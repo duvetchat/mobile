@@ -1,0 +1,1508 @@
+import 'dart:async';
+import 'dart:io';
+import 'dart:math' as math;
+import 'dart:ui' as ui;
+
+import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
+import 'package:forui/forui.dart';
+import 'package:image_picker/image_picker.dart';
+
+import 'data/appearance.dart';
+import 'data/links.dart';
+import 'data/models.dart';
+import 'data/scope.dart';
+import 'people.dart';
+import 'tabs.dart' show LiveIndicator;
+import 'theme.dart';
+import 'widgets/avatar.dart';
+import 'widgets/chrome.dart';
+import 'widgets/depth.dart';
+import 'widgets/glass.dart';
+import 'widgets/rows.dart';
+
+void _toast(BuildContext context, String text) {
+  if (context.mounted) showFToast(context: context, title: Text(text), duration: const Duration(seconds: 3));
+}
+
+/// A form screen: a back chevron (or none), the large title and its line,
+/// the fields, then its one Primary action at the bottom.
+class _FormPage extends StatelessWidget {
+  final String title;
+  final String? lead;
+  final List<Widget> children;
+  final Widget? action;
+  final List<Widget> after;
+  const _FormPage({required this.title, required this.children, this.lead, this.action, this.after = const []});
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = context.theme.colors;
+    final padding = MediaQuery.paddingOf(context);
+    return Scaffold(
+      backgroundColor: colors.background,
+      body: Stack(
+        children: [
+          Positioned.fill(
+            child: ListView(
+              padding: EdgeInsets.fromLTRB(24, padding.top + DuvetTokens.sizeTopBar, 24, padding.bottom + 24),
+              children: [
+                Semantics(
+                  header: true,
+                  child: Text(title, style: DuvetType.largeTitle.copyWith(color: colors.foreground)),
+                ),
+                if (lead != null) ...[
+                  const SizedBox(height: 8),
+                  Text(lead!, style: DuvetType.snippet.copyWith(color: colors.mutedForeground)),
+                ],
+                const SizedBox(height: 32),
+                ...children,
+                if (action != null) ...[const SizedBox(height: 32), action!],
+                ...after,
+              ],
+            ),
+          ),
+          Positioned(
+            top: padding.top + 6,
+            left: 8,
+            child: IconAction(
+              icon: FLucideIcons.chevronLeft,
+              label: 'Back',
+              onPressed: () => Navigator.of(context).maybePop(),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+String? _error(Object e) => e.toString().contains('409')
+    ? 'That username or email is taken'
+    : e.toString().contains('400')
+    ? 'Check what you typed'
+    : 'Couldn’t reach Duvet. Check your connection.';
+
+// -----------------------------------------------------------------------------
+// Sign up
+// -----------------------------------------------------------------------------
+
+/// How strong a password is, 0 to 4, and what would make it stronger.
+({int score, String hint}) passwordStrength(String p) {
+  if (p.isEmpty) return (score: 0, hint: 'At least 8 characters');
+  var score = 0;
+  if (p.length >= 8) score++;
+  if (p.length >= 12) score++;
+  if (RegExp(r'[a-z]').hasMatch(p) && RegExp(r'[A-Z]').hasMatch(p) || RegExp(r'\d').hasMatch(p)) score++;
+  if (RegExp(r'[^A-Za-z0-9]').hasMatch(p)) score++;
+  score = math.min(score, 4);
+  final hint = switch (score) {
+    _ when p.length < 8 => 'Too short: at least 8 characters',
+    4 => 'Strong',
+    3 => 'Good. Make it longer to make it strong.',
+    _ => 'Fair. Add a number or a symbol.',
+  };
+  return (score: score, hint: hint);
+}
+
+class SignUpScreen extends StatefulWidget {
+  const SignUpScreen({super.key});
+
+  @override
+  State<SignUpScreen> createState() => _SignUpScreenState();
+}
+
+class _SignUpScreenState extends State<SignUpScreen> {
+  final _username = TextEditingController();
+  final _email = TextEditingController();
+  final _password = TextEditingController();
+  bool _show = false;
+  bool _busy = false;
+  String? _failure;
+
+  @override
+  void initState() {
+    super.initState();
+    for (final c in [_username, _email, _password]) {
+      c.addListener(() => setState(() {}));
+    }
+  }
+
+  @override
+  void dispose() {
+    _username.dispose();
+    _email.dispose();
+    _password.dispose();
+    super.dispose();
+  }
+
+  String get _name => _username.text.trim().replaceFirst('@', '');
+  bool get _validName => RegExp(r'^[a-zA-Z0-9_.]{2,32}$').hasMatch(_name);
+  bool get _validEmail => RegExp(r'^[^@\s]+@[^@\s]+\.[^@\s]+$').hasMatch(_email.text.trim());
+
+  Future<void> _create() async {
+    final navigator = Navigator.of(context);
+    setState(() {
+      _busy = true;
+      _failure = null;
+    });
+    try {
+      await context.repository.signUp(username: _name, email: _email.text.trim(), password: _password.text);
+      // Signed in: the app shows; the verify screen goes over it.
+      navigator.popUntil((r) => r.isFirst);
+      unawaited(navigator.push(MaterialPageRoute<void>(builder: (_) => VerifyEmailPage(email: _email.text.trim()))));
+    } catch (e) {
+      if (mounted) setState(() => _failure = _error(e));
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = context.theme.colors;
+    final strength = passwordStrength(_password.text);
+    final ready = _validName && _validEmail && _password.text.length >= 8;
+    return _FormPage(
+      title: 'Create your account',
+      lead: 'One account for every Space you join.',
+      action: DuvetButton(
+        label: 'Create account',
+        variant: ButtonVariant.primary,
+        expand: true,
+        busy: _busy,
+        onPressed: ready ? _create : null,
+      ),
+      after: [
+        const SizedBox(height: 16),
+        Wrap(
+          alignment: WrapAlignment.center,
+          crossAxisAlignment: WrapCrossAlignment.center,
+          children: [
+            Text('Already have an account?', style: DuvetType.snippet.copyWith(color: colors.mutedForeground)),
+            TextAction(label: 'Sign in', onPressed: () => Navigator.of(context).maybePop()),
+          ],
+        ),
+      ],
+      children: [
+        DuvetTextField(
+          label: 'Username',
+          controller: _username,
+          autofocus: true,
+          autofillHints: const [AutofillHints.newUsername],
+          textInputAction: TextInputAction.next,
+          error: _username.text.isNotEmpty && !_validName ? 'Letters, numbers, dots and _, 2 to 32' : null,
+        ),
+        const SizedBox(height: 16),
+        DuvetTextField(
+          label: 'Email',
+          controller: _email,
+          keyboardType: TextInputType.emailAddress,
+          autofillHints: const [AutofillHints.email],
+          textInputAction: TextInputAction.next,
+          error: _email.text.isNotEmpty && !_validEmail ? 'That doesn’t look like an email' : null,
+        ),
+        const SizedBox(height: 16),
+        DuvetTextField(
+          label: 'Password',
+          controller: _password,
+          obscure: !_show,
+          autofillHints: const [AutofillHints.newPassword],
+          trailing: IconAction(
+            icon: _show ? FLucideIcons.eyeOff : FLucideIcons.eye,
+            label: _show ? 'Hide password' : 'Show password',
+            color: colors.mutedForeground,
+            onPressed: () => setState(() => _show = !_show),
+          ),
+        ),
+        const SizedBox(height: 8),
+        // Strength in four segments, `ink` filled: never red or green.
+        Semantics(
+          label: 'Password strength: ${strength.score} of 4',
+          excludeSemantics: true,
+          child: Row(
+            children: [
+              for (var i = 0; i < 4; i++) ...[
+                if (i > 0) const SizedBox(width: 4),
+                Expanded(
+                  child: Container(
+                    height: 4,
+                    decoration: BoxDecoration(
+                      color: i < strength.score ? colors.foreground : colors.secondary,
+                      borderRadius: BorderRadius.circular(2),
+                    ),
+                  ),
+                ),
+              ],
+            ],
+          ),
+        ),
+        const SizedBox(height: 8),
+        Text(strength.hint, style: DuvetType.caption.copyWith(color: colors.mutedForeground)),
+        if (_failure != null) ...[
+          const SizedBox(height: 16),
+          Semantics(
+            liveRegion: true,
+            child: Text(_failure!, style: DuvetType.caption.copyWith(color: colors.destructive)),
+          ),
+        ],
+      ],
+    );
+  }
+}
+
+// -----------------------------------------------------------------------------
+// Verify email
+// -----------------------------------------------------------------------------
+
+/// Verifies with a link's token: from a tapped link, or pasted.
+Future<void> verifyFromLink(BuildContext context, String token) async {
+  try {
+    await context.repository.verifyEmail(token);
+    if (context.mounted) _toast(context, 'Your email is verified');
+  } catch (_) {
+    if (context.mounted) _toast(context, 'That link has expired. Ask for a new one.');
+  }
+}
+
+/// Check your email: the link goes to [email]; resend it after a minute, or
+/// paste the link here.
+class VerifyEmailPage extends StatefulWidget {
+  final String? email;
+  const VerifyEmailPage({this.email, super.key});
+
+  @override
+  State<VerifyEmailPage> createState() => _VerifyEmailPageState();
+}
+
+class _VerifyEmailPageState extends State<VerifyEmailPage> {
+  static const _wait = 60;
+  final _link = TextEditingController();
+  Timer? _timer;
+  int _left = _wait;
+  String? _failure;
+
+  @override
+  void initState() {
+    super.initState();
+    _tick();
+  }
+
+  void _tick() {
+    _timer?.cancel();
+    _left = _wait;
+    _timer = Timer.periodic(const Duration(seconds: 1), (t) {
+      if (!mounted) return;
+      setState(() => _left--);
+      if (_left <= 0) t.cancel();
+    });
+  }
+
+  @override
+  void dispose() {
+    _timer?.cancel();
+    _link.dispose();
+    super.dispose();
+  }
+
+  Future<void> _resend() async {
+    try {
+      await context.repository.sendVerificationEmail();
+      setState(_tick);
+      if (mounted) _toast(context, 'Sent again');
+    } catch (_) {
+      if (mounted) _toast(context, 'Couldn’t send it');
+    }
+  }
+
+  Future<void> _verify() async {
+    final token = switch (parseDeepLink(_link.text.trim())) {
+      OpenVerify(:final token) => token,
+      _ => _link.text.trim().contains('/') ? null : _link.text.trim(),
+    };
+    if (token == null || token.isEmpty) {
+      setState(() => _failure = 'That isn’t a verification link');
+      return;
+    }
+    final navigator = Navigator.of(context);
+    try {
+      await context.repository.verifyEmail(token);
+      navigator.pop();
+    } catch (_) {
+      if (mounted) setState(() => _failure = 'That link has expired. Ask for a new one.');
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = context.theme.colors;
+    final tokens = context.duvet;
+    return ValueListenableBuilder(
+      valueListenable: context.repository.profile,
+      builder: (context, profile, _) {
+        if (profile?.emailVerified == true) {
+          return _FormPage(
+            title: 'Email verified',
+            lead: 'You’re all set.',
+            action: DuvetButton(
+              label: 'Done',
+              variant: ButtonVariant.primary,
+              expand: true,
+              onPressed: () => Navigator.of(context).maybePop(),
+            ),
+            children: const [],
+          );
+        }
+        return _FormPage(
+          title: 'Check your email',
+          lead: widget.email == null
+              ? 'We sent you a link. Tap it on this phone to verify your address.'
+              : 'We sent a link to ${widget.email}. Tap it on this phone to verify your address.',
+          action: DuvetButton(
+            label: _left > 0 ? 'Resend link in 0:${_left.toString().padLeft(2, '0')}' : 'Resend link',
+            expand: true,
+            onPressed: _left > 0 ? null : _resend,
+          ),
+          after: [
+            const SizedBox(height: 8),
+            Center(
+              child: TextAction(label: 'Later', onPressed: () => Navigator.of(context).maybePop()),
+            ),
+          ],
+          children: [
+            Container(
+              width: 64,
+              height: 64,
+              decoration: BoxDecoration(
+                color: colors.card,
+                borderRadius: BorderRadius.circular(DuvetTokens.radiusButton),
+                boxShadow: tokens.shadowRaised,
+              ),
+              child: Icon(FLucideIcons.mail, size: 28, color: colors.foreground),
+            ),
+            const SizedBox(height: 24),
+            DuvetTextField(
+              label: 'Or paste the link',
+              controller: _link,
+              keyboardType: TextInputType.url,
+              error: _failure,
+              onSubmitted: (_) => _verify(),
+              trailing: TextAction(label: 'Verify', onPressed: _verify),
+            ),
+          ],
+        );
+      },
+    );
+  }
+}
+
+// -----------------------------------------------------------------------------
+// Passwords and email
+// -----------------------------------------------------------------------------
+
+/// Reset your password: an email gets a link.
+class ForgotPasswordScreen extends StatefulWidget {
+  const ForgotPasswordScreen({super.key});
+
+  @override
+  State<ForgotPasswordScreen> createState() => _ForgotPasswordScreenState();
+}
+
+class _ForgotPasswordScreenState extends State<ForgotPasswordScreen> {
+  final _email = TextEditingController();
+  bool _busy = false;
+  String? _sent;
+  String? _failure;
+
+  @override
+  void dispose() {
+    _email.dispose();
+    super.dispose();
+  }
+
+  Future<void> _send() async {
+    final email = _email.text.trim();
+    setState(() {
+      _busy = true;
+      _failure = null;
+    });
+    try {
+      await context.repository.forgotPassword(email);
+      if (mounted) setState(() => _sent = email);
+    } catch (_) {
+      if (mounted) setState(() => _failure = 'Couldn’t send a link to that email');
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = context.theme.colors;
+    final tokens = context.duvet;
+    return _FormPage(
+      title: 'Reset your password',
+      lead: 'Enter your email and we’ll send you a link. It works for 30 minutes.',
+      action: _sent != null
+          ? null
+          : DuvetButton(
+              label: 'Send reset link',
+              variant: ButtonVariant.primary,
+              expand: true,
+              busy: _busy,
+              onPressed: _send,
+            ),
+      children: [
+        DuvetTextField(
+          label: 'Email',
+          controller: _email,
+          autofocus: true,
+          keyboardType: TextInputType.emailAddress,
+          autofillHints: const [AutofillHints.email],
+          error: _failure,
+          onSubmitted: (_) => _send(),
+        ),
+        if (_sent case final email?) ...[
+          const SizedBox(height: 32),
+          Semantics(
+            liveRegion: true,
+            child: Container(
+              padding: const EdgeInsets.all(16),
+              decoration: BoxDecoration(
+                color: colors.card,
+                borderRadius: BorderRadius.circular(DuvetTokens.radiusCard),
+                boxShadow: tokens.shadowRest,
+              ),
+              child: Row(
+                children: [
+                  Icon(FLucideIcons.mailCheck, color: colors.foreground),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text('Link sent', style: DuvetType.rowTitle.copyWith(color: colors.foreground)),
+                        Text(
+                          'Check $email. You can close this screen.',
+                          style: DuvetType.caption.copyWith(color: colors.mutedForeground),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ],
+      ],
+    );
+  }
+}
+
+/// A new password, from the emailed link.
+class ResetPasswordPage extends StatefulWidget {
+  final String token;
+  const ResetPasswordPage({required this.token, super.key});
+
+  @override
+  State<ResetPasswordPage> createState() => _ResetPasswordPageState();
+}
+
+class _ResetPasswordPageState extends State<ResetPasswordPage> {
+  final _password = TextEditingController();
+  bool _busy = false;
+  String? _failure;
+
+  @override
+  void initState() {
+    super.initState();
+    _password.addListener(() => setState(() {}));
+  }
+
+  @override
+  void dispose() {
+    _password.dispose();
+    super.dispose();
+  }
+
+  Future<void> _save() async {
+    final navigator = Navigator.of(context);
+    setState(() => _busy = true);
+    try {
+      await context.repository.resetPassword(widget.token, _password.text);
+      if (mounted) _toast(context, 'Password changed. Sign in with it.');
+      navigator.pop();
+    } catch (_) {
+      if (mounted) setState(() => _failure = 'That link has expired. Ask for a new one.');
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final strength = passwordStrength(_password.text);
+    return _FormPage(
+      title: 'Choose a new password',
+      action: DuvetButton(
+        label: 'Save password',
+        variant: ButtonVariant.primary,
+        expand: true,
+        busy: _busy,
+        onPressed: _password.text.length >= 8 ? _save : null,
+      ),
+      children: [
+        DuvetTextField(
+          label: 'New password',
+          controller: _password,
+          obscure: true,
+          autofocus: true,
+          autofillHints: const [AutofillHints.newPassword],
+          helper: strength.hint,
+          error: _failure,
+        ),
+      ],
+    );
+  }
+}
+
+/// Moves the account to the address in the emailed link.
+Future<void> changeEmailFromLink(BuildContext context, String token, String email) async {
+  try {
+    await context.repository.changeEmail(token, email);
+    if (context.mounted) _toast(context, 'Your email is now $email');
+  } catch (_) {
+    if (context.mounted) _toast(context, 'That link has expired. Ask for a new one.');
+  }
+}
+
+class ChangeEmailPage extends StatefulWidget {
+  const ChangeEmailPage({super.key});
+
+  @override
+  State<ChangeEmailPage> createState() => _ChangeEmailPageState();
+}
+
+class _ChangeEmailPageState extends State<ChangeEmailPage> {
+  final _email = TextEditingController();
+  bool _busy = false;
+  String? _sent;
+  String? _failure;
+
+  @override
+  void dispose() {
+    _email.dispose();
+    super.dispose();
+  }
+
+  Future<void> _send() async {
+    setState(() => _busy = true);
+    try {
+      await context.repository.sendChangeEmail(_email.text.trim());
+      if (mounted) setState(() => _sent = _email.text.trim());
+    } catch (_) {
+      if (mounted) setState(() => _failure = 'Couldn’t send a link to that email');
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) => _FormPage(
+    title: 'Change email',
+    lead: _sent == null
+        ? 'We’ll send a link to the new address. The change happens when you tap it.'
+        : 'Check $_sent and tap the link on this phone.',
+    action: _sent != null
+        ? null
+        : DuvetButton(label: 'Send link', variant: ButtonVariant.primary, expand: true, busy: _busy, onPressed: _send),
+    children: [
+      if (_sent == null)
+        DuvetTextField(
+          label: 'New email',
+          controller: _email,
+          autofocus: true,
+          keyboardType: TextInputType.emailAddress,
+          error: _failure,
+        ),
+    ],
+  );
+}
+
+// -----------------------------------------------------------------------------
+// Edit profile
+// -----------------------------------------------------------------------------
+
+/// Picks a picture for the profile; tests swap in their own.
+Future<String?> Function() pickProfilePicture = () async =>
+    (await ImagePicker().pickImage(source: ImageSource.gallery, imageQuality: 95))?.path;
+
+class EditProfilePage extends StatefulWidget {
+  const EditProfilePage({super.key});
+
+  @override
+  State<EditProfilePage> createState() => _EditProfilePageState();
+}
+
+class _EditProfilePageState extends State<EditProfilePage> {
+  late final TextEditingController _alias;
+  bool _saving = false;
+  String? _avatar;
+  String? _banner;
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    _alias = TextEditingController(text: context.repository.profile.value?.alias ?? '');
+  }
+
+  @override
+  void dispose() {
+    _alias.dispose();
+    super.dispose();
+  }
+
+  Future<void> _change(ProfileImage kind) async {
+    final path = await pickProfilePicture();
+    if (path == null || !mounted) return;
+    final crop = await Navigator.of(context).push<CropRect>(
+      MaterialPageRoute(
+        fullscreenDialog: true,
+        builder: (_) => CropPage(path: path, aspect: kind == ProfileImage.avatar ? 1 : 3),
+      ),
+    );
+    if (crop == null || !mounted) return;
+    try {
+      await context.repository.uploadProfileImage(kind, path, crop);
+      if (mounted) setState(() => kind == ProfileImage.avatar ? _avatar = path : _banner = path);
+    } catch (_) {
+      if (mounted) {
+        _toast(context, kind == ProfileImage.avatar ? 'Couldn’t change the photo' : 'Couldn’t change the banner');
+      }
+    }
+  }
+
+  Future<void> _save() async {
+    final navigator = Navigator.of(context);
+    setState(() => _saving = true);
+    try {
+      await context.repository.updateProfile(alias: _alias.text);
+      navigator.pop();
+    } catch (_) {
+      if (mounted) _toast(context, 'Couldn’t save your profile');
+    } finally {
+      if (mounted) setState(() => _saving = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final profile = context.repository.profile.value;
+    final colors = context.theme.colors;
+    final tokens = context.duvet;
+    final padding = MediaQuery.paddingOf(context);
+    if (profile == null) return const SizedBox.shrink();
+    return Scaffold(
+      backgroundColor: colors.background,
+      body: Stack(
+        children: [
+          Positioned.fill(
+            child: ListView(
+              padding: EdgeInsets.fromLTRB(16, GlassTopBar.heightOf(context) + 8, 16, padding.bottom + 24),
+              children: [
+                SizedBox(
+                  height: 128 + 48,
+                  child: Stack(
+                    clipBehavior: Clip.none,
+                    children: [
+                      Container(
+                        height: 128,
+                        decoration: BoxDecoration(
+                          color: colors.secondary,
+                          borderRadius: BorderRadius.circular(DuvetTokens.radiusCard),
+                          image: switch (_banner ?? profile.bannerUrl) {
+                            final b? => DecorationImage(
+                              image: b.startsWith('http') ? NetworkImage(b) : FileImage(File(b)) as ImageProvider,
+                              fit: BoxFit.cover,
+                            ),
+                            null => null,
+                          },
+                        ),
+                      ),
+                      Positioned(
+                        right: 12,
+                        top: 12,
+                        child: Semantics(
+                          container: true,
+                          button: true,
+                          label: 'Change banner',
+                          excludeSemantics: true,
+                          onTap: () => _change(ProfileImage.banner),
+                          child: GestureDetector(
+                            onTap: () => _change(ProfileImage.banner),
+                            child: GlassSurface(
+                              borderRadius: BorderRadius.circular(DuvetTokens.radiusField),
+                              child: Padding(
+                                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                                child: Row(
+                                  mainAxisSize: MainAxisSize.min,
+                                  children: [
+                                    Icon(FLucideIcons.image, size: 18, color: colors.foreground),
+                                    const SizedBox(width: 6),
+                                    Text('Banner', style: DuvetType.label.copyWith(color: colors.foreground)),
+                                  ],
+                                ),
+                              ),
+                            ),
+                          ),
+                        ),
+                      ),
+                      Positioned(
+                        left: 16,
+                        top: 128 - 40,
+                        child: Semantics(
+                          container: true,
+                          button: true,
+                          label: 'Change profile photo',
+                          excludeSemantics: true,
+                          onTap: () => _change(ProfileImage.avatar),
+                          child: GestureDetector(
+                            onTap: () => _change(ProfileImage.avatar),
+                            child: Stack(
+                              clipBehavior: Clip.none,
+                              children: [
+                                DecoratedBox(
+                                  decoration: BoxDecoration(
+                                    shape: BoxShape.circle,
+                                    border: Border.all(color: colors.background, width: 4),
+                                    boxShadow: tokens.shadowRaised,
+                                  ),
+                                  child: _avatar != null
+                                      ? ClipOval(
+                                          child: Image.file(File(_avatar!), width: 88, height: 88, fit: BoxFit.cover),
+                                        )
+                                      : UserAvatar(name: profile.displayName, url: profile.avatarUrl, size: 88),
+                                ),
+                                Positioned(
+                                  right: -2,
+                                  bottom: -2,
+                                  child: Container(
+                                    width: 32,
+                                    height: 32,
+                                    decoration: BoxDecoration(
+                                      color: colors.card,
+                                      borderRadius: BorderRadius.circular(DuvetTokens.radiusField),
+                                      boxShadow: tokens.shadowControl,
+                                    ),
+                                    child: Icon(FLucideIcons.camera, size: 16, color: colors.foreground),
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                const SizedBox(height: 8),
+                DuvetTextField(label: 'Display name', controller: _alias, hint: profile.username),
+                const SizedBox(height: 16),
+                Text(
+                  'Username',
+                  style: DuvetType.caption.copyWith(color: colors.foreground, fontWeight: FontWeight.w500),
+                ),
+                const SizedBox(height: 8),
+                Container(
+                  height: 48,
+                  padding: const EdgeInsets.symmetric(horizontal: 16),
+                  alignment: Alignment.centerLeft,
+                  decoration: BoxDecoration(
+                    color: colors.secondary,
+                    borderRadius: BorderRadius.circular(DuvetTokens.radiusField),
+                  ),
+                  child: Text('@${profile.username}', style: DuvetType.body.copyWith(color: colors.mutedForeground)),
+                ),
+              ],
+            ),
+          ),
+          Positioned(
+            top: 0,
+            left: 0,
+            right: 0,
+            child: GlassTopBar(
+              title: const Text('Edit profile'),
+              leading: TextAction(label: 'Cancel', onPressed: () => Navigator.of(context).maybePop()),
+              actions: [TextAction(label: 'Save', onPressed: _saving ? null : _save)],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// Cropping, before an upload: pan and pinch the picture inside the frame;
+/// the frame's part goes up (the server crops).
+class CropPage extends StatefulWidget {
+  final String path;
+
+  /// Width over height: 1 for an avatar, 3 for a banner.
+  final double aspect;
+  const CropPage({required this.path, required this.aspect, super.key});
+
+  @override
+  State<CropPage> createState() => _CropPageState();
+}
+
+class _CropPageState extends State<CropPage> {
+  final _transform = TransformationController();
+  Size? _image;
+
+  @override
+  void initState() {
+    super.initState();
+    File(widget.path)
+        .readAsBytes()
+        .then(ui.instantiateImageCodec)
+        .then((codec) => codec.getNextFrame())
+        .then(
+          (frame) {
+            if (mounted) setState(() => _image = Size(frame.image.width.toDouble(), frame.image.height.toDouble()));
+          },
+          onError: (Object e) {
+            if (mounted) Navigator.of(context).pop();
+          },
+        );
+  }
+
+  @override
+  void dispose() {
+    _transform.dispose();
+    super.dispose();
+  }
+
+  /// The frame, in the picture's pixels.
+  CropRect _crop(Size frame, double scale) {
+    final inverse = Matrix4.inverted(_transform.value);
+    final topLeft = MatrixUtils.transformPoint(inverse, Offset.zero) / scale;
+    final bottomRight = MatrixUtils.transformPoint(inverse, Offset(frame.width, frame.height)) / scale;
+    final image = _image!;
+    final x = topLeft.dx.clamp(0.0, image.width);
+    final y = topLeft.dy.clamp(0.0, image.height);
+    return (
+      x: x,
+      y: y,
+      w: (bottomRight.dx.clamp(0.0, image.width) - x),
+      h: (bottomRight.dy.clamp(0.0, image.height) - y),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    const ink = Color(0xFFF2F1EE);
+    final padding = MediaQuery.paddingOf(context);
+    final image = _image;
+    return Scaffold(
+      backgroundColor: const Color(0xFF0A0A0B),
+      body: LayoutBuilder(
+        builder: (context, constraints) {
+          final width = constraints.maxWidth - 32;
+          final frame = Size(width, width / widget.aspect);
+          // The picture covers the frame at scale 1.
+          final scale = image == null ? 1.0 : math.max(frame.width / image.width, frame.height / image.height);
+          return Stack(
+            children: [
+              Center(
+                child: SizedBox.fromSize(
+                  size: frame,
+                  child: image == null
+                      ? const Center(child: CircularProgressIndicator(color: ink))
+                      : Semantics(
+                          image: true,
+                          label: 'Picture to crop. Pinch to zoom, drag to move',
+                          child: ClipRRect(
+                            borderRadius: BorderRadius.circular(
+                              widget.aspect == 1 ? frame.width / 2 : DuvetTokens.radiusCard,
+                            ),
+                            child: InteractiveViewer(
+                              transformationController: _transform,
+                              constrained: false,
+                              minScale: 1,
+                              maxScale: 6,
+                              child: Image.file(
+                                File(widget.path),
+                                width: image.width * scale,
+                                height: image.height * scale,
+                                fit: BoxFit.fill,
+                              ),
+                            ),
+                          ),
+                        ),
+                ),
+              ),
+              Positioned(
+                left: 8,
+                right: 8,
+                top: padding.top + 6,
+                child: Row(
+                  children: [
+                    TextAction(label: 'Cancel', color: ink, onPressed: () => Navigator.of(context).pop()),
+                    const Spacer(),
+                    TextAction(
+                      label: 'Use',
+                      color: ink,
+                      onPressed: image == null ? null : () => Navigator.of(context).pop(_crop(frame, scale)),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          );
+        },
+      ),
+    );
+  }
+}
+
+// -----------------------------------------------------------------------------
+// My files
+// -----------------------------------------------------------------------------
+
+String formatBytes(int bytes) {
+  if (bytes < 1024) return '$bytes B';
+  if (bytes < 1024 * 1024) return '${(bytes / 1024).toStringAsFixed(1)} KB';
+  if (bytes < 1024 * 1024 * 1024) return '${(bytes / (1024 * 1024)).toStringAsFixed(1)} MB';
+  return '${(bytes / (1024 * 1024 * 1024)).toStringAsFixed(1)} GB';
+}
+
+enum _FileFilter { all, largest, images, voice }
+
+/// My files: the storage used, by kind, and every file, to delete.
+class MyFilesPage extends StatefulWidget {
+  const MyFilesPage({super.key});
+
+  @override
+  State<MyFilesPage> createState() => _MyFilesPageState();
+}
+
+class _MyFilesPageState extends State<MyFilesPage> {
+  List<MyFile>? _files;
+  StorageInfo? _storage;
+  _FileFilter _filter = _FileFilter.all;
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    if (_files == null) _load();
+  }
+
+  Future<void> _load() async {
+    final repository = context.repository;
+    try {
+      final (files, storage) = await (repository.myFiles(), repository.storage()).wait;
+      if (mounted) {
+        setState(() {
+          _files = files;
+          _storage = storage;
+        });
+      }
+    } catch (_) {
+      if (mounted) setState(() => _files = const []);
+    }
+  }
+
+  Future<void> _delete(MyFile f) async {
+    final sure = await showGlassDialogSheet<bool>(
+      context,
+      label: 'Delete ${f.name}?',
+      builder: (context) => Padding(
+        padding: const EdgeInsets.fromLTRB(24, 16, 24, 24),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Text('Delete ${f.name}?', style: DuvetType.title.copyWith(color: context.theme.colors.foreground)),
+            const SizedBox(height: 12),
+            Text(
+              'It goes from every message it’s in. This can’t be undone.',
+              style: DuvetType.snippet.copyWith(color: context.theme.colors.mutedForeground),
+            ),
+            const SizedBox(height: 24),
+            DuvetButton(
+              label: 'Delete file',
+              variant: ButtonVariant.destructive,
+              expand: true,
+              onPressed: () => Navigator.of(context).pop(true),
+            ),
+            const SizedBox(height: 12),
+            DuvetButton(label: 'Cancel', expand: true, onPressed: () => Navigator.of(context).pop(false)),
+          ],
+        ),
+      ),
+    );
+    if (sure != true || !mounted) return;
+    try {
+      await context.repository.deleteMyFile(f.id);
+      await _load();
+    } catch (_) {
+      if (mounted) _toast(context, 'Couldn’t delete the file');
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = context.theme.colors;
+    final tokens = context.duvet;
+    final padding = MediaQuery.paddingOf(context);
+    final files = _files;
+    final storage = _storage;
+    int sum(bool Function(MyFile f) test) => (files ?? const <MyFile>[]).where(test).fold(0, (a, f) => a + f.sizeBytes);
+    final images = sum((f) => f.isImage);
+    final voice = sum((f) => f.isAudio);
+    final other = sum((f) => !f.isImage && !f.isAudio);
+    final shown = switch (_filter) {
+      _FileFilter.all => [...?files]..sort((a, b) => b.createdAt.compareTo(a.createdAt)),
+      _FileFilter.largest => [...?files]..sort((a, b) => b.sizeBytes.compareTo(a.sizeBytes)),
+      _FileFilter.images => [...?files?.where((f) => f.isImage)],
+      _FileFilter.voice => [...?files?.where((f) => f.isAudio)],
+    };
+    return Scaffold(
+      backgroundColor: colors.background,
+      body: Stack(
+        children: [
+          Positioned.fill(
+            child: ListView(
+              padding: EdgeInsets.only(top: GlassTopBar.heightOf(context) + 8, bottom: padding.bottom + 24),
+              children: [
+                if (storage != null)
+                  Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 16),
+                    child: StorageMeter(storage: storage, images: images, files: other, voice: voice, big: true),
+                  ),
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(16, 12, 16, 0),
+                  child: SingleChildScrollView(
+                    scrollDirection: Axis.horizontal,
+                    child: Row(
+                      children: [
+                        for (final (f, label) in const [
+                          (_FileFilter.all, 'All'),
+                          (_FileFilter.largest, 'Largest'),
+                          (_FileFilter.images, 'Images'),
+                          (_FileFilter.voice, 'Voice'),
+                        ]) ...[
+                          Semantics(
+                            button: true,
+                            selected: _filter == f,
+                            label: label,
+                            excludeSemantics: true,
+                            onTap: () => setState(() => _filter = f),
+                            child: GestureDetector(
+                              behavior: HitTestBehavior.opaque,
+                              onTap: () => setState(() => _filter = f),
+                              child: Padding(
+                                padding: const EdgeInsets.symmetric(vertical: 10),
+                                child: Text(
+                                  label,
+                                  style: DuvetType.label.copyWith(
+                                    color: _filter == f ? tokens.accentText : colors.mutedForeground,
+                                  ),
+                                ),
+                              ),
+                            ),
+                          ),
+                          const SizedBox(width: 24),
+                        ],
+                      ],
+                    ),
+                  ),
+                ),
+                if (files == null)
+                  const Padding(
+                    padding: EdgeInsets.all(24),
+                    child: Center(child: FCircularProgress()),
+                  )
+                else if (shown.isEmpty)
+                  const ListNote('No files')
+                else
+                  for (final f in shown)
+                    Padding(
+                      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                      child: Row(
+                        children: [
+                          ClipRRect(
+                            borderRadius: BorderRadius.circular(DuvetTokens.radiusField),
+                            child: Container(
+                              width: 48,
+                              height: 48,
+                              color: colors.secondary,
+                              child: f.isImage
+                                  ? Image.network(
+                                      f.url,
+                                      fit: BoxFit.cover,
+                                      cacheWidth: (48 * MediaQuery.devicePixelRatioOf(context)).round(),
+                                      errorBuilder: (_, _, _) => Icon(FLucideIcons.image, color: colors.foreground),
+                                    )
+                                  : Icon(
+                                      f.isAudio ? FLucideIcons.mic : FLucideIcons.fileText,
+                                      color: colors.foreground,
+                                    ),
+                            ),
+                          ),
+                          const SizedBox(width: 12),
+                          Expanded(
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Text(
+                                  f.name,
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                  style: DuvetType.rowTitle.copyWith(fontSize: 15, color: colors.foreground),
+                                ),
+                                Text(
+                                  '${formatBytes(f.sizeBytes)} · ${shortTime(f.createdAt)}',
+                                  style: DuvetType.caption.copyWith(color: colors.mutedForeground),
+                                ),
+                              ],
+                            ),
+                          ),
+                          IconAction(
+                            icon: FLucideIcons.trash2,
+                            label: 'Delete ${f.name}',
+                            color: colors.mutedForeground,
+                            onPressed: () => _delete(f),
+                          ),
+                        ],
+                      ),
+                    ),
+              ],
+            ),
+          ),
+          Positioned(
+            top: 0,
+            left: 0,
+            right: 0,
+            child: GlassTopBar(title: const Text('My files'), onBack: () => Navigator.of(context).maybePop()),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// Storage used: a meter in three shades of `ink`, never hues to tell apart.
+class StorageMeter extends StatelessWidget {
+  final StorageInfo storage;
+  final int images;
+  final int files;
+  final int voice;
+  final bool big;
+  const StorageMeter({
+    required this.storage,
+    required this.images,
+    required this.files,
+    required this.voice,
+    this.big = false,
+    super.key,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = context.theme.colors;
+    final tokens = context.duvet;
+    final max = storage.max <= 0 ? 1 : storage.max;
+    final parts = [
+      (images, colors.foreground, 'Images'),
+      (files, colors.mutedForeground, 'Files'),
+      (voice, tokens.grabber, 'Voice'),
+    ];
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: colors.card,
+        borderRadius: BorderRadius.circular(DuvetTokens.radiusCard),
+        boxShadow: big ? tokens.shadowRaised : tokens.shadowRest,
+      ),
+      child: Semantics(
+        container: true,
+        label:
+            '${formatBytes(storage.used)} of ${formatBytes(storage.max)} used: '
+            'images ${formatBytes(images)}, files ${formatBytes(files)}, voice ${formatBytes(voice)}',
+        excludeSemantics: true,
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              crossAxisAlignment: CrossAxisAlignment.baseline,
+              textBaseline: TextBaseline.alphabetic,
+              children: [
+                Text(
+                  formatBytes(storage.used),
+                  style: (big ? DuvetType.title : DuvetType.rowTitle).copyWith(color: colors.foreground),
+                ),
+                const SizedBox(width: 8),
+                Text(
+                  'of ${formatBytes(storage.max)} used',
+                  style: DuvetType.caption.copyWith(color: colors.mutedForeground),
+                ),
+              ],
+            ),
+            const SizedBox(height: 10),
+            Container(
+              height: 8,
+              decoration: BoxDecoration(
+                color: colors.secondary,
+                borderRadius: BorderRadius.circular(DuvetTokens.radiusChip),
+              ),
+              clipBehavior: Clip.antiAlias,
+              child: Row(
+                children: [
+                  for (final (bytes, color, _) in parts)
+                    Flexible(
+                      flex: math.max(0, (bytes / max * 1000).round()),
+                      child: Container(color: color),
+                    ),
+                  Flexible(
+                    flex: math.max(1, ((max - images - files - voice) / max * 1000).round()),
+                    child: const SizedBox.shrink(),
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(height: 10),
+            Wrap(
+              spacing: 16,
+              children: [
+                for (final (bytes, color, label) in parts)
+                  Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Container(
+                        width: 10,
+                        height: 10,
+                        decoration: BoxDecoration(color: color, borderRadius: BorderRadius.circular(3)),
+                      ),
+                      const SizedBox(width: 6),
+                      Text(
+                        '$label ${formatBytes(bytes)}',
+                        style: DuvetType.caption.copyWith(color: colors.mutedForeground),
+                      ),
+                    ],
+                  ),
+              ],
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+// -----------------------------------------------------------------------------
+// You
+// -----------------------------------------------------------------------------
+
+/// You: the profile card (Edit), friends, appearance, storage, account.
+class YouTab extends StatefulWidget {
+  const YouTab({super.key});
+
+  @override
+  State<YouTab> createState() => _YouTabState();
+}
+
+class _YouTabState extends State<YouTab> {
+  StorageInfo? _storage;
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    context.repository.storage().then((s) {
+      if (mounted) setState(() => _storage = s);
+    }, onError: (Object e) => debugPrint('storage: $e'));
+  }
+
+  void _push(Widget page) =>
+      Navigator.of(context, rootNavigator: true).push(MaterialPageRoute<void>(builder: (_) => page));
+
+  @override
+  Widget build(BuildContext context) {
+    final repository = context.repository;
+    final appearance = AppearanceScope.of(context);
+    final colors = context.theme.colors;
+    final tokens = context.duvet;
+    return ListenableBuilder(
+      listenable: Listenable.merge([repository.profile, repository.friends]),
+      builder: (context, _) {
+        final profile = repository.profile.value;
+        if (profile == null) return const SizedBox.shrink();
+        Widget panel(List<Widget> rows) => Container(
+          padding: const EdgeInsets.all(4),
+          decoration: BoxDecoration(
+            color: colors.card,
+            borderRadius: BorderRadius.circular(DuvetTokens.radiusCard),
+            boxShadow: tokens.shadowRest,
+          ),
+          child: Column(children: rows),
+        );
+        Widget row(String label, VoidCallback onTap, {String? value, bool warn = false}) =>
+            GlassRow(label: label, detail: value, destructive: warn, onPressed: onTap);
+        return LargeTitlePage(
+          title: 'You',
+          titleTrailing: const LiveIndicator(),
+          slivers: [
+            SliverPadding(
+              padding: const EdgeInsets.fromLTRB(16, 16, 16, 0),
+              sliver: SliverList.list(
+                children: [
+                  Container(
+                    padding: const EdgeInsets.all(16),
+                    decoration: BoxDecoration(
+                      color: colors.card,
+                      borderRadius: BorderRadius.circular(DuvetTokens.radiusCard),
+                      boxShadow: tokens.shadowRaised,
+                    ),
+                    child: Row(
+                      children: [
+                        ExcludeSemantics(
+                          child: UserAvatar(name: profile.displayName, url: profile.avatarUrl, size: 56),
+                        ),
+                        const SizedBox(width: 12),
+                        Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(
+                                profile.displayName,
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                                style: DuvetType.rowTitleUnread.copyWith(fontSize: 17, color: colors.foreground),
+                              ),
+                              Text(
+                                '@${profile.username}',
+                                style: DuvetType.caption.copyWith(color: colors.mutedForeground),
+                              ),
+                            ],
+                          ),
+                        ),
+                        DuvetButton(label: 'Edit', onPressed: () => _push(const EditProfilePage())),
+                      ],
+                    ),
+                  ),
+                  if (!profile.emailVerified) ...[
+                    const SizedBox(height: 16),
+                    panel([row('Verify your email', () => _push(const VerifyEmailPage()), value: 'Not verified yet')]),
+                  ],
+                  const SizedBox(height: 16),
+                  panel([
+                    row(
+                      'Friends',
+                      () => _push(const FriendsPage()),
+                      value: repository.friends.value.incoming.isEmpty
+                          ? null
+                          : '${repository.friends.value.incoming.length} waiting',
+                    ),
+                  ]),
+                  const Overline('Appearance'),
+                  _Segmented<ThemeMode>(
+                    label: 'Appearance',
+                    value: appearance.value,
+                    options: const {ThemeMode.system: 'System', ThemeMode.light: 'Light', ThemeMode.dark: 'Dark'},
+                    onChanged: appearance.set,
+                  ),
+                  const Overline('Storage'),
+                  Semantics(
+                    container: true,
+                    button: true,
+                    label: 'My files',
+                    onTap: () => _push(const MyFilesPage()),
+                    child: GestureDetector(
+                      onTap: () => _push(const MyFilesPage()),
+                      child: _storage == null
+                          ? panel([row('My files', () => _push(const MyFilesPage()))])
+                          : StorageMeter(storage: _storage!, images: 0, files: _storage!.used, voice: 0),
+                    ),
+                  ),
+                  const Overline('Account'),
+                  panel([
+                    row('Change email', () => _push(const ChangeEmailPage())),
+                    row('Sign out', repository.logOut, warn: true),
+                  ]),
+                ],
+              ),
+            ),
+          ],
+        );
+      },
+    );
+  }
+}
+
+/// A segmented control: the chosen option raised out of a recess.
+class _Segmented<T> extends StatelessWidget {
+  final String label;
+  final T value;
+  final Map<T, String> options;
+  final ValueChanged<T> onChanged;
+  const _Segmented({required this.label, required this.value, required this.options, required this.onChanged});
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = context.theme.colors;
+    final tokens = context.duvet;
+    const radius = BorderRadius.all(Radius.circular(DuvetTokens.radiusField));
+    return Semantics(
+      label: label,
+      explicitChildNodes: true,
+      child: Container(
+        height: 40,
+        padding: const EdgeInsets.all(2),
+        decoration: const BoxDecoration(borderRadius: radius).copyWith(color: colors.secondary),
+        child: InsetShadow(
+          shadows: tokens.shadowWell,
+          borderRadius: radius,
+          child: Row(
+            children: [
+              for (final MapEntry(:key, value: text) in options.entries)
+                Expanded(
+                  child: Semantics(
+                    container: true,
+                    button: true,
+                    inMutuallyExclusiveGroup: true,
+                    checked: key == value,
+                    label: text,
+                    excludeSemantics: true,
+                    onTap: () => onChanged(key),
+                    child: GestureDetector(
+                      behavior: HitTestBehavior.opaque,
+                      onTap: () {
+                        HapticFeedback.selectionClick();
+                        onChanged(key);
+                      },
+                      child: AnimatedContainer(
+                        duration: MediaQuery.disableAnimationsOf(context) ? Duration.zero : DuvetTokens.pressOut,
+                        alignment: Alignment.center,
+                        decoration: BoxDecoration(
+                          color: key == value ? colors.card : null,
+                          borderRadius: BorderRadius.circular(10),
+                          boxShadow: key == value ? tokens.shadowControl : null,
+                        ),
+                        child: Text(
+                          text,
+                          style: DuvetType.label.copyWith(
+                            fontSize: 15,
+                            color: key == value ? colors.foreground : colors.mutedForeground,
+                          ),
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}

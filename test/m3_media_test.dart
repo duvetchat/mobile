@@ -1,0 +1,474 @@
+import 'dart:async';
+
+import 'package:duvet/chat_view.dart';
+import 'package:duvet/data/emoji_catalog.dart';
+import 'package:duvet/data/gifs.dart';
+import 'package:duvet/data/links.dart';
+import 'package:duvet/data/models.dart';
+import 'package:duvet/main.dart';
+import 'package:duvet/widgets/media.dart';
+import 'package:duvet/widgets/media_actions.dart';
+import 'package:duvet/widgets/message_content.dart';
+import 'package:flutter/foundation.dart';
+import 'package:flutter/gestures.dart';
+import 'package:flutter/material.dart';
+import 'package:flutter/rendering.dart';
+import 'package:flutter_test/flutter_test.dart';
+import 'package:image_picker/image_picker.dart';
+
+import 'support/fake_repository.dart';
+
+const _maya = FakeRepository.maya;
+const _space = '5a5a5a5a-0000-4000-8000-000000000001';
+const _room = '5a5a5a5a-0000-4000-8000-000000000002';
+const _linked = '5a5a5a5a-0000-4000-8000-000000000003';
+
+class _Playback implements AudioPlayback {
+  final played = <(String, String)>[];
+  final _state = ValueNotifier(PlaybackState.idle);
+  @override
+  ValueListenable<PlaybackState> get state => _state;
+
+  @override
+  Future<void> play(String id, String url) async {
+    played.add((id, url));
+    _state.value = PlaybackState(id: id, playing: true, duration: const Duration(seconds: 14));
+  }
+
+  @override
+  Future<void> pause() async => _state.value = PlaybackState(id: _state.value.id, duration: _state.value.duration);
+
+  @override
+  Future<void> seek(String id, Duration position) async {}
+}
+
+class _Recorder implements VoiceRecorder {
+  static int started = 0;
+  static int cancelled = 0;
+  final _levels = StreamController<double>.broadcast();
+
+  @override
+  Future<bool> start() async {
+    started++;
+    return true;
+  }
+
+  @override
+  Stream<double> get levels => _levels.stream;
+
+  @override
+  Future<Recording?> stop() async => (bytes: [1, 2, 3], format: 'ogg', length: const Duration(seconds: 3));
+
+  @override
+  Future<void> cancel() async => cancelled++;
+}
+
+class _Actions extends MediaActions {
+  final calls = <String>[];
+  @override
+  Future<bool> open(String url) async {
+    calls.add('open $url');
+    return true;
+  }
+
+  @override
+  Future<bool> saveToGallery(String url, String name) async {
+    calls.add('save $name');
+    return true;
+  }
+
+  @override
+  Future<void> share(String url, String name, String contentType) async => calls.add('share $name');
+}
+
+class _Gifs implements GifSource {
+  final searched = <String>[];
+  static const party = Gif(
+    id: 'g1',
+    url: 'https://media.tenor.com/party.gif',
+    preview: 'https://media.tenor.com/party-tiny.gif',
+    width: 200,
+    height: 150,
+    description: 'party',
+  );
+
+  @override
+  String get attribution => 'GIFs from Tenor';
+
+  @override
+  Future<List<Gif>> trending() async => const [party];
+
+  @override
+  Future<List<Gif>> search(String query) async {
+    searched.add(query);
+    return const [party];
+  }
+}
+
+/// M3 · Media.
+void main() {
+  late SemanticsHandle semantics;
+  late _Playback playback;
+  late _Actions actions;
+
+  // On the real clock, before any chat starts loading it on the fake one.
+  setUpAll(() async {
+    TestWidgetsFlutterBinding.ensureInitialized();
+    EmojiCatalog.debugUse(await EmojiCatalog.load());
+  });
+
+  setUp(() {
+    playback = _Playback();
+    AudioPlayback.instance = playback;
+    actions = _Actions();
+    MediaActions.instance = actions;
+    VoiceRecorder.create = _Recorder.new;
+    _Recorder.started = 0;
+    _Recorder.cancelled = 0;
+    ChatView.debugPickMedia = null;
+    ChatView.debugPickFiles = null;
+  });
+
+  Future<FakeRepository> openMaya(WidgetTester tester, {void Function(FakeRepository r)? setUp}) async {
+    semantics = tester.ensureSemantics();
+    tester.view.physicalSize = const Size(390 * 3, 844 * 3);
+    tester.view.devicePixelRatio = 3;
+    addTearDown(tester.view.reset);
+    final repository = FakeRepository();
+    await tester.pumpWidget(DuvetApp(repository: repository));
+    await tester.pumpAndSettle();
+    setUp?.call(repository);
+    await tester.tap(find.text('Maya'));
+    await tester.pumpAndSettle();
+    return repository;
+  }
+
+  Future<void> tapLabel(WidgetTester tester, Pattern label) async {
+    await tester.tap(find.bySemanticsLabel(label).last);
+    await tester.pumpAndSettle();
+  }
+
+  ChatMessage withFiles(String id, List<MessageAttachment> files, {bool voice = false}) => ChatMessage(
+    id: id,
+    authorId: _maya,
+    authorName: 'Maya',
+    content: '',
+    createdAt: DateTime(2026, 10, 23, 10),
+    attachments: files,
+    isVoice: voice,
+  );
+
+  group('links', () {
+    test('message links, invites and deep links, as desktop reads them', () {
+      final room = parseMessageLink('https://duvet.chat/channels/$_space/$_room/$_linked')!;
+      expect((room.spaceId, room.roomId, room.messageId), (_space, _room, _linked));
+      final dm = parseMessageLink('duvet://conversations/$_room/$_linked')!;
+      expect((dm.conversationId, dm.messageId), (_room, _linked));
+      expect(parseMessageLink('https://duvet.chat/channels/a/b/c'), isNull);
+      expect(parseMessageLink('https://evil.example/channels/$_space/$_room/$_linked'), isNull);
+
+      expect(parseInviteCode('https://duvet.chat/invite?code=paper-club'), 'paper-club');
+      expect(parseInviteCode('https://duvet.chat/invite/paper-club'), 'paper-club');
+      expect(parseInviteCode('duvet://invite/paper-club'), 'paper-club');
+      expect(parseInviteCode('https://duvet.chat/invite'), isNull);
+      expect(parseDeepLink('duvet://invite/x'), isA<OpenInvite>());
+      expect(parseDeepLink('https://example.com'), isNull);
+    });
+
+    test('Tenor results, upload shares, fallback waveforms', () {
+      final gifs = TenorGifs.parse({
+        'results': [
+          {
+            'id': '7',
+            'content_description': 'cat dance',
+            'media': [
+              {
+                'gif': {
+                  'url': 'https://t/g.gif',
+                  'dims': [400, 300],
+                },
+                'tinygif': {
+                  'url': 'https://t/tiny.gif',
+                  'dims': [200, 150],
+                },
+              },
+            ],
+          },
+        ],
+      });
+      expect((gifs.single.url, gifs.single.preview, gifs.single.width), ('https://t/g.gif', 'https://t/tiny.gif', 200));
+
+      const files = [
+        MessageAttachment(id: 'a', filename: 'a', contentType: 'image/png', url: '', sizeBytes: 100),
+        MessageAttachment(id: 'b', filename: 'b', contentType: 'image/png', url: '', sizeBytes: 300),
+      ];
+      expect(fileProgress(files, 0, 0.5), 1);
+      expect(fileProgress(files, 1, 0.5), closeTo(1 / 3, 0.001));
+      expect(uploadingIndex(files, 0.5), 1);
+
+      expect(fallbackBars('abc', 5), fallbackBars('abc', 5));
+      expect(fallbackBars('abc', 30).every((b) => b >= 0.15 && b <= 1), isTrue);
+    });
+  });
+
+  testWidgets('a voice note plays from its bubble', (tester) async {
+    final repository = await openMaya(tester);
+    repository.push(
+      'c-maya',
+      MessageCreated(
+        withFiles('v', const [
+          MessageAttachment(
+            id: 'att-v',
+            filename: 'voice-note.webm',
+            contentType: 'audio/webm',
+            url: 'https://x/v.webm',
+          ),
+        ], voice: true),
+      ),
+    );
+    await tester.pumpAndSettle();
+    expect(find.bySemanticsLabel(RegExp('^Voice note from Maya')), findsOneWidget);
+    await tapLabel(tester, 'Play voice note');
+    expect(playback.played.single, ('att-v', 'https://x/v.webm'));
+    expect(find.bySemanticsLabel('Pause'), findsOneWidget);
+    semantics.dispose();
+  });
+
+  testWidgets('voice notes record from the + menu, locked, and send', (tester) async {
+    final repository = await openMaya(tester);
+    await tapLabel(tester, 'Add photos, a sticker or a mention');
+    await tapLabel(tester, 'Voice note');
+    expect(_Recorder.started, 1);
+    expect(find.bySemanticsLabel(RegExp(r'^Recording voice note, \d+ seconds$')), findsOneWidget);
+    expect(repository.recordings, isNotEmpty);
+
+    await tester.pump(const Duration(seconds: 2));
+    await tapLabel(tester, 'Send voice note');
+    expect(repository.voiceNotes.single.$1, [1, 2, 3]);
+    expect(repository.voiceNotes.single.$2, 'ogg');
+    expect(find.bySemanticsLabel(RegExp('^Your voice note')), findsOneWidget);
+    semantics.dispose();
+  });
+
+  testWidgets('holding Send records; sliding left cancels', (tester) async {
+    final repository = await openMaya(tester);
+    final send = find.bySemanticsLabel('Send');
+    final hold = await tester.startGesture(tester.getCenter(send));
+    await tester.pump(kLongPressTimeout + const Duration(milliseconds: 100));
+    await tester.pump();
+    expect(_Recorder.started, 1);
+    expect(find.textContaining('Slide to cancel'), findsOneWidget);
+    await hold.moveBy(const Offset(-140, 0));
+    await tester.pump();
+    await hold.up();
+    await tester.pumpAndSettle();
+    expect(_Recorder.cancelled, 1);
+    expect(repository.voiceNotes, isEmpty);
+    semantics.dispose();
+  });
+
+  testWidgets('audio files and videos play inline; other files open, share', (tester) async {
+    final repository = await openMaya(tester);
+    repository.push(
+      'c-maya',
+      MessageCreated(
+        withFiles('f', const [
+          MessageAttachment(id: 'au', filename: 'talk.mp3', contentType: 'audio/mpeg', url: 'https://x/talk.mp3'),
+          MessageAttachment(id: 'vi', filename: 'tour.mp4', contentType: 'video/mp4', url: 'https://x/tour.mp4'),
+          MessageAttachment(
+            id: 'pd',
+            filename: 'report.pdf',
+            contentType: 'application/pdf',
+            url: 'https://x/report.pdf',
+            sizeBytes: 2400000,
+          ),
+        ]),
+      ),
+    );
+    await tester.pumpAndSettle();
+    expect(find.bySemanticsLabel(RegExp('^Audio file talk.mp3')), findsOneWidget);
+    expect(find.bySemanticsLabel('Video, tour.mp4. Play'), findsOneWidget);
+    await tapLabel(tester, 'Play talk.mp3');
+    expect(playback.played.single.$1, 'au');
+
+    await tapLabel(tester, RegExp('^PDF, report.pdf'));
+    await tapLabel(tester, 'Share');
+    expect(actions.calls, ['share report.pdf']);
+    await tapLabel(tester, RegExp('^PDF, report.pdf'));
+    await tapLabel(tester, 'Open');
+    expect(actions.calls.last, 'open https://x/report.pdf');
+    semantics.dispose();
+  });
+
+  testWidgets('any file attaches from the + menu', (tester) async {
+    final repository = await openMaya(tester);
+    ChatView.debugPickFiles = () async => const [
+      OutgoingFile(path: '/tmp/notes.pdf', name: 'notes.pdf', contentType: 'application/pdf', sizeBytes: 1000),
+    ];
+    await tapLabel(tester, 'Add photos, a sticker or a mention');
+    await tapLabel(tester, 'File');
+    expect(find.bySemanticsLabel('File, notes.pdf'), findsOneWidget);
+    await tapLabel(tester, 'Send');
+    expect(repository.sent.last.files.single.name, 'notes.pdf');
+    semantics.dispose();
+  });
+
+  testWidgets('GIFs: a tab in the picker; a pick sends its link', (tester) async {
+    final gifs = _Gifs();
+    GifSource.instance = gifs;
+    final repository = await openMaya(tester);
+    await tapLabel(tester, 'Emoji and stickers');
+    await tester.tap(find.text('GIFs'));
+    await tester.pumpAndSettle();
+    expect(find.text('GIFs from Tenor'), findsOneWidget);
+    await tester.tap(find.text('Celebrate'));
+    await tester.pumpAndSettle();
+    expect(gifs.searched, ['Celebrate']);
+    await tapLabel(tester, 'GIF, party');
+    expect(repository.sent.last.content, _Gifs.party.url);
+    semantics.dispose();
+  });
+
+  testWidgets('the image viewer saves, shares, and closes on a swipe down', (tester) async {
+    final repository = await openMaya(tester);
+    repository.push(
+      'c-maya',
+      MessageCreated(
+        withFiles('p', const [
+          MessageAttachment(id: 'ph', filename: 'room.jpg', contentType: 'image/jpeg', url: 'https://x/room.jpg'),
+        ]),
+      ),
+    );
+    await tester.pumpAndSettle();
+    await tapLabel(tester, 'Photo, room.jpg');
+    expect(find.text('Swipe down to close · pinch to zoom'), findsOneWidget);
+    await tapLabel(tester, 'Save');
+    await tapLabel(tester, 'Share');
+    expect(actions.calls, ['save room.jpg', 'share room.jpg']);
+
+    await tester.drag(find.byType(PageView), const Offset(0, 300));
+    await tester.pumpAndSettle();
+    expect(find.text('Swipe down to close · pinch to zoom'), findsNothing);
+    semantics.dispose();
+  });
+
+  testWidgets('uploads show their progress and can be cancelled; large files are refused', (tester) async {
+    final repository = await openMaya(tester);
+    repository.limit = 25 * 1024 * 1024;
+    ChatView.debugPickMedia = (_) async => const [
+      OutgoingFile(path: '/tmp/a.jpg', name: 'a.jpg', contentType: 'image/jpeg', sizeBytes: 1000),
+      OutgoingFile(path: '/tmp/b.jpg', name: 'b.jpg', contentType: 'image/jpeg', sizeBytes: 1000),
+    ];
+    repository.holdSends = Completer();
+    await tapLabel(tester, 'Add photos, a sticker or a mention');
+    await tapLabel(tester, 'Photos & GIFs');
+    await tapLabel(tester, 'Send');
+    repository.lastUpload!(0.75);
+    await tester.pump();
+    expect(find.text('Uploading 2 of 2 · 75%'), findsOneWidget);
+
+    await tapLabel(tester, 'Cancel upload');
+    expect(find.textContaining('Uploading'), findsNothing);
+    // The files are back in the tray.
+    expect(find.bySemanticsLabel('Photo, a.jpg'), findsOneWidget);
+    repository.holdSends!.complete();
+    await tester.pumpAndSettle();
+
+    // Over the limit: kept back, with the reason.
+    ChatView.debugPickMedia = (_) async => const [
+      OutgoingFile(path: '/tmp/big.mov', name: 'big.mov', contentType: 'video/quicktime', sizeBytes: 30 * 1024 * 1024),
+    ];
+    await tapLabel(tester, 'Remove a.jpg');
+    await tapLabel(tester, 'Remove b.jpg');
+    await tapLabel(tester, 'Add photos, a sticker or a mention');
+    await tapLabel(tester, 'Photos & GIFs');
+    final sent = repository.sent.length;
+    await tapLabel(tester, 'Send');
+    expect(repository.sent.length, sent);
+    expect(find.text('big.mov is over your 25 MB upload limit'), findsOneWidget);
+    semantics.dispose();
+  });
+
+  testWidgets('a file the server finds too large says so, with no Retry', (tester) async {
+    final repository = await openMaya(tester);
+    repository.tooLarge = true;
+    ChatView.debugPickMedia = (_) async => const [
+      OutgoingFile(path: '/tmp/a.jpg', name: 'a.jpg', contentType: 'image/jpeg'),
+    ];
+    await tapLabel(tester, 'Add photos, a sticker or a mention');
+    await tapLabel(tester, 'Photos & GIFs');
+    await tapLabel(tester, 'Send');
+    expect(find.text('Too large to send'), findsOneWidget);
+    expect(find.bySemanticsLabel('Retry'), findsNothing);
+    semantics.dispose();
+  });
+
+  testWidgets('Duvet links show as cards: a quoted message, an invite to join', (tester) async {
+    final repository = await openMaya(
+      tester,
+      setUp: (r) {
+        r.spaces.value = [
+          ...r.spaces.value,
+          const Space(
+            id: _space,
+            name: 'Paper Club',
+            sections: [
+              RoomSection(
+                name: null,
+                rooms: [Room(id: _room, spaceId: _space, name: 'books', kind: RoomKind.text, position: 0)],
+              ),
+            ],
+          ),
+        ];
+        r.history[_room] = [
+          FakeRepository.message(_linked, author: FakeRepository.leo, name: 'Leo', text: 'Chapter 4'),
+        ];
+        r.invites['paper'] = const InvitePreview(
+          code: 'paper',
+          spaceId: 's-paper',
+          spaceName: 'Fieldwork',
+          memberCount: 412,
+        );
+      },
+    );
+    repository.push(
+      'c-maya',
+      MessageCreated(
+        FakeRepository.message(
+          'l',
+          author: _maya,
+          name: 'Maya',
+          text: 'see https://duvet.chat/channels/$_space/$_room/$_linked and https://duvet.chat/invite?code=paper',
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+    expect(find.bySemanticsLabel('Linked message from Leo in # books · Paper Club. Jump to message'), findsOneWidget);
+    expect(find.text('Chapter 4'), findsOneWidget);
+    expect(find.text('412 members'), findsOneWidget);
+    await tapLabel(tester, 'Join Fieldwork');
+    expect(repository.joined, ['paper']);
+    expect(find.bySemanticsLabel('Open Fieldwork'), findsOneWidget);
+
+    await tapLabel(tester, RegExp('^Linked message from Leo'));
+    expect(find.text('# books'), findsWidgets);
+    // The toast's timer runs out.
+    await tester.pump(const Duration(seconds: 4));
+    semantics.dispose();
+  });
+
+  test('the message text hook opens links', () {
+    expect(MessageText.openLink, isNotNull);
+  });
+
+  testWidgets('pictures come from the gallery as before', (tester) async {
+    ChatView.debugPickMedia = (source) async {
+      expect(source, ImageSource.gallery);
+      return const [];
+    };
+    await openMaya(tester);
+    await tapLabel(tester, 'Add photos, a sticker or a mention');
+    await tapLabel(tester, 'Photos & GIFs');
+    semantics.dispose();
+  });
+}

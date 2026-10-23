@@ -1,0 +1,223 @@
+import 'dart:async';
+import 'dart:io';
+import 'dart:ui' as ui;
+
+import 'package:duvet/account.dart';
+import 'package:duvet/data/appearance.dart';
+import 'package:duvet/data/emoji_catalog.dart';
+import 'package:duvet/data/models.dart';
+import 'package:duvet/deep_links.dart';
+import 'package:duvet/main.dart';
+import 'package:duvet/widgets/chrome.dart';
+import 'package:flutter/material.dart';
+import 'package:flutter/rendering.dart';
+import 'package:flutter_test/flutter_test.dart';
+
+import 'support/fake_repository.dart';
+
+class _Links implements DeepLinkSource {
+  final controller = StreamController<Uri>.broadcast();
+  @override
+  Stream<Uri> get links => controller.stream;
+}
+
+/// M7 · Account.
+void main() {
+  late SemanticsHandle semantics;
+  late _Links links;
+  late Appearance appearance;
+  late MemoryAppearanceStore store;
+
+  setUpAll(() async {
+    TestWidgetsFlutterBinding.ensureInitialized();
+    EmojiCatalog.debugUse(await EmojiCatalog.load());
+  });
+
+  setUp(() {
+    links = _Links();
+    DeepLinkSource.instance = links;
+    store = MemoryAppearanceStore();
+    appearance = Appearance(store);
+  });
+
+  Future<FakeRepository> pumpApp(WidgetTester tester, {bool signedIn = true}) async {
+    semantics = tester.ensureSemantics();
+    tester.view.physicalSize = const Size(390 * 3, 844 * 3);
+    tester.view.devicePixelRatio = 3;
+    addTearDown(tester.view.reset);
+    final repository = FakeRepository(signedIn: signedIn);
+    await tester.pumpWidget(DuvetApp(repository: repository, appearance: appearance));
+    await tester.pumpAndSettle();
+    return repository;
+  }
+
+  Future<void> tapLabel(WidgetTester tester, Pattern label) async {
+    await tester.tap(find.bySemanticsLabel(label).hitTestable().last);
+    await tester.pumpAndSettle();
+  }
+
+  Future<void> openYou(WidgetTester tester) async {
+    await tester.tap(find.descendant(of: find.byType(DuvetTabBar), matching: find.text('You')));
+    await tester.pumpAndSettle();
+  }
+
+  test('password strength grows with length and kinds of characters', () {
+    expect(passwordStrength('abc').score, lessThan(2));
+    expect(passwordStrength('abc').hint, startsWith('Too short'));
+    expect(passwordStrength('correct horse battery 9!').score, 4);
+  });
+
+  testWidgets('sign up: fields check themselves; the account verifies by its emailed link', (tester) async {
+    final repository = await pumpApp(tester, signedIn: false);
+    await tapLabel(tester, 'Create an account');
+    expect(find.text('Create your account'), findsOneWidget);
+    final create = find.bySemanticsLabel('Create account');
+    expect(tester.getSemantics(create).getSemanticsData().flagsCollection.isEnabled.toString(), contains('isFalse'));
+
+    await tester.enterText(find.byType(EditableText).at(0), 'alex.moreno');
+    await tester.enterText(find.byType(EditableText).at(1), 'alex@example.com');
+    await tester.enterText(find.byType(EditableText).at(2), 'short');
+    await tester.pump();
+    expect(find.text('Too short: at least 8 characters'), findsOneWidget);
+    await tester.enterText(find.byType(EditableText).at(2), 'a much longer one 9!');
+    await tester.pump();
+    await tapLabel(tester, 'Create account');
+    expect(repository.account.first, 'signup alex.moreno alex@example.com');
+    expect(find.text('Check your email'), findsOneWidget);
+    expect(find.textContaining('alex@example.com'), findsOneWidget);
+
+    await tester.enterText(find.byType(EditableText).last, 'https://duvet.chat/verify?token=abc123');
+    await tapLabel(tester, 'Verify');
+    expect(repository.account.last, 'verify abc123');
+    expect(find.text('Check your email'), findsNothing);
+    await tester.pump(const Duration(seconds: 61));
+    semantics.dispose();
+  });
+
+  testWidgets('forgot password sends a link; the link opens the new-password screen', (tester) async {
+    final repository = await pumpApp(tester, signedIn: false);
+    await tapLabel(tester, 'Forgot password?');
+    await tester.enterText(find.byType(EditableText), 'alex@example.com');
+    await tapLabel(tester, 'Send reset link');
+    expect(find.text('Link sent'), findsOneWidget);
+    expect(repository.account, ['forgot alex@example.com']);
+
+    links.controller.add(Uri.parse('https://duvet.chat/reset-password?token=t0k'));
+    await tester.pumpAndSettle();
+    expect(find.text('Choose a new password'), findsOneWidget);
+    await tester.enterText(find.byType(EditableText).last, 'a new password 7');
+    await tester.pump();
+    await tapLabel(tester, 'Save password');
+    expect(repository.account.last, 'reset t0k');
+    await tester.pump(const Duration(seconds: 4));
+    semantics.dispose();
+  });
+
+  testWidgets('verify and change-email links work while signed in', (tester) async {
+    final repository = await pumpApp(tester);
+    links.controller.add(Uri.parse('https://duvet.chat/verify?token=v1'));
+    await tester.pumpAndSettle();
+    links.controller.add(Uri.parse('https://duvet.chat/change-email?token=c1&email=new%40example.com'));
+    await tester.pumpAndSettle();
+    expect(repository.account, ['verify v1', 'change c1 new@example.com']);
+    await tester.pump(const Duration(seconds: 4));
+    semantics.dispose();
+  });
+
+  testWidgets('You: edit the display name, change email, appearance, sign out', (tester) async {
+    final repository = await pumpApp(tester);
+    await openYou(tester);
+    await tapLabel(tester, 'Edit');
+    expect(find.text('@gaby'), findsWidgets);
+    await tester.enterText(find.byType(EditableText), 'Gabriela');
+    await tapLabel(tester, 'Save');
+    expect(repository.account, ['alias Gabriela']);
+    expect(find.text('Gabriela'), findsWidgets);
+
+    await tapLabel(tester, 'Dark');
+    expect(appearance.value, ThemeMode.dark);
+    expect(store.mode, 'dark');
+    expect(Theme.of(tester.element(find.text('Gabriela').first)).brightness, Brightness.dark);
+
+    await tester.ensureVisible(find.text('Change email'));
+    await tester.pumpAndSettle();
+    await tapLabel(tester, 'Change email');
+    await tester.enterText(find.byType(EditableText), 'new@example.com');
+    await tapLabel(tester, 'Send link');
+    expect(repository.account.last, 'change-send new@example.com');
+    expect(find.textContaining('Check new@example.com'), findsOneWidget);
+    semantics.dispose();
+  });
+
+  testWidgets('a new avatar is cropped to the frame before it goes up', (tester) async {
+    final repository = await pumpApp(tester);
+    final dir = Directory.systemTemp.createTempSync('duvet_crop');
+    addTearDown(() => dir.deleteSync(recursive: true));
+    final path = '${dir.path}/me.png';
+    await tester.runAsync(() async {
+      final recorder = ui.PictureRecorder();
+      Canvas(recorder).drawRect(const Rect.fromLTWH(0, 0, 400, 200), Paint()..color = const Color(0xFF2F5FE0));
+      final image = await recorder.endRecording().toImage(400, 200);
+      final png = await image.toByteData(format: ui.ImageByteFormat.png);
+      File(path).writeAsBytesSync(png!.buffer.asUint8List());
+    });
+    pickProfilePicture = () async => path;
+
+    await openYou(tester);
+    await tapLabel(tester, 'Edit');
+    await tester.tap(find.bySemanticsLabel('Change profile photo'));
+    // The picture decodes on the real clock.
+    for (var i = 0; i < 20 && find.byType(InteractiveViewer).evaluate().isEmpty; i++) {
+      await tester.runAsync(() => Future<void>.delayed(const Duration(milliseconds: 50)));
+      await tester.pump(const Duration(milliseconds: 50));
+    }
+    await tester.pump(const Duration(milliseconds: 500));
+    await tapLabel(tester, 'Use');
+    // A square from the 400 × 200 picture: its full height.
+    expect(repository.account.single, 'avatar $path 200x200');
+    semantics.dispose();
+  });
+
+  testWidgets('my files: storage by kind, filters, delete', (tester) async {
+    final repository = await pumpApp(tester);
+    repository.files = [
+      MyFile(
+        id: 'f1',
+        name: 'room.jpg',
+        contentType: 'image/jpeg',
+        sizeBytes: 3 * 1024 * 1024,
+        createdAt: DateTime(2026, 10, 1),
+        url: 'https://x/room.jpg',
+      ),
+      MyFile(
+        id: 'f2',
+        name: 'voice-note.ogg',
+        contentType: 'audio/ogg',
+        sizeBytes: 200 * 1024,
+        createdAt: DateTime(2026, 10, 2),
+        url: 'https://x/v.ogg',
+      ),
+    ];
+    repository.usage = const StorageInfo(used: 3 * 1024 * 1024 + 200 * 1024, max: 5 * 1024 * 1024 * 1024);
+    await openYou(tester);
+    await tester.ensureVisible(find.byType(StorageMeter));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byType(StorageMeter));
+    await tester.pumpAndSettle();
+    expect(find.bySemanticsLabel(RegExp(r'^3\.2 MB of 5\.0 GB used: images 3\.0 MB')), findsOneWidget);
+    await tester.ensureVisible(find.text('Voice'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Voice'));
+    await tester.pumpAndSettle();
+    expect(find.text('room.jpg'), findsNothing);
+    await tester.ensureVisible(find.text('All'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('All'));
+    await tester.pumpAndSettle();
+    await tapLabel(tester, 'Delete room.jpg');
+    await tapLabel(tester, 'Delete file');
+    expect(repository.account, ['delete f1']);
+    expect(find.text('room.jpg'), findsNothing);
+    semantics.dispose();
+  });
+}

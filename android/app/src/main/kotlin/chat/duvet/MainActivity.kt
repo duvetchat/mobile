@@ -1,4 +1,4 @@
-package com.example.duvet
+package chat.duvet
 
 import io.flutter.embedding.android.FlutterActivity
 

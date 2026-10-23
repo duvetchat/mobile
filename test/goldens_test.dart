@@ -1,0 +1,202 @@
+import 'package:duvet/data/appearance.dart';
+import 'package:duvet/data/emoji_catalog.dart';
+import 'package:duvet/data/models.dart';
+import 'package:duvet/deep_links.dart';
+import 'package:duvet/main.dart';
+import 'package:duvet/theme.dart';
+import 'package:duvet/widgets/chrome.dart';
+import 'package:duvet/widgets/glass.dart';
+import 'package:duvet/widgets/rows.dart';
+import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
+import 'package:flutter_test/flutter_test.dart';
+import 'package:forui/forui.dart';
+
+import 'support/fake_repository.dart';
+
+/// The design-system components and screens, drawn in both themes. Update
+/// them with `flutter test --update-goldens test/goldens_test.dart`.
+void main() {
+  setUpAll(() async {
+    TestWidgetsFlutterBinding.ensureInitialized();
+    DeepLinkSource.instance = _NoLinks();
+    // The app's own faces, not the test font's boxes.
+    final sans = FontLoader('Fira Sans');
+    for (final w in ['Regular', 'Medium', 'Bold']) {
+      sans.addFont(rootBundle.load('assets/fonts/FiraSans-$w.ttf'));
+    }
+    await sans.load();
+    final icons = FontLoader('packages/forui_lucide/ForuiLucideIcons')
+      ..addFont(rootBundle.load('packages/forui_lucide/assets/lucide.ttf'));
+    await icons.load();
+    final mono = FontLoader('Fira Mono')..addFont(rootBundle.load('assets/fonts/FiraMono-Regular.ttf'));
+    await mono.load();
+    EmojiCatalog.debugUse(await EmojiCatalog.load());
+  });
+
+  void phone(WidgetTester tester, {double height = 844}) {
+    tester.view.physicalSize = Size(390 * 2, height * 2);
+    tester.view.devicePixelRatio = 2;
+    addTearDown(tester.view.reset);
+  }
+
+  // Real soft shadows, not the test binding's solid stand-ins, while [body]
+  // runs.
+  Future<void> withShadows(Future<void> Function() body) async {
+    debugDisableShadows = false;
+    try {
+      await body();
+    } finally {
+      debugDisableShadows = true;
+    }
+  }
+
+  Widget themed(Brightness b, Widget child) => MaterialApp(
+    debugShowCheckedModeBanner: false,
+    theme: Duvet.material(b),
+    home: FTheme(
+      data: Duvet.theme(b),
+      child: Scaffold(backgroundColor: Duvet.theme(b).colors.background, body: child),
+    ),
+  );
+
+  for (final b in Brightness.values) {
+    testWidgets(
+      'components, ${b.name}',
+      (tester) => withShadows(() async {
+        phone(tester, height: 1040);
+        await tester.pumpWidget(
+          themed(
+            b,
+            Padding(
+              padding: const EdgeInsets.only(top: 40),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  const Overline('Information'),
+                  const ListRow(
+                    title: 'announcements',
+                    hash: true,
+                    snippet: 'Ana: Crit night moves to Thursday',
+                    unread: true,
+                  ),
+                  const ListRow(title: 'design-crit', hash: true, snippet: 'Jon: pushed v3 of the cards'),
+                  const ListRow(title: 'general', hash: true, snippet: 'Sam: coffee after?', selected: true),
+                  const ListRow(
+                    title: 'Maya Okafor',
+                    snippet: 'sent the new shadow tokens ok?',
+                    trailing: '9:41',
+                    mentions: 2,
+                  ),
+                  const SizedBox(height: 16),
+                  Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 16),
+                    child: Row(
+                      children: [
+                        Expanded(
+                          child: SpaceCard(
+                            space: const Space(id: 'a', name: 'Design Guild', onlineCount: 128),
+                            onTap: () {},
+                            unread: true,
+                          ),
+                        ),
+                        const SizedBox(width: 12),
+                        Expanded(
+                          child: SpaceCard(
+                            space: const Space(id: 'b', name: 'Bogotá Night Runners', onlineCount: 7),
+                            onTap: () {},
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                  const SizedBox(height: 16),
+                  Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 16),
+                    child: Row(
+                      children: [
+                        DuvetButton(label: 'Join', variant: ButtonVariant.primary, onPressed: () {}),
+                        const SizedBox(width: 8),
+                        DuvetButton(label: 'Invite', onPressed: () {}),
+                        const SizedBox(width: 8),
+                        DuvetButton(label: 'Leave', variant: ButtonVariant.destructive, onPressed: () {}),
+                      ],
+                    ),
+                  ),
+                  const SizedBox(height: 16),
+                  const Padding(padding: EdgeInsets.symmetric(horizontal: 16), child: SearchField()),
+                  const SizedBox(height: 16),
+                  Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 16),
+                    child: GlassSurface(
+                      child: Padding(
+                        padding: const EdgeInsets.all(8),
+                        child: Column(
+                          children: [
+                            GlassRow(icon: FLucideIcons.reply, label: 'Reply', onPressed: () {}),
+                            GlassRow(icon: FLucideIcons.trash2, label: 'Delete', destructive: true, onPressed: () {}),
+                          ],
+                        ),
+                      ),
+                    ),
+                  ),
+                  const Spacer(),
+                  DuvetTabBar(
+                    index: 1,
+                    items: const [
+                      (icon: FLucideIcons.messageCircle, label: 'Chats'),
+                      (icon: FLucideIcons.layoutGrid, label: 'Spaces'),
+                      (icon: FLucideIcons.phone, label: 'Calls'),
+                      (icon: FLucideIcons.user, label: 'You'),
+                    ],
+                    onChange: (_) {},
+                  ),
+                ],
+              ),
+            ),
+          ),
+        );
+        await tester.pumpAndSettle();
+        await expectLater(find.byType(MaterialApp), matchesGoldenFile('goldens/components_${b.name}.png'));
+      }),
+    );
+
+    testWidgets(
+      'chat, ${b.name}',
+      (tester) => withShadows(() async {
+        phone(tester);
+        final repository = FakeRepository();
+        final appearance = Appearance(MemoryAppearanceStore())
+          ..value = b == Brightness.dark ? ThemeMode.dark : ThemeMode.light;
+        await tester.pumpWidget(DuvetApp(repository: repository, appearance: appearance));
+        await tester.pumpAndSettle();
+        repository.history['c-maya']!.addAll([
+          FakeRepository.message(
+            'm5',
+            author: FakeRepository.maya,
+            name: 'Maya',
+            text: '**Release checklist** for v3:\n- swap to `shadow-float`\n- retest the ||pressed inset||',
+            reactions: [
+              Reaction(emoji: '👍', users: {FakeRepository.maya, FakeRepository.me.id}),
+            ],
+          ),
+          FakeRepository.message(
+            'm6',
+            author: FakeRepository.me.id,
+            name: 'Gaby',
+            text: 'Checking dark now',
+            reply: const MessageReply(messageId: 'm5', authorName: 'Maya', content: 'Release checklist'),
+          ),
+        ]);
+        await tester.tap(find.text('Maya'));
+        await tester.pumpAndSettle();
+        await expectLater(find.byType(DuvetApp), matchesGoldenFile('goldens/chat_${b.name}.png'));
+      }),
+    );
+  }
+}
+
+class _NoLinks implements DeepLinkSource {
+  @override
+  Stream<Uri> get links => const Stream.empty();
+}

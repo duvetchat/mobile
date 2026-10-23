@@ -1,0 +1,282 @@
+import 'dart:convert';
+
+import 'package:duvet/data/cache.dart';
+import 'package:duvet/data/emoji_catalog.dart';
+import 'package:duvet/data/links.dart';
+import 'package:duvet/data/models.dart';
+import 'package:duvet/deep_links.dart';
+import 'package:duvet/main.dart';
+import 'package:duvet/widgets/chrome.dart';
+import 'package:duvet/widgets/rows.dart';
+import 'package:flutter/material.dart';
+import 'package:flutter/rendering.dart';
+import 'package:flutter_test/flutter_test.dart';
+
+import 'support/fake_repository.dart';
+
+class _NoLinks implements DeepLinkSource {
+  @override
+  Stream<Uri> get links => const Stream.empty();
+}
+
+const _ballot = 'u-ballot';
+
+BotModal _meetup() => BotModal.fromJson(
+  {
+    'custom_id': 'meetup',
+    'title': 'Plan a meetup',
+    'components': [
+      {
+        'type': 18,
+        'id': 1,
+        'label': 'Title',
+        'component': {'type': 4, 'id': 2, 'custom_id': 'title', 'style': 1, 'max_length': 40},
+      },
+      {
+        'type': 18,
+        'label': 'Notes',
+        'component': {'type': 4, 'custom_id': 'notes', 'style': 2, 'required': false},
+      },
+      {
+        'type': 18,
+        'label': 'Remind people the day before',
+        'component': {'type': 23, 'custom_id': 'remind'},
+      },
+    ],
+  },
+  applicationId: 'app-ballot',
+  roomId: 'r-general',
+  messageId: 'poll',
+);
+
+/// M9 · Bots & interactions.
+void main() {
+  late SemanticsHandle semantics;
+
+  setUpAll(() async {
+    TestWidgetsFlutterBinding.ensureInitialized();
+    DeepLinkSource.instance = _NoLinks();
+    EmojiCatalog.debugUse(await EmojiCatalog.load());
+  });
+
+  Future<FakeRepository> pumpGeneral(WidgetTester tester, {List<ChatMessage>? history}) async {
+    semantics = tester.ensureSemantics();
+    tester.view.physicalSize = const Size(390 * 3, 844 * 3);
+    tester.view.devicePixelRatio = 3;
+    addTearDown(tester.view.reset);
+    final repository = FakeRepository();
+    repository.botCommands = const [
+      BotCommand(
+        id: 'cmd-poll',
+        applicationId: 'app-ballot',
+        appName: 'Ballot',
+        name: 'poll',
+        description: 'Start a vote',
+        options: [
+          BotCommandOption(type: OptionKind.string, name: 'question', required: true),
+          BotCommandOption(
+            type: OptionKind.integer,
+            name: 'hours',
+            choices: [(name: 'One day', value: 24), (name: 'One week', value: 168)],
+          ),
+        ],
+      ),
+      BotCommand(id: 'cmd-ping', applicationId: 'app-ballot', appName: 'Ballot', name: 'ping', description: 'Pong'),
+    ];
+    await tester.pumpWidget(DuvetApp(repository: repository));
+    await tester.pumpAndSettle();
+    if (history != null) repository.history['r-general'] = history;
+    await tester.tap(find.descendant(of: find.byType(DuvetTabBar), matching: find.text('Spaces')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Design Guild'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('# general'));
+    await tester.pumpAndSettle();
+    return repository;
+  }
+
+  Future<void> tapLabel(WidgetTester tester, Pattern label) async {
+    await tester.tap(find.bySemanticsLabel(label).hitTestable().last);
+    await tester.pumpAndSettle();
+  }
+
+  ChatMessage poll() => ChatMessage(
+    id: 'poll',
+    authorId: _ballot,
+    authorName: 'Ballot',
+    fromBot: true,
+    content: 'Which book next?',
+    createdAt: DateTime(2026, 10, 23, 9),
+    components: componentsFromJson([
+      {
+        'type': 1,
+        'components': [
+          {'type': 2, 'custom_id': 'vote-a', 'style': 1, 'label': 'Dune'},
+          {'type': 2, 'custom_id': 'vote-b', 'style': 2, 'label': 'Piranesi'},
+          {'type': 2, 'style': 5, 'label': 'Results', 'url': 'https://example.com/r'},
+        ],
+      },
+      {
+        'type': 1,
+        'components': [
+          {
+            'type': 3,
+            'custom_id': 'genre',
+            'placeholder': 'Pick a genre',
+            'options': [
+              {'label': 'Sci-fi', 'value': 'sf'},
+              {'label': 'Fantasy', 'value': 'fantasy'},
+            ],
+          },
+        ],
+      },
+    ]),
+  );
+
+  test('the offline cache keeps a bot message\'s controls', () {
+    final raw = [
+      {
+        'type': 1,
+        'components': [
+          {'type': 2, 'custom_id': 'vote-a', 'style': 1, 'label': 'Dune'},
+        ],
+      },
+    ];
+    final m = ChatMessage(
+      id: 'poll',
+      authorId: _ballot,
+      authorName: 'Ballot',
+      fromBot: true,
+      content: '',
+      createdAt: DateTime(2026, 10, 23),
+      components: componentsFromJson(raw),
+      rawComponents: raw,
+    );
+    final back = messageFromJson(jsonDecode(jsonEncode(messageToJson(m))) as Map<String, Object?>);
+    expect(back.fromBot, isTrue);
+    expect(back.components.single.children.single.label, 'Dune');
+  });
+
+  test('bot invite links name the bot; plain invites stay invites', () {
+    const id = '0190a3b2-0000-7000-8000-000000000002';
+    expect(parseBotInvite('https://duvet.chat/invite.html?bot=$id'), id);
+    expect(parseBotInvite('https://duvet.chat/invite?bot=$id'), id);
+    expect(parseBotInvite('https://duvet.chat/invite?bot=nope'), isNull);
+    expect(parseBotInvite('https://duvet.chat/invite/abc'), isNull);
+  });
+
+  test('a modal checks its fields as the API does, then answers labels', () {
+    final modal = _meetup();
+    final values = initialValues(modal);
+    expect(values, {'title': '', 'notes': '', 'remind': false});
+    final empty = modalAnswers(modal, values);
+    expect(empty.components, isNull);
+    expect(empty.problems, {'title': 'This field is required'});
+    values['title'] = 'x' * 41;
+    expect(modalAnswers(modal, values).problems['title'], 'Must be at most 40 characters');
+    values
+      ..['title'] = 'Chapter 4'
+      ..['remind'] = true;
+    expect(modalAnswers(modal, values).components, [
+      {
+        'type': 18,
+        'id': 1,
+        'component': {'type': 4, 'id': 2, 'custom_id': 'title', 'value': 'Chapter 4'},
+      },
+      {
+        'type': 18,
+        'component': {'type': 4, 'custom_id': 'notes', 'value': ''},
+      },
+      {
+        'type': 18,
+        'component': {'type': 23, 'custom_id': 'remind', 'value': true},
+      },
+    ]);
+  });
+
+  testWidgets('a bot message: rounded-square avatar, BOT tag, buttons and a select', (tester) async {
+    final repository = await pumpGeneral(tester, history: [poll()]);
+    expect(find.text('BOT'), findsOneWidget);
+    expect(find.bySemanticsLabel('Ballot, bot,’s profile'), findsOneWidget);
+    await tapLabel(tester, 'Dune');
+    expect(repository.interactions, ['component vote-a']);
+
+    await tapLabel(tester, 'Pick a genre');
+    await tapLabel(tester, 'Fantasy');
+    expect(repository.interactions.last, 'component genre fantasy');
+    semantics.dispose();
+  });
+
+  testWidgets('a button that opens a modal: a glass sheet that checks, then submits', (tester) async {
+    final repository = await pumpGeneral(tester, history: [poll()]);
+    repository.nextModal = _meetup();
+    await tapLabel(tester, 'Piranesi');
+    expect(find.text('Plan a meetup'), findsOneWidget);
+    expect(find.text('From Ballot · a bot in Design Guild'), findsOneWidget);
+
+    await tapLabel(tester, 'Submit');
+    expect(find.text('This field is required'), findsOneWidget);
+    expect(repository.submitted, isEmpty);
+
+    await tester.enterText(
+      find.descendant(of: find.byType(DuvetTextField).first, matching: find.byType(EditableText)),
+      'Chapter 4',
+    );
+    await tapLabel(tester, 'Remind people the day before');
+    await tapLabel(tester, 'Submit');
+    expect(find.text('Plan a meetup'), findsNothing);
+    final answers = repository.submitted.single;
+    expect((answers.first['component'] as Map)['value'], 'Chapter 4');
+    expect((answers.last['component'] as Map)['value'], true);
+    semantics.dispose();
+  });
+
+  testWidgets('slash commands: suggestions above the composer, options, then it runs', (tester) async {
+    final repository = await pumpGeneral(tester);
+    await tester.enterText(find.byType(EditableText), '/p');
+    await tester.pumpAndSettle();
+    expect(find.bySemanticsLabel(RegExp(r'^Commands, 2')), findsOneWidget);
+    await tester.enterText(find.byType(EditableText), '/po');
+    await tester.pumpAndSettle();
+    expect(find.bySemanticsLabel(RegExp(r'^Commands, 1')), findsOneWidget);
+    await tapLabel(tester, RegExp(r'^/poll'));
+
+    // Its form: the question is required.
+    expect(find.text('/poll'), findsWidgets);
+    await tapLabel(tester, 'Send /poll');
+    expect(find.text('This one is required'), findsOneWidget);
+    await tester.enterText(find.byType(EditableText).last, 'Next book?');
+    await tester.tap(find.text('One week'));
+    await tester.pumpAndSettle();
+    await tapLabel(tester, 'Send /poll');
+    expect(repository.interactions, ['command poll hours=168 question=Next book?']);
+    expect(repository.sent, isEmpty);
+
+    // A command with no options runs from the composer's Send.
+    await tester.enterText(find.byType(EditableText), '/ping');
+    await tester.pumpAndSettle();
+    await tapLabel(tester, 'Send');
+    expect(repository.interactions.last, 'command ping');
+    semantics.dispose();
+  });
+
+  testWidgets('a bot invite link is a card: add the bot to a Space', (tester) async {
+    final repository = await pumpGeneral(
+      tester,
+      history: [
+        FakeRepository.message(
+          'inv',
+          author: FakeRepository.maya,
+          name: 'Maya',
+          text: 'Add this one https://duvet.chat/invite?bot=0190a3b2-0000-7000-8000-000000000002',
+        ),
+      ],
+    );
+    expect(find.bySemanticsLabel('Invite for the bot Ballot'), findsOneWidget);
+    await tapLabel(tester, 'Add to a Space');
+    await tapLabel(tester, 'Design Guild');
+    expect(repository.botsAdded, [('s-guild', '0190a3b2-0000-7000-8000-000000000002')]);
+    expect(find.text('Added to Design Guild'), findsOneWidget);
+    semantics.dispose();
+  });
+}

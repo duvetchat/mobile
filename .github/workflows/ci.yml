@@ -1,0 +1,73 @@
+# Analyze, test and build a release APK on every pull request into dev, as api and desktop do.
+# The app uses duvet_client from a checkout beside it (pubspec.yaml's dependency_overrides) until
+# 1.0.1 is on pub.dev, so the job checks out duvetchat/duvet-client next to this repository.
+name: CI
+
+on:
+  pull_request:
+    branches: [dev]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# A newer push to the same branch or PR makes the older run pointless.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  flutter:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          path: mobile
+      - uses: actions/checkout@v7
+        with:
+          repository: duvetchat/duvet-client
+          path: duvet-client
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: 17
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: 3.47.7
+          channel: stable
+          cache: true
+      - name: Dependencies
+        working-directory: mobile
+        run: flutter pub get
+      - name: Analyze
+        working-directory: mobile
+        run: flutter analyze
+      - name: Test
+        working-directory: mobile
+        run: flutter test
+      # Signed with the release key when the repository has it (base64 keystore and its
+      # passwords as secrets); with the debug key otherwise, so forks still build.
+      - name: Release key
+        env:
+          KEYSTORE: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          STORE_PASSWORD: ${{ secrets.ANDROID_STORE_PASSWORD }}
+          KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        if: env.KEYSTORE != ''
+        working-directory: mobile/android
+        run: |
+          echo "$KEYSTORE" | base64 --decode > "$RUNNER_TEMP/release.jks"
+          {
+            echo "storeFile=$RUNNER_TEMP/release.jks"
+            echo "storePassword=$STORE_PASSWORD"
+            echo "keyAlias=duvet"
+            echo "keyPassword=$KEY_PASSWORD"
+          } > key.properties
+      - name: Build
+        working-directory: mobile
+        run: flutter build apk --release --target-platform android-arm64
+      - uses: actions/upload-artifact@v5
+        with:
+          name: duvet-apk
+          path: mobile/build/app/outputs/flutter-apk/app-release.apk
+          retention-days: 14

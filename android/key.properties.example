@@ -1,0 +1,7 @@
+# Copy to android/key.properties (ignored by git) and fill in, to sign release
+# builds with Duvet's own key. Make one with:
+#   keytool -genkey -v -keystore ~/duvet-release.jks -keyalg RSA -keysize 2048 -validity 10000 -alias duvet
+storeFile=/home/you/duvet-release.jks
+storePassword=
+keyAlias=duvet
+keyPassword=

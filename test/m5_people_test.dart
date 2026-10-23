@@ -1,0 +1,163 @@
+import 'package:duvet/data/emoji_catalog.dart';
+import 'package:duvet/data/models.dart';
+import 'package:duvet/main.dart';
+import 'package:duvet/widgets/chrome.dart';
+import 'package:flutter/material.dart';
+import 'package:flutter/rendering.dart';
+import 'package:flutter_test/flutter_test.dart';
+
+import 'support/fake_repository.dart';
+
+const _maya = FakeRepository.maya;
+const _leo = FakeRepository.leo;
+
+/// M5 · People & conversations.
+void main() {
+  late SemanticsHandle semantics;
+
+  setUpAll(() async {
+    TestWidgetsFlutterBinding.ensureInitialized();
+    EmojiCatalog.debugUse(await EmojiCatalog.load());
+  });
+
+  Future<FakeRepository> pumpApp(WidgetTester tester, {void Function(FakeRepository r)? setUp}) async {
+    semantics = tester.ensureSemantics();
+    tester.view.physicalSize = const Size(390 * 3, 844 * 3);
+    tester.view.devicePixelRatio = 3;
+    addTearDown(tester.view.reset);
+    final repository = FakeRepository();
+    await tester.pumpWidget(DuvetApp(repository: repository));
+    await tester.pumpAndSettle();
+    setUp?.call(repository);
+    await tester.pumpAndSettle();
+    return repository;
+  }
+
+  Future<void> tapLabel(WidgetTester tester, Pattern label) async {
+    await tester.tap(find.bySemanticsLabel(label).last);
+    await tester.pumpAndSettle();
+  }
+
+  testWidgets('an avatar opens a profile: bio, roles, Add friend, Mention', (tester) async {
+    final repository = await pumpApp(
+      tester,
+      setUp: (r) => r.roleTags[_leo] = const [RoleTag('Moderator', color: 0xFF2F9E62)],
+    );
+    await tester.tap(find.descendant(of: find.byType(DuvetTabBar), matching: find.text('Spaces')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Design Guild'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('# general'));
+    await tester.pumpAndSettle();
+
+    await tapLabel(tester, 'Leo’s profile');
+    expect(find.text('ROLES IN DESIGN GUILD'), findsOneWidget);
+    expect(find.text('Moderator'), findsOneWidget);
+    expect(find.text('Nothing here yet.'), findsOneWidget);
+    await tapLabel(tester, 'Add friend');
+    expect(repository.friendCalls, ['send $_leo']);
+    expect(find.bySemanticsLabel('Friend request sent'), findsOneWidget);
+
+    await tapLabel(tester, 'Mention leo');
+    expect(find.text('@leo '), findsOneWidget);
+    semantics.dispose();
+  });
+
+  testWidgets('friends: requests in and out, accept, decline, cancel, add by username', (tester) async {
+    final repository = await pumpApp(
+      tester,
+      setUp: (r) => r.friendsOnServer = Friends(
+        friends: const [Member(userId: _maya, username: 'maya', alias: 'Maya')],
+        incoming: [
+          FriendRequestItem(
+            id: 'req-in',
+            person: const Member(userId: 'u-sam', username: 'sam', alias: 'Sam'),
+            at: DateTime(2026, 10, 22),
+          ),
+        ],
+        outgoing: [
+          FriendRequestItem(
+            id: 'req-out',
+            person: const Member(userId: 'u-theo', username: 'theo', alias: 'Theo'),
+            at: DateTime(2026, 10, 21),
+          ),
+        ],
+      ),
+    );
+    await tester.tap(find.bySemanticsLabel('Friends').hitTestable().first);
+    await tester.pumpAndSettle();
+    expect(find.text('WANTS TO BE FRIENDS'), findsOneWidget);
+    expect(find.text('ONLINE — 1'), findsOneWidget);
+    expect(find.text('Pending 1'), findsOneWidget);
+
+    await tapLabel(tester, 'Accept');
+    await tapLabel(tester, 'Decline Sam');
+    await tapLabel(tester, 'Cancel request');
+    expect(repository.friendCalls, ['accept req-in', 'reject req-in', 'reject req-out']);
+
+    await tester.enterText(find.byType(EditableText), '@leo');
+    await tapLabel(tester, 'Add');
+    expect(repository.friendCalls.last, 'send $_leo');
+    await tester.enterText(find.byType(EditableText), 'nobody');
+    await tapLabel(tester, 'Add');
+    expect(find.text('No one called @nobody shares a Space or a chat with you'), findsOneWidget);
+
+    await tapLabel(tester, 'Sent 1');
+    expect(find.text('WANTS TO BE FRIENDS'), findsNothing);
+    expect(find.text('YOU ASKED'), findsOneWidget);
+    await tester.pump(const Duration(seconds: 4));
+    semantics.dispose();
+  });
+
+  testWidgets('new conversation: one person opens a DM, several a group', (tester) async {
+    final repository = await pumpApp(tester);
+    await tapLabel(tester, 'New conversation');
+    expect(find.bySemanticsLabel('Start conversation'), findsOneWidget);
+    await tapLabel(tester, 'Maya, @maya');
+    await tapLabel(tester, 'leo, @leo');
+    expect(find.text('Start group with 2 people'), findsOneWidget);
+    await tester.enterText(find.byType(EditableText).last, 'Crit crew');
+    await tapLabel(tester, 'Start group with 2 people');
+    expect(repository.conversationCalls.single, 'group Crit crew $_maya,$_leo');
+    expect(find.text('New group'), findsWidgets);
+    semantics.dispose();
+  });
+
+  testWidgets('group info: rename, add, remove, leave', (tester) async {
+    final repository = await pumpApp(
+      tester,
+      setUp: (r) => r.conversations.value = [
+        ConversationSummary(
+          id: 'c-team',
+          title: 'Design crew',
+          name: 'Design crew',
+          isGroup: true,
+          memberCount: 2,
+          ownerId: FakeRepository.me.id,
+        ),
+        ...r.conversations.value.where((c) => c.id != 'c-team'),
+      ],
+    );
+    await tester.tap(find.text('Design crew'));
+    await tester.pumpAndSettle();
+    await tapLabel(tester, 'More');
+    await tapLabel(tester, 'Group info');
+    expect(find.text('Group info'), findsOneWidget);
+
+    await tapLabel(tester, 'Rename group, Design crew');
+    await tester.enterText(find.byType(EditableText).last, 'Crit crew');
+    await tapLabel(tester, 'Save');
+    await tapLabel(tester, 'Remove Maya');
+    await tapLabel(tester, 'Add people');
+    await tapLabel(tester, RegExp('^leo'));
+    await tapLabel(tester, 'Leave group');
+    await tapLabel(tester, 'Leave group');
+    expect(repository.conversationCalls, [
+      'rename c-team Crit crew',
+      'remove c-team $_maya',
+      'add c-team $_leo',
+      'leave c-team',
+    ]);
+    semantics.dispose();
+  });
+}

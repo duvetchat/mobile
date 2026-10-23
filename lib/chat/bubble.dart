@@ -1,0 +1,694 @@
+part of '../chat_view.dart';
+
+/// One message: the sender's name over a run's first bubble, the reply it
+/// quotes, the bubble, its reactions, and the time under a run's last one.
+///
+/// Double-tap replies (the bubble does the press); a long press opens its
+/// actions.
+class _Bubble extends StatelessWidget {
+  final _Entry entry;
+  final bool mine;
+  final String? me;
+  final bool firstOfRun;
+  final bool lastOfRun;
+
+  /// The copy shown over the scrim with its actions: the bubble alone.
+  final bool lifted;
+  final MessageDirectory directory;
+  final String? stickerName;
+
+  /// Being edited in the composer.
+  final bool editing;
+
+  /// Just jumped to.
+  final bool flash;
+
+  /// Sending, while the socket is down.
+  final bool waiting;
+  final VoidCallback? onRetry;
+  final VoidCallback? onDiscard;
+  final VoidCallback onReply;
+  final ValueChanged<String> onJump;
+  final void Function(String emoji, String? emojiId) onReact;
+  final VoidCallback onMoreReactions;
+  final ValueChanged<BuildContext> onLongPress;
+
+  /// How far its files have uploaded, 0 to 1, while sending.
+  final double? progress;
+  final VoidCallback? onCancelUpload;
+
+  /// The server refused its files as too large.
+  final bool tooLarge;
+  final ValueChanged<MessageLink> onOpenLink;
+  final ValueChanged<String> onOpenSpace;
+
+  /// Their avatar or name was tapped: their profile.
+  final VoidCallback onOpenAuthor;
+
+  /// A bot's button or select used.
+  final Future<void> Function(UiComponent component, List<String>? values) onUseComponent;
+  final SelectChoices selectChoices;
+
+  const _Bubble({
+    required this.entry,
+    required this.mine,
+    required this.me,
+    required this.firstOfRun,
+    required this.lastOfRun,
+    required this.directory,
+    required this.onReply,
+    required this.onJump,
+    required this.onReact,
+    required this.onMoreReactions,
+    required this.onLongPress,
+    this.lifted = false,
+    this.stickerName,
+    this.editing = false,
+    this.flash = false,
+    this.waiting = false,
+    this.onRetry,
+    this.onDiscard,
+    this.progress,
+    this.onCancelUpload,
+    this.tooLarge = false,
+    required this.onOpenLink,
+    required this.onOpenSpace,
+    required this.onOpenAuthor,
+    required this.onUseComponent,
+    required this.selectChoices,
+    super.key,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = context.theme.colors;
+    final tokens = context.duvet;
+    final m = entry.message;
+    final mentionsMe = !mine && directory.me != null && mentionedIn(m.content).contains(directory.me);
+    final maxWidth = MediaQuery.sizeOf(context).width * 0.75;
+    final secondary = DuvetType.caption.copyWith(color: colors.mutedForeground);
+    final faded = entry.delivery != _Delivery.sent;
+
+    final parts = <Widget>[
+      if (m.stickerUrl != null) StickerView(url: m.stickerUrl!, name: stickerName),
+      if (m.content.isNotEmpty)
+        if (isJumboEmoji(m.content))
+          MessageText(
+            content: m.content,
+            directory: directory,
+            style: DuvetType.body.copyWith(color: colors.foreground),
+          )
+        else
+          // Double-tap the text bubble to reply: it does the press. Pictures
+          // and files take their own single taps at once.
+          Pressable(
+            scale: 0.98,
+            onDoubleTap: entry.delivery == _Delivery.sent && !lifted ? onReply : null,
+            builder: (context, _) => Container(
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+              constraints: BoxConstraints(maxWidth: maxWidth),
+              decoration: BoxDecoration(
+                color: mine ? Duvet.accent : colors.card,
+                borderRadius: BorderRadius.circular(DuvetTokens.radiusButton),
+                boxShadow: editing ? null : (lifted ? tokens.shadowFloat : tokens.shadowRest),
+                // Mentioning the user: the accent as an outline, never a fill.
+                border: mentionsMe ? Border.all(color: tokens.accentText, width: 1.5) : null,
+              ),
+              child: MessageText(
+                content: m.content,
+                directory: directory,
+                onAccent: mine,
+                style: DuvetType.body.copyWith(color: mine ? colors.primaryForeground : colors.foreground),
+              ),
+            ),
+          ),
+      if (m.isVoice && m.attachments.isNotEmpty)
+        VoiceNotePlayer(attachment: m.attachments.first, mine: mine, authorName: m.authorName)
+      else if (m.attachments.isNotEmpty)
+        MessageAttachments(attachments: m.attachments, uploadProgress: progress),
+      // Duvet's own links, as cards: a quoted message, an invite.
+      if (!lifted)
+        for (final url in duvetLinksIn(m.content))
+          if (parseMessageLink(url) case final link?)
+            MessageLinkCard(link: link, directory: directory, onOpen: onOpenLink)
+          else if (parseBotInvite(url) case final bot?)
+            BotInviteCard(botId: bot)
+          else if (parseInviteCode(url) case final code?)
+            InviteCard(code: code, onOpenSpace: onOpenSpace),
+      for (final e in m.embeds) EmbedCard(embed: e),
+      if (m.components.isNotEmpty && !lifted)
+        BotComponents(
+          components: m.components,
+          directory: directory,
+          choices: selectChoices,
+          onUse: entry.delivery == _Delivery.sent ? onUseComponent : (_, _) async {},
+        ),
+    ];
+
+    final body = Opacity(
+      opacity: editing ? 0.55 : (faded ? 0.7 : 1),
+      child: Column(
+        crossAxisAlignment: mine ? CrossAxisAlignment.end : CrossAxisAlignment.start,
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          for (final (i, part) in parts.indexed)
+            Padding(
+              padding: EdgeInsets.only(top: i == 0 ? 0 : 4),
+              child: part,
+            ),
+        ],
+      ),
+    );
+    if (lifted) {
+      return Transform.scale(scale: 1.02, alignment: mine ? Alignment.centerRight : Alignment.centerLeft, child: body);
+    }
+
+    // The time under the run's last bubble; "edited" under the edited one.
+    final meta = [if (lastOfRun) _time(m.createdAt), if (m.edited) 'edited'].join(' · ');
+    final status = switch (entry.delivery) {
+      _ when editing => _Caption(icon: FLucideIcons.pencil, text: 'Editing', style: secondary),
+      _Delivery.failed => _FailedActions(onRetry: tooLarge ? null : onRetry, onDiscard: onDiscard, tooLarge: tooLarge),
+      _Delivery.sending when waiting => _Caption(
+        icon: FLucideIcons.clock,
+        text: 'Waiting for connection',
+        style: secondary,
+      ),
+      _Delivery.sending when m.attachments.isNotEmpty && !m.isVoice => _UploadStatus(
+        files: m.attachments,
+        progress: progress ?? 0,
+        onCancel: onCancelUpload,
+      ),
+      _Delivery.sending when m.isVoice => _Caption(text: 'Sending…', style: secondary),
+      _ when meta.isNotEmpty => _Caption(text: meta, style: secondary),
+      _ => null,
+    };
+
+    final column = Column(
+      crossAxisAlignment: mine ? CrossAxisAlignment.end : CrossAxisAlignment.start,
+      children: [
+        if (firstOfRun && !mine)
+          GestureDetector(
+            onTap: onOpenAuthor,
+            child: Padding(
+              padding: const EdgeInsets.only(left: 4, bottom: 4),
+              child: m.fromBot
+                  ? Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Flexible(child: Text(m.authorName, style: secondary)),
+                        const SizedBox(width: 6),
+                        const BotTag(),
+                      ],
+                    )
+                  : Text(m.authorName, style: secondary),
+            ),
+          ),
+        if (m.reply case final reply?)
+          _ReplyRef(reply: reply, directory: directory, onTap: () => onJump(reply.messageId)),
+        Builder(
+          builder: (anchor) => GestureDetector(
+            onLongPress: () {
+              HapticFeedback.mediumImpact();
+              onLongPress(anchor);
+            },
+            child: body,
+          ),
+        ),
+        if (m.reactions.isNotEmpty)
+          _Reactions(reactions: m.reactions, me: me, directory: directory, onReact: onReact, onMore: onMoreReactions),
+        ?status,
+      ],
+    );
+
+    // A jump lands here: a brief `accent-tint` behind the message. One
+    // message is one stop for screen readers, its name, text and time read
+    // together; its pictures, quote and reactions are stops inside it, and its
+    // actions are custom actions.
+    final highlighted = Builder(
+      builder: (whole) => Semantics(
+        container: true,
+        customSemanticsActions: {
+          if (entry.delivery == _Delivery.sent) const CustomSemanticsAction(label: 'Reply'): onReply,
+          const CustomSemanticsAction(label: 'Message options'): () => onLongPress(whole),
+        },
+        child: AnimatedContainer(
+          duration: const Duration(milliseconds: 300),
+          curve: DuvetTokens.decelerate,
+          padding: const EdgeInsets.all(4),
+          decoration: BoxDecoration(
+            color: flash ? tokens.accentTint : const Color(0x00000000),
+            borderRadius: BorderRadius.circular(DuvetTokens.radiusButton),
+          ),
+          child: column,
+        ),
+      ),
+    );
+
+    // 4pt between bubbles of a run, 12pt between runs (less the highlight's
+    // own 4pt).
+    final gap = EdgeInsets.only(top: firstOfRun ? 8 : 0);
+    if (mine) {
+      return Padding(
+        padding: gap,
+        child: Align(alignment: Alignment.centerRight, child: highlighted),
+      );
+    }
+    return Padding(
+      padding: gap,
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.end,
+        children: [
+          // The avatar beside the run's last bubble, above its time.
+          SizedBox(
+            width: 36,
+            child: lastOfRun
+                ? Padding(
+                    padding: EdgeInsets.only(bottom: 4 + (status == null ? 0 : 22) + (m.reactions.isEmpty ? 0 : 32)),
+                    child: Semantics(
+                      container: true,
+                      button: true,
+                      label: '${m.authorName}${m.fromBot ? ', bot,' : ''}’s profile',
+                      excludeSemantics: true,
+                      onTap: onOpenAuthor,
+                      child: GestureDetector(
+                        onTap: onOpenAuthor,
+                        child: m.fromBot
+                            ? const BotAvatar()
+                            : UserAvatar(name: m.authorName, url: m.authorAvatarUrl, size: 32),
+                      ),
+                    ),
+                  )
+                : null,
+          ),
+          Flexible(child: highlighted),
+        ],
+      ),
+    );
+  }
+
+  static String _time(DateTime t) => '${t.hour.toString().padLeft(2, '0')}:${t.minute.toString().padLeft(2, '0')}';
+}
+
+/// A line under a bubble: its time, "Editing", "Uploading…".
+class _Caption extends StatelessWidget {
+  final IconData? icon;
+  final String text;
+  final TextStyle style;
+  const _Caption({required this.text, required this.style, this.icon});
+
+  @override
+  Widget build(BuildContext context) => Padding(
+    padding: const EdgeInsets.fromLTRB(4, 4, 4, 0),
+    child: Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        if (icon != null) ...[
+          ExcludeSemantics(child: Icon(icon, size: 14, color: style.color)),
+          const SizedBox(width: 4),
+        ],
+        Flexible(child: Text(text, style: style)),
+      ],
+    ),
+  );
+}
+
+/// Under a message that didn't send: "Not sent", then Retry and Delete.
+class _FailedActions extends StatelessWidget {
+  final VoidCallback? onRetry;
+  final VoidCallback? onDiscard;
+
+  /// Refused as too large: retrying wouldn't help.
+  final bool tooLarge;
+  const _FailedActions({this.onRetry, this.onDiscard, this.tooLarge = false});
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = context.theme.colors;
+    final tokens = context.duvet;
+    Widget action(String label, Color color, VoidCallback? onTap, {IconData? icon}) => Semantics(
+      container: true,
+      button: true,
+      label: label,
+      excludeSemantics: true,
+      onTap: onTap,
+      child: GestureDetector(
+        behavior: HitTestBehavior.opaque,
+        onTap: onTap,
+        child: SizedBox(
+          height: 40,
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              if (icon != null) ...[Icon(icon, size: 14, color: color), const SizedBox(width: 4)],
+              Text(
+                label,
+                style: DuvetType.caption.copyWith(color: color, fontWeight: FontWeight.w500),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+    return Semantics(
+      container: true,
+      label: tooLarge ? 'Message not sent: too large' : 'Message not sent',
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 4),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            ExcludeSemantics(child: Icon(FLucideIcons.circleAlert, size: 14, color: colors.destructive)),
+            const SizedBox(width: 4),
+            ExcludeSemantics(
+              child: Text(
+                tooLarge ? 'Too large to send' : 'Not sent',
+                style: DuvetType.caption.copyWith(color: colors.destructive),
+              ),
+            ),
+            if (onRetry != null) ...[
+              const SizedBox(width: 12),
+              action('Retry', tokens.accentText, onRetry, icon: FLucideIcons.rotateCw),
+            ],
+            const SizedBox(width: 12),
+            action('Delete', colors.destructive, onDiscard),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+/// Under a message whose files are uploading: "Uploading 2 of 3 · 64%", and
+/// Cancel.
+class _UploadStatus extends StatelessWidget {
+  final List<MessageAttachment> files;
+  final double progress;
+  final VoidCallback? onCancel;
+  const _UploadStatus({required this.files, required this.progress, this.onCancel});
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = context.theme.colors;
+    final tokens = context.duvet;
+    final current = math.min(files.length, uploadingIndex(files, progress) + 1);
+    final percent = (progress * 100).round();
+    final text = files.length == 1 ? 'Uploading · $percent%' : 'Uploading $current of ${files.length} · $percent%';
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 4),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Flexible(
+            child: Semantics(
+              liveRegion: true,
+              child: Text(
+                text,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: DuvetType.caption.copyWith(color: colors.mutedForeground),
+              ),
+            ),
+          ),
+          if (onCancel != null) ...[
+            const SizedBox(width: 8),
+            Semantics(
+              container: true,
+              button: true,
+              label: 'Cancel upload',
+              excludeSemantics: true,
+              onTap: onCancel,
+              child: GestureDetector(
+                behavior: HitTestBehavior.opaque,
+                onTap: onCancel,
+                child: SizedBox(
+                  height: 40,
+                  child: Center(
+                    child: Text(
+                      'Cancel',
+                      style: DuvetType.caption.copyWith(color: tokens.accentText, fontWeight: FontWeight.w500),
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+}
+
+/// Above a reply: the message it answers, one line, "**Jon** text…". Tapping
+/// it jumps there.
+class _ReplyRef extends StatelessWidget {
+  final MessageReply reply;
+  final MessageDirectory directory;
+  final VoidCallback onTap;
+  const _ReplyRef({required this.reply, required this.directory, required this.onTap});
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = context.theme.colors;
+    final text = readableContent(
+      reply.content,
+      nameOf: directory.nameOf,
+      emojiNameOf: (id) => directory.emojiOf(id)?.name,
+    ).replaceAll(RegExp(r'[*_~|`>#]+'), '').replaceAll('\n', ' ').trim();
+    final shown = text.isEmpty ? 'a message' : text;
+    return Semantics(
+      container: true,
+      button: true,
+      label: 'Replying to ${reply.authorName}: $shown. Jump to message',
+      excludeSemantics: true,
+      onTap: onTap,
+      child: GestureDetector(
+        behavior: HitTestBehavior.opaque,
+        onTap: onTap,
+        child: Container(
+          constraints: const BoxConstraints(maxWidth: 260, minHeight: 24),
+          padding: const EdgeInsets.fromLTRB(4, 0, 4, 4),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(FLucideIcons.cornerUpLeft, size: 14, color: colors.mutedForeground),
+              const SizedBox(width: 6),
+              Flexible(
+                child: Text.rich(
+                  TextSpan(
+                    children: [
+                      TextSpan(
+                        text: reply.authorName,
+                        style: TextStyle(color: colors.foreground, fontWeight: FontWeight.w500),
+                      ),
+                      TextSpan(text: ' $shown'),
+                    ],
+                  ),
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: DuvetType.caption.copyWith(color: colors.mutedForeground),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// The reaction chips under a bubble: the emoji and its count; the user's
+/// own in the selected state. A last chip adds one.
+class _Reactions extends StatelessWidget {
+  final List<Reaction> reactions;
+  final String? me;
+  final MessageDirectory directory;
+  final void Function(String emoji, String? emojiId) onReact;
+  final VoidCallback onMore;
+  const _Reactions({
+    required this.reactions,
+    required this.me,
+    required this.directory,
+    required this.onReact,
+    required this.onMore,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = context.theme.colors;
+    final tokens = context.duvet;
+    Widget chip({
+      required String label,
+      required Widget child,
+      required VoidCallback onTap,
+      bool mine = false,
+      bool? toggled,
+    }) => Semantics(
+      container: true,
+      button: true,
+      toggled: toggled,
+      label: label,
+      excludeSemantics: true,
+      onTap: onTap,
+      child: Pressable(
+        onTap: onTap,
+        builder: (context, pressed) => Container(
+          height: 28,
+          constraints: const BoxConstraints(minWidth: 40),
+          padding: const EdgeInsets.symmetric(horizontal: 8),
+          decoration: BoxDecoration(
+            color: mine ? tokens.accentTint : colors.card,
+            borderRadius: BorderRadius.circular(DuvetTokens.radiusChip),
+            border: mine ? Border.all(color: tokens.accentText) : null,
+            boxShadow: mine || pressed ? null : tokens.shadowRest,
+          ),
+          child: DefaultTextStyle.merge(
+            style: DuvetType.caption.copyWith(
+              color: mine ? tokens.accentText : colors.foreground,
+              fontWeight: FontWeight.w500,
+              height: 1,
+            ),
+            child: Row(mainAxisSize: MainAxisSize.min, mainAxisAlignment: MainAxisAlignment.center, children: [child]),
+          ),
+        ),
+      ),
+    );
+
+    return Padding(
+      padding: const EdgeInsets.only(top: 4),
+      child: Wrap(
+        spacing: 4,
+        runSpacing: 4,
+        children: [
+          for (final r in reactions)
+            () {
+              final mine = me != null && r.users.contains(me);
+              final custom = r.emojiId == null ? null : directory.emojiOf(r.emojiId!);
+              final name = r.emojiId == null ? r.emoji : ':${custom?.name ?? r.emoji}:';
+              return chip(
+                label: '$name ${r.count}${mine ? ', you reacted' : ''}',
+                mine: mine,
+                toggled: mine,
+                onTap: () => onReact(r.emoji, r.emojiId),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    if (custom != null)
+                      Image.network(
+                        custom.url,
+                        width: 18,
+                        height: 18,
+                        cacheWidth: (18 * MediaQuery.devicePixelRatioOf(context)).round(),
+                        excludeFromSemantics: true,
+                        errorBuilder: (_, _, _) => Text(name),
+                      )
+                    else
+                      Text(r.emojiId == null ? r.emoji : name, style: const TextStyle(fontSize: 15)),
+                    const SizedBox(width: 4),
+                    Text('${r.count}'),
+                  ],
+                ),
+              );
+            }(),
+          chip(
+            label: 'Add reaction',
+            onTap: onMore,
+            child: Icon(FLucideIcons.smilePlus, size: 16, color: colors.mutedForeground),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// Where the day changes: centered `caption`, no rule.
+class _DaySeparator extends StatelessWidget {
+  final DateTime day;
+  const _DaySeparator({required this.day});
+
+  @override
+  Widget build(BuildContext context) => Padding(
+    padding: const EdgeInsets.only(top: 16, bottom: 4),
+    child: Center(
+      child: Semantics(
+        header: true,
+        child: Text(
+          dayLabel(day, DateTime.now()),
+          style: DuvetType.caption.copyWith(color: context.theme.colors.mutedForeground),
+        ),
+      ),
+    ),
+  );
+}
+
+/// Before the first unread message: "New messages" between two hairlines.
+class _NewMessagesDivider extends StatelessWidget {
+  final String text;
+
+  /// The thread's "3 replies": `ink-secondary`, regular.
+  final bool quiet;
+  const _NewMessagesDivider({this.text = 'New messages', this.quiet = false, super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    final hairline = Expanded(child: Container(height: 1, color: context.duvet.hairline));
+    return Padding(
+      padding: const EdgeInsets.only(top: 16, bottom: 4),
+      child: Semantics(
+        header: true,
+        child: Row(
+          children: [
+            hairline,
+            const SizedBox(width: 12),
+            Text(
+              text,
+              style: DuvetType.caption.copyWith(
+                color: quiet ? context.theme.colors.mutedForeground : context.theme.colors.foreground,
+                fontWeight: quiet ? FontWeight.w400 : FontWeight.w500,
+              ),
+            ),
+            const SizedBox(width: 12),
+            hairline,
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _Notice extends StatelessWidget {
+  final String text;
+  const _Notice({required this.text});
+
+  @override
+  Widget build(BuildContext context) => Padding(
+    padding: const EdgeInsets.only(top: 12),
+    child: Center(
+      child: Text(text, style: DuvetType.caption.copyWith(color: context.theme.colors.mutedForeground)),
+    ),
+  );
+}
+
+class _TypingLine extends StatelessWidget {
+  final List<String> names;
+  const _TypingLine({required this.names});
+
+  @override
+  Widget build(BuildContext context) {
+    if (names.isEmpty) return const SizedBox.shrink();
+    final who = switch (names) {
+      [final one] => '$one is typing…',
+      [final a, final b] => '$a and $b are typing…',
+      _ => 'Several people are typing…',
+    };
+    return Align(
+      alignment: Alignment.centerLeft,
+      child: Padding(
+        padding: const EdgeInsets.only(left: 4, bottom: 8),
+        child: Semantics(
+          liveRegion: true,
+          child: Text(who, style: DuvetType.caption.copyWith(color: context.theme.colors.mutedForeground)),
+        ),
+      ),
+    );
+  }
+}
