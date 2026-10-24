@@ -2,15 +2,15 @@
 
 _23 October 2026 · Flutter app in `mobile/`, against `duvet_client` 1.0.1 (local, unpublished) and the Duvet design system (`L1t5M8Kr96KAEGfwD1pjEQ`) with the Feature Layouts canvas (`UYB8DxdUxBCcgauVFZshq2`)._
 
-**In short:** every milestone but voice is done. Messaging, media, navigation and search, people, Spaces and invites, account, bots, and Space administration all work, laid out to the design system and covered by widget tests. **M8 (voice and calls) hasn't started**, and three platform tasks remain: push notifications, an accessibility pass, Spanish. A debug build runs on the phone against the live server with no crashes. `TODO.md` has the task list; its **Needs you** section lists what needs a server change, a credential or a Mac.
+**In short:** every milestone is built. Messaging, media, navigation and search, people, Spaces and invites, account, bots, Space administration and now voice rooms and calls work, laid out to the design system and covered by widget tests. **M8 (voice and calls) is written and tested against fakes, but hasn't run on a device**: WebRTC can't run here. Three platform tasks remain: push notifications (which calls need to ring in the background), an accessibility pass, Spanish. A debug build runs on the phone against the live server with no crashes. `TODO.md` has the task list; its **Needs you** section lists what needs a server change, a credential, a Mac or the phone.
 
 | | |
 |---|---|
-| Code | 21,879 lines in `lib/` (44 files), 4,351 in `test/` |
-| Tests | 129 widget, unit and golden tests, all passing; `flutter analyze` clean |
-| Client | `duvet_client`: 343 tests passing (one skipped), `dart analyze` clean |
-| TODO | 71 of 82 tasks done (11 open, 3 of them from the device test) |
-| Verified on | an Android 15 phone, debug build, signed in to the live server |
+| Code | 25,546 lines in `lib/` (51 files), 6,017 in `test/` |
+| Tests | 178 widget, unit and golden tests; `flutter analyze` clean. On Windows the 4 goldens fail (glyph edges); the `chat` ones need regenerating on Linux for M8's Call button |
+| Client | `duvet_client`: 397 tests passing (the live ones left out), `dart analyze` clean |
+| TODO | 82 of 89 tasks done (7 open, 3 of them from the device test) |
+| Verified on | an Android 15 phone, debug build, signed in to the live server (before M8) |
 
 ---
 
@@ -25,7 +25,7 @@ _23 October 2026 · Flutter app in `mobile/`, against `duvet_client` 1.0.1 (loca
 | M5 · People | ✅ | profile sheet, friends, new conversation, group DMs, presence from the start |
 | M6 · Spaces & invites | ✅ | join by link or code, invite people, create and leave, unread per Space |
 | M7 · Account | 🟡 | sign up, verify email, forgot and reset password, change email, edit profile (crop), my files, appearance. **Status** and **bio editing** wait on the server |
-| M8 · Voice & calls | ❌ | not started |
+| M8 · Voice & calls | 🟡 | voice rooms (who's in, join, mute, deafen, faces talking, sound output), DM and group calls (incoming screen, call screen, Calls tab from this phone's history), rejoining after a gateway restart, Android foreground service, iOS background audio. **Tested against fakes only: not yet on a device** |
 | M9 · Bots | ✅ | message buttons and selects, slash commands with options, bot modals, bot invite cards; bots drawn as rounded squares with a BOT tag |
 | M10 · Space administration | ✅ | overview, rooms (with per-role overwrites), roles (colors, members, permissions), emojis and stickers, invites, webhooks (URL shown once), storage (view only) |
 | Platform | 🟡 | done: offline cache, connection state, token safety, iOS config, golden tests, CI, release signing config, build settings. Open: push, accessibility pass, Spanish |
@@ -44,14 +44,15 @@ The app calls about **100 of 138 methods (~72%)**. What's left is outside a phon
 
 ### Gateway (`GatewayManager`)
 
-The app handles **49 of 58 event types (84%)**. The nine left are all voice and calls (M8): `VOICE_STATE_UPDATE`, `VOICE_JOINED`, `CALL_INCOMING`/`ACCEPTED`/`DECLINED`/`ENDED`, and the three `WEBRTC_*` events.
+The app handles **all 59 event types** the client parses. M8 added the nine voice and call events (`VOICE_STATE_UPDATE`, `VOICE_JOINED`, `CALL_INCOMING`/`ACCEPTED`/`DECLINED`/`ENDED`, the three `WEBRTC_*`) and `VOICE_SESSION_REPLACED`. It sends `VOICE_JOIN`, `VOICE_LEAVE`, `VOICE_SYNC`, `WEBRTC_ICE_CANDIDATE`, `WEBRTC_ANSWER` and the five `CALL_*` messages; never `WEBRTC_RENEGOTIATE_OFFER` (the phone adds no tracks mid-call). `VOICE_VIDEO_REFUSED` stays unparsed: the phone sends no video.
 
 ### Changes to `duvet_client` (1.0.1, in its CHANGELOG)
 
 - **Parsing and requests:** `member_statuses` parsed (presence at connect); `count` on message history; `m4a` voice notes and a `format` parameter; `getConversationMessageThread`.
 - **Gateway:** a connection-state stream; the token no longer logged; no reconnect after `destroy()`; `DM_MENTION_CREATE` handled, and mention events carry message and author IDs.
 - **Uploads and interactions:** upload progress and cancel; `useComponent`, `useCommand` and `submitModal`, which keep the bot's reply.
-- **Breaking:** `createSpace` now returns the new Space's ID.
+- **Voice and calls:** `WebRTCController` rewritten to the gateway's real messages (it sent `join_voice`, `call_accept` and other names the gateway ignores), with `VoiceStates` (who's in voice, in version order); the WebRTC events' data as the gateway sends it (the ICE candidate is a JSON string); READY's ICE servers; `VOICE_SESSION_REPLACED`; `connection` (the open socket's number) and `silenceBeforeReady` on the gateway client.
+- **Breaking:** `createSpace` now returns the new Space's ID; the voice API changed (see the CHANGELOG).
 
 ## 3. Design system
 
@@ -59,13 +60,14 @@ All screens and components in the wireframes and the 37 feature layouts are buil
 - **Foundations:** tokens in both themes, Fira Sans and Fira Mono, the shadows including inset ones, and glass with blur and saturation.
 - **Rules:** one accent per screen, and circles only for people (Spaces and bots are rounded squares).
 - **Exceptions:**
-  - The voice room, incoming-call and in-call layouts wait on M8.
+  - M8's voice room, incoming call and call screens follow the tokens and components (glass bars, rounded-square controls, faces in circles, one accent: Join voice, the speaking ring, or Accept). The Feature Layouts canvas couldn't be opened in that session: check them against its voice room, incoming-call and in-call layouts.
   - Role colors are adjusted until they read at 4.5:1 on both themes (tested), so a few swatches render darker or lighter than picked.
 
 ## 4. Accessibility
 
 - Every control has a screen-reader label and its own tap action. Each message is one stop, with its actions as custom actions. Live regions announce suggestions, typing, uploads and failures.
 - Touch targets are 44 to 48 pt. Presence and selection are told apart by shape, not color alone. Reduce motion makes springs plain and pauses GIFs; high contrast makes glass opaque.
+- Voice: each tile reads its person and state ("Maya, muted, speaking"); mute and deafen are switches; the incoming call announces its caller, and Accept and Decline say what they do.
 - **Not done:** a TalkBack or VoiceOver pass on a device, 200% text size checks, and contrast checks beyond role colors.
 
 ## 5. On the device (23 Oct 2026)
@@ -81,6 +83,7 @@ All screens and components in the wireframes and the 37 feature layouts are buil
 
 ## 6. Not verified
 
+- **Voice and calls (M8):** written against the gateway's code and tested with a fake gateway and a fake WebRTC; nothing has carried audio yet. `TODO.md`'s **Needs you** lists the pass to make on the phone. Calls ring only while the app is open (no push yet), and not on a locked screen.
 - **Release build:** not built yet; the release keystore is yours to make (see `TODO.md`).
 - **iOS:** configured, never built (needs a Mac).
 - **Sending from the device:** messages, files, voice notes, bot commands and admin changes are tested against the fake repository only.

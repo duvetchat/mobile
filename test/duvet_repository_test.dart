@@ -247,6 +247,34 @@ void main() {
     expect(repository.unread.value, isNot(contains('c-1')));
   });
 
+  test('voice gets the gateway\'s voice and call events, and READY, and nothing else', () async {
+    await repository.logIn('gaby@duvet.chat', 'secret');
+    final voice = <duvet.GatewayEventPayload>[];
+    final sub = repository.voiceSignaling.events.listen(voice.add);
+    addTearDown(sub.cancel);
+
+    repository.handleEvent(_event('READY', {'user': _user(_me, 'gaby'), 'sessionToken': 'ws'}));
+    repository.handleEvent(_event('DM_MESSAGE_CREATE', _dm('9', _maya, 'not for voice')));
+    repository.handleEvent(
+      _event('VOICE_STATE_UPDATE', {'room_id': 'r-voice', 'user_id': _maya, 'joined': true, 'version': 1}),
+    );
+    repository.handleEvent(
+      _event('CALL_INCOMING', {'conversation_id': 'c-1', 'initiator_id': _maya, 'initiator_name': 'maya'}),
+    );
+    repository.handleEvent(_event('VOICE_SESSION_REPLACED', {'room_id': 'r-voice'}));
+    await pumpEventQueue();
+    expect(voice.map((e) => e.runtimeType), [
+      duvet.ReadyEvent,
+      duvet.VoiceStateUpdatedEvent,
+      duvet.CallIncomingPayloadEvent,
+      duvet.VoiceSessionReplacedPayloadEvent,
+    ]);
+
+    // No gateway (it's off in these tests): nothing can go out.
+    expect(repository.voiceSignaling.connection, isNull);
+    expect(repository.voiceSignaling.acceptCall('c-1'), isFalse);
+  });
+
   test('a new Space shows at once, before the gateway tells of it', () async {
     await repository.logIn('gaby@duvet.chat', 'secret');
     final id = await repository.createSpace('Testing lair');

@@ -1,13 +1,18 @@
 import 'package:flutter/material.dart';
 import 'package:forui/forui.dart';
 
+import 'calls.dart';
 import 'chat_view.dart';
 import 'data/models.dart';
 import 'data/recent_chats.dart';
+import 'data/repository.dart';
 import 'data/scope.dart';
+import 'data/voice.dart';
 import 'people.dart';
 import 'search.dart';
 import 'spaces.dart';
+import 'theme.dart';
+import 'voice_room.dart';
 import 'widgets/avatar.dart';
 import 'widgets/chrome.dart';
 import 'widgets/rows.dart';
@@ -302,18 +307,45 @@ class _SpaceDirectoryState extends State<SpaceDirectory> {
     super.dispose();
   }
 
+  bool _askedNames = false;
+
+  // Someone in voice whom the app can't name yet: the space's members name
+  // them, fetched once (and cached) after this frame.
+  void _nameVoice(ChatRepository repository, Room room) {
+    if (_askedNames) return;
+    final me = repository.profile.value?.id;
+    if (!context.voice.participants(room.id).any((p) => p.userId != me && repository.nameOf(p.userId) == null)) return;
+    _askedNames = true;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      repository.members(room.target).then((_) {
+        if (mounted) setState(() {});
+      }, onError: (Object _) {});
+    });
+  }
+
   @override
   Widget build(BuildContext context) {
     final repository = context.repository;
+    final voice = context.voice;
     final colors = context.theme.colors;
     return ListenableBuilder(
-      listenable: Listenable.merge([repository.spaces, repository.unread, repository.latest, repository.profile]),
+      listenable: Listenable.merge([
+        repository.spaces,
+        repository.unread,
+        repository.latest,
+        repository.profile,
+        voice,
+      ]),
       builder: (context, _) {
         final space = repository.spaces.value.where((s) => s.id == widget.spaceId).firstOrNull;
         final unread = repository.unread.value;
         final latest = repository.latest.value;
         final me = repository.profile.value?.id;
         final barHeight = GlassTopBar.heightOf(context);
+        for (final room in space?.rooms ?? const <Room>[]) {
+          if (room.kind == RoomKind.voice) _nameVoice(repository, room);
+        }
         return Scaffold(
           backgroundColor: colors.background,
           body: Stack(
@@ -344,12 +376,15 @@ class _SpaceDirectoryState extends State<SpaceDirectory> {
                                     unread: unread.contains(room.id),
                                     onTap: () => openChat(context, room.target, '# ${room.name}'),
                                   ),
-                                  // Voice needs WebRTC, which the mobile app doesn't have yet.
+                                  // Who's in, the user first when their voice is here (no
+                                  // accent: the tab bar has the screen's).
                                   RoomKind.voice => ListRow(
                                     key: ValueKey(room.id),
                                     leading: Icon(FLucideIcons.volume2, size: 24, color: colors.mutedForeground),
                                     title: room.name,
-                                    snippet: 'Voice rooms are desktop-only for now',
+                                    snippet: voiceSnippet(repository, voice, room.id),
+                                    detail: voice.target?.id == room.id ? 'you’re in voice here' : null,
+                                    onTap: () => openVoiceRoom(context, room),
                                   ),
                                 },
                             ],
@@ -379,19 +414,41 @@ class _SpaceDirectoryState extends State<SpaceDirectory> {
   }
 }
 
+/// Who's in a voice room, for its row: "Maya, Leo and 2 more", or no one.
+String voiceSnippet(ChatRepository repository, VoiceController voice, String roomId) {
+  final me = repository.profile.value?.id;
+  final known = {for (final m in repository.people) m.userId: m.displayName};
+  final names = [
+    for (final p in voice.participants(roomId))
+      p.userId == me ? 'You' : known[p.userId] ?? repository.nameOf(p.userId) ?? 'Someone',
+  ];
+  if (voice.target?.id == roomId && !names.contains('You')) names.insert(0, 'You');
+  return switch (names.length) {
+    0 => 'No one’s here',
+    1 || 2 => names.join(', '),
+    final n => '${names.take(2).join(', ')} and ${n - 2} more',
+  };
+}
+
+/// The calls this phone saw: Duvet's servers keep no call history.
 class CallsTab extends StatelessWidget {
   const CallsTab({super.key});
 
   @override
-  Widget build(BuildContext context) => const LargeTitlePage(
-    title: 'Calls',
-    slivers: [
-      SliverFillRemaining(
-        hasScrollBody: false,
-        child: EmptyState(icon: FLucideIcons.phone, text: 'No recent calls'),
+  Widget build(BuildContext context) {
+    final colors = context.theme.colors;
+    return LargeTitlePage(
+      title: 'Calls',
+      header: Padding(
+        padding: const EdgeInsets.fromLTRB(16, 4, 16, 0),
+        child: Text(
+          'Calls on this phone. Duvet keeps no call history, so your other devices’ calls aren’t here.',
+          style: DuvetType.caption.copyWith(color: colors.mutedForeground),
+        ),
       ),
-    ],
-  );
+      slivers: const [CallHistoryList()],
+    );
+  }
 }
 
 /// A spinner beside the title while the gateway connects. The client doesn't

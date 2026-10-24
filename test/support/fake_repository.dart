@@ -6,6 +6,8 @@ import 'package:duvet/data/recent_chats.dart' as recent show previewOf;
 import 'package:duvet/data/repository.dart';
 import 'package:flutter/foundation.dart';
 
+import 'fake_voice.dart';
+
 /// An in-memory [ChatRepository]: the shell's old sample data, and hooks for
 /// tests to push what the gateway would.
 class FakeRepository implements ChatRepository {
@@ -48,6 +50,10 @@ class FakeRepository implements ChatRepository {
   ValueListenable<List<RecentChat>> get recents => recentChats.chats;
   @override
   final ValueNotifier<LiveStatus> status = ValueNotifier(LiveStatus.offline);
+
+  /// The gateway's voice side: tests push its events and read what went out.
+  @override
+  final FakeVoiceSignaling voiceSignaling = FakeVoiceSignaling();
   @override
   final ValueNotifier<Map<String, ChatMessage>> latest = ValueNotifier(const {});
   @override
@@ -325,8 +331,17 @@ class FakeRepository implements ChatRepository {
   /// Rooms the user can't invite to.
   final noInvites = <String>{};
 
+  /// Voice rooms the user can't join, or can't speak in.
+  final noJoin = <String>{};
+  final noSpeak = <String>{};
+
   @override
-  bool canInRoom(String spaceId, String roomId, int bit) => !(bit == Perm.createInvites && noInvites.contains(roomId));
+  bool canInRoom(String spaceId, String roomId, int bit) => switch (bit) {
+    Perm.createInvites => !noInvites.contains(roomId),
+    Perm.joinVoice => !noJoin.contains(roomId),
+    Perm.speakInVoice => !noSpeak.contains(roomId),
+    _ => true,
+  };
 
   @override
   SpaceProfile? spaceProfile(String spaceId) {
@@ -890,6 +905,7 @@ class FakeRepository implements ChatRepository {
 
   @override
   void dispose() {
+    voiceSignaling.dispose();
     _resumed.close();
     _events.close();
     _typing.close();

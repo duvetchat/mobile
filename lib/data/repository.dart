@@ -2,6 +2,7 @@ import 'package:flutter/foundation.dart';
 
 import 'models.dart';
 import 'recent_chats.dart';
+import 'voice_signaling.dart';
 
 /// Everything the app asks of a Duvet server. The UI depends on this alone;
 /// [DuvetRepository] talks to the real API, and tests pass a fake.
@@ -22,6 +23,10 @@ abstract interface class ChatRepository {
   ValueListenable<Set<String>> get unread;
 
   ValueListenable<LiveStatus> get status;
+
+  /// The gateway's voice and call signalling, which voice rooms and calls
+  /// run on (`VoiceController`).
+  VoiceSignaling get voiceSignaling;
 
   /// Resumes a saved session; answers whether there was one that still works.
   Future<bool> restore();

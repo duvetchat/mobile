@@ -11,6 +11,7 @@ import 'package:forui/forui.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:image_picker/image_picker.dart';
 
+import 'calls.dart';
 import 'data/emoji_catalog.dart';
 import 'data/links.dart';
 import 'data/message_tokens.dart';
@@ -1082,6 +1083,26 @@ class _ChatViewState extends State<ChatView> {
       widget.target is ConversationTarget &&
       (_repository.conversations.value.where((c) => c.id == widget.target.id).firstOrNull?.isGroup ?? false);
 
+  // A DM or a group can be called; a room or a thread can't.
+  bool get _callable => widget.target is ConversationTarget && widget.threadOf == null;
+
+  /// Under the top bar: the connection's state, and the call going on here.
+  Widget? _topBanner() {
+    final status = switch (_repository.status.value) {
+      LiveStatus.reconnecting => const ConnectionBanner(
+        text: 'Reconnecting…',
+        detail: 'messages will send when you’re back',
+      ),
+      LiveStatus.offline => const ConnectionBanner(text: 'Offline', detail: '· showing saved messages'),
+      _ => null,
+    };
+    final call = _callable && CallBanner.shows(context.voice, widget.target.id)
+        ? CallBanner(conversationId: widget.target.id)
+        : null;
+    if (status == null || call == null) return status ?? call;
+    return Column(mainAxisSize: MainAxisSize.min, children: [status, const SizedBox(height: 8), call]);
+  }
+
   Future<void> _openMore(BuildContext anchor) async {
     final picked = await showGlassMenu(
       anchor,
@@ -1537,9 +1558,9 @@ class _ChatViewState extends State<ChatView> {
               onChange: (h) {
                 if (h != _topHeight) setState(() => _topHeight = h);
               },
-              child: ValueListenableBuilder(
-                valueListenable: _repository.status,
-                builder: (context, status, _) => GlassTopBar(
+              child: ListenableBuilder(
+                listenable: Listenable.merge([_repository.status, context.voice]),
+                builder: (context, _) => GlassTopBar(
                   hairline: _underTop,
                   onBack: () => Navigator.of(context).maybePop(),
                   title: widget.threadOf != null
@@ -1574,6 +1595,16 @@ class _ChatViewState extends State<ChatView> {
                       ? 'Channel ${widget.title.replaceFirst('# ', '')}, switch channel'
                       : null,
                   actions: [
+                    if (_callable)
+                      IconAction(
+                        icon: FLucideIcons.phone,
+                        label: 'Call',
+                        // One call at a time; this conversation's own is in the banner.
+                        onPressed:
+                            context.voice.call == null && !context.voice.callsInProgress.contains(widget.target.id)
+                            ? () => callConversation(context, widget.target.id)
+                            : null,
+                      ),
                     if (widget.threadOf == null)
                       IconAction(icon: FLucideIcons.search, label: 'Search', onPressed: _openSearch),
                     Builder(
@@ -1581,15 +1612,9 @@ class _ChatViewState extends State<ChatView> {
                           IconAction(icon: FLucideIcons.ellipsis, label: 'More', onPressed: () => _openMore(anchor)),
                     ),
                   ],
-                  // The connection's state lives in the chrome, never over messages.
-                  bottom: switch (status) {
-                    LiveStatus.reconnecting => const ConnectionBanner(
-                      text: 'Reconnecting…',
-                      detail: 'messages will send when you’re back',
-                    ),
-                    LiveStatus.offline => const ConnectionBanner(text: 'Offline', detail: '· showing saved messages'),
-                    _ => null,
-                  },
+                  // The connection's state lives in the chrome, never over
+                  // messages; so does a call going on here.
+                  bottom: _topBanner(),
                 ),
               ),
             ),

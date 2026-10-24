@@ -15,6 +15,7 @@ import 'recent_chats.dart';
 import 'recent_chats.dart' as recent show previewOf;
 import 'repository.dart';
 import 'session_store.dart';
+import 'voice_signaling.dart';
 
 /// [ChatRepository] over the Duvet API (`duvet_client`): REST for history and
 /// sending, the gateway for everything live.
@@ -78,6 +79,11 @@ class DuvetRepository implements ChatRepository {
   final ValueNotifier<Set<String>> unread = ValueNotifier(const {});
   @override
   final ValueNotifier<LiveStatus> status = ValueNotifier(LiveStatus.offline);
+
+  // Outlives the sessions: each one's gateway is attached to it.
+  final _voiceSignaling = GatewayVoiceSignaling();
+  @override
+  VoiceSignaling get voiceSignaling => _voiceSignaling;
   @override
   final ValueNotifier<Map<String, ChatMessage>> latest = ValueNotifier(const {});
   @override
@@ -233,6 +239,7 @@ class DuvetRepository implements ChatRepository {
     _lastRead.clear();
     drafts.clear();
     mentions.value = const {};
+    _voiceSignaling.detach();
     // Destroying the gateway closes the REST client's HTTP client too.
     if (_gateway case final gateway?) {
       gateway.destroy();
@@ -298,6 +305,7 @@ class DuvetRepository implements ChatRepository {
       // No gateway log at all in release builds.
       log: kDebugMode ? (shard, msg) => debugPrint('[gateway:$shard] $msg') : (_, _) {},
     );
+    _voiceSignaling.attach(gateway);
     // Listen before connecting: READY comes right after IDENTIFY, on a
     // broadcast stream.
     _events = gateway.onEvent.listen(handleEvent);
@@ -513,6 +521,8 @@ class DuvetRepository implements ChatRepository {
 
       default:
     }
+    // After the spaces and roles took it in: voice reads them.
+    _voiceSignaling.deliver(event);
   }
 
   // Events for whichever chat has the message.
@@ -2010,6 +2020,7 @@ class DuvetRepository implements ChatRepository {
   @override
   void dispose() {
     _closeSession();
+    _voiceSignaling.dispose();
     _resumed.close();
     mentions.dispose();
     _messageEvents.close();
