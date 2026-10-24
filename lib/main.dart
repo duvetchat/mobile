@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_localizations/flutter_localizations.dart';
 import 'package:forui/forui.dart';
 
 import 'data/appearance.dart';
@@ -69,7 +70,13 @@ class _DuvetAppState extends State<DuvetApp> {
         voice: _voice,
         child: MaterialApp(
           debugShowCheckedModeBanner: false,
-          localizationsDelegates: FLocalizations.localizationsDelegates,
+          // forui's list brings material_ui's and cupertino_ui's localizations; the framework's widgets
+          // (TextField first) read their own, which only English has without these, and fail to build.
+          localizationsDelegates: const [
+            ...FLocalizations.localizationsDelegates,
+            GlobalMaterialLocalizations.delegate,
+            GlobalCupertinoLocalizations.delegate,
+          ],
           supportedLocales: FLocalizations.supportedLocales,
           theme: Duvet.material(brightness),
           builder: (context, child) => FTheme(

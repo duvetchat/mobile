@@ -39,6 +39,20 @@ void main() {
     expect(find.text('4 members'), findsOneWidget);
   });
 
+  // forui's delegates bring material_ui's localizations, and the framework's TextField reads its own: without
+  // flutter_localizations' too, only English had them, and in any other language the fields failed to build.
+  testWidgets('signing in works in another language', (tester) async {
+    tester.platformDispatcher.localesTestValue = const [Locale('es', 'ES')];
+    addTearDown(tester.platformDispatcher.clearLocalesTestValue);
+    await pumpApp(tester, signedIn: false);
+
+    await tester.enterText(find.byType(EditableText).at(0), 'gaby@duvet.chat');
+    await tester.enterText(find.byType(EditableText).at(1), 'secret');
+    await tester.tap(find.text('Sign in'));
+    await tester.pumpAndSettle();
+    expect(find.text('Maya'), findsOneWidget);
+  });
+
   testWidgets('a chat loads its history and takes live messages', (tester) async {
     final repository = await pumpApp(tester);
     final unreadTitle = tester.widget<Text>(find.text('Maya'));
