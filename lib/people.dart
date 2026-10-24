@@ -1,3 +1,4 @@
+import 'package:flutter/foundation.dart' show ValueListenable;
 import 'package:flutter/material.dart';
 import 'package:forui/forui.dart';
 
@@ -703,14 +704,21 @@ class _NewConversationPageState extends State<NewConversationPage> {
     _query.addListener(() => setState(() {}));
   }
 
+  ValueListenable<Friends>? _friends;
+
   @override
   void didChangeDependencies() {
     super.didChangeDependencies();
+    if (_friends != null) return;
+    _friends = context.repository.friends..addListener(_friendsChanged);
     context.repository.loadFriends().catchError((Object e) => debugPrint('friends: $e'));
   }
 
+  void _friendsChanged() => setState(() {});
+
   @override
   void dispose() {
+    _friends?.removeListener(_friendsChanged);
     _query.dispose();
     _name.dispose();
     super.dispose();
@@ -764,16 +772,11 @@ class _NewConversationPageState extends State<NewConversationPage> {
     final colors = context.theme.colors;
     final tokens = context.duvet;
     final padding = MediaQuery.paddingOf(context);
-    final me = repository.profile.value?.id;
     final q = _query.text.trim().toLowerCase();
-    // Friends first, then everyone else known.
-    final byId = <String, Member>{
-      for (final m in repository.friends.value.friends) m.userId: m,
-      for (final m in repository.people)
-        if (m.userId != me && !m.isBot) m.userId: m,
-    };
+    // Friends alone, as the desktop offers: the API opens DMs and groups only
+    // between friends.
     final people = [
-      for (final m in byId.values)
+      for (final m in repository.friends.value.friends)
         if (q.isEmpty || m.displayName.toLowerCase().contains(q) || m.username.toLowerCase().contains(q)) m,
     ];
     final group = _picked.length > 1;
@@ -858,7 +861,7 @@ class _NewConversationPageState extends State<NewConversationPage> {
                     padding: const EdgeInsets.fromLTRB(16, 12, 16, 0),
                     child: DuvetTextField(label: 'Group name · optional', controller: _name),
                   ),
-                Overline(q.isEmpty ? 'People' : 'Matching “${_query.text.trim()}”'),
+                Overline(q.isEmpty ? 'Friends' : 'Matching “${_query.text.trim()}”'),
                 for (final m in people)
                   Semantics(
                     container: true,
@@ -893,7 +896,7 @@ class _NewConversationPageState extends State<NewConversationPage> {
                       ),
                     ),
                   ),
-                if (people.isEmpty) const ListNote('No one found'),
+                if (people.isEmpty) ListNote(q.isEmpty ? 'No friends added yet' : 'No one found'),
               ],
             ),
           ),
@@ -934,8 +937,9 @@ class _NewConversationPageState extends State<NewConversationPage> {
 // Group info
 // -----------------------------------------------------------------------------
 
-/// A group's info: its people (as people: overlapping circles), its name to
-/// rename, add and remove people, leave.
+/// A group's info: its people (as people: overlapping circles), leave. Its
+/// owner renames it, and adds and removes people, as the API allows only the
+/// owner.
 class GroupInfoPage extends StatefulWidget {
   final String conversationId;
   const GroupInfoPage({required this.conversationId, super.key});
@@ -964,8 +968,14 @@ class _GroupInfoPageState extends State<GroupInfoPage> {
     try {
       await action();
       await _reload(refresh: true);
-    } catch (_) {
-      if (mounted) showFToast(context: context, title: Text(failure), duration: const Duration(seconds: 3));
+    } catch (e) {
+      if (mounted) {
+        showFToast(
+          context: context,
+          title: Text(e is ActionFailed ? e.message : failure),
+          duration: const Duration(seconds: 3),
+        );
+      }
     }
   }
 
@@ -982,11 +992,10 @@ class _GroupInfoPageState extends State<GroupInfoPage> {
   Future<void> _addPeople() async {
     final repository = context.repository;
     final here = {for (final m in _members) m.userId};
+    // Friends alone, as the desktop offers: the API adds only the owner's.
     final candidates = [
-      for (final m in {
-        for (final p in [...repository.friends.value.friends, ...repository.people]) p.userId: p,
-      }.values)
-        if (!here.contains(m.userId) && !m.isBot) m,
+      for (final m in repository.friends.value.friends)
+        if (!here.contains(m.userId)) m,
     ];
     final picked = await showGlassSheet<Member>(
       context,
@@ -1002,7 +1011,7 @@ class _GroupInfoPageState extends State<GroupInfoPage> {
               snippet: '@${m.username}',
               onTap: () => Navigator.of(context).pop(m),
             ),
-          if (candidates.isEmpty) const ListNote('Everyone you know is here'),
+          if (candidates.isEmpty) const ListNote('No friends available to add'),
         ],
       ),
     );
@@ -1042,9 +1051,13 @@ class _GroupInfoPageState extends State<GroupInfoPage> {
     try {
       await context.repository.leaveConversation(widget.conversationId);
       navigator.popUntil((r) => r.isFirst);
-    } catch (_) {
+    } catch (e) {
       if (mounted) {
-        showFToast(context: context, title: const Text('Couldn’t leave'), duration: const Duration(seconds: 3));
+        showFToast(
+          context: context,
+          title: Text(e is ActionFailed ? e.message : 'Couldn’t leave'),
+          duration: const Duration(seconds: 3),
+        );
       }
     }
   }
@@ -1060,8 +1073,14 @@ class _GroupInfoPageState extends State<GroupInfoPage> {
       valueListenable: repository.conversations,
       builder: (context, conversations, _) {
         final group = conversations.where((c) => c.id == widget.conversationId).firstOrNull;
-        final owner = group?.ownerId == me;
+        final owner = group != null && group.ownerId == me;
         final faces = _members.take(3).toList();
+        final title = Text(
+          group?.title ?? 'Group',
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
+          style: DuvetType.title.copyWith(color: colors.foreground),
+        );
         return Scaffold(
           backgroundColor: colors.background,
           body: Stack(
@@ -1097,30 +1116,25 @@ class _GroupInfoPageState extends State<GroupInfoPage> {
                     ),
                     const SizedBox(height: 12),
                     Center(
-                      child: Semantics(
-                        button: true,
-                        label: 'Rename group, ${group?.title ?? ''}',
-                        excludeSemantics: true,
-                        onTap: group == null ? null : () => _rename(group),
-                        child: GestureDetector(
-                          onTap: group == null ? null : () => _rename(group),
-                          child: Row(
-                            mainAxisSize: MainAxisSize.min,
-                            children: [
-                              Flexible(
-                                child: Text(
-                                  group?.title ?? 'Group',
-                                  maxLines: 1,
-                                  overflow: TextOverflow.ellipsis,
-                                  style: DuvetType.title.copyWith(color: colors.foreground),
+                      child: owner
+                          ? Semantics(
+                              button: true,
+                              label: 'Rename group, ${group.title}',
+                              excludeSemantics: true,
+                              onTap: () => _rename(group),
+                              child: GestureDetector(
+                                onTap: () => _rename(group),
+                                child: Row(
+                                  mainAxisSize: MainAxisSize.min,
+                                  children: [
+                                    Flexible(child: title),
+                                    const SizedBox(width: 8),
+                                    Icon(FLucideIcons.pencil, size: 16, color: colors.mutedForeground),
+                                  ],
                                 ),
                               ),
-                              const SizedBox(width: 8),
-                              Icon(FLucideIcons.pencil, size: 16, color: colors.mutedForeground),
-                            ],
-                          ),
-                        ),
-                      ),
+                            )
+                          : Semantics(header: true, child: title),
                     ),
                     const SizedBox(height: 4),
                     Center(
@@ -1139,12 +1153,13 @@ class _GroupInfoPageState extends State<GroupInfoPage> {
                       ),
                       child: Column(
                         children: [
-                          GlassRow(
-                            label: 'Add people',
-                            leading: Icon(FLucideIcons.userPlus, color: tokens.accentText),
-                            selected: true,
-                            onPressed: _addPeople,
-                          ),
+                          if (owner)
+                            GlassRow(
+                              label: 'Add people',
+                              leading: Icon(FLucideIcons.userPlus, color: tokens.accentText),
+                              selected: true,
+                              onPressed: _addPeople,
+                            ),
                           for (final m in _members)
                             Row(
                               children: [

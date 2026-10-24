@@ -2,6 +2,7 @@ import 'package:duvet/data/emoji_catalog.dart';
 import 'package:duvet/data/models.dart';
 import 'package:duvet/main.dart';
 import 'package:duvet/widgets/chrome.dart';
+import 'package:duvet/widgets/rows.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -191,7 +192,15 @@ void main() {
   });
 
   testWidgets('new conversation: one person opens a DM, several a group', (tester) async {
-    final repository = await pumpApp(tester);
+    final repository = await pumpApp(
+      tester,
+      setUp: (r) => r.friendsOnServer = const Friends(
+        friends: [
+          Member(userId: _maya, username: 'maya', alias: 'Maya'),
+          Member(userId: _leo, username: 'leo'),
+        ],
+      ),
+    );
     await tapLabel(tester, 'New conversation');
     expect(find.bySemanticsLabel('Start conversation'), findsOneWidget);
     await tapLabel(tester, 'Maya, @maya');
@@ -204,32 +213,49 @@ void main() {
     semantics.dispose();
   });
 
-  testWidgets('group info: rename, add, remove, leave', (tester) async {
+  // A group of the user's friends Maya and Leo; its members Gaby and Maya.
+  Future<FakeRepository> openGroupInfo(WidgetTester tester, {required String owner}) async {
     final repository = await pumpApp(
       tester,
-      setUp: (r) => r.conversations.value = [
-        ConversationSummary(
-          id: 'c-team',
-          title: 'Design crew',
-          name: 'Design crew',
-          isGroup: true,
-          memberCount: 2,
-          ownerId: FakeRepository.me.id,
-        ),
-        ...r.conversations.value.where((c) => c.id != 'c-team'),
-      ],
+      setUp: (r) {
+        r.conversations.value = [
+          ConversationSummary(
+            id: 'c-team',
+            title: 'Design crew',
+            name: 'Design crew',
+            isGroup: true,
+            memberCount: 2,
+            ownerId: owner,
+          ),
+          ...r.conversations.value.where((c) => c.id != 'c-team'),
+        ];
+        r.friends.value = const Friends(
+          friends: [
+            Member(userId: _maya, username: 'maya', alias: 'Maya'),
+            Member(userId: _leo, username: 'leo'),
+          ],
+        );
+      },
     );
     await tester.tap(find.text('Design crew'));
     await tester.pumpAndSettle();
     await tapLabel(tester, 'More');
     await tapLabel(tester, 'Group info');
     expect(find.text('Group info'), findsOneWidget);
+    return repository;
+  }
+
+  testWidgets('group info: rename, add, remove, leave', (tester) async {
+    final repository = await openGroupInfo(tester, owner: FakeRepository.me.id);
 
     await tapLabel(tester, 'Rename group, Design crew');
     await tester.enterText(find.byType(EditableText).last, 'Crit crew');
     await tapLabel(tester, 'Save');
     await tapLabel(tester, 'Remove Maya');
     await tapLabel(tester, 'Add people');
+    // The friends not in it.
+    expect(find.widgetWithText(ListRow, 'leo'), findsOneWidget);
+    expect(find.widgetWithText(ListRow, 'Maya'), findsNothing);
     await tapLabel(tester, RegExp('^leo'));
     await tapLabel(tester, 'Leave group');
     await tapLabel(tester, 'Leave group');
@@ -239,6 +265,46 @@ void main() {
       'add c-team $_leo',
       'leave c-team',
     ]);
+    semantics.dispose();
+  });
+
+  testWidgets('group info: only its owner renames it and adds or removes people', (tester) async {
+    final repository = await openGroupInfo(tester, owner: _maya);
+    expect(find.bySemanticsLabel(RegExp('^Rename group')), findsNothing);
+    expect(find.bySemanticsLabel('Add people'), findsNothing);
+    expect(find.bySemanticsLabel('Remove Maya'), findsNothing);
+    expect(find.text('Design crew'), findsWidgets);
+    await tapLabel(tester, 'Leave group');
+    await tapLabel(tester, 'Leave group');
+    expect(repository.conversationCalls, ['leave c-team']);
+    semantics.dispose();
+  });
+
+  testWidgets('a group change the server refuses says why', (tester) async {
+    final repository = await openGroupInfo(tester, owner: FakeRepository.me.id);
+    repository.conversationRefused = 'You must be friends with leo';
+    await tapLabel(tester, 'Add people');
+    await tapLabel(tester, RegExp('^leo'));
+    expect(find.text('You must be friends with leo'), findsOneWidget);
+    await tester.pump(const Duration(seconds: 4));
+    semantics.dispose();
+  });
+
+  testWidgets('new conversation offers friends alone, as the API opens DMs and groups only between friends', (
+    tester,
+  ) async {
+    final repository = await pumpApp(tester);
+    await tapLabel(tester, 'New conversation');
+    expect(find.text('No friends added yet'), findsOneWidget);
+
+    // Leo shares a Space with the user, but isn\'t a friend.
+    repository.friends.value = const Friends(
+      friends: [Member(userId: _maya, username: 'maya', alias: 'Maya')],
+    );
+    await tester.pumpAndSettle();
+    expect(find.text('FRIENDS'), findsOneWidget);
+    expect(find.bySemanticsLabel('Maya, @maya'), findsOneWidget);
+    expect(find.bySemanticsLabel('leo, @leo'), findsNothing);
     semantics.dispose();
   });
 }

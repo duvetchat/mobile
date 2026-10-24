@@ -1714,34 +1714,50 @@ class DuvetRepository implements ChatRepository {
 
   @override
   Future<ConversationSummary> createGroup(String name, List<String> userIds) async {
-    final group = await _call((api) => api.createGroup(name, userIds));
+    final group = await _attempt((api) => api.createGroup(name, userIds));
     await refreshConversations();
     return conversations.value.where((c) => c.id == group.id).firstOrNull ?? _summary(group, profile.value?.id);
   }
 
   @override
   Future<void> renameConversation(String conversationId, String name) async {
-    await _call((api) => api.updateConversation(conversationId, name));
+    await _attempt((api) => api.updateConversation(conversationId, name));
     await refreshConversations();
   }
 
   @override
   Future<void> addToConversation(String conversationId, String userId) async {
-    await _call((api) => api.addConversationMember(conversationId, userId));
+    await _attempt((api) => api.addConversationMember(conversationId, userId));
     await refreshConversations();
   }
 
   @override
   Future<void> removeFromConversation(String conversationId, String userId) async {
-    await _call((api) => api.removeConversationMember(conversationId, userId));
+    await _attempt((api) => api.removeConversationMember(conversationId, userId));
     await refreshConversations();
   }
 
   @override
   Future<void> leaveConversation(String conversationId) async {
-    await _call((api) => api.leaveConversation(conversationId));
+    await _attempt((api) => api.leaveConversation(conversationId));
     await refreshConversations();
   }
+
+  // [_call], for what the API may refuse: its reason, as it says it, is the
+  // [ActionFailed] to show, as the desktop shows it.
+  Future<T> _attempt<T>(Future<T> Function(duvet.RestClient api) request) async {
+    try {
+      return await _call(request);
+    } on duvet.DuvetApiException catch (e) {
+      if (_refusal(e) case final reason?) throw ActionFailed(reason);
+      rethrow;
+    }
+  }
+
+  // Why the API refused a request (a 4xx but a 401, after which the session
+  // renews or ends), if its answer says.
+  static String? _refusal(duvet.DuvetApiException e) =>
+      e.statusCode >= 400 && e.statusCode < 500 && e.statusCode != 401 ? _serverReason(e) : null;
 
   void _setProfile(duvet.UserMeResult me) {
     profile.value = Profile(
@@ -2604,6 +2620,7 @@ class DuvetRepository implements ChatRepository {
           'You can only message friends. ${name == null ? 'Send them' : 'Send $name'} a friend request first.',
         );
       }
+      if (_refusal(e) case final reason?) throw ActionFailed(reason);
       rethrow;
     } on TimeoutException {
       throw const ActionFailed('Duvet didn’t answer. Check your connection and try again.');

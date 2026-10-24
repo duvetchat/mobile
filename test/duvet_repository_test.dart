@@ -137,6 +137,15 @@ void main() {
         },
         ('PUT', '/api/users/@me/status') when apiHasStatus => {..._user(_me, 'gaby'), 'status': body()['status']},
         ('DELETE', '/api/spaces/s-1') => deleteReply,
+        // Between friends alone; and a server error.
+        ('POST', '/api/users/@me/conversations') => http.Response(
+          jsonEncode({'error': 'you must be friends with $_leo'}),
+          403,
+        ),
+        ('POST', '/api/users/@me/conversations/c-1/members') => http.Response(
+          jsonEncode({'error': 'internal server error'}),
+          500,
+        ),
         ('GET', '/api/users/@me/conversations') => [
           {
             'id': 'c-1',
@@ -296,6 +305,16 @@ void main() {
     final again = (await repository.members(const ConversationTarget('c-1'))).firstWhere((m) => m.userId == _maya);
     expect((again.displayName, again.bio, again.avatarUrl), ('Maya', 'Night owl', null));
     expect(repository.conversations.value.single.title, 'Maya');
+  });
+
+  test('a group the API refuses to make or change says why, as the API says it', () async {
+    await repository.logIn('gaby@duvet.chat', 'secret');
+    await expectLater(
+      repository.createGroup('Crew', [_maya, _leo]),
+      throwsA(isA<ActionFailed>().having((e) => e.message, 'message', 'You must be friends with $_leo')),
+    );
+    // A server error isn't a refusal: the screen says it its own way.
+    await expectLater(repository.addToConversation('c-1', _leo), throwsA(isA<duvet.DuvetApiException>()));
   });
 
   test('the friends list gives friends their presence, where the gateway hasn\'t told it', () async {

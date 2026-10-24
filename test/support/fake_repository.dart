@@ -231,8 +231,12 @@ class FakeRepository implements ChatRepository {
   @override
   bool isMember(String spaceId, String userId) => spaceMembers[spaceId]?.contains(userId) ?? false;
 
+  /// Why the server refuses to make or change a group, if it does.
+  String? conversationRefused;
+
   @override
   Future<ConversationSummary> createGroup(String name, List<String> userIds) async {
+    if (conversationRefused != null) throw ActionFailed(conversationRefused!);
     conversationCalls.add('group $name ${userIds.join(',')}');
     const group = ConversationSummary(id: 'c-new', title: 'New group', isGroup: true, memberCount: 3);
     conversations.value = [group, ...conversations.value];
@@ -244,8 +248,10 @@ class FakeRepository implements ChatRepository {
       conversationCalls.add('rename $conversationId $name');
 
   @override
-  Future<void> addToConversation(String conversationId, String userId) async =>
-      conversationCalls.add('add $conversationId $userId');
+  Future<void> addToConversation(String conversationId, String userId) async {
+    if (conversationRefused != null) throw ActionFailed(conversationRefused!);
+    conversationCalls.add('add $conversationId $userId');
+  }
 
   @override
   Future<void> removeFromConversation(String conversationId, String userId) async =>
