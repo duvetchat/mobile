@@ -756,6 +756,21 @@ void main() {
       expect(repository.spaces.value.single.onlineCount, 1);
     });
 
+    test('who\'s in a Space: SPACE_CREATE\'s members, the ones who join, not the ones who leave', () async {
+      await repository.logIn('gaby@duvet.chat', 'secret');
+      repository.handleEvent(_event('SPACE_CREATE', space(statuses: {_me: 1}, members: [_me, _maya])));
+      expect(repository.isMember('s-1', _maya), isTrue);
+      expect(repository.isMember('s-1', _leo), isFalse);
+      expect(repository.isMember('s-2', _maya), isFalse);
+
+      repository.handleEvent(_event('SPACE_MEMBER_ADD', {'member_id': 'm-leo', 'space_id': 's-1', 'user_id': _leo}));
+      expect(repository.isMember('s-1', _leo), isTrue);
+      repository.handleEvent(
+        _event('SPACE_MEMBER_REMOVE', {'member_id': 'm-maya', 'space_id': 's-1', 'user_id': _maya}),
+      );
+      expect(repository.isMember('s-1', _maya), isFalse);
+    });
+
     test('a new session\'s READY clears the others\' presence, which its SPACE_CREATEs bring again', () async {
       await repository.logIn('gaby@duvet.chat', 'secret');
       final members = [_me, _maya, _leo];

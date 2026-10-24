@@ -63,6 +63,34 @@ void main() {
     semantics.dispose();
   });
 
+  testWidgets('a profile counts the Spaces the person is in as Mutual Spaces', (tester) async {
+    await pumpApp(
+      tester,
+      setUp: (r) {
+        r.spaces.value = [...r.spaces.value, const Space(id: 's-runners', name: 'Night Runners')];
+        r.spaceMembers['s-guild'] = {FakeRepository.me.id, _leo};
+        r.spaceMembers['s-runners'] = {FakeRepository.me.id};
+      },
+    );
+    await tester.tap(find.descendant(of: find.byType(DuvetTabBar), matching: find.text('Spaces')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Design Guild'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('# general'));
+    await tester.pumpAndSettle();
+
+    await tapLabel(tester, 'Leo’s profile');
+    expect(find.text('MUTUAL SPACES'), findsOneWidget);
+    expect(
+      find.descendant(
+        of: find.ancestor(of: find.text('MUTUAL SPACES'), matching: find.byType(Column)).first,
+        matching: find.text('1'),
+      ),
+      findsOneWidget,
+    );
+    semantics.dispose();
+  });
+
   testWidgets('friends: requests in and out, accept, decline, cancel, add by username', (tester) async {
     final repository = await pumpApp(
       tester,

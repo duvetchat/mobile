@@ -109,7 +109,7 @@ class _ProfileState extends State<_Profile> {
         final f = repository.friends.value;
         final isFriend = f.friends.any((x) => x.userId == m.userId);
         final pending = _asked || f.outgoing.any((r) => r.person.userId == m.userId);
-        final mutual = repository.spaces.value.where((s) => repository.people.any((p) => p.userId == m.userId)).length;
+        final mutual = repository.spaces.value.where((s) => repository.isMember(s.id, m.userId)).length;
         return ListView(
           controller: widget.scroll,
           padding: EdgeInsets.zero,

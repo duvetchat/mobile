@@ -150,6 +150,10 @@ abstract interface class ChatRepository {
   /// [userId]'s roles in a Space, highest first.
   List<RoleTag> rolesOf(String spaceId, String userId);
 
+  /// Whether [userId] is in the Space, as far as the gateway and the member
+  /// lists loaded have told.
+  bool isMember(String spaceId, String userId);
+
   /// Makes an account, then signs in to it; the API emails a link to verify
   /// the address.
   Future<void> signUp({required String username, required String email, required String password, String? alias});

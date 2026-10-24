@@ -1537,6 +1537,9 @@ class DuvetRepository implements ChatRepository {
   }
 
   @override
+  bool isMember(String spaceId, String userId) => _spaceMemberIds[spaceId]?.contains(userId) ?? false;
+
+  @override
   final ValueNotifier<Friends> friends = ValueNotifier(Friends.none);
 
   // The friends lists' loads, counted, and the newest one shown: an older

@@ -225,6 +225,12 @@ class FakeRepository implements ChatRepository {
   @override
   List<RoleTag> rolesOf(String spaceId, String userId) => roleTags[userId] ?? const [];
 
+  /// Who's in each Space, by its ID.
+  final spaceMembers = <String, Set<String>>{};
+
+  @override
+  bool isMember(String spaceId, String userId) => spaceMembers[spaceId]?.contains(userId) ?? false;
+
   @override
   Future<ConversationSummary> createGroup(String name, List<String> userIds) async {
     conversationCalls.add('group $name ${userIds.join(',')}');
