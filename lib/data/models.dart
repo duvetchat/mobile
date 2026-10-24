@@ -530,6 +530,9 @@ class ConversationSummary {
 
   /// The other user's avatar, for a DM.
   final String? avatarUrl;
+
+  /// The other user, for a DM: their presence shows beside it.
+  final String? otherUserId;
   final int memberCount;
 
   /// When it last changed, for ordering it among the recent chats.
@@ -546,6 +549,7 @@ class ConversationSummary {
     required this.title,
     required this.isGroup,
     this.avatarUrl,
+    this.otherUserId,
     this.memberCount = 2,
     this.updatedAt,
     this.ownerId,

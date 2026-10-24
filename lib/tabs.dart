@@ -8,6 +8,7 @@ import 'data/recent_chats.dart';
 import 'data/repository.dart';
 import 'data/scope.dart';
 import 'data/voice.dart';
+import 'members_sheet.dart';
 import 'people.dart';
 import 'search.dart';
 import 'spaces.dart';
@@ -33,6 +34,7 @@ class ChatsTab extends StatelessWidget {
         repository.unread,
         repository.mentions,
         repository.profile,
+        repository.presence,
       ]),
       builder: (context, _) {
         final mentions = repository.mentions.value;
@@ -41,6 +43,7 @@ class ChatsTab extends StatelessWidget {
           repository.conversations.value,
           repository.spaces.value,
           repository.profile.value?.id,
+          repository.presence.value,
         );
         final unread = repository.unread.value;
         return LargeTitlePage(
@@ -122,9 +125,20 @@ class ChatsTab extends StatelessWidget {
     List<ConversationSummary> conversations,
     List<Space> spaces,
     String? me,
+    Map<String, Presence> presence,
   ) {
     final conversationsById = {for (final c in conversations) c.id: c};
     final spacesById = {for (final s in spaces) s.id: s};
+
+    // A DM's avatar shows the other person's presence; a group's doesn't.
+    Widget avatar(String title, ConversationSummary? c) => switch (c?.otherUserId) {
+      final id? => PresenceAvatar(
+        member: Member(userId: id, username: title, avatarUrl: c!.avatarUrl),
+        presence: presence[id],
+        size: 48,
+      ),
+      null => UserAvatar(name: title, url: c?.avatarUrl, size: 48),
+    };
 
     // "You:" for the user's own; the author for a room or a group.
     String? preview(RecentChat chat, {required bool named}) {
@@ -160,7 +174,7 @@ class ChatsTab extends StatelessWidget {
               title: title,
               chatTitle: title,
               snippet: preview(chat, named: summary?.isGroup ?? false),
-              leading: UserAvatar(name: title, url: summary?.avatarUrl, size: 48),
+              leading: avatar(title, summary),
               at: chat.at,
             );
           }(),
@@ -172,7 +186,7 @@ class ChatsTab extends StatelessWidget {
             title: c.title,
             chatTitle: c.title,
             snippet: c.isGroup ? '${c.memberCount} members' : null,
-            leading: UserAvatar(name: c.title, url: c.avatarUrl, size: 48),
+            leading: avatar(c.title, c),
             at: c.updatedAt,
           ),
     ];
