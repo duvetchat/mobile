@@ -129,8 +129,9 @@ void main() {
     await openYou(tester);
     await tapLabel(tester, 'Edit');
     expect(find.text('@gaby'), findsWidgets);
-    await tester.enterText(find.byType(EditableText), 'Gabriela');
+    await tester.enterText(find.byType(EditableText).first, 'Gabriela');
     await tapLabel(tester, 'Save');
+    // The bio wasn't touched: it isn't sent.
     expect(repository.account, ['alias Gabriela']);
     expect(find.text('Gabriela'), findsWidgets);
 
@@ -146,6 +147,88 @@ void main() {
     await tapLabel(tester, 'Send link');
     expect(repository.account.last, 'change-send new@example.com');
     expect(find.textContaining('Check new@example.com'), findsOneWidget);
+    semantics.dispose();
+  });
+
+  testWidgets('edit profile: the bio counts an emoji as one, stops at 190, and saves', (tester) async {
+    final repository = await pumpApp(tester);
+    await openYou(tester);
+    await tapLabel(tester, 'Edit');
+    final bio = find.byType(EditableText).at(1);
+    expect(find.text('0 of 190 characters'), findsOneWidget);
+
+    // Trimmed, and by code points: 😀 is one, where its UTF-16 is two.
+    await tester.enterText(bio, '  Night runner 😀 ');
+    await tester.pump();
+    expect(find.text('14 of 190 characters'), findsOneWidget);
+
+    bool saveEnabled() =>
+        tester.getSemantics(find.bySemanticsLabel('Save').last).flagsCollection.isEnabled.toString().contains('isTrue');
+    await tester.enterText(bio, '😀' * 191);
+    await tester.pump();
+    expect(find.text('Too long: 191 of 190 characters'), findsOneWidget);
+    expect(saveEnabled(), isFalse);
+    await tester.enterText(bio, '😀' * 190);
+    await tester.pump();
+    expect(find.text('190 of 190 characters'), findsOneWidget);
+    expect(saveEnabled(), isTrue);
+
+    await tester.enterText(bio, '  Night runner 😀 ');
+    await tapLabel(tester, 'Save');
+    expect(repository.account, ['alias Gaby', 'bio Night runner 😀']);
+    expect(repository.profile.value!.bio, 'Night runner 😀');
+
+    // Cleared: an empty bio goes, as the API clears it.
+    await tapLabel(tester, 'Edit');
+    expect(find.text('Night runner 😀'), findsOneWidget);
+    await tester.enterText(find.byType(EditableText).at(1), ' ');
+    await tapLabel(tester, 'Save');
+    expect(repository.account.last, 'bio ');
+    expect(repository.profile.value!.bio, isNull);
+    semantics.dispose();
+  });
+
+  testWidgets('You: the status switch chooses do not disturb, and says when it can\'t', (tester) async {
+    final repository = await pumpApp(tester);
+    await openYou(tester);
+    bool checked(String label) =>
+        tester.getSemantics(find.bySemanticsLabel(label).last).flagsCollection.isChecked.toString().contains('isTrue');
+    expect(checked('Online'), isTrue);
+
+    // Shown at once, while the server takes it.
+    final hold = repository.holdStatus = Completer<void>();
+    await tester.tap(find.bySemanticsLabel('Do not disturb').last);
+    await tester.pump();
+    expect(checked('Do not disturb'), isTrue);
+    hold.complete();
+    await tester.pumpAndSettle();
+    expect(repository.account, ['status doNotDisturb']);
+    expect(repository.profile.value!.status, Presence.doNotDisturb);
+    expect(checked('Do not disturb'), isTrue);
+
+    // Refused: back to what it was, saying why.
+    repository.statusRefused = 'This server can’t set a status yet: it needs the latest API';
+    await tapLabel(tester, 'Online');
+    expect(repository.account.last, 'status online');
+    expect(checked('Do not disturb'), isTrue);
+    expect(find.text('This server can’t set a status yet: it needs the latest API'), findsOneWidget);
+    await tester.pump(const Duration(seconds: 4));
+    semantics.dispose();
+  });
+
+  testWidgets('edit profile keeps working when the keyboard changes the screen\'s padding', (tester) async {
+    await pumpApp(tester);
+    await openYou(tester);
+    await tapLabel(tester, 'Edit');
+    await tester.enterText(find.byType(EditableText).first, 'Gabriela');
+    // The keyboard opens over the gesture bar: the bottom padding goes.
+    tester.view.padding = const FakeViewPadding(bottom: 34 * 3);
+    await tester.pump();
+    tester.view.padding = FakeViewPadding.zero;
+    tester.view.viewInsets = const FakeViewPadding(bottom: 300 * 3);
+    await tester.pumpAndSettle();
+    expect(tester.takeException(), isNull);
+    expect(find.text('Gabriela'), findsOneWidget);
     semantics.dispose();
   });
 

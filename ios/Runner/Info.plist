@@ -10,6 +10,10 @@
 	<string>Duvet takes photos to send in your chats.</string>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>Duvet records voice notes and carries your voice in calls.</string>
+	<key>UIBackgroundModes</key>
+	<array>
+		<string>audio</string>
+	</array>
 	<key>CFBundleURLTypes</key>
 	<array>
 		<dict>

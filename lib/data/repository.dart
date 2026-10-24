@@ -2,6 +2,7 @@ import 'package:flutter/foundation.dart';
 
 import 'models.dart';
 import 'recent_chats.dart';
+import 'voice_signaling.dart';
 
 /// Everything the app asks of a Duvet server. The UI depends on this alone;
 /// [DuvetRepository] talks to the real API, and tests pass a fake.
@@ -22,6 +23,16 @@ abstract interface class ChatRepository {
   ValueListenable<Set<String>> get unread;
 
   ValueListenable<LiveStatus> get status;
+
+  /// The gateway's voice and call signalling, which voice rooms and calls
+  /// run on (`VoiceController`).
+  VoiceSignaling get voiceSignaling;
+
+  /// The session ended for good: the user signed out, or the server refused
+  /// its tokens (saved ones at launch included). Fires before the session's
+  /// gateway goes, so voice can still say it leaves; what the phone kept for
+  /// the account goes with it.
+  Stream<void> get signedOut;
 
   /// Resumes a saved session; answers whether there was one that still works.
   Future<bool> restore();
@@ -140,8 +151,13 @@ abstract interface class ChatRepository {
   Future<void> sendChangeEmail(String email);
   Future<void> changeEmail(String token, String email);
 
-  /// The user's display name: empty clears it, back to the username.
-  Future<void> updateProfile({required String alias});
+  /// The user's display name: empty clears it, back to the username. A [bio]
+  /// replaces theirs (empty clears it); left out, it stays.
+  Future<void> updateProfile({required String alias, String? bio});
+
+  /// Chooses the user's status, [Presence.online] or
+  /// [Presence.doNotDisturb]: what others see while they're connected.
+  Future<void> setStatus(Presence status);
 
   /// A new avatar or banner: [crop] of the picture at [path].
   Future<void> uploadProfileImage(ProfileImage kind, String path, CropRect crop);

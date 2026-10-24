@@ -1,3 +1,4 @@
+import 'package:clock/clock.dart';
 import 'package:flutter/material.dart';
 import 'package:forui/forui.dart';
 
@@ -414,8 +415,10 @@ const _months = [
 const _weekdays = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
 
 /// A day separator's text: "Today", "Yesterday", "Monday, 20 October", or
-/// with the year when it isn't this one.
-String dayLabel(DateTime day, DateTime now) {
+/// with the year when it isn't this one. [now] defaults to [clock]'s, which
+/// tests can pin with `withClock`.
+String dayLabel(DateTime day, [DateTime? now]) {
+  now ??= clock.now();
   final today = DateTime(now.year, now.month, now.day);
   final days = today.difference(DateTime(day.year, day.month, day.day)).inDays;
   if (days == 0) return 'Today';

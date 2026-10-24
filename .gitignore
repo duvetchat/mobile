@@ -120,3 +120,6 @@ app.*.symbols
 
 # Device QA output: screenshots, UI dumps and logs from a real phone
 android-qa-output/
+
+# Golden test failures: the diffs a failing golden writes next to its test
+test/failures/

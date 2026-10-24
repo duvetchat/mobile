@@ -1,8 +1,27 @@
-<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
     <!-- A chat app: the API and the gateway, in every build, release included. -->
     <uses-permission android:name="android.permission.INTERNET"/>
-    <!-- Voice notes. -->
+    <!-- Voice notes, and voice rooms and calls. -->
     <uses-permission android:name="android.permission.RECORD_AUDIO"/>
+    <!-- Voice and calls: WebRTC routes the sound (loudspeaker, earpiece,
+         headsets) and follows the network through a change. -->
+    <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS"/>
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE"/>
+    <!-- A Bluetooth headset in a call: asked for on Android 12 and later,
+         granted before. -->
+    <uses-permission android:name="android.permission.BLUETOOTH" android:maxSdkVersion="30"/>
+    <uses-permission android:name="android.permission.BLUETOOTH_CONNECT"/>
+    <!-- The foreground service that keeps voice going with the phone locked
+         or another app open (its type: the microphone), its notification,
+         and its wake and Wi-Fi locks. -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE"/>
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE"/>
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>
+    <uses-permission android:name="android.permission.WAKE_LOCK"/>
+    <!-- flutter_background asks to skip battery optimizations only when told
+         to, and the app never does. -->
+    <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" tools:node="remove"/>
     <!-- Saving a photo to the gallery on Android 9 and older. -->
     <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" android:maxSdkVersion="29"/>
     <application
@@ -49,6 +68,13 @@
                 <data android:scheme="https" android:host="duvet.chat" android:pathPrefix="/change-email"/>
             </intent-filter>
         </activity>
+        <!-- Keeps voice going in the background (flutter_background): started
+             once the microphone is granted, stopped when the voice ends or the
+             app is swiped away. -->
+        <service
+            android:name="de.julianassmann.flutter_background.IsolateHolderService"
+            android:exported="false"
+            android:foregroundServiceType="microphone"/>
         <!-- Don't delete the meta-data below.
              This is used by the Flutter tool to generate GeneratedPluginRegistrant.java -->
         <meta-data
