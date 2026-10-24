@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert' show jsonDecode;
 import 'dart:io';
 
+import 'package:clock/clock.dart';
 import 'package:duvet_client/duvet.dart' as duvet;
 import 'package:duvet_client/http/router.dart' show ApiRouter;
 import 'package:flutter/foundation.dart';
@@ -23,9 +24,18 @@ typedef _MemberMove = ({String memberId, String? userId});
 /// [ChatRepository] over the Duvet API (`duvet_client`): REST for history and
 /// sending, the gateway for everything live.
 ///
+/// The session is renewed before it runs out, as the desktop app's is:
+/// 23 hours after its tokens were issued, checked as it starts, every
+/// 10 minutes and when the app comes back to the front. The gateway
+/// identifies with the REST client's token, so it takes each renewal on its
+/// next socket.
+///
 /// Limits of duvet_client this works around or lives with:
-/// - The gateway reconnects with the REST client's token, which renews only on
-///   a REST 401: after a long idle it may retry with an expired one.
+/// - The gateway refuses a token it doesn't know with a 401 at the socket's
+///   upgrade, which the client doesn't report, so a session ended while no
+///   socket was open shows as reconnecting until a request to the API ends
+///   it. One ended under an open socket closes it with 4004, which asks the
+///   API at once.
 /// - A space left while offline stays listed until the next sign-in: READY
 ///   doesn't list the spaces, it's followed by a SPACE_CREATE for each.
 class DuvetRepository implements ChatRepository {
@@ -106,6 +116,7 @@ class DuvetRepository implements ChatRepository {
   final _lastRead = <String, String>{};
   final _resumed = StreamController<void>.broadcast();
   StreamSubscription<duvet.GatewayConnectionState>? _states;
+  StreamSubscription<duvet.GatewayCloseReason>? _closes;
   bool _wasReady = false;
 
   @override
@@ -241,11 +252,16 @@ class DuvetRepository implements ChatRepository {
   }
 
   Future<void> _start() async {
+    // Before the gateway connects: a renewal during its identify would revoke
+    // the token it identifies with.
+    await _renewIfDue();
     final me = await _call((api) => api.me());
     _setProfile(me);
     _names[me.id] = profile.value!.displayName;
     _recentsLoaded = _recents.load(me.id);
     unawaited(refreshConversations().catchError((Object e) => debugPrint('conversations: $e')));
+    _renewals?.cancel();
+    _renewals = Timer.periodic(renewalCheck, (_) => _renewQuietly());
     if (_connectsGateway) _connectGateway();
   }
 
@@ -264,10 +280,14 @@ class DuvetRepository implements ChatRepository {
   void _closeSession() {
     _retry?.cancel();
     _retry = null;
+    _renewals?.cancel();
+    _renewals = null;
     _events?.cancel();
     _events = null;
     _states?.cancel();
     _states = null;
+    _closes?.cancel();
+    _closes = null;
     _wasReady = false;
     _lastRead.clear();
     drafts.clear();
@@ -325,13 +345,52 @@ class DuvetRepository implements ChatRepository {
     }
   }
 
+  // Saves the client's tokens when they changed: the API issued them just now
+  // (a login, or a renewal), which dates them for [_renewIfDue].
   Future<void> _persist(duvet.RestClient api) async {
     if (!api.isAuthenticated) return;
-    final current = (token: api.token, sessionToken: api.sessionToken);
-    if (current == _saved) return;
+    final saved = _saved;
+    if (saved != null && saved.token == api.token && saved.sessionToken == api.sessionToken) return;
+    final current = (token: api.token, sessionToken: api.sessionToken, refreshedAt: clock.now());
     _saved = current;
     await _store.write(current);
   }
+
+  /// How old the session's tokens get before they're renewed: they last
+  /// 24 hours from the login or the last renewal, so an hour early, as the
+  /// desktop app renews them.
+  static const renewAfter = Duration(hours: 23);
+
+  /// How often a session checks whether its renewal is due, besides as it
+  /// starts and when the app comes back to the front.
+  static const renewalCheck = Duration(minutes: 10);
+
+  Timer? _renewals;
+
+  // Renews the session once its tokens are [renewAfter] old, or of unknown
+  // age. Tokens the client got since they were saved (a login, a renewal on a
+  // 401) aren't due: the API issued them just now. A refusal ends the session
+  // ([_call]) and is thrown; anything else waits for the next check.
+  Future<void> _renewIfDue() async {
+    final api = _api;
+    final saved = _saved;
+    if (api == null || saved == null || saved.token != api.token || api.sessionToken.isEmpty) return;
+    if (saved.refreshedAt case final at? when clock.now().difference(at) < renewAfter) return;
+    try {
+      await _call((api) => api.refreshSession());
+    } on duvet.DuvetAuthException {
+      rethrow;
+    } catch (e) {
+      debugPrint('session: $e');
+    }
+  }
+
+  // From the timer, or the app coming to the front: a refusal has ended the
+  // session already.
+  void _renewQuietly() => unawaited(_renewIfDue().catchError((Object e) => debugPrint('session: $e')));
+
+  @override
+  void cameToFront() => _renewQuietly();
 
   // ---------------------------------------------------------------------------
   // Gateway
@@ -349,6 +408,7 @@ class DuvetRepository implements ChatRepository {
     // broadcast stream.
     _events = gateway.onEvent.listen(handleEvent);
     _states = gateway.onConnectionState.listen(handleConnectionState);
+    _closes = gateway.onCloseReason.listen(handleCloseReason);
     status.value = LiveStatus.connecting;
     gateway.connectAll().catchError((Object e) {
       debugPrint('gateway: $e');
@@ -360,6 +420,17 @@ class DuvetRepository implements ChatRepository {
   @visibleForTesting
   void handleConnectionState(duvet.GatewayConnectionState state) {
     if (state == duvet.GatewayConnectionState.reconnecting && _wasReady) status.value = LiveStatus.reconnecting;
+  }
+
+  /// The gateway refused the session's token (4004: unknown as it
+  /// identified, or the session ended since): the API is asked about the
+  /// session at once, as the desktop app does. A dead one gets a 401 there,
+  /// which ends it ([_call]); a live one renews its tokens if it must, which
+  /// the next socket identifies with. Any other reason only reconnects.
+  @visibleForTesting
+  void handleCloseReason(duvet.GatewayCloseReason close) {
+    if (close.code != duvet.GatewayCloseCode.invalidCredentials || _api == null) return;
+    unawaited(_call((api) => api.me()).then((_) {}, onError: (Object e) => debugPrint('session: $e')));
   }
 
   /// Applies a gateway event.

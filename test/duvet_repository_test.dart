@@ -1,12 +1,14 @@
 import 'dart:io';
 import 'dart:convert';
 
+import 'package:clock/clock.dart';
 import 'package:duvet/data/cache.dart';
 import 'package:duvet/data/duvet_repository.dart';
 import 'package:duvet/data/models.dart';
 import 'package:duvet/data/recent_chats.dart';
 import 'package:duvet/data/session_store.dart';
 import 'package:duvet_client/duvet.dart' as duvet;
+import 'package:fake_async/fake_async.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
@@ -67,6 +69,16 @@ void main() {
   /// The newest message of `r-general`.
   late Map<String, dynamic> roomNewest;
 
+  /// How many times the session was renewed: each gives `access-N` and
+  /// `refresh-N`, from 2.
+  late int refreshes;
+
+  /// The session ended on the server: it refuses its tokens, a renewal too.
+  late bool sessionDead;
+
+  /// An access token the API no longer takes, though the session lives.
+  String? expiredToken;
+
   setUp(() {
     requests = [];
     store = MemorySessionStore();
@@ -77,9 +89,19 @@ void main() {
     bio = '';
     deleteReply = http.Response('', 204);
     roomNewest = _roomMessage('last', 'newest');
+    refreshes = 0;
+    sessionDead = false;
+    expiredToken = null;
     client = MockClient((request) async {
       requests.add(request);
       Map<String, dynamic> body() => jsonDecode(request.body) as Map<String, dynamic>;
+      if (request.url.path == '/api/auth/refresh') {
+        if (sessionDead) return http.Response('{"error":"invalid or expired session"}', 401);
+        final n = ++refreshes + 1;
+        return http.Response(jsonEncode({'token': 'access-$n', 'session_token': 'refresh-$n'}), 200);
+      }
+      final refused = sessionDead || request.headers['Authorization'] == 'Bearer $expiredToken';
+      if (refused && !request.url.path.startsWith('/api/auth/')) return http.Response('', 401);
       final json = switch ((request.method, request.url.path)) {
         ('POST', '/api/auth/login') => {'token': 'access-1', 'session_token': 'refresh-1'},
         ('GET', '/api/users/@me') => {..._user(_me, 'gaby', alias: 'Gaby'), 'email_verified': true},
@@ -169,7 +191,10 @@ void main() {
     await repository.logIn('gaby@duvet.chat', 'secret');
 
     expect(repository.profile.value?.displayName, 'Gaby');
-    expect(await store.read(), (token: 'access-1', sessionToken: 'refresh-1'));
+    final saved = await store.read();
+    expect((saved?.token, saved?.sessionToken), ('access-1', 'refresh-1'));
+    // Issued just now, by the login: a renewal is 23 hours away.
+    expect(DateTime.now().difference(saved!.refreshedAt!), lessThan(const Duration(minutes: 1)));
     expect(requests.last.headers['Authorization'], 'Bearer access-1');
 
     await pumpEventQueue();
@@ -188,7 +213,7 @@ void main() {
   });
 
   test('a saved session resumes; a rejected one is forgotten', () async {
-    await store.write((token: 'access-1', sessionToken: 'refresh-1'));
+    await store.write((token: 'access-1', sessionToken: 'refresh-1', refreshedAt: DateTime.now()));
     expect(await repository.restore(), isTrue);
     expect(repository.profile.value?.username, 'gaby');
 
@@ -361,7 +386,7 @@ void main() {
   test('a session refused at launch leaves no account\'s recent chats on the phone', () async {
     const someone = '00000000-0000-4000-8000-0000000000ff';
     await recentsStore.write(someone, '[]');
-    await store.write((token: 'access-1', sessionToken: 'refresh-1'));
+    await store.write((token: 'access-1', sessionToken: 'refresh-1', refreshedAt: DateTime.now()));
     final rejecting = DuvetRepository(
       store: store,
       recentsStore: recentsStore,
@@ -415,6 +440,145 @@ void main() {
     await pumpEventQueue();
     expect(restarted.recents.value, isEmpty);
     expect(await recentsStore.read(_me), isNull);
+  });
+
+  group('session', () {
+    // Another repository on the same API and stores; made in a fake clock's
+    // zone, its timers run on that clock.
+    DuvetRepository newRepository() => DuvetRepository(
+      store: store,
+      recentsStore: recentsStore,
+      httpClient: () => client,
+      connectGateway: false,
+      cacheStore: cache,
+    );
+
+    StoredSession? saved(FakeAsync async) {
+      StoredSession? session;
+      store.read().then((s) => session = s);
+      async.flushMicrotasks();
+      return session;
+    }
+
+    test('it\'s renewed 23 hours after its tokens were issued, as checked every 10 minutes', () {
+      fakeAsync((async) {
+        final repository = newRepository();
+        repository.logIn('gaby@duvet.chat', 'secret');
+        async.flushMicrotasks();
+        final issued = saved(async)!.refreshedAt!;
+        expect(issued, clock.now());
+
+        async.elapse(const Duration(hours: 22, minutes: 59));
+        expect(refreshes, 0);
+        async.elapse(const Duration(minutes: 1));
+        expect(refreshes, 1);
+        // With the session token, and the new tokens kept, dated now.
+        final renewal = requests.lastWhere((r) => r.url.path == '/api/auth/refresh');
+        expect(renewal.headers['X-Session-Token'], 'refresh-1');
+        expect(saved(async), (token: 'access-2', sessionToken: 'refresh-2', refreshedAt: clock.now()));
+
+        // The next one, 23 hours after this one.
+        async.elapse(const Duration(hours: 22, minutes: 59));
+        expect(refreshes, 1);
+        async.elapse(const Duration(minutes: 1));
+        expect(refreshes, 2);
+        expect(saved(async)!.token, 'access-3');
+        repository.dispose();
+        async.flushMicrotasks();
+      }, initialTime: DateTime(2026, 10, 24, 9));
+    });
+
+    test('a saved session that came due, or of unknown age, is renewed before it starts', () async {
+      final dayOld = DateTime.now().subtract(const Duration(hours: 23));
+      for (final refreshedAt in [dayOld, null]) {
+        requests.clear();
+        refreshes = 0;
+        await store.write((token: 'access-1', sessionToken: 'refresh-1', refreshedAt: refreshedAt));
+        final restored = newRepository();
+        addTearDown(restored.dispose);
+        expect(await restored.restore(), isTrue);
+        expect(requests.take(2).map((r) => r.url.path), ['/api/auth/refresh', '/api/users/@me']);
+        expect(requests[1].headers['Authorization'], 'Bearer access-2');
+        expect((await store.read())!.token, 'access-2');
+        // Its conversations, which come after.
+        await pumpEventQueue();
+      }
+
+      // One renewed an hour ago isn't.
+      requests.clear();
+      final hourOld = DateTime.now().subtract(const Duration(hours: 1));
+      await store.write((token: 'access-5', sessionToken: 'refresh-5', refreshedAt: hourOld));
+      final fresh = newRepository();
+      addTearDown(fresh.dispose);
+      expect(await fresh.restore(), isTrue);
+      expect(requests.first.url.path, '/api/users/@me');
+      expect(requests.any((r) => r.url.path == '/api/auth/refresh'), isFalse);
+    });
+
+    test('back in front, it\'s renewed if that came due while its timer couldn\'t run', () async {
+      var now = DateTime(2026, 10, 24, 9);
+      await withClock(Clock(() => now), () async {
+        await repository.logIn('gaby@duvet.chat', 'secret');
+        repository.cameToFront();
+        await pumpEventQueue();
+        expect(refreshes, 0);
+
+        // Asleep for a day: no timer ran meanwhile.
+        now = now.add(const Duration(hours: 23));
+        repository.cameToFront();
+        await pumpEventQueue();
+        expect(refreshes, 1);
+        expect(await store.read(), (token: 'access-2', sessionToken: 'refresh-2', refreshedAt: now));
+      });
+    });
+
+    test('a renewal the API refuses ends it, as the next request would', () {
+      fakeAsync((async) {
+        final repository = newRepository();
+        var ended = 0;
+        repository.signedOut.listen((_) => ended++);
+        repository.logIn('gaby@duvet.chat', 'secret');
+        async.flushMicrotasks();
+
+        sessionDead = true;
+        async.elapse(const Duration(hours: 23));
+        expect(ended, 1);
+        expect(repository.profile.value, isNull);
+        expect(saved(async), isNull);
+        repository.dispose();
+        async.flushMicrotasks();
+      }, initialTime: DateTime(2026, 10, 24, 9));
+    });
+
+    test('the gateway\'s 4004 asks the API about the session at once', () async {
+      await repository.logIn('gaby@duvet.chat', 'secret');
+      await pumpEventQueue();
+      var ended = 0;
+      repository.signedOut.listen((_) => ended++);
+
+      // Other reasons only reconnect.
+      final before = requests.length;
+      repository.handleCloseReason(const duvet.GatewayCloseReason(code: 4000, reason: 'invalid shard'));
+      await pumpEventQueue();
+      expect(requests, hasLength(before));
+
+      // A live session whose access token is no longer taken renews it there,
+      // for the next socket.
+      expiredToken = 'access-1';
+      repository.handleCloseReason(const duvet.GatewayCloseReason(code: 4004, reason: 'authentication failed'));
+      await pumpEventQueue();
+      expect(requests.skip(before).map((r) => r.url.path), ['/api/users/@me', '/api/auth/refresh', '/api/users/@me']);
+      expect((await store.read())!.token, 'access-2');
+      expect(repository.profile.value, isNotNull);
+
+      // A dead one ends.
+      sessionDead = true;
+      repository.handleCloseReason(const duvet.GatewayCloseReason(code: 4004, reason: 'session ended'));
+      await pumpEventQueue();
+      expect(ended, 1);
+      expect(repository.profile.value, isNull);
+      expect(await store.read(), isNull);
+    });
   });
 
   group('M2', () {

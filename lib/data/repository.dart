@@ -37,6 +37,11 @@ abstract interface class ChatRepository {
   /// Resumes a saved session; answers whether there was one that still works.
   Future<bool> restore();
 
+  /// The app is in front again, after the background or a locked screen,
+  /// where its timers may not have run: the session is renewed now if that
+  /// came due meanwhile.
+  void cameToFront();
+
   Future<void> logIn(String email, String password);
 
   Future<void> logOut();

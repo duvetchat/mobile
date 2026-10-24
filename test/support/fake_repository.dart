@@ -795,6 +795,12 @@ class FakeRepository implements ChatRepository {
     return signedIn;
   }
 
+  /// How many times the app came back to the front.
+  int cameToFrontTimes = 0;
+
+  @override
+  void cameToFront() => cameToFrontTimes++;
+
   @override
   Future<void> logIn(String email, String password) async {
     if (password != this.password) throw Exception('rejected');
