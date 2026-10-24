@@ -248,6 +248,7 @@ Map<String, Object?> messageToJson(ChatMessage m) => {
   'isVoice': m.isVoice,
   'pinned': m.pinned,
   'fromBot': m.fromBot,
+  'fromWebhook': m.fromWebhook,
   if (m.rawComponents.isNotEmpty) 'components': m.rawComponents,
   'stickerUrl': m.stickerUrl,
   'attachments': [
@@ -290,6 +291,7 @@ ChatMessage messageFromJson(Map<String, Object?> j) => ChatMessage(
   isVoice: j['isVoice'] as bool? ?? false,
   pinned: j['pinned'] as bool? ?? false,
   fromBot: j['fromBot'] as bool? ?? false,
+  fromWebhook: j['fromWebhook'] as bool? ?? false,
   components: componentsFromJson([
     for (final c in j['components'] as List? ?? const [])
       if (c is Map<String, dynamic>) c,

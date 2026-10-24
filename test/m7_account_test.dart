@@ -40,12 +40,17 @@ void main() {
     appearance = Appearance(store);
   });
 
-  Future<FakeRepository> pumpApp(WidgetTester tester, {bool signedIn = true}) async {
+  Future<FakeRepository> pumpApp(
+    WidgetTester tester, {
+    bool signedIn = true,
+    void Function(FakeRepository r)? setUp,
+  }) async {
     semantics = tester.ensureSemantics();
     tester.view.physicalSize = const Size(390 * 3, 844 * 3);
     tester.view.devicePixelRatio = 3;
     addTearDown(tester.view.reset);
     final repository = FakeRepository(signedIn: signedIn);
+    setUp?.call(repository);
     await tester.pumpWidget(DuvetApp(repository: repository, appearance: appearance));
     await tester.pumpAndSettle();
     return repository;
@@ -258,6 +263,36 @@ void main() {
     await tapLabel(tester, 'Use');
     // A square from the 400 × 200 picture: its full height.
     expect(repository.account.single, 'avatar $path 200x200');
+    semantics.dispose();
+  });
+
+  testWidgets('with a bucket of their own active, storage shows it, then the default storage and every bucket', (
+    tester,
+  ) async {
+    // Before the app starts: the You tab reads the storage once, as it's built.
+    await pumpApp(
+      tester,
+      setUp: (r) => r.usage = const StorageInfo(
+        used: 0,
+        max: 5 * 1024 * 1024 * 1024,
+        buckets: [
+          (name: 'Backblaze', used: 3 * 1024 * 1024, max: null, active: true),
+          (name: 'Old R2', used: 1024 * 1024, max: 10 * 1024 * 1024, active: false),
+        ],
+      ),
+    );
+    await openYou(tester);
+    await tester.ensureVisible(find.byType(BucketMeter));
+    await tester.pumpAndSettle();
+    expect(find.byType(StorageMeter), findsNothing, reason: 'the active bucket keeps the uploads');
+    expect(find.bySemanticsLabel('Your own storage, Backblaze: 3.0 MB used · no quota'), findsOneWidget);
+
+    await tester.tap(find.byType(BucketMeter));
+    await tester.pumpAndSettle();
+    expect(find.bySemanticsLabel(RegExp(r'^Default storage: 0 B of 5\.0 GB used')), findsOneWidget);
+    expect(find.text('YOUR BUCKETS'), findsOneWidget);
+    expect(find.text('3.0 MB used · Active'), findsOneWidget);
+    expect(find.text('1.0 MB of 10.0 MB · Off'), findsOneWidget);
     semantics.dispose();
   });
 

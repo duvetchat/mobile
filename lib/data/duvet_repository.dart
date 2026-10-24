@@ -1358,8 +1358,12 @@ class DuvetRepository implements ChatRepository {
 
   @override
   Future<StorageInfo> storage() async {
-    final s = await _call((api) => api.getMyStorageStatus());
-    return StorageInfo(used: s.usedBytes, max: s.maxBytes);
+    final (s, buckets) = await (_call((api) => api.getMyStorageStatus()), _call((api) => api.getMyBuckets())).wait;
+    return StorageInfo(
+      used: s.usedBytes,
+      max: s.maxBytes,
+      buckets: [for (final b in buckets) (name: b.name, used: b.usedBytes, max: b.maxBytes, active: b.isActive)],
+    );
   }
 
   // ---------------------------------------------------------------------------
@@ -2015,6 +2019,7 @@ class DuvetRepository implements ChatRepository {
     components: componentsFromJson(m.components),
     rawComponents: m.components ?? const [],
     fromBot: m.user?.isBot ?? false,
+    fromWebhook: m.webhookId != null,
     attachments: _attachments(m.attachments),
     stickerUrl: m.stickerAttachmentId == null ? null : attachmentUrl(m.stickerAttachmentId!),
     embeds: _embeds(m.embeds),

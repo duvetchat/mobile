@@ -1105,11 +1105,42 @@ class _MyFilesPageState extends State<MyFilesPage> {
             child: ListView(
               padding: EdgeInsets.only(top: GlassTopBar.heightOf(context) + 8, bottom: padding.bottom + 24),
               children: [
-                if (storage != null)
+                if (storage != null) ...[
+                  // As the desktop: the active bucket first, which keeps the uploads, then the default
+                  // storage and every bucket. The files list doesn't say where each file is, so with buckets
+                  // the default storage's meter shows what it holds, not its kinds.
+                  if (storage.activeBucket case final active?)
+                    Padding(
+                      padding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
+                      child: BucketMeter(bucket: active, big: true),
+                    ),
                   Padding(
                     padding: const EdgeInsets.symmetric(horizontal: 16),
-                    child: StorageMeter(storage: storage, images: images, files: other, voice: voice, big: true),
+                    child: storage.buckets.isEmpty
+                        ? StorageMeter(storage: storage, images: images, files: other, voice: voice, big: true)
+                        : StorageMeter(
+                            storage: storage,
+                            images: 0,
+                            files: storage.used,
+                            voice: 0,
+                            big: storage.activeBucket == null,
+                            title: 'Default storage',
+                          ),
                   ),
+                  if (storage.buckets.isNotEmpty) ...[
+                    const Overline('Your buckets'),
+                    for (final b in storage.buckets)
+                      ListRow(
+                        title: b.name,
+                        snippet: [
+                          b.max == null
+                              ? '${formatBytes(b.used)} used'
+                              : '${formatBytes(b.used)} of ${formatBytes(b.max!)}',
+                          b.active ? 'Active' : 'Off',
+                        ].join(' · '),
+                      ),
+                  ],
+                ],
                 Padding(
                   padding: const EdgeInsets.fromLTRB(16, 12, 16, 0),
                   child: SingleChildScrollView(
@@ -1229,12 +1260,16 @@ class StorageMeter extends StatelessWidget {
   final int files;
   final int voice;
   final bool big;
+
+  /// Above it: which storage it is, when there are others.
+  final String? title;
   const StorageMeter({
     required this.storage,
     required this.images,
     required this.files,
     required this.voice,
     this.big = false,
+    this.title,
     super.key,
   });
 
@@ -1258,12 +1293,16 @@ class StorageMeter extends StatelessWidget {
       child: Semantics(
         container: true,
         label:
-            '${formatBytes(storage.used)} of ${formatBytes(storage.max)} used: '
+            '${title == null ? '' : '$title: '}${formatBytes(storage.used)} of ${formatBytes(storage.max)} used: '
             'images ${formatBytes(images)}, files ${formatBytes(files)}, voice ${formatBytes(voice)}',
         excludeSemantics: true,
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
+            if (title case final title?) ...[
+              Text(title, style: DuvetType.caption.copyWith(color: colors.mutedForeground)),
+              const SizedBox(height: 4),
+            ],
             Row(
               crossAxisAlignment: CrossAxisAlignment.baseline,
               textBaseline: TextBaseline.alphabetic,
@@ -1323,6 +1362,78 @@ class StorageMeter extends StatelessWidget {
                   ),
               ],
             ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+/// A bucket of the user's own: what it holds, against its own limit when it
+/// has one, else no quota, as the desktop shows the active one.
+class BucketMeter extends StatelessWidget {
+  final BucketUsage bucket;
+  final bool big;
+  const BucketMeter({required this.bucket, this.big = false, super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = context.theme.colors;
+    final tokens = context.duvet;
+    final max = bucket.max;
+    final of = max == null ? 'used · no quota' : 'of ${formatBytes(max)} used';
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: colors.card,
+        borderRadius: BorderRadius.circular(DuvetTokens.radiusCard),
+        boxShadow: big ? tokens.shadowRaised : tokens.shadowRest,
+      ),
+      child: Semantics(
+        container: true,
+        label: 'Your own storage, ${bucket.name}: ${formatBytes(bucket.used)} $of',
+        excludeSemantics: true,
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              'Your own storage · ${bucket.name}',
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: DuvetType.caption.copyWith(color: colors.mutedForeground),
+            ),
+            const SizedBox(height: 4),
+            Row(
+              crossAxisAlignment: CrossAxisAlignment.baseline,
+              textBaseline: TextBaseline.alphabetic,
+              children: [
+                Text(
+                  formatBytes(bucket.used),
+                  style: (big ? DuvetType.title : DuvetType.rowTitle).copyWith(color: colors.foreground),
+                ),
+                const SizedBox(width: 8),
+                // "used · no quota" is longer than a quota's line: it wraps when the space runs out.
+                Flexible(
+                  child: Text(of, style: DuvetType.caption.copyWith(color: colors.mutedForeground)),
+                ),
+              ],
+            ),
+            if (max != null && max > 0) ...[
+              const SizedBox(height: 10),
+              Container(
+                height: 8,
+                decoration: BoxDecoration(
+                  color: colors.secondary,
+                  borderRadius: BorderRadius.circular(DuvetTokens.radiusChip),
+                ),
+                clipBehavior: Clip.antiAlias,
+                alignment: Alignment.centerLeft,
+                child: FractionallySizedBox(
+                  widthFactor: (bucket.used / max).clamp(0.0, 1.0),
+                  child: Container(color: colors.foreground),
+                ),
+              ),
+            ],
           ],
         ),
       ),
@@ -1474,9 +1585,12 @@ class _YouTabState extends State<YouTab> {
                     onTap: () => _push(const MyFilesPage()),
                     child: GestureDetector(
                       onTap: () => _push(const MyFilesPage()),
-                      child: _storage == null
-                          ? panel([row('My files', () => _push(const MyFilesPage()))])
-                          : StorageMeter(storage: _storage!, images: 0, files: _storage!.used, voice: 0),
+                      // Where the uploads go: the user's own bucket while one is active.
+                      child: switch (_storage) {
+                        null => panel([row('My files', () => _push(const MyFilesPage()))]),
+                        StorageInfo(:final activeBucket?) => BucketMeter(bucket: activeBucket),
+                        final storage => StorageMeter(storage: storage, images: 0, files: storage.used, voice: 0),
+                      },
                     ),
                   ),
                   const Overline('Account'),

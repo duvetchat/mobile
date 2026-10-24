@@ -687,7 +687,9 @@ class BotAvatar extends StatelessWidget {
 
 /// The quiet tag after a bot's name.
 class BotTag extends StatelessWidget {
-  const BotTag({super.key});
+  /// A webhook's message: WEBHOOK, as on the desktop.
+  final bool webhook;
+  const BotTag({this.webhook = false, super.key});
 
   @override
   Widget build(BuildContext context) {
@@ -698,7 +700,7 @@ class BotTag extends StatelessWidget {
       alignment: Alignment.center,
       decoration: BoxDecoration(color: colors.secondary, borderRadius: BorderRadius.circular(4)),
       child: Text(
-        'BOT',
+        webhook ? 'WEBHOOK' : 'BOT',
         style: DuvetType.tabLabel.copyWith(fontSize: 10, fontWeight: FontWeight.w700, color: colors.foreground),
       ),
     );
