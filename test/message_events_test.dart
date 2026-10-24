@@ -1,0 +1,201 @@
+import 'dart:convert';
+
+import 'package:duvet/data/cache.dart';
+import 'package:duvet/data/duvet_repository.dart';
+import 'package:duvet/data/models.dart';
+import 'package:duvet/data/recent_chats.dart';
+import 'package:duvet/data/session_store.dart';
+import 'package:duvet_client/duvet.dart' as duvet;
+import 'package:flutter_test/flutter_test.dart';
+import 'package:http/http.dart' as http;
+import 'package:http/testing.dart';
+
+const _me = '00000000-0000-4000-8000-000000000001';
+const _maya = '00000000-0000-4000-8000-000000000002';
+const _at = '2026-10-23T09:00:00Z';
+const _room = RoomTarget(spaceId: 's-1', roomId: 'r-1');
+const _dm = ConversationTarget('c-1');
+
+Map<String, dynamic> _user(String id, String username, {String? alias}) => {
+  'id': id,
+  'username': username,
+  'alias': alias,
+  'custom': '',
+  'status_id': 1,
+  'created_at': _at,
+  'updated_at': _at,
+};
+
+/// A room message as MESSAGE_CREATE carries it: Maya's in r-1, with a file
+/// and a reaction.
+Map<String, dynamic> _roomMessage(String id, String content) => {
+  'id': id,
+  'room_id': 'r-1',
+  'author_id': _maya,
+  'content': content,
+  'type': 0,
+  'created_at': _at,
+  'updated_at': _at,
+  'user': _user(_maya, 'maya', alias: 'Maya'),
+  'attachments': [
+    {
+      'id': 'a-1',
+      'filename': 'notes.pdf',
+      'content_type': 'application/pdf',
+      'size_bytes': 2048,
+      'created_at': _at,
+      'url': 'https://api.duvet.chat/attachments/a-1',
+    },
+  ],
+  'reactions': [
+    {
+      'emoji_name': '👍',
+      'count': 1,
+      'users': [_me],
+    },
+  ],
+};
+
+/// What MESSAGE_UPDATE carries when a link's preview comes: the text and the
+/// embeds, no user, files, reactions or reply.
+Map<String, dynamic> _preview(String id, String content) => {
+  'id': id,
+  'room_id': 'r-1',
+  'author_id': _maya,
+  'content': content,
+  'type': 0,
+  'created_at': _at,
+  'updated_at': _at,
+  'embeds': [
+    {'title': 'Duvet', 'url': 'https://duvet.chat'},
+  ],
+};
+
+Map<String, dynamic> _dmMessage(String id, String content, {bool withUser = true}) => {
+  'id': id,
+  'conversation_id': 'c-1',
+  'author_id': _maya,
+  'content': content,
+  'type': 0,
+  'created_at': _at,
+  'updated_at': _at,
+  if (withUser) 'user': {'id': _maya, 'username': 'maya', 'alias': 'Maya'},
+};
+
+/// The gateway's envelope for [type], parsed as the client parses it.
+duvet.GatewayEventPayload _event(String type, Map<String, dynamic> data) => duvet.GatewayEnvelope.fromJson({
+  'op': 0,
+  's': 1,
+  'event': type,
+  'd': {'type': type, 'data': data},
+}).d!;
+
+/// The repository's side of a chat's messages: what the gateway's message
+/// events do to the open chats, the previews and the Chats tab.
+void main() {
+  late List<http.Request> requests;
+  late DuvetRepository repository;
+
+  setUp(() {
+    requests = [];
+    final client = MockClient((request) async {
+      requests.add(request);
+      final json = switch ((request.method, request.url.path)) {
+        ('POST', '/api/auth/login') => {'token': 'access-1', 'session_token': 'refresh-1'},
+        ('GET', '/api/users/@me') => {..._user(_me, 'gaby', alias: 'Gaby'), 'email_verified': true},
+        ('GET', '/api/users/@me/conversations') => <Object>[],
+        _ => null,
+      };
+      if (json == null) return http.Response('not found', 404);
+      return http.Response(jsonEncode(json), 200, headers: {'content-type': 'application/json'});
+    });
+    repository = DuvetRepository(
+      store: MemorySessionStore(),
+      recentsStore: MemoryRecentChatsStore(),
+      httpClient: () => client,
+      connectGateway: false,
+      cacheStore: MemoryChatCacheStore(),
+    );
+  });
+
+  tearDown(() => repository.dispose());
+
+  Future<List<MessageEvent>> listen(ChatTarget target) async {
+    await repository.logIn('gaby@duvet.chat', 'secret');
+    final events = <MessageEvent>[];
+    final sub = repository.messageEvents(target).listen(events.add);
+    addTearDown(sub.cancel);
+    return events;
+  }
+
+  group('updates', () {
+    test('a link preview\'s update keeps the files, reactions and author of the newest message', () async {
+      final events = await listen(_room);
+      repository.opened(_room, '# general');
+      repository.handleEvent(_event('MESSAGE_CREATE', _roomMessage('7', 'see https://duvet.chat')));
+      repository.handleEvent(_event('MESSAGE_UPDATE', _preview('7', 'see https://duvet.chat')));
+      await pumpEventQueue();
+
+      final latest = repository.latest.value['r-1']!;
+      expect(latest.authorName, 'Maya');
+      expect(latest.attachments.single.filename, 'notes.pdf');
+      expect(latest.reactions.single.emoji, '👍');
+      expect(latest.embeds.single.title, 'Duvet');
+      expect(repository.recents.value.single.previewAuthor, 'Maya');
+
+      // The chat merges it into its own copy: the event says it named no one.
+      final update = events.last as MessageUpdated;
+      expect(update.withAuthor, isFalse);
+      expect(update.message.authorName, 'Maya');
+    });
+
+    test('an edit of a DM keeps its author in the Chats tab, also when the event has no user', () async {
+      final events = await listen(_dm);
+      repository.handleEvent(_event('DM_MESSAGE_CREATE', _dmMessage('9', 'first try')));
+      repository.handleEvent(_event('DM_MESSAGE_UPDATE', _dmMessage('9', 'see https://duvet.chat', withUser: false)));
+      await pumpEventQueue();
+
+      expect(repository.recents.value.single.previewAuthor, 'Maya');
+      expect(repository.recents.value.single.previewText, 'see https://duvet.chat');
+      expect(repository.latest.value['c-1']!.content, 'see https://duvet.chat');
+      expect(repository.latest.value['c-1']!.authorName, 'Maya');
+      expect((events.last as MessageUpdated).withAuthor, isFalse);
+    });
+  });
+
+  test('ChatMessage.updatedBy keeps what the event leaves out', () {
+    final original = ChatMessage(
+      id: '7',
+      authorId: _maya,
+      authorName: 'Maya',
+      content: 'old',
+      createdAt: DateTime(2026, 10, 23),
+      pinned: true,
+      fromBot: true,
+      reply: const MessageReply(messageId: '1', authorName: 'Gaby', content: 'ship it?'),
+      reactions: [
+        Reaction(emoji: '👍', users: {_me}),
+      ],
+      attachments: const [
+        MessageAttachment(id: 'a', filename: 'notes.pdf', contentType: 'application/pdf', url: 'https://x/a'),
+      ],
+    );
+    final update = ChatMessage(
+      id: '7',
+      authorId: _maya,
+      authorName: 'Unknown',
+      content: 'new',
+      createdAt: DateTime(2026, 10, 23),
+      edited: true,
+      embeds: const [MessageEmbed(title: 'Duvet')],
+    );
+    final merged = original.updatedBy(update, withAuthor: false);
+    expect((merged.content, merged.edited, merged.embeds.single.title), ('new', true, 'Duvet'));
+    expect((merged.authorName, merged.fromBot, merged.pinned), ('Maya', true, true));
+    expect(merged.reply?.content, 'ship it?');
+    expect(merged.reactions.single.emoji, '👍');
+    expect(merged.attachments.single.filename, 'notes.pdf');
+    // An edit names its author: a new name shows.
+    expect(original.updatedBy(update).authorName, 'Unknown');
+  });
+}

@@ -167,6 +167,7 @@ class ChatMessage {
     bool? edited,
     List<Reaction>? reactions,
     bool? pinned,
+    MessageReply? reply,
   }) => ChatMessage(
     id: id ?? this.id,
     authorId: authorId,
@@ -180,13 +181,40 @@ class ChatMessage {
     attachments: attachments,
     stickerUrl: stickerUrl,
     embeds: embeds,
-    reply: reply,
+    reply: reply ?? this.reply,
     reactions: reactions ?? this.reactions,
     isVoice: isVoice,
     pinned: pinned ?? this.pinned,
     components: components,
     rawComponents: rawComponents,
     fromBot: fromBot,
+    fromWebhook: fromWebhook,
+  );
+
+  /// This message as an edit, or a link preview that came late, leaves it.
+  /// [update] is what MESSAGE_UPDATE carries: the text, sticker, embeds and
+  /// components. It has none of the files, reactions, reply or pin, which
+  /// stay, and names the author only when [withAuthor].
+  ChatMessage updatedBy(ChatMessage update, {bool withAuthor = true}) => ChatMessage(
+    id: id,
+    authorId: authorId,
+    authorName: withAuthor ? update.authorName : authorName,
+    authorAvatarUrl: withAuthor ? update.authorAvatarUrl : authorAvatarUrl,
+    content: update.content,
+    createdAt: createdAt,
+    edited: update.edited,
+    nonce: nonce,
+    isNotice: isNotice,
+    attachments: attachments,
+    stickerUrl: update.stickerUrl,
+    embeds: update.embeds,
+    reply: reply,
+    reactions: reactions,
+    isVoice: isVoice,
+    pinned: pinned,
+    components: update.components,
+    rawComponents: update.rawComponents,
+    fromBot: withAuthor ? update.fromBot : fromBot,
     fromWebhook: fromWebhook,
   );
 
@@ -219,6 +247,10 @@ class MessageReply {
   final String authorName;
   final String content;
   const MessageReply({required this.messageId, required this.authorName, required this.content, this.authorId});
+
+  /// The same quote, of the message as edited to [content].
+  MessageReply withContent(String content) =>
+      MessageReply(messageId: messageId, authorId: authorId, authorName: authorName, content: content);
 }
 
 /// One emoji's reactions on a message: a Unicode emoji, or a custom one by
@@ -504,9 +536,14 @@ final class MessageCreated extends MessageEvent {
   const MessageCreated(this.message);
 }
 
+/// A message edited, or given a link preview: [message] has what the event
+/// carries, for [ChatMessage.updatedBy].
 final class MessageUpdated extends MessageEvent {
   final ChatMessage message;
-  const MessageUpdated(this.message);
+
+  /// Whether the event named the author: a link preview's doesn't.
+  final bool withAuthor;
+  const MessageUpdated(this.message, {this.withAuthor = true});
 }
 
 final class MessageDeleted extends MessageEvent {

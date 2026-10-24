@@ -379,9 +379,8 @@ class _ChatViewState extends State<ChatView> {
         case MessageCreated(:final message):
           _stopTyping(message.authorId);
           _upsert(message);
-        case MessageUpdated(:final message):
-          final i = _entries.indexWhere((e) => e.message.id == message.id);
-          if (i >= 0) _entries[i] = (message: message, delivery: _Delivery.sent);
+        case MessageUpdated(:final message, :final withAuthor):
+          _applyUpdate(message, withAuthor: withAuthor);
         case MessageDeleted(:final messageId):
           _entries.removeWhere((e) => e.message.id == messageId);
           if (_editing?.id == messageId) _stopEditing();
@@ -399,6 +398,20 @@ class _ChatViewState extends State<ChatView> {
       }
     });
     if (event is MessageCreated) _markRead();
+  }
+
+  /// An edit, or a link preview that came late, merged into the message (see
+  /// [ChatMessage.updatedBy]); the replies quoting it follow its text, as on
+  /// the desktop.
+  void _applyUpdate(ChatMessage update, {required bool withAuthor}) {
+    for (var i = 0; i < _entries.length; i++) {
+      final m = _entries[i].message;
+      if (m.id == update.id) {
+        _entries[i] = (message: m.updatedBy(update, withAuthor: withAuthor), delivery: _Delivery.sent);
+      } else if (m.reply case final reply? when reply.messageId == update.id) {
+        _entries[i] = (message: m.copyWith(reply: reply.withContent(update.content)), delivery: _entries[i].delivery);
+      }
+    }
   }
 
   /// Adds a message, or replaces the one it is: the same ID, or the pending
@@ -797,7 +810,9 @@ class _ChatViewState extends State<ChatView> {
     // Shown at once; put back if the server says no.
     _replace(editing.copyWith(content: content, edited: true));
     try {
-      _replace(await _repository.edit(widget.target, editing.id, content));
+      // The API answers the message without its files, reactions or reply.
+      final saved = await _repository.edit(widget.target, editing.id, content);
+      if (mounted) setState(() => _applyUpdate(saved, withAuthor: false));
     } catch (_) {
       _replace(editing);
       _toast('Couldn’t save your edit');

@@ -470,10 +470,7 @@ class DuvetRepository implements ChatRepository {
           _latestDeleted(data.roomId, data.id);
           _messageEvents.add((data.roomId, MessageDeleted(data.id)));
         } else {
-          final message = _roomMessage(data);
-          _recents.edited(data.roomId, message);
-          if (latest.value[data.roomId]?.id == message.id) _setLatest(data.roomId, message);
-          _messageEvents.add((data.roomId, MessageUpdated(message)));
+          _updated(data.roomId, _roomMessage(data), withAuthor: data.user != null);
         }
       case duvet.MessageDeletedEvent(:final data):
         _recents.deleted(data.roomId, data.id);
@@ -491,11 +488,7 @@ class DuvetRepository implements ChatRepository {
         _setLatest(id, message);
         _messageEvents.add((id, MessageCreated(message)));
       case duvet.DMMessageUpdatedEvent(:final data):
-        if (data.conversationId case final id?) {
-          final message = _directMessage(data);
-          _recents.edited(id, message);
-          _messageEvents.add((id, MessageUpdated(message)));
-        }
+        if (data.conversationId case final id?) _updated(id, _directMessage(data), withAuthor: data.user != null);
       case duvet.DMMessageDeletedEvent(:final data):
         _recents.deleted(data.conversationId, data.id);
         _messageEvents.add((data.conversationId, MessageDeleted(data.id)));
@@ -580,6 +573,17 @@ class DuvetRepository implements ChatRepository {
     final known = latest.value[chatId];
     if (known != null && known.id != m.id && known.createdAt.isAfter(m.createdAt)) return;
     latest.value = {...latest.value, chatId: m};
+  }
+
+  // An edit, or a link preview that came late. The event carries no files,
+  // reactions, reply or pin, nor always the author: the newest message keeps
+  // them, as the chat does, and so does the Chats tab's preview.
+  void _updated(String chatId, ChatMessage update, {required bool withAuthor}) {
+    if (latest.value[chatId] case final known? when known.id == update.id) {
+      latest.value = {...latest.value, chatId: known.updatedBy(update, withAuthor: withAuthor)};
+    }
+    _recents.edited(chatId, update);
+    _messageEvents.add((chatId, MessageUpdated(update, withAuthor: withAuthor)));
   }
 
   // The one before it isn't known here: fetched again when next shown.
@@ -2042,10 +2046,13 @@ class DuvetRepository implements ChatRepository {
     });
   }
 
+  // Events without a user (a link preview's update) name the author as seen
+  // before.
   ChatMessage _roomMessage(duvet.GatewayMessage m) {
     final name = m.memberAlias ?? m.user?.alias ?? m.user?.username;
     if (m.authorId != null && name != null) _names[m.authorId!] = name;
-    return _roomMessageNamed(m, name ?? (m.webhookId != null ? 'Webhook' : 'Unknown'));
+    final known = m.authorId == null ? null : _names[m.authorId];
+    return _roomMessageNamed(m, name ?? known ?? (m.webhookId != null ? 'Webhook' : 'Unknown'));
   }
 
   ChatMessage _roomMessageNamed(duvet.GatewayMessage m, String authorName) => ChatMessage(
@@ -2074,7 +2081,7 @@ class DuvetRepository implements ChatRepository {
   ChatMessage _directMessage(duvet.DirectMessage m) {
     final name = m.user?.alias ?? m.user?.username;
     if (name != null) _names[m.authorId] = name;
-    return _directMessageNamed(m, name ?? 'Unknown');
+    return _directMessageNamed(m, name ?? _names[m.authorId] ?? 'Unknown');
   }
 
   ChatMessage _directMessageNamed(duvet.DirectMessage m, String authorName) => ChatMessage(
