@@ -28,10 +28,13 @@ jobs:
         with:
           repository: duvetchat/duvet-client
           path: duvet-client
+      # Gradle's downloads (its distribution, the Android plugin, the dependencies) cached, keyed by the Gradle
+      # files: building the APK fetched them all every run. A pull request restores what a run on dev saved.
       - uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: 17
+          cache: gradle
       - uses: subosito/flutter-action@v2
         with:
           flutter-version: 3.47.7
