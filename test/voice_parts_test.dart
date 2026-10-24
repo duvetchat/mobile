@@ -5,6 +5,7 @@ import 'dart:convert';
 
 import 'package:duvet/calls.dart' show callClock, CallHistoryList;
 import 'package:duvet/data/call_history.dart';
+import 'package:duvet/data/recent_chats.dart' show SecureRecentChatsStore;
 import 'package:duvet/data/voice.dart' show mouthFor, speakingLevel;
 import 'package:duvet/data/voice_engine.dart';
 import 'package:duvet/data/webrtc_engine.dart';
@@ -120,11 +121,30 @@ void main() {
     await CallHistory(store).load('me');
   });
 
-  group('the WebRTC engine, over its plugins\' channels', () {
+  group('the WebRTC engine and the keystore, over their plugins\' channels', () {
     final messenger = TestWidgetsFlutterBinding.ensureInitialized().defaultBinaryMessenger;
+    const keystore = MethodChannel('plugins.it_nomads.com/flutter_secure_storage');
     tearDown(() {
       messenger.setMockMethodCallHandler(const MethodChannel('flutter.baseflow.com/permissions/methods'), null);
       messenger.setMockMethodCallHandler(const MethodChannel('FlutterWebRTC.Method'), null);
+      messenger.setMockMethodCallHandler(keystore, null);
+    });
+
+    test('forgetting deletes every account\'s call history and recent chats, and nothing else', () async {
+      final kept = {
+        'duvet_session_token': 'access',
+        'duvet_refresh_token': 'refresh',
+        'duvet_appearance': 'dark',
+        for (final account in ['a', 'b']) ...{'duvet_call_history_$account': '[]', 'duvet_recent_chats_$account': '[]'},
+      };
+      messenger.setMockMethodCallHandler(keystore, (call) async {
+        if (call.method == 'readAll') return {...kept};
+        if (call.method == 'delete') kept.remove((call.arguments as Map)['key']);
+        return null;
+      });
+      await const SecureCallHistoryStore().clearAll();
+      await const SecureRecentChatsStore().clearAll();
+      expect(kept.keys, unorderedEquals(['duvet_session_token', 'duvet_refresh_token', 'duvet_appearance']));
     });
 
     test('asks for Nearby devices once: a refusal stands at the next launch', () async {

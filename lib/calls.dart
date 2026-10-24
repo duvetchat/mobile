@@ -22,18 +22,28 @@ Future<void> openCall(BuildContext context, String conversationId) => Navigator.
   rootNavigator: true,
 ).push(MaterialPageRoute<void>(builder: (_) => CallScreen(conversationId: conversationId)));
 
+// Set while a Call button places or joins a call (the members, then the
+// permissions): a second tap meanwhile would stack a second call screen. Not
+// kept while the screen is up: it covers the buttons, and its push doesn't
+// finish if it's removed instead of popped.
+bool _placing = false;
+
 /// Calls [conversationId], or joins its call going on, and opens the call
 /// screen.
 Future<void> callConversation(BuildContext context, String conversationId) async {
+  if (_placing) return;
   final voice = context.voice;
-  if (voice.call?.conversationId == conversationId) {
-    await openCall(context, conversationId);
-    return;
-  }
-  if (voice.callsInProgress.contains(conversationId)) {
-    await voice.joinCall(conversationId);
-  } else {
-    await voice.startCall(conversationId);
+  if (voice.call?.conversationId != conversationId) {
+    _placing = true;
+    try {
+      if (voice.callsInProgress.contains(conversationId)) {
+        await voice.joinCall(conversationId);
+      } else {
+        await voice.startCall(conversationId);
+      }
+    } finally {
+      _placing = false;
+    }
   }
   if (context.mounted && voice.call?.conversationId == conversationId) await openCall(context, conversationId);
 }

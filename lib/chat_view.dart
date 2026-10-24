@@ -18,6 +18,7 @@ import 'data/message_tokens.dart';
 import 'data/models.dart';
 import 'data/repository.dart';
 import 'data/scope.dart';
+import 'data/voice.dart' show VoiceController;
 import 'members_sheet.dart';
 import 'people.dart';
 import 'search.dart';
@@ -167,6 +168,7 @@ class _ChatViewState extends State<ChatView> {
     _restoreDraft();
     _composer.addListener(_onComposerChanged);
     _scroll.addListener(_onScroll);
+    _voice = context.voice..addListener(_onVoice);
     _load();
     _loadDirectory();
   }
@@ -174,6 +176,7 @@ class _ChatViewState extends State<ChatView> {
   @override
   void dispose() {
     _saveDraft();
+    _voice?.removeListener(_onVoice);
     _recordTick?.cancel();
     _levelsSub?.cancel();
     _recorder?.cancel();
@@ -657,6 +660,14 @@ class _ChatViewState extends State<ChatView> {
   bool get _recording => _recorder != null;
 
   Duration get _recorded => _recordedFor;
+
+  VoiceController? _voice;
+
+  // Voice took the microphone (a call answered from over this chat, say): the
+  // voice note being recorded stops.
+  void _onVoice() {
+    if (_recording && _voice!.inVoice) unawaited(_stopRecording(send: false));
+  }
 
   Future<void> _startRecording({required bool locked}) async {
     if (_recording || _editing != null) return;

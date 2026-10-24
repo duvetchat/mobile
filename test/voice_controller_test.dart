@@ -16,6 +16,7 @@ import 'support/fake_voice.dart';
 
 const _lounge = Room(id: 'r-lounge', spaceId: 's-guild', name: 'lounge', kind: RoomKind.voice, position: 1);
 const _studio = Room(id: 'r-studio', spaceId: 's-guild', name: 'studio', kind: RoomKind.voice, position: 2);
+const _attic = Room(id: 'r-attic', spaceId: 's-guild', name: 'attic', kind: RoomKind.voice, position: 3);
 
 /// The whole voice state the phone always sends.
 Map<String, Object?> _sync({bool muted = false, bool deafened = false, String room = 'r-lounge'}) => {
@@ -282,6 +283,22 @@ void main() {
     expect(h.notices, ['You left voice: the connection was lost for a while']);
   });
 
+  _voice('a join made offline long ago leaves on a new gateway client\'s first READY, which reports no silence', (
+    async,
+    h,
+  ) {
+    h.gateway.socket = null;
+    h.voice.joinRoom(_lounge);
+    async.flushMicrotasks();
+    // Suspended or in Doze: the 3 minutes' timer hadn't run yet.
+    h.now = h.now.add(const Duration(minutes: 10));
+    h.gateway.ready(number: 1);
+    async.flushMicrotasks();
+    expect(h.voice.target, isNull);
+    expect(h.engine.peers, isEmpty);
+    expect(h.notices, ['You left voice: the connection was lost for a while']);
+  });
+
   _voice('a join made offline just now joins, however long the gateway had been silent before', (async, h) {
     h.gateway.socket = null;
     h.voice.joinRoom(_lounge);
@@ -395,6 +412,24 @@ void main() {
     expect(first.closed, isTrue);
     expect(h.engine.peer.closed, isFalse);
     expect(h.gateway.last('VOICE_JOIN')!['room_id'], 'r-studio');
+  });
+
+  _voice('switching twice before the next connection exists keeps the first until the last one exists', (async, h) {
+    h.voice.joinRoom(_lounge);
+    async.flushMicrotasks();
+    final first = h.engine.peer;
+    h.engine.holdPeer = Completer<void>();
+    h.voice.joinRoom(_studio);
+    async.flushMicrotasks();
+    h.voice.joinRoom(_attic);
+    async.flushMicrotasks();
+    expect(first.closed, isFalse);
+
+    h.engine.holdPeer!.complete();
+    h.engine.holdPeer = null;
+    async.flushMicrotasks();
+    expect(h.engine.peers.map((p) => p.closed), [true, true, false]);
+    expect(h.gateway.last('VOICE_JOIN')!['room_id'], 'r-attic');
   });
 
   _voice('unmuting while the microphone opens opens no second one', (async, h) {

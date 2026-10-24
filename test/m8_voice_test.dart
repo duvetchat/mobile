@@ -1,6 +1,9 @@
 // M8 · Voice & calls: the voice room, the incoming call and call screens,
 // the bar over the tabs, a DM's call button and banner, and the Calls tab,
 // over a fake gateway and a fake WebRTC.
+import 'dart:async';
+
+import 'package:duvet/calls.dart' show CallScreen;
 import 'package:duvet/data/call_history.dart';
 import 'package:duvet/data/models.dart';
 import 'package:duvet/data/voice.dart';
@@ -256,6 +259,27 @@ void main() {
     await finish(tester, app);
   });
 
+  testWidgets('two quick taps on Call place one call and open one call screen', (tester) async {
+    final semantics = tester.ensureSemantics();
+    final app = await pumpApp(tester);
+    await tester.tap(find.text('Maya'));
+    await tester.pumpAndSettle();
+
+    // The microphone's permission dialog: the call isn't placed yet.
+    app.engine.holdMic = Completer<void>();
+    await tester.tap(find.bySemanticsLabel('Call'));
+    await tester.pump();
+    await tester.tap(find.bySemanticsLabel('Call'));
+    await tester.pump();
+    app.engine.holdMic!.complete();
+    app.engine.holdMic = null;
+    await settle(tester);
+    expect(app.gateway.types.where((t) => t == 'CALL_INITIATE'), hasLength(1));
+    expect(find.byType(CallScreen, skipOffstage: false), findsOneWidget);
+    semantics.dispose();
+    await finish(tester, app);
+  });
+
   testWidgets('a DM\'s Call button calls; cancelled before an answer', (tester) async {
     final semantics = tester.ensureSemantics();
     final app = await pumpApp(tester);
@@ -297,6 +321,37 @@ void main() {
     await settle(tester);
     expect(recordings, 0);
     expect(find.text('You can’t record while in a call or a voice room'), findsOneWidget);
+    semantics.dispose();
+    await finish(tester, app);
+  });
+
+  testWidgets('a call answered stops the voice note being recorded under it', (tester) async {
+    final semantics = tester.ensureSemantics();
+    var recordings = 0;
+    var cancels = 0;
+    VoiceRecorder.create = () => _Recorder(() => recordings++, onCancel: () => cancels++);
+    addTearDown(() => VoiceRecorder.create = RecordVoiceRecorder.new);
+    final app = await pumpApp(tester);
+    await tester.tap(find.text('Maya'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.bySemanticsLabel('Add photos, a sticker or a mention').last);
+    await tester.pumpAndSettle();
+    await tester.tap(find.bySemanticsLabel('Voice note').last);
+    await settle(tester);
+    expect(recordings, 1);
+
+    // The call rings over the chat, which stays underneath.
+    app.gateway.push(
+      const duvet.CallIncomingPayloadEvent(
+        duvet.CallIncomingEvent(conversationId: 'c-maya', initiatorId: FakeRepository.maya, initiatorName: 'Maya'),
+      ),
+    );
+    await settle(tester);
+    await tester.tap(find.bySemanticsLabel('Accept the call'));
+    await settle(tester);
+    expect(app.voice.target, const CallVoice('c-maya'));
+    expect(cancels, 1);
+    expect(app.repository.voiceNotes, isEmpty);
     semantics.dispose();
     await finish(tester, app);
   });
@@ -358,7 +413,8 @@ void main() {
 /// A recorder that only counts its starts.
 class _Recorder implements VoiceRecorder {
   final void Function() onStart;
-  _Recorder(this.onStart);
+  final void Function()? onCancel;
+  _Recorder(this.onStart, {this.onCancel});
 
   @override
   Future<bool> start() async {
@@ -373,5 +429,5 @@ class _Recorder implements VoiceRecorder {
   Future<Recording?> stop() async => null;
 
   @override
-  Future<void> cancel() async {}
+  Future<void> cancel() async => onCancel?.call();
 }

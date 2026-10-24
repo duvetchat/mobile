@@ -6,8 +6,8 @@ _23 October 2026 · Flutter app in `mobile/`, against `duvet_client` 1.0.1 (loca
 
 | | |
 |---|---|
-| Code | 25,749 lines in `lib/` (51 files), 6,491 in `test/` |
-| Tests | 196 widget, unit and golden tests; `flutter analyze` clean. On Windows the 4 goldens fail (glyph edges); the `chat` ones need regenerating on Linux for M8's Call button |
+| Code | 25,990 lines in `lib/` (51 files), 7,129 in `test/` |
+| Tests | 223 widget, unit and golden tests; `flutter analyze` clean. On Windows all pass but the 4 goldens (glyph edges). The goldens are recorded on Linux, where all 196 tests passed at `538d2c1`, which re-recorded the `chat` ones with M8's Call button |
 | Client | `duvet_client`: 401 tests passing (the live ones left out), `dart analyze` clean |
 | TODO | 85 of 89 tasks done (4 open) |
 | Verified on | an Android 15 phone, debug build, signed in to the live server (before M8) |
@@ -25,7 +25,7 @@ _23 October 2026 · Flutter app in `mobile/`, against `duvet_client` 1.0.1 (loca
 | M5 · People | ✅ | profile sheet, friends, new conversation, group DMs, presence from the start |
 | M6 · Spaces & invites | ✅ | join by link or code, invite people, create and leave, unread per Space |
 | M7 · Account | ✅ | sign up, verify email, forgot and reset password, change email, edit profile (crop, bio), my files, appearance, status (online or do not disturb). **Status** and **bio editing** work once the server's 23 October round is deployed |
-| M8 · Voice & calls | 🟡 | voice rooms (who's in, join, mute, deafen, faces talking, sound output), DM and group calls (incoming screen, call screen, Calls tab from this phone's history; no buzz in do not disturb), rejoining after a gateway restart, Android foreground service, iOS background audio. **Tested against fakes only: not yet on a device** |
+| M8 · Voice & calls | 🟡 | voice rooms (who's in, join, mute, deafen, faces talking, sound output), DM and group calls (incoming screen, call screen, Calls tab from this phone's history; no buzz in do not disturb), rejoining after a gateway restart, Android foreground service, iOS background audio. Two reviews' findings fixed: a join made offline waits 3 minutes at most, signing out tells the gateway, voice notes and voice don't share the microphone, and listening without a microphone says it lasts only while the app is open. **Tested against fakes only: not yet on a device** |
 | M9 · Bots | ✅ | message buttons and selects, slash commands with options, bot modals, bot invite cards; bots drawn as rounded squares with a BOT tag |
 | M10 · Space administration | ✅ | overview, rooms (with per-role overwrites), roles (colors, members, permissions), emojis and stickers, invites, webhooks (URL shown once), storage (view only) |
 | Platform | 🟡 | done: offline cache, connection state, token safety, iOS config, golden tests, CI, release signing config, build settings. Open: push, accessibility pass, Spanish |
@@ -85,7 +85,7 @@ All screens and components in the wireframes and the 37 feature layouts are buil
 
 ## 6. Not verified
 
-- **Voice and calls (M8):** written against the gateway's code and tested with a fake gateway and a fake WebRTC; nothing has carried audio yet. `TODO.md`'s **Needs you** lists the pass to make on the phone. Calls ring only while the app is open (no push yet), and not on a locked screen.
+- **Voice and calls (M8):** written against the gateway's code and tested with a fake gateway and a fake WebRTC; nothing has carried audio yet. `TODO.md`'s **Needs you** lists the pass to make on the phone, the reviews' checks included: a join made offline, listening with the phone locked, a voice note during a Bluetooth call, signing out in voice, switching rooms, a release build, a TCP-only network. Calls ring only while the app is open (no push yet), and not on a locked screen.
 - **Release build:** not built yet; the release keystore is yours to make (see `TODO.md`).
 - **iOS:** configured, never built (needs a Mac).
 - **Sending from the device:** messages, files, voice notes, bot commands and admin changes are tested against the fake repository only.

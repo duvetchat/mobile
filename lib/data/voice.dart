@@ -755,11 +755,13 @@ class VoiceController extends ChangeNotifier {
     // A join sent on this session's own socket went out after its identify:
     // it's in already.
     if (_joining && target != null && _joinedOn != _signaling.connection) {
-      // How long voice was out of reach: since the gateway's last word, or,
-      // for a join asked offline, since it was asked.
+      // How long voice was out of reach: for a join never sent, since it was
+      // asked (a new gateway client's first READY reports no silence at all);
+      // else since the gateway's last word, or the join if it came later.
       final silence = _signaling.silenceBeforeReady;
       final waited = _now().difference(_askedAt ?? _now());
-      if ((waited < silence ? waited : silence) > rejoinWindow) {
+      final lost = _joinedOn == null || waited < silence ? waited : silence;
+      if (lost > rejoinWindow) {
         _notice(_lostForAWhile);
         leave();
       } else {
@@ -1131,14 +1133,15 @@ class VoiceController extends ChangeNotifier {
     leave();
   }
 
-  // Leaves ([leave] does) for another voice: its connection closes only once
-  // the next one exists (see [_connect]), as on Android the audio session ends
-  // with the last one.
+  // Leaves ([leave] does) for another voice: its connection, and any that
+  // still wait for a newer one to exist, close only once the next one exists
+  // (see [_connect]), as on Android the audio session ends with the last one.
   void _handOver(void Function() leave) {
-    final old = _peer;
+    final kept = [..._retired, ?_peer];
+    _retired.clear();
     _peer = null;
     leave();
-    if (old != null) _retired.add(old);
+    _retired.addAll(kept);
   }
 
   // ---------------------------------------------------------------------------
