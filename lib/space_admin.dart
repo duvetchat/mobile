@@ -1264,7 +1264,8 @@ class AssetsPage extends StatefulWidget {
 }
 
 class _AssetsPageState extends State<AssetsPage> {
-  AssetKind _kind = AssetKind.emoji;
+  // The kind the user may change first.
+  late AssetKind _kind = _may(AssetKind.emoji) || !_may(AssetKind.sticker) ? AssetKind.emoji : AssetKind.sticker;
   late Future<List<SpaceAsset>> _list;
 
   @override
@@ -1273,25 +1274,31 @@ class _AssetsPageState extends State<AssetsPage> {
     _list = context.repository.assets(widget.spaceId, _kind);
   }
 
+  /// Each kind takes its own permission, as in the API and the desktop's
+  /// tabs: both lists show, the controls only where it's held.
+  bool _may(AssetKind kind) =>
+      context.repository
+          .spaceProfile(widget.spaceId)
+          ?.can(kind == AssetKind.emoji ? Perm.manageEmojis : Perm.manageStickers) ??
+      false;
+
   void _reload() => setState(() {
     _list = context.repository.assets(widget.spaceId, _kind);
   });
 
   String get _noun => _kind == AssetKind.emoji ? 'emoji' : 'sticker';
 
-  // Emoji names are `:like_this:`.
-  static String _clean(String name) => name.replaceAll(RegExp(r'[^A-Za-z0-9_]'), '_');
-
+  // Names go as typed (trimmed), as the desktop sends them: the API takes
+  // any text.
   Future<void> _add() async {
     final path = await pickSpaceImage();
     if (path == null || !mounted) return;
     final got = await askName<void>(context, title: 'Name the $_noun', action: 'Add');
     if (got == null || !mounted) return;
-    final name = _kind == AssetKind.emoji ? _clean(got.$1) : got.$1;
     await _try(
       context,
       'Couldn’t add the $_noun',
-      () => context.repository.addAsset(widget.spaceId, _kind, name, path),
+      () => context.repository.addAsset(widget.spaceId, _kind, got.$1, path),
     );
     if (mounted) _reload();
   }
@@ -1320,8 +1327,7 @@ class _AssetsPageState extends State<AssetsPage> {
       case 'rename':
         final got = await askName<void>(context, title: 'Rename ${a.name}', initial: a.name);
         if (got == null || !mounted) return;
-        final name = _kind == AssetKind.emoji ? _clean(got.$1) : got.$1;
-        await _try(context, 'Couldn’t rename it', () => repository.renameAsset(widget.spaceId, _kind, a.id, name));
+        await _try(context, 'Couldn’t rename it', () => repository.renameAsset(widget.spaceId, _kind, a.id, got.$1));
       case 'delete':
         final sure = await confirmDestructive(
           context,
@@ -1339,13 +1345,14 @@ class _AssetsPageState extends State<AssetsPage> {
   Widget build(BuildContext context) {
     final colors = context.theme.colors;
     final size = _kind == AssetKind.emoji ? 48.0 : 96.0;
+    final may = _may(_kind);
     return FutureBuilder(
       future: _list,
       builder: (context, snapshot) {
         final list = snapshot.data;
         return AdminPage(
           title: 'Emojis and stickers',
-          actions: [IconAction(icon: FLucideIcons.plus, label: 'Add $_noun', onPressed: _add)],
+          actions: [if (may) IconAction(icon: FLucideIcons.plus, label: 'Add $_noun', onPressed: _add)],
           children: [
             Wrap(
               spacing: 8,
@@ -1379,14 +1386,14 @@ class _AssetsPageState extends State<AssetsPage> {
                   for (final a in list)
                     Semantics(
                       container: true,
-                      button: true,
+                      button: may,
                       label: _kind == AssetKind.emoji ? ':${a.name}:' : a.name,
-                      hint: 'Double tap for options',
+                      hint: may ? 'Double tap for options' : null,
                       excludeSemantics: true,
-                      onTap: () => _options(a),
+                      onTap: may ? () => _options(a) : null,
                       child: GestureDetector(
                         behavior: HitTestBehavior.opaque,
-                        onTap: () => _options(a),
+                        onTap: may ? () => _options(a) : null,
                         child: SizedBox(
                           width: size + 24,
                           child: Column(

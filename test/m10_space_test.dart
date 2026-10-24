@@ -332,19 +332,24 @@ void main() {
     semantics.dispose();
   });
 
-  testWidgets('emojis and stickers: add with a clean name, rename, delete', (tester) async {
+  testWidgets('emojis and stickers: add with the name as typed, as the API takes it; rename, delete', (tester) async {
     pickSpaceImage = () async => '/tmp/party.png';
     final repository = await pumpSettings(tester);
     await tapLabel(tester, RegExp(r'^Emojis and stickers'));
     expect(find.text('No emojis yet'), findsOneWidget);
     await tapLabel(tester, 'Add emoji');
-    await typeName(tester, 'party time');
+    await typeName(tester, 'party time!');
     await tapLabel(tester, 'Add');
-    expect(repository.admin.last, 'emoji+ party_time /tmp/party.png');
-    await tapLabel(tester, ':party_time:');
+    expect(repository.admin.last, 'emoji+ party time! /tmp/party.png');
+    await tapLabel(tester, ':party time!:');
+    await tapLabel(tester, 'Rename');
+    await typeName(tester, 'fiesta-time');
+    await tapLabel(tester, 'Save');
+    expect(repository.admin.last, 'emoji~ emoji-party time! fiesta-time');
+    await tapLabel(tester, ':fiesta-time:');
     await tapLabel(tester, 'Delete');
     await tapLabel(tester, 'Delete emoji');
-    expect(repository.admin.last, 'emoji- emoji-party_time');
+    expect(repository.admin.last, 'emoji- emoji-party time!');
 
     await tester.tap(find.text('Stickers'));
     await tester.pumpAndSettle();
@@ -352,6 +357,29 @@ void main() {
     await typeName(tester, 'Wave');
     await tapLabel(tester, 'Add');
     expect(repository.admin.last, 'sticker+ Wave /tmp/party.png');
+    semantics.dispose();
+  });
+
+  testWidgets('emojis and stickers: each kind by its own permission', (tester) async {
+    pickSpaceImage = () async => '/tmp/party.png';
+    final repository = await pumpSettings(
+      tester,
+      setUp: (r) => r
+        ..spaceOwner = false
+        ..spacePerms = Perm.manageStickers
+        ..assetList[AssetKind.emoji]!.add(const SpaceAsset(id: 'e-1', name: 'party', url: 'https://x/party.png')),
+    );
+    await tapLabel(tester, RegExp(r'^Emojis and stickers'));
+    // Stickers first, the kind the user may change.
+    expect(find.bySemanticsLabel('Add sticker'), findsOneWidget);
+    await tester.tap(find.text('Emojis'));
+    await tester.pumpAndSettle();
+    expect(find.bySemanticsLabel('Add emoji'), findsNothing);
+    // Listed, but without options.
+    await tester.tap(find.bySemanticsLabel(':party:').last);
+    await tester.pumpAndSettle();
+    expect(find.bySemanticsLabel('Rename'), findsNothing);
+    expect(repository.admin, isEmpty);
     semantics.dispose();
   });
 
