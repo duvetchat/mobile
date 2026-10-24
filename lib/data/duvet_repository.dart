@@ -33,6 +33,9 @@ class DuvetRepository implements ChatRepository {
     readable: (content) => readableContent(content, nameOf: nameOf, emojiNameOf: emojiNameOf),
   );
 
+  // The saved list's read, which previews catch up after.
+  Future<void> _recentsLoaded = Future.value();
+
   // Names seen this session: members, conversation members, message authors.
   final _names = <String, String>{};
   final _emojiNames = <String, String>{};
@@ -163,7 +166,7 @@ class DuvetRepository implements ChatRepository {
       conversations.value = home.conversations;
       spaces.value = home.spaces;
       status.value = LiveStatus.offline;
-      unawaited(_recents.load(home.profile.id));
+      _recentsLoaded = _recents.load(home.profile.id);
       _retry = Timer.periodic(const Duration(seconds: 20), (_) => _comeBack());
       return true;
     }
@@ -219,7 +222,7 @@ class DuvetRepository implements ChatRepository {
     final me = await _call((api) => api.me());
     _setProfile(me);
     _names[me.id] = profile.value!.displayName;
-    unawaited(_recents.load(me.id));
+    _recentsLoaded = _recents.load(me.id);
     unawaited(refreshConversations().catchError((Object e) => debugPrint('conversations: $e')));
     if (_connectsGateway) _connectGateway();
   }
@@ -349,6 +352,7 @@ class DuvetRepository implements ChatRepository {
         unread.value = {...?data.unreadRooms, ...?data.unreadConvs};
         _lastRead.addAll(data.lastReadRooms ?? const {});
         _lastMessage.addAll(data.lastMsgRooms ?? const {});
+        unawaited(_catchUpRooms());
         if (_api != null) {
           unawaited(
             _call((api) => api.getMentionCounts()).then((counts) {
@@ -359,8 +363,12 @@ class DuvetRepository implements ChatRepository {
             }, onError: (Object e) => debugPrint('mentions: $e')),
           );
         }
-        // READY again after a drop: chats catch up.
-        if (_wasReady) _resumed.add(null);
+        // READY again after a drop: chats catch up, and the conversations,
+        // whose dates tell the DMs' previews behind.
+        if (_wasReady) {
+          _resumed.add(null);
+          unawaited(refreshConversations().catchError((Object e) => debugPrint('conversations: $e')));
+        }
         _wasReady = true;
 
       case duvet.MentionCreatedEvent(:final data) when data.authorId != me:
@@ -582,10 +590,42 @@ class DuvetRepository implements ChatRepository {
   final _loadingLatest = <String>{};
 
   @override
-  Future<void> loadLatest(Iterable<ChatTarget> targets) async {
+  Future<void> loadLatest(Iterable<ChatTarget> targets) =>
+      _fetchLatest(targets.where((t) => !latest.value.containsKey(t.id)));
+
+  // Messages sent while the app wasn't listening (closed, or offline too long
+  // to resume) never reached the previews, which still show the last one it
+  // saw: the rooms whose newest message, as READY names it, isn't the one
+  // shown fetch it again, for the Chats tab and their Space's list.
+  Future<void> _catchUpRooms() async {
+    await _recentsLoaded;
+    bool behind(String roomId, String? shown) => _lastMessage[roomId] != null && _lastMessage[roomId] != shown;
+    await _fetchLatest({
+      for (final c in _recents.chats.value)
+        if (c.target case RoomTarget(:final roomId) when behind(roomId, c.previewId)) c.target,
+      for (final (:space, :rooms) in _spaces.values)
+        for (final id in rooms.keys)
+          if (latest.value[id] case final m? when behind(id, m.id)) RoomTarget(spaceId: space.id, roomId: id),
+    });
+  }
+
+  // The same for DMs, which the list of conversations dates by their newest
+  // message.
+  Future<void> _catchUpConversations() async {
+    await _recentsLoaded;
+    final updated = {for (final c in conversations.value) c.id: c.updatedAt};
+    bool behind(String conversationId, DateTime shown) => updated[conversationId]?.isAfter(shown) ?? false;
+    await _fetchLatest([
+      for (final c in _recents.chats.value)
+        if (c.target case ConversationTarget(:final conversationId) when behind(conversationId, c.at)) c.target,
+    ]);
+  }
+
+  // Each chat's newest message, for its preview here and in the Chats tab.
+  Future<void> _fetchLatest(Iterable<ChatTarget> targets) async {
     final wanted = [
       for (final t in targets)
-        if (!latest.value.containsKey(t.id) && _loadingLatest.add(t.id)) t,
+        if (_loadingLatest.add(t.id)) t,
     ];
     await Future.wait([
       for (final t in wanted)
@@ -600,7 +640,10 @@ class DuvetRepository implements ChatRepository {
                 (api) => api.getDirectMessages(conversationId, count: 1),
               )).map(_directMessage).firstOrNull,
             };
-            if (newest != null) _setLatest(t.id, newest);
+            if (newest != null) {
+              _setLatest(t.id, newest);
+              _recents.caughtUp(t.id, newest);
+            }
           } catch (e) {
             debugPrint('latest: $e');
           } finally {
@@ -660,6 +703,7 @@ class DuvetRepository implements ChatRepository {
         _summary(c, me),
     ];
     _saveHome();
+    unawaited(_catchUpConversations());
   }
 
   ConversationSummary _summary(duvet.Conversation c, String? me) {

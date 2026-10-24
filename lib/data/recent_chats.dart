@@ -216,6 +216,15 @@ class RecentChats {
     _put(known._withMessage(m, _readable));
   }
 
+  /// [m] is the chat's newest message, fetched again: what was sent while the
+  /// app wasn't listening never reached the list. It shows unless the list
+  /// has one as new (a live message can come before the fetch's answer).
+  void caughtUp(String chatId, ChatMessage m) {
+    if (_find(chatId) case final known? when known.previewId == null || m.createdAt.isAfter(known.at)) {
+      _put(known._withMessage(m, _readable));
+    }
+  }
+
   /// The previewed message was edited.
   void edited(String chatId, ChatMessage m) {
     if (_find(chatId) case final known? when known.previewId == m.id) _put(known._withMessage(m, _readable));

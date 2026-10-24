@@ -338,7 +338,17 @@ class MessageAttachments extends StatelessWidget {
 
   /// While they upload: how far, 0 to 1, over all of them.
   final double? uploadProgress;
-  const MessageAttachments({required this.attachments, this.maxWidth = 260, this.uploadProgress, super.key});
+
+  /// A double tap on a picture: its message's (a reply). A single tap then
+  /// waits for the second before it opens the picture.
+  final VoidCallback? onDoubleTap;
+  const MessageAttachments({
+    required this.attachments,
+    this.maxWidth = 260,
+    this.uploadProgress,
+    this.onDoubleTap,
+    super.key,
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -354,7 +364,10 @@ class MessageAttachments extends StatelessWidget {
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         if (images.length == 1)
-          _uploading(images.single, _Picture(attachment: images.single, width: maxWidth, gallery: images, index: 0))
+          _uploading(
+            images.single,
+            _Picture(attachment: images.single, width: maxWidth, gallery: images, index: 0, onDoubleTap: onDoubleTap),
+          )
         else if (images.length > 1)
           SizedBox(
             width: maxWidth,
@@ -365,7 +378,14 @@ class MessageAttachments extends StatelessWidget {
                 for (final (i, a) in images.indexed)
                   _uploading(
                     a,
-                    _Picture(attachment: a, width: (maxWidth - 4) / 2, square: true, gallery: images, index: i),
+                    _Picture(
+                      attachment: a,
+                      width: (maxWidth - 4) / 2,
+                      square: true,
+                      gallery: images,
+                      index: i,
+                      onDoubleTap: onDoubleTap,
+                    ),
                   ),
               ],
             ),
@@ -426,19 +446,22 @@ int uploadingIndex(List<MessageAttachment> files, double total) {
 }
 
 /// An image or GIF in a message, at its aspect ratio within bounds. A GIF
-/// plays unless animations are off, then waits for a tap.
+/// plays unless animations are off, then waits for a tap. A long press is its
+/// message's (the actions), as on a text bubble.
 class _Picture extends StatefulWidget {
   final MessageAttachment attachment;
   final double width;
   final bool square;
   final List<MessageAttachment> gallery;
   final int index;
+  final VoidCallback? onDoubleTap;
   const _Picture({
     required this.attachment,
     required this.width,
     required this.gallery,
     required this.index,
     this.square = false,
+    this.onDoubleTap,
   });
 
   @override
@@ -472,6 +495,7 @@ class _PictureState extends State<_Picture> {
         onTap: () => setState(() => _revealed = true),
         child: GestureDetector(
           onTap: () => setState(() => _revealed = true),
+          onDoubleTap: widget.onDoubleTap,
           child: ClipRRect(
             borderRadius: BorderRadius.circular(DuvetTokens.radiusButton),
             child: Container(
@@ -499,13 +523,12 @@ class _PictureState extends State<_Picture> {
       image: true,
       button: true,
       label: '$kind, ${a.displayName}',
-      hint: a.isGif && still ? 'Double tap to play. Long press to open' : 'Double tap to open',
+      hint: a.isGif && still ? 'Double tap to play' : 'Double tap to open',
       excludeSemantics: true,
       onTap: a.isGif && still ? () => setState(() => _playing = true) : () => _open(context),
-      onLongPress: () => _open(context),
       child: GestureDetector(
         onTap: a.isGif && still ? () => setState(() => _playing = true) : () => _open(context),
-        onLongPress: () => _open(context),
+        onDoubleTap: widget.onDoubleTap,
         child: Hero(
           tag: _heroTag(a),
           child: ClipRRect(

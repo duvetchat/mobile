@@ -4,6 +4,7 @@ import 'package:duvet/data/markdown.dart';
 import 'package:duvet/data/models.dart';
 import 'package:duvet/main.dart';
 import 'package:duvet/widgets/message_content.dart';
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -294,6 +295,7 @@ void main() {
     final cover = find.bySemanticsLabel('Spoiler, Photo, ending.png');
     expect(cover, findsOneWidget);
     await tester.tap(cover);
+    await tester.pump(kDoubleTapTimeout);
     await tester.pumpAndSettle();
     expect(find.bySemanticsLabel('Photo, ending.png'), findsOneWidget);
     semantics.dispose();
