@@ -404,10 +404,21 @@ class MyFile {
 }
 
 /// How much of their storage the user has used, in bytes.
+/// A bucket of the user's own: what it holds, its own limit if it has one,
+/// and whether it's the one that keeps their uploads.
+typedef BucketUsage = ({String name, int used, int? max, bool active});
+
 class StorageInfo {
+  /// The default storage's: what it holds, and its quota.
   final int used;
   final int max;
-  const StorageInfo({required this.used, required this.max});
+
+  /// The user's own buckets; one at most is active, and keeps the uploads
+  /// instead of the default storage.
+  final List<BucketUsage> buckets;
+  const StorageInfo({required this.used, required this.max, this.buckets = const []});
+
+  BucketUsage? get activeBucket => buckets.where((b) => b.active).firstOrNull;
 }
 
 enum ProfileImage { avatar, banner }
