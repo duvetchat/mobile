@@ -1,5 +1,6 @@
 import 'package:clock/clock.dart';
 import 'package:duvet/data/emoji_catalog.dart';
+import 'package:duvet/data/gifs.dart';
 import 'package:duvet/data/models.dart';
 import 'package:duvet/deep_links.dart';
 import 'package:duvet/main.dart';
@@ -557,4 +558,52 @@ void main() {
     expect(find.text('Alerts'), findsOneWidget);
     semantics.dispose();
   });
+
+  testWidgets('a sticker or a GIF sent while replying answers that message, and the strip closes', (tester) async {
+    GifSource.instance = _Gifs();
+    final repository = await openGeneral(tester);
+    Future<void> replyToLeo() async {
+      await tester.tap(find.text('Pushed the new type ramp'));
+      await tester.pump(const Duration(milliseconds: 50));
+      await tester.tap(find.text('Pushed the new type ramp'));
+      await tester.pumpAndSettle();
+      expect(find.text('Replying to Leo — Pushed the new type ramp'), findsOneWidget);
+    }
+
+    await replyToLeo();
+    await tapLabel(tester, 'Add photos, a sticker or a mention');
+    await tapLabel(tester, 'Sticker');
+    await tapLabel(tester, 'Sticker, wave');
+    expect((repository.sent.last.sticker?.id, repository.sent.last.replyTo), (FakeRepository.wave.id, 'm3'));
+    expect(find.textContaining('Replying to Leo'), findsNothing);
+
+    await replyToLeo();
+    await tapLabel(tester, 'Emoji and stickers');
+    await tester.tap(find.text('GIFs'));
+    await tester.pumpAndSettle();
+    await tapLabel(tester, 'GIF, party');
+    expect((repository.sent.last.content, repository.sent.last.replyTo), (_Gifs.party.url, 'm3'));
+    expect(find.textContaining('Replying to Leo'), findsNothing);
+    semantics.dispose();
+  });
+}
+
+class _Gifs implements GifSource {
+  static const party = Gif(
+    id: 'g1',
+    url: 'https://media.tenor.com/party.gif',
+    preview: 'https://media.tenor.com/party-tiny.gif',
+    width: 200,
+    height: 150,
+    description: 'party',
+  );
+
+  @override
+  String get attribution => 'GIFs from Tenor';
+
+  @override
+  Future<List<Gif>> trending() async => const [party];
+
+  @override
+  Future<List<Gif>> search(String query) async => const [party];
 }

@@ -592,10 +592,18 @@ class _ChatViewState extends State<ChatView> {
 
   static String _megabytes(int bytes) => '${(bytes / (1024 * 1024)).round()} MB';
 
-  void _sendSticker(Sticker sticker) =>
-      _queue((content: '', files: const [], sticker: sticker, replyTo: null, voice: null));
+  void _sendSticker(Sticker sticker) => _sendPicked(sticker: sticker);
 
-  void _sendGif(String url) => _queue((content: url, files: const [], sticker: null, replyTo: null, voice: null));
+  void _sendGif(String url) => _sendPicked(content: url);
+
+  // A sticker or a GIF answers the message being replied to, as a text does
+  // (on the desktop they all go out the same way), and the strip closes.
+  void _sendPicked({String content = '', Sticker? sticker}) {
+    final reply = _replyTo;
+    if (reply != null) setState(() => _replyTo = null);
+    final to = reply?.messageId ?? widget.threadOf;
+    _queue((content: content, files: const [], sticker: sticker, replyTo: to, voice: null), reply: reply);
+  }
 
   void _sendVoice(Recording recording) =>
       _queue((content: '', files: const [], sticker: null, replyTo: null, voice: recording));
