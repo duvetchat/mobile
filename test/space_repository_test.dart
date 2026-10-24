@@ -1,0 +1,235 @@
+import 'dart:convert';
+
+import 'package:duvet/data/cache.dart';
+import 'package:duvet/data/duvet_repository.dart';
+import 'package:duvet/data/models.dart';
+import 'package:duvet/data/recent_chats.dart';
+import 'package:duvet/data/session_store.dart';
+import 'package:duvet_client/duvet.dart' as duvet;
+import 'package:flutter_test/flutter_test.dart';
+import 'package:http/http.dart' as http;
+import 'package:http/testing.dart';
+
+const _me = '00000000-0000-4000-8000-000000000001';
+const _maya = '00000000-0000-4000-8000-000000000002';
+const _leo = '00000000-0000-4000-8000-000000000003';
+const _at = '2026-10-24T09:00:00Z';
+
+/// The gateway's envelope for [type], parsed as the client parses it.
+duvet.GatewayEventPayload _event(String type, Map<String, dynamic> data) => duvet.GatewayEnvelope.fromJson({
+  'op': 0,
+  's': 1,
+  'event': type,
+  'd': {'type': type, 'data': data},
+}).d!;
+
+Map<String, dynamic> _user(String id, String username, {bool bot = false}) => {
+  'id': id,
+  'username': username,
+  'custom': '',
+  'status_id': 1,
+  'is_bot': bot,
+  'created_at': _at,
+  'updated_at': _at,
+};
+
+Map<String, dynamic> _room(String id, {int type = 1, int position = 0, String? parent}) => {
+  'id': id,
+  'space_id': 's-1',
+  'parent_id': parent,
+  'type': type,
+  'name': id,
+  'position': position,
+  'created_at': _at,
+  'updated_at': _at,
+};
+
+Map<String, dynamic> _role(String id, String name, int perms, {int position = 1}) => {
+  'id': id,
+  'space_id': 's-1',
+  'name': name,
+  'permissions': perms,
+  'position': position,
+  'created_at': _at,
+  'updated_at': _at,
+};
+
+/// A member of s-1, as the members list gives them.
+Map<String, dynamic> _member(String memberId, String userId, String username) => {
+  'id': memberId,
+  'space_id': 's-1',
+  'user_id': userId,
+  'created_at': _at,
+  'updated_at': _at,
+  'user': _user(userId, username),
+  'max_pos': -1,
+};
+
+/// Maya's Space, where the user has [roles] beside the default one (whose ID
+/// is the Space's).
+Map<String, dynamic> _space({
+  Map<String, Map<String, dynamic>>? rooms,
+  Map<String, int> roles = const {},
+  List<String> mine = const [],
+  Map<String, List<Map<String, dynamic>>>? overwrites,
+  int everyone = Perm.viewChannels | Perm.sendMessages,
+}) => {
+  'space': {'id': 's-1', 'name': 'Duvet Official', 'owner_id': _maya, 'created_at': _at, 'updated_at': _at},
+  'rooms': rooms ?? {'r-general': _room('r-general')},
+  'roles_permissions': {
+    's-1': _role('s-1', 'everyone', everyone, position: 0),
+    for (final e in roles.entries) e.key: _role(e.key, e.key, e.value),
+  },
+  'member_roles': {
+    _me: ['s-1', ...mine],
+    _maya: ['s-1'],
+  },
+  'overwrites': ?overwrites,
+  'owner_id': _maya,
+};
+
+void main() {
+  late List<http.Request> requests;
+  late Map<(String, String), Object? Function(http.Request request)> routes;
+  late DuvetRepository repository;
+
+  setUp(() {
+    requests = [];
+    routes = {
+      ('POST', '/api/auth/login'): (_) => {'token': 'access-1', 'session_token': 'refresh-1'},
+      ('GET', '/api/users/@me'): (_) => {..._user(_me, 'gaby'), 'email_verified': true},
+      ('GET', '/api/users/@me/conversations'): (_) => <Object>[],
+    };
+    final client = MockClient((request) async {
+      requests.add(request);
+      final json = routes[(request.method, request.url.path)]?.call(request);
+      if (json is http.Response) return json;
+      if (json == null) return http.Response('not found', 404);
+      return http.Response(jsonEncode(json), 200, headers: {'content-type': 'application/json'});
+    });
+    repository = DuvetRepository(
+      store: MemorySessionStore(),
+      recentsStore: MemoryRecentChatsStore(),
+      httpClient: () => client,
+      connectGateway: false,
+      cacheStore: MemoryChatCacheStore(),
+    );
+  });
+
+  tearDown(() => repository.dispose());
+
+  Future<void> signIn() async {
+    await repository.logIn('gaby@duvet.chat', 'secret');
+    await pumpEventQueue();
+  }
+
+  group('roles', () {
+    test('the default role is left out by its ID: the API names it "everyone"', () async {
+      await signIn();
+      repository.handleEvent(_event('SPACE_CREATE', _space(roles: {'role-mod': Perm.pinMessages}, mine: ['role-mod'])));
+      expect(repository.rolesOf('s-1', _me).map((r) => r.name), ['role-mod']);
+      expect(repository.spaceRoles('s-1').map((r) => r.id), ['role-mod']);
+    });
+
+    // The members list names each member's ID, which the API's role routes and
+    // events take.
+    void members() => routes[('GET', '/api/spaces/s-1/members')] = (_) => [
+      _member('mem-me', _me, 'gaby'),
+      _member('mem-maya', _maya, 'maya'),
+    ];
+    int memberFetches() => requests.where((r) => r.url.path == '/api/spaces/s-1/members').length;
+
+    test('giving and taking a role names the member by their member ID', () async {
+      await signIn();
+      repository.handleEvent(_event('SPACE_CREATE', _space(roles: {'role-mod': Perm.pinMessages})));
+      members();
+      routes[('PUT', '/api/spaces/s-1/members/mem-maya/roles/role-mod')] = (_) => http.Response('', 204);
+      routes[('DELETE', '/api/spaces/s-1/members/mem-maya/roles/role-mod')] = (_) => http.Response('', 204);
+
+      // The members list wasn't loaded: it is, for the ID.
+      await repository.setRole('s-1', 'role-mod', _maya, has: true);
+      expect(
+        (requests.last.method, requests.last.url.path),
+        ('PUT', '/api/spaces/s-1/members/mem-maya/roles/role-mod'),
+      );
+      expect(repository.roleMembers('s-1', 'role-mod'), [_maya]);
+
+      await repository.setRole('s-1', 'role-mod', _maya, has: false);
+      expect(requests.last.url.path, '/api/spaces/s-1/members/mem-maya/roles/role-mod');
+      expect(repository.roleMembers('s-1', 'role-mod'), isEmpty);
+      expect(memberFetches(), 1);
+    });
+
+    test('someone the members list doesn\'t have can\'t be given a role', () async {
+      await signIn();
+      repository.handleEvent(_event('SPACE_CREATE', _space(roles: {'role-mod': Perm.pinMessages})));
+      members();
+      await expectLater(
+        repository.setRole('s-1', 'role-mod', _leo, has: true),
+        throwsA(isA<ActionFailed>().having((e) => e.message, 'message', 'Member not found')),
+      );
+      expect(requests.where((r) => r.method == 'PUT'), isEmpty);
+    });
+
+    test('live role changes reach the member they name, by member ID', () async {
+      await signIn();
+      repository.handleEvent(_event('SPACE_CREATE', _space(roles: {'role-mod': Perm.pinMessages})));
+      members();
+      await repository.members(const RoomTarget(spaceId: 's-1', roomId: 'r-general'));
+
+      repository.handleEvent(
+        _event('MEMBER_ROLE_ADD', {'member_id': 'mem-maya', 'role_id': 'role-mod', 'space_id': 's-1'}),
+      );
+      expect(repository.rolesOf('s-1', _maya).map((r) => r.name), ['role-mod']);
+      expect(repository.roleMembers('s-1', 'role-mod'), [_maya]);
+
+      // MEMBER_ROLE_REMOVE names no Space: the role's own tells it.
+      repository.handleEvent(_event('MEMBER_ROLE_REMOVE', {'member_id': 'mem-maya', 'role_id': 'role-mod'}));
+      expect(repository.rolesOf('s-1', _maya), isEmpty);
+      expect(memberFetches(), 1);
+    });
+
+    test('a role of the user\'s own, before the members list named them, changes what they may do', () async {
+      await signIn();
+      repository.handleEvent(_event('SPACE_CREATE', _space(roles: {'role-mod': Perm.pinMessages})));
+      members();
+      expect(repository.canInRoom('s-1', 'r-general', Perm.pinMessages), isFalse);
+
+      repository.handleEvent(
+        _event('MEMBER_ROLE_ADD', {'member_id': 'mem-me', 'role_id': 'role-mod', 'space_id': 's-1'}),
+      );
+      await pumpEventQueue();
+      expect(repository.canInRoom('s-1', 'r-general', Perm.pinMessages), isTrue);
+      expect(memberFetches(), 1);
+    });
+
+    test('role changes waiting for the members list apply in the order they came', () async {
+      await signIn();
+      repository.handleEvent(_event('SPACE_CREATE', _space(roles: {'role-mod': Perm.pinMessages})));
+      members();
+      // Leo's role comes first, then his arrival names him, then he loses it.
+      repository.handleEvent(
+        _event('MEMBER_ROLE_ADD', {'member_id': 'mem-leo', 'role_id': 'role-mod', 'space_id': 's-1'}),
+      );
+      repository.handleEvent(
+        _event('SPACE_MEMBER_ADD', {'space_id': 's-1', 'user_id': _leo, 'member_id': 'mem-leo', 'status_id': 1}),
+      );
+      repository.handleEvent(_event('MEMBER_ROLE_REMOVE', {'member_id': 'mem-leo', 'role_id': 'role-mod'}));
+      await pumpEventQueue();
+      expect(repository.rolesOf('s-1', _leo), isEmpty);
+    });
+
+    test('someone who joins brings their member ID: their roles need no members list', () async {
+      await signIn();
+      repository.handleEvent(_event('SPACE_CREATE', _space(roles: {'role-mod': Perm.pinMessages})));
+      repository.handleEvent(
+        _event('SPACE_MEMBER_ADD', {'space_id': 's-1', 'user_id': _leo, 'member_id': 'mem-leo', 'status_id': 1}),
+      );
+      repository.handleEvent(
+        _event('MEMBER_ROLE_ADD', {'member_id': 'mem-leo', 'role_id': 'role-mod', 'space_id': 's-1'}),
+      );
+      expect(repository.rolesOf('s-1', _leo).map((r) => r.name), ['role-mod']);
+      expect(memberFetches(), 0);
+    });
+  });
+}
