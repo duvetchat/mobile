@@ -14,13 +14,19 @@ abstract interface class VoiceSignaling {
   /// events, as they arrive.
   Stream<duvet.GatewayEventPayload> get events;
 
-  /// The number of the gateway socket open now, or null while none is. Each
-  /// socket gets a READY: a session of its own.
+  /// The number of the gateway socket open now, or null while none is. A
+  /// socket the gateway resumed the session on carries on the one before;
+  /// any other gets a READY: a session of its own.
   int? get connection;
 
   /// How long the gateway had been silent before its last READY: how long
   /// the phone was cut off (asleep, say) before this session.
   Duration get silenceBeforeReady;
+
+  /// Makes the next socket start a new session, with READY, rather than
+  /// resume this one, until a READY comes: voice joins on READY, which a
+  /// resumed session doesn't send.
+  void wantFreshSession();
 
   bool joinVoice(String roomId, duvet.SessionDescription offer, {required bool videoOff});
   bool leaveVoice(String roomId);
@@ -99,6 +105,9 @@ class GatewayVoiceSignaling implements VoiceSignaling {
 
   @override
   Duration get silenceBeforeReady => _manager?.silenceBeforeReady ?? Duration.zero;
+
+  @override
+  void wantFreshSession() => _manager?.wantFreshSession();
 
   @override
   bool joinVoice(String roomId, duvet.SessionDescription offer, {required bool videoOff}) =>

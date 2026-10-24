@@ -26,6 +26,16 @@ class FakeVoiceSignaling implements VoiceSignaling {
 
   void push(duvet.GatewayEventPayload event) => _events.add(event);
 
+  /// How many times voice asked for the next socket to start a new session.
+  int freshSessionsWanted = 0;
+
+  @override
+  void wantFreshSession() => freshSessionsWanted++;
+
+  /// The gateway resumed the session on socket [number]: it goes on, with no
+  /// READY.
+  void resumed({int number = 2}) => socket = number;
+
   /// A new session: READY, on socket [number].
   void ready({
     int number = 2,

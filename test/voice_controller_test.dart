@@ -255,6 +255,62 @@ void main() {
     expect(h.voice.link, VoiceLink.connecting);
   });
 
+  _voice('a join that waits for the gateway asks for a new session, whose READY joins', (async, h) {
+    // Out of reach as it joins.
+    h.gateway.socket = null;
+    h.voice.joinRoom(_lounge);
+    async.flushMicrotasks();
+    expect(h.gateway.freshSessionsWanted, 1);
+
+    // Gone while the connection was made.
+    h.engine.holdPeer = Completer<void>();
+    h.gateway.ready(number: 2);
+    async.flushMicrotasks();
+    h.gateway.socket = null;
+    h.engine.holdPeer!.complete();
+    h.engine.holdPeer = null;
+    async.flushMicrotasks();
+    expect(h.gateway.freshSessionsWanted, 2);
+    expect(h.voice.link, VoiceLink.waiting);
+
+    // Gone when the join's answer was due.
+    h.gateway.ready(number: 3);
+    async.flushMicrotasks();
+    h.gateway.socket = null;
+    async.elapse(const Duration(seconds: 15));
+    expect(h.gateway.freshSessionsWanted, 3);
+
+    // Gone as the connection failed.
+    h.gateway.ready(number: 4);
+    async.flushMicrotasks();
+    h.gateway.socket = null;
+    h.engine.peer.stateHandler!(PeerState.failed);
+    expect(h.gateway.freshSessionsWanted, 4);
+    expect(h.voice.link, VoiceLink.waiting);
+
+    h.gateway.ready(number: 5);
+    async.flushMicrotasks();
+    expect(h.gateway.last('VOICE_JOIN')!['offer'], 'offer-4');
+    expect(h.voice.link, VoiceLink.connecting);
+  });
+
+  _voice('a session the gateway resumes on a new socket keeps its voice: nothing joins again', (async, h) {
+    h.gateway.ready(number: 1);
+    h.voice.joinRoom(_lounge);
+    async.flushMicrotasks();
+    h.gateway.push(_joined('r-lounge', 'a1'));
+    async.flushMicrotasks();
+    h.engine.peer.stateHandler!(PeerState.connected);
+
+    h.gateway.socket = null;
+    h.gateway.resumed(number: 2);
+    async.elapse(const Duration(minutes: 1));
+    expect(h.gateway.types.where((t) => t == 'VOICE_JOIN'), hasLength(1));
+    expect(h.engine.peers, hasLength(1));
+    expect(h.voice.link, VoiceLink.connected);
+    expect(h.gateway.freshSessionsWanted, 0);
+  });
+
   _voice('an offline join waits 3 minutes at most, then leaves with the microphone and the service', (async, h) {
     h.gateway.socket = null;
     h.voice.joinRoom(_lounge);

@@ -141,10 +141,11 @@ const mouthRange = 0.2;
 /// connection's offer; the gateway answers with VOICE_JOINED, then its own
 /// offers (WEBRTC_RENEGOTIATE) as people's audio comes and goes. Each new
 /// gateway session (READY) joins again, unless voice had been out of reach
-/// for longer than [rejoinWindow]; a join made while the gateway is out of
-/// reach waits for its next session, [rejoinWindow] at most, and one it
-/// doesn't answer in [joinTimeout] leaves. Video is out: the phone asks for
-/// none (`video_off`) and sends none.
+/// for longer than [rejoinWindow], and a session the gateway resumes on a new
+/// socket keeps its voice as it was; a join made while the gateway is out of
+/// reach waits for its next session (a new one: it asks for it), and
+/// [rejoinWindow] at most, and one it doesn't answer in [joinTimeout] leaves.
+/// Video is out: the phone asks for none (`video_off`) and sends none.
 class VoiceController extends ChangeNotifier {
   VoiceController({
     required ChatRepository repository,
@@ -539,7 +540,7 @@ class VoiceController extends ChangeNotifier {
     if (_signaling.connection == null) {
       // The gateway is out of reach, and a VOICE_JOIN now would be lost: its
       // next session's READY joins.
-      _setLink(VoiceLink.waiting);
+      _waitForSession();
       return;
     }
     _setLink(VoiceLink.connecting);
@@ -584,7 +585,7 @@ class VoiceController extends ChangeNotifier {
       // The socket can have closed meanwhile.
       final connection = _signaling.connection;
       if (connection == null) {
-        _setLink(VoiceLink.waiting);
+        _waitForSession();
         return;
       }
       _signaling.joinVoice(target.id, offer, videoOff: true);
@@ -602,11 +603,19 @@ class VoiceController extends ChangeNotifier {
     _joinTimer = Timer(joinTimeout, () {
       if (generation != _generation || _target != target || _negotiationReady) return;
       if (_signaling.connection == null) {
-        _setLink(VoiceLink.waiting);
+        _waitForSession();
         return;
       }
       _fail('Couldn’t connect to voice');
     });
+  }
+
+  // Joins on the gateway's next session, as desktop's VoiceChat does: a new
+  // one, whose READY joins. A resumed one would send no READY, and could
+  // replay what the gateway sent the last socket.
+  void _waitForSession() {
+    _signaling.wantFreshSession();
+    _setLink(VoiceLink.waiting);
   }
 
   void _onPeerState(VoicePeer peer, PeerState state) {
@@ -627,7 +636,7 @@ class VoiceController extends ChangeNotifier {
         if (_signaling.connection != null) {
           _fail('Lost the connection to voice');
         } else {
-          _setLink(VoiceLink.waiting);
+          _waitForSession();
         }
       case PeerState.connecting || PeerState.closed:
         break;

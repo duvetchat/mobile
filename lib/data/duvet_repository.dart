@@ -116,6 +116,7 @@ class DuvetRepository implements ChatRepository {
   final _lastRead = <String, String>{};
   final _resumed = StreamController<void>.broadcast();
   StreamSubscription<duvet.GatewayConnectionState>? _states;
+  StreamSubscription<void>? _resumes;
   StreamSubscription<duvet.GatewayCloseReason>? _closes;
   bool _wasReady = false;
 
@@ -286,6 +287,8 @@ class DuvetRepository implements ChatRepository {
     _events = null;
     _states?.cancel();
     _states = null;
+    _resumes?.cancel();
+    _resumes = null;
     _closes?.cancel();
     _closes = null;
     _wasReady = false;
@@ -402,12 +405,17 @@ class DuvetRepository implements ChatRepository {
       router: _router,
       // No gateway log at all in release builds.
       log: kDebugMode ? (shard, msg) => debugPrint('[gateway:$shard] $msg') : (_, _) {},
+      // A socket that replaces one that dropped takes the session up again,
+      // as the desktop app's does: the gateway replays what it missed, with
+      // no READY (see [handleResume]), when it still keeps the session.
+      resume: true,
     );
     _voiceSignaling.attach(gateway);
     // Listen before connecting: READY comes right after IDENTIFY, on a
     // broadcast stream.
     _events = gateway.onEvent.listen(handleEvent);
     _states = gateway.onConnectionState.listen(handleConnectionState);
+    _resumes = gateway.onResume.listen((_) => handleResume());
     _closes = gateway.onCloseReason.listen(handleCloseReason);
     status.value = LiveStatus.connecting;
     gateway.connectAll().catchError((Object e) {
@@ -416,11 +424,18 @@ class DuvetRepository implements ChatRepository {
     });
   }
 
-  /// A dropped socket shows until READY comes again.
+  /// A dropped socket shows until READY comes again, or the session resumes.
   @visibleForTesting
   void handleConnectionState(duvet.GatewayConnectionState state) {
     if (state == duvet.GatewayConnectionState.reconnecting && _wasReady) status.value = LiveStatus.reconnecting;
   }
+
+  /// The gateway took the session up again on a new socket: what it missed
+  /// came replayed before this, so it's live again as it was. Unlike after
+  /// READY, nothing is rebuilt or fetched again: presence, the chats (no
+  /// [resumed]), their previews, the mentions, the conversations, voice.
+  @visibleForTesting
+  void handleResume() => status.value = LiveStatus.online;
 
   /// The gateway refused the session's token (4004: unknown as it
   /// identified, or the session ended since): the API is asked about the

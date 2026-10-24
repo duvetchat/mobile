@@ -710,6 +710,28 @@ void main() {
       expect(resumed, 1);
     });
 
+    test('a resumed session is live again as it was: nothing fetched again, chats not told to catch up', () async {
+      await repository.logIn('gaby@duvet.chat', 'secret');
+      var resumed = 0;
+      final sub = repository.resumed.listen((_) => resumed++);
+      addTearDown(sub.cancel);
+      repository.handleEvent(_event('READY', {'user': _user(_me, 'gaby'), 'sessionToken': 'ws'}));
+      repository.handleEvent(_event('SPACE_CREATE', space(statuses: {_maya: 1, _me: 1})));
+      await pumpEventQueue();
+      final fetched = requests.length;
+
+      repository.handleConnectionState(duvet.GatewayConnectionState.reconnecting);
+      expect(repository.status.value, LiveStatus.reconnecting);
+      repository.handleResume();
+      await pumpEventQueue();
+      expect(repository.status.value, LiveStatus.online);
+      expect(resumed, 0);
+      expect(requests, hasLength(fetched));
+      // What was missed came replayed: the presence known stays.
+      expect(repository.presence.value[_maya], Presence.online);
+      expect(repository.spaces.value.single.onlineCount, 2);
+    });
+
     test('reactions reach whichever chat has the message', () async {
       await repository.logIn('gaby@duvet.chat', 'secret');
       final events = <MessageEvent>[];

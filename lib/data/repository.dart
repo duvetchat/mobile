@@ -297,7 +297,9 @@ abstract interface class ChatRepository {
   /// when it doesn't (and in conversations).
   String? lastReadOf(ChatTarget target);
 
-  /// Fires when the gateway is back after a drop: chats fetch what they missed.
+  /// Fires when the gateway is back after a drop with a new session (READY):
+  /// chats fetch what they missed. When it resumes the session instead, it
+  /// replays what was missed, and this doesn't fire.
   Stream<void> get resumed;
 
   /// What's unsent per chat, by chat ID; kept for the session.
