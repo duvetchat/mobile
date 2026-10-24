@@ -2,7 +2,9 @@ import 'dart:async';
 
 import 'package:duvet/data/models.dart';
 import 'package:duvet/main.dart';
+import 'package:duvet/members_sheet.dart';
 import 'package:duvet/widgets/avatar.dart';
+import 'package:duvet/widgets/chrome.dart';
 import 'package:duvet/widgets/facehash.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -51,6 +53,35 @@ void main() {
     await tester.tap(find.text('Sign in'));
     await tester.pumpAndSettle();
     expect(find.text('Maya'), findsOneWidget);
+  });
+
+  testWidgets('a DM shows the other person\'s presence, in the chats list and its top bar, as it changes', (
+    tester,
+  ) async {
+    final repository = await pumpApp(tester);
+    Finder dot(String userId, Presence? presence) =>
+        find.byWidgetPredicate((w) => w is PresenceAvatar && w.member.userId == userId && w.presence == presence);
+    Finder inTopBar(String text) => find.descendant(of: find.byType(GlassTopBar), matching: find.text(text));
+    expect(dot(FakeRepository.maya, Presence.online), findsOneWidget);
+    expect(dot(FakeRepository.leo, null), findsOneWidget, reason: 'nothing told about Leo: no dot');
+    expect(find.byType(PresenceAvatar), findsNWidgets(2), reason: 'a group has none');
+
+    await openMaya(tester);
+    expect(inTopBar('Online'), findsOneWidget);
+    repository.presence.value = {FakeRepository.maya: Presence.doNotDisturb};
+    await tester.pump();
+    expect(inTopBar('Do not disturb'), findsOneWidget);
+    repository.presence.value = {FakeRepository.maya: Presence.offline};
+    await tester.pump();
+    expect(inTopBar('Offline'), findsOneWidget);
+
+    await tester.binding.handlePopRoute();
+    await tester.pumpAndSettle();
+    expect(dot(FakeRepository.maya, Presence.offline), findsOneWidget);
+    await tester.tap(find.text('Design crew'));
+    await tester.pumpAndSettle();
+    expect(inTopBar('Offline'), findsNothing);
+    expect(inTopBar('Online'), findsNothing);
   });
 
   testWidgets('a chat loads its history and takes live messages', (tester) async {

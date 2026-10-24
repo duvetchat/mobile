@@ -12,7 +12,8 @@ import 'widgets/depth.dart';
 import 'widgets/glass.dart';
 import 'widgets/rows.dart';
 
-String _presenceText(Presence? p) => switch (p) {
+/// What a presence reads as; nothing when it isn't known.
+String presenceText(Presence? p) => switch (p) {
   Presence.online => 'Online',
   Presence.doNotDisturb => 'Do not disturb',
   Presence.offline => 'Offline',
@@ -161,7 +162,7 @@ class _ProfileState extends State<_Profile> {
                                   PresenceAvatar.dotFor(context, presence, 10),
                                   const SizedBox(width: 6),
                                   Text(
-                                    _presenceText(presence),
+                                    presenceText(presence),
                                     style: DuvetType.caption.copyWith(color: colors.foreground),
                                   ),
                                 ],

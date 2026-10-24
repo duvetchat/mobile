@@ -683,8 +683,8 @@ class FakeRepository implements ChatRepository {
     recentChats.load(me.id);
     status.value = LiveStatus.online;
     conversations.value = const [
-      ConversationSummary(id: 'c-maya', title: 'Maya', isGroup: false),
-      ConversationSummary(id: 'c-leo', title: 'Leo', isGroup: false),
+      ConversationSummary(id: 'c-maya', title: 'Maya', isGroup: false, otherUserId: maya),
+      ConversationSummary(id: 'c-leo', title: 'Leo', isGroup: false, otherUserId: leo),
       ConversationSummary(id: 'c-team', title: 'Design crew', isGroup: true, memberCount: 4),
     ];
     unread.value = {'c-maya'};
