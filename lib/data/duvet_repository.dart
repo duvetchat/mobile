@@ -316,7 +316,6 @@ class DuvetRepository implements ChatRepository {
     _loadedMembers.clear();
     _roles.clear();
     _memberRoles.clear();
-    _friendsLoaded = false;
     friends.value = Friends.none;
     _conversationMembers.clear();
     _names.clear();
@@ -477,6 +476,9 @@ class DuvetRepository implements ChatRepository {
               };
             }, onError: (Object e) => debugPrint('mentions: $e')),
           );
+          // The friends and the requests, as the desktop fetches them on each
+          // READY; FRIEND_* events keep them current.
+          unawaited(_reloadFriends());
         }
         // READY again after a drop: chats catch up, and the conversations,
         // whose dates tell the DMs' previews behind.
@@ -674,6 +676,9 @@ class DuvetRepository implements ChatRepository {
           duvet.GuildMemberRemovedEvent():
         _spaceMembers.clear();
 
+      // A request made, taken, turned down or taken back, or a friendship
+      // ended, by either side, from any device: the lists again, as the
+      // desktop fetches them (the newest load's answer stands).
       case duvet.FriendRequestCreatedEvent() ||
           duvet.FriendRequestAcceptedEvent() ||
           duvet.FriendRequestRejectedEvent() ||
@@ -1512,20 +1517,27 @@ class DuvetRepository implements ChatRepository {
 
   @override
   final ValueNotifier<Friends> friends = ValueNotifier(Friends.none);
-  bool _friendsLoaded = false;
+
+  // The friends lists' loads, counted, and the newest one shown: an older
+  // one that answers late (an event came while it was under way) is dropped.
+  int _friendsLoads = 0;
+  int _friendsShown = 0;
 
   Member _person(String id, String username, String? alias, String? avatar) =>
       Member(userId: id, username: username, alias: alias, avatarUrl: avatarUrl(avatar));
 
   @override
   Future<void> loadFriends() async {
+    final api = _api;
+    final load = ++_friendsLoads;
     final me = profile.value?.id;
     final (list, incoming, outgoing) = await (
       _call((api) => api.getFriends()),
       _call((api) => api.getPendingRequests()),
       _call((api) => api.getSentRequests()),
     ).wait;
-    _friendsLoaded = true;
+    if (!identical(api, _api) || load < _friendsShown) return;
+    _friendsShown = load;
     // Friends sharing no space with the user have no presence from the gateway
     // until it changes: the list's, for those it hasn't told about.
     final listed = {
@@ -1563,9 +1575,7 @@ class DuvetRepository implements ChatRepository {
     }
   }
 
-  Future<void> _reloadFriends() async {
-    if (_friendsLoaded) await loadFriends().catchError((Object e) => debugPrint('friends: $e'));
-  }
+  Future<void> _reloadFriends() => loadFriends().catchError((Object e) => debugPrint('friends: $e'));
 
   @override
   Future<void> sendFriendRequest(String userId) async {

@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 import 'dart:convert';
 
@@ -42,6 +43,16 @@ Map<String, dynamic> _dm(String id, String author, String content, {String? nonc
   'user': {'id': author, 'username': author == _me ? 'gaby' : 'maya'},
 };
 
+/// A friend request to the user, as the API lists it.
+Map<String, dynamic> _asks(String id, String sender, String username) => {
+  'id': id,
+  'sender_id': sender,
+  'recipient_id': _me,
+  'created_at': _at,
+  'updated_at': _at,
+  'user_username': username,
+};
+
 /// The gateway's envelope for [type], parsed as the client parses it.
 duvet.GatewayEventPayload _event(String type, Map<String, dynamic> data) => duvet.GatewayEnvelope.fromJson({
   'op': 0,
@@ -79,6 +90,12 @@ void main() {
   /// An access token the API no longer takes, though the session lives.
   String? expiredToken;
 
+  /// The friend requests to the user, as `GET …/friends/requests` answers.
+  late List<Map<String, dynamic>> asking;
+
+  /// While set, holds that answer, as it was when asked.
+  Completer<void>? holdAsking;
+
   setUp(() {
     requests = [];
     store = MemorySessionStore();
@@ -92,6 +109,8 @@ void main() {
     refreshes = 0;
     sessionDead = false;
     expiredToken = null;
+    asking = [];
+    holdAsking = null;
     client = MockClient((request) async {
       requests.add(request);
       Map<String, dynamic> body() => jsonDecode(request.body) as Map<String, dynamic>;
@@ -102,6 +121,11 @@ void main() {
       }
       final refused = sessionDead || request.headers['Authorization'] == 'Bearer $expiredToken';
       if (refused && !request.url.path.startsWith('/api/auth/')) return http.Response('', 401);
+      if (request.url.path == '/api/users/@me/friends/requests') {
+        final answer = jsonEncode(asking);
+        if (holdAsking case final hold?) await hold.future;
+        return http.Response(answer, 200, headers: {'content-type': 'application/json'});
+      }
       final json = switch ((request.method, request.url.path)) {
         ('POST', '/api/auth/login') => {'token': 'access-1', 'session_token': 'refresh-1'},
         ('GET', '/api/users/@me') => {..._user(_me, 'gaby', alias: 'Gaby'), 'email_verified': true},
@@ -152,7 +176,7 @@ void main() {
               'status_id': status,
             },
         ],
-        ('GET', '/api/users/@me/friends/requests') || ('GET', '/api/users/@me/friends/requests/sent') => <Object>[],
+        ('GET', '/api/users/@me/friends/requests/sent') => <Object>[],
         ('GET', '/api/rooms/r-general/messages') => [roomNewest],
         ('POST', '/api/spaces') => {
           'space': {'id': 's-new', 'name': 'Testing lair', 'owner_id': _me, 'created_at': _at, 'updated_at': _at},
@@ -210,6 +234,38 @@ void main() {
     repository.presence.value = {_leo: Presence.online};
     await repository.loadFriends();
     expect(repository.presence.value, {_leo: Presence.online, _maya: Presence.doNotDisturb});
+  });
+
+  test('READY loads the friend requests, and FRIEND_* events keep them current', () async {
+    List<String> askingIds() => [for (final r in repository.friends.value.incoming) r.id];
+    asking = [_asks('q-1', _maya, 'maya')];
+    await repository.logIn('gaby@duvet.chat', 'secret');
+    expect(askingIds(), isEmpty);
+    repository.handleEvent(_event('READY', {'user': _user(_me, 'gaby'), 'sessionToken': 'ws'}));
+    await pumpEventQueue();
+    expect(askingIds(), ['q-1']);
+    expect(repository.friends.value.incoming.single.person.displayName, 'maya');
+    expect([for (final f in repository.friends.value.friends) f.username], ['leo', 'maya']);
+
+    // A load under way when a request comes: its answer, from before the
+    // request, comes after the next load's and doesn't hide it.
+    final hold = holdAsking = Completer<void>();
+    repository.handleEvent(_event('FRIEND_REQUEST_REJECT', {'id': 'q-0'}));
+    await pumpEventQueue();
+    holdAsking = null;
+    asking = [...asking, _asks('q-2', _leo, 'leo')];
+    repository.handleEvent(_event('FRIEND_REQUEST_CREATE', {'id': 'q-2', 'sender_id': _leo, 'username': 'leo'}));
+    await pumpEventQueue();
+    expect(askingIds(), ['q-1', 'q-2']);
+    hold.complete();
+    await pumpEventQueue();
+    expect(askingIds(), ['q-1', 'q-2']);
+
+    // Taken back by its sender.
+    asking = [_asks('q-2', _leo, 'leo')];
+    repository.handleEvent(_event('FRIEND_REQUEST_REJECT', {'id': 'q-1'}));
+    await pumpEventQueue();
+    expect(askingIds(), ['q-2']);
   });
 
   test('a saved session resumes; a rejected one is forgotten', () async {

@@ -109,6 +109,29 @@ void main() {
     semantics.dispose();
   });
 
+  testWidgets('the Friends button counts the requests to the user, as the desktop\'s does', (tester) async {
+    final repository = await pumpApp(tester);
+    Finder count(String text) => find.descendant(of: find.byType(IconAction), matching: find.text(text));
+    FriendRequestItem asks(int i) => FriendRequestItem(
+      id: 'req-$i',
+      person: Member(userId: 'u-$i', username: 'person$i'),
+      at: DateTime(2026, 10, 22),
+    );
+    expect(find.bySemanticsLabel('Friends'), findsOneWidget);
+    expect(count('0'), findsNothing);
+
+    repository.friends.value = Friends(incoming: [asks(1)]);
+    await tester.pump();
+    expect(find.bySemanticsLabel('Friends, 1 friend request'), findsOneWidget);
+    expect(count('1'), findsOneWidget);
+
+    repository.friends.value = Friends(incoming: [for (var i = 0; i < 10; i++) asks(i)]);
+    await tester.pump();
+    expect(find.bySemanticsLabel('Friends, 10 friend requests'), findsOneWidget);
+    expect(count('9+'), findsOneWidget);
+    semantics.dispose();
+  });
+
   testWidgets('new conversation: one person opens a DM, several a group', (tester) async {
     final repository = await pumpApp(tester);
     await tapLabel(tester, 'New conversation');

@@ -46,7 +46,18 @@ class IconAction extends StatelessWidget {
   final VoidCallback? onPressed;
   final Color? color;
 
-  const IconAction({required this.icon, required this.label, required this.onPressed, this.color, super.key});
+  /// A count on its corner, as on the desktop's Friends button: none at 0,
+  /// 9+ past 9. [label] says it for screen readers.
+  final int badge;
+
+  const IconAction({
+    required this.icon,
+    required this.label,
+    required this.onPressed,
+    this.color,
+    this.badge = 0,
+    super.key,
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -62,24 +73,56 @@ class IconAction extends StatelessWidget {
       onTap: onPressed,
       child: Pressable(
         onTap: onPressed,
-        builder: (context, pressed) => SizedBox.square(
-          dimension: 40,
-          child: AnimatedContainer(
-            duration: pressed ? DuvetTokens.pressIn : DuvetTokens.pressOut,
-            decoration: BoxDecoration(color: pressed ? colors.secondary : Colors.transparent, borderRadius: radius),
-            child: InsetShadow(
-              shadows: pressed ? tokens.shadowPressed : const [],
-              borderRadius: radius,
-              child: Center(
-                child: Icon(
-                  icon,
-                  size: 24,
-                  color: onPressed == null ? colors.mutedForeground : (color ?? colors.foreground),
+        builder: (context, pressed) {
+          final button = SizedBox.square(
+            dimension: 40,
+            child: AnimatedContainer(
+              duration: pressed ? DuvetTokens.pressIn : DuvetTokens.pressOut,
+              decoration: BoxDecoration(color: pressed ? colors.secondary : Colors.transparent, borderRadius: radius),
+              child: InsetShadow(
+                shadows: pressed ? tokens.shadowPressed : const [],
+                borderRadius: radius,
+                child: Center(
+                  child: Icon(
+                    icon,
+                    size: 24,
+                    color: onPressed == null ? colors.mutedForeground : (color ?? colors.foreground),
+                  ),
                 ),
               ),
             ),
-          ),
-        ),
+          );
+          if (badge <= 0) return button;
+          return Stack(
+            clipBehavior: Clip.none,
+            children: [
+              button,
+              Positioned(
+                top: 1,
+                right: 1,
+                child: Container(
+                  constraints: const BoxConstraints(minWidth: 18),
+                  height: 18,
+                  padding: const EdgeInsets.symmetric(horizontal: 4),
+                  alignment: Alignment.center,
+                  decoration: BoxDecoration(
+                    color: colors.destructive,
+                    borderRadius: BorderRadius.circular(9),
+                    border: Border.all(color: colors.background, width: 1.5),
+                  ),
+                  child: Text(
+                    badge > 9 ? '9+' : '$badge',
+                    style: DuvetType.tabLabel.copyWith(
+                      color: colors.destructiveForeground,
+                      fontWeight: FontWeight.w700,
+                      height: 1,
+                    ),
+                  ),
+                ),
+              ),
+            ],
+          );
+        },
       ),
     );
   }

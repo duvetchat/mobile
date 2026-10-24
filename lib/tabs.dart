@@ -35,6 +35,7 @@ class ChatsTab extends StatelessWidget {
         repository.mentions,
         repository.profile,
         repository.presence,
+        repository.friends,
       ]),
       builder: (context, _) {
         final mentions = repository.mentions.value;
@@ -46,6 +47,8 @@ class ChatsTab extends StatelessWidget {
           repository.presence.value,
         );
         final unread = repository.unread.value;
+        // The requests to the user, counted on Friends as on the desktop's.
+        final asking = repository.friends.value.incoming.length;
         return LargeTitlePage(
           title: 'Chats',
           titleTrailing: Row(
@@ -54,7 +57,12 @@ class ChatsTab extends StatelessWidget {
               const LiveIndicator(),
               IconAction(
                 icon: FLucideIcons.users,
-                label: 'Friends',
+                label: switch (asking) {
+                  0 => 'Friends',
+                  1 => 'Friends, 1 friend request',
+                  _ => 'Friends, $asking friend requests',
+                },
+                badge: asking,
                 onPressed: () => Navigator.of(
                   context,
                   rootNavigator: true,
