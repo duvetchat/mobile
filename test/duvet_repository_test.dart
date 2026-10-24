@@ -638,7 +638,9 @@ void main() {
   });
 
   group('M2', () {
-    Map<String, dynamic> space({Map<String, int>? statuses}) => {
+    // Its members by their role IDs (each has @everyone's, the Space's ID),
+    // and those not offline by their status.
+    Map<String, dynamic> space({Map<String, int>? statuses, List<String>? members}) => {
       'space': {'id': 's-1', 'name': 'Design Guild', 'owner_id': _me, 'created_at': _at, 'updated_at': _at},
       'rooms': {
         'r-general': {
@@ -652,6 +654,9 @@ void main() {
         },
       },
       'roles_permissions': <String, dynamic>{},
+      'member_roles': {
+        for (final id in members ?? const <String>[]) id: ['s-1'],
+      },
       'owner_id': _me,
       'member_statuses': ?statuses,
     };
@@ -726,6 +731,51 @@ void main() {
 
       repository.handleEvent(_event('USER_STATUS_UPDATE', {'user_id': _maya, 'status_id': 0}));
       expect(repository.spaces.value.single.onlineCount, 1);
+    });
+
+    test('a member offline as the gateway connects counts once they come online', () async {
+      await repository.logIn('gaby@duvet.chat', 'secret');
+      repository.handleEvent(_event('SPACE_CREATE', space(statuses: {_me: 1}, members: [_me, _leo])));
+      expect(repository.spaces.value.single.onlineCount, 1);
+      repository.handleEvent(_event('USER_STATUS_UPDATE', {'user_id': _leo, 'status_id': 1}));
+      expect(repository.spaces.value.single.onlineCount, 2);
+    });
+
+    test('a new member\'s status comes with SPACE_MEMBER_ADD; the online count follows them in and out', () async {
+      await repository.logIn('gaby@duvet.chat', 'secret');
+      repository.handleEvent(_event('SPACE_CREATE', space(statuses: {_me: 1}, members: [_me])));
+      expect(repository.spaces.value.single.onlineCount, 1);
+
+      repository.handleEvent(
+        _event('SPACE_MEMBER_ADD', {'member_id': 'm-leo', 'space_id': 's-1', 'user_id': _leo, 'status_id': 2}),
+      );
+      expect(repository.presence.value[_leo], Presence.doNotDisturb);
+      expect(repository.spaces.value.single.onlineCount, 2);
+
+      repository.handleEvent(_event('SPACE_MEMBER_REMOVE', {'member_id': 'm-leo', 'space_id': 's-1', 'user_id': _leo}));
+      expect(repository.spaces.value.single.onlineCount, 1);
+    });
+
+    test('a new session\'s READY clears the others\' presence, which its SPACE_CREATEs bring again', () async {
+      await repository.logIn('gaby@duvet.chat', 'secret');
+      final members = [_me, _maya, _leo];
+      repository.handleEvent(_event('READY', {'user': _user(_me, 'gaby'), 'sessionToken': 'ws'}));
+      repository.handleEvent(_event('SPACE_CREATE', space(statuses: {_maya: 1, _leo: 2, _me: 1}, members: members)));
+      expect(repository.spaces.value.single.onlineCount, 3);
+
+      // Back after a drop too long to resume, during which Leo went offline.
+      repository.handleConnectionState(duvet.GatewayConnectionState.reconnecting);
+      repository.handleEvent(_event('READY', {'user': _user(_me, 'gaby'), 'sessionToken': 'ws2'}));
+      expect(repository.presence.value, {_me: Presence.online});
+      expect(repository.spaces.value.single.onlineCount, 1);
+      repository.handleEvent(_event('SPACE_CREATE', space(statuses: {_maya: 1, _me: 1}, members: members)));
+      expect(repository.presence.value, {_me: Presence.online, _maya: Presence.online});
+      expect(repository.spaces.value.single.onlineCount, 2);
+
+      // The friends list fills in whom the gateway didn't name; what it says
+      // is newer.
+      await pumpEventQueue();
+      expect(repository.presence.value, {_me: Presence.online, _maya: Presence.online, _leo: Presence.offline});
     });
 
     test('mentions: counted from READY and MENTION_CREATE, cleared on reading', () async {

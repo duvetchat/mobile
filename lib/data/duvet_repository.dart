@@ -148,8 +148,9 @@ class DuvetRepository implements ChatRepository {
   // Spaces by ID, with their rooms as the gateway sends them.
   final _spaces = <String, ({duvet.GatewaySpace space, Map<String, duvet.GatewayRoom> rooms})>{};
 
-  // Who's in each space, as far as known: SPACE_CREATE's member_statuses (the
-  // members not offline), then the member list once fetched.
+  // Who's in each space, as far as known: SPACE_CREATE's members (each has
+  // @everyone's role), those SPACE_MEMBER_ADD and _REMOVE tell of, and the
+  // member list once fetched.
   final _spaceMemberIds = <String, Set<String>>{};
 
   // Each space's members' user IDs, by member ID (`Members.id`), which the
@@ -455,6 +456,14 @@ class DuvetRepository implements ChatRepository {
     switch (event) {
       case duvet.ReadyEvent(:final data):
         status.value = LiveStatus.online;
+        // A new session: the others' presence comes again with the
+        // SPACE_CREATEs that follow, and the friends list, without whoever
+        // went offline meanwhile, as the desktop does. A session the gateway
+        // resumes keeps it ([handleResume]).
+        presence.value = {
+          for (final e in presence.value.entries)
+            if (e.key == me) e.key: e.value,
+        };
         // Connected, the user shows the status they chose. A gateway from
         // before statuses doesn't say: online.
         if (_chosen(data.user.status) case final chosen?) {
@@ -463,6 +472,7 @@ class DuvetRepository implements ChatRepository {
         } else if (me != null && !presence.value.containsKey(me)) {
           presence.value = {...presence.value, me: Presence.online};
         }
+        if (_spaces.isNotEmpty) _publishSpaces();
         unread.value = {...?data.unreadRooms, ...?data.unreadConvs};
         _lastRead.addAll(data.lastReadRooms ?? const {});
         _lastMessage.addAll(data.lastMsgRooms ?? const {});
@@ -520,8 +530,9 @@ class DuvetRepository implements ChatRepository {
         _memberRoles[data.space.id] = {
           for (final e in data.memberRoles.entries) e.key: [...e.value],
         };
-        // Presence as the gateway connects; live updates follow.
-        (_spaceMemberIds[data.space.id] ??= {}).addAll(data.memberStatuses.keys);
+        // Who's in it (each member has @everyone's role), and their presence
+        // as the gateway connects; live updates follow.
+        _spaceMemberIds[data.space.id] = {...data.memberRoles.keys, ...data.memberStatuses.keys};
         if (data.memberStatuses.isNotEmpty) {
           presence.value = {...presence.value, for (final e in data.memberStatuses.entries) e.key: _presence(e.value)};
         }
@@ -670,10 +681,20 @@ class DuvetRepository implements ChatRepository {
         _stickers.remove(data.spaceId);
       case duvet.SpaceStickerDeletedEvent(:final data):
         _stickers.remove(data.spaceId);
-      case duvet.SpaceMemberAddedEvent() ||
-          duvet.SpaceMemberRemovedEvent() ||
-          duvet.GuildMemberAddedEvent() ||
-          duvet.GuildMemberRemovedEvent():
+      case duvet.SpaceMemberAddedEvent(:final data):
+        _spaceMembers.clear();
+        if (data.userId case final userId?) {
+          (_spaceMemberIds[data.spaceId] ??= {}).add(userId);
+          // Their status as they join, which USER_STATUS_UPDATE carries on.
+          if (data.statusId case final status?) presence.value = {...presence.value, userId: _presence(status)};
+          _publishSpaces();
+        }
+      case duvet.SpaceMemberRemovedEvent(:final data):
+        _spaceMembers.clear();
+        if (data.userId case final userId? when _spaceMemberIds[data.spaceId]?.remove(userId) ?? false) {
+          _publishSpaces();
+        }
+      case duvet.GuildMemberAddedEvent() || duvet.GuildMemberRemovedEvent():
         _spaceMembers.clear();
 
       // A request made, taken, turned down or taken back, or a friendship
