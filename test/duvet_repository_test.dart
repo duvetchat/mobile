@@ -64,6 +64,9 @@ void main() {
   /// What `DELETE /api/spaces/s-1` answers.
   late http.Response deleteReply;
 
+  /// The newest message of `r-general`.
+  late Map<String, dynamic> roomNewest;
+
   setUp(() {
     requests = [];
     store = MemorySessionStore();
@@ -73,6 +76,7 @@ void main() {
     apiHasStatus = true;
     bio = '';
     deleteReply = http.Response('', 204);
+    roomNewest = _roomMessage('last', 'newest');
     client = MockClient((request) async {
       requests.add(request);
       Map<String, dynamic> body() => jsonDecode(request.body) as Map<String, dynamic>;
@@ -127,7 +131,7 @@ void main() {
             },
         ],
         ('GET', '/api/users/@me/friends/requests') || ('GET', '/api/users/@me/friends/requests/sent') => <Object>[],
-        ('GET', '/api/rooms/r-general/messages') => [_roomMessage('last', 'newest')],
+        ('GET', '/api/rooms/r-general/messages') => [roomNewest],
         ('POST', '/api/spaces') => {
           'space': {'id': 's-new', 'name': 'Testing lair', 'owner_id': _me, 'created_at': _at, 'updated_at': _at},
           for (final (key, id, type, name) in [
@@ -592,6 +596,80 @@ void main() {
       expect(requests.last.url.queryParameters['count'], '1');
       expect(repository.latest.value['r-general']?.content, 'newest');
       expect(repository.previewOf(repository.latest.value['r-general']!), 'newest');
+    });
+
+    Map<String, dynamic> ready(String newest) => {
+      'user': _user(_me, 'gaby'),
+      'sessionToken': 'ws',
+      'last_msg_rooms': {'r-general': newest},
+    };
+
+    test('the Chats tab catches up with what came while the app wasn\'t listening', () async {
+      // Saved by the last launch, a day behind: a room's preview and a DM's.
+      await recentsStore.write(
+        _me,
+        jsonEncode([
+          for (final (kind, id, preview) in [('room', 'r-general', 'old'), ('conversation', 'c-1', '1')])
+            {
+              'kind': kind,
+              'id': id,
+              'spaceId': 's-1',
+              'title': id,
+              'at': '2026-10-22T09:00:00Z',
+              'previewId': preview,
+              'previewText': 'from yesterday',
+            },
+        ]),
+      );
+      int fetches() => requests.where((r) => r.method == 'GET' && r.url.path.endsWith('/messages')).length;
+      String? preview(String id) => repository.recents.value.firstWhere((c) => c.target.id == id).previewText;
+
+      // The list of conversations dates the DM after its preview.
+      await repository.logIn('gaby@duvet.chat', 'secret');
+      await pumpEventQueue();
+      expect(preview('c-1'), 'second');
+
+      // READY names a newer message than the room's preview.
+      repository.handleEvent(_event('READY', ready('last')));
+      await pumpEventQueue();
+      expect(preview('r-general'), 'newest');
+      expect(fetches(), 2);
+
+      // Back after a drop with nothing new: nothing is fetched again.
+      repository.handleConnectionState(duvet.GatewayConnectionState.reconnecting);
+      repository.handleEvent(_event('READY', ready('last')));
+      await pumpEventQueue();
+      expect(fetches(), 2);
+
+      // A live message can come before the fetch's answer, which is older.
+      roomNewest = {..._roomMessage('later', 'even newer'), 'created_at': '2026-10-24T09:00:00Z'};
+      repository.handleConnectionState(duvet.GatewayConnectionState.reconnecting);
+      repository.handleEvent(_event('READY', ready('later')));
+      repository.handleEvent(
+        _event('MESSAGE_CREATE', {
+          ..._roomMessage('live', 'live one'),
+          'room_id': 'r-general',
+          'created_at': '2026-10-25T09:00:00Z',
+        }),
+      );
+      await pumpEventQueue();
+      expect(fetches(), 3);
+      expect(preview('r-general'), 'live one');
+    });
+
+    test('a Space\'s list of rooms catches up after a drop', () async {
+      await repository.logIn('gaby@duvet.chat', 'secret');
+      repository.handleEvent(_event('READY', ready('last')));
+      repository.handleEvent(_event('SPACE_CREATE', space()));
+      await repository.loadLatest([const RoomTarget(spaceId: 's-1', roomId: 'r-general')]);
+      expect(repository.latest.value['r-general']?.content, 'newest');
+
+      // The drop lasted too long to resume: READY names a newer message.
+      roomNewest = {..._roomMessage('later', 'even newer'), 'created_at': '2026-10-24T09:00:00Z'};
+      repository.handleConnectionState(duvet.GatewayConnectionState.reconnecting);
+      repository.handleEvent(_event('READY', ready('later')));
+      await pumpEventQueue();
+      expect(repository.latest.value['r-general']?.content, 'even newer');
     });
   });
 
