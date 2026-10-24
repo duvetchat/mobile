@@ -329,6 +329,42 @@ void main() {
     semantics.dispose();
   });
 
+  testWidgets('a picture alone: a long press opens its actions, a double tap replies, a tap opens it', (tester) async {
+    final repository = await openMaya(tester);
+    repository.push(
+      'c-maya',
+      MessageCreated(
+        withFiles('p', const [
+          MessageAttachment(id: 'ph', filename: 'room.jpg', contentType: 'image/jpeg', url: 'https://x/room.jpg'),
+        ]),
+      ),
+    );
+    await tester.pumpAndSettle();
+    final photo = find.bySemanticsLabel('Photo, room.jpg');
+    const viewer = 'Swipe down to close · pinch to zoom';
+
+    await tester.longPress(photo);
+    await tester.pumpAndSettle();
+    expect(find.text(viewer), findsNothing, reason: 'a long press is the message\'s');
+    await tapLabel(tester, 'Reply');
+    expect(find.textContaining('Replying to Maya'), findsOneWidget);
+    await tapLabel(tester, 'Cancel reply');
+    expect(find.textContaining('Replying to Maya'), findsNothing);
+
+    await tester.tap(photo);
+    await tester.pump(const Duration(milliseconds: 50));
+    await tester.tap(photo);
+    await tester.pumpAndSettle();
+    expect(find.textContaining('Replying to Maya'), findsOneWidget);
+    expect(find.text(viewer), findsNothing);
+
+    await tester.tap(photo);
+    await tester.pump(kDoubleTapTimeout);
+    await tester.pumpAndSettle();
+    expect(find.text(viewer), findsOneWidget);
+    semantics.dispose();
+  });
+
   testWidgets('the image viewer saves, shares, and closes on a swipe down', (tester) async {
     final repository = await openMaya(tester);
     repository.push(
@@ -340,7 +376,9 @@ void main() {
       ),
     );
     await tester.pumpAndSettle();
-    await tapLabel(tester, 'Photo, room.jpg');
+    await tester.tap(find.bySemanticsLabel('Photo, room.jpg'));
+    await tester.pump(kDoubleTapTimeout);
+    await tester.pumpAndSettle();
     expect(find.text('Swipe down to close · pinch to zoom'), findsOneWidget);
     await tapLabel(tester, 'Save');
     await tapLabel(tester, 'Share');

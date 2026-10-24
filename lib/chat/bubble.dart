@@ -89,21 +89,30 @@ class _Bubble extends StatelessWidget {
     final secondary = DuvetType.caption.copyWith(color: colors.mutedForeground);
     final faded = entry.delivery != _Delivery.sent;
 
+    // Double-tap a text bubble (which does the press), a sticker, a big emoji
+    // or a picture to reply; files, videos and voice keep their single taps at
+    // once. A long press anywhere is the bubble's.
+    final onDoubleTap = entry.delivery == _Delivery.sent && !lifted ? onReply : null;
     final parts = <Widget>[
-      if (m.stickerUrl != null) StickerView(url: m.stickerUrl!, name: stickerName),
+      if (m.stickerUrl != null)
+        GestureDetector(
+          onDoubleTap: onDoubleTap,
+          child: StickerView(url: m.stickerUrl!, name: stickerName),
+        ),
       if (m.content.isNotEmpty)
         if (isJumboEmoji(m.content))
-          MessageText(
-            content: m.content,
-            directory: directory,
-            style: DuvetType.body.copyWith(color: colors.foreground),
+          GestureDetector(
+            onDoubleTap: onDoubleTap,
+            child: MessageText(
+              content: m.content,
+              directory: directory,
+              style: DuvetType.body.copyWith(color: colors.foreground),
+            ),
           )
         else
-          // Double-tap the text bubble to reply: it does the press. Pictures
-          // and files take their own single taps at once.
           Pressable(
             scale: 0.98,
-            onDoubleTap: entry.delivery == _Delivery.sent && !lifted ? onReply : null,
+            onDoubleTap: onDoubleTap,
             builder: (context, _) => Container(
               padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
               constraints: BoxConstraints(maxWidth: maxWidth),
@@ -125,7 +134,7 @@ class _Bubble extends StatelessWidget {
       if (m.isVoice && m.attachments.isNotEmpty)
         VoiceNotePlayer(attachment: m.attachments.first, mine: mine, authorName: m.authorName)
       else if (m.attachments.isNotEmpty)
-        MessageAttachments(attachments: m.attachments, uploadProgress: progress),
+        MessageAttachments(attachments: m.attachments, uploadProgress: progress, onDoubleTap: onDoubleTap),
       // Duvet's own links, as cards: a quoted message, an invite.
       if (!lifted)
         for (final url in duvetLinksIn(m.content))
