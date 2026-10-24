@@ -54,6 +54,17 @@ Map<String, dynamic> _role(String id, String name, int perms, {int position = 1}
   'updated_at': _at,
 };
 
+Map<String, dynamic> _overwrite(String room, String target, {int type = 0, int allow = 0, int deny = 0}) => {
+  'id': '$room-$target',
+  'room_id': room,
+  'target_id': target,
+  'target_type': type,
+  'allow_flags': allow,
+  'deny_flags': deny,
+  'created_at': _at,
+  'updated_at': _at,
+};
+
 /// A member of s-1, as the members list gives them.
 Map<String, dynamic> _member(String memberId, String userId, String username) => {
   'id': memberId,
@@ -230,6 +241,102 @@ void main() {
       );
       expect(repository.rolesOf('s-1', _leo).map((r) => r.name), ['role-mod']);
       expect(memberFetches(), 0);
+    });
+  });
+
+  group('rooms the user can\'t see', () {
+    List<String> listed() => [for (final r in repository.spaces.value.single.rooms) r.id];
+    List<String?> sections() => [for (final s in repository.spaces.value.single.sections) s.name];
+
+    // #mods is for the mods: @everyone can't see it.
+    Map<String, dynamic> guild({List<String> mine = const []}) => _space(
+      rooms: {
+        'r-general': _room('r-general'),
+        'r-mods': _room('r-mods', position: 1),
+        'r-voice': _room('r-voice', type: 2, position: 2),
+      },
+      roles: {'role-mod': Perm.pinMessages},
+      mine: mine,
+      overwrites: {
+        'r-mods': [
+          _overwrite('r-mods', 's-1', deny: Perm.viewChannels),
+          _overwrite('r-mods', 'role-mod', allow: Perm.viewChannels),
+        ],
+      },
+    );
+
+    test('aren\'t listed, and show once the user may see them', () async {
+      await signIn();
+      repository.handleEvent(_event('SPACE_CREATE', guild()));
+      expect(listed(), ['r-general', 'r-voice']);
+      expect(repository.adminRooms('s-1').map((r) => r.id), ['r-general', 'r-voice']);
+
+      // Given the role: the gateway names the user's member.
+      routes[('GET', '/api/spaces/s-1/members')] = (_) => [_member('mem-me', _me, 'gaby')];
+      repository.handleEvent(
+        _event('MEMBER_ROLE_ADD', {'member_id': 'mem-me', 'role_id': 'role-mod', 'space_id': 's-1'}),
+      );
+      await pumpEventQueue();
+      expect(listed(), ['r-general', 'r-mods', 'r-voice']);
+    });
+
+    test('an overwrite that hides a room takes it away, and one that\'s gone brings it back', () async {
+      await signIn();
+      repository.handleEvent(_event('SPACE_CREATE', guild()));
+      repository.handleEvent(_event('ROOM_OVERWRITE_UPDATE', _overwrite('r-voice', 's-1', deny: Perm.viewChannels)));
+      expect(listed(), ['r-general']);
+      repository.handleEvent(_event('ROOM_OVERWRITE_DELETE', {'room_id': 'r-voice', 'target_id': 's-1'}));
+      expect(listed(), ['r-general', 'r-voice']);
+    });
+
+    test('a category shows while it has no rooms or one the user sees, as on the desktop', () async {
+      await signIn();
+      repository.handleEvent(
+        _event(
+          'SPACE_CREATE',
+          _space(
+            rooms: {
+              'c-talk': _room('c-talk', type: 3),
+              'r-general': _room('r-general', parent: 'c-talk'),
+              'c-staff': _room('c-staff', type: 3, position: 1),
+              'r-mods': _room('r-mods', parent: 'c-staff'),
+              'c-empty': _room('c-empty', type: 3, position: 2),
+            },
+            overwrites: {
+              'r-mods': [_overwrite('r-mods', 's-1', deny: Perm.viewChannels)],
+            },
+          ),
+        ),
+      );
+      expect(sections(), ['c-talk', 'c-empty']);
+      expect(listed(), ['r-general']);
+      expect(repository.adminRooms('s-1').map((r) => r.id), ['c-talk', 'r-general', 'c-empty']);
+    });
+
+    test('a room the user may see stays listed when its category can\'t be', () async {
+      await signIn();
+      // @everyone sees nothing: categories take no overwrites, so none shows,
+      // but the mods' room lets them in.
+      repository.handleEvent(
+        _event(
+          'SPACE_CREATE',
+          _space(
+            everyone: Perm.sendMessages,
+            rooms: {
+              'c-staff': _room('c-staff', type: 3),
+              'r-mods': _room('r-mods', parent: 'c-staff'),
+              'r-general': _room('r-general', position: 1),
+            },
+            roles: {'role-mod': Perm.pinMessages},
+            mine: ['role-mod'],
+            overwrites: {
+              'r-mods': [_overwrite('r-mods', 'role-mod', allow: Perm.viewChannels)],
+            },
+          ),
+        ),
+      );
+      expect(sections(), [null]);
+      expect(listed(), ['r-mods']);
     });
   });
 }

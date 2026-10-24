@@ -462,10 +462,13 @@ class DuvetRepository implements ChatRepository {
             ..removeWhere((o) => o.targetId == data.targetId)
             ..add(data);
         }
+        // It may change which rooms the user sees.
+        _publishSpaces();
       case duvet.RoomOverwriteDeletedEvent(:final data):
         for (final rooms in _overwrites.values) {
           rooms[data.roomId]?.removeWhere((o) => o.targetId == data.targetId);
         }
+        _publishSpaces();
 
       case duvet.RoomDeletedEvent(:final data):
         _spaces[data.spaceId]?.rooms.remove(data.id);
@@ -642,7 +645,7 @@ class DuvetRepository implements ChatRepository {
           id: space.id,
           name: space.name,
           iconUrl: avatarUrl(space.icon),
-          sections: _sections(space.id, rooms.values),
+          sections: _sections(space.id, _visibleRooms(space.id, rooms.values)),
           onlineCount: switch (_spaceMemberIds[space.id]) {
             final ids? when ids.isNotEmpty =>
               ids.where((id) => (now[id] ?? Presence.offline) != Presence.offline).length,
@@ -762,6 +765,27 @@ class DuvetRepository implements ChatRepository {
   @override
   String previewOf(ChatMessage message) =>
       recent.previewOf(message, (content) => readableContent(content, nameOf: nameOf, emojiNameOf: emojiNameOf));
+
+  /// The rooms the user may see, as the desktop lists them: those they have
+  /// ViewChannels in, and of the categories they may see, those with no
+  /// rooms or with one of those. A room they may see in a category they can't
+  /// is listed outside any.
+  List<duvet.GatewayRoom> _visibleRooms(String spaceId, Iterable<duvet.GatewayRoom> all) {
+    final rooms = [
+      for (final r in all)
+        if (r.deletedAt == null) r,
+    ];
+    final seen = {
+      for (final r in rooms)
+        if (canInRoom(spaceId, r.id, Perm.viewChannels)) r.id,
+    };
+    bool shown(duvet.GatewayRoom r) =>
+        seen.contains(r.id) &&
+        (r.type != duvet.RoomType.category ||
+            !rooms.any((c) => c.parentId == r.id) ||
+            rooms.any((c) => c.parentId == r.id && seen.contains(c.id)));
+    return rooms.where(shown).toList();
+  }
 
   /// The rooms outside any category, then each category's, by position.
   static List<RoomSection> _sections(String spaceId, Iterable<duvet.GatewayRoom> all) {
@@ -1644,7 +1668,10 @@ class DuvetRepository implements ChatRepository {
 
   @override
   List<AdminRoom> adminRooms(String spaceId) => [
-    for (final r in (_spaces[spaceId]?.rooms.values.toList() ?? [])..sort((a, b) => a.position.compareTo(b.position)))
+    for (final r in _visibleRooms(
+      spaceId,
+      _spaces[spaceId]?.rooms.values ?? const [],
+    )..sort((a, b) => a.position.compareTo(b.position)))
       AdminRoom(
         id: r.id,
         name: r.name,
@@ -1705,6 +1732,7 @@ class DuvetRepository implements ChatRepository {
     if (overwrite.isEmpty) {
       await _call((api) => api.deleteRoomOverwrite(spaceId, roomId, overwrite.targetId));
       list.removeWhere((o) => o.targetId == overwrite.targetId);
+      _publishSpaces();
       return;
     }
     final saved = await _call(
@@ -1720,6 +1748,7 @@ class DuvetRepository implements ChatRepository {
     list
       ..removeWhere((o) => o.targetId == overwrite.targetId)
       ..add(saved);
+    _publishSpaces();
   }
 
   SpaceRole _role(String spaceId, duvet.GatewayRole r) => SpaceRole(
@@ -1774,6 +1803,7 @@ class DuvetRepository implements ChatRepository {
     for (final ids in _memberRoles[spaceId]?.values ?? const <List<String>>[]) {
       ids.remove(roleId);
     }
+    _publishSpaces();
   }
 
   @override
