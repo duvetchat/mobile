@@ -1645,6 +1645,7 @@ class DuvetRepository implements ChatRepository {
       memberCount: _spaceMemberIds[spaceId]?.length ?? 0,
       owner: space.ownerId == profile.value?.id,
       perms: _permsIn(spaceId),
+      managesRooms: adminRooms(spaceId).any((r) => canInRoom(spaceId, r.id, Perm.manageChannels)),
     );
   }
 

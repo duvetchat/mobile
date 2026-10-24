@@ -222,6 +222,41 @@ void main() {
     semantics.dispose();
   });
 
+  testWidgets('rooms: ManageChannels counts in each room; making one takes it in the Space', (tester) async {
+    await pumpSettings(
+      tester,
+      setUp: (r) => r
+        ..spaceOwner = false
+        ..spacePerms = Perm.manageChannels
+        // An overwrite takes it away in #lounge.
+        ..deniedInRoom['r-lounge'] = Perm.manageChannels,
+    );
+    await tapLabel(tester, RegExp(r'^Rooms'));
+    expect(find.bySemanticsLabel('New room'), findsOneWidget);
+    expect(find.bySemanticsLabel('lounge, Voice room'), findsOneWidget);
+    await tapLabel(tester, 'lounge, Voice room');
+    expect(find.bySemanticsLabel('Rename'), findsNothing);
+    await tapLabel(tester, RegExp(r'^# general, Double tap for options'));
+    expect(find.bySemanticsLabel('Rename'), findsOneWidget);
+    semantics.dispose();
+  });
+
+  testWidgets('rooms: a room\'s overwrite alone opens Space settings, for that room', (tester) async {
+    await pumpSettings(
+      tester,
+      setUp: (r) => r
+        ..spaceOwner = false
+        ..spacePerms = Perm.viewChannels | Perm.sendMessages
+        ..managesRooms = true
+        ..deniedInRoom['r-lounge'] = Perm.manageChannels,
+    );
+    await tapLabel(tester, RegExp(r'^Rooms'));
+    expect(find.bySemanticsLabel('New room'), findsNothing);
+    await tapLabel(tester, RegExp(r'^# general'));
+    expect(find.bySemanticsLabel('Rename'), findsOneWidget);
+    semantics.dispose();
+  });
+
   testWidgets('roles: create, color, members, permissions, save; delete', (tester) async {
     final repository = await pumpSettings(tester);
     await tapLabel(tester, RegExp(r'^Roles'));

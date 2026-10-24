@@ -447,4 +447,28 @@ void main() {
       expect(sent(), {'position': 2});
     });
   });
+
+  test('ManageChannels counts room by room: a room\'s overwrite lets the user run it, and Space settings', () async {
+    await signIn();
+    repository.handleEvent(
+      _event(
+        'SPACE_CREATE',
+        _space(
+          rooms: {'r-general': _room('r-general'), 'r-mods': _room('r-mods', position: 1)},
+          roles: {'role-mod': Perm.pinMessages},
+          mine: ['role-mod'],
+          overwrites: {
+            'r-mods': [_overwrite('r-mods', 'role-mod', allow: Perm.manageChannels)],
+          },
+        ),
+      ),
+    );
+    final profile = repository.spaceProfile('s-1')!;
+    // Not in the Space: no new rooms.
+    expect(profile.can(Perm.manageChannels), isFalse);
+    expect(repository.canInRoom('s-1', 'r-mods', Perm.manageChannels), isTrue);
+    expect(repository.canInRoom('s-1', 'r-general', Perm.manageChannels), isFalse);
+    expect(profile.managesRooms, isTrue);
+    expect(profile.helpsRun, isTrue);
+  });
 }

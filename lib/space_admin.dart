@@ -97,7 +97,8 @@ class _SpaceSettingsPageState extends State<SpaceSettingsPage> {
                   detail: 'Name, icon, banner',
                   onPressed: () => _open(SpaceOverviewPage(spaceId: id)),
                 ),
-              if (profile.can(Perm.manageChannels))
+              // ManageChannels in the Space makes rooms; in a room, runs it.
+              if (profile.can(Perm.manageChannels) || profile.managesRooms)
                 GlassRow(
                   icon: FLucideIcons.hash,
                   label: 'Rooms',
@@ -669,36 +670,49 @@ class _RoomsAdminPageState extends State<RoomsAdminPage> {
     valueListenable: context.repository.spaces,
     builder: (context, _, _) {
       final colors = context.theme.colors;
+      final repository = context.repository;
       final all = _all;
       final categories = all.where((r) => r.kind == AdminRoomKind.category).toList();
       final categoryIds = {for (final c in categories) c.id};
       // As the Space's list has them: a room whose category isn't listed is
       // outside any.
       final loose = all.where((r) => r.kind != AdminRoomKind.category && !categoryIds.contains(r.parentId)).toList();
+      // The API checks ManageChannels in the room itself, overwrites included,
+      // to change, move or delete it, and in the Space to make one.
+      bool manages(AdminRoom r) => repository.canInRoom(widget.spaceId, r.id, Perm.manageChannels);
+      final makes = repository.spaceProfile(widget.spaceId)?.can(Perm.manageChannels) ?? false;
       Widget roomRow(AdminRoom r, List<AdminRoom> siblings) => ListRow(
         title: r.name,
         hash: r.kind == AdminRoomKind.text,
         leading: r.kind == AdminRoomKind.voice
             ? ExcludeSemantics(child: Icon(FLucideIcons.volume2, size: 20, color: colors.mutedForeground))
             : null,
-        detail: r.kind == AdminRoomKind.voice ? 'Voice room. Double tap for options' : 'Double tap for options',
-        onTap: () => _options(r, siblings),
+        detail: switch ((r.kind == AdminRoomKind.voice, manages(r))) {
+          (true, true) => 'Voice room. Double tap for options',
+          (true, false) => 'Voice room',
+          (false, true) => 'Double tap for options',
+          (false, false) => null,
+        },
+        onTap: manages(r) ? () => _options(r, siblings) : null,
       );
       return AdminPage(
         title: 'Rooms',
-        actions: [IconAction(icon: FLucideIcons.plus, label: 'New room', onPressed: _create)],
+        actions: [if (makes) IconAction(icon: FLucideIcons.plus, label: 'New room', onPressed: _create)],
         children: [
           for (final r in loose) roomRow(r, loose),
           for (final c in categories) ...[
-            Semantics(
-              container: true,
-              button: true,
-              label: 'Category ${c.name}',
-              hint: 'Double tap for options',
-              excludeSemantics: true,
-              onTap: () => _options(c, categories),
-              child: GestureDetector(onTap: () => _options(c, categories), child: Overline(c.name)),
-            ),
+            if (manages(c))
+              Semantics(
+                container: true,
+                button: true,
+                label: 'Category ${c.name}',
+                hint: 'Double tap for options',
+                excludeSemantics: true,
+                onTap: () => _options(c, categories),
+                child: GestureDetector(onTap: () => _options(c, categories), child: Overline(c.name)),
+              )
+            else
+              Overline(c.name),
             for (final r in all.where((r) => r.parentId == c.id && r.kind != AdminRoomKind.category).toList())
               roomRow(r, all.where((o) => o.parentId == c.id && o.kind != AdminRoomKind.category).toList()),
           ],

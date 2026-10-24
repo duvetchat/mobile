@@ -356,8 +356,15 @@ class FakeRepository implements ChatRepository {
   final noJoin = <String>{};
   final noSpeak = <String>{};
 
+  /// Permissions the user lacks in a room, by room ID.
+  final deniedInRoom = <String, int>{};
+
+  /// What [spaceProfile] says of ManageChannels in some room.
+  bool managesRooms = false;
+
   @override
   bool canInRoom(String spaceId, String roomId, int bit) => switch (bit) {
+    _ when (deniedInRoom[roomId] ?? 0) & bit != 0 => false,
     Perm.createInvites => !noInvites.contains(roomId),
     Perm.joinVoice => !noJoin.contains(roomId),
     Perm.speakInVoice => !noSpeak.contains(roomId),
@@ -374,6 +381,7 @@ class FakeRepository implements ChatRepository {
       memberCount: everyone.length,
       owner: spaceOwner,
       perms: spacePerms,
+      managesRooms: managesRooms,
     );
   }
 
