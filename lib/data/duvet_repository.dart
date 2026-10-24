@@ -471,8 +471,7 @@ class DuvetRepository implements ChatRepository {
         _publishSpaces();
 
       case duvet.RoomDeletedEvent(:final data):
-        _spaces[data.spaceId]?.rooms.remove(data.id);
-        _publishSpaces();
+        _roomGone(data.spaceId, data.id);
 
       case duvet.MessageCreateEvent(:final data):
         if (data.deletedAt != null) break;
@@ -1708,9 +1707,36 @@ class DuvetRepository implements ChatRepository {
   @override
   Future<void> deleteRoom(String spaceId, String roomId) async {
     await _call((api) => api.deleteRoom(spaceId, roomId));
-    _spaces[spaceId]?.rooms.remove(roomId);
+    _roomGone(spaceId, roomId);
+  }
+
+  /// A room was deleted. A category's rooms stay, outside any category: the
+  /// API moves them there and sends no event for it.
+  void _roomGone(String spaceId, String roomId) {
+    final rooms = _spaces[spaceId]?.rooms;
+    if (rooms == null) return;
+    rooms.remove(roomId);
+    for (final r in [...rooms.values]) {
+      if (r.parentId == roomId) rooms[r.id] = _placed(r, parentId: null, position: r.position);
+    }
     _publishSpaces();
   }
+
+  /// [r] at another [position], in [parentId] (null: outside any category).
+  static duvet.GatewayRoom _placed(duvet.GatewayRoom r, {required String? parentId, required int position}) =>
+      duvet.GatewayRoom(
+        id: r.id,
+        spaceId: r.spaceId,
+        parentId: parentId,
+        type: r.type,
+        name: r.name,
+        description: r.description,
+        position: position,
+        nsfw: r.nsfw,
+        createdAt: r.createdAt,
+        updatedAt: r.updatedAt,
+        deletedAt: r.deletedAt,
+      );
 
   @override
   Future<void> moveRoom(String spaceId, String roomId, int position) async {

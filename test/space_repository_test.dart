@@ -339,4 +339,48 @@ void main() {
       expect(listed(), ['r-mods']);
     });
   });
+
+  group('rooms in order', () {
+    // A Space with a room outside any category, and a category of two.
+    Map<String, dynamic> guild() => _space(
+      rooms: {
+        'r-general': _room('r-general'),
+        'c-talk': _room('c-talk', type: 3, position: 1),
+        'r-crit': _room('r-crit', parent: 'c-talk'),
+        'r-lounge': _room('r-lounge', type: 2, position: 1, parent: 'c-talk'),
+      },
+    );
+    Map<String?, List<String>> sections() => {
+      for (final s in repository.spaces.value.single.sections) s.name: [for (final r in s.rooms) r.id],
+    };
+
+    test('a deleted category leaves its rooms outside any, as the API does', () async {
+      await signIn();
+      repository.handleEvent(_event('SPACE_CREATE', guild()));
+      expect(sections(), {
+        null: ['r-general'],
+        'c-talk': ['r-crit', 'r-lounge'],
+      });
+      repository.handleEvent(_event('ROOM_DELETE', {'id': 'c-talk', 'space_id': 's-1'}));
+      expect(sections(), {
+        null: ['r-general', 'r-crit', 'r-lounge'],
+      });
+      expect(repository.adminRooms('s-1').map((r) => (r.id, r.parentId)), [
+        ('r-general', null),
+        ('r-crit', null),
+        ('r-lounge', null),
+      ]);
+    });
+
+    test('deleting a category here does the same', () async {
+      await signIn();
+      repository.handleEvent(_event('SPACE_CREATE', guild()));
+      routes[('DELETE', '/api/spaces/s-1/rooms/c-talk')] = (_) => http.Response('', 204);
+      await repository.deleteRoom('s-1', 'c-talk');
+      expect(sections(), {
+        null: ['r-general', 'r-crit', 'r-lounge'],
+      });
+      expect(repository.adminRooms('s-1').map((r) => r.parentId), [null, null, null]);
+    });
+  });
 }
