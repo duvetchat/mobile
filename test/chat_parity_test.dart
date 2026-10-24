@@ -356,4 +356,38 @@ void main() {
       semantics.dispose();
     });
   });
+
+  testWidgets('spoiler videos, audio and files stay covered until tapped, as pictures do', (tester) async {
+    final repository = await openMaya(tester);
+    MessageAttachment file(String id, String name, String type) =>
+        MessageAttachment(id: id, filename: name, contentType: type, url: 'https://example.invalid/$id');
+    repository.push(
+      'c-maya',
+      MessageCreated(
+        ChatMessage(
+          id: 'sp',
+          authorId: _maya,
+          authorName: 'Maya',
+          content: '',
+          createdAt: DateTime(2026, 10, 23, 10),
+          attachments: [
+            file('v', 'SPOILER_ending.mp4', 'video/mp4'),
+            file('s', 'SPOILER_theme.mp3', 'audio/mpeg'),
+            file('d', 'SPOILER_script.pdf', 'application/pdf'),
+          ],
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+    expect(find.bySemanticsLabel('Spoiler, Video, ending.mp4'), findsOneWidget);
+    expect(find.bySemanticsLabel('Spoiler, Audio file, theme.mp3'), findsOneWidget);
+    expect(find.bySemanticsLabel('Spoiler, File, script.pdf'), findsOneWidget);
+    expect(find.bySemanticsLabel(RegExp(r'^Video, ending\.mp4')), findsNothing);
+    expect(find.bySemanticsLabel(RegExp(r'^PDF, script\.pdf')), findsNothing);
+
+    await tapLabel(tester, 'Spoiler, File, script.pdf');
+    expect(find.bySemanticsLabel(RegExp(r'^PDF, script\.pdf')), findsOneWidget);
+    expect(find.bySemanticsLabel('Spoiler, Video, ending.mp4'), findsOneWidget);
+    semantics.dispose();
+  });
 }
