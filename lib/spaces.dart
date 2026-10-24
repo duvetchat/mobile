@@ -108,8 +108,9 @@ class _JoinState extends State<_Join> {
     try {
       final spaceId = invite.joined ? invite.spaceId : await context.repository.joinInvite(invite.code);
       if (mounted) Navigator.of(context).pop(spaceId);
-    } catch (_) {
-      if (mounted) setState(() => _error = 'Couldn’t join. The invite may have run out.');
+    } catch (e) {
+      // The API's reason, as the desktop shows it.
+      if (mounted) setState(() => _error = e is ActionFailed ? e.message : 'Couldn’t join the Space');
     } finally {
       if (mounted) setState(() => _joining = false);
     }
@@ -147,7 +148,13 @@ class _JoinState extends State<_Join> {
               builder: (context, snapshot) {
                 final invite = snapshot.data;
                 if (snapshot.hasError) {
-                  return const Padding(padding: EdgeInsets.only(top: 16), child: ListNote('This invite has expired'));
+                  return Padding(
+                    padding: const EdgeInsets.only(top: 16),
+                    child: ListNote(switch (snapshot.error) {
+                      final ActionFailed f => f.message,
+                      _ => 'This invite has expired',
+                    }),
+                  );
                 }
                 if (invite == null) {
                   return const Padding(

@@ -1231,22 +1231,36 @@ class DuvetRepository implements ChatRepository {
   Future<String> createInvite(String spaceId, String roomId, {Duration? maxAge}) async {
     final String code;
     try {
-      code = await _call((api) => api.createRoomInvite(spaceId, roomId, maxAge?.inSeconds ?? 0));
+      code = await _explained((api) => api.createRoomInvite(spaceId, roomId, maxAge?.inSeconds ?? 0));
     } on duvet.DuvetApiException catch (e) {
-      debugPrint('invite: $e');
+      // One without the API's reason.
       final room = _spaces[spaceId]?.rooms[roomId]?.name;
       throw ActionFailed(switch (e.statusCode) {
         403 => 'You can’t invite people${room == null ? '' : ' to #$room'}',
-        400 => _serverReason(e) ?? 'The server refused the link',
+        400 => 'The server refused the link',
         _ => 'The server couldn’t make a link (${e.statusCode})',
       });
+    }
+    return '$duvetDomain/invite?code=${Uri.encodeQueryComponent(code)}';
+  }
+
+  /// Runs a request whose refusal the user should read: the API's reason, as
+  /// the desktop's `getApiError` shows it, or that Duvet couldn't be reached.
+  /// A 401 is the session's, which [_call] renews or ends.
+  Future<T> _explained<T>(Future<T> Function(duvet.RestClient api) request) async {
+    try {
+      return await _call(request);
+    } on duvet.DuvetApiException catch (e) {
+      if (e.statusCode == 401) rethrow;
+      debugPrint('refused: $e');
+      if (_serverReason(e) case final reason?) throw ActionFailed(reason);
+      rethrow;
     } on TimeoutException {
       throw const ActionFailed('Duvet didn’t answer. Check your connection and try again.');
     } on IOException catch (e) {
-      debugPrint('invite: $e');
+      debugPrint('offline: $e');
       throw const ActionFailed('No connection. Check it and try again.');
     }
-    return '$duvetDomain/invite?code=${Uri.encodeQueryComponent(code)}';
   }
 
   // The `error` of an API error's JSON body, if it has one.
@@ -1698,7 +1712,7 @@ class DuvetRepository implements ChatRepository {
 
   @override
   Future<void> createRoom(String spaceId, String name, AdminRoomKind kind, {String? parentId}) async {
-    final room = await _call(
+    final room = await _explained(
       (api) => api.createRoom(spaceId, name, switch (kind) {
         AdminRoomKind.voice => duvet.RoomType.voice,
         AdminRoomKind.category => duvet.RoomType.category,
@@ -1711,14 +1725,14 @@ class DuvetRepository implements ChatRepository {
 
   @override
   Future<void> renameRoom(String spaceId, String roomId, String name) async {
-    final room = await _call((api) => api.updateRoom(spaceId, roomId, name: name));
+    final room = await _explained((api) => api.updateRoom(spaceId, roomId, name: name));
     _spaces[spaceId]?.rooms[room.id] = room;
     _publishSpaces();
   }
 
   @override
   Future<void> deleteRoom(String spaceId, String roomId) async {
-    await _call((api) => api.deleteRoom(spaceId, roomId));
+    await _explained((api) => api.deleteRoom(spaceId, roomId));
     _roomGone(spaceId, roomId);
   }
 
@@ -1752,7 +1766,7 @@ class DuvetRepository implements ChatRepository {
 
   @override
   Future<void> moveRoom(String spaceId, String roomId, int position) async {
-    final room = await _call((api) => api.updateRoom(spaceId, roomId, position: position));
+    final room = await _explained((api) => api.updateRoom(spaceId, roomId, position: position));
     // The rooms it moved past follow in ROOM_REORDER.
     _spaces[spaceId]?.rooms[room.id] = room;
     _publishSpaces();
@@ -1767,7 +1781,7 @@ class DuvetRepository implements ChatRepository {
         if (r.parentId == null && r.type != duvet.RoomType.category && r.id != roomId) r.position,
     ];
     final position = categoryId != null ? 0 : loose.fold(-1, (a, b) => a > b ? a : b) + 1;
-    final room = await _call(
+    final room = await _explained(
       (api) =>
           api.updateRoom(spaceId, roomId, parentId: categoryId, clearParent: categoryId == null, position: position),
     );
@@ -1789,12 +1803,12 @@ class DuvetRepository implements ChatRepository {
       // Without one it's as the roles say already, and the API would answer
       // a 404.
       if (!list.any((o) => o.targetId == overwrite.targetId && o.deletedAt == null)) return;
-      await _call((api) => api.deleteRoomOverwrite(spaceId, roomId, overwrite.targetId));
+      await _explained((api) => api.deleteRoomOverwrite(spaceId, roomId, overwrite.targetId));
       list.removeWhere((o) => o.targetId == overwrite.targetId);
       _publishSpaces();
       return;
     }
-    final saved = await _call(
+    final saved = await _explained(
       (api) => api.upsertRoomOverwrite(
         spaceId,
         roomId,
@@ -1833,7 +1847,7 @@ class DuvetRepository implements ChatRepository {
 
   @override
   Future<SpaceRole> createRole(String spaceId, String name) async {
-    final r = await _call((api) => api.createRole(spaceId, name));
+    final r = await _explained((api) => api.createRole(spaceId, name));
     (_roles[spaceId] ??= {})[r.id] = r;
     return _role(spaceId, r);
   }
@@ -1847,7 +1861,7 @@ class DuvetRepository implements ChatRepository {
     bool clearColor = false,
     int? perms,
   }) async {
-    final r = await _call(
+    final r = await _explained(
       (api) =>
           api.updateRole(spaceId, roleId, name: name, colorFrom: color, permissions: perms, clearColors: clearColor),
     );
@@ -1857,7 +1871,7 @@ class DuvetRepository implements ChatRepository {
 
   @override
   Future<void> deleteRole(String spaceId, String roleId) async {
-    await _call((api) => api.deleteRole(spaceId, roleId));
+    await _explained((api) => api.deleteRole(spaceId, roleId));
     _roles[spaceId]?.remove(roleId);
     for (final ids in _memberRoles[spaceId]?.values ?? const <List<String>>[]) {
       ids.remove(roleId);
@@ -1879,7 +1893,7 @@ class DuvetRepository implements ChatRepository {
     final memberId = memberIdOf();
     // What the API answers for someone who isn't in the Space.
     if (memberId == null) throw const ActionFailed('Member not found');
-    await _call(
+    await _explained(
       (api) =>
           has ? api.assignRoleToMember(spaceId, roleId, memberId) : api.removeRoleFromMember(spaceId, roleId, memberId),
     );
@@ -1906,7 +1920,8 @@ class DuvetRepository implements ChatRepository {
   }
 
   @override
-  Future<void> revokeInvite(String spaceId, String inviteId) => _call((api) => api.revokeInvite(spaceId, inviteId));
+  Future<void> revokeInvite(String spaceId, String inviteId) =>
+      _explained((api) => api.revokeInvite(spaceId, inviteId));
 
   @override
   Future<List<SpaceAsset>> assets(String spaceId, AssetKind kind) async => switch (kind) {
@@ -1927,7 +1942,7 @@ class DuvetRepository implements ChatRepository {
 
   @override
   Future<void> addAsset(String spaceId, AssetKind kind, String name, String path) async {
-    await _call(
+    await _explained(
       (api) => kind == AssetKind.emoji
           ? api.createEmoji(spaceId, name, File(path))
           : api.createSticker(spaceId, name, File(path)),
@@ -1937,7 +1952,7 @@ class DuvetRepository implements ChatRepository {
 
   @override
   Future<void> renameAsset(String spaceId, AssetKind kind, String id, String name) async {
-    await _call(
+    await _explained(
       (api) => kind == AssetKind.emoji ? api.updateEmoji(spaceId, id, name) : api.updateSticker(spaceId, id, name),
     );
     _assetsChanged(spaceId);
@@ -1945,7 +1960,7 @@ class DuvetRepository implements ChatRepository {
 
   @override
   Future<void> deleteAsset(String spaceId, AssetKind kind, String id) async {
-    await _call((api) => kind == AssetKind.emoji ? api.deleteEmoji(spaceId, id) : api.deleteSticker(spaceId, id));
+    await _explained((api) => kind == AssetKind.emoji ? api.deleteEmoji(spaceId, id) : api.deleteSticker(spaceId, id));
     _assetsChanged(spaceId);
   }
 
@@ -2092,7 +2107,7 @@ class DuvetRepository implements ChatRepository {
   }
 
   @override
-  Future<void> addBot(String spaceId, String botId) => _call((api) => api.addBotToSpace(spaceId, botId));
+  Future<void> addBot(String spaceId, String botId) => _explained((api) => api.addBotToSpace(spaceId, botId));
 
   @override
   List<({String id, String name})> spaceRoles(String spaceId) => [
@@ -2102,7 +2117,7 @@ class DuvetRepository implements ChatRepository {
 
   @override
   Future<InvitePreview> invite(String code) async {
-    final info = await _call((api) => api.getInvite(code));
+    final info = await _explained((api) => api.getInvite(code));
     return InvitePreview(
       code: info.code,
       spaceId: info.spaceId,
@@ -2114,7 +2129,7 @@ class DuvetRepository implements ChatRepository {
   }
 
   @override
-  Future<String> joinInvite(String code) async => (await _call((api) => api.joinInvite(code))).spaceId;
+  Future<String> joinInvite(String code) async => (await _explained((api) => api.joinInvite(code))).spaceId;
 
   @override
   Future<List<Member>> members(ChatTarget target, {bool refresh = false}) async {

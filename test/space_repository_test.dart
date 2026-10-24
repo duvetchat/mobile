@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:io';
 
 import 'package:duvet/data/cache.dart';
 import 'package:duvet/data/duvet_repository.dart';
@@ -496,5 +497,150 @@ void main() {
       ('DELETE', '/api/spaces/s-1/rooms/r-general/overwrites/s-1'),
     );
     expect(repository.overwrites('s-1', 'r-general'), isEmpty);
+  });
+
+  group('a refusal says why, as the desktop shows the API\'s reason', () {
+    late String upload;
+
+    setUp(() {
+      final dir = Directory.systemTemp.createTempSync('duvet_refusals');
+      addTearDown(() => dir.deleteSync(recursive: true));
+      upload = '${dir.path}/party.png';
+      File(upload).writeAsBytesSync(const [1, 2, 3]);
+    });
+
+    Future<void> refuses(
+      String method,
+      String path,
+      Future<void> Function() call, {
+      int status = 403,
+      String reason = 'you don\'t have permission to do that',
+    }) async {
+      routes[(method, path)] = (_) =>
+          http.Response(jsonEncode({'error': reason}), status, headers: {'content-type': 'application/json'});
+      await expectLater(
+        call(),
+        throwsA(
+          isA<ActionFailed>().having((e) => e.message, 'message', '${reason[0].toUpperCase()}${reason.substring(1)}'),
+        ),
+        reason: '$method $path',
+      );
+    }
+
+    test('rooms, overwrites, roles, emojis, stickers, invites, joining and bots', () async {
+      await signIn();
+      repository.handleEvent(
+        _event(
+          'SPACE_CREATE',
+          _space(
+            roles: {'role-mod': Perm.pinMessages},
+            overwrites: {
+              'r-general': [_overwrite('r-general', 's-1', deny: Perm.sendMessages)],
+            },
+          ),
+        ),
+      );
+      routes[('GET', '/api/spaces/s-1/members')] = (_) => [_member('mem-maya', _maya, 'maya')];
+
+      await refuses('POST', '/api/spaces/s-1/rooms', () => repository.createRoom('s-1', 'crit', AdminRoomKind.text));
+      await refuses('PATCH', '/api/spaces/s-1/rooms/r-general', () => repository.renameRoom('s-1', 'r-general', 'x'));
+      await refuses('PATCH', '/api/spaces/s-1/rooms/r-general', () => repository.moveRoom('s-1', 'r-general', 1));
+      await refuses(
+        'PATCH',
+        '/api/spaces/s-1/rooms/r-general',
+        () => repository.setRoomCategory('s-1', 'r-general', null),
+        status: 400,
+        reason: 'parent_id must be a category of this space',
+      );
+      await refuses('DELETE', '/api/spaces/s-1/rooms/r-general', () => repository.deleteRoom('s-1', 'r-general'));
+      await refuses(
+        'PUT',
+        '/api/spaces/s-1/rooms/r-general/overwrites',
+        () => repository.setOverwrite(
+          's-1',
+          'r-general',
+          const RoomOverwrite(targetId: 'role-mod', allow: Perm.pinMessages),
+        ),
+        reason: 'you cannot grant or deny permissions you don\'t have',
+      );
+      await refuses(
+        'DELETE',
+        '/api/spaces/s-1/rooms/r-general/overwrites/s-1',
+        () => repository.setOverwrite('s-1', 'r-general', const RoomOverwrite(targetId: 's-1')),
+      );
+      await refuses('POST', '/api/spaces/s-1/roles', () => repository.createRole('s-1', 'Hosts'));
+      await refuses(
+        'PATCH',
+        '/api/spaces/s-1/roles/role-mod',
+        () => repository.updateRole('s-1', 'role-mod', name: 'Mods'),
+        reason: 'you cannot manage a role higher than or equal to your highest role',
+      );
+      await refuses('DELETE', '/api/spaces/s-1/roles/role-mod', () => repository.deleteRole('s-1', 'role-mod'));
+      await refuses(
+        'PUT',
+        '/api/spaces/s-1/members/mem-maya/roles/role-mod',
+        () => repository.setRole('s-1', 'role-mod', _maya, has: true),
+      );
+      await refuses(
+        'POST',
+        '/api/spaces/s-1/rooms/r-general/invites',
+        () => repository.createInvite('s-1', 'r-general'),
+        reason: 'you don\'t have permission to create invite links for this space',
+      );
+      await refuses('DELETE', '/api/spaces/s-1/invites/i-1', () => repository.revokeInvite('s-1', 'i-1'));
+      await refuses(
+        'POST',
+        '/api/spaces/s-1/emojis',
+        () => repository.addAsset('s-1', AssetKind.emoji, 'party', upload),
+        status: 422,
+        reason: 'this space does not have a storage bucket configured',
+      );
+      await refuses(
+        'POST',
+        '/api/spaces/s-1/stickers',
+        () => repository.addAsset('s-1', AssetKind.sticker, 'party', upload),
+        status: 400,
+        reason: 'invalid image: sticker images can be 512 KiB at most',
+      );
+      await refuses(
+        'PATCH',
+        '/api/spaces/s-1/emojis/e-1',
+        () => repository.renameAsset('s-1', AssetKind.emoji, 'e-1', 'cake'),
+      );
+      await refuses(
+        'DELETE',
+        '/api/spaces/s-1/stickers/st-1',
+        () => repository.deleteAsset('s-1', AssetKind.sticker, 'st-1'),
+      );
+      await refuses(
+        'GET',
+        '/api/invites/k7Qe2m',
+        () => repository.invite('k7Qe2m'),
+        status: 404,
+        reason: 'invite link not found or has expired',
+      );
+      await refuses(
+        'POST',
+        '/api/invites/k7Qe2m/join',
+        () => repository.joinInvite('k7Qe2m'),
+        status: 400,
+        reason: 'you cannot be in more than 100 spaces',
+      );
+      await refuses(
+        'POST',
+        '/api/spaces/s-1/bots/b-1',
+        () => repository.addBot('s-1', 'b-1'),
+        reason: 'this bot is private — only team members can add it',
+      );
+    });
+
+    test('without a connection, it says so', () async {
+      await signIn();
+      routes[('POST', '/api/invites/k7Qe2m/join')] = (_) => throw const SocketException('no network');
+      await expectLater(
+        repository.joinInvite('k7Qe2m'),
+        throwsA(isA<ActionFailed>().having((e) => e.message, 'message', 'No connection. Check it and try again.')),
+      );
+    });
   });
 }

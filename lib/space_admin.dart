@@ -841,8 +841,8 @@ class _RolesPageState extends State<RolesPage> {
     try {
       final role = await repository.createRole(widget.spaceId, got.$1);
       if (mounted) await _edit(role);
-    } catch (_) {
-      if (mounted) _toast(context, 'Couldn’t create the role');
+    } catch (e) {
+      if (mounted) _toast(context, e is ActionFailed ? e.message : 'Couldn’t create the role');
     }
   }
 

@@ -338,6 +338,14 @@ class FakeRepository implements ChatRepository {
 
   // Running a Space: what the admin screens did, in order.
   final admin = <String>[];
+
+  /// Why the server refuses a call, by the method's name, as the real
+  /// repository says it (the API's reason).
+  final refusals = <String, String>{};
+  void _refuse(String call) {
+    if (refusals[call] case final why?) throw ActionFailed(why);
+  }
+
   int spacePerms = Perm.all;
   bool spaceOwner = true;
   final adminRoomList = <String, List<AdminRoom>>{};
@@ -506,6 +514,7 @@ class FakeRepository implements ChatRepository {
   @override
   Future<SpaceRole> createRole(String spaceId, String name) async {
     admin.add('role+ $name');
+    _refuse('createRole');
     roles(spaceId);
     final role = SpaceRole(id: 'role-$name', name: name, position: 1);
     roleList[spaceId]!.insert(roleList[spaceId]!.length - 1, role);
@@ -651,17 +660,26 @@ class FakeRepository implements ChatRepository {
   Future<BotInfo> bot(String userId) async => BotInfo(id: userId, name: 'Ballot');
 
   @override
-  Future<void> addBot(String spaceId, String botId) async => botsAdded.add((spaceId, botId));
+  Future<void> addBot(String spaceId, String botId) async {
+    _refuse('addBot');
+    botsAdded.add((spaceId, botId));
+  }
 
   @override
   List<({String id, String name})> spaceRoles(String spaceId) => const [(id: 'role-mod', name: 'Moderator')];
 
   @override
-  Future<InvitePreview> invite(String code) async => invites[code] ?? (throw Exception('no such invite'));
+  Future<InvitePreview> invite(String code) async {
+    // A request takes a moment: the preview waits for its answer.
+    await Future<void>.delayed(const Duration(milliseconds: 100));
+    _refuse('invite');
+    return invites[code] ?? (throw Exception('no such invite'));
+  }
 
   @override
   Future<String> joinInvite(String code) async {
     joined.add(code);
+    _refuse('joinInvite');
     return invites[code]!.spaceId;
   }
 
