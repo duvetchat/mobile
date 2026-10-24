@@ -151,7 +151,7 @@ class FakeRepository implements ChatRepository {
   Future<List<ChatMessage>> thread(ChatTarget target, String messageId) async => [...?threads[messageId]];
 
   @override
-  List<Member> get people => everyone;
+  List<Member> people = everyone;
 
   final created = <(String, String?, String?)>[];
   final left = <String>[];

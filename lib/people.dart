@@ -98,7 +98,19 @@ class _ProfileState extends State<_Profile> {
     final repository = context.repository;
     final colors = context.theme.colors;
     final tokens = context.duvet;
-    final m = widget.member;
+    // The friends list has no bio or banner: a DM's or a Space's members do.
+    final known = repository.people.where((p) => p.userId == widget.member.userId).firstOrNull;
+    final m = known == null
+        ? widget.member
+        : Member(
+            userId: widget.member.userId,
+            username: widget.member.username,
+            alias: widget.member.alias,
+            avatarUrl: widget.member.avatarUrl,
+            isBot: widget.member.isBot,
+            bio: widget.member.bio ?? known.bio,
+            bannerUrl: widget.member.bannerUrl ?? known.bannerUrl,
+          );
     final me = repository.profile.value?.id == m.userId;
     final roles = widget.spaceId == null ? const <RoleTag>[] : repository.rolesOf(widget.spaceId!, m.userId);
     final spaceName = repository.spaces.value.where((s) => s.id == widget.spaceId).firstOrNull?.name;

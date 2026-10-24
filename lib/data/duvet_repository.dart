@@ -1057,7 +1057,15 @@ class DuvetRepository implements ChatRepository {
     final members = _conversationMembers[c.id] = [
       for (final m in c.members)
         if (m.user case final u?)
-          Member(userId: u.id, username: u.username, alias: u.alias, avatarUrl: avatarUrl(u.avatar), isBot: u.isBot),
+          Member(
+            userId: u.id,
+            username: u.username,
+            alias: u.alias,
+            avatarUrl: avatarUrl(u.avatar),
+            isBot: u.isBot,
+            bio: u.custom.trim().isEmpty ? null : u.custom,
+            bannerUrl: avatarUrl(u.banner),
+          ),
     ];
     for (final m in members) {
       _names[m.userId] = m.displayName;

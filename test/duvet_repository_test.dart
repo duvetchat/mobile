@@ -18,6 +18,7 @@ const _me = '00000000-0000-4000-8000-000000000001';
 const _maya = '00000000-0000-4000-8000-000000000002';
 const _leo = '00000000-0000-4000-8000-000000000003';
 const _avatar = '00000000-0000-4000-8000-0000000000aa';
+const _banner = '00000000-0000-4000-8000-0000000000bb';
 const _at = '2026-10-23T09:00:00Z';
 
 Map<String, dynamic> _user(String id, String username, {String? alias, String? avatar}) => {
@@ -151,7 +152,14 @@ void main() {
                   'user_id': id,
                   'created_at': _at,
                   'updated_at': _at,
-                  'user': {'id': id, 'username': name, 'alias': name == 'maya' ? 'Maya' : null, 'avatar': avatar},
+                  'user': {
+                    'id': id,
+                    'username': name,
+                    'alias': name == 'maya' ? 'Maya' : null,
+                    'avatar': avatar,
+                    'custom': name == 'maya' ? 'Night runner' : '',
+                    'banner': name == 'maya' ? _banner : null,
+                  },
                 },
             ],
           },
@@ -227,6 +235,16 @@ void main() {
     expect(chat.isGroup, isFalse);
     expect(chat.avatarUrl, 'https://api.duvet.chat/attachments/$_avatar');
     expect(chat.otherUserId, _maya);
+  });
+
+  test('a conversation\'s members come with their bio and banner, for their profiles', () async {
+    await repository.logIn('gaby@duvet.chat', 'secret');
+    final members = await repository.members(const ConversationTarget('c-1'));
+    final maya = members.firstWhere((m) => m.userId == _maya);
+    expect(maya.bio, 'Night runner');
+    expect(maya.bannerUrl, 'https://api.duvet.chat/attachments/$_banner');
+    final gaby = members.firstWhere((m) => m.userId == _me);
+    expect((gaby.bio, gaby.bannerUrl), (null, null));
   });
 
   test('the friends list gives friends their presence, where the gateway hasn\'t told it', () async {

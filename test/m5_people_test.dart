@@ -63,6 +63,36 @@ void main() {
     semantics.dispose();
   });
 
+  testWidgets('a profile from the friends list shows the bio and banner a DM\'s members carry', (tester) async {
+    const banner = 'https://api.duvet.chat/attachments/0b0b0b0b-0000-4000-8000-000000000001';
+    await pumpApp(
+      tester,
+      setUp: (r) {
+        r.people = [
+          for (final m in FakeRepository.everyone)
+            m.userId == _maya
+                ? const Member(userId: _maya, username: 'maya', alias: 'Maya', bio: 'Night runner', bannerUrl: banner)
+                : m,
+        ];
+        r.friendsOnServer = const Friends(
+          friends: [Member(userId: _maya, username: 'maya', alias: 'Maya')],
+        );
+      },
+    );
+    await tester.tap(find.bySemanticsLabel('Friends').hitTestable().first);
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Maya').last);
+    await tester.pumpAndSettle();
+
+    expect(find.text('Night runner'), findsOneWidget);
+    expect(find.text('Nothing here yet.'), findsNothing);
+    expect(
+      find.byWidgetPredicate((w) => w is Image && w.image is NetworkImage && (w.image as NetworkImage).url == banner),
+      findsOneWidget,
+    );
+    semantics.dispose();
+  });
+
   testWidgets('a profile counts the Spaces the person is in as Mutual Spaces', (tester) async {
     await pumpApp(
       tester,
