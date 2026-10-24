@@ -194,6 +194,25 @@ void main() {
     ]);
   });
 
+  testWidgets('a webhook\'s message says WEBHOOK, as on the desktop, and the cache keeps it', (tester) async {
+    final hook = ChatMessage(
+      id: 'hook',
+      authorId: null,
+      authorName: 'Deploys',
+      fromBot: true,
+      fromWebhook: true,
+      content: 'Deployed the API',
+      createdAt: DateTime(2026, 10, 24, 9),
+    );
+    await pumpGeneral(tester, history: [hook]);
+    expect(find.text('WEBHOOK'), findsOneWidget);
+    expect(find.text('BOT'), findsNothing);
+    expect(find.bySemanticsLabel('Deploys, webhook,’s profile'), findsOneWidget);
+    final back = messageFromJson(jsonDecode(jsonEncode(messageToJson(hook))) as Map<String, Object?>);
+    expect(back.fromWebhook, isTrue);
+    semantics.dispose();
+  });
+
   testWidgets('a bot message: rounded-square avatar, BOT tag, buttons and a select', (tester) async {
     final repository = await pumpGeneral(tester, history: [poll()]);
     expect(find.text('BOT'), findsOneWidget);

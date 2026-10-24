@@ -1103,6 +1103,14 @@ class _ChatViewState extends State<ChatView> {
   // A DM or a group can be called; a room or a thread can't.
   bool get _callable => widget.target is ConversationTarget && widget.threadOf == null;
 
+  /// A DM's other person's presence, under its name: none in a group, a room
+  /// or a thread, nor before the gateway or the friends list has told it.
+  Presence? get _dmPresence {
+    if (widget.target is! ConversationTarget || widget.threadOf != null) return null;
+    final other = _repository.conversations.value.where((c) => c.id == widget.target.id).firstOrNull?.otherUserId;
+    return other == null ? null : _repository.presence.value[other];
+  }
+
   /// Under the top bar: the connection's state, and the call going on here.
   Widget? _topBanner() {
     final status = switch (_repository.status.value) {
@@ -1576,7 +1584,12 @@ class _ChatViewState extends State<ChatView> {
                 if (h != _topHeight) setState(() => _topHeight = h);
               },
               child: ListenableBuilder(
-                listenable: Listenable.merge([_repository.status, context.voice]),
+                listenable: Listenable.merge([
+                  _repository.status,
+                  context.voice,
+                  _repository.conversations,
+                  _repository.presence,
+                ]),
                 builder: (context, _) => GlassTopBar(
                   hairline: _underTop,
                   onBack: () => Navigator.of(context).maybePop(),
@@ -1593,20 +1606,32 @@ class _ChatViewState extends State<ChatView> {
                             ),
                           ],
                         )
-                      : Text.rich(
-                          TextSpan(
+                      : switch (_dmPresence) {
+                          final presence? => Column(
+                            mainAxisSize: MainAxisSize.min,
                             children: [
-                              if (isRoom)
-                                TextSpan(
-                                  text: '# ',
-                                  style: TextStyle(color: colors.mutedForeground),
-                                ),
-                              TextSpan(text: isRoom ? widget.title.replaceFirst('# ', '') : widget.title),
+                              Text(widget.title, maxLines: 1, overflow: TextOverflow.ellipsis),
+                              Text(
+                                presenceText(presence),
+                                style: DuvetType.caption.copyWith(color: colors.mutedForeground),
+                              ),
                             ],
                           ),
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                        ),
+                          null => Text.rich(
+                            TextSpan(
+                              children: [
+                                if (isRoom)
+                                  TextSpan(
+                                    text: '# ',
+                                    style: TextStyle(color: colors.mutedForeground),
+                                  ),
+                                TextSpan(text: isRoom ? widget.title.replaceFirst('# ', '') : widget.title),
+                              ],
+                            ),
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                        },
                   onTitle: isRoom && widget.threadOf == null ? _openSwitcher : null,
                   titleLabel: isRoom && widget.threadOf == null
                       ? 'Channel ${widget.title.replaceFirst('# ', '')}, switch channel'

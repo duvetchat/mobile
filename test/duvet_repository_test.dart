@@ -13,6 +13,7 @@ import 'package:http/testing.dart';
 
 const _me = '00000000-0000-4000-8000-000000000001';
 const _maya = '00000000-0000-4000-8000-000000000002';
+const _leo = '00000000-0000-4000-8000-000000000003';
 const _avatar = '00000000-0000-4000-8000-0000000000aa';
 const _at = '2026-10-23T09:00:00Z';
 
@@ -114,6 +115,18 @@ void main() {
           nonce: (jsonDecode(request.body) as Map)['nonce'] as String?,
         ),
         ('GET', '/api/users/@me/mentions/counts') => {'r-general': 2, 'c-1': 0},
+        ('GET', '/api/users/@me/friends') => [
+          for (final (id, name, status) in [(_maya, 'maya', 2), (_leo, 'leo', 0)])
+            {
+              'id': 'f-$id',
+              'request_id': 'q-$id',
+              'sender_id': _me,
+              'recipient_id': id,
+              'user_username': name,
+              'status_id': status,
+            },
+        ],
+        ('GET', '/api/users/@me/friends/requests') || ('GET', '/api/users/@me/friends/requests/sent') => <Object>[],
         ('GET', '/api/rooms/r-general/messages') => [_roomMessage('last', 'newest')],
         ('POST', '/api/spaces') => {
           'space': {'id': 's-new', 'name': 'Testing lair', 'owner_id': _me, 'created_at': _at, 'updated_at': _at},
@@ -160,6 +173,14 @@ void main() {
     expect(chat.title, 'Maya');
     expect(chat.isGroup, isFalse);
     expect(chat.avatarUrl, 'https://api.duvet.chat/attachments/$_avatar');
+    expect(chat.otherUserId, _maya);
+  });
+
+  test('the friends list gives friends their presence, where the gateway hasn\'t told it', () async {
+    await repository.logIn('gaby@duvet.chat', 'secret');
+    repository.presence.value = {_leo: Presence.online};
+    await repository.loadFriends();
+    expect(repository.presence.value, {_leo: Presence.online, _maya: Presence.doNotDisturb});
   });
 
   test('a saved session resumes; a rejected one is forgotten', () async {

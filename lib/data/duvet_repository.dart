@@ -684,6 +684,7 @@ class DuvetRepository implements ChatRepository {
           : (others.isEmpty ? 'Direct message' : name(others.first)),
       isGroup: isGroup,
       avatarUrl: isGroup || others.isEmpty ? null : avatarUrl(others.first.avatar),
+      otherUserId: isGroup ? null : others.firstOrNull?.id,
       memberCount: c.members.length,
       updatedAt: c.updatedAt.toLocal(),
       ownerId: c.ownerId,
@@ -1104,6 +1105,13 @@ class DuvetRepository implements ChatRepository {
       _call((api) => api.getSentRequests()),
     ).wait;
     _friendsLoaded = true;
+    // Friends sharing no space with the user have no presence from the gateway
+    // until it changes: the list's, for those it hasn't told about.
+    final listed = {
+      for (final f in list)
+        if (f.statusId case final status?) (f.senderId == me ? f.recipientId : f.senderId): _presence(status),
+    };
+    if (listed.keys.any((id) => !presence.value.containsKey(id))) presence.value = {...listed, ...presence.value};
     friends.value = Friends(
       friends: [
         for (final f in list)
@@ -1350,8 +1358,12 @@ class DuvetRepository implements ChatRepository {
 
   @override
   Future<StorageInfo> storage() async {
-    final s = await _call((api) => api.getMyStorageStatus());
-    return StorageInfo(used: s.usedBytes, max: s.maxBytes);
+    final (s, buckets) = await (_call((api) => api.getMyStorageStatus()), _call((api) => api.getMyBuckets())).wait;
+    return StorageInfo(
+      used: s.usedBytes,
+      max: s.maxBytes,
+      buckets: [for (final b in buckets) (name: b.name, used: b.usedBytes, max: b.maxBytes, active: b.isActive)],
+    );
   }
 
   // ---------------------------------------------------------------------------
@@ -2007,6 +2019,7 @@ class DuvetRepository implements ChatRepository {
     components: componentsFromJson(m.components),
     rawComponents: m.components ?? const [],
     fromBot: m.user?.isBot ?? false,
+    fromWebhook: m.webhookId != null,
     attachments: _attachments(m.attachments),
     stickerUrl: m.stickerAttachmentId == null ? null : attachmentUrl(m.stickerAttachmentId!),
     embeds: _embeds(m.embeds),

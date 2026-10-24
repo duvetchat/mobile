@@ -3,8 +3,8 @@ part of '../chat_view.dart';
 /// One message: the sender's name over a run's first bubble, the reply it
 /// quotes, the bubble, its reactions, and the time under a run's last one.
 ///
-/// Double-tap replies (the bubble does the press); a long press opens its
-/// actions.
+/// Double-tap replies (the bubble does the press), and so does a swipe toward
+/// the start; a long press opens its actions.
 class _Bubble extends StatelessWidget {
   final _Entry entry;
   final bool mine;
@@ -191,13 +191,13 @@ class _Bubble extends StatelessWidget {
             onTap: onOpenAuthor,
             child: Padding(
               padding: const EdgeInsets.only(left: 4, bottom: 4),
-              child: m.fromBot
+              child: m.fromBot || m.fromWebhook
                   ? Row(
                       mainAxisSize: MainAxisSize.min,
                       children: [
                         Flexible(child: Text(m.authorName, style: secondary)),
                         const SizedBox(width: 6),
-                        const BotTag(),
+                        BotTag(webhook: m.fromWebhook),
                       ],
                     )
                   : Text(m.authorName, style: secondary),
@@ -247,46 +247,151 @@ class _Bubble extends StatelessWidget {
     // 4pt between bubbles of a run, 12pt between runs (less the highlight's
     // own 4pt).
     final gap = EdgeInsets.only(top: firstOfRun ? 8 : 0);
+    final onSwipe = entry.delivery == _Delivery.sent ? onReply : null;
     if (mine) {
       return Padding(
         padding: gap,
-        child: Align(alignment: Alignment.centerRight, child: highlighted),
+        child: _SwipeToReply(
+          onReply: onSwipe,
+          child: Align(alignment: Alignment.centerRight, child: highlighted),
+        ),
       );
     }
     return Padding(
       padding: gap,
-      child: Row(
-        crossAxisAlignment: CrossAxisAlignment.end,
-        children: [
-          // The avatar beside the run's last bubble, above its time.
-          SizedBox(
-            width: 36,
-            child: lastOfRun
-                ? Padding(
-                    padding: EdgeInsets.only(bottom: 4 + (status == null ? 0 : 22) + (m.reactions.isEmpty ? 0 : 32)),
-                    child: Semantics(
-                      container: true,
-                      button: true,
-                      label: '${m.authorName}${m.fromBot ? ', bot,' : ''}’s profile',
-                      excludeSemantics: true,
-                      onTap: onOpenAuthor,
-                      child: GestureDetector(
+      child: _SwipeToReply(
+        onReply: onSwipe,
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.end,
+          children: [
+            // The avatar beside the run's last bubble, above its time.
+            SizedBox(
+              width: 36,
+              child: lastOfRun
+                  ? Padding(
+                      padding: EdgeInsets.only(bottom: 4 + (status == null ? 0 : 22) + (m.reactions.isEmpty ? 0 : 32)),
+                      child: Semantics(
+                        container: true,
+                        button: true,
+                        label:
+                            '${m.authorName}${m.fromWebhook
+                                ? ', webhook,'
+                                : m.fromBot
+                                ? ', bot,'
+                                : ''}’s profile',
+                        excludeSemantics: true,
                         onTap: onOpenAuthor,
-                        child: m.fromBot
-                            ? const BotAvatar()
-                            : UserAvatar(name: m.authorName, url: m.authorAvatarUrl, size: 32),
+                        child: GestureDetector(
+                          onTap: onOpenAuthor,
+                          child: m.fromBot
+                              ? const BotAvatar()
+                              : UserAvatar(name: m.authorName, url: m.authorAvatarUrl, size: 32),
+                        ),
                       ),
-                    ),
-                  )
-                : null,
-          ),
-          Flexible(child: highlighted),
-        ],
+                    )
+                  : null,
+            ),
+            Flexible(child: highlighted),
+          ],
+        ),
       ),
     );
   }
 
   static String _time(DateTime t) => '${t.hour.toString().padLeft(2, '0')}:${t.minute.toString().padLeft(2, '0')}';
+}
+
+/// Swiping a message toward the start (left, left to right) replies to it, as
+/// in WhatsApp: the message follows the finger, the reply icon grows in behind
+/// it at the end, a tick says a release will reply, and it slides back.
+/// Scrollers and sliders inside the message keep their own horizontal drags.
+class _SwipeToReply extends StatefulWidget {
+  /// Null while the message can't be replied to: no swipe.
+  final VoidCallback? onReply;
+  final Widget child;
+  const _SwipeToReply({required this.onReply, required this.child});
+
+  @override
+  State<_SwipeToReply> createState() => _SwipeToReplyState();
+}
+
+class _SwipeToReplyState extends State<_SwipeToReply> with SingleTickerProviderStateMixin {
+  // The message follows the finger to the threshold, where a release replies,
+  // then a fifth as fast, up to [_max].
+  static const _threshold = 64.0;
+  static const _max = 96.0;
+  late final _shift = AnimationController(vsync: this, upperBound: _max, duration: const Duration(milliseconds: 250));
+  double _travel = 0;
+
+  bool get _armed => _shift.value >= _threshold;
+
+  @override
+  void dispose() {
+    _shift.dispose();
+    super.dispose();
+  }
+
+  void _drag(DragUpdateDetails d) {
+    final toStart = Directionality.of(context) == TextDirection.rtl ? d.delta.dx : -d.delta.dx;
+    _travel = math.max(0, _travel + toStart);
+    final wasArmed = _armed;
+    _shift.value = _travel <= _threshold ? _travel : _threshold + (_travel - _threshold) / 5;
+    if (_armed && !wasArmed) HapticFeedback.selectionClick();
+  }
+
+  void _release() {
+    if (_armed) widget.onReply?.call();
+    _travel = 0;
+    if (MediaQuery.disableAnimationsOf(context)) {
+      _shift.value = 0;
+    } else {
+      _shift.animateTo(0, curve: DuvetTokens.decelerate);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = context.theme.colors;
+    final accent = context.duvet.accentText;
+    final rtl = Directionality.of(context) == TextDirection.rtl;
+    // The same tree whether or not it can be replied to, so a message being
+    // sent isn't mounted again once it is.
+    final enabled = widget.onReply != null;
+    return GestureDetector(
+      onHorizontalDragUpdate: enabled ? _drag : null,
+      onHorizontalDragEnd: enabled ? (_) => _release() : null,
+      onHorizontalDragCancel: enabled ? _release : null,
+      child: AnimatedBuilder(
+        animation: _shift,
+        child: widget.child,
+        builder: (context, child) {
+          final shown = (_shift.value / _threshold).clamp(0.0, 1.0);
+          return Stack(
+            alignment: AlignmentDirectional.centerEnd,
+            children: [
+              if (shown > 0)
+                Padding(
+                  padding: const EdgeInsetsDirectional.only(end: 12),
+                  child: Opacity(
+                    opacity: shown,
+                    child: Transform.scale(
+                      scale: 0.6 + 0.4 * shown,
+                      child: Container(
+                        width: 32,
+                        height: 32,
+                        decoration: BoxDecoration(color: colors.secondary, shape: BoxShape.circle),
+                        child: Icon(FLucideIcons.reply, size: 16, color: _armed ? accent : colors.mutedForeground),
+                      ),
+                    ),
+                  ),
+                ),
+              Transform.translate(offset: Offset(rtl ? _shift.value : -_shift.value, 0), child: child),
+            ],
+          );
+        },
+      ),
+    );
+  }
 }
 
 /// A line under a bubble: its time, "Editing", "Uploading…".

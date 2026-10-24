@@ -150,6 +150,25 @@ void main() {
     semantics.dispose();
   });
 
+  testWidgets('swiping a message left replies, as in WhatsApp; a short swipe or one to the right does not', (
+    tester,
+  ) async {
+    await openMaya(tester);
+    final message = find.text('Hey! Did you see the new tab bar?');
+    final x = tester.getTopLeft(message).dx;
+    await tester.drag(message, const Offset(-40, 0));
+    await tester.pumpAndSettle();
+    await tester.drag(message, const Offset(120, 0));
+    await tester.pumpAndSettle();
+    expect(find.textContaining('Replying to Maya —'), findsNothing);
+
+    await tester.drag(message, const Offset(-120, 0));
+    await tester.pumpAndSettle();
+    expect(find.text('Replying to Maya — Hey! Did you see the new tab bar?'), findsOneWidget);
+    expect(tester.getTopLeft(message).dx, x, reason: 'it slides back on release');
+    semantics.dispose();
+  });
+
   testWidgets('a reply to a message not loaded opens it on its own', (tester) async {
     final repository = await openMaya(
       tester,
