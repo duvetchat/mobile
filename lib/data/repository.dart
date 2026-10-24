@@ -205,7 +205,7 @@ abstract interface class ChatRepository {
   Future<void> setRoomCategory(String spaceId, String roomId, String? categoryId);
   List<RoomOverwrite> overwrites(String spaceId, String roomId);
 
-  /// Saves an overwrite; an empty one is removed.
+  /// Saves an overwrite; an empty one is removed, where there is one.
   Future<void> setOverwrite(String spaceId, String roomId, RoomOverwrite overwrite);
 
   /// Roles, highest first, @everyone last.

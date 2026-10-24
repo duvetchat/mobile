@@ -471,4 +471,30 @@ void main() {
     expect(profile.managesRooms, isTrue);
     expect(profile.helpsRun, isTrue);
   });
+
+  test('"As the role says" deletes an overwrite only where there is one: the API answers 404 otherwise', () async {
+    await signIn();
+    repository.handleEvent(
+      _event(
+        'SPACE_CREATE',
+        _space(
+          roles: {'role-mod': Perm.pinMessages},
+          overwrites: {
+            'r-general': [_overwrite('r-general', 's-1', deny: Perm.sendMessages)],
+          },
+        ),
+      ),
+    );
+    routes[('DELETE', '/api/spaces/s-1/rooms/r-general/overwrites/s-1')] = (_) => http.Response('', 204);
+    final before = requests.length;
+    await repository.setOverwrite('s-1', 'r-general', const RoomOverwrite(targetId: 'role-mod'));
+    expect(requests.length, before);
+
+    await repository.setOverwrite('s-1', 'r-general', const RoomOverwrite(targetId: 's-1'));
+    expect(
+      (requests.last.method, requests.last.url.path),
+      ('DELETE', '/api/spaces/s-1/rooms/r-general/overwrites/s-1'),
+    );
+    expect(repository.overwrites('s-1', 'r-general'), isEmpty);
+  });
 }

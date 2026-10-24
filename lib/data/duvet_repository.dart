@@ -1786,6 +1786,9 @@ class DuvetRepository implements ChatRepository {
   Future<void> setOverwrite(String spaceId, String roomId, RoomOverwrite overwrite) async {
     final list = (_overwrites[spaceId] ??= {})[roomId] ??= [];
     if (overwrite.isEmpty) {
+      // Without one it's as the roles say already, and the API would answer
+      // a 404.
+      if (!list.any((o) => o.targetId == overwrite.targetId && o.deletedAt == null)) return;
       await _call((api) => api.deleteRoomOverwrite(spaceId, roomId, overwrite.targetId));
       list.removeWhere((o) => o.targetId == overwrite.targetId);
       _publishSpaces();
