@@ -565,6 +565,13 @@ final class MessageDeleted extends MessageEvent {
   const MessageDeleted(this.messageId);
 }
 
+/// Someone pinned a message, or unpinned it, here or on another device.
+final class MessagePinned extends MessageEvent {
+  final String messageId;
+  final bool pinned;
+  const MessagePinned(this.messageId, {required this.pinned});
+}
+
 /// Someone reacted to a message, or took a reaction back. The gateway doesn't
 /// say in which chat: a chat applies it if it has the message.
 final class ReactionChanged extends MessageEvent {
@@ -582,11 +589,13 @@ final class ReactionChanged extends MessageEvent {
   });
 }
 
-/// Someone started typing in a chat.
+/// Someone started typing in a chat, or recording a voice message: either
+/// replaces the other.
 class TypingUser {
   final String userId;
   final String name;
-  const TypingUser({required this.userId, required this.name});
+  final bool recording;
+  const TypingUser({required this.userId, required this.name, this.recording = false});
 }
 
 /// A row of the Chats tab.

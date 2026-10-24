@@ -511,10 +511,24 @@ class DuvetRepository implements ChatRepository {
         _recents.deleted(data.conversationId, data.id);
         _messageEvents.add((data.conversationId, MessageDeleted(data.id)));
 
+      // duvet_client's events since 1.0.1 are UnknownEvents too: matched here,
+      // before the default.
+      case duvet.MessagePinUpdatedEvent(:final data):
+        _messageEvents.add((data.roomId, MessagePinned(data.id, pinned: data.pinnedAt != null)));
+      case duvet.DMMessagePinUpdatedEvent(:final data):
+        _messageEvents.add((data.conversationId, MessagePinned(data.id, pinned: data.pinnedAt != null)));
+
       case duvet.TypingStartedEvent(:final data) when data.userId != me:
         _typing.add((data.roomId, TypingUser(userId: data.userId, name: data.alias ?? data.username)));
       case duvet.DMTypingStartedEvent(:final data) when data.userId != me:
         _typing.add((data.conversationId, TypingUser(userId: data.userId, name: data.alias ?? data.username)));
+      case duvet.RecordingStartedEvent(:final data) when data.userId != me:
+        _typing.add((data.roomId, TypingUser(userId: data.userId, name: data.alias ?? data.username, recording: true)));
+      case duvet.DMRecordingStartedEvent(:final data) when data.userId != me:
+        _typing.add((
+          data.conversationId,
+          TypingUser(userId: data.userId, name: data.alias ?? data.username, recording: true),
+        ));
 
       case duvet.UserStatusUpdatedEvent(:final data):
         presence.value = {...presence.value, data.userId: _presence(data.statusId)};

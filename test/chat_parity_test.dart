@@ -311,4 +311,49 @@ void main() {
       semantics.dispose();
     });
   });
+
+  group('live', () {
+    testWidgets('a pin made elsewhere: the menu offers Unpin, and an open pins list loads again', (tester) async {
+      final repository = await openGeneral(tester);
+      repository.push('r-general', const MessagePinned('m3', pinned: true));
+      await tester.pumpAndSettle();
+      await longPress(tester, 'Pushed the new type ramp');
+      expect(find.bySemanticsLabel('Unpin'), findsOneWidget);
+      await tester.tapAt(const Offset(10, 10));
+      await tester.pumpAndSettle();
+
+      repository.push('r-general', const MessagePinned('m3', pinned: false));
+      await tapLabel(tester, 'More');
+      await tapLabel(tester, 'Pinned messages');
+      expect(find.text('Nothing pinned yet'), findsOneWidget);
+      repository.pinned['r-general'] = [repository.history['r-general']!.single];
+      repository.push('r-general', const MessagePinned('m3', pinned: true));
+      await tester.pumpAndSettle();
+      expect(find.text('1 message in #general'), findsOneWidget);
+      semantics.dispose();
+    });
+
+    testWidgets('who\'s recording a voice message shows above the composer, beside who\'s typing', (tester) async {
+      final repository = await openGeneral(tester);
+      repository.pushTyping('r-general', const TypingUser(userId: _maya, name: 'Maya', recording: true));
+      // A broadcast stream delivers in a microtask, after the first frame.
+      await tester.pump();
+      await tester.pump();
+      expect(find.text('Maya is recording a voice message'), findsOneWidget);
+
+      repository.pushTyping('r-general', const TypingUser(userId: FakeRepository.leo, name: 'Leo'));
+      await tester.pump();
+      await tester.pump();
+      expect(find.text('Leo is typing… · Maya is recording a voice message'), findsOneWidget);
+
+      // Maya types now: that replaces her recording.
+      repository.pushTyping('r-general', const TypingUser(userId: _maya, name: 'Maya'));
+      await tester.pump();
+      await tester.pump();
+      expect(find.text('Maya and Leo are typing…'), findsOneWidget);
+      await tester.pump(const Duration(seconds: 7));
+      expect(find.textContaining('typing'), findsNothing);
+      semantics.dispose();
+    });
+  });
 }

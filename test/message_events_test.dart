@@ -217,6 +217,36 @@ void main() {
     });
   });
 
+  test('pins and voice messages being recorded reach their chats as they happen', () async {
+    final roomEvents = await listen(_room);
+    final dmEvents = <MessageEvent>[];
+    final roomTyping = <TypingUser>[];
+    final dmTyping = <TypingUser>[];
+    final subs = [
+      repository.messageEvents(_dm).listen(dmEvents.add),
+      repository.typing(_room).listen(roomTyping.add),
+      repository.typing(_dm).listen(dmTyping.add),
+    ];
+    addTearDown(() => Future.wait([for (final s in subs) s.cancel()]));
+
+    repository.handleEvent(_event('MESSAGE_PIN_UPDATE', {'id': '7', 'room_id': 'r-1', 'pinned_at': _at}));
+    repository.handleEvent(_event('DM_MESSAGE_PIN_UPDATE', {'id': '9', 'conversation_id': 'c-1', 'pinned_at': null}));
+    repository.handleEvent(
+      _event('RECORDING', {'user_id': _maya, 'username': 'maya', 'alias': 'Maya', 'room_id': 'r-1'}),
+    );
+    // The user's own, from another device: not shown.
+    repository.handleEvent(_event('RECORDING', {'user_id': _me, 'username': 'gaby', 'room_id': 'r-1'}));
+    repository.handleEvent(_event('DM_RECORDING', {'user_id': _maya, 'username': 'maya', 'conversation_id': 'c-1'}));
+    await pumpEventQueue();
+
+    final pin = roomEvents.single as MessagePinned;
+    expect((pin.messageId, pin.pinned), ('7', true));
+    final unpin = dmEvents.single as MessagePinned;
+    expect((unpin.messageId, unpin.pinned), ('9', false));
+    expect([for (final t in roomTyping) (t.name, t.recording)], [('Maya', true)]);
+    expect([for (final t in dmTyping) (t.name, t.recording)], [('maya', true)]);
+  });
+
   test('ChatMessage.updatedBy keeps what the event leaves out', () {
     final original = ChatMessage(
       id: '7',

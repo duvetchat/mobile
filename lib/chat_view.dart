@@ -111,7 +111,7 @@ class _ChatViewState extends State<ChatView> {
   bool _loadingOlder = false;
   bool _hasOlder = false;
 
-  final _typing = <String, ({String name, Timer expiry})>{};
+  final _typing = <String, ({String name, bool recording, Timer expiry})>{};
   DateTime _lastTypingSent = DateTime.fromMillisecondsSinceEpoch(0);
 
   // Who can be mentioned, the space's emoji and stickers, the Unicode set.
@@ -413,6 +413,11 @@ class _ChatViewState extends State<ChatView> {
         case MessageDeleted(:final messageId):
           _entries.removeWhere((e) => e.message.id == messageId);
           if (_editing?.id == messageId) _stopEditing();
+        case MessagePinned(:final messageId, :final pinned):
+          final i = _entries.indexWhere((e) => e.message.id == messageId);
+          if (i >= 0) {
+            _entries[i] = (message: _entries[i].message.copyWith(pinned: pinned), delivery: _entries[i].delivery);
+          }
         case ReactionChanged(:final messageId, :final userId, :final emoji, :final emojiId, :final added):
           final i = _entries.indexWhere((e) => e.message.id == messageId);
           // The user's own come back as an echo of what's shown already.
@@ -458,11 +463,14 @@ class _ChatViewState extends State<ChatView> {
     }
   }
 
+  // Recording a voice message lasts as long as typing does, and either
+  // replaces the other.
   void _onTyping(TypingUser user) {
     setState(() {
       _typing[user.userId]?.expiry.cancel();
       _typing[user.userId] = (
         name: user.name,
+        recording: user.recording,
         expiry: Timer(_typingFor, () {
           if (mounted) setState(() => _typing.remove(user.userId));
         }),
@@ -1228,7 +1236,8 @@ class _ChatViewState extends State<ChatView> {
   Future<void> _openPins() async {
     final picked = await showPinsSheet(
       context,
-      pins: _repository.pins(widget.target),
+      pins: () => _repository.pins(widget.target),
+      changes: _repository.messageEvents(widget.target).where((e) => e is MessagePinned),
       where: _where,
       directory: _directory,
       onUnpin: _canPin ? (m) => _setPinned(m, false) : null,
@@ -1753,7 +1762,16 @@ class _ChatViewState extends State<ChatView> {
                   child: Column(
                     mainAxisSize: MainAxisSize.min,
                     children: [
-                      _TypingLine(names: [for (final t in _typing.values) t.name]),
+                      _TypingLine(
+                        typing: [
+                          for (final t in _typing.values)
+                            if (!t.recording) t.name,
+                        ],
+                        recording: [
+                          for (final t in _typing.values)
+                            if (t.recording) t.name,
+                        ],
+                      ),
                       if (_files.isNotEmpty && _editing == null)
                         _AttachmentTray(files: _files, onRemove: (f) => setState(() => _files.remove(f))),
                       _ComposerStrip(
