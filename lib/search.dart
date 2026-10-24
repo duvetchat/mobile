@@ -211,7 +211,7 @@ class _InChatSearchState extends State<InChatSearch> {
     // By day, the newest first.
     final groups = <String, List<SearchHit>>{};
     for (final h in hits ?? const <SearchHit>[]) {
-      (groups[dayLabel(h.message.createdAt, DateTime.now())] ??= []).add(h);
+      (groups[dayLabel(h.message.createdAt)] ??= []).add(h);
     }
     return Scaffold(
       backgroundColor: colors.background,

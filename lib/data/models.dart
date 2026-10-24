@@ -20,6 +20,10 @@ class Profile {
   /// Whether they've confirmed their email from the link it was sent.
   final bool emailVerified;
 
+  /// The status they chose, [Presence.online] or [Presence.doNotDisturb]:
+  /// what others see while they're connected.
+  final Presence status;
+
   const Profile({
     required this.id,
     required this.username,
@@ -28,9 +32,22 @@ class Profile {
     this.bannerUrl,
     this.bio,
     this.emailVerified = true,
+    this.status = Presence.online,
   });
 
   String get displayName => alias?.isNotEmpty == true ? alias! : username;
+
+  /// The same profile, with [status] chosen.
+  Profile withStatus(Presence status) => Profile(
+    id: id,
+    username: username,
+    alias: alias,
+    avatarUrl: avatarUrl,
+    bannerUrl: bannerUrl,
+    bio: bio,
+    emailVerified: emailVerified,
+    status: status,
+  );
 }
 
 /// Where messages go: a space's room or a conversation (DM or group). Rooms and

@@ -6,6 +6,8 @@ import 'package:duvet/data/recent_chats.dart' as recent show previewOf;
 import 'package:duvet/data/repository.dart';
 import 'package:flutter/foundation.dart';
 
+import 'fake_voice.dart';
+
 /// An in-memory [ChatRepository]: the shell's old sample data, and hooks for
 /// tests to push what the gateway would.
 class FakeRepository implements ChatRepository {
@@ -48,6 +50,10 @@ class FakeRepository implements ChatRepository {
   ValueListenable<List<RecentChat>> get recents => recentChats.chats;
   @override
   final ValueNotifier<LiveStatus> status = ValueNotifier(LiveStatus.offline);
+
+  /// The gateway's voice side: tests push its events and read what went out.
+  @override
+  final FakeVoiceSignaling voiceSignaling = FakeVoiceSignaling();
   @override
   final ValueNotifier<Map<String, ChatMessage>> latest = ValueNotifier(const {});
   @override
@@ -287,10 +293,31 @@ class FakeRepository implements ChatRepository {
   Future<void> changeEmail(String token, String email) async => account.add('change $token $email');
 
   @override
-  Future<void> updateProfile({required String alias}) async {
+  Future<void> updateProfile({required String alias, String? bio}) async {
     account.add('alias $alias');
+    if (bio != null) account.add('bio $bio');
     final p = profile.value!;
-    profile.value = Profile(id: p.id, username: p.username, alias: alias.isEmpty ? null : alias);
+    profile.value = Profile(
+      id: p.id,
+      username: p.username,
+      alias: alias.isEmpty ? null : alias,
+      bio: bio == null ? p.bio : (bio.trim().isEmpty ? null : bio.trim()),
+      status: p.status,
+    );
+  }
+
+  /// Why the server refuses a status, if it does.
+  String? statusRefused;
+
+  /// Completes status changes when set; otherwise they answer at once.
+  Completer<void>? holdStatus;
+
+  @override
+  Future<void> setStatus(Presence status) async {
+    account.add('status ${status.name}');
+    await holdStatus?.future;
+    if (statusRefused != null) throw ActionFailed(statusRefused!);
+    profile.value = profile.value!.withStatus(status);
   }
 
   @override
@@ -325,8 +352,17 @@ class FakeRepository implements ChatRepository {
   /// Rooms the user can't invite to.
   final noInvites = <String>{};
 
+  /// Voice rooms the user can't join, or can't speak in.
+  final noJoin = <String>{};
+  final noSpeak = <String>{};
+
   @override
-  bool canInRoom(String spaceId, String roomId, int bit) => !(bit == Perm.createInvites && noInvites.contains(roomId));
+  bool canInRoom(String spaceId, String roomId, int bit) => switch (bit) {
+    Perm.createInvites => !noInvites.contains(roomId),
+    Perm.joinVoice => !noJoin.contains(roomId),
+    Perm.speakInVoice => !noSpeak.contains(roomId),
+    _ => true,
+  };
 
   @override
   SpaceProfile? spaceProfile(String spaceId) {
@@ -618,6 +654,10 @@ class FakeRepository implements ChatRepository {
   @override
   Stream<void> get resumed => _resumed.stream;
 
+  final _signedOut = StreamController<void>.broadcast(sync: true);
+  @override
+  Stream<void> get signedOut => _signedOut.stream;
+
   /// What the gateway coming back would do.
   void resume() => _resumed.add(null);
   final latestLoads = <String>[];
@@ -721,8 +761,15 @@ class FakeRepository implements ChatRepository {
   }
 
   @override
-  Future<void> logOut() async {
+  Future<void> logOut() => endSession();
+
+  /// What the real repository does when the session ends for good: signed
+  /// out, or its tokens refused (one saved at launch included). As there,
+  /// the gateway goes before the profile does.
+  Future<void> endSession() async {
+    _signedOut.add(null);
     await recentChats.close(forget: true);
+    voiceSignaling.socket = null;
     profile.value = null;
     conversations.value = const [];
     spaces.value = const [];
@@ -890,7 +937,9 @@ class FakeRepository implements ChatRepository {
 
   @override
   void dispose() {
+    voiceSignaling.dispose();
     _resumed.close();
+    _signedOut.close();
     _events.close();
     _typing.close();
     recentChats.dispose();

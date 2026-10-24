@@ -99,7 +99,10 @@ String previewOf(ChatMessage m, String Function(String content) readable) {
 abstract interface class RecentChatsStore {
   Future<String?> read(String userId);
   Future<void> write(String userId, String json);
-  Future<void> clear(String userId);
+
+  /// Deletes every account's: a session can end before its account was
+  /// known (refused at launch), and the phone has one account at a time.
+  Future<void> clearAll();
 }
 
 /// In the keystore, next to the session: previews are message text.
@@ -107,16 +110,20 @@ class SecureRecentChatsStore implements RecentChatsStore {
   final FlutterSecureStorage _storage;
   const SecureRecentChatsStore([this._storage = const FlutterSecureStorage()]);
 
-  static String _key(String userId) => 'duvet_recent_chats_$userId';
+  static const _prefix = 'duvet_recent_chats_';
 
   @override
-  Future<String?> read(String userId) => _storage.read(key: _key(userId));
+  Future<String?> read(String userId) => _storage.read(key: '$_prefix$userId');
 
   @override
-  Future<void> write(String userId, String json) => _storage.write(key: _key(userId), value: json);
+  Future<void> write(String userId, String json) => _storage.write(key: '$_prefix$userId', value: json);
 
   @override
-  Future<void> clear(String userId) => _storage.delete(key: _key(userId));
+  Future<void> clearAll() async {
+    for (final key in (await _storage.readAll()).keys) {
+      if (key.startsWith(_prefix)) await _storage.delete(key: key);
+    }
+  }
 }
 
 class MemoryRecentChatsStore implements RecentChatsStore {
@@ -129,7 +136,7 @@ class MemoryRecentChatsStore implements RecentChatsStore {
   Future<void> write(String userId, String json) async => _data[userId] = json;
 
   @override
-  Future<void> clear(String userId) async => _data.remove(userId);
+  Future<void> clearAll() async => _data.clear();
 }
 
 /// The recent chats, the newest first, for whoever is signed in.
@@ -164,14 +171,14 @@ class RecentChats {
     _publish([...chats.value, ...saved.where((c) => !live.contains(c.target.id))]);
   }
 
-  /// Forgets the list in memory, on signing out; [forget] also deletes it.
+  /// Forgets the list in memory, on signing out; [forget] also deletes what
+  /// was kept, any account's.
   Future<void> close({bool forget = false}) async {
-    final userId = _userId;
     _userId = null;
     chats.value = const [];
-    if (!forget || userId == null) return;
+    if (!forget) return;
     try {
-      await _store.clear(userId);
+      await _store.clearAll();
     } catch (e) {
       debugPrint('recent chats: $e');
     }
@@ -219,6 +226,16 @@ class RecentChats {
     if (_find(chatId) case final known? when known.previewId == messageId) {
       _put(RecentChat(target: known.target, title: known.title, at: known.at, previewText: 'Message deleted'));
     }
+  }
+
+  /// A Space was deleted: its rooms leave the list. Answers their IDs.
+  Set<String> forgetSpace(String spaceId) {
+    final gone = {
+      for (final c in chats.value)
+        if (c.target case RoomTarget(spaceId: final space) when space == spaceId) c.target.id,
+    };
+    if (gone.isNotEmpty) _publish(chats.value.where((c) => !gone.contains(c.target.id)).toList());
+    return gone;
   }
 
   RecentChat? _find(String id) => chats.value.where((c) => c.target.id == id).firstOrNull;

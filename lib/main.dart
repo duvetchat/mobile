@@ -2,10 +2,14 @@ import 'package:flutter/material.dart';
 import 'package:forui/forui.dart';
 
 import 'data/appearance.dart';
+import 'data/call_history.dart';
 import 'data/duvet_repository.dart';
 import 'data/models.dart';
 import 'data/repository.dart';
 import 'data/scope.dart';
+import 'data/voice.dart';
+import 'data/webrtc_engine.dart';
+import 'calls.dart';
 import 'deep_links.dart';
 import 'account.dart';
 import 'login.dart';
@@ -20,7 +24,11 @@ class DuvetApp extends StatefulWidget {
 
   /// System, light or dark; tests pass one kept in memory.
   final Appearance? appearance;
-  const DuvetApp({required this.repository, this.appearance, super.key});
+
+  /// Voice rooms and calls; tests pass one over fakes. By default, WebRTC
+  /// and the call history in the keystore.
+  final VoiceController? voice;
+  const DuvetApp({required this.repository, this.appearance, this.voice, super.key});
 
   @override
   State<DuvetApp> createState() => _DuvetAppState();
@@ -28,9 +36,18 @@ class DuvetApp extends StatefulWidget {
 
 class _DuvetAppState extends State<DuvetApp> {
   late final _appearance = widget.appearance ?? (Appearance()..load());
+  late final _voice =
+      widget.voice ??
+      VoiceController(
+        repository: widget.repository,
+        engine: WebRtcVoiceEngine(),
+        historyStore: const SecureCallHistoryStore(),
+      );
 
   @override
   void dispose() {
+    // Before the repository: it listens to it.
+    if (widget.voice == null) _voice.dispose();
     widget.repository.dispose();
     if (widget.appearance == null) _appearance.dispose();
     super.dispose();
@@ -48,18 +65,21 @@ class _DuvetAppState extends State<DuvetApp> {
 
     return RepositoryScope(
       repository: widget.repository,
-      child: MaterialApp(
-        debugShowCheckedModeBanner: false,
-        localizationsDelegates: FLocalizations.localizationsDelegates,
-        supportedLocales: FLocalizations.supportedLocales,
-        theme: Duvet.material(brightness),
-        builder: (context, child) => FTheme(
-          data: theme,
-          child: FToaster(child: child!),
+      child: VoiceScope(
+        voice: _voice,
+        child: MaterialApp(
+          debugShowCheckedModeBanner: false,
+          localizationsDelegates: FLocalizations.localizationsDelegates,
+          supportedLocales: FLocalizations.supportedLocales,
+          theme: Duvet.material(brightness),
+          builder: (context, child) => FTheme(
+            data: theme,
+            child: FToaster(child: child!),
+          ),
+          // Duvet's links open whether signed in or not: verifying an email
+          // and resetting a password come from links too.
+          home: const DeepLinkHandler(child: SessionGate()),
         ),
-        // Duvet's links open whether signed in or not: verifying an email
-        // and resetting a password come from links too.
-        home: const DeepLinkHandler(child: SessionGate()),
       ),
     );
   }
@@ -151,7 +171,7 @@ class _HomeTabsState extends State<HomeTabs> {
   int index = 0;
   final _spaces = GlobalKey<NavigatorState>();
 
-  static const _tabs = <TabItem>[
+  static const _items = <TabItem>[
     (icon: FLucideIcons.messageCircle, label: 'Chats'),
     (icon: FLucideIcons.layoutGrid, label: 'Spaces'),
     (icon: FLucideIcons.phone, label: 'Calls'),
@@ -166,15 +186,23 @@ class _HomeTabsState extends State<HomeTabs> {
 
   @override
   Widget build(BuildContext context) {
+    final voice = context.voice;
+    return VoiceListener(
+      child: ListenableBuilder(listenable: voice, builder: (context, _) => _tabs(context, VoiceBar.shows(voice))),
+    );
+  }
+
+  Widget _tabs(BuildContext context, bool voiceBar) {
     final media = MediaQuery.of(context);
     final colors = context.theme.colors;
+    final barHeight = DuvetTabBar.heightOf(context);
     return Scaffold(
       backgroundColor: colors.background,
       body: Stack(
         children: [
-          // The tabs scroll under the bar: it's their bottom padding.
+          // The tabs scroll under the bars: they're their bottom padding.
           MediaQuery(
-            data: media.copyWith(padding: media.padding.copyWith(bottom: DuvetTabBar.heightOf(context))),
+            data: media.copyWith(padding: media.padding.copyWith(bottom: barHeight + (voiceBar ? VoiceBar.height : 0))),
             child: IndexedStack(
               index: index,
               children: [
@@ -191,11 +219,13 @@ class _HomeTabsState extends State<HomeTabs> {
               ],
             ),
           ),
+          // In voice or a call: back to it, over the tab bar.
+          if (voiceBar) Positioned(left: 0, right: 0, bottom: barHeight, child: const VoiceBar()),
           Positioned(
             left: 0,
             right: 0,
             bottom: 0,
-            child: DuvetTabBar(index: index, items: _tabs, onChange: _select),
+            child: DuvetTabBar(index: index, items: _items, onChange: _select),
           ),
         ],
       ),

@@ -579,6 +579,8 @@ class _Reactions extends StatelessWidget {
                         height: 18,
                         cacheWidth: (18 * MediaQuery.devicePixelRatioOf(context)).round(),
                         excludeFromSemantics: true,
+                        // Its name until the image arrives, and if it never does.
+                        frameBuilder: (_, child, frame, sync) => frame == null && !sync ? Text(name) : child,
                         errorBuilder: (_, _, _) => Text(name),
                       )
                     else
@@ -611,10 +613,7 @@ class _DaySeparator extends StatelessWidget {
     child: Center(
       child: Semantics(
         header: true,
-        child: Text(
-          dayLabel(day, DateTime.now()),
-          style: DuvetType.caption.copyWith(color: context.theme.colors.mutedForeground),
-        ),
+        child: Text(dayLabel(day), style: DuvetType.caption.copyWith(color: context.theme.colors.mutedForeground)),
       ),
     ),
   );
