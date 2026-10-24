@@ -4,6 +4,7 @@ import 'package:duvet/data/message_tokens.dart';
 import 'package:duvet/data/models.dart';
 import 'package:duvet/main.dart';
 import 'package:duvet/widgets/composer_controller.dart';
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -236,9 +237,11 @@ void main() {
       );
       await tester.pumpAndSettle();
       final gif = find.bySemanticsLabel('GIF, dance.gif');
-      expect(tester.getSemantics(gif).hint, 'Double tap to play. Long press to open');
+      expect(tester.getSemantics(gif).hint, 'Double tap to play');
       expect(find.text('GIF ▶'), findsOneWidget);
       await tester.tap(gif);
+      // A double tap replies: a single tap waits to be sure it isn't one.
+      await tester.pump(kDoubleTapTimeout);
       await tester.pumpAndSettle();
       expect(find.text('GIF'), findsOneWidget);
       semantics.dispose();
