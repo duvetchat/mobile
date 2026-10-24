@@ -21,6 +21,9 @@ import 'voice_engine.dart';
 /// and stops when the last peer connection is disposed; it sees a Bluetooth
 /// headset only with BLUETOOTH_CONNECT granted before it starts.
 class WebRtcVoiceEngine implements VoiceEngine {
+  WebRtcVoiceEngine({@visibleForTesting bool? android}) : _android = android ?? Platform.isAndroid;
+
+  final bool _android;
   bool _prepared = false;
   bool _askedNotifications = false;
   final _routes = ValueNotifier(AudioRoutes.none);
@@ -38,10 +41,14 @@ class WebRtcVoiceEngine implements VoiceEngine {
   Future<void> prepare() async {
     if (_prepared) return;
     _prepared = true;
-    if (!Platform.isAndroid) return;
+    if (!_android) return;
     try {
-      // Granted below Android 12, where the permission doesn't exist.
-      await Permission.bluetoothConnect.request();
+      // Once: after a refusal Android shows the rationale flag, and the answer
+      // stands. (Granted below Android 12, where the permission doesn't exist.)
+      final status = await Permission.bluetoothConnect.status;
+      if (status.isDenied && !await Permission.bluetoothConnect.shouldShowRequestRationale) {
+        await Permission.bluetoothConnect.request();
+      }
     } catch (e) {
       debugPrint('voice: Bluetooth permission: $e');
     }
@@ -140,7 +147,7 @@ class WebRtcVoiceEngine implements VoiceEngine {
 
   @override
   Future<void> keepAlive(String title) {
-    if (!Platform.isAndroid) return Future.value();
+    if (!_android) return Future.value();
     return _inTurn(() async {
       if (!_askedNotifications) {
         _askedNotifications = true;
@@ -168,7 +175,7 @@ class WebRtcVoiceEngine implements VoiceEngine {
   Future<void> letSleep() {
     _routes.value = AudioRoutes.none;
     _chosen = null;
-    if (!Platform.isAndroid) return Future.value();
+    if (!_android) return Future.value();
     return _inTurn(() async {
       if (FlutterBackground.isBackgroundExecutionEnabled) await FlutterBackground.disableBackgroundExecution();
     });
@@ -315,9 +322,15 @@ class _Peer implements VoicePeer {
   static duvet.SessionDescription _description(rtc.RTCSessionDescription d) =>
       duvet.SessionDescription(type: d.type ?? '', sdp: d.sdp ?? '');
 
+  // flutter_webrtc reads only `mandatory` and `optional` (a flat map was
+  // ignored), and with no map at all it asks for video too.
   @override
-  Future<duvet.SessionDescription> createOffer() async =>
-      _description(await _pc.createOffer({'offerToReceiveAudio': true, 'offerToReceiveVideo': false}));
+  Future<duvet.SessionDescription> createOffer() async => _description(
+    await _pc.createOffer({
+      'mandatory': {'OfferToReceiveAudio': true, 'OfferToReceiveVideo': false},
+      'optional': [],
+    }),
+  );
 
   @override
   Future<duvet.SessionDescription> createAnswer() async => _description(await _pc.createAnswer({}));

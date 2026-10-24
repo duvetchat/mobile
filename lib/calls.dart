@@ -50,7 +50,7 @@ String callStatus(VoiceController voice, ActiveCall call, DateTime now) {
   if (call.phase == CallPhase.ringing) return 'Incoming call';
   if (call.phase == CallPhase.calling) return 'Calling…';
   return switch (voice.target == CallVoice(call.conversationId) ? voice.link : null) {
-    VoiceLink.connected => callClock(now.difference(call.answeredAt ?? now)),
+    VoiceLink.connected => callClock(now.difference(call.connectedAt ?? now)),
     VoiceLink.waiting => 'Waiting for Duvet…',
     VoiceLink.reconnecting => 'Reconnecting…',
     null => 'Not connected',
@@ -413,7 +413,7 @@ class VoiceBar extends StatefulWidget {
   static const height = 64.0;
 
   /// Whether there's something for it to show.
-  static bool shows(VoiceController voice) => voice.target != null || voice.call?.phase == CallPhase.calling;
+  static bool shows(VoiceController voice) => voice.inVoice;
 
   @override
   State<VoiceBar> createState() => _VoiceBarState();
@@ -614,6 +614,7 @@ class CallHistoryList extends StatelessWidget {
     CallOutcome.declined => 'Declined',
     CallOutcome.cancelled => 'Cancelled',
     CallOutcome.unanswered => 'No answer',
+    CallOutcome.failed => 'Couldn’t connect',
   };
 
   @override

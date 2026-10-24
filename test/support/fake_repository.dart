@@ -654,6 +654,10 @@ class FakeRepository implements ChatRepository {
   @override
   Stream<void> get resumed => _resumed.stream;
 
+  final _signedOut = StreamController<void>.broadcast(sync: true);
+  @override
+  Stream<void> get signedOut => _signedOut.stream;
+
   /// What the gateway coming back would do.
   void resume() => _resumed.add(null);
   final latestLoads = <String>[];
@@ -757,8 +761,15 @@ class FakeRepository implements ChatRepository {
   }
 
   @override
-  Future<void> logOut() async {
+  Future<void> logOut() => endSession();
+
+  /// What the real repository does when the session ends for good: signed
+  /// out, or its tokens refused (one saved at launch included). As there,
+  /// the gateway goes before the profile does.
+  Future<void> endSession() async {
+    _signedOut.add(null);
     await recentChats.close(forget: true);
+    voiceSignaling.socket = null;
     profile.value = null;
     conversations.value = const [];
     spaces.value = const [];
@@ -928,6 +939,7 @@ class FakeRepository implements ChatRepository {
   void dispose() {
     voiceSignaling.dispose();
     _resumed.close();
+    _signedOut.close();
     _events.close();
     _typing.close();
     recentChats.dispose();

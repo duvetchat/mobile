@@ -8,6 +8,7 @@ import 'package:duvet/data/voice_engine.dart' show PeerState;
 import 'package:duvet/main.dart';
 import 'package:duvet/widgets/chrome.dart';
 import 'package:duvet/widgets/facehash.dart';
+import 'package:duvet/widgets/media.dart';
 import 'package:duvet_client/duvet.dart' as duvet;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -279,6 +280,27 @@ void main() {
     await finish(tester, app);
   });
 
+  testWidgets('in voice, voice notes wait: the call has the microphone', (tester) async {
+    final semantics = tester.ensureSemantics();
+    var recordings = 0;
+    VoiceRecorder.create = () => _Recorder(() => recordings++);
+    addTearDown(() => VoiceRecorder.create = RecordVoiceRecorder.new);
+    final app = await pumpApp(tester);
+    await app.voice.joinRoom(
+      const Room(id: 'r-lounge', spaceId: 's-guild', name: 'lounge', kind: RoomKind.voice, position: 1),
+    );
+    await tester.tap(find.text('Maya'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.bySemanticsLabel('Add photos, a sticker or a mention').last);
+    await tester.pumpAndSettle();
+    await tester.tap(find.bySemanticsLabel('Voice note').last);
+    await settle(tester);
+    expect(recordings, 0);
+    expect(find.text('You can’t record while in a call or a voice room'), findsOneWidget);
+    semantics.dispose();
+    await finish(tester, app);
+  });
+
   testWidgets('a call going on in a DM: its banner joins it', (tester) async {
     final app = await pumpApp(tester);
     // A new session lists the call: someone else's, going on.
@@ -331,4 +353,25 @@ void main() {
     expect(buzzes, greaterThan(0));
     await finish(tester, app);
   });
+}
+
+/// A recorder that only counts its starts.
+class _Recorder implements VoiceRecorder {
+  final void Function() onStart;
+  _Recorder(this.onStart);
+
+  @override
+  Future<bool> start() async {
+    onStart();
+    return true;
+  }
+
+  @override
+  Stream<double> get levels => const Stream.empty();
+
+  @override
+  Future<Recording?> stop() async => null;
+
+  @override
+  Future<void> cancel() async {}
 }

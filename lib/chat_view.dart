@@ -660,6 +660,12 @@ class _ChatViewState extends State<ChatView> {
 
   Future<void> _startRecording({required bool locked}) async {
     if (_recording || _editing != null) return;
+    // The recorder would take the microphone and the audio routing (a
+    // Bluetooth headset's included) from under the call.
+    if (context.voice.inVoice) {
+      _toast('You can’t record while in a call or a voice room');
+      return;
+    }
     final recorder = VoiceRecorder.create();
     setState(() {
       _recorder = recorder;

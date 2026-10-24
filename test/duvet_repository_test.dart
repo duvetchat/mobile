@@ -325,6 +325,33 @@ void main() {
     expect(requests.last.url.path, '/api/auth/logout');
   });
 
+  test('the end of a session is told before it closes: voice can still leave over its gateway', () async {
+    await repository.logIn('gaby@duvet.chat', 'secret');
+    final profiles = <String?>[];
+    repository.signedOut.listen((_) => profiles.add(repository.profile.value?.id));
+    await repository.logOut();
+    expect(profiles, [_me]);
+  });
+
+  test('a session refused at launch leaves no account\'s recent chats on the phone', () async {
+    const someone = '00000000-0000-4000-8000-0000000000ff';
+    await recentsStore.write(someone, '[]');
+    await store.write((token: 'access-1', sessionToken: 'refresh-1'));
+    final rejecting = DuvetRepository(
+      store: store,
+      recentsStore: recentsStore,
+      httpClient: () => MockClient((_) async => http.Response('', 401)),
+      connectGateway: false,
+    );
+    addTearDown(rejecting.dispose);
+    var ended = 0;
+    rejecting.signedOut.listen((_) => ended++);
+    expect(await rejecting.restore(), isFalse);
+    await pumpEventQueue();
+    expect(ended, 1);
+    expect(await recentsStore.read(someone), isNull);
+  });
+
   test('recent chats list opened rooms and DMs with news, and outlive a restart', () async {
     await repository.logIn('gaby@duvet.chat', 'secret');
     await pumpEventQueue();

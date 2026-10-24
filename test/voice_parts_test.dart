@@ -1,5 +1,6 @@
 // Voice's small parts: where the sound plays, the call history kept on the
 // phone, and a voice's level as a mouth.
+import 'dart:async';
 import 'dart:convert';
 
 import 'package:duvet/calls.dart' show callClock, CallHistoryList;
@@ -7,6 +8,7 @@ import 'package:duvet/data/call_history.dart';
 import 'package:duvet/data/voice.dart' show mouthFor, speakingLevel;
 import 'package:duvet/data/voice_engine.dart';
 import 'package:duvet/data/webrtc_engine.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 const _speaker = AudioRoute(id: 'speaker', kind: AudioRouteKind.speaker, label: 'Speakerphone');
@@ -63,6 +65,7 @@ void main() {
     expect(CallHistoryList.describe(_record(2)), 'Outgoing · 1:05');
     expect(CallHistoryList.describe(_record(3, outcome: CallOutcome.missed)), 'Missed call');
     expect(CallHistoryList.describe(_record(4, outcome: CallOutcome.unanswered)), 'No answer');
+    expect(CallHistoryList.describe(_record(5, outcome: CallOutcome.failed)), 'Couldn’t connect');
   });
 
   test('the call history: per account, the newest first, 100 at most, gone at sign-out', () async {
@@ -92,6 +95,18 @@ void main() {
     expect(history.calls.value, isEmpty);
   });
 
+  test('a call recorded while the history loads is kept, with what was saved', () async {
+    final store = _SlowStore()..data['me'] = jsonEncode([_record(1).toJson()]);
+    final history = CallHistory(store);
+    final loading = history.load('me');
+    history.add(_record(2, outcome: CallOutcome.missed));
+    store.release.complete();
+    await loading;
+    expect(history.calls.value.map((c) => c.conversationId), ['c-2', 'c-1']);
+    await pumpEventQueue();
+    expect(jsonDecode(store.data['me']!), hasLength(2));
+  });
+
   test('a damaged history starts empty', () async {
     final store = MemoryCallHistoryStore()
       ..data['me'] = jsonEncode([
@@ -104,4 +119,71 @@ void main() {
     store.data['me'] = '{not json';
     await CallHistory(store).load('me');
   });
+
+  group('the WebRTC engine, over its plugins\' channels', () {
+    final messenger = TestWidgetsFlutterBinding.ensureInitialized().defaultBinaryMessenger;
+    tearDown(() {
+      messenger.setMockMethodCallHandler(const MethodChannel('flutter.baseflow.com/permissions/methods'), null);
+      messenger.setMockMethodCallHandler(const MethodChannel('FlutterWebRTC.Method'), null);
+    });
+
+    test('asks for Nearby devices once: a refusal stands at the next launch', () async {
+      final asked = <String>[];
+      // Denied: as Android says of a permission never asked for, too.
+      var rationale = false;
+      messenger.setMockMethodCallHandler(const MethodChannel('flutter.baseflow.com/permissions/methods'), (call) async {
+        asked.add(call.method);
+        return switch (call.method) {
+          'checkPermissionStatus' => 0,
+          'shouldShowRequestPermissionRationale' => rationale,
+          'requestPermissions' => {for (final p in call.arguments as List) p: 0},
+          _ => null,
+        };
+      });
+      await WebRtcVoiceEngine(android: true).prepare();
+      expect(asked, contains('requestPermissions'));
+
+      // Refused once, which Android remembers with the rationale: not again.
+      asked.clear();
+      rationale = true;
+      await WebRtcVoiceEngine(android: true).prepare();
+      expect(asked, isNot(contains('requestPermissions')));
+    });
+
+    test('offers audio alone, in the shape flutter_webrtc reads (it ignores a flat map)', () async {
+      final calls = <MethodCall>[];
+      messenger.setMockMethodCallHandler(const MethodChannel('FlutterWebRTC.Method'), (call) async {
+        calls.add(call);
+        return switch (call.method) {
+          'createPeerConnection' => {'peerConnectionId': 'pc-1'},
+          'createOffer' => {'sdp': 'v=0', 'type': 'offer'},
+          _ => null,
+        };
+      });
+      messenger.setMockStreamHandler(
+        const EventChannel('FlutterWebRTC/peerConnectionEventpc-1'),
+        MockStreamHandler.inline(onListen: (_, _) {}),
+      );
+      final peer = await WebRtcVoiceEngine().createPeer(const []);
+      await peer.createOffer();
+      final offer = calls.singleWhere((c) => c.method == 'createOffer');
+      expect((offer.arguments as Map)['constraints'], {
+        'mandatory': {'OfferToReceiveAudio': true, 'OfferToReceiveVideo': false},
+        'optional': <Object?>[],
+      });
+    });
+  });
+}
+
+/// A keystore whose reads answer what was kept when they were asked, once
+/// [release] completes.
+class _SlowStore extends MemoryCallHistoryStore {
+  final release = Completer<void>();
+
+  @override
+  Future<String?> read(String userId) async {
+    final kept = data[userId];
+    await release.future;
+    return kept;
+  }
 }

@@ -4,9 +4,11 @@ library;
 
 import 'dart:async';
 import 'dart:math' as math;
+import 'dart:ui' show AppLifecycleState;
 
 import 'package:duvet_client/duvet.dart' as duvet;
 import 'package:flutter/foundation.dart';
+import 'package:flutter/scheduler.dart' show SchedulerBinding;
 
 import 'call_history.dart';
 import 'models.dart';
@@ -92,8 +94,8 @@ class ActiveCall {
   /// When it rang, or was placed.
   final DateTime startedAt;
 
-  /// When it was answered.
-  final DateTime? answeredAt;
+  /// When its voice first connected here: the talk counts from then.
+  final DateTime? connectedAt;
 
   const ActiveCall({
     required this.conversationId,
@@ -102,18 +104,20 @@ class ActiveCall {
     required this.outgoing,
     required this.phase,
     required this.startedAt,
-    this.answeredAt,
+    this.connectedAt,
   });
 
-  ActiveCall answered(DateTime at) => ActiveCall(
+  ActiveCall _copy({CallPhase? phase, DateTime? connectedAt}) => ActiveCall(
     conversationId: conversationId,
     initiatorId: initiatorId,
     initiatorName: initiatorName,
     outgoing: outgoing,
-    phase: CallPhase.connected,
+    phase: phase ?? this.phase,
     startedAt: startedAt,
-    answeredAt: at,
+    connectedAt: connectedAt ?? this.connectedAt,
   );
+
+  ActiveCall answered() => _copy(phase: CallPhase.connected);
 }
 
 /// A voice level (0–1, linear) as a face's mouth opens: shut below
@@ -136,11 +140,11 @@ const mouthRange = 0.2;
 /// starts the foreground service, and sends VOICE_JOIN with the peer
 /// connection's offer; the gateway answers with VOICE_JOINED, then its own
 /// offers (WEBRTC_RENEGOTIATE) as people's audio comes and goes. Each new
-/// gateway session (READY) joins again, unless the gateway had been silent
+/// gateway session (READY) joins again, unless voice had been out of reach
 /// for longer than [rejoinWindow]; a join made while the gateway is out of
-/// reach waits for its next session, and one it doesn't answer in
-/// [joinTimeout] leaves. Video is out: the phone asks for none (`video_off`)
-/// and sends none.
+/// reach waits for its next session, [rejoinWindow] at most, and one it
+/// doesn't answer in [joinTimeout] leaves. Video is out: the phone asks for
+/// none (`video_off`) and sends none.
 class VoiceController extends ChangeNotifier {
   VoiceController({
     required ChatRepository repository,
@@ -150,12 +154,15 @@ class VoiceController extends ChangeNotifier {
     this.rejoinWindow = const Duration(minutes: 3),
     this.levelInterval = const Duration(milliseconds: 200),
     DateTime Function()? clock,
+    @visibleForTesting bool Function()? inFront,
   }) : _repository = repository,
        _signaling = repository.voiceSignaling,
        _engine = engine,
        _now = clock ?? DateTime.now,
+       _inFront = inFront ?? _appInFront,
        history = CallHistory(historyStore) {
     _events = _signaling.events.listen(_onEvent);
+    _signedOut = _repository.signedOut.listen((_) => _onSignedOut());
     _repository.profile.addListener(_onProfile);
     _repository.spaces.addListener(_checkSpeak);
     _onProfile();
@@ -166,6 +173,14 @@ class VoiceController extends ChangeNotifier {
   final VoiceEngine _engine;
   final DateTime Function() _now;
   late final StreamSubscription<duvet.GatewayEventPayload> _events;
+  late final StreamSubscription<void> _signedOut;
+
+  // Duvet on screen: not behind another app, nor under a locked screen.
+  final bool Function() _inFront;
+  static bool _appInFront() => switch (SchedulerBinding.instance.lifecycleState) {
+    null || AppLifecycleState.resumed || AppLifecycleState.inactive => true,
+    _ => false,
+  };
 
   /// How long the gateway has to answer a join.
   final Duration joinTimeout;
@@ -182,7 +197,7 @@ class VoiceController extends ChangeNotifier {
   final CallHistory history;
 
   /// Now, by the controller's clock: a call's clock counts from its
-  /// [ActiveCall.answeredAt] by it.
+  /// [ActiveCall.connectedAt] by it.
   DateTime now() => _now();
 
   String? _me;
@@ -197,8 +212,11 @@ class VoiceController extends ChangeNotifier {
   List<duvet.VoiceParticipant> participants(String roomId) => _states.participantsIn(roomId);
 
   /// How open each speaker's mouth is (0–1), by user ID; the silent are left
-  /// out. Read every [levelInterval] while connected.
-  final ValueNotifier<Map<String, double>> levels = ValueNotifier(const {});
+  /// out. Read every [levelInterval] while connected, as long as something
+  /// listens (a screen showing the faces) with Duvet in front: WebRTC's stats
+  /// cost a call into the platform each time.
+  ValueNotifier<Map<String, double>> get levels => _levels;
+  final _levels = _Levels();
 
   /// Conversations with a call going on.
   Set<String> get callsInProgress => _calls;
@@ -223,7 +241,8 @@ class VoiceController extends ChangeNotifier {
   bool _canSpeak = true;
 
   /// What the gateway shows of the user: muted (or, without a microphone, not
-  /// sending), deafened. They outlast a session, as on the desktop.
+  /// sending), deafened. They outlast a session, as on the desktop, but not
+  /// the account.
   bool get muted => _muted;
   bool get deafened => _deafened;
 
@@ -237,6 +256,16 @@ class VoiceController extends ChangeNotifier {
 
   /// The call ringing, placed or going on here.
   ActiveCall? get call => _call;
+
+  /// In a voice room or a call, or placing one: the microphone and the
+  /// phone's call audio are voice's.
+  bool get inVoice => _target != null || _call?.phase == CallPhase.calling;
+
+  // The gateway socket this phone placed or answered [_call] on.
+  int? _callOn;
+
+  // The gateway ends a call nobody answered this long after it rang.
+  static const _ringTimeout = Duration(seconds: 30);
 
   final _notices = StreamController<String>.broadcast();
 
@@ -256,6 +285,13 @@ class VoiceController extends ChangeNotifier {
   // The gateway socket the last VOICE_JOIN went out on.
   int? _joinedOn;
 
+  // When the user asked for this voice: a join made offline counts its wait
+  // from then, not from the gateway's last word.
+  DateTime? _askedAt;
+
+  // Leaves once the gateway has been out of reach for [rejoinWindow].
+  Timer? _waitTimer;
+
   // Counts sessions (each join) and connection attempts, so work for an
   // older one stops when it resumes.
   int _session = 0;
@@ -263,8 +299,14 @@ class VoiceController extends ChangeNotifier {
 
   bool _negotiationReady = false;
   bool _remoteSet = false;
+
+  // This connection's VOICE_JOINED came.
+  bool _answered = false;
   final _pendingCandidates = <duvet.IceCandidateInit>[];
   Future<void> _negotiations = Future.value();
+
+  // The gateway's offers that failed in a row: each starts the connection over.
+  int _failedOffers = 0;
 
   // Completes once VOICE_JOINED was applied: the gateway's offers wait for it.
   Completer<void> _joined = Completer()..complete();
@@ -272,8 +314,10 @@ class VoiceController extends ChangeNotifier {
   Timer? _levelTimer;
   bool _readingLevels = false;
 
-  // READY's STUN and TURN servers; STUN alone until the first READY.
-  List<duvet.IceServer> _iceServers = const [
+  // READY's STUN and TURN servers (the TURN credentials are the account's);
+  // STUN alone until the first READY.
+  List<duvet.IceServer> _iceServers = _stun;
+  static const _stun = [
     duvet.IceServer(urls: ['stun:stun.l.google.com:19302']),
   ];
 
@@ -359,13 +403,17 @@ class VoiceController extends ChangeNotifier {
           await mic?.stop();
           return;
         }
-        if (mic == null) {
+        if (_mic != null) {
+          // Another tap opened one meanwhile.
+          await mic?.stop();
+        } else if (mic == null) {
           _notice('Allow Duvet to use the microphone to talk');
           return;
+        } else {
+          _mic = mic;
+          await _peer?.useMicrophone(mic);
+          _keepAlive(target);
         }
-        _mic = mic;
-        await _peer?.useMicrophone(mic);
-        _keepAlive(target);
       }
       _muted = false;
       _deafened = false;
@@ -416,21 +464,14 @@ class VoiceController extends ChangeNotifier {
   void _keepAlive(VoiceTarget target) {
     if (_keptAlive) return;
     _keptAlive = true;
-    unawaited(_engine.keepAlive(_titleFor(target)));
-  }
-
-  String _titleFor(VoiceTarget target) => switch (target) {
-    RoomVoice(:final roomId) => 'In voice · ${_roomName(roomId) ?? 'a voice room'}',
-    CallVoice(:final conversationId) => 'In a call · ${_conversationTitle(conversationId) ?? 'Duvet'}',
-  };
-
-  String? _roomName(String roomId) {
-    for (final space in _repository.spaces.value) {
-      for (final room in space.rooms) {
-        if (room.id == roomId) return room.name;
-      }
-    }
-    return null;
+    // Naming nobody: the notification shows on the lock screen, and
+    // flutter_background keeps its title in plain SharedPreferences.
+    unawaited(
+      _engine.keepAlive(switch (target) {
+        RoomVoice() => 'In a voice room',
+        CallVoice() => 'In a call',
+      }),
+    );
   }
 
   String? _conversationTitle(String id) => _repository.conversations.value.where((c) => c.id == id).firstOrNull?.title;
@@ -447,10 +488,13 @@ class VoiceController extends ChangeNotifier {
     _link = VoiceLink.starting;
     _joining = false;
     _joinedOn = null;
+    _askedAt = _now();
+    _failedOffers = 0;
     notifyListeners();
 
     await _engine.prepare();
     if (session != _session) return;
+    var refused = false;
     // A call placed from here opened it already (see [startCall]).
     if (_canSpeak && _mic == null) {
       final mic = await _engine.openMicrophone();
@@ -462,10 +506,18 @@ class VoiceController extends ChangeNotifier {
       _mic = mic;
       if (mic == null) {
         _muted = true;
-        _notice('Duvet can’t use the microphone: you’re listening only');
+        refused = true;
       }
     }
-    if (_mic != null) _keepAlive(target);
+    if (_mic != null) {
+      _keepAlive(target);
+    } else if (defaultTargetPlatform == TargetPlatform.android) {
+      // Android starts a microphone service only with the microphone open:
+      // without one, nothing keeps voice going once Duvet is in the background.
+      _notice('${refused ? 'Duvet can’t use the microphone. ' : ''}Listening only: keep Duvet open to stay in voice');
+    } else if (refused) {
+      _notice('Duvet can’t use the microphone: you’re listening only');
+    }
     unawaited(_engine.useDefaultRoute(speaker: speaker));
     _joining = true;
     await _connect();
@@ -478,6 +530,7 @@ class VoiceController extends ChangeNotifier {
     _joinTimer?.cancel();
     _negotiationReady = false;
     _remoteSet = false;
+    _answered = false;
     _pendingCandidates.clear();
     _negotiations = Future.value();
     if (!_joined.isCompleted) _joined.complete();
@@ -560,6 +613,10 @@ class VoiceController extends ChangeNotifier {
     if (!identical(_peer, peer)) return;
     switch (state) {
       case PeerState.connected:
+        // A call's talk starts.
+        if (_call case final call? when _target == CallVoice(call.conversationId) && call.connectedAt == null) {
+          _call = call._copy(connectedAt: _now());
+        }
         _setLink(VoiceLink.connected);
         _startLevels();
       case PeerState.disconnected:
@@ -580,8 +637,20 @@ class VoiceController extends ChangeNotifier {
   void _setLink(VoiceLink link) {
     if (_link == link) return;
     _link = link;
+    _waitTimer?.cancel();
+    _waitTimer = null;
+    if (link == VoiceLink.waiting) {
+      // Not forever: the microphone, the service and the battery stay on
+      // while voice waits, and the microphone mustn't go live by surprise.
+      _waitTimer = Timer(rejoinWindow, () {
+        _notice(_lostForAWhile);
+        leave();
+      });
+    }
     notifyListeners();
   }
+
+  static const _lostForAWhile = 'You left voice: the connection was lost for a while';
 
   void _closeRetired() {
     final retired = [..._retired];
@@ -657,16 +726,41 @@ class VoiceController extends ChangeNotifier {
     _calls = {for (final c in calls) c.conversationId};
 
     // The gateway keeps calls in memory: one the new session doesn't list is
-    // over (it restarted, or the call ended while the phone was away).
+    // over (it restarted, or the call ended while the phone was away). But
+    // one placed or answered on this session's own socket went out after its
+    // identify, and READY was made before it.
     final call = _call;
-    if (call != null && !_calls.contains(call.conversationId)) _callOver(call);
+    if (call != null && !_calls.contains(call.conversationId)) {
+      if (_callOn == _signaling.connection) {
+        _calls = {..._calls, call.conversationId};
+      } else {
+        _callOver(call);
+      }
+    }
+
+    // A call answered here on an older socket, which may have lost the
+    // answer, in the 30 s after it rang, when the gateway ends a call nobody
+    // answered: the answer again. Only then: each CALL_ACCEPTED makes the
+    // desktop app of a member who isn't in the call join it.
+    if (_call case final c?
+        when c.phase == CallPhase.connected &&
+            !c.outgoing &&
+            _callOn != _signaling.connection &&
+            _now().difference(c.startedAt) < _ringTimeout) {
+      _signaling.acceptCall(c.conversationId);
+      _callOn = _signaling.connection;
+    }
 
     final target = _target;
     // A join sent on this session's own socket went out after its identify:
     // it's in already.
     if (_joining && target != null && _joinedOn != _signaling.connection) {
-      if (_joinedOn != null && _signaling.silenceBeforeReady > rejoinWindow) {
-        _notice('You left voice: the connection was lost for a while');
+      // How long voice was out of reach: since the gateway's last word, or,
+      // for a join asked offline, since it was asked.
+      final silence = _signaling.silenceBeforeReady;
+      final waited = _now().difference(_askedAt ?? _now());
+      if ((waited < silence ? waited : silence) > rejoinWindow) {
+        _notice(_lostForAWhile);
         leave();
       } else {
         unawaited(_connect());
@@ -678,6 +772,15 @@ class VoiceController extends ChangeNotifier {
   void _onJoined(duvet.VoiceJoinedEvent data) {
     final peer = _peer;
     if (peer == null || data.roomId != _target?.id) return;
+    if (_answered) {
+      // The gateway answers each join once, in order, and its answers carry
+      // no tag: a second one means the first was for an older join of this
+      // room, left before its answer came. The connection that took it
+      // starts over.
+      unawaited(_connect());
+      return;
+    }
+    _answered = true;
     final gate = _joined;
     final answer = data.answer;
     // At once, never behind a queued offer.
@@ -723,20 +826,31 @@ class VoiceController extends ChangeNotifier {
     final peer = _peer;
     if (target == null || peer == null || data.roomId != target.id) return;
     final gate = _joined.future;
-    _negotiations = _negotiations
-        .then((_) async {
-          await gate;
-          if (!identical(_peer, peer)) return;
-          await peer.setRemoteDescription(data.offer);
-          if (!identical(_peer, peer)) return;
-          _remoteSet = true;
-          _flushCandidates(peer);
-          final answer = await peer.createAnswer();
-          if (!identical(_peer, peer)) return;
-          await peer.setLocalDescription(answer);
-          _signaling.sendAnswer(target.id, answer);
-        })
-        .catchError((Object e) => debugPrint('voice: renegotiation: $e'));
+    _negotiations = _negotiations.then((_) async {
+      await gate;
+      if (!identical(_peer, peer)) return;
+      try {
+        await peer.setRemoteDescription(data.offer);
+        if (!identical(_peer, peer)) return;
+        _remoteSet = true;
+        _flushCandidates(peer);
+        final answer = await peer.createAnswer();
+        if (!identical(_peer, peer)) return;
+        await peer.setLocalDescription(answer);
+        _signaling.sendAnswer(target.id, answer);
+        _failedOffers = 0;
+      } catch (e) {
+        debugPrint('voice: renegotiation: $e');
+        if (!identical(_peer, peer)) return;
+        // Unanswered, the gateway's side waits for the answer forever: a new
+        // connection, as after a failed one; twice in a row at most.
+        if (++_failedOffers > 2) {
+          _fail('Lost the connection to voice');
+        } else {
+          unawaited(_connect());
+        }
+      }
+    });
   }
 
   void _onAnswer(duvet.RenegotiateAnswerEvent data) {
@@ -768,8 +882,8 @@ class VoiceController extends ChangeNotifier {
 
   void _onIncoming(duvet.CallIncomingEvent data) {
     _calls = {..._calls, data.conversationId};
-    // One call at a time: another one rings out unanswered here.
-    _call ??= ActiveCall(
+    final current = _call;
+    final call = ActiveCall(
       conversationId: data.conversationId,
       initiatorId: data.initiatorId,
       initiatorName: data.initiatorName,
@@ -777,6 +891,14 @@ class VoiceController extends ChangeNotifier {
       phase: CallPhase.ringing,
       startedAt: _now(),
     );
+    if (current == null) {
+      _call = call;
+      _callOn = null;
+    } else if (current.conversationId != data.conversationId) {
+      // One call at a time: another one doesn't ring here, but it's missed.
+      _record(call);
+      _notice('Missed a call from ${data.initiatorName}');
+    }
     notifyListeners();
   }
 
@@ -785,7 +907,7 @@ class VoiceController extends ChangeNotifier {
     if (call == null || call.conversationId != data.conversationId) return;
     if (call.phase == CallPhase.calling) {
       // Someone answered: the caller's voice joins.
-      _call = call.answered(_now());
+      _call = call.answered();
       unawaited(_joinCallVoice(call.conversationId));
     } else if (call.phase == CallPhase.ringing && data.userId == _me) {
       // Answered on another device.
@@ -819,14 +941,14 @@ class VoiceController extends ChangeNotifier {
   }
 
   void _record(ActiveCall call, [CallOutcome? outcome]) {
+    final connectedAt = call.connectedAt;
     final o =
         outcome ??
         switch (call.phase) {
           CallPhase.ringing => CallOutcome.missed,
           CallPhase.calling => CallOutcome.unanswered,
-          CallPhase.connected => CallOutcome.answered,
+          CallPhase.connected => connectedAt == null ? CallOutcome.failed : CallOutcome.answered,
         };
-    final answeredAt = call.answeredAt;
     history.add(
       CallRecord(
         conversationId: call.conversationId,
@@ -834,7 +956,7 @@ class VoiceController extends ChangeNotifier {
         outgoing: call.outgoing,
         outcome: o,
         at: call.startedAt,
-        duration: o == CallOutcome.answered && answeredAt != null ? _now().difference(answeredAt) : null,
+        duration: o == CallOutcome.answered && connectedAt != null ? _now().difference(connectedAt) : null,
       ),
     );
   }
@@ -848,15 +970,31 @@ class VoiceController extends ChangeNotifier {
     }
     final me = _repository.profile.value;
     if (me == null) return;
+    const offline = 'You’re offline: call again once you’re back';
+    if (_signaling.connection == null) {
+      _notice(offline);
+      return;
+    }
     final ids = await _memberIds(conversationId, me.id);
     if (ids == null || _call != null) return;
+    // The permissions before it rings anyone. And the microphone and the
+    // foreground service now, with the app in front: once someone answers it
+    // may be behind another app, and Android lets neither the microphone
+    // open nor a microphone service start from there.
+    await _engine.prepare();
+    final mic = await _engine.openMicrophone();
+    if (_call != null || _repository.profile.value?.id != me.id) {
+      await mic?.stop();
+      return;
+    }
     if (!_signaling.initiateCall(conversationId, ids)) {
-      _notice('You’re offline: call again once you’re back');
+      await mic?.stop();
+      _notice(offline);
       return;
     }
     // Unlike the desktop, a voice room's voice ends now, not once someone
-    // answers: the call's microphone opens now.
-    if (_target != null) _teardown(sendLeave: true);
+    // answers.
+    if (_target != null) _handOver(() => _teardown(sendLeave: true));
     _call = ActiveCall(
       conversationId: conversationId,
       initiatorId: me.id,
@@ -865,26 +1003,11 @@ class VoiceController extends ChangeNotifier {
       phase: CallPhase.calling,
       startedAt: _now(),
     );
+    _callOn = _signaling.connection;
     _calls = {..._calls, conversationId};
-    notifyListeners();
-    await _openForCall(conversationId);
-  }
-
-  // The microphone and the foreground service of a call placed, while the
-  // app is in front: once someone answers it may be behind another app, and
-  // Android lets neither the microphone open nor a microphone service start
-  // from there.
-  Future<void> _openForCall(String conversationId) async {
-    final session = ++_session;
-    await _engine.prepare();
-    if (session != _session) return;
-    final mic = await _engine.openMicrophone();
-    if (session != _session || _call?.conversationId != conversationId || _mic != null) {
-      await mic?.stop();
-      return;
-    }
     _mic = mic;
     if (mic != null) _keepAlive(CallVoice(conversationId));
+    notifyListeners();
   }
 
   /// Joins the call going on in [conversationId]: one that rang out, or that
@@ -907,15 +1030,14 @@ class VoiceController extends ChangeNotifier {
       _notice('You’re offline: join again once you’re back');
       return;
     }
-    final now = _now();
+    _callOn = _signaling.connection;
     _call = ActiveCall(
       conversationId: conversationId,
       initiatorId: me.id,
       initiatorName: me.displayName,
       outgoing: false,
       phase: CallPhase.connected,
-      startedAt: now,
-      answeredAt: now,
+      startedAt: _now(),
     );
     notifyListeners();
     await _joinCallVoice(conversationId);
@@ -929,7 +1051,8 @@ class VoiceController extends ChangeNotifier {
       _notice('You’re offline: the call can’t be answered');
       return;
     }
-    _call = call.answered(_now());
+    _callOn = _signaling.connection;
+    _call = call.answered();
     notifyListeners();
     await _joinCallVoice(call.conversationId);
   }
@@ -992,19 +1115,30 @@ class VoiceController extends ChangeNotifier {
   Future<void> _joinCallVoice(String conversationId) async {
     final target = CallVoice(conversationId);
     if (_target == target) return;
-    if (_target is RoomVoice) _teardown(sendLeave: true);
+    if (_target is RoomVoice) _handOver(() => _teardown(sendLeave: true));
     // Calls ask for no permission.
     _canSpeak = true;
     await _begin(target, speaker: false);
   }
 
   // Before joining somewhere else: a room's voice is left, a call hung up.
-  void _leaveCurrent() {
-    if (_call != null) {
-      hangUp();
-    } else if (_target != null) {
-      _teardown(sendLeave: true);
-    }
+  void _leaveCurrent() => _handOver(_leaveAll);
+
+  // Leaves the voice room or the call, telling the gateway, and declines a
+  // call ringing.
+  void _leaveAll() {
+    if (_call?.phase == CallPhase.ringing) declineCall();
+    leave();
+  }
+
+  // Leaves ([leave] does) for another voice: its connection closes only once
+  // the next one exists (see [_connect]), as on Android the audio session ends
+  // with the last one.
+  void _handOver(void Function() leave) {
+    final old = _peer;
+    _peer = null;
+    leave();
+    if (old != null) _retired.add(old);
   }
 
   // ---------------------------------------------------------------------------
@@ -1012,7 +1146,9 @@ class VoiceController extends ChangeNotifier {
   // ---------------------------------------------------------------------------
 
   void _startLevels() {
-    _levelTimer ??= Timer.periodic(levelInterval, (_) => unawaited(_readLevels()));
+    _levelTimer ??= Timer.periodic(levelInterval, (_) {
+      if (_levels.watched && _inFront()) unawaited(_readLevels());
+    });
   }
 
   Future<void> _readLevels() async {
@@ -1055,6 +1191,8 @@ class VoiceController extends ChangeNotifier {
     _generation++;
     _joinTimer?.cancel();
     _joinTimer = null;
+    _waitTimer?.cancel();
+    _waitTimer = null;
     _levelTimer?.cancel();
     _levelTimer = null;
     _negotiationReady = false;
@@ -1081,17 +1219,29 @@ class VoiceController extends ChangeNotifier {
     if (!_notices.isClosed) _notices.add(text);
   }
 
+  // The session ended for good, its gateway still there: voice and calls tell
+  // it they leave, and every call history kept on the phone goes, first, so
+  // what ends now isn't kept either.
+  void _onSignedOut() {
+    unawaited(history.close(forget: true));
+    _leaveAll();
+  }
+
   void _onProfile() {
     final me = _repository.profile.value?.id;
     if (me == _me) return;
     final previous = _me;
     _me = me;
     if (previous != null) {
-      // Signed out (or in as someone else): voice and calls end here.
+      // Signed out (or in as someone else): voice and calls end here, and
+      // nothing of the account's carries over to the next.
       _teardown(sendLeave: true);
       _call = null;
       _calls = const {};
       _states.reset();
+      _iceServers = _stun;
+      _muted = false;
+      _deafened = false;
       unawaited(history.close(forget: me == null));
       notifyListeners();
     }
@@ -1102,6 +1252,7 @@ class VoiceController extends ChangeNotifier {
   void dispose() {
     _teardown(sendLeave: true);
     unawaited(_events.cancel());
+    unawaited(_signedOut.cancel());
     _repository.profile.removeListener(_onProfile);
     _repository.spaces.removeListener(_checkSpeak);
     unawaited(_notices.close());
@@ -1109,4 +1260,11 @@ class VoiceController extends ChangeNotifier {
     history.dispose();
     super.dispose();
   }
+}
+
+/// [VoiceController.levels], which knows whether anything shows them.
+class _Levels extends ValueNotifier<Map<String, double>> {
+  _Levels() : super(const {});
+
+  bool get watched => hasListeners;
 }

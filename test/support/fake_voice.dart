@@ -148,6 +148,9 @@ class FakePeer implements VoicePeer {
   /// Holds setRemoteDescription while set.
   Completer<void>? holdRemote;
 
+  /// The gateway's offers fail to apply while set.
+  bool failOffers = false;
+
   @override
   Future<void> addAudio(VoiceMic? mic) async => log.add(mic == null ? 'audio none' : 'audio mic');
 
@@ -177,14 +180,21 @@ class FakePeer implements VoicePeer {
   @override
   Future<void> setRemoteDescription(duvet.SessionDescription description) async {
     if (holdRemote case final hold?) await hold.future;
+    if (failOffers && description.type == 'offer') throw StateError('can’t apply ${description.sdp}');
     log.add('remote ${description.type} ${description.sdp}');
   }
 
   @override
   Future<void> addIceCandidate(duvet.IceCandidateInit candidate) async => candidates.add(candidate.candidate);
 
+  /// How many times the levels were read (WebRTC's getStats).
+  int reads = 0;
+
   @override
-  Future<AudioLevels> audioLevels() async => levels;
+  Future<AudioLevels> audioLevels() async {
+    reads++;
+    return levels;
+  }
 
   @override
   Future<void> close() async => closed = true;

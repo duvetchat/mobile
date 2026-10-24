@@ -28,6 +28,12 @@ abstract interface class ChatRepository {
   /// run on (`VoiceController`).
   VoiceSignaling get voiceSignaling;
 
+  /// The session ended for good: the user signed out, or the server refused
+  /// its tokens (saved ones at launch included). Fires before the session's
+  /// gateway goes, so voice can still say it leaves; what the phone kept for
+  /// the account goes with it.
+  Stream<void> get signedOut;
+
   /// Resumes a saved session; answers whether there was one that still works.
   Future<bool> restore();
 

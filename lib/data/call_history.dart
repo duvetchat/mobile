@@ -20,6 +20,9 @@ enum CallOutcome {
 
   /// Called from here; nobody answered.
   unanswered,
+
+  /// Answered, but its voice never connected here.
+  failed,
 }
 
 /// A call this device rang for, placed or took part in. Neither the API nor
@@ -82,7 +85,10 @@ class CallRecord {
 abstract interface class CallHistoryStore {
   Future<String?> read(String userId);
   Future<void> write(String userId, String json);
-  Future<void> clear(String userId);
+
+  /// Deletes every account's: a session can end before its account was
+  /// known (refused at launch), and the phone has one account at a time.
+  Future<void> clearAll();
 }
 
 /// In the keystore, as the recent chats are: who called whom is private.
@@ -90,16 +96,20 @@ class SecureCallHistoryStore implements CallHistoryStore {
   final FlutterSecureStorage _storage;
   const SecureCallHistoryStore([this._storage = const FlutterSecureStorage()]);
 
-  static String _key(String userId) => 'duvet_call_history_$userId';
+  static const _prefix = 'duvet_call_history_';
 
   @override
-  Future<String?> read(String userId) => _storage.read(key: _key(userId));
+  Future<String?> read(String userId) => _storage.read(key: '$_prefix$userId');
 
   @override
-  Future<void> write(String userId, String json) => _storage.write(key: _key(userId), value: json);
+  Future<void> write(String userId, String json) => _storage.write(key: '$_prefix$userId', value: json);
 
   @override
-  Future<void> clear(String userId) => _storage.delete(key: _key(userId));
+  Future<void> clearAll() async {
+    for (final key in (await _storage.readAll()).keys) {
+      if (key.startsWith(_prefix)) await _storage.delete(key: key);
+    }
+  }
 }
 
 class MemoryCallHistoryStore implements CallHistoryStore {
@@ -112,7 +122,7 @@ class MemoryCallHistoryStore implements CallHistoryStore {
   Future<void> write(String userId, String json) async => data[userId] = json;
 
   @override
-  Future<void> clear(String userId) async => data.remove(userId);
+  Future<void> clearAll() async => data.clear();
 }
 
 /// The signed-in account's calls on this device, the newest first.
@@ -125,43 +135,49 @@ class CallHistory {
   final ValueNotifier<List<CallRecord>> calls = ValueNotifier(const []);
   String? _userId;
 
-  /// Loads [userId]'s history: the account that signed in.
+  /// Loads [userId]'s history: the account that signed in. Calls recorded
+  /// while it loads are kept, as the recent chats' are.
   Future<void> load(String userId) async {
     if (_userId == userId) return;
     _userId = userId;
     calls.value = const [];
+    var saved = const <CallRecord>[];
     try {
       final json = await _store.read(userId);
-      if (_userId != userId || json == null) return;
-      final list = jsonDecode(json);
-      if (list is! List) return;
-      calls.value = [for (final item in list) ?CallRecord.fromJson(item)];
+      final list = json == null ? null : jsonDecode(json);
+      if (list is List) saved = [for (final item in list) ?CallRecord.fromJson(item)];
     } catch (e) {
       // Unreadable (or no keystore, as in tests): it starts empty.
       debugPrint('call history: $e');
     }
+    if (_userId != userId) return;
+    final added = calls.value;
+    calls.value = [...added, ...saved].take(_max).toList();
+    if (added.isNotEmpty) _save(userId);
   }
 
   void add(CallRecord record) {
     final userId = _userId;
     if (userId == null) return;
     calls.value = [record, ...calls.value].take(_max).toList();
+    _save(userId);
+  }
+
+  void _save(String userId) {
     final json = jsonEncode([for (final c in calls.value) c.toJson()]);
     unawaited(_store.write(userId, json).catchError((Object e) => debugPrint('call history: $e')));
   }
 
-  /// Signed out: [forget] deletes what was kept, as signing out does with
-  /// the recent chats.
+  /// Signed out: [forget] deletes what was kept, any account's, as signing
+  /// out does with the recent chats.
   Future<void> close({bool forget = false}) async {
-    final userId = _userId;
     _userId = null;
     calls.value = const [];
-    if (forget && userId != null) {
-      try {
-        await _store.clear(userId);
-      } catch (e) {
-        debugPrint('call history: $e');
-      }
+    if (!forget) return;
+    try {
+      await _store.clearAll();
+    } catch (e) {
+      debugPrint('call history: $e');
     }
   }
 

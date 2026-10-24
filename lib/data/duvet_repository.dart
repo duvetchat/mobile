@@ -84,6 +84,11 @@ class DuvetRepository implements ChatRepository {
   final _voiceSignaling = GatewayVoiceSignaling();
   @override
   VoiceSignaling get voiceSignaling => _voiceSignaling;
+
+  // Synchronous: its listeners act before the session closes.
+  final _signedOut = StreamController<void>.broadcast(sync: true);
+  @override
+  Stream<void> get signedOut => _signedOut.stream;
   @override
   final ValueNotifier<Map<String, ChatMessage>> latest = ValueNotifier(const {});
   @override
@@ -220,6 +225,9 @@ class DuvetRepository implements ChatRepository {
   }
 
   Future<void> _endSession() async {
+    // While the gateway is still attached; once (a refused session ends in
+    // [_call], then again in [restore]).
+    if (_api != null) _signedOut.add(null);
     // Previews are message text: signing out leaves none on the device.
     unawaited(_recents.close(forget: true));
     unawaited(_cache.clear());
@@ -2095,6 +2103,7 @@ class DuvetRepository implements ChatRepository {
   void dispose() {
     _closeSession();
     _voiceSignaling.dispose();
+    _signedOut.close();
     _resumed.close();
     mentions.dispose();
     _messageEvents.close();
