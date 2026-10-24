@@ -530,4 +530,31 @@ void main() {
       semantics.dispose();
     });
   });
+
+  testWidgets('different webhooks, or one under another name, start runs of their own', (tester) async {
+    ChatMessage hook(String id, String webhook, String name, int minute) => ChatMessage(
+      id: id,
+      authorId: null,
+      authorName: name,
+      fromBot: true,
+      fromWebhook: true,
+      webhookId: webhook,
+      content: 'Run $id',
+      createdAt: DateTime(2026, 10, 23, 9, minute),
+    );
+    await openGeneral(
+      tester,
+      setUp: (r) => r.history['r-general'] = [
+        hook('a', 'w-1', 'Deploys', 0),
+        hook('b', 'w-2', 'Deploys', 1),
+        hook('c', 'w-2', 'Alerts', 2),
+        hook('d', 'w-2', 'Alerts', 3),
+      ],
+    );
+    // A name and a tag over each run's first message: three runs.
+    expect(find.text('WEBHOOK'), findsNWidgets(3));
+    expect(find.text('Deploys'), findsNWidgets(2));
+    expect(find.text('Alerts'), findsOneWidget);
+    semantics.dispose();
+  });
 }

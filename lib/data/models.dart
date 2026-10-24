@@ -135,6 +135,10 @@ class ChatMessage {
   /// A webhook sent it: its tag says WEBHOOK, as on the desktop.
   final bool fromWebhook;
 
+  /// The webhook that sent it, which has no author ID: what tells two
+  /// webhooks' messages apart, as on the desktop.
+  final String? webhookId;
+
   /// A bot's answer to the user alone (the EPHEMERAL flag): no history has
   /// it, and nothing of the room's (replies, reactions, pins) applies to it.
   final bool isEphemeral;
@@ -167,6 +171,7 @@ class ChatMessage {
     this.rawComponents = const [],
     this.fromBot = false,
     this.fromWebhook = false,
+    this.webhookId,
     this.isEphemeral = false,
     this.isLoading = false,
     this.isComponentsV2 = false,
@@ -213,6 +218,7 @@ class ChatMessage {
     rawComponents: rawComponents,
     fromBot: fromBot,
     fromWebhook: fromWebhook,
+    webhookId: webhookId,
     isEphemeral: isEphemeral,
     isLoading: isLoading,
     isComponentsV2: isComponentsV2,
@@ -244,6 +250,7 @@ class ChatMessage {
     rawComponents: update.rawComponents,
     fromBot: withAuthor ? update.fromBot : fromBot,
     fromWebhook: fromWebhook,
+    webhookId: webhookId,
     isEphemeral: isEphemeral,
     isLoading: update.isLoading,
     isComponentsV2: update.isComponentsV2,

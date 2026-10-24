@@ -2120,6 +2120,7 @@ class DuvetRepository implements ChatRepository {
     rawComponents: m.components ?? const [],
     fromBot: m.user?.isBot ?? false,
     fromWebhook: m.webhookId != null,
+    webhookId: m.webhookId,
     isEphemeral: m.flags & duvet.MessageFlag.ephemeral != 0,
     isLoading: m.flags & duvet.MessageFlag.loading != 0,
     isComponentsV2: m.flags & duvet.MessageFlag.isComponentsV2 != 0,

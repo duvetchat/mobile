@@ -249,6 +249,7 @@ Map<String, Object?> messageToJson(ChatMessage m) => {
   'pinned': m.pinned,
   'fromBot': m.fromBot,
   'fromWebhook': m.fromWebhook,
+  'webhookId': ?m.webhookId,
   if (m.isLoading) 'isLoading': true,
   if (m.isComponentsV2) 'isComponentsV2': true,
   if (m.rawComponents.isNotEmpty) 'components': m.rawComponents,
@@ -300,6 +301,7 @@ ChatMessage messageFromJson(Map<String, Object?> j) => ChatMessage(
   pinned: j['pinned'] as bool? ?? false,
   fromBot: j['fromBot'] as bool? ?? false,
   fromWebhook: j['fromWebhook'] as bool? ?? false,
+  webhookId: j['webhookId'] as String?,
   isLoading: j['isLoading'] as bool? ?? false,
   isComponentsV2: j['isComponentsV2'] as bool? ?? false,
   components: componentsFromJson([

@@ -1961,7 +1961,8 @@ class _ChatViewState extends State<ChatView> {
 
   /// The entries, oldest first, with a separator where the day changes, the
   /// "New messages" divider after the last one read, and each message marked
-  /// first and last of its run: one author, minutes apart.
+  /// first and last of its run: one author by ID (a webhook's own) and name,
+  /// minutes apart, as on the desktop.
   List<_Item> _items() {
     final items = <_Item>[];
     for (var i = 0; i < _entries.length; i++) {
@@ -1994,6 +1995,8 @@ class _ChatViewState extends State<ChatView> {
       !a.isNotice &&
       !b.isNotice &&
       a.authorId == b.authorId &&
+      a.webhookId == b.webhookId &&
+      a.authorName == b.authorName &&
       a.isEphemeral == b.isEphemeral &&
       _sameDay(a.createdAt, b.createdAt) &&
       b.createdAt.difference(a.createdAt).abs() <= const Duration(minutes: 5);
