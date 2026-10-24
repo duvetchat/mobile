@@ -1,3 +1,4 @@
+import 'package:clock/clock.dart';
 import 'package:duvet/data/emoji_catalog.dart';
 import 'package:duvet/data/models.dart';
 import 'package:duvet/deep_links.dart';
@@ -247,6 +248,66 @@ void main() {
       await tapLabel(tester, 'Pinned messages');
       expect(find.text('1 message in #general'), findsOneWidget);
       expect(find.bySemanticsLabel('Unpin Leo’s message'), findsNothing);
+      semantics.dispose();
+    });
+  });
+
+  group('bots\' answers', () {
+    ChatMessage answer(String id, String text, {bool ephemeral = true, bool loading = false, DateTime? at}) =>
+        ChatMessage(
+          id: id,
+          authorId: 'u-ballot',
+          authorName: 'Ballot',
+          fromBot: true,
+          content: text,
+          createdAt: at ?? DateTime(2026, 10, 23, 9, 5),
+          isEphemeral: ephemeral,
+          isLoading: loading,
+        );
+
+    testWidgets('one to the user alone says so, takes nothing of the room\'s, and goes when dismissed', (tester) async {
+      final repository = await openGeneral(tester);
+      repository.push('r-general', MessageCreated(answer('e1', 'Your vote counts')));
+      await tester.pumpAndSettle();
+      expect(find.text('Only you can see this'), findsOneWidget);
+      // Not the room's message the user read up to.
+      expect(repository.reads.map((r) => r.$2), isNot(contains('e1')));
+
+      await longPress(tester, 'Your vote counts');
+      expect(find.bySemanticsLabel('Copy text'), findsOneWidget);
+      expect(find.bySemanticsLabel('Quick reactions'), findsNothing);
+      expect(find.bySemanticsLabel('Reply'), findsNothing);
+      expect(find.bySemanticsLabel('Pin'), findsNothing);
+      await tester.tapAt(const Offset(10, 10));
+      await tester.pumpAndSettle();
+
+      // It outlives leaving the room, until it's dismissed.
+      await tapLabel(tester, 'Back');
+      await tester.tap(find.text('# general'));
+      await tester.pumpAndSettle();
+      expect(find.text('Your vote counts'), findsOneWidget);
+      await tapLabel(tester, 'Dismiss message');
+      expect(find.text('Your vote counts'), findsNothing);
+      expect(repository.dismissed, ['e1']);
+      semantics.dispose();
+    });
+
+    testWidgets('a deferred one: the bot is thinking, and past 15 minutes it did not respond', (tester) async {
+      final repository = await openGeneral(tester);
+      repository.push('r-general', MessageCreated(answer('l1', '', ephemeral: false, loading: true, at: clock.now())));
+      await tester.pumpAndSettle();
+      expect(find.text('Ballot is thinking…'), findsOneWidget);
+
+      await tester.pump(const Duration(minutes: 15));
+      await tester.pump(const Duration(seconds: 1));
+      expect(find.text('Ballot is thinking…'), findsNothing);
+      expect(find.text('The application did not respond'), findsOneWidget);
+
+      // Its bot completes it, late.
+      repository.push('r-general', MessageUpdated(answer('l1', 'Here it is', ephemeral: false)));
+      await tester.pumpAndSettle();
+      expect(find.text('Here it is'), findsOneWidget);
+      expect(find.text('The application did not respond'), findsNothing);
       semantics.dispose();
     });
   });

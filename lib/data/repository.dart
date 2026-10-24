@@ -63,6 +63,13 @@ abstract interface class ChatRepository {
   /// Who starts typing in the chat.
   Stream<TypingUser> typing(ChatTarget target);
 
+  /// A room's ephemeral messages: its bots' answers to the user alone, which
+  /// no history has. They last the session, until dismissed.
+  List<ChatMessage> ephemeralIn(ChatTarget target);
+
+  /// The user dismissed an ephemeral message: it goes.
+  void dismissEphemeral(ChatTarget target, String messageId);
+
   /// Sends [content] with [files], or a sticker, in reply to [replyTo] if
   /// given; [nonce] matches the gateway's echo to it. With files,
   /// [onProgress] follows the upload (0 to 1) and completing [cancel] stops

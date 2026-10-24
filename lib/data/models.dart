@@ -135,6 +135,13 @@ class ChatMessage {
   /// A webhook sent it: its tag says WEBHOOK, as on the desktop.
   final bool fromWebhook;
 
+  /// A bot's answer to the user alone (the EPHEMERAL flag): no history has
+  /// it, and nothing of the room's (replies, reactions, pins) applies to it.
+  final bool isEphemeral;
+
+  /// A bot's deferred answer, not completed yet (the LOADING flag).
+  final bool isLoading;
+
   const ChatMessage({
     required this.id,
     required this.authorId,
@@ -156,6 +163,8 @@ class ChatMessage {
     this.rawComponents = const [],
     this.fromBot = false,
     this.fromWebhook = false,
+    this.isEphemeral = false,
+    this.isLoading = false,
   });
 
   int get attachmentCount => attachments.length;
@@ -189,12 +198,15 @@ class ChatMessage {
     rawComponents: rawComponents,
     fromBot: fromBot,
     fromWebhook: fromWebhook,
+    isEphemeral: isEphemeral,
+    isLoading: isLoading,
   );
 
   /// This message as an edit, or a link preview that came late, leaves it.
-  /// [update] is what MESSAGE_UPDATE carries: the text, sticker, embeds and
-  /// components. It has none of the files, reactions, reply or pin, which
-  /// stay, and names the author only when [withAuthor].
+  /// [update] is what MESSAGE_UPDATE carries: the text, sticker, embeds,
+  /// components and flags (a bot's deferred answer completes by an edit). It
+  /// has none of the files, reactions, reply or pin, which stay, and names
+  /// the author only when [withAuthor].
   ChatMessage updatedBy(ChatMessage update, {bool withAuthor = true}) => ChatMessage(
     id: id,
     authorId: authorId,
@@ -216,6 +228,8 @@ class ChatMessage {
     rawComponents: update.rawComponents,
     fromBot: withAuthor ? update.fromBot : fromBot,
     fromWebhook: fromWebhook,
+    isEphemeral: isEphemeral,
+    isLoading: update.isLoading,
   );
 
   /// With [userId]'s reaction [emoji] added or taken away.

@@ -71,6 +71,21 @@ Map<String, dynamic> _preview(String id, String content) => {
   ],
 };
 
+const _ballot = '00000000-0000-4000-8000-0000000000b0';
+
+/// A bot's answer in r-1, with [flags] (64: ephemeral, 128: loading).
+Map<String, dynamic> _answer(String id, String content, {int flags = 64}) => {
+  'id': id,
+  'room_id': 'r-1',
+  'author_id': _ballot,
+  'content': content,
+  'type': 0,
+  'created_at': _at,
+  'updated_at': _at,
+  'user': {..._user(_ballot, 'ballot', alias: 'Ballot'), 'is_bot': true},
+  'flags': flags,
+};
+
 Map<String, dynamic> _dmMessage(String id, String content, {bool withUser = true}) => {
   'id': id,
   'conversation_id': 'c-1',
@@ -160,6 +175,45 @@ void main() {
       expect(repository.latest.value['c-1']!.content, 'see https://duvet.chat');
       expect(repository.latest.value['c-1']!.authorName, 'Maya');
       expect((events.last as MessageUpdated).withAuthor, isFalse);
+    });
+  });
+
+  group('bots\' answers', () {
+    test('one to the user alone is kept apart: the room stays read, and it isn\'t the preview', () async {
+      final events = await listen(_room);
+      repository.opened(_room, '# general');
+      repository.handleEvent(_event('MESSAGE_CREATE', _answer('8', 'Only for you')));
+      await pumpEventQueue();
+      expect(repository.unread.value, isEmpty);
+      expect(repository.latest.value, isEmpty);
+      expect(repository.recents.value.single.previewId, isNull);
+      expect((events.single as MessageCreated).message.isEphemeral, isTrue);
+      expect(repository.ephemeralIn(_room).map((m) => m.content), ['Only for you']);
+
+      // Edited while it's shown; not once it's dismissed.
+      repository.handleEvent(_event('MESSAGE_UPDATE', _answer('8', 'Still only for you')));
+      expect(repository.ephemeralIn(_room).single.content, 'Still only for you');
+      repository.dismissEphemeral(_room, '8');
+      repository.handleEvent(_event('MESSAGE_UPDATE', _answer('8', 'Back again?')));
+      await pumpEventQueue();
+      expect(repository.ephemeralIn(_room), isEmpty);
+      expect(events.whereType<MessageUpdated>().map((e) => e.message.content), ['Still only for you']);
+
+      // Its bot deletes it.
+      repository.handleEvent(_event('MESSAGE_CREATE', _answer('9', 'Another')));
+      repository.handleEvent(_event('MESSAGE_DELETE', {'id': '9', 'room_id': 'r-1'}));
+      expect(repository.ephemeralIn(_room), isEmpty);
+    });
+
+    test('a deferred one is loading until its bot completes it', () async {
+      final events = await listen(_room);
+      repository.handleEvent(_event('MESSAGE_CREATE', _answer('10', '', flags: 128)));
+      repository.handleEvent(_event('MESSAGE_UPDATE', _answer('10', 'Done', flags: 0)));
+      await pumpEventQueue();
+      expect((events.first as MessageCreated).message.isLoading, isTrue);
+      expect((events.last as MessageUpdated).message.isLoading, isFalse);
+      expect(repository.latest.value['r-1']!.isLoading, isFalse);
+      expect(repository.latest.value['r-1']!.content, 'Done');
     });
   });
 

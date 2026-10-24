@@ -49,6 +49,9 @@ class _Bubble extends StatelessWidget {
   final Future<void> Function(UiComponent component, List<String>? values) onUseComponent;
   final SelectChoices selectChoices;
 
+  /// Dismisses a bot's answer to the user alone.
+  final VoidCallback? onDismiss;
+
   const _Bubble({
     required this.entry,
     required this.mine,
@@ -76,6 +79,7 @@ class _Bubble extends StatelessWidget {
     required this.onOpenAuthor,
     required this.onUseComponent,
     required this.selectChoices,
+    this.onDismiss,
     super.key,
   });
 
@@ -91,9 +95,12 @@ class _Bubble extends StatelessWidget {
 
     // Double-tap a text bubble (which does the press), a sticker, a big emoji
     // or a picture to reply; files, videos and voice keep their single taps at
-    // once. A long press anywhere is the bubble's.
-    final onDoubleTap = entry.delivery == _Delivery.sent && !lifted ? onReply : null;
+    // once. A long press anywhere is the bubble's. A bot's answer to the user
+    // alone takes no reply.
+    final repliable = entry.delivery == _Delivery.sent && !m.isEphemeral;
+    final onDoubleTap = repliable && !lifted ? onReply : null;
     final parts = <Widget>[
+      if (m.isLoading) _Thinking(name: m.authorName, since: m.createdAt),
       if (m.stickerUrl != null)
         GestureDetector(
           onDoubleTap: onDoubleTap,
@@ -225,6 +232,7 @@ class _Bubble extends StatelessWidget {
         ),
         if (m.reactions.isNotEmpty)
           _Reactions(reactions: m.reactions, me: me, directory: directory, onReact: onReact, onMore: onMoreReactions),
+        if (m.isEphemeral) _EphemeralNote(onDismiss: onDismiss),
         ?status,
       ],
     );
@@ -237,7 +245,7 @@ class _Bubble extends StatelessWidget {
       builder: (whole) => Semantics(
         container: true,
         customSemanticsActions: {
-          if (entry.delivery == _Delivery.sent) const CustomSemanticsAction(label: 'Reply'): onReply,
+          if (repliable) const CustomSemanticsAction(label: 'Reply'): onReply,
           const CustomSemanticsAction(label: 'Message options'): () => onLongPress(whole),
         },
         child: AnimatedContainer(
@@ -256,7 +264,7 @@ class _Bubble extends StatelessWidget {
     // 4pt between bubbles of a run, 12pt between runs (less the highlight's
     // own 4pt).
     final gap = EdgeInsets.only(top: firstOfRun ? 8 : 0);
-    final onSwipe = entry.delivery == _Delivery.sent ? onReply : null;
+    final onSwipe = repliable ? onReply : null;
     if (mine) {
       return Padding(
         padding: gap,
@@ -278,7 +286,13 @@ class _Bubble extends StatelessWidget {
               width: 36,
               child: lastOfRun
                   ? Padding(
-                      padding: EdgeInsets.only(bottom: 4 + (status == null ? 0 : 22) + (m.reactions.isEmpty ? 0 : 32)),
+                      padding: EdgeInsets.only(
+                        bottom:
+                            4 +
+                            (status == null ? 0 : 22) +
+                            (m.reactions.isEmpty ? 0 : 32) +
+                            (m.isEphemeral ? _EphemeralNote.height : 0),
+                      ),
                       child: Semantics(
                         container: true,
                         button: true,
@@ -424,6 +438,119 @@ class _Caption extends StatelessWidget {
       ],
     ),
   );
+}
+
+/// Under a bot's answer to the user alone: "Only you can see this · Dismiss
+/// message", as on the desktop.
+class _EphemeralNote extends StatelessWidget {
+  final VoidCallback? onDismiss;
+  const _EphemeralNote({this.onDismiss});
+
+  /// Dismiss's tap target.
+  static const height = 40.0;
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = context.theme.colors;
+    final style = DuvetType.caption.copyWith(color: colors.mutedForeground);
+    return SizedBox(
+      height: height,
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 4),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            ExcludeSemantics(child: Icon(FLucideIcons.eye, size: 14, color: colors.mutedForeground)),
+            const SizedBox(width: 4),
+            Flexible(
+              child: Text('Only you can see this', maxLines: 1, overflow: TextOverflow.ellipsis, style: style),
+            ),
+            ExcludeSemantics(child: Text(' · ', style: style)),
+            Semantics(
+              container: true,
+              button: true,
+              label: 'Dismiss message',
+              excludeSemantics: true,
+              onTap: onDismiss,
+              child: GestureDetector(
+                behavior: HitTestBehavior.opaque,
+                onTap: onDismiss,
+                child: Center(
+                  child: Text(
+                    'Dismiss message',
+                    style: style.copyWith(color: context.duvet.accentText, fontWeight: FontWeight.w500),
+                  ),
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+/// A bot's deferred answer until it completes it: "Ballot is thinking…",
+/// and past the 15 minutes it has, "The application did not respond", as on
+/// the desktop.
+class _Thinking extends StatefulWidget {
+  final String name;
+  final DateTime since;
+  const _Thinking({required this.name, required this.since});
+
+  @override
+  State<_Thinking> createState() => _ThinkingState();
+}
+
+class _ThinkingState extends State<_Thinking> {
+  static const _window = Duration(minutes: 15);
+  Timer? _late;
+
+  @override
+  void initState() {
+    super.initState();
+    _schedule();
+  }
+
+  @override
+  void didUpdateWidget(_Thinking old) {
+    super.didUpdateWidget(old);
+    if (old.since != widget.since) _schedule();
+  }
+
+  @override
+  void dispose() {
+    _late?.cancel();
+    super.dispose();
+  }
+
+  // A redraw once the window has passed.
+  void _schedule() {
+    _late?.cancel();
+    final left = widget.since.add(_window).difference(time.clock.now());
+    if (!left.isNegative) _late = Timer(left + const Duration(milliseconds: 1), () => setState(() {}));
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = context.theme.colors;
+    if (time.clock.now().difference(widget.since) > _window) {
+      return Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          ExcludeSemantics(child: Icon(FLucideIcons.circleAlert, size: 16, color: colors.destructive)),
+          const SizedBox(width: 6),
+          Flexible(
+            child: Text('The application did not respond', style: DuvetType.body.copyWith(color: colors.destructive)),
+          ),
+        ],
+      );
+    }
+    return Text(
+      '${widget.name} is thinking…',
+      style: DuvetType.body.copyWith(color: colors.mutedForeground, fontStyle: FontStyle.italic),
+    );
+  }
 }
 
 /// Under a message that didn't send: "Not sent", then Retry and Delete.

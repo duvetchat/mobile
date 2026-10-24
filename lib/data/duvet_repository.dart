@@ -249,6 +249,7 @@ class DuvetRepository implements ChatRepository {
     _wasReady = false;
     _lastRead.clear();
     drafts.clear();
+    _ephemeral.clear();
     mentions.value = const {};
     _voiceSignaling.detach();
     // Destroying the gateway closes the REST client's HTTP client too.
@@ -459,20 +460,37 @@ class DuvetRepository implements ChatRepository {
 
       case duvet.MessageCreateEvent(:final data):
         if (data.deletedAt != null) break;
-        if (data.authorId != me) _markUnread(data.roomId);
         final message = _roomMessage(data);
-        _recents.roomMessage(data.roomId, message);
-        _setLatest(data.roomId, message);
+        // A bot's answer to the user alone isn't one of the room's: it leaves
+        // the room read, and isn't its preview.
+        if (message.isEphemeral) {
+          _keepEphemeral(data.roomId, message);
+        } else {
+          if (data.authorId != me) _markUnread(data.roomId);
+          _recents.roomMessage(data.roomId, message);
+          _setLatest(data.roomId, message);
+        }
         _messageEvents.add((data.roomId, MessageCreated(message)));
       case duvet.MessageUpdateEvent(:final data):
         if (data.deletedAt != null) {
+          _dropEphemeral(data.roomId, data.id);
           _recents.deleted(data.roomId, data.id);
           _latestDeleted(data.roomId, data.id);
           _messageEvents.add((data.roomId, MessageDeleted(data.id)));
         } else {
-          _updated(data.roomId, _roomMessage(data), withAuthor: data.user != null);
+          final update = _roomMessage(data);
+          final withAuthor = data.user != null;
+          final kept = _ephemeral[data.roomId];
+          if (!update.isEphemeral) {
+            _updated(data.roomId, update, withAuthor: withAuthor);
+          } else if (kept?.indexWhere((m) => m.id == data.id) case final i? when i >= 0) {
+            // Only while it's shown: one dismissed stays gone, as on the desktop.
+            kept![i] = kept[i].updatedBy(update, withAuthor: withAuthor);
+            _messageEvents.add((data.roomId, MessageUpdated(update, withAuthor: withAuthor)));
+          }
         }
       case duvet.MessageDeletedEvent(:final data):
+        _dropEphemeral(data.roomId, data.id);
         _recents.deleted(data.roomId, data.id);
         _latestDeleted(data.roomId, data.id);
         _messageEvents.add((data.roomId, MessageDeleted(data.id)));
@@ -574,6 +592,23 @@ class DuvetRepository implements ChatRepository {
     if (known != null && known.id != m.id && known.createdAt.isAfter(m.createdAt)) return;
     latest.value = {...latest.value, chatId: m};
   }
+
+  // Each room's ephemeral messages, the oldest first.
+  final _ephemeral = <String, List<ChatMessage>>{};
+
+  @override
+  List<ChatMessage> ephemeralIn(ChatTarget target) => [...?_ephemeral[target.id]];
+
+  @override
+  void dismissEphemeral(ChatTarget target, String messageId) => _dropEphemeral(target.id, messageId);
+
+  void _keepEphemeral(String roomId, ChatMessage m) {
+    final kept = _ephemeral[roomId] ??= [];
+    final i = kept.indexWhere((k) => k.id == m.id);
+    i < 0 ? kept.add(m) : kept[i] = m;
+  }
+
+  void _dropEphemeral(String roomId, String messageId) => _ephemeral[roomId]?.removeWhere((m) => m.id == messageId);
 
   // An edit, or a link preview that came late. The event carries no files,
   // reactions, reply or pin, nor always the author: the newest message keeps
@@ -2071,6 +2106,8 @@ class DuvetRepository implements ChatRepository {
     rawComponents: m.components ?? const [],
     fromBot: m.user?.isBot ?? false,
     fromWebhook: m.webhookId != null,
+    isEphemeral: m.flags & duvet.MessageFlag.ephemeral != 0,
+    isLoading: m.flags & duvet.MessageFlag.loading != 0,
     attachments: _attachments(m.attachments),
     stickerUrl: m.stickerAttachmentId == null ? null : attachmentUrl(m.stickerAttachmentId!),
     embeds: _embeds(m.embeds),

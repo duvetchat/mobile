@@ -4,6 +4,7 @@ import 'dart:math';
 import 'dart:math' as math;
 import 'dart:ui' show ImageFilter;
 
+import 'package:clock/clock.dart' as time show clock;
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
@@ -271,12 +272,20 @@ class _ChatViewState extends State<ChatView> {
           : await _repository.thread(widget.target, thread);
       if (!mounted) return;
       final loaded = {for (final m in page) m.id};
+      // Keep what the gateway pushed while the page loaded.
+      final pushed = [
+        for (final e in _entries)
+          if (!loaded.contains(e.message.id)) e,
+      ];
+      final shown = {...loaded, for (final e in pushed) e.message.id};
+      // The bots' answers to the user alone, which no history has, show among
+      // the room's messages, by time.
+      final ephemeral = [
+        for (final m in thread == null ? _repository.ephemeralIn(widget.target) : const <ChatMessage>[])
+          if (!shown.contains(m.id)) m,
+      ];
       setState(() {
-        // Keep what the gateway pushed while the page loaded.
-        _entries = [
-          for (final m in page) (message: m, delivery: _Delivery.sent),
-          ..._entries.where((e) => !loaded.contains(e.message.id)),
-        ];
+        _entries = [for (final m in _byTime(page, ephemeral)) (message: m, delivery: _Delivery.sent), ...pushed];
         _hasOlder = thread == null && page.length >= _pageSize;
         _loading = false;
         // Nothing after the last read: no divider.
@@ -303,6 +312,26 @@ class _ChatViewState extends State<ChatView> {
     }
   }
 
+  /// [list] (the oldest first) with [more] put in by time, after those as old.
+  static List<ChatMessage> _byTime(List<ChatMessage> list, List<ChatMessage> more) {
+    final all = [...list];
+    for (final m in more) {
+      var i = all.length;
+      while (i > 0 && all[i - 1].createdAt.isAfter(m.createdAt)) {
+        i--;
+      }
+      all.insert(i, m);
+    }
+    return all;
+  }
+
+  /// The room's own messages that were sent, the oldest first: what paging,
+  /// catching up and reading go by. An ephemeral one isn't the room's.
+  Iterable<ChatMessage> get _history => [
+    for (final e in _entries)
+      if (e.delivery == _Delivery.sent && !e.message.isEphemeral) e.message,
+  ];
+
   /// Brings the "New messages" divider into view, near the top.
   Future<void> _showDivider() async {
     if (!mounted || !_entries.any((e) => e.message.id == _unreadAfter)) return;
@@ -313,11 +342,11 @@ class _ChatViewState extends State<ChatView> {
   }
 
   Future<void> _loadOlder() async {
-    final oldest = _entries.where((e) => e.delivery == _Delivery.sent).firstOrNull;
+    final oldest = _history.firstOrNull;
     if (_loadingOlder || !_hasOlder || oldest == null) return;
     setState(() => _loadingOlder = true);
     try {
-      final page = await _repository.messages(widget.target, before: oldest.message.id);
+      final page = await _repository.messages(widget.target, before: oldest.id);
       if (!mounted) return;
       final known = {for (final e in _entries) e.message.id};
       setState(() {
@@ -338,7 +367,7 @@ class _ChatViewState extends State<ChatView> {
   /// What came while the socket was down: everything after the newest
   /// message here.
   Future<void> _catchUp() async {
-    final newest = _entries.where((e) => e.delivery == _Delivery.sent).lastOrNull?.message;
+    final newest = _history.lastOrNull;
     if (newest == null) return;
     try {
       final missed = await _repository.messagesAfter(widget.target, newest.id);
@@ -360,7 +389,7 @@ class _ChatViewState extends State<ChatView> {
   }
 
   void _markRead() {
-    final newest = _entries.where((e) => e.delivery == _Delivery.sent).lastOrNull?.message;
+    final newest = _history.lastOrNull;
     if (newest != null) _repository.markRead(widget.target, newest.id);
   }
 
@@ -768,7 +797,7 @@ class _ChatViewState extends State<ChatView> {
   // ---------------------------------------------------------------------------
 
   void _startReply(ChatMessage m) {
-    if (m.id.startsWith('pending:') || m.isNotice) return;
+    if (m.id.startsWith('pending:') || m.isNotice || m.isEphemeral) return;
     HapticFeedback.selectionClick();
     setState(() {
       if (_editing != null) _stopEditing();
@@ -784,6 +813,12 @@ class _ChatViewState extends State<ChatView> {
   }
 
   void _cancelReply() => setState(() => _replyTo = null);
+
+  /// Dismisses a bot's answer to the user alone: it goes for the session.
+  void _dismiss(ChatMessage m) {
+    _repository.dismissEphemeral(widget.target, m.id);
+    setState(() => _entries.removeWhere((e) => e.message.id == m.id));
+  }
 
   void _startEditing(ChatMessage m) {
     final directory = _directory;
@@ -1300,9 +1335,32 @@ class _ChatViewState extends State<ChatView> {
       emojiNameOf: (id) => directory.emojiOf(id)?.name,
     );
     final mine = m.authorId != null && m.authorId == _me;
-    final sent = entry.delivery == _Delivery.sent;
+    // Nothing of the room's applies to a bot's answer to the user alone: no
+    // reactions, replies, pins or deleting, as on the desktop.
+    final sent = entry.delivery == _Delivery.sent && !m.isEphemeral;
     final canPin = _canPin;
     final canDelete = mine || _canDeleteOthers;
+    final items = [
+      if (sent) const GlassMenuItem(icon: FLucideIcons.reply, label: 'Reply', value: _Action.reply),
+      if (sent && widget.threadOf == null)
+        const GlassMenuItem(icon: FLucideIcons.messagesSquare, label: 'View thread', value: _Action.thread),
+      if (readable.isNotEmpty) const GlassMenuItem(icon: FLucideIcons.copy, label: 'Copy text', value: _Action.copy),
+      if (sent && !m.isNotice && canPin)
+        m.pinned
+            ? const GlassMenuItem(icon: FLucideIcons.pinOff, label: 'Unpin', value: _Action.unpin)
+            : const GlassMenuItem(icon: FLucideIcons.pin, label: 'Pin', value: _Action.pin),
+      if (mine && sent && m.content.isNotEmpty && m.stickerUrl == null)
+        const GlassMenuItem(icon: FLucideIcons.pencil, label: 'Edit', value: _Action.edit),
+      if (!mine && m.authorId != null && !m.isEphemeral)
+        GlassMenuItem(icon: FLucideIcons.atSign, label: 'Mention ${m.authorName}', value: _Action.mention),
+      if (entry.delivery == _Delivery.failed)
+        const GlassMenuItem(icon: FLucideIcons.rotateCw, label: 'Send again', value: _Action.retry),
+      if (canDelete && sent)
+        const GlassMenuItem(icon: FLucideIcons.trash2, label: 'Delete', value: _Action.delete, destructive: true),
+      if (entry.delivery == _Delivery.failed)
+        const GlassMenuItem(icon: FLucideIcons.trash2, label: 'Delete', value: _Action.discard, destructive: true),
+    ];
+    if (items.isEmpty && !sent) return;
     final box = anchor.findRenderObject() as RenderBox?;
     if (box == null || !box.attached) return;
     final picked = await _showMessageActions(
@@ -1312,26 +1370,7 @@ class _ChatViewState extends State<ChatView> {
       me: _me,
       reactions: sent ? m.reactions : null,
       catalog: _catalog,
-      items: [
-        if (sent) const GlassMenuItem(icon: FLucideIcons.reply, label: 'Reply', value: _Action.reply),
-        if (sent && widget.threadOf == null)
-          const GlassMenuItem(icon: FLucideIcons.messagesSquare, label: 'View thread', value: _Action.thread),
-        if (readable.isNotEmpty) const GlassMenuItem(icon: FLucideIcons.copy, label: 'Copy text', value: _Action.copy),
-        if (sent && !m.isNotice && canPin)
-          m.pinned
-              ? const GlassMenuItem(icon: FLucideIcons.pinOff, label: 'Unpin', value: _Action.unpin)
-              : const GlassMenuItem(icon: FLucideIcons.pin, label: 'Pin', value: _Action.pin),
-        if (mine && sent && m.content.isNotEmpty && m.stickerUrl == null)
-          const GlassMenuItem(icon: FLucideIcons.pencil, label: 'Edit', value: _Action.edit),
-        if (!mine && m.authorId != null)
-          GlassMenuItem(icon: FLucideIcons.atSign, label: 'Mention ${m.authorName}', value: _Action.mention),
-        if (entry.delivery == _Delivery.failed)
-          const GlassMenuItem(icon: FLucideIcons.rotateCw, label: 'Send again', value: _Action.retry),
-        if (canDelete && sent)
-          const GlassMenuItem(icon: FLucideIcons.trash2, label: 'Delete', value: _Action.delete, destructive: true),
-        if (entry.delivery == _Delivery.failed)
-          const GlassMenuItem(icon: FLucideIcons.trash2, label: 'Delete', value: _Action.discard, destructive: true),
-      ],
+      items: items,
     );
     if (!mounted || picked == null) return;
     switch (picked) {
@@ -1812,6 +1851,7 @@ class _ChatViewState extends State<ChatView> {
       onOpenAuthor: () => _openAuthor(m),
       onUseComponent: (component, values) => _useComponent(m, component, values),
       selectChoices: _selectChoices,
+      onDismiss: m.isEphemeral ? () => _dismiss(m) : null,
     );
   }
 
@@ -1896,6 +1936,7 @@ class _ChatViewState extends State<ChatView> {
       !a.isNotice &&
       !b.isNotice &&
       a.authorId == b.authorId &&
+      a.isEphemeral == b.isEphemeral &&
       _sameDay(a.createdAt, b.createdAt) &&
       b.createdAt.difference(a.createdAt).abs() <= const Duration(minutes: 5);
 }

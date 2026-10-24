@@ -732,9 +732,12 @@ class FakeRepository implements ChatRepository {
     reactions: reactions,
   );
 
-  /// What the gateway would push.
+  /// What the gateway would push. A bot's answer to the user alone is kept
+  /// apart, as the real repository keeps it.
   void push(String chatId, MessageEvent event) {
-    if (event is MessageCreated) {
+    if (event is MessageCreated && event.message.isEphemeral) {
+      (ephemeral[chatId] ??= []).add(event.message);
+    } else if (event is MessageCreated) {
       if (event.message.authorId != me.id) unread.value = {...unread.value, chatId};
       latest.value = {...latest.value, chatId: event.message};
       if (chatId.startsWith('c-')) {
@@ -814,6 +817,19 @@ class FakeRepository implements ChatRepository {
 
   @override
   Future<List<ChatMessage>> messagesAfter(ChatTarget target, String messageId) async => [...?missed[target.id]];
+
+  /// Each room's ephemeral messages, and those the user dismissed.
+  final ephemeral = <String, List<ChatMessage>>{};
+  final dismissed = <String>[];
+
+  @override
+  List<ChatMessage> ephemeralIn(ChatTarget target) => [...?ephemeral[target.id]];
+
+  @override
+  void dismissEphemeral(ChatTarget target, String messageId) {
+    dismissed.add(messageId);
+    ephemeral[target.id]?.removeWhere((m) => m.id == messageId);
+  }
 
   @override
   Future<void> loadLatest(Iterable<ChatTarget> targets) async {
