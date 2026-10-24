@@ -247,6 +247,41 @@ void main() {
     expect([for (final t in dmTyping) (t.name, t.recording)], [('maya', true)]);
   });
 
+  test('a reply says whether it mentions the author it answers, and a v2 message its text displays', () async {
+    final events = await listen(_room);
+    repository.handleEvent(
+      _event('MESSAGE_CREATE', {
+        ..._roomMessage('11', 'agreed'),
+        'referenced_message': {'message_id': '1', 'author_id': _me, 'author_name': 'Gaby', 'mention_author': true},
+      }),
+    );
+    repository.handleEvent(
+      _event('MESSAGE_CREATE', {
+        ..._answer('12', '', flags: 1 << 15),
+        'components': [
+          {
+            'type': 17,
+            'components': [
+              {'type': 10, 'content': 'Your turn, <@$_me>'},
+            ],
+          },
+        ],
+      }),
+    );
+    await pumpEventQueue();
+    final reply = (events[0] as MessageCreated).message.reply!;
+    expect((reply.authorId, reply.mentionAuthor), (_me, true));
+    final v2 = (events[1] as MessageCreated).message;
+    expect((v2.isComponentsV2, v2.text), (true, 'Your turn, <@$_me>'));
+    // The offline cache keeps both.
+    final reread = messageFromJson(jsonDecode(jsonEncode(messageToJson(v2))) as Map<String, Object?>);
+    expect(reread.isComponentsV2, isTrue);
+    final replyBack = messageFromJson(
+      jsonDecode(jsonEncode(messageToJson((events[0] as MessageCreated).message))) as Map<String, Object?>,
+    );
+    expect(replyBack.reply!.mentionAuthor, isTrue);
+  });
+
   test('ChatMessage.updatedBy keeps what the event leaves out', () {
     final original = ChatMessage(
       id: '7',

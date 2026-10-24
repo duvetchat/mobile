@@ -88,7 +88,14 @@ class _Bubble extends StatelessWidget {
     final colors = context.theme.colors;
     final tokens = context.duvet;
     final m = entry.message;
-    final mentionsMe = !mine && directory.me != null && mentionedIn(m.content).contains(directory.me);
+    // Mentioning the user, as the desktop has it: the text (a v2 message's
+    // text displays) names them, or it replies to them and mentions them.
+    final mentionsMe =
+        !mine &&
+        directory.me != null &&
+        (mentionedIn(m.text).contains(directory.me) ||
+            (m.reply?.mentionAuthor == true && m.reply?.authorId == directory.me));
+    final textBubble = m.content.isNotEmpty && !isJumboEmoji(m.content);
     final maxWidth = MediaQuery.sizeOf(context).width * 0.75;
     final secondary = DuvetType.caption.copyWith(color: colors.mutedForeground);
     final faded = entry.delivery != _Delivery.sent;
@@ -161,20 +168,30 @@ class _Bubble extends StatelessWidget {
         ),
     ];
 
-    final body = Opacity(
-      opacity: editing ? 0.55 : (faded ? 0.7 : 1),
-      child: Column(
-        crossAxisAlignment: mine ? CrossAxisAlignment.end : CrossAxisAlignment.start,
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          for (final (i, part) in parts.indexed)
-            Padding(
-              padding: EdgeInsets.only(top: i == 0 ? 0 : 4),
-              child: part,
-            ),
-        ],
-      ),
+    Widget content = Column(
+      crossAxisAlignment: mine ? CrossAxisAlignment.end : CrossAxisAlignment.start,
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        for (final (i, part) in parts.indexed)
+          Padding(
+            padding: EdgeInsets.only(top: i == 0 ? 0 : 4),
+            child: part,
+          ),
+      ],
     );
+    // A mention with no text bubble to outline (a bot's components, a
+    // sticker): the outline goes round the whole message.
+    if (mentionsMe && !textBubble) {
+      content = Container(
+        padding: const EdgeInsets.all(4),
+        decoration: BoxDecoration(
+          border: Border.all(color: tokens.accentText, width: 1.5),
+          borderRadius: BorderRadius.circular(DuvetTokens.radiusButton),
+        ),
+        child: content,
+      );
+    }
+    final body = Opacity(opacity: editing ? 0.55 : (faded ? 0.7 : 1), child: content);
     if (lifted) {
       return Transform.scale(scale: 1.02, alignment: mine ? Alignment.centerRight : Alignment.centerLeft, child: body);
     }

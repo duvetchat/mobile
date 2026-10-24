@@ -390,4 +390,68 @@ void main() {
     expect(find.bySemanticsLabel('Spoiler, Video, ending.mp4'), findsOneWidget);
     semantics.dispose();
   });
+
+  group('mentions', () {
+    Finder outlined() => find.byWidgetPredicate(
+      (w) => w is Container && ((w.decoration as BoxDecoration?)?.border as Border?)?.top.width == 1.5,
+    );
+
+    testWidgets('a reply to the user that mentions them is outlined; one sent without the mention isn\'t', (
+      tester,
+    ) async {
+      final repository = await openMaya(tester);
+      MessageReply toMe({required bool mention}) => MessageReply(
+        messageId: 'm2',
+        authorId: _me,
+        authorName: 'Gaby',
+        content: 'Yes, way better than the side panels.',
+        mentionAuthor: mention,
+      );
+      repository.push(
+        'c-maya',
+        MessageCreated(
+          FakeRepository.message('r1', author: _maya, name: 'Maya', text: 'A quiet reply', reply: toMe(mention: false)),
+        ),
+      );
+      repository.push(
+        'c-maya',
+        MessageCreated(
+          FakeRepository.message('r2', author: _maya, name: 'Maya', text: 'A loud reply', reply: toMe(mention: true)),
+        ),
+      );
+      await tester.pumpAndSettle();
+      expect(outlined(), findsOneWidget);
+      expect(find.ancestor(of: find.text('A loud reply'), matching: outlined()), findsOneWidget);
+      semantics.dispose();
+    });
+
+    testWidgets('a v2 message whose text displays mention the user is outlined', (tester) async {
+      final repository = await openGeneral(tester);
+      repository.push(
+        'r-general',
+        MessageCreated(
+          ChatMessage(
+            id: 'v2',
+            authorId: 'u-ballot',
+            authorName: 'Ballot',
+            fromBot: true,
+            content: '',
+            createdAt: DateTime(2026, 10, 23, 9, 5),
+            isComponentsV2: true,
+            components: componentsFromJson([
+              {
+                'type': 17,
+                'components': [
+                  {'type': 10, 'content': 'Your turn, <@$_me>'},
+                ],
+              },
+            ]),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+      expect(find.ancestor(of: find.text('Your turn, @Gaby'), matching: outlined()), findsOneWidget);
+      semantics.dispose();
+    });
+  });
 }

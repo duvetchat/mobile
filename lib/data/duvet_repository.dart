@@ -2122,6 +2122,7 @@ class DuvetRepository implements ChatRepository {
     fromWebhook: m.webhookId != null,
     isEphemeral: m.flags & duvet.MessageFlag.ephemeral != 0,
     isLoading: m.flags & duvet.MessageFlag.loading != 0,
+    isComponentsV2: m.flags & duvet.MessageFlag.isComponentsV2 != 0,
     attachments: _attachments(m.attachments),
     stickerUrl: m.stickerAttachmentId == null ? null : attachmentUrl(m.stickerAttachmentId!),
     embeds: _embeds(m.embeds),
@@ -2164,6 +2165,7 @@ class DuvetRepository implements ChatRepository {
       authorId: authorId,
       authorName: ref?.authorName ?? (authorId == null ? null : nameOf(authorId)) ?? 'Someone',
       content: ref?.content ?? '',
+      mentionAuthor: ref?.mentionAuthor ?? false,
     );
   }
 

@@ -142,6 +142,10 @@ class ChatMessage {
   /// A bot's deferred answer, not completed yet (the LOADING flag).
   final bool isLoading;
 
+  /// Its components are all of it (the IS_COMPONENTS_V2 flag), its text their
+  /// text displays.
+  final bool isComponentsV2;
+
   const ChatMessage({
     required this.id,
     required this.authorId,
@@ -165,9 +169,20 @@ class ChatMessage {
     this.fromWebhook = false,
     this.isEphemeral = false,
     this.isLoading = false,
+    this.isComponentsV2 = false,
   });
 
   int get attachmentCount => attachments.length;
+
+  /// The text it shows: its content, or a v2 message's text displays.
+  String get text => isComponentsV2 ? _texts(components).join('\n') : content;
+
+  static Iterable<String> _texts(List<UiComponent> components) sync* {
+    for (final c in components) {
+      if (c.type == ComponentKind.textDisplay && (c.content?.isNotEmpty ?? false)) yield c.content!;
+      yield* _texts(c.children);
+    }
+  }
 
   ChatMessage copyWith({
     String? id,
@@ -200,6 +215,7 @@ class ChatMessage {
     fromWebhook: fromWebhook,
     isEphemeral: isEphemeral,
     isLoading: isLoading,
+    isComponentsV2: isComponentsV2,
   );
 
   /// This message as an edit, or a link preview that came late, leaves it.
@@ -230,6 +246,7 @@ class ChatMessage {
     fromWebhook: fromWebhook,
     isEphemeral: isEphemeral,
     isLoading: update.isLoading,
+    isComponentsV2: update.isComponentsV2,
   );
 
   /// With [userId]'s reaction [emoji] added or taken away.
@@ -260,11 +277,26 @@ class MessageReply {
   final String? authorId;
   final String authorName;
   final String content;
-  const MessageReply({required this.messageId, required this.authorName, required this.content, this.authorId});
+
+  /// The reply mentions the author of the message it answers (the API's
+  /// `mention_author`): it's highlighted for them.
+  final bool mentionAuthor;
+  const MessageReply({
+    required this.messageId,
+    required this.authorName,
+    required this.content,
+    this.authorId,
+    this.mentionAuthor = false,
+  });
 
   /// The same quote, of the message as edited to [content].
-  MessageReply withContent(String content) =>
-      MessageReply(messageId: messageId, authorId: authorId, authorName: authorName, content: content);
+  MessageReply withContent(String content) => MessageReply(
+    messageId: messageId,
+    authorId: authorId,
+    authorName: authorName,
+    content: content,
+    mentionAuthor: mentionAuthor,
+  );
 }
 
 /// One emoji's reactions on a message: a Unicode emoji, or a custom one by
