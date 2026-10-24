@@ -165,7 +165,8 @@ void main() {
 
     await tapLabel(tester, RegExp(r'^# crit'));
     await tapLabel(tester, 'Move up');
-    expect(repository.admin.last, startsWith('room> r-crit'));
+    // The room above's place.
+    expect(repository.admin.last, 'room> r-crit 1');
 
     await tapLabel(tester, RegExp(r'^# crit'));
     await tapLabel(tester, 'Rename');
@@ -191,6 +192,33 @@ void main() {
     await tapLabel(tester, 'Delete');
     expect(repository.admin.last, 'room- r-crit');
     expect(find.text('design-crit'), findsNothing);
+    semantics.dispose();
+  });
+
+  testWidgets('rooms: down goes one past the room below, as the API takes it; into a category and out', (tester) async {
+    final repository = await pumpSettings(
+      tester,
+      setUp: (r) => r.adminRoomList['s-guild'] = [
+        const AdminRoom(id: 'r-general', name: 'general', kind: AdminRoomKind.text),
+        const AdminRoom(id: 'r-crit', name: 'crit', kind: AdminRoomKind.text, position: 1),
+        const AdminRoom(id: 'c-talk', name: 'Talk', kind: AdminRoomKind.category, position: 2),
+        const AdminRoom(id: 'r-lounge', name: 'lounge', kind: AdminRoomKind.voice, parentId: 'c-talk'),
+      ],
+    );
+    await tapLabel(tester, RegExp(r'^Rooms'));
+    await tapLabel(tester, RegExp(r'^# general'));
+    await tapLabel(tester, 'Move down');
+    expect(repository.admin.last, 'room> r-general 2');
+
+    await tapLabel(tester, RegExp(r'^# crit'));
+    await tapLabel(tester, RegExp(r'^Category, No category'));
+    await tapLabel(tester, 'Talk');
+    expect(repository.admin.last, 'room^ r-crit c-talk');
+
+    await tapLabel(tester, RegExp(r'^# crit'));
+    await tapLabel(tester, RegExp(r'^Category, Talk'));
+    await tapLabel(tester, 'No category');
+    expect(repository.admin.last, 'room^ r-crit none');
     semantics.dispose();
   });
 

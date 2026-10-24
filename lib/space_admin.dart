@@ -555,6 +555,8 @@ class _RoomsAdminPageState extends State<RoomsAdminPage> {
   Future<void> _options(AdminRoom room, List<AdminRoom> siblings) async {
     final i = siblings.indexOf(room);
     final label = room.kind == AdminRoomKind.category ? room.name : '#${room.name}';
+    final categories = _all.where((r) => r.kind == AdminRoomKind.category).toList();
+    final category = categories.where((c) => c.id == room.parentId).firstOrNull;
     final picked = await showGlassSheet<String>(
       context,
       label: label,
@@ -570,6 +572,14 @@ class _RoomsAdminPageState extends State<RoomsAdminPage> {
               icon: FLucideIcons.arrowDown,
               label: 'Move down',
               onPressed: () => Navigator.of(context).pop('down'),
+            ),
+          // Categories don't nest.
+          if (room.kind != AdminRoomKind.category && categories.isNotEmpty)
+            GlassRow(
+              icon: FLucideIcons.folder,
+              label: 'Category',
+              detail: category?.name ?? 'No category',
+              onPressed: () => Navigator.of(context).pop('category'),
             ),
           if (room.kind != AdminRoomKind.category)
             GlassRow(
@@ -594,9 +604,44 @@ class _RoomsAdminPageState extends State<RoomsAdminPage> {
         final got = await askName<void>(context, title: 'Rename $label', initial: room.name);
         if (got == null || !mounted) return;
         await _try(context, 'Couldn’t rename $label', () => repository.renameRoom(id, room.id, got.$1));
-      case 'up' || 'down':
-        final other = siblings[picked == 'up' ? i - 1 : i + 1];
-        await _try(context, 'Couldn’t move $label', () => repository.moveRoom(id, room.id, other.position));
+      // Where the API inserts it, counted before it leaves its place: the
+      // room above's, or one past the room below's.
+      case 'up':
+        await _try(context, 'Couldn’t move $label', () => repository.moveRoom(id, room.id, siblings[i - 1].position));
+      case 'down':
+        await _try(
+          context,
+          'Couldn’t move $label',
+          () => repository.moveRoom(id, room.id, siblings[i + 1].position + 1),
+        );
+      case 'category':
+        final into = await showGlassSheet<String>(
+          context,
+          label: 'Put $label in',
+          builder: (context, scroll) => ListView(
+            controller: scroll,
+            children: [
+              SheetTitle(title: 'Put $label in'),
+              GlassRow(
+                label: 'No category',
+                selected: category == null,
+                onPressed: () => Navigator.of(context).pop(''),
+              ),
+              for (final c in categories)
+                GlassRow(
+                  label: c.name,
+                  selected: c.id == category?.id,
+                  onPressed: () => Navigator.of(context).pop(c.id),
+                ),
+            ],
+          ),
+        );
+        if (into == null || into == (category?.id ?? '') || !mounted) return;
+        await _try(
+          context,
+          'Couldn’t move $label',
+          () => repository.setRoomCategory(id, room.id, into.isEmpty ? null : into),
+        );
       case 'perms':
         await Navigator.of(context).push(
           MaterialPageRoute<void>(
@@ -619,42 +664,49 @@ class _RoomsAdminPageState extends State<RoomsAdminPage> {
   }
 
   @override
-  Widget build(BuildContext context) {
-    final colors = context.theme.colors;
-    final all = _all;
-    final categories = all.where((r) => r.kind == AdminRoomKind.category).toList();
-    final loose = all.where((r) => r.kind != AdminRoomKind.category && r.parentId == null).toList();
-    Widget roomRow(AdminRoom r, List<AdminRoom> siblings) => ListRow(
-      title: r.name,
-      hash: r.kind == AdminRoomKind.text,
-      leading: r.kind == AdminRoomKind.voice
-          ? ExcludeSemantics(child: Icon(FLucideIcons.volume2, size: 20, color: colors.mutedForeground))
-          : null,
-      detail: r.kind == AdminRoomKind.voice ? 'Voice room. Double tap for options' : 'Double tap for options',
-      onTap: () => _options(r, siblings),
-    );
-    return AdminPage(
-      title: 'Rooms',
-      actions: [IconAction(icon: FLucideIcons.plus, label: 'New room', onPressed: _create)],
-      children: [
-        for (final r in loose) roomRow(r, loose),
-        for (final c in categories) ...[
-          Semantics(
-            container: true,
-            button: true,
-            label: 'Category ${c.name}',
-            hint: 'Double tap for options',
-            excludeSemantics: true,
-            onTap: () => _options(c, categories),
-            child: GestureDetector(onTap: () => _options(c, categories), child: Overline(c.name)),
-          ),
-          for (final r in all.where((r) => r.parentId == c.id && r.kind != AdminRoomKind.category).toList())
-            roomRow(r, all.where((o) => o.parentId == c.id && o.kind != AdminRoomKind.category).toList()),
+  Widget build(BuildContext context) => ValueListenableBuilder(
+    // Moves and deletions elsewhere (ROOM_REORDER) show as they come.
+    valueListenable: context.repository.spaces,
+    builder: (context, _, _) {
+      final colors = context.theme.colors;
+      final all = _all;
+      final categories = all.where((r) => r.kind == AdminRoomKind.category).toList();
+      final categoryIds = {for (final c in categories) c.id};
+      // As the Space's list has them: a room whose category isn't listed is
+      // outside any.
+      final loose = all.where((r) => r.kind != AdminRoomKind.category && !categoryIds.contains(r.parentId)).toList();
+      Widget roomRow(AdminRoom r, List<AdminRoom> siblings) => ListRow(
+        title: r.name,
+        hash: r.kind == AdminRoomKind.text,
+        leading: r.kind == AdminRoomKind.voice
+            ? ExcludeSemantics(child: Icon(FLucideIcons.volume2, size: 20, color: colors.mutedForeground))
+            : null,
+        detail: r.kind == AdminRoomKind.voice ? 'Voice room. Double tap for options' : 'Double tap for options',
+        onTap: () => _options(r, siblings),
+      );
+      return AdminPage(
+        title: 'Rooms',
+        actions: [IconAction(icon: FLucideIcons.plus, label: 'New room', onPressed: _create)],
+        children: [
+          for (final r in loose) roomRow(r, loose),
+          for (final c in categories) ...[
+            Semantics(
+              container: true,
+              button: true,
+              label: 'Category ${c.name}',
+              hint: 'Double tap for options',
+              excludeSemantics: true,
+              onTap: () => _options(c, categories),
+              child: GestureDetector(onTap: () => _options(c, categories), child: Overline(c.name)),
+            ),
+            for (final r in all.where((r) => r.parentId == c.id && r.kind != AdminRoomKind.category).toList())
+              roomRow(r, all.where((o) => o.parentId == c.id && o.kind != AdminRoomKind.category).toList()),
+          ],
+          if (all.isEmpty) const ListNote('No rooms yet'),
         ],
-        if (all.isEmpty) const ListNote('No rooms yet'),
-      ],
-    );
-  }
+      );
+    },
+  );
 }
 
 /// What each role may do in one room: allowed, denied, or as the role says.

@@ -382,5 +382,69 @@ void main() {
       });
       expect(repository.adminRooms('s-1').map((r) => r.parentId), [null, null, null]);
     });
+
+    test('ROOM_REORDER moves every room it lists, into or out of categories', () async {
+      await signIn();
+      repository.handleEvent(_event('SPACE_CREATE', guild()));
+      // Someone moved #lounge to the top, and #general into Talk, first.
+      repository.handleEvent(
+        _event('ROOM_REORDER', {
+          'rooms': [
+            _room('r-lounge', type: 2),
+            _room('c-talk', type: 3, position: 1),
+            _room('r-general', parent: 'c-talk'),
+            _room('r-crit', position: 1, parent: 'c-talk'),
+          ],
+        }),
+      );
+      expect(sections(), {
+        null: ['r-lounge'],
+        'c-talk': ['r-general', 'r-crit'],
+      });
+    });
+
+    // The rooms' PATCH, answering the room as the API would.
+    void patches() => routes[('PATCH', '/api/spaces/s-1/rooms/r-general')] = (request) {
+      final body = jsonDecode(request.body) as Map<String, dynamic>;
+      return {..._room('r-general'), 'parent_id': body['parent_id'], 'position': body['position'] ?? 0};
+    };
+    Map<String, dynamic> sent() => jsonDecode(requests.last.body) as Map<String, dynamic>;
+
+    test('a room moves into a category first, as the desktop drops one in', () async {
+      await signIn();
+      repository.handleEvent(_event('SPACE_CREATE', guild()));
+      patches();
+      await repository.setRoomCategory('s-1', 'r-general', 'c-talk');
+      expect(requests.last.method, 'PATCH');
+      expect(sent(), {'parent_id': 'c-talk', 'position': 0});
+    });
+
+    test('a room leaves its category for the end of the rooms outside any', () async {
+      await signIn();
+      repository.handleEvent(
+        _event(
+          'SPACE_CREATE',
+          _space(
+            rooms: {
+              'c-talk': _room('c-talk', type: 3),
+              'r-general': _room('r-general', parent: 'c-talk'),
+              'r-news': _room('r-news', position: 4),
+              'r-rules': _room('r-rules', position: 2),
+            },
+          ),
+        ),
+      );
+      patches();
+      await repository.setRoomCategory('s-1', 'r-general', null);
+      expect(sent(), {'parent_id': null, 'position': 5});
+    });
+
+    test('moving a room sends the position as the API takes it', () async {
+      await signIn();
+      repository.handleEvent(_event('SPACE_CREATE', guild()));
+      patches();
+      await repository.moveRoom('s-1', 'r-general', 2);
+      expect(sent(), {'position': 2});
+    });
   });
 }

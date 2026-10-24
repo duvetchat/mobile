@@ -453,6 +453,15 @@ class FakeRepository implements ChatRepository {
   }
 
   @override
+  Future<void> setRoomCategory(String spaceId, String roomId, String? categoryId) async {
+    admin.add('room^ $roomId ${categoryId ?? 'none'}');
+    final rooms = adminRooms(spaceId);
+    final i = rooms.indexWhere((r) => r.id == roomId);
+    final r = rooms[i];
+    rooms[i] = AdminRoom(id: r.id, name: r.name, kind: r.kind, parentId: categoryId, position: r.position);
+  }
+
+  @override
   List<RoomOverwrite> overwrites(String spaceId, String roomId) => [...?overwriteList[roomId]];
 
   @override

@@ -435,6 +435,17 @@ class DuvetRepository implements ChatRepository {
           known.rooms[data.id] = data;
           _publishSpaces();
         }
+      // Every room of a Space after one moved: their places, as the desktop
+      // takes them. An UnknownEvent too, for older code: matched before any.
+      case duvet.RoomReorderedEvent(:final data):
+        for (final moved in data.rooms) {
+          for (final (space: _, :rooms) in _spaces.values) {
+            if (rooms[moved.id] case final r?) {
+              rooms[moved.id] = _placed(r, parentId: moved.parentId, position: moved.position);
+            }
+          }
+        }
+        _publishSpaces();
       case duvet.RoleCreatedEvent(:final data) || duvet.RoleUpdatedEvent(:final data):
         (_roles[data.spaceId] ??= {})[data.id] = data;
         _publishSpaces();
@@ -1741,6 +1752,24 @@ class DuvetRepository implements ChatRepository {
   @override
   Future<void> moveRoom(String spaceId, String roomId, int position) async {
     final room = await _call((api) => api.updateRoom(spaceId, roomId, position: position));
+    // The rooms it moved past follow in ROOM_REORDER.
+    _spaces[spaceId]?.rooms[room.id] = room;
+    _publishSpaces();
+  }
+
+  @override
+  Future<void> setRoomCategory(String spaceId, String roomId, String? categoryId) async {
+    // Out of a category: after the rooms outside any (the categories, which
+    // share their positions, are listed apart).
+    final loose = [
+      for (final r in _spaces[spaceId]?.rooms.values ?? const <duvet.GatewayRoom>[])
+        if (r.parentId == null && r.type != duvet.RoomType.category && r.id != roomId) r.position,
+    ];
+    final position = categoryId != null ? 0 : loose.fold(-1, (a, b) => a > b ? a : b) + 1;
+    final room = await _call(
+      (api) =>
+          api.updateRoom(spaceId, roomId, parentId: categoryId, clearParent: categoryId == null, position: position),
+    );
     _spaces[spaceId]?.rooms[room.id] = room;
     _publishSpaces();
   }
