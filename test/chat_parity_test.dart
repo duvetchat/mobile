@@ -454,4 +454,80 @@ void main() {
       semantics.dispose();
     });
   });
+
+  group('reading', () {
+    // Enough of Maya's messages to scroll.
+    void longChat(_Fake r) => r.history['c-maya'] = [
+      for (var i = 0; i < 40; i++)
+        FakeRepository.message('h$i', author: _maya, name: 'Maya', text: 'Line $i', at: DateTime(2026, 10, 23, 9, i)),
+    ];
+    ChatMessage later(String id, String text) =>
+        FakeRepository.message(id, author: _maya, name: 'Maya', text: text, at: DateTime(2026, 10, 23, 10));
+    final list = find.byWidgetPredicate((w) => w is ListView && w.reverse);
+
+    testWidgets('a new message is read at the bottom, not while the reader is further up', (tester) async {
+      final repository = await openMaya(tester, setUp: longChat);
+      // Opening the chat reads it.
+      expect(repository.reads.last.$2, 'h39');
+      repository.push('c-maya', MessageCreated(later('n1', 'At the bottom')));
+      await tester.pumpAndSettle();
+      expect(repository.reads.last.$2, 'n1');
+
+      await tester.drag(list, const Offset(0, 600));
+      await tester.pumpAndSettle();
+      repository.push('c-maya', MessageCreated(later('n2', 'While you were up there')));
+      await tester.pumpAndSettle();
+      expect(repository.reads.last.$2, 'n1');
+      expect(repository.unread.value, contains('c-maya'));
+
+      await tester.drag(list, const Offset(0, -3000));
+      await tester.pumpAndSettle();
+      expect(repository.reads.last.$2, 'n2');
+      expect(repository.unread.value, isNot(contains('c-maya')));
+      semantics.dispose();
+    });
+
+    testWidgets('nor while the app is in the background: when it comes back', (tester) async {
+      final repository = await openMaya(tester, setUp: longChat);
+      for (final state in [AppLifecycleState.inactive, AppLifecycleState.hidden, AppLifecycleState.paused]) {
+        tester.binding.handleAppLifecycleStateChanged(state);
+      }
+      repository.push('c-maya', MessageCreated(later('n1', 'While the phone was locked')));
+      await tester.pumpAndSettle();
+      expect(repository.reads.last.$2, 'h39');
+
+      for (final state in [AppLifecycleState.hidden, AppLifecycleState.inactive, AppLifecycleState.resumed]) {
+        tester.binding.handleAppLifecycleStateChanged(state);
+      }
+      await tester.pumpAndSettle();
+      expect(repository.reads.last.$2, 'n1');
+      semantics.dispose();
+    });
+
+    testWidgets('a thread reads nothing, nor the chat under it: that one does once back on top', (tester) async {
+      final repository = await openGeneral(tester, setUp: (r) => r.threads['m3'] = [r.history['r-general']!.single]);
+      await longPress(tester, 'Pushed the new type ramp');
+      await tapLabel(tester, 'View thread');
+      final reads = repository.reads.length;
+      repository.push(
+        'r-general',
+        MessageCreated(
+          FakeRepository.message(
+            't1',
+            author: _maya,
+            name: 'Maya',
+            text: 'Looks great',
+            reply: const MessageReply(messageId: 'm3', authorName: 'Leo', content: 'Pushed the new type ramp'),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+      expect(find.text('Looks great'), findsOneWidget);
+      expect(repository.reads.length, reads);
+
+      await tapLabel(tester, 'Back');
+      expect(repository.reads.last.$2, 't1');
+      semantics.dispose();
+    });
+  });
 }

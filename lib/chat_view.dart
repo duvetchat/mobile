@@ -146,17 +146,33 @@ class _ChatViewState extends State<ChatView> {
   final _keys = <String, GlobalKey>{};
   String? _flash;
 
+  // New messages are read where the reader sees them, as the desktop acks
+  // them: at the bottom of the list, with the app in front and this chat on
+  // top. The newest one read from here is acked once.
+  bool _atBottom = true;
+  bool _onTop = true;
+  String? _acked;
+  late final AppLifecycleListener _lifecycle;
+
   @override
   void initState() {
     super.initState();
     EmojiCatalog.load().then((c) {
       if (mounted) setState(() => _catalog = c);
     }, onError: (Object e) => debugPrint('emoji: $e'));
+    _lifecycle = AppLifecycleListener(onResume: _readIfSeen);
   }
 
   @override
   void didChangeDependencies() {
     super.didChangeDependencies();
+    // Back on top (a thread or a chat opened over this one was closed): what
+    // came meanwhile is read, at the bottom, once this build is done.
+    final onTop = ModalRoute.of(context)?.isCurrent ?? true;
+    if (onTop != _onTop) {
+      _onTop = onTop;
+      if (onTop) WidgetsBinding.instance.addPostFrameCallback((_) => _readIfSeen());
+    }
     if (_events != null) return;
     _repository = context.repository;
     // Listen before loading, so nothing sent meanwhile is missed.
@@ -184,6 +200,7 @@ class _ChatViewState extends State<ChatView> {
     for (final c in _cancels.values) {
       if (!c.isCompleted) c.complete();
     }
+    _lifecycle.dispose();
     _events?.cancel();
     _typingSub?.cancel();
     _resumedSub?.cancel();
@@ -377,21 +394,44 @@ class _ChatViewState extends State<ChatView> {
           _upsert(m);
         }
       });
-      _markRead();
+      _readIfSeen();
     } catch (e) {
       debugPrint('catch up: $e');
     }
   }
 
-  // The list is reversed: its end is the top, the oldest messages.
+  // The list is reversed: its end is the top, the oldest messages, and its
+  // start the bottom, within 50 points of which (as on the desktop) the
+  // newest are in view.
   void _onScroll() {
-    if (_scroll.position.extentAfter < 400) _loadOlder();
+    final position = _scroll.position;
+    if (position.extentAfter < 400) _loadOlder();
+    final atBottom = position.pixels <= 50;
+    if (atBottom == _atBottom) return;
+    _atBottom = atBottom;
+    if (atBottom) _readIfSeen();
   }
 
+  /// Reads the chat up to its newest message: opening it does, wherever it
+  /// opens, and new messages do when seen ([_readIfSeen]).
   void _markRead() {
     final newest = _history.lastOrNull;
-    if (newest != null) _repository.markRead(widget.target, newest.id);
+    if (newest == null || newest.id == _acked) return;
+    _acked = newest.id;
+    _repository.markRead(widget.target, newest.id);
   }
+
+  /// Reads what came if the reader sees it: at the bottom of the chat (not a
+  /// thread), with the app in front and nothing opened over the chat.
+  void _readIfSeen() {
+    if (!mounted || widget.threadOf != null || !_atBottom || !_onTop || !_inFront) return;
+    _markRead();
+  }
+
+  static bool get _inFront => switch (WidgetsBinding.instance.lifecycleState) {
+    null || AppLifecycleState.resumed || AppLifecycleState.inactive => true,
+    _ => false,
+  };
 
   void _onEvent(MessageEvent event) {
     if (event case ReactionChanged(:final messageId) when !_entries.any((e) => e.message.id == messageId)) return;
@@ -431,7 +471,7 @@ class _ChatViewState extends State<ChatView> {
           }
       }
     });
-    if (event is MessageCreated) _markRead();
+    if (event is MessageCreated) _readIfSeen();
   }
 
   /// An edit, or a link preview that came late, merged into the message (see
