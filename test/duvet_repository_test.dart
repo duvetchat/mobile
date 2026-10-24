@@ -186,6 +186,16 @@ void main() {
         ],
         ('GET', '/api/users/@me/friends/requests/sent') => <Object>[],
         ('GET', '/api/rooms/r-general/messages') => [roomNewest],
+        ('GET', '/api/spaces/s-1/members') => [
+          {
+            'id': 'm-maya',
+            'space_id': 's-1',
+            'user_id': _maya,
+            'created_at': _at,
+            'updated_at': _at,
+            'user': _user(_maya, 'maya', alias: 'Maya'),
+          },
+        ],
         ('POST', '/api/spaces') => {
           'space': {'id': 's-new', 'name': 'Testing lair', 'owner_id': _me, 'created_at': _at, 'updated_at': _at},
           for (final (key, id, type, name) in [
@@ -245,6 +255,47 @@ void main() {
     expect(maya.bannerUrl, 'https://api.duvet.chat/attachments/$_banner');
     final gaby = members.firstWhere((m) => m.userId == _me);
     expect((gaby.bio, gaby.bannerUrl), (null, null));
+  });
+
+  test('someone else\'s profile change shows wherever they do', () async {
+    const avatar = '00000000-0000-4000-8000-0000000000cc';
+    const general = RoomTarget(spaceId: 's-1', roomId: 'r-general');
+    await repository.logIn('gaby@duvet.chat', 'secret');
+    repository.handleEvent(_event('READY', {'user': _user(_me, 'gaby'), 'sessionToken': 'ws'}));
+    await pumpEventQueue();
+    await repository.members(general);
+    expect(repository.conversations.value.single.title, 'Maya');
+
+    repository.handleEvent(
+      _event('USER_UPDATE', {
+        'id': _maya,
+        'username': 'maya',
+        'alias': 'Maya O.',
+        'avatar': avatar,
+        'banner': _banner,
+        'custom': 'Night owl',
+      }),
+    );
+    final dm = repository.conversations.value.single;
+    expect((dm.title, dm.avatarUrl), ('Maya O.', 'https://api.duvet.chat/attachments/$avatar'));
+    expect(repository.nameOf(_maya), 'Maya O.');
+    final inDm = (await repository.members(const ConversationTarget('c-1'))).firstWhere((m) => m.userId == _maya);
+    expect(
+      (inDm.displayName, inDm.bio, inDm.bannerUrl),
+      ('Maya O.', 'Night owl', 'https://api.duvet.chat/attachments/$_banner'),
+    );
+    final inSpace = (await repository.members(general)).single;
+    expect(
+      (inSpace.displayName, inSpace.avatarUrl, inSpace.bio),
+      ('Maya O.', 'https://api.duvet.chat/attachments/$avatar', 'Night owl'),
+    );
+    expect([for (final f in repository.friends.value.friends) f.displayName], ['leo', 'Maya O.']);
+
+    // An API from before bios leaves the bio out: the one known stays.
+    repository.handleEvent(_event('USER_UPDATE', {'id': _maya, 'username': 'maya', 'alias': 'Maya'}));
+    final again = (await repository.members(const ConversationTarget('c-1'))).firstWhere((m) => m.userId == _maya);
+    expect((again.displayName, again.bio, again.avatarUrl), ('Maya', 'Night owl', null));
+    expect(repository.conversations.value.single.title, 'Maya');
   });
 
   test('the friends list gives friends their presence, where the gateway hasn\'t told it', () async {

@@ -713,10 +713,13 @@ class DuvetRepository implements ChatRepository {
           duvet.ConversationMemberRemovedEvent():
         unawaited(refreshConversations().catchError((_) {}));
 
-      case duvet.UserUpdatedEvent(:final data) when data.id == me:
-        _call((api) => api.me()).then((me) {
-          _setProfile(me);
-        }, onError: (_) {});
+      case duvet.UserUpdatedEvent(:final data):
+        _userUpdated(data);
+        if (data.id == me) {
+          _call((api) => api.me()).then((me) {
+            _setProfile(me);
+          }, onError: (_) {});
+        }
 
       default:
     }
@@ -1070,25 +1073,101 @@ class DuvetRepository implements ChatRepository {
     for (final m in members) {
       _names[m.userId] = m.displayName;
     }
+    return _titled(
+      ConversationSummary(
+        id: c.id,
+        title: '',
+        isGroup: c.type == duvet.ConversationType.group,
+        memberCount: c.members.length,
+        updatedAt: c.updatedAt.toLocal(),
+        ownerId: c.ownerId,
+        name: c.name?.isNotEmpty == true ? c.name : null,
+      ),
+      members,
+      me,
+    );
+  }
+
+  // [c] as its members show it: a DM by the other person's name and avatar, a
+  // group without a name of its own by everyone else's names.
+  ConversationSummary _titled(ConversationSummary c, List<Member> members, String? me) {
     final others = [
-      for (final m in c.members)
-        if (m.userId != me && m.user != null) m.user!,
+      for (final m in members)
+        if (m.userId != me) m,
     ];
-    String name(duvet.ConversationUser u) => u.alias?.isNotEmpty == true ? u.alias! : u.username;
-    final isGroup = c.type == duvet.ConversationType.group;
     return ConversationSummary(
       id: c.id,
-      title: isGroup
-          ? (c.name?.isNotEmpty == true ? c.name! : (others.isEmpty ? 'Group' : others.map(name).join(', ')))
-          : (others.isEmpty ? 'Direct message' : name(others.first)),
-      isGroup: isGroup,
-      avatarUrl: isGroup || others.isEmpty ? null : avatarUrl(others.first.avatar),
-      otherUserId: isGroup ? null : others.firstOrNull?.id,
-      memberCount: c.members.length,
-      updatedAt: c.updatedAt.toLocal(),
+      title: c.isGroup
+          ? (c.name ?? (others.isEmpty ? 'Group' : others.map((m) => m.displayName).join(', ')))
+          : (others.isEmpty ? 'Direct message' : others.first.displayName),
+      isGroup: c.isGroup,
+      avatarUrl: c.isGroup ? null : others.firstOrNull?.avatarUrl,
+      otherUserId: c.isGroup ? null : others.firstOrNull?.userId,
+      memberCount: c.memberCount,
+      updatedAt: c.updatedAt,
       ownerId: c.ownerId,
-      name: c.name?.isNotEmpty == true ? c.name : null,
+      name: c.name,
     );
+  }
+
+  // Someone changed their profile: every list that shows them takes it, as
+  // the desktop's do, and the conversations they're in are named again.
+  // (Members' own names in a Space can't be set: a Space's list shows the
+  // user's.)
+  void _userUpdated(duvet.UserUpdateEvent u) {
+    Member updated(Member m) => Member(
+      userId: m.userId,
+      username: u.username,
+      alias: u.alias,
+      avatarUrl: avatarUrl(u.avatar),
+      isBot: m.isBot,
+      // An API from before bios leaves it out: the one known stays.
+      bio: switch (u.custom) {
+        null => m.bio,
+        final bio => bio.trim().isEmpty ? null : bio,
+      },
+      bannerUrl: avatarUrl(u.banner),
+    );
+    // In place: [members] answers these very lists.
+    bool patch(List<Member> list) {
+      var found = false;
+      for (var i = 0; i < list.length; i++) {
+        if (list[i].userId != u.id) continue;
+        list[i] = updated(list[i]);
+        found = true;
+      }
+      return found;
+    }
+
+    _names[u.id] = u.alias?.isNotEmpty == true ? u.alias! : u.username;
+    for (final list in _loadedMembers.values) {
+      patch(list);
+    }
+    final renamed = {
+      for (final MapEntry(key: id, value: list) in _conversationMembers.entries)
+        if (patch(list)) id,
+    };
+    if (renamed.isNotEmpty) {
+      final me = profile.value?.id;
+      conversations.value = [
+        for (final c in conversations.value) renamed.contains(c.id) ? _titled(c, _conversationMembers[c.id]!, me) : c,
+      ];
+      _saveHome();
+    }
+    final f = friends.value;
+    if ([
+      ...f.friends,
+      for (final r in [...f.incoming, ...f.outgoing]) r.person,
+    ].any((m) => m.userId == u.id)) {
+      FriendRequestItem request(FriendRequestItem r) =>
+          r.person.userId == u.id ? FriendRequestItem(id: r.id, person: updated(r.person), at: r.at) : r;
+      friends.value = Friends(
+        friends: [for (final m in f.friends) m.userId == u.id ? updated(m) : m]
+          ..sort((a, b) => a.displayName.toLowerCase().compareTo(b.displayName.toLowerCase())),
+        incoming: [for (final r in f.incoming) request(r)],
+        outgoing: [for (final r in f.outgoing) request(r)],
+      );
+    }
   }
 
   @override
