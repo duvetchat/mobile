@@ -56,14 +56,14 @@ Future<Room?> showChannelSwitcher(BuildContext context, {required Space space, r
       },
     );
 
-/// The chat's pinned messages, each with Jump to message and Unpin. Answers
-/// the one to jump to.
+/// The chat's pinned messages, each with Jump to message, and Unpin for those
+/// who may ([onUnpin] null for the others). Answers the one to jump to.
 Future<ChatMessage?> showPinsSheet(
   BuildContext context, {
   required Future<List<ChatMessage>> pins,
   required String where,
   required MessageDirectory directory,
-  required Future<void> Function(ChatMessage m) onUnpin,
+  required Future<void> Function(ChatMessage m)? onUnpin,
 }) => showGlassSheet<ChatMessage>(
   context,
   label: 'Pinned',
@@ -74,7 +74,7 @@ class _Pins extends StatefulWidget {
   final Future<List<ChatMessage>> pins;
   final String where;
   final MessageDirectory directory;
-  final Future<void> Function(ChatMessage m) onUnpin;
+  final Future<void> Function(ChatMessage m)? onUnpin;
   final ScrollController scroll;
   const _Pins({
     required this.pins,
@@ -148,7 +148,8 @@ class _PinsState extends State<_Pins> {
             Padding(
               padding: const EdgeInsets.only(bottom: 12),
               child: Container(
-                padding: const EdgeInsets.fromLTRB(12, 12, 4, 12),
+                // Unpin's 40pt button keeps its own margin on the right.
+                padding: EdgeInsets.fromLTRB(12, 12, widget.onUnpin == null ? 12 : 4, 12),
                 decoration: BoxDecoration(
                   color: colors.card,
                   borderRadius: BorderRadius.circular(DuvetTokens.radiusButton),
@@ -209,13 +210,14 @@ class _PinsState extends State<_Pins> {
                         ),
                       ),
                     ),
-                    _UnpinButton(
-                      name: m.authorName,
-                      onPressed: () async {
-                        await widget.onUnpin(m);
-                        if (mounted) setState(() => _pins = [...?_pins]..remove(m));
-                      },
-                    ),
+                    if (widget.onUnpin case final onUnpin?)
+                      _UnpinButton(
+                        name: m.authorName,
+                        onPressed: () async {
+                          await onUnpin(m);
+                          if (mounted) setState(() => _pins = [...?_pins]..remove(m));
+                        },
+                      ),
                   ],
                 ),
               ),

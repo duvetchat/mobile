@@ -828,7 +828,13 @@ class _ChatViewState extends State<ChatView> {
   }
 
   Future<void> _confirmDelete(ChatMessage m) async {
-    final confirmed = await _showDeleteSheet(context, message: m, directory: _directory, where: _where);
+    final confirmed = await _showDeleteSheet(
+      context,
+      message: m,
+      mine: m.authorId != null && m.authorId == _me,
+      directory: _directory,
+      where: _where,
+    );
     if (confirmed != true || !mounted) return;
     final i = _entries.indexWhere((e) => e.message.id == m.id);
     if (i < 0) return;
@@ -1190,7 +1196,7 @@ class _ChatViewState extends State<ChatView> {
       pins: _repository.pins(widget.target),
       where: _where,
       directory: _directory,
-      onUnpin: (m) => _setPinned(m, false),
+      onUnpin: _canPin ? (m) => _setPinned(m, false) : null,
     );
     if (picked != null && mounted) await _jumpTo(picked.id);
   }
@@ -1295,6 +1301,8 @@ class _ChatViewState extends State<ChatView> {
     );
     final mine = m.authorId != null && m.authorId == _me;
     final sent = entry.delivery == _Delivery.sent;
+    final canPin = _canPin;
+    final canDelete = mine || _canDeleteOthers;
     final box = anchor.findRenderObject() as RenderBox?;
     if (box == null || !box.attached) return;
     final picked = await _showMessageActions(
@@ -1309,7 +1317,7 @@ class _ChatViewState extends State<ChatView> {
         if (sent && widget.threadOf == null)
           const GlassMenuItem(icon: FLucideIcons.messagesSquare, label: 'View thread', value: _Action.thread),
         if (readable.isNotEmpty) const GlassMenuItem(icon: FLucideIcons.copy, label: 'Copy text', value: _Action.copy),
-        if (sent && !m.isNotice)
+        if (sent && !m.isNotice && canPin)
           m.pinned
               ? const GlassMenuItem(icon: FLucideIcons.pinOff, label: 'Unpin', value: _Action.unpin)
               : const GlassMenuItem(icon: FLucideIcons.pin, label: 'Pin', value: _Action.pin),
@@ -1319,7 +1327,7 @@ class _ChatViewState extends State<ChatView> {
           GlassMenuItem(icon: FLucideIcons.atSign, label: 'Mention ${m.authorName}', value: _Action.mention),
         if (entry.delivery == _Delivery.failed)
           const GlassMenuItem(icon: FLucideIcons.rotateCw, label: 'Send again', value: _Action.retry),
-        if (mine && sent)
+        if (canDelete && sent)
           const GlassMenuItem(icon: FLucideIcons.trash2, label: 'Delete', value: _Action.delete, destructive: true),
         if (entry.delivery == _Delivery.failed)
           const GlassMenuItem(icon: FLucideIcons.trash2, label: 'Delete', value: _Action.discard, destructive: true),
@@ -1358,6 +1366,20 @@ class _ChatViewState extends State<ChatView> {
       case (_Action.react, null):
     }
   }
+
+  /// Pins take PinMessages in a room, as the API has it; every member of a
+  /// conversation pins.
+  bool get _canPin => switch (widget.target) {
+    RoomTarget(:final spaceId, :final roomId) => _repository.canInRoom(spaceId, roomId, Perm.pinMessages),
+    ConversationTarget() => true,
+  };
+
+  /// Someone else's message is deleted with ManageMessages in a room; in a
+  /// conversation, each member deletes only their own.
+  bool get _canDeleteOthers => switch (widget.target) {
+    RoomTarget(:final spaceId, :final roomId) => _repository.canInRoom(spaceId, roomId, Perm.manageMessages),
+    ConversationTarget() => false,
+  };
 
   // ---------------------------------------------------------------------------
   // Bots

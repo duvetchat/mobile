@@ -2,6 +2,7 @@ import 'package:duvet/data/emoji_catalog.dart';
 import 'package:duvet/data/models.dart';
 import 'package:duvet/deep_links.dart';
 import 'package:duvet/main.dart';
+import 'package:duvet/widgets/chrome.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -69,6 +70,17 @@ void main() {
   Future<_Fake> openMaya(WidgetTester tester, {void Function(_Fake r)? setUp}) async {
     final repository = await pumpApp(tester, setUp);
     await tester.tap(find.text('Maya'));
+    await tester.pumpAndSettle();
+    return repository;
+  }
+
+  Future<_Fake> openGeneral(WidgetTester tester, {void Function(_Fake r)? setUp}) async {
+    final repository = await pumpApp(tester, setUp);
+    await tester.tap(find.descendant(of: find.byType(DuvetTabBar), matching: find.text('Spaces')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Design Guild'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('# general'));
     await tester.pumpAndSettle();
     return repository;
   }
@@ -194,6 +206,47 @@ void main() {
       expect(find.text('Yes, much better.'), findsOneWidget);
       expect(find.bySemanticsLabel(RegExp(r'^PDF, panels\.pdf')), findsOneWidget);
       expect(find.bySemanticsLabel('👍 1'), findsOneWidget);
+      semantics.dispose();
+    });
+  });
+
+  group('moderation', () {
+    testWidgets('in a room, ManageMessages deletes someone else\'s message, and only it does', (tester) async {
+      final repository = await openGeneral(tester, setUp: (r) => r.deny(Perm.manageMessages));
+      await longPress(tester, 'Pushed the new type ramp');
+      expect(find.bySemanticsLabel('Reply'), findsWidgets);
+      expect(find.bySemanticsLabel('Delete'), findsNothing);
+      await tester.tapAt(const Offset(10, 10));
+      await tester.pumpAndSettle();
+
+      repository.denied.clear();
+      await longPress(tester, 'Pushed the new type ramp');
+      await tapLabel(tester, 'Delete');
+      expect(find.text('Delete this message?'), findsOneWidget);
+      await tapLabel(tester, 'Delete for everyone');
+      expect(repository.deletes, ['m3']);
+      expect(find.text('Pushed the new type ramp'), findsNothing);
+      semantics.dispose();
+    });
+
+    testWidgets('without PinMessages, a room offers neither Pin nor Unpin', (tester) async {
+      await openGeneral(
+        tester,
+        setUp: (r) {
+          r.deny(Perm.pinMessages);
+          r.pinned['r-general'] = [r.history['r-general']!.single];
+        },
+      );
+      await longPress(tester, 'Pushed the new type ramp');
+      expect(find.bySemanticsLabel('Reply'), findsWidgets);
+      expect(find.bySemanticsLabel('Pin'), findsNothing);
+      await tester.tapAt(const Offset(10, 10));
+      await tester.pumpAndSettle();
+
+      await tapLabel(tester, 'More');
+      await tapLabel(tester, 'Pinned messages');
+      expect(find.text('1 message in #general'), findsOneWidget);
+      expect(find.bySemanticsLabel('Unpin Leo’s message'), findsNothing);
       semantics.dispose();
     });
   });
