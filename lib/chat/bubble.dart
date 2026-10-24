@@ -191,13 +191,13 @@ class _Bubble extends StatelessWidget {
             onTap: onOpenAuthor,
             child: Padding(
               padding: const EdgeInsets.only(left: 4, bottom: 4),
-              child: m.fromBot
+              child: m.fromBot || m.fromWebhook
                   ? Row(
                       mainAxisSize: MainAxisSize.min,
                       children: [
                         Flexible(child: Text(m.authorName, style: secondary)),
                         const SizedBox(width: 6),
-                        const BotTag(),
+                        BotTag(webhook: m.fromWebhook),
                       ],
                     )
                   : Text(m.authorName, style: secondary),
@@ -273,7 +273,12 @@ class _Bubble extends StatelessWidget {
                       child: Semantics(
                         container: true,
                         button: true,
-                        label: '${m.authorName}${m.fromBot ? ', bot,' : ''}’s profile',
+                        label:
+                            '${m.authorName}${m.fromWebhook
+                                ? ', webhook,'
+                                : m.fromBot
+                                ? ', bot,'
+                                : ''}’s profile',
                         excludeSemantics: true,
                         onTap: onOpenAuthor,
                         child: GestureDetector(

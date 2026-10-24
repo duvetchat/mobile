@@ -2019,6 +2019,7 @@ class DuvetRepository implements ChatRepository {
     components: componentsFromJson(m.components),
     rawComponents: m.components ?? const [],
     fromBot: m.user?.isBot ?? false,
+    fromWebhook: m.webhookId != null,
     attachments: _attachments(m.attachments),
     stickerUrl: m.stickerAttachmentId == null ? null : attachmentUrl(m.stickerAttachmentId!),
     embeds: _embeds(m.embeds),
