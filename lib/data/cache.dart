@@ -160,6 +160,7 @@ Map<String, Object?> profileToJson(Profile p) => {
   'bannerUrl': p.bannerUrl,
   'bio': p.bio,
   'emailVerified': p.emailVerified,
+  'status': p.status.name,
 };
 
 Profile profileFromJson(Map<String, Object?> j) => Profile(
@@ -170,6 +171,7 @@ Profile profileFromJson(Map<String, Object?> j) => Profile(
   bannerUrl: j['bannerUrl'] as String?,
   bio: j['bio'] as String?,
   emailVerified: j['emailVerified'] as bool? ?? true,
+  status: j['status'] == Presence.doNotDisturb.name ? Presence.doNotDisturb : Presence.online,
 );
 
 Map<String, Object?> conversationToJson(ConversationSummary c) => {

@@ -3,6 +3,7 @@ import 'dart:io';
 import 'dart:math' as math;
 import 'dart:ui' as ui;
 
+import 'package:duvet_client/duvet.dart' show maxBioLength;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:forui/forui.dart';
@@ -646,19 +647,32 @@ class EditProfilePage extends StatefulWidget {
 
 class _EditProfilePageState extends State<EditProfilePage> {
   late final TextEditingController _alias;
+  late final TextEditingController _bio;
+  bool _fieldsMade = false;
   bool _saving = false;
   String? _avatar;
   String? _banner;
 
+  /// The bio's length as the API counts it: code points, so an emoji is one.
+  int get _bioLength => _bio.text.trim().runes.length;
+  bool get _bioTooLong => _bioLength > maxBioLength;
+
   @override
   void didChangeDependencies() {
     super.didChangeDependencies();
-    _alias = TextEditingController(text: context.repository.profile.value?.alias ?? '');
+    // Once: this runs again whenever the padding the page reads changes, as
+    // when the keyboard opens.
+    if (_fieldsMade) return;
+    _fieldsMade = true;
+    final profile = context.repository.profile.value;
+    _alias = TextEditingController(text: profile?.alias ?? '');
+    _bio = TextEditingController(text: profile?.bio ?? '')..addListener(() => setState(() {}));
   }
 
   @override
   void dispose() {
     _alias.dispose();
+    _bio.dispose();
     super.dispose();
   }
 
@@ -684,12 +698,17 @@ class _EditProfilePageState extends State<EditProfilePage> {
 
   Future<void> _save() async {
     final navigator = Navigator.of(context);
+    final repository = context.repository;
+    // The bio goes only when it changed: left out, it stays.
+    final bio = _bio.text.trim();
+    final changed = bio != (repository.profile.value?.bio ?? '').trim();
     setState(() => _saving = true);
     try {
-      await context.repository.updateProfile(alias: _alias.text);
-      navigator.pop();
-    } catch (_) {
-      if (mounted) _toast(context, 'Couldn’t save your profile');
+      await repository.updateProfile(alias: _alias.text, bio: changed ? bio : null);
+      // Cancelled meanwhile: the page is gone, and the route under it stays.
+      if (mounted) navigator.pop();
+    } catch (e) {
+      if (mounted) _toast(context, e is ActionFailed ? e.message : 'Couldn’t save your profile');
     } finally {
       if (mounted) setState(() => _saving = false);
     }
@@ -808,6 +827,17 @@ class _EditProfilePageState extends State<EditProfilePage> {
                 const SizedBox(height: 8),
                 DuvetTextField(label: 'Display name', controller: _alias, hint: profile.username),
                 const SizedBox(height: 16),
+                // As the desktop's About Me: up to 190 characters, an emoji
+                // counting as one; empty clears it.
+                DuvetTextField(
+                  label: 'About me',
+                  controller: _bio,
+                  hint: 'A few words about you',
+                  maxLines: 4,
+                  helper: '$_bioLength of $maxBioLength characters',
+                  error: _bioTooLong ? 'Too long: $_bioLength of $maxBioLength characters' : null,
+                ),
+                const SizedBox(height: 16),
                 Text(
                   'Username',
                   style: DuvetType.caption.copyWith(color: colors.foreground, fontWeight: FontWeight.w500),
@@ -833,7 +863,7 @@ class _EditProfilePageState extends State<EditProfilePage> {
             child: GlassTopBar(
               title: const Text('Edit profile'),
               leading: TextAction(label: 'Cancel', onPressed: () => Navigator.of(context).maybePop()),
-              actions: [TextAction(label: 'Save', onPressed: _saving ? null : _save)],
+              actions: [TextAction(label: 'Save', onPressed: _saving || _bioTooLong ? null : _save)],
             ),
           ),
         ],
@@ -1315,6 +1345,9 @@ class YouTab extends StatefulWidget {
 class _YouTabState extends State<YouTab> {
   StorageInfo? _storage;
 
+  // The status chosen while the server takes it: shown meanwhile.
+  Presence? _choosing;
+
   @override
   void didChangeDependencies() {
     super.didChangeDependencies();
@@ -1325,6 +1358,20 @@ class _YouTabState extends State<YouTab> {
 
   void _push(Widget page) =>
       Navigator.of(context, rootNavigator: true).push(MaterialPageRoute<void>(builder: (_) => page));
+
+  /// Online or do not disturb; one change at a time.
+  Future<void> _setStatus(Presence status) async {
+    final repository = context.repository;
+    if (_choosing != null || status == repository.profile.value?.status) return;
+    setState(() => _choosing = status);
+    try {
+      await repository.setStatus(status);
+    } catch (e) {
+      if (mounted) _toast(context, e is ActionFailed ? e.message : 'Couldn’t change your status');
+    } finally {
+      if (mounted) setState(() => _choosing = null);
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -1404,6 +1451,14 @@ class _YouTabState extends State<YouTab> {
                           : '${repository.friends.value.incoming.length} waiting',
                     ),
                   ]),
+                  // What others see while you're connected.
+                  const Overline('Status'),
+                  _Segmented<Presence>(
+                    label: 'Status',
+                    value: _choosing ?? profile.status,
+                    options: const {Presence.online: 'Online', Presence.doNotDisturb: 'Do not disturb'},
+                    onChanged: _setStatus,
+                  ),
                   const Overline('Appearance'),
                   _Segmented<ThemeMode>(
                     label: 'Appearance',
@@ -1488,11 +1543,20 @@ class _Segmented<T> extends StatelessWidget {
                           borderRadius: BorderRadius.circular(10),
                           boxShadow: key == value ? tokens.shadowControl : null,
                         ),
-                        child: Text(
-                          text,
-                          style: DuvetType.label.copyWith(
-                            fontSize: 15,
-                            color: key == value ? colors.foreground : colors.mutedForeground,
+                        // One line, shrunk to fit at large text sizes rather
+                        // than cut ("Do not disturb").
+                        child: Padding(
+                          padding: const EdgeInsets.symmetric(horizontal: 6),
+                          child: FittedBox(
+                            fit: BoxFit.scaleDown,
+                            child: Text(
+                              text,
+                              maxLines: 1,
+                              style: DuvetType.label.copyWith(
+                                fontSize: 15,
+                                color: key == value ? colors.foreground : colors.mutedForeground,
+                              ),
+                            ),
                           ),
                         ),
                       ),

@@ -1,5 +1,6 @@
 import 'dart:async';
 
+import 'package:flutter/foundation.dart' show ValueListenable;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:forui/forui.dart';
@@ -230,7 +231,7 @@ class _Waiting extends StatelessWidget {
   }
 }
 
-/// Someone calls: Accept or Decline, full screen, the phone buzzing.
+/// Someone calls: Accept or Decline, full screen, the phone buzzing (not in do not disturb).
 class IncomingCallScreen extends StatefulWidget {
   const IncomingCallScreen({super.key});
 
@@ -240,12 +241,22 @@ class IncomingCallScreen extends StatefulWidget {
 
 class _IncomingCallScreenState extends State<IncomingCallScreen> {
   Timer? _buzz;
+  ValueListenable<Profile?>? _profile;
 
   @override
-  void initState() {
-    super.initState();
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    _profile = context.repository.profile;
+    if (_buzz != null) return;
+    _buzzOnce();
+    _buzz = Timer.periodic(const Duration(milliseconds: 1500), (_) => _buzzOnce());
+  }
+
+  // In do not disturb the call shows without buzzing, as the desktop's doesn't ring (callRings), and a
+  // switch to it mid-ring stops the buzz.
+  void _buzzOnce() {
+    if (_profile?.value?.status == Presence.doNotDisturb) return;
     unawaited(HapticFeedback.heavyImpact());
-    _buzz = Timer.periodic(const Duration(milliseconds: 1500), (_) => unawaited(HapticFeedback.heavyImpact()));
   }
 
   @override

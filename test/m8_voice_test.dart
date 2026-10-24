@@ -2,6 +2,7 @@
 // the bar over the tabs, a DM's call button and banner, and the Calls tab,
 // over a fake gateway and a fake WebRTC.
 import 'package:duvet/data/call_history.dart';
+import 'package:duvet/data/models.dart';
 import 'package:duvet/data/voice.dart';
 import 'package:duvet/data/voice_engine.dart' show PeerState;
 import 'package:duvet/main.dart';
@@ -9,6 +10,7 @@ import 'package:duvet/widgets/chrome.dart';
 import 'package:duvet/widgets/facehash.dart';
 import 'package:duvet_client/duvet.dart' as duvet;
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import 'support/fake_repository.dart';
@@ -301,6 +303,32 @@ void main() {
     // The call screen, Maya and the user in it.
     expect(find.bySemanticsLabel(RegExp('^Call with Maya')), findsOneWidget);
     expect(find.byWidgetPredicate((w) => w is Facehash && w.name == 'Maya'), findsWidgets);
+    await finish(tester, app);
+  });
+
+  testWidgets('in do not disturb an incoming call shows without buzzing', (tester) async {
+    var buzzes = 0;
+    tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(SystemChannels.platform, (call) async {
+      if (call.method == 'HapticFeedback.vibrate') buzzes++;
+      return null;
+    });
+    addTearDown(() => tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(SystemChannels.platform, null));
+    final app = await pumpApp(tester);
+    app.repository.profile.value = FakeRepository.me.withStatus(Presence.doNotDisturb);
+    app.gateway.push(
+      const duvet.CallIncomingPayloadEvent(
+        duvet.CallIncomingEvent(conversationId: 'c-maya', initiatorId: FakeRepository.maya, initiatorName: 'Maya'),
+      ),
+    );
+    await settle(tester);
+    expect(find.text('Incoming call'), findsOneWidget);
+    await tester.pump(const Duration(seconds: 4));
+    expect(buzzes, 0);
+
+    // Back to online while it rings, it buzzes.
+    app.repository.profile.value = FakeRepository.me.withStatus(Presence.online);
+    await tester.pump(const Duration(milliseconds: 1600));
+    expect(buzzes, greaterThan(0));
     await finish(tester, app);
   });
 }

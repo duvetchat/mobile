@@ -330,7 +330,14 @@ class DuvetRepository implements ChatRepository {
     switch (event) {
       case duvet.ReadyEvent(:final data):
         status.value = LiveStatus.online;
-        if (me != null && !presence.value.containsKey(me)) presence.value = {...presence.value, me: Presence.online};
+        // Connected, the user shows the status they chose. A gateway from
+        // before statuses doesn't say: online.
+        if (_chosen(data.user.status) case final chosen?) {
+          _choose(chosen);
+          if (me != null) presence.value = {...presence.value, me: chosen};
+        } else if (me != null && !presence.value.containsKey(me)) {
+          presence.value = {...presence.value, me: Presence.online};
+        }
         unread.value = {...?data.unreadRooms, ...?data.unreadConvs};
         _lastRead.addAll(data.lastReadRooms ?? const {});
         _lastMessage.addAll(data.lastMsgRooms ?? const {});
@@ -392,9 +399,7 @@ class DuvetRepository implements ChatRepository {
           _publishSpaces();
         }
       case duvet.SpaceDeletedEvent(:final data):
-        _spaces.remove(data.id);
-        _spaceMemberIds.remove(data.id);
-        _publishSpaces();
+        _forgetSpace(data.id);
 
       case duvet.RoomCreateEvent(:final data) || duvet.RoomUpdateEvent(:final data):
         if (_spaces[data.spaceId] case final known?) {
@@ -486,6 +491,8 @@ class DuvetRepository implements ChatRepository {
 
       case duvet.UserStatusUpdatedEvent(:final data):
         presence.value = {...presence.value, data.userId: _presence(data.statusId)};
+        // The user's own: the status they chose, on this device or another.
+        if (_chosen(data.statusId) case final chosen? when data.userId == me) _choose(chosen);
         if (_spaceMemberIds.values.any((ids) => ids.contains(data.userId))) _publishSpaces();
       case duvet.SpaceEmojiCreatedEvent(:final data) || duvet.SpaceEmojiUpdatedEvent(:final data):
         _emojis.remove(data.spaceId);
@@ -965,20 +972,37 @@ class DuvetRepository implements ChatRepository {
       await _call((api) => api.deleteSpace(spaceId));
     } on duvet.DuvetApiException catch (e) {
       debugPrint('delete space: $e');
+      final missing = _routeMissing(e);
+      // Gone already, its SPACE_DELETE missed (while offline, say): it goes
+      // from here too.
+      if (e.statusCode == 404 && !missing) _forgetSpace(spaceId);
       throw ActionFailed(switch (e.statusCode) {
+        _ when missing => 'This server can’t delete Spaces yet: it needs the latest API',
         403 => 'Only the Space’s owner can delete it',
-        // The API's own 404 is JSON; a route it doesn't have yet answers plain text.
-        404 || 405 when !(e.body ?? '').trimLeft().startsWith('{') =>
-          'This server can’t delete Spaces yet: it needs the latest API',
         404 => 'This Space is already gone',
         _ => 'Couldn’t delete the Space (${e.statusCode})',
       });
     } on TimeoutException {
       throw const ActionFailed('Duvet didn’t answer. Check your connection and try again.');
     }
-    // SPACE_DELETE follows; it goes from the list at once.
-    _spaces.remove(spaceId);
+    // SPACE_DELETE follows; it goes at once.
+    _forgetSpace(spaceId);
+  }
+
+  /// A route this API doesn't have yet: its own 404s are JSON, and a route it
+  /// lacks answers gin's plain text.
+  static bool _routeMissing(duvet.DuvetApiException e) =>
+      (e.statusCode == 404 || e.statusCode == 405) && !(e.body ?? '').trimLeft().startsWith('{');
+
+  /// Forgets a deleted Space: its card, and its rooms in the Chats list, with
+  /// their unread marks and mentions.
+  void _forgetSpace(String spaceId) {
+    final rooms = {...?_spaces.remove(spaceId)?.rooms.keys, ..._recents.forgetSpace(spaceId)};
     _spaceMemberIds.remove(spaceId);
+    if (unread.value.any(rooms.contains)) unread.value = unread.value.difference(rooms);
+    if (mentions.value.keys.any(rooms.contains)) {
+      mentions.value = {...mentions.value}..removeWhere((id, _) => rooms.contains(id));
+    }
     _publishSpaces();
   }
 
@@ -1170,7 +1194,25 @@ class DuvetRepository implements ChatRepository {
       bannerUrl: avatarUrl(me.banner),
       bio: me.custom.trim().isEmpty ? null : me.custom,
       emailVerified: me.emailVerified,
+      // An answer that doesn't say keeps the status known (READY's, say).
+      status: _chosen(me.status) ?? (profile.value?.id == me.id ? profile.value?.status : null) ?? Presence.online,
     );
+    _saveHome();
+  }
+
+  /// The status a user chose, as the API and the gateway number them: online
+  /// (1) or do not disturb (2). Null for anything else: offline, or not said.
+  static Presence? _chosen(duvet.UserStatus? status) => switch (status) {
+    duvet.UserStatus.online => Presence.online,
+    duvet.UserStatus.dnd => Presence.doNotDisturb,
+    _ => null,
+  };
+
+  /// The user chose [status], here or on another device.
+  void _choose(Presence status) {
+    final p = profile.value;
+    if (p == null || p.status == status) return;
+    profile.value = p.withStatus(status);
     _saveHome();
   }
 
@@ -1227,12 +1269,44 @@ class DuvetRepository implements ChatRepository {
   Future<void> changeEmail(String token, String email) => _anonymous((api) => api.changeEmail(token, email));
 
   @override
-  Future<void> updateProfile({required String alias}) async {
+  Future<void> updateProfile({required String alias, String? bio}) async {
     final trimmed = alias.trim();
+    final about = bio?.trim();
     final me = await _call(
-      (api) => api.updateUser(alias: trimmed.isEmpty ? null : trimmed, clearAlias: trimmed.isEmpty),
+      (api) => api.updateUser(alias: trimmed.isEmpty ? null : trimmed, clearAlias: trimmed.isEmpty, custom: about),
     );
     _setProfile(me);
+    // An API from before bios saves the rest, and answers the bio it had.
+    if (about != null && me.custom != about) {
+      throw const ActionFailed('This server can’t save a bio yet: it needs the latest API');
+    }
+  }
+
+  @override
+  Future<void> setStatus(Presence status) async {
+    final chosen = switch (status) {
+      Presence.online => duvet.UserStatus.online,
+      Presence.doNotDisturb => duvet.UserStatus.dnd,
+      Presence.offline => throw ArgumentError.value(status, 'status', 'offline isn’t a choice'),
+    };
+    final duvet.UserMeResult me;
+    try {
+      me = await _call((api) => api.setStatus(chosen));
+    } on duvet.DuvetApiException catch (e) {
+      debugPrint('status: $e');
+      throw ActionFailed(
+        _routeMissing(e)
+            ? 'This server can’t set a status yet: it needs the latest API'
+            : 'Couldn’t change your status (${e.statusCode})',
+      );
+    } on TimeoutException {
+      throw const ActionFailed('Duvet didn’t answer. Check your connection and try again.');
+    }
+    _setProfile(me);
+    // Shown at once while connected; the gateway's USER_STATUS_UPDATE follows.
+    if (presence.value[me.id] case final shown? when shown != Presence.offline) {
+      presence.value = {...presence.value, me.id: profile.value!.status};
+    }
   }
 
   @override

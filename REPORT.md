@@ -2,14 +2,14 @@
 
 _23 October 2026 · Flutter app in `mobile/`, against `duvet_client` 1.0.1 (local, unpublished) and the Duvet design system (`L1t5M8Kr96KAEGfwD1pjEQ`) with the Feature Layouts canvas (`UYB8DxdUxBCcgauVFZshq2`)._
 
-**In short:** every milestone is built. Messaging, media, navigation and search, people, Spaces and invites, account, bots, Space administration and now voice rooms and calls work, laid out to the design system and covered by widget tests. **M8 (voice and calls) is written and tested against fakes, but hasn't run on a device**: WebRTC can't run here. Three platform tasks remain: push notifications (which calls need to ring in the background), an accessibility pass, Spanish. A debug build runs on the phone against the live server with no crashes. `TODO.md` has the task list; its **Needs you** section lists what needs a server change, a credential, a Mac or the phone.
+**In short:** every milestone is built. Messaging, media, navigation and search, people, Spaces and invites, account (now with the status, online or do not disturb, and the bio), bots, Space administration, and voice rooms and calls work, laid out to the design system and covered by widget tests. **M8 (voice and calls) is written and tested against fakes, but hasn't run on a device**: WebRTC can't run here. The status, bio editing and Delete Space need the server's 23 October round deployed. Three platform tasks remain: push notifications (which calls need to ring in the background), an accessibility pass, Spanish. A debug build runs on the phone against the live server with no crashes. `TODO.md` has the task list; its **Needs you** section lists what needs a server change, a credential, a Mac or the phone.
 
 | | |
 |---|---|
-| Code | 25,546 lines in `lib/` (51 files), 6,017 in `test/` |
-| Tests | 178 widget, unit and golden tests; `flutter analyze` clean. On Windows the 4 goldens fail (glyph edges); the `chat` ones need regenerating on Linux for M8's Call button |
-| Client | `duvet_client`: 397 tests passing (the live ones left out), `dart analyze` clean |
-| TODO | 82 of 89 tasks done (7 open, 3 of them from the device test) |
+| Code | 25,749 lines in `lib/` (51 files), 6,491 in `test/` |
+| Tests | 196 widget, unit and golden tests; `flutter analyze` clean. On Windows the 4 goldens fail (glyph edges); the `chat` ones need regenerating on Linux for M8's Call button |
+| Client | `duvet_client`: 401 tests passing (the live ones left out), `dart analyze` clean |
+| TODO | 85 of 89 tasks done (4 open) |
 | Verified on | an Android 15 phone, debug build, signed in to the live server (before M8) |
 
 ---
@@ -24,8 +24,8 @@ _23 October 2026 · Flutter app in `mobile/`, against `duvet_client` 1.0.1 (loca
 | M4 · Navigation & search | ✅ | Channel Switcher, global and in-chat search, pins, threads, deep links (`duvet://`; `https://duvet.chat` needs server files) |
 | M5 · People | ✅ | profile sheet, friends, new conversation, group DMs, presence from the start |
 | M6 · Spaces & invites | ✅ | join by link or code, invite people, create and leave, unread per Space |
-| M7 · Account | 🟡 | sign up, verify email, forgot and reset password, change email, edit profile (crop), my files, appearance. **Status** and **bio editing** wait on the server |
-| M8 · Voice & calls | 🟡 | voice rooms (who's in, join, mute, deafen, faces talking, sound output), DM and group calls (incoming screen, call screen, Calls tab from this phone's history), rejoining after a gateway restart, Android foreground service, iOS background audio. **Tested against fakes only: not yet on a device** |
+| M7 · Account | ✅ | sign up, verify email, forgot and reset password, change email, edit profile (crop, bio), my files, appearance, status (online or do not disturb). **Status** and **bio editing** work once the server's 23 October round is deployed |
+| M8 · Voice & calls | 🟡 | voice rooms (who's in, join, mute, deafen, faces talking, sound output), DM and group calls (incoming screen, call screen, Calls tab from this phone's history; no buzz in do not disturb), rejoining after a gateway restart, Android foreground service, iOS background audio. **Tested against fakes only: not yet on a device** |
 | M9 · Bots | ✅ | message buttons and selects, slash commands with options, bot modals, bot invite cards; bots drawn as rounded squares with a BOT tag |
 | M10 · Space administration | ✅ | overview, rooms (with per-role overwrites), roles (colors, members, permissions), emojis and stickers, invites, webhooks (URL shown once), storage (view only) |
 | Platform | 🟡 | done: offline cache, connection state, token safety, iOS config, golden tests, CI, release signing config, build settings. Open: push, accessibility pass, Spanish |
@@ -52,7 +52,9 @@ The app handles **all 59 event types** the client parses. M8 added the nine voic
 - **Gateway:** a connection-state stream; the token no longer logged; no reconnect after `destroy()`; `DM_MENTION_CREATE` handled, and mention events carry message and author IDs.
 - **Uploads and interactions:** upload progress and cancel; `useComponent`, `useCommand` and `submitModal`, which keep the bot's reply.
 - **Voice and calls:** `WebRTCController` rewritten to the gateway's real messages (it sent `join_voice`, `call_accept` and other names the gateway ignores), with `VoiceStates` (who's in voice, in version order); the WebRTC events' data as the gateway sends it (the ICE candidate is a JSON string); READY's ICE servers; `VOICE_SESSION_REPLACED`; `connection` (the open socket's number) and `silenceBeforeReady` on the gateway client.
-- **Breaking:** `createSpace` now returns the new Space's ID; the voice API changed (see the CHANGELOG).
+- **Breaking:** `createSpace` now returns a `CreatedSpace`: the new Space and its rooms, which the app shows before the gateway's SPACE_CREATE. The voice API changed too (see the CHANGELOG).
+
+Unreleased, after 1.0.1 (for the server's 23 October round): the bio (`updateUser(custom:)`, `maxBioLength`, USER_UPDATE's `custom`) and the status (`setStatus`, `UserMeResult.status`, READY's `GatewayUser.status`).
 
 ## 3. Design system
 
@@ -75,9 +77,9 @@ All screens and components in the wireframes and the 37 feature layouts are buil
 - **Build and setup:** a debug build (arm64, `chat.duvet`) on an Android 15 phone, signed in to the live server.
 - **Checked:** sign in, Chats, Spaces, Duvet Official's rooms, #github-logs and #general. There were no crashes or Flutter errors, the gateway heartbeat stayed steady, and the debug build used about 460 MB.
 - **What worked:** presence, room snippets, replies, mentions, stickers, custom-emoji reactions and webhook bots all displayed correctly.
-- **Issues found (open in `TODO.md`):**
-  - Link and webhook card titles stop at two lines, hiding GitHub's success or failure.
-  - Stickers, custom-emoji reactions and avatars are blank until they load, with no placeholder.
+- **Issues found (fixed since, not checked on the phone yet):**
+  - Link and webhook card titles stopped at two lines, hiding GitHub's success or failure. They take four now.
+  - Stickers and custom-emoji reactions were blank until they loaded; avatars showed their Facehash. A sticker now shows a `base-sunken` square, a reaction the emoji's name, and an avatar a `base-sunken` circle.
 - **Not reached:** the You tab. Nothing was posted to the server.
 
 
@@ -87,4 +89,5 @@ All screens and components in the wireframes and the 37 feature layouts are buil
 - **Release build:** not built yet; the release keystore is yours to make (see `TODO.md`).
 - **iOS:** configured, never built (needs a Mac).
 - **Sending from the device:** messages, files, voice notes, bot commands and admin changes are tested against the fake repository only.
+- **Status, bio and Delete Space against a server:** they need the API's and the gateway's unmerged branches (`dnd-status`, `space-delete-bio`). They're tested against fakes and mocks of those contracts, which `duvet_client`'s fixtures take from the branches.
 - **CI:** the workflow is written but has never run, since there's no remote here.

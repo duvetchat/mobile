@@ -55,16 +55,36 @@ void main() {
   late DuvetRepository repository;
   late MemoryChatCacheStore cache;
 
+  // What the API in use has: bios and statuses came after the deployed one.
+  late bool apiHasBios;
+  late bool apiHasStatus;
+  late String bio;
+
+  /// What `DELETE /api/spaces/s-1` answers.
+  late http.Response deleteReply;
+
   setUp(() {
     requests = [];
     store = MemorySessionStore();
     recentsStore = MemoryRecentChatsStore();
     cache = MemoryChatCacheStore();
+    apiHasBios = true;
+    apiHasStatus = true;
+    bio = '';
+    deleteReply = http.Response('', 204);
     client = MockClient((request) async {
       requests.add(request);
+      Map<String, dynamic> body() => jsonDecode(request.body) as Map<String, dynamic>;
       final json = switch ((request.method, request.url.path)) {
         ('POST', '/api/auth/login') => {'token': 'access-1', 'session_token': 'refresh-1'},
         ('GET', '/api/users/@me') => {..._user(_me, 'gaby', alias: 'Gaby'), 'email_verified': true},
+        // An API from before bios ignores `custom`, and answers the bio it had.
+        ('PATCH', '/api/users/@me') => {
+          ..._user(_me, 'gaby', alias: body()['alias'] as String?),
+          'custom': bio = apiHasBios ? (body()['custom'] as String? ?? bio).trim() : bio,
+        },
+        ('PUT', '/api/users/@me/status') when apiHasStatus => {..._user(_me, 'gaby'), 'status': body()['status']},
+        ('DELETE', '/api/spaces/s-1') => deleteReply,
         ('GET', '/api/users/@me/conversations') => [
           {
             'id': 'c-1',
@@ -113,6 +133,7 @@ void main() {
         },
         _ => null,
       };
+      if (json is http.Response) return json;
       if (json == null) return http.Response('not found', 404);
       return http.Response(jsonEncode(json), 200, headers: {'content-type': 'application/json'});
     });
@@ -523,6 +544,182 @@ void main() {
       expect(requests.last.url.queryParameters['count'], '1');
       expect(repository.latest.value['r-general']?.content, 'newest');
       expect(repository.previewOf(repository.latest.value['r-general']!), 'newest');
+    });
+  });
+
+  group('deleting a Space', () {
+    Map<String, dynamic> space(String id, String roomId) => {
+      'space': {'id': id, 'name': 'Space $id', 'owner_id': _me, 'created_at': _at, 'updated_at': _at},
+      'rooms': {
+        roomId: {
+          'id': roomId,
+          'space_id': id,
+          'type': 1,
+          'name': 'general',
+          'position': 0,
+          'created_at': _at,
+          'updated_at': _at,
+        },
+      },
+      'roles_permissions': <String, dynamic>{},
+      'owner_id': _me,
+    };
+
+    // Two Spaces, a room of each opened, unread and with mentions.
+    Future<void> twoSpaces() async {
+      await repository.logIn('gaby@duvet.chat', 'secret');
+      repository.handleEvent(_event('SPACE_CREATE', space('s-1', 'r-general')));
+      repository.handleEvent(_event('SPACE_CREATE', space('s-2', 'r-other')));
+      repository.opened(const RoomTarget(spaceId: 's-1', roomId: 'r-general'), '# general');
+      repository.opened(const RoomTarget(spaceId: 's-2', roomId: 'r-other'), '# general');
+      repository.handleEvent(
+        _event('READY', {
+          'user': _user(_me, 'gaby'),
+          'sessionToken': 'ws',
+          'unread_rooms': ['r-general', 'r-other'],
+        }),
+      );
+      // READY's mention counts first, then one more live.
+      await pumpEventQueue();
+      repository.handleEvent(_event('MENTION_CREATE', {'message_id': 'x', 'room_id': 'r-other', 'author_id': _maya}));
+      expect(repository.mentions.value, {'r-general': 2, 'r-other': 1});
+    }
+
+    void expectOnlyTheOther() {
+      expect(repository.spaces.value.map((s) => s.id), ['s-2']);
+      expect(repository.recents.value.map((c) => c.target.id), ['r-other']);
+      expect(repository.unread.value, {'r-other'});
+      expect(repository.mentions.value, {'r-other': 1});
+    }
+
+    test('it goes with its rooms\' chats, unread marks and mentions', () async {
+      await twoSpaces();
+      await repository.deleteSpace('s-1');
+      expect((requests.last.method, requests.last.url.path), ('DELETE', '/api/spaces/s-1'));
+      expectOnlyTheOther();
+    });
+
+    test('only its owner may: a refusal keeps it', () async {
+      await twoSpaces();
+      deleteReply = http.Response('{"error":"only the space\'s owner can delete it"}', 403);
+      await expectLater(
+        repository.deleteSpace('s-1'),
+        throwsA(isA<ActionFailed>().having((e) => e.message, 'message', 'Only the Space’s owner can delete it')),
+      );
+      expect(repository.spaces.value.map((s) => s.id), ['s-1', 's-2']);
+      expect(repository.recents.value, hasLength(2));
+    });
+
+    test('gone already (the API\'s JSON 404): it goes from here too', () async {
+      await twoSpaces();
+      deleteReply = http.Response('{"error":"space not found"}', 404);
+      await expectLater(
+        repository.deleteSpace('s-1'),
+        throwsA(isA<ActionFailed>().having((e) => e.message, 'message', 'This Space is already gone')),
+      );
+      expectOnlyTheOther();
+    });
+
+    test('SPACE_DELETE takes it away, with its rooms\' chats', () async {
+      await twoSpaces();
+      repository.handleEvent(_event('SPACE_DELETE', {'id': 's-1'}));
+      expectOnlyTheOther();
+    });
+  });
+
+  group('profile', () {
+    test('the bio saves, trimmed; left out, it stays; empty clears it', () async {
+      await repository.logIn('gaby@duvet.chat', 'secret');
+      await repository.updateProfile(alias: 'Gaby', bio: '  Night runner 😀 ');
+      expect(jsonDecode(requests.last.body), {'alias': 'Gaby', 'custom': 'Night runner 😀'});
+      expect(repository.profile.value!.bio, 'Night runner 😀');
+
+      await repository.updateProfile(alias: 'Gabriela');
+      expect(jsonDecode(requests.last.body), {'alias': 'Gabriela'});
+      expect(repository.profile.value!.bio, 'Night runner 😀');
+
+      await repository.updateProfile(alias: 'Gabriela', bio: '');
+      expect(repository.profile.value!.bio, isNull);
+    });
+
+    test('an API from before bios saves the rest, and says it needs the latest API', () async {
+      await repository.logIn('gaby@duvet.chat', 'secret');
+      apiHasBios = false;
+      await expectLater(
+        repository.updateProfile(alias: 'Gabriela', bio: 'Night runner'),
+        throwsA(isA<ActionFailed>().having((e) => e.message, 'message', contains('latest API'))),
+      );
+      expect(repository.profile.value!.displayName, 'Gabriela');
+      expect(repository.profile.value!.bio, isNull);
+    });
+
+    test('the status: chosen here, and from READY and USER_STATUS_UPDATE', () async {
+      await repository.logIn('gaby@duvet.chat', 'secret');
+      expect(repository.profile.value!.status, Presence.online);
+
+      // Connected in do not disturb: READY says so.
+      repository.handleEvent(
+        _event('READY', {
+          'user': {..._user(_me, 'gaby'), 'status': 2},
+          'sessionToken': 'ws',
+        }),
+      );
+      expect(repository.profile.value!.status, Presence.doNotDisturb);
+      expect(repository.presence.value[_me], Presence.doNotDisturb);
+
+      // Changed on another device.
+      repository.handleEvent(_event('USER_STATUS_UPDATE', {'user_id': _me, 'status_id': 1}));
+      expect(repository.profile.value!.status, Presence.online);
+      expect(repository.presence.value[_me], Presence.online);
+      // Someone else's is theirs alone.
+      repository.handleEvent(_event('USER_STATUS_UPDATE', {'user_id': _maya, 'status_id': 2}));
+      expect(repository.profile.value!.status, Presence.online);
+      expect(repository.presence.value[_maya], Presence.doNotDisturb);
+
+      await repository.setStatus(Presence.doNotDisturb);
+      expect((requests.last.method, requests.last.url.path), ('PUT', '/api/users/@me/status'));
+      expect(jsonDecode(requests.last.body), {'status': 2});
+      expect(repository.profile.value!.status, Presence.doNotDisturb);
+      expect(repository.presence.value[_me], Presence.doNotDisturb);
+      await expectLater(repository.setStatus(Presence.offline), throwsArgumentError);
+
+      // Offline is shown, but never taken for a choice.
+      repository.handleEvent(_event('USER_STATUS_UPDATE', {'user_id': _me, 'status_id': 0}));
+      expect(repository.presence.value[_me], Presence.offline);
+      expect(repository.profile.value!.status, Presence.doNotDisturb);
+    });
+
+    test('an answer without the status keeps the one known', () async {
+      await repository.logIn('gaby@duvet.chat', 'secret');
+      repository.handleEvent(
+        _event('READY', {
+          'user': {..._user(_me, 'gaby'), 'status': 2},
+          'sessionToken': 'ws',
+        }),
+      );
+      // The mock's PATCH answers no status.
+      await repository.updateProfile(alias: 'Gabriela');
+      expect(repository.profile.value!.status, Presence.doNotDisturb);
+    });
+
+    test('a gateway from before statuses shows the user online; an API without the route says so', () async {
+      await repository.logIn('gaby@duvet.chat', 'secret');
+      repository.handleEvent(_event('READY', {'user': _user(_me, 'gaby'), 'sessionToken': 'ws'}));
+      expect(repository.presence.value[_me], Presence.online);
+      expect(repository.profile.value!.status, Presence.online);
+
+      apiHasStatus = false;
+      await expectLater(
+        repository.setStatus(Presence.doNotDisturb),
+        throwsA(isA<ActionFailed>().having((e) => e.message, 'message', contains('latest API'))),
+      );
+      expect(repository.profile.value!.status, Presence.online);
+    });
+
+    test('the cache keeps the status chosen', () {
+      const p = Profile(id: _me, username: 'gaby', status: Presence.doNotDisturb);
+      expect(profileFromJson(profileToJson(p)).status, Presence.doNotDisturb);
+      expect(profileFromJson(profileToJson(const Profile(id: _me, username: 'gaby'))).status, Presence.online);
     });
   });
 }

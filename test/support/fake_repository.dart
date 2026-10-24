@@ -293,10 +293,31 @@ class FakeRepository implements ChatRepository {
   Future<void> changeEmail(String token, String email) async => account.add('change $token $email');
 
   @override
-  Future<void> updateProfile({required String alias}) async {
+  Future<void> updateProfile({required String alias, String? bio}) async {
     account.add('alias $alias');
+    if (bio != null) account.add('bio $bio');
     final p = profile.value!;
-    profile.value = Profile(id: p.id, username: p.username, alias: alias.isEmpty ? null : alias);
+    profile.value = Profile(
+      id: p.id,
+      username: p.username,
+      alias: alias.isEmpty ? null : alias,
+      bio: bio == null ? p.bio : (bio.trim().isEmpty ? null : bio.trim()),
+      status: p.status,
+    );
+  }
+
+  /// Why the server refuses a status, if it does.
+  String? statusRefused;
+
+  /// Completes status changes when set; otherwise they answer at once.
+  Completer<void>? holdStatus;
+
+  @override
+  Future<void> setStatus(Presence status) async {
+    account.add('status ${status.name}');
+    await holdStatus?.future;
+    if (statusRefused != null) throw ActionFailed(statusRefused!);
+    profile.value = profile.value!.withStatus(status);
   }
 
   @override

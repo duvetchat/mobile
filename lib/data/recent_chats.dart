@@ -221,6 +221,16 @@ class RecentChats {
     }
   }
 
+  /// A Space was deleted: its rooms leave the list. Answers their IDs.
+  Set<String> forgetSpace(String spaceId) {
+    final gone = {
+      for (final c in chats.value)
+        if (c.target case RoomTarget(spaceId: final space) when space == spaceId) c.target.id,
+    };
+    if (gone.isNotEmpty) _publish(chats.value.where((c) => !gone.contains(c.target.id)).toList());
+    return gone;
+  }
+
   RecentChat? _find(String id) => chats.value.where((c) => c.target.id == id).firstOrNull;
 
   void _put(RecentChat chat) => _publish([chat, ...chats.value.where((c) => c.target.id != chat.target.id)]);

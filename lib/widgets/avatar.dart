@@ -1,9 +1,10 @@
 import 'package:flutter/material.dart';
+import 'package:forui/forui.dart';
 
 import 'facehash.dart';
 
-/// A person's avatar: their image once it loads, their [Facehash] until then
-/// and when they have none.
+/// A person's avatar: their image once it loads, a `base-sunken` circle until
+/// then, and their [Facehash] when they have none or it doesn't load.
 class UserAvatar extends StatelessWidget {
   final String name;
   final String? url;
@@ -45,8 +46,13 @@ class UserAvatar extends StatelessWidget {
         cacheWidth: (size * MediaQuery.devicePixelRatioOf(context)).round(),
         fit: BoxFit.cover,
         semanticLabel: name,
-        frameBuilder: (context, child, frame, wasSynchronouslyLoaded) =>
-            frame == null && !wasSynchronouslyLoaded ? face : child,
+        frameBuilder: (context, child, frame, wasSynchronouslyLoaded) => frame == null && !wasSynchronouslyLoaded
+            ? Semantics(
+                label: name,
+                image: true,
+                child: Container(width: size, height: size, color: context.theme.colors.secondary),
+              )
+            : child,
         errorBuilder: (context, error, stackTrace) => face,
       ),
     );

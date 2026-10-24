@@ -689,7 +689,7 @@ Future<void> _fileMenu(BuildContext anchor, MessageAttachment a) async {
   }
 }
 
-/// A sticker: large, with no bubble.
+/// A sticker: large, with no bubble; a `base-sunken` square until it loads.
 class StickerView extends StatelessWidget {
   final String url;
   final String? name;
@@ -707,6 +707,17 @@ class StickerView extends StatelessWidget {
       height: 160,
       cacheWidth: (160 * MediaQuery.devicePixelRatioOf(context)).round(),
       fit: BoxFit.contain,
+      // Not behind the sticker once it's there: stickers are see-through.
+      frameBuilder: (context, child, frame, sync) => frame == null && !sync
+          ? Container(
+              width: 160,
+              height: 160,
+              decoration: BoxDecoration(
+                color: context.theme.colors.secondary,
+                borderRadius: BorderRadius.circular(DuvetTokens.radiusButton),
+              ),
+            )
+          : child,
       errorBuilder: (context, _, _) => SizedBox(
         width: 160,
         height: 160,
@@ -748,10 +759,12 @@ class EmbedCard extends StatelessWidget {
               children: [
                 if (e.provider != null)
                   Text(e.provider!, style: DuvetType.caption.copyWith(color: colors.mutedForeground)),
+                // Four lines here hold what the desktop's two do in its wider
+                // card: a GitHub run's title with its result at the end.
                 if (e.title != null)
                   Text(
                     e.title!,
-                    maxLines: 2,
+                    maxLines: 4,
                     overflow: TextOverflow.ellipsis,
                     style: DuvetType.rowTitle.copyWith(color: colors.foreground),
                   ),

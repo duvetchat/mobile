@@ -145,8 +145,13 @@ abstract interface class ChatRepository {
   Future<void> sendChangeEmail(String email);
   Future<void> changeEmail(String token, String email);
 
-  /// The user's display name: empty clears it, back to the username.
-  Future<void> updateProfile({required String alias});
+  /// The user's display name: empty clears it, back to the username. A [bio]
+  /// replaces theirs (empty clears it); left out, it stays.
+  Future<void> updateProfile({required String alias, String? bio});
+
+  /// Chooses the user's status, [Presence.online] or
+  /// [Presence.doNotDisturb]: what others see while they're connected.
+  Future<void> setStatus(Presence status);
 
   /// A new avatar or banner: [crop] of the picture at [path].
   Future<void> uploadProfileImage(ProfileImage kind, String path, CropRect crop);
