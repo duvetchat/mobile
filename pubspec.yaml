@@ -53,6 +53,8 @@ dependencies:
   gal: ^2.3.3
   path_provider: ^2.1.6
   app_links: ^7.2.2
+  # Today for the day separators, which tests can pin with withClock.
+  clock: ^1.1.3
   # Voice rooms and calls (M8): WebRTC; the Android foreground service that
   # keeps a call going in the background; and Bluetooth's runtime permission,
   # without which Android 12+ can't route a call to a headset. 12.x, not 13:

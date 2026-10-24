@@ -613,10 +613,7 @@ class _DaySeparator extends StatelessWidget {
     child: Center(
       child: Semantics(
         header: true,
-        child: Text(
-          dayLabel(day, DateTime.now()),
-          style: DuvetType.caption.copyWith(color: context.theme.colors.mutedForeground),
-        ),
+        child: Text(dayLabel(day), style: DuvetType.caption.copyWith(color: context.theme.colors.mutedForeground)),
       ),
     ),
   );

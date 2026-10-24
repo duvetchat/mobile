@@ -1,3 +1,4 @@
+import 'package:clock/clock.dart';
 import 'package:duvet/data/appearance.dart';
 import 'package:duvet/data/emoji_catalog.dart';
 import 'package:duvet/data/models.dart';
@@ -163,35 +164,39 @@ void main() {
 
     testWidgets(
       'chat, ${b.name}',
-      (tester) => withShadows(() async {
-        phone(tester);
-        final repository = FakeRepository();
-        final appearance = Appearance(MemoryAppearanceStore())
-          ..value = b == Brightness.dark ? ThemeMode.dark : ThemeMode.light;
-        await tester.pumpWidget(DuvetApp(repository: repository, appearance: appearance));
-        await tester.pumpAndSettle();
-        repository.history['c-maya']!.addAll([
-          FakeRepository.message(
-            'm5',
-            author: FakeRepository.maya,
-            name: 'Maya',
-            text: '**Release checklist** for v3:\n- swap to `shadow-float`\n- retest the ||pressed inset||',
-            reactions: [
-              Reaction(emoji: '👍', users: {FakeRepository.maya, FakeRepository.me.id}),
-            ],
-          ),
-          FakeRepository.message(
-            'm6',
-            author: FakeRepository.me.id,
-            name: 'Gaby',
-            text: 'Checking dark now',
-            reply: const MessageReply(messageId: 'm5', authorName: 'Maya', content: 'Release checklist'),
-          ),
-        ]);
-        await tester.tap(find.text('Maya'));
-        await tester.pumpAndSettle();
-        await expectLater(find.byType(DuvetApp), matchesGoldenFile('goldens/chat_${b.name}.png'));
-      }),
+      // On the messages' day, so the separator says "Today" whenever it runs.
+      (tester) => withClock(
+        Clock.fixed(DateTime(2026, 10, 23, 12)),
+        () => withShadows(() async {
+          phone(tester);
+          final repository = FakeRepository();
+          final appearance = Appearance(MemoryAppearanceStore())
+            ..value = b == Brightness.dark ? ThemeMode.dark : ThemeMode.light;
+          await tester.pumpWidget(DuvetApp(repository: repository, appearance: appearance));
+          await tester.pumpAndSettle();
+          repository.history['c-maya']!.addAll([
+            FakeRepository.message(
+              'm5',
+              author: FakeRepository.maya,
+              name: 'Maya',
+              text: '**Release checklist** for v3:\n- swap to `shadow-float`\n- retest the ||pressed inset||',
+              reactions: [
+                Reaction(emoji: '👍', users: {FakeRepository.maya, FakeRepository.me.id}),
+              ],
+            ),
+            FakeRepository.message(
+              'm6',
+              author: FakeRepository.me.id,
+              name: 'Gaby',
+              text: 'Checking dark now',
+              reply: const MessageReply(messageId: 'm5', authorName: 'Maya', content: 'Release checklist'),
+            ),
+          ]);
+          await tester.tap(find.text('Maya'));
+          await tester.pumpAndSettle();
+          await expectLater(find.byType(DuvetApp), matchesGoldenFile('goldens/chat_${b.name}.png'));
+        }),
+      ),
     );
   }
 }
