@@ -122,6 +122,33 @@ void main() {
     semantics.dispose();
   });
 
+  testWidgets('the profile of someone who asked the user offers Accept request, which takes theirs', (tester) async {
+    final repository = await pumpApp(
+      tester,
+      setUp: (r) => r.friendsOnServer = Friends(
+        incoming: [
+          FriendRequestItem(
+            id: 'req-leo',
+            person: const Member(userId: _leo, username: 'leo'),
+            at: DateTime(2026, 10, 22),
+          ),
+        ],
+      ),
+    );
+    await tester.tap(find.descendant(of: find.byType(DuvetTabBar), matching: find.text('Spaces')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Design Guild'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('# general'));
+    await tester.pumpAndSettle();
+
+    await tapLabel(tester, 'Leo’s profile');
+    expect(find.bySemanticsLabel('Add friend'), findsNothing);
+    await tapLabel(tester, 'Accept request');
+    expect(repository.friendCalls, ['accept req-leo']);
+    semantics.dispose();
+  });
+
   testWidgets('friends: requests in and out, accept, decline, cancel, add by username', (tester) async {
     final repository = await pumpApp(
       tester,

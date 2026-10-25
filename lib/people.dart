@@ -49,6 +49,7 @@ class _Profile extends StatefulWidget {
 
 class _ProfileState extends State<_Profile> {
   bool _asked = false;
+  bool _accepting = false;
 
   @override
   void didChangeDependencies() {
@@ -94,6 +95,25 @@ class _ProfileState extends State<_Profile> {
     }
   }
 
+  // Their request, which a request sent back wouldn't answer: the API refuses
+  // one while theirs waits.
+  Future<void> _accept(String requestId) async {
+    setState(() => _accepting = true);
+    try {
+      await context.repository.acceptFriendRequest(requestId);
+    } catch (_) {
+      if (mounted) {
+        showFToast(
+          context: context,
+          title: const Text('Couldn’t accept the request'),
+          duration: const Duration(seconds: 3),
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _accepting = false);
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final repository = context.repository;
@@ -122,6 +142,8 @@ class _ProfileState extends State<_Profile> {
         final f = repository.friends.value;
         final isFriend = f.friends.any((x) => x.userId == m.userId);
         final pending = _asked || f.outgoing.any((r) => r.person.userId == m.userId);
+        // They asked the user: Accept request, as on the desktop's profile.
+        final asking = f.incoming.where((r) => r.person.userId == m.userId).firstOrNull;
         final mutual = repository.spaces.value.where((s) => repository.isMember(s.id, m.userId)).length;
         return ListView(
           controller: widget.scroll,
@@ -222,15 +244,23 @@ class _ProfileState extends State<_Profile> {
                             _SquareButton(
                               label: isFriend
                                   ? 'Friends'
+                                  : asking != null
+                                  ? 'Accept request'
                                   : pending
                                   ? 'Friend request sent'
                                   : 'Add friend',
                               icon: isFriend
                                   ? FLucideIcons.userCheck
-                                  : pending
+                                  : pending && asking == null
                                   ? FLucideIcons.clock
                                   : FLucideIcons.userPlus,
-                              onPressed: isFriend || pending ? null : _addFriend,
+                              onPressed: isFriend
+                                  ? null
+                                  : asking != null
+                                  ? (_accepting ? null : () => _accept(asking.id))
+                                  : pending
+                                  ? null
+                                  : _addFriend,
                             ),
                           ],
                         ],
