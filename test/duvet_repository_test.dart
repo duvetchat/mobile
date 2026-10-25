@@ -355,8 +355,11 @@ void main() {
       repository.createGroup('Crew', [_maya, _leo]),
       throwsA(isA<ActionFailed>().having((e) => e.message, 'message', 'You must be friends with $_leo')),
     );
-    // A server error isn't a refusal: the screen says it its own way.
-    await expectLater(repository.addToConversation('c-1', _leo), throwsA(isA<duvet.DuvetApiException>()));
+    // A server error says the API's words too, as the desktop shows them.
+    await expectLater(
+      repository.addToConversation('c-1', _leo),
+      throwsA(isA<ActionFailed>().having((e) => e.message, 'message', 'Internal server error')),
+    );
   });
 
   test('the friends list gives friends their presence, where the gateway hasn\'t told it', () async {

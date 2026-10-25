@@ -1852,11 +1852,6 @@ class DuvetRepository implements ChatRepository {
     }
   }
 
-  // Why the API refused a request (a 4xx but a 401, after which the session
-  // renews or ends), if its answer says.
-  static String? _refusal(duvet.DuvetApiException e) =>
-      e.statusCode >= 400 && e.statusCode < 500 && e.statusCode != 401 ? _serverReason(e) : null;
-
   void _setProfile(duvet.UserMeResult me) {
     profile.value = Profile(
       id: me.id,
