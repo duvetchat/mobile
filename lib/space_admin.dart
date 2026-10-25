@@ -96,6 +96,12 @@ Future<String> Function(String path, CropRect crop, int side) saveSquareImage = 
   return file.path;
 };
 
+/// The position that moves [siblings]' room at [index] [up] or down one place,
+/// as the API takes it: the place it's inserted at, counted before it leaves
+/// its own. So the room above's, or one past the room below's.
+int movedPosition(List<AdminRoom> siblings, int index, {required bool up}) =>
+    up ? siblings[index - 1].position : siblings[index + 1].position + 1;
+
 /// Space settings: the Space, then its rooms, emojis and stickers; its
 /// roles and invites; its webhooks and storage. Each row shows only to those
 /// who may change what it opens.
@@ -683,15 +689,11 @@ class _RoomsAdminPageState extends State<RoomsAdminPage> {
         final got = await askName<void>(context, title: 'Rename $label', initial: room.name);
         if (got == null || !mounted) return;
         await _try(context, 'Couldn’t rename $label', () => repository.renameRoom(id, room.id, got.$1));
-      // Where the API inserts it, counted before it leaves its place: the
-      // room above's, or one past the room below's.
-      case 'up':
-        await _try(context, 'Couldn’t move $label', () => repository.moveRoom(id, room.id, siblings[i - 1].position));
-      case 'down':
+      case 'up' || 'down':
         await _try(
           context,
           'Couldn’t move $label',
-          () => repository.moveRoom(id, room.id, siblings[i + 1].position + 1),
+          () => repository.moveRoom(id, room.id, movedPosition(siblings, i, up: picked == 'up')),
         );
       case 'category':
         final into = await showGlassSheet<String>(

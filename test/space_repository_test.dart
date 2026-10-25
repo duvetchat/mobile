@@ -7,6 +7,7 @@ import 'package:duvet/data/duvet_repository.dart';
 import 'package:duvet/data/models.dart';
 import 'package:duvet/data/recent_chats.dart';
 import 'package:duvet/data/session_store.dart';
+import 'package:duvet/space_admin.dart' show movedPosition;
 import 'package:duvet_client/duvet.dart' as duvet;
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
@@ -553,6 +554,115 @@ void main() {
       patches();
       await repository.moveRoom('s-1', 'r-general', 2);
       expect(sent(), {'position': 2});
+    });
+
+    test('moves land where the user meant them, as the API places them', () async {
+      await signIn();
+      // The rooms as the API keeps them: three outside any category, which
+      // share their positions with the two categories, and two in k.
+      final server = <String, ({String? parent, int position, int type})>{
+        'a': (parent: null, position: 0, type: 1),
+        'b': (parent: null, position: 1, type: 1),
+        'c': (parent: null, position: 2, type: 1),
+        'k': (parent: null, position: 3, type: 3),
+        'l': (parent: null, position: 4, type: 3),
+        'x': (parent: 'k', position: 0, type: 1),
+        'y': (parent: 'k', position: 1, type: 2),
+      };
+      Map<String, dynamic> json(String id) =>
+          _room(id, type: server[id]!.type, position: server[id]!.position, parent: server[id]!.parent);
+      // The API's UpdateRoom (rooms.go): the gap at the old place closes; the
+      // position is one lower when the room moves later among the same rooms;
+      // a gap opens at the new place.
+      void place(String id, Map<String, dynamic> body) {
+        final now = server[id]!;
+        final parent = now.type != 3 && body.containsKey('parent_id') ? body['parent_id'] as String? : now.parent;
+        var position = body['position'] as int? ?? now.position;
+        for (final MapEntry(:key, :value) in [...server.entries]) {
+          if (value.parent == now.parent && value.position > now.position) {
+            server[key] = (parent: value.parent, position: value.position - 1, type: value.type);
+          }
+        }
+        if (parent == now.parent && position > now.position) position--;
+        for (final MapEntry(:key, :value) in [...server.entries]) {
+          if (key != id && value.parent == parent && value.position >= position) {
+            server[key] = (parent: value.parent, position: value.position + 1, type: value.type);
+          }
+        }
+        server[id] = (parent: parent, position: position, type: now.type);
+      }
+
+      repository.handleEvent(_event('SPACE_CREATE', _space(rooms: {for (final id in server.keys) id: json(id)})));
+      for (final id in server.keys) {
+        routes[('PATCH', '/api/spaces/s-1/rooms/$id')] = (request) {
+          place(id, jsonDecode(request.body) as Map<String, dynamic>);
+          // As the API broadcasts after the move.
+          repository.handleEvent(
+            _event('ROOM_REORDER', {
+              'rooms': [for (final r in server.keys) json(r)],
+            }),
+          );
+          return json(id);
+        };
+      }
+
+      // The rooms settings' lists: outside any category, the categories, and
+      // each category's rooms.
+      List<AdminRoom> siblingsOf(String id) {
+        final all = repository.adminRooms('s-1');
+        final room = all.singleWhere((r) => r.id == id);
+        final categories = {for (final c in all.where((r) => r.kind == AdminRoomKind.category)) c.id};
+        return [
+          for (final r in all)
+            if (room.kind == AdminRoomKind.category
+                ? r.kind == AdminRoomKind.category
+                : r.kind != AdminRoomKind.category &&
+                      (categories.contains(room.parentId)
+                          ? r.parentId == room.parentId
+                          : !categories.contains(r.parentId)))
+              r,
+        ];
+      }
+
+      Future<void> move(String id, {required bool up}) {
+        final siblings = siblingsOf(id);
+        return repository.moveRoom('s-1', id, movedPosition(siblings, siblings.indexWhere((r) => r.id == id), up: up));
+      }
+
+      Map<String?, List<String>> shown() => {
+        for (final s in repository.spaces.value.single.sections) s.name: [for (final r in s.rooms) r.id],
+      };
+
+      await move('a', up: false);
+      expect(shown(), {
+        null: ['b', 'a', 'c'],
+        'k': ['x', 'y'],
+        'l': <String>[],
+      });
+      await move('c', up: true);
+      expect(shown()[null], ['b', 'c', 'a']);
+      await move('b', up: false);
+      await move('b', up: false);
+      expect(shown()[null], ['c', 'a', 'b']);
+      await move('x', up: false);
+      expect(shown()['k'], ['y', 'x']);
+      await repository.setRoomCategory('s-1', 'a', 'k');
+      expect(shown(), {
+        null: ['c', 'b'],
+        'k': ['a', 'y', 'x'],
+        'l': <String>[],
+      });
+      await repository.setRoomCategory('s-1', 'y', null);
+      expect(shown(), {
+        null: ['c', 'b', 'y'],
+        'k': ['a', 'x'],
+        'l': <String>[],
+      });
+      await move('l', up: true);
+      expect(shown().keys, [null, 'l', 'k']);
+      await move('b', up: true);
+      await move('y', up: true);
+      expect(shown()[null], ['b', 'y', 'c']);
     });
   });
 
