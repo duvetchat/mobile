@@ -492,6 +492,76 @@ void main() {
       expect(repository.adminRooms('s-1').map((r) => r.parentId), [null, null, null]);
     });
 
+    // As the API deletes a category: ROOM_DELETE, then ROOM_REORDER with every
+    // room of the Space, where the category's rooms follow the last place of
+    // the top level (which the categories share), in the order they had. The
+    // events may reach the phone before the user's own delete is answered, or
+    // after it.
+    for (final (before, answer) in [(2, 'after both events'), (1, 'between the events'), (0, 'before both events')]) {
+      test('a deleted category\'s rooms go after the loose ones, in order, as ROOM_REORDER places them: '
+          'the delete answered $answer', () async {
+        await signIn();
+        repository.handleEvent(
+          _event(
+            'SPACE_CREATE',
+            _space(
+              rooms: {
+                'r-general': _room('r-general'),
+                'r-rules': _room('r-rules', position: 1),
+                'c-staff': _room('c-staff', type: 3, position: 2),
+                'r-mods': _room('r-mods', parent: 'c-staff'),
+                'c-talk': _room('c-talk', type: 3, position: 3),
+                'r-crit': _room('r-crit', parent: 'c-talk'),
+                'r-lounge': _room('r-lounge', type: 2, position: 1, parent: 'c-talk'),
+              },
+            ),
+          ),
+        );
+        final events = [
+          _event('ROOM_DELETE', {'id': 'c-talk', 'space_id': 's-1'}),
+          _event('ROOM_REORDER', {
+            'rooms': [
+              _room('r-general'),
+              _room('r-rules', position: 1),
+              _room('c-staff', type: 3, position: 2),
+              _room('r-mods', parent: 'c-staff'),
+              _room('r-crit', position: 3),
+              _room('r-lounge', type: 2, position: 4),
+            ],
+          }),
+        ];
+        Map<String, (String?, int)> places() => {
+          for (final r in repository.adminRooms('s-1')) r.id: (r.parentId, r.position),
+        };
+        routes[('DELETE', '/api/spaces/s-1/rooms/c-talk')] = (_) {
+          events.take(before).forEach(repository.handleEvent);
+          return http.Response('', 204);
+        };
+
+        await repository.deleteRoom('s-1', 'c-talk');
+        if (before == 0) {
+          // Out of the category with the places they had, until ROOM_REORDER:
+          // they aren't numbered here.
+          expect(places()['r-crit'], (null, 0));
+          expect(places()['r-lounge'], (null, 1));
+        }
+        events.skip(before).forEach(repository.handleEvent);
+
+        expect(sections(), {
+          null: ['r-general', 'r-rules', 'r-crit', 'r-lounge'],
+          'c-staff': ['r-mods'],
+        });
+        expect(places(), {
+          'r-general': (null, 0),
+          'r-rules': (null, 1),
+          'c-staff': (null, 2),
+          'r-mods': ('c-staff', 0),
+          'r-crit': (null, 3),
+          'r-lounge': (null, 4),
+        });
+      });
+    }
+
     test('ROOM_REORDER moves every room it lists, into or out of categories', () async {
       await signIn();
       repository.handleEvent(_event('SPACE_CREATE', guild()));

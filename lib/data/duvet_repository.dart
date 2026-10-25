@@ -1794,8 +1794,11 @@ class DuvetRepository implements ChatRepository {
     _roomGone(spaceId, roomId);
   }
 
-  /// A room was deleted. A category's rooms stay, outside any category: the
-  /// API moves them there and sends no event for it.
+  /// A room was deleted. A category's rooms stay, outside any category, where
+  /// the API moves them: they keep their places until ROOM_REORDER, which
+  /// follows ROOM_DELETE, gives them their new ones (after the last of the
+  /// top level, in the order they had). They aren't numbered here: the
+  /// desktop waits for it too.
   void _roomGone(String spaceId, String roomId) {
     final rooms = _spaces[spaceId]?.rooms;
     if (rooms == null) return;
