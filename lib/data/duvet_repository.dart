@@ -402,9 +402,9 @@ class DuvetRepository implements ChatRepository {
 
   Timer? _renewals;
 
-  // That renewal once more, for all that got no answer meanwhile. Signing out
-  // ends it; a session that opens offline keeps it, its client the same
-  // tokens.
+  // The renewal going once more ([renewalRetry]), for all that got no answer
+  // meanwhile. Signing out ends it; a session that opens offline keeps it:
+  // its client has the same tokens.
   Timer? _renewalRetry;
 
   // Renews the session once its tokens are [after] old, or of unknown age: no
