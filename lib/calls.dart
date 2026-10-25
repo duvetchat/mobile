@@ -9,6 +9,7 @@ import 'chat_view.dart' show openChat;
 import 'data/models.dart';
 import 'data/scope.dart';
 import 'data/voice.dart';
+import 'tabs.dart' show voiceSnippet;
 import 'theme.dart';
 import 'voice_room.dart';
 import 'widgets/avatar.dart';
@@ -47,6 +48,12 @@ Future<void> callConversation(BuildContext context, String conversationId) async
   }
   if (context.mounted && voice.call?.conversationId == conversationId) await openCall(context, conversationId);
 }
+
+/// Whether the user's own call in [conversationId] still rings the others
+/// from another of their devices: nothing to join from here until someone
+/// answers it, as its device joins then.
+bool callingElsewhere(VoiceController voice, String conversationId) =>
+    voice.call?.conversationId != conversationId && voice.ownCallRinging(conversationId);
 
 /// "2:05", or "1:02:05".
 String callClock(Duration d) {
@@ -632,7 +639,7 @@ class CallHistoryList extends StatelessWidget {
     final repository = context.repository;
     final voice = context.voice;
     return ListenableBuilder(
-      listenable: Listenable.merge([voice.history.calls, repository.conversations]),
+      listenable: Listenable.merge([voice.history.calls, repository.conversations, voice]),
       builder: (context, _) {
         final calls = voice.history.calls.value;
         final summaries = {for (final c in repository.conversations.value) c.id: c};
@@ -656,7 +663,11 @@ class CallHistoryList extends StatelessWidget {
                 title: title,
                 avatarUrl: summary?.isGroup == true ? null : summary?.avatarUrl,
                 onOpen: () => openChat(context, ConversationTarget(c.conversationId), title),
-                onCall: summary == null ? null : () => callConversation(context, c.conversationId),
+                // As the banner's Join, it waits for someone to answer the
+                // user's own call ringing from another device.
+                onCall: summary == null || callingElsewhere(voice, c.conversationId)
+                    ? null
+                    : () => callConversation(context, c.conversationId),
               );
             },
           ),
@@ -706,8 +717,10 @@ class _CallRow extends StatelessWidget {
   }
 }
 
-/// A conversation's call, in its chat's top bar: "Call in progress · Join",
-/// or "In a call · Open" for the user's own. A `base-sunken` strip, as the
+/// A conversation's call, in its chat's top bar: "Call in progress", with
+/// who is in it, and Join; "You’re in this call · Open" for the one here; or
+/// "Calling from another device", with nothing to join yet, while the user's
+/// own call still rings the others from there. A `base-sunken` strip, as the
 /// connection banner is.
 class CallBanner extends StatelessWidget {
   final String conversationId;
@@ -722,10 +735,18 @@ class CallBanner extends StatelessWidget {
     final voice = context.voice;
     final colors = context.theme.colors;
     final mine = voice.call?.conversationId == conversationId && voice.call?.phase != CallPhase.ringing;
+    final elsewhere = callingElsewhere(voice, conversationId);
+    final text = mine
+        ? 'You’re in this call'
+        : elsewhere
+        ? 'Calling from another device'
+        : voice.participants(conversationId).isEmpty
+        ? 'Call in progress'
+        : 'Call in progress · ${voiceSnippet(context.repository, voice, conversationId)}';
     const radius = BorderRadius.all(Radius.circular(DuvetTokens.radiusField));
     return Container(
       height: 36,
-      padding: const EdgeInsets.only(left: 12),
+      padding: EdgeInsets.only(left: 12, right: elsewhere ? 12 : 0),
       decoration: BoxDecoration(color: colors.secondary, borderRadius: radius),
       child: InsetShadow(
         shadows: context.duvet.shadowWell,
@@ -736,16 +757,19 @@ class CallBanner extends StatelessWidget {
             const SizedBox(width: 8),
             Expanded(
               child: Text(
-                mine ? 'You’re in this call' : 'Call in progress',
+                text,
                 maxLines: 1,
                 overflow: TextOverflow.ellipsis,
                 style: DuvetType.caption.copyWith(color: colors.foreground),
               ),
             ),
-            TextAction(
-              label: mine ? 'Open' : 'Join',
-              onPressed: () => mine ? openCall(context, conversationId) : callConversation(context, conversationId),
-            ),
+            // The user's voice would be in it alone: the device that placed
+            // it joins at the first answer.
+            if (!elsewhere)
+              TextAction(
+                label: mine ? 'Open' : 'Join',
+                onPressed: () => mine ? openCall(context, conversationId) : callConversation(context, conversationId),
+              ),
           ],
         ),
       ),
