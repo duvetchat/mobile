@@ -1274,7 +1274,8 @@ class DuvetRepository implements ChatRepository {
   // show it wherever the app holds them, as the desktop renames the messages
   // it has, and so do the replies' quotes of theirs, each chat naming them
   // as [_nameIn] says. The open chats, each chat's newest message, the bots'
-  // answers to the user alone, and the Chats tab's previews.
+  // answers to the user alone, the Chats tab's previews, and the pages kept
+  // for offline.
   void _authorChanged(String userId, String name, String? avatar) {
     AuthorChanged changeIn(String chatId) =>
         AuthorChanged(userId, name: _nameIn(chatId, userId, name), avatarUrl: avatar);
@@ -1288,6 +1289,7 @@ class DuvetRepository implements ChatRepository {
       }
     }
     _recents.renamed(userId, (target) => changeIn(target.id).name);
+    unawaited(_cache.changeMessages(userId, (chatId, m) => m.changedBy(changeIn(chatId))));
   }
 
   // [name], the one [userId] goes by, as the chat [chatId] names them: a

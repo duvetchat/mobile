@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 
 import 'package:duvet/data/cache.dart';
@@ -115,6 +116,17 @@ Map<String, dynamic> _space() => {
   'owner_id': _me,
 };
 
+/// A cache store whose writes wait for [hold] while it's set.
+class _HeldWrites extends MemoryChatCacheStore {
+  Completer<void>? hold;
+
+  @override
+  Future<void> write(String key, String json) async {
+    await hold?.future;
+    await super.write(key, json);
+  }
+}
+
 /// The gateway's envelope for [type], parsed as the client parses it.
 duvet.GatewayEventPayload _event(String type, Map<String, dynamic> data) => duvet.GatewayEnvelope.fromJson({
   'op': 0,
@@ -128,15 +140,28 @@ duvet.GatewayEventPayload _event(String type, Map<String, dynamic> data) => duve
 void main() {
   late List<http.Request> requests;
   late DuvetRepository repository;
+  late MemoryChatCacheStore cache;
 
   setUp(() {
     requests = [];
+    cache = MemoryChatCacheStore();
     final client = MockClient((request) async {
       requests.add(request);
       final json = switch ((request.method, request.url.path)) {
         ('POST', '/api/auth/login') => {'token': 'access-1', 'session_token': 'refresh-1'},
         ('GET', '/api/users/@me') => {..._user(_me, 'gaby', alias: 'Gaby'), 'email_verified': true},
         ('GET', '/api/users/@me/conversations') => <Object>[],
+        // The DM's history, the newest first: Maya's message, and the user's
+        // reply to it.
+        ('GET', '/api/users/@me/conversations/c-1/messages') => [
+          {
+            ..._dmMessage('6', 'shipping it'),
+            'author_id': _me,
+            'user': {'id': _me, 'username': 'gaby', 'alias': 'Gaby'},
+            'referenced_message': {'message_id': '5', 'author_id': _maya, 'author_name': 'Maya', 'content': 'ready?'},
+          },
+          _dmMessage('5', 'ready?'),
+        ],
         // Maya's Space nickname, which the history and the member list give.
         ('GET', '/api/rooms/r-1/messages') => [
           {..._roomMessage('7', 'first'), 'member_alias': 'Nick'},
@@ -199,7 +224,7 @@ void main() {
       recentsStore: MemoryRecentChatsStore(),
       httpClient: () => client,
       connectGateway: false,
-      cacheStore: MemoryChatCacheStore(),
+      cacheStore: cache,
     );
   });
 
@@ -397,6 +422,48 @@ void main() {
       );
       final answer = repository.ephemeralIn(_room).single;
       expect((answer.authorName, answer.authorAvatarUrl), ('Ballot 2', avatarUrl));
+    });
+
+    test('the pages kept for offline show it too, written or not yet; a room\'s by their nickname there', () async {
+      await listen(_room);
+      repository.handleEvent(_event('SPACE_CREATE', _space()));
+      // The DM's history, written: her message, and the user's reply to it.
+      await repository.messages(_dm);
+      await Future<void>.delayed(const Duration(milliseconds: 700));
+      expect(cache.data.keys, contains('chat_c-1'));
+      // The room's, where the history names her Nick: not written yet.
+      await repository.messages(_room);
+
+      repository.handleEvent(renamed());
+      await pumpEventQueue();
+      await Future<void>.delayed(const Duration(milliseconds: 700));
+
+      final dm = (await ChatCache(cache).loadPage('c-1'))!;
+      expect(
+        [for (final m in dm) (m.authorName, m.authorAvatarUrl, m.reply?.authorName)],
+        [('Maya O.', avatarUrl, null), ('Gaby', null, 'Maya O.')],
+      );
+      final room = (await ChatCache(cache).loadPage('r-1'))!.single;
+      expect((room.authorName, room.authorAvatarUrl), ('Nick', avatarUrl));
+    });
+
+    test('signing out while the pages kept change leaves none behind', () async {
+      final store = _HeldWrites();
+      final kept = ChatCache(store);
+      kept.savePage('c-1', [
+        ChatMessage(id: '5', authorId: _maya, authorName: 'Maya', content: 'ready?', createdAt: DateTime(2026, 10, 23)),
+      ]);
+      await Future<void>.delayed(const Duration(milliseconds: 700));
+      // Her new name, being written when the user signs out.
+      final writing = store.hold = Completer<void>();
+      unawaited(kept.changeMessages(_maya, (_, m) => m.changedBy(const AuthorChanged(_maya, name: 'Maya O.'))));
+      await pumpEventQueue();
+      final clearing = kept.clear();
+      writing.complete();
+      await clearing;
+      // Once the write under way is done too.
+      await pumpEventQueue();
+      expect(store.data, isEmpty);
     });
   });
 
