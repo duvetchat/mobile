@@ -275,6 +275,8 @@ class DuvetRepository implements ChatRepository {
     // Previews are message text: signing out leaves none on the device.
     unawaited(_recents.close(forget: true));
     unawaited(_cache.clear());
+    _renewalRetry?.cancel();
+    _renewalRetry = null;
     _closeSession();
     _saved = null;
     await _store.clear();
@@ -376,10 +378,17 @@ class DuvetRepository implements ChatRepository {
 
   /// When a renewal got no answer, it goes once more this much later: the API
   /// may have renewed the session and its answer been lost, and for 30
-  /// seconds it answers the old session token with the same new tokens.
-  static const renewalRetry = Duration(seconds: 5);
+  /// seconds it answers the old session token with the same new tokens. As
+  /// the desktop app waits: one that timed out (20 seconds) still goes again
+  /// within them.
+  static const renewalRetry = Duration(seconds: 3);
 
   Timer? _renewals;
+
+  // That renewal once more, for all that got no answer meanwhile. Signing out
+  // ends it; a session that opens offline keeps it, its client the same
+  // tokens.
+  Timer? _renewalRetry;
 
   // Renews the session once its tokens are [after] old, or of unknown age: no
   // date, or one ahead of the clock (it was ahead then), which says nothing
@@ -402,12 +411,10 @@ class DuvetRepository implements ChatRepository {
     } catch (e) {
       debugPrint('session: $e');
       if (retry) {
-        unawaited(
-          Future<void>.delayed(
-            renewalRetry,
-            () => _renewIfDue(after, retry: false),
-          ).catchError((Object e) => debugPrint('session: $e')),
-        );
+        _renewalRetry ??= Timer(renewalRetry, () {
+          _renewalRetry = null;
+          unawaited(_renewIfDue(after, retry: false).catchError((Object e) => debugPrint('session: $e')));
+        });
       }
     }
   }
@@ -2866,6 +2873,7 @@ class DuvetRepository implements ChatRepository {
 
   @override
   void dispose() {
+    _renewalRetry?.cancel();
     _closeSession();
     _voiceSignaling.dispose();
     _signedOut.close();

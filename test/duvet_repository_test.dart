@@ -780,7 +780,7 @@ void main() {
       });
     });
 
-    test('a renewal that got no answer goes once more, 5 seconds on, and gets the tokens the API made', () {
+    test('a renewal that got no answer goes once more, 3 seconds on, and gets the tokens the API made', () {
       fakeAsync((async) {
         final repository = newRepository();
         repository.logIn('gaby@duvet.chat', 'secret');
@@ -794,7 +794,7 @@ void main() {
         async.elapse(const Duration(hours: 23));
         expect(renewals(), ['refresh-1']);
         expect(saved(async)!.token, 'access-1');
-        async.elapse(const Duration(seconds: 4));
+        async.elapse(const Duration(seconds: 2));
         expect(renewals(), hasLength(1));
         async.elapse(const Duration(seconds: 1));
         // The same session token, which the API answers with what it made.
@@ -829,6 +829,41 @@ void main() {
         expect(renewals(), 4);
         async.elapse(const Duration(seconds: 30));
         expect(renewals(), 4);
+        repository.dispose();
+        async.flushMicrotasks();
+      }, initialTime: DateTime(2026, 10, 24, 9));
+    });
+
+    test('renewals that get no answer meanwhile share that once more, which signing out ends', () {
+      fakeAsync((async) {
+        final repository = newRepository();
+        repository.logIn('gaby@duvet.chat', 'secret');
+        async.flushMicrotasks();
+        int renewals() => requests.where((r) => r.url.path == '/api/auth/refresh').length;
+        List<FakeTimer> waiting() => [
+          for (final t in async.pendingTimers)
+            if (t.duration == DuvetRepository.renewalRetry) t,
+        ];
+
+        // The check's renewal, then the one back in front, before the first
+        // goes again: once more for both.
+        renewalAnswersLost = 3;
+        async.elapse(const Duration(hours: 23));
+        async.elapse(const Duration(seconds: 1));
+        repository.cameToFront();
+        async.flushMicrotasks();
+        expect(renewals(), 2);
+        expect(waiting(), hasLength(1));
+        async.elapse(const Duration(seconds: 10));
+        expect(renewals(), 3);
+
+        renewalAnswersLost = 1;
+        repository.cameToFront();
+        async.flushMicrotasks();
+        expect(waiting(), hasLength(1));
+        repository.logOut();
+        async.flushMicrotasks();
+        expect(waiting(), isEmpty);
         repository.dispose();
         async.flushMicrotasks();
       }, initialTime: DateTime(2026, 10, 24, 9));
