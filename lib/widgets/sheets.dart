@@ -59,16 +59,16 @@ Future<Room?> showChannelSwitcher(BuildContext context, {required Space space, r
     );
 
 /// The chat's pinned messages, each with Jump to message, and Unpin for those
-/// who may ([onUnpin] null for the others). [pins] loads them again whenever
-/// [changes] says a pin changed, as the desktop's list does. Answers the one
-/// to jump to.
+/// who may ([onUnpin], which answers whether it did; null for the others).
+/// [pins] loads them again whenever [changes] says a pin changed, as the
+/// desktop's list does. Answers the one to jump to.
 Future<ChatMessage?> showPinsSheet(
   BuildContext context, {
   required Future<List<ChatMessage>> Function() pins,
   Stream<void>? changes,
   required String where,
   required MessageDirectory directory,
-  required Future<void> Function(ChatMessage m)? onUnpin,
+  required Future<bool> Function(ChatMessage m)? onUnpin,
 }) => showGlassSheet<ChatMessage>(
   context,
   label: 'Pinned',
@@ -81,7 +81,7 @@ class _Pins extends StatefulWidget {
   final Stream<void>? changes;
   final String where;
   final MessageDirectory directory;
-  final Future<void> Function(ChatMessage m)? onUnpin;
+  final Future<bool> Function(ChatMessage m)? onUnpin;
   final ScrollController scroll;
   const _Pins({
     required this.pins,
@@ -242,9 +242,9 @@ class _PinsState extends State<_Pins> {
                     if (widget.onUnpin case final onUnpin?)
                       _UnpinButton(
                         name: m.authorName,
+                        // A pin the server kept stays listed.
                         onPressed: () async {
-                          await onUnpin(m);
-                          if (mounted) setState(() => _pins = [...?_pins]..remove(m));
+                          if (await onUnpin(m) && mounted) setState(() => _pins = [...?_pins]..remove(m));
                         },
                       ),
                   ],

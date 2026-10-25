@@ -896,9 +896,15 @@ class DuvetRepository implements ChatRepository {
       return await _sendTo(target, content, nonce, upload, sticker, replyTo, progress, cancel);
     } on duvet.DuvetApiException catch (e) {
       if (e.statusCode == 413) throw const UploadTooLarge();
+      if (_refusal(e) case final reason?) throw ActionFailed(reason);
       rethrow;
     }
   }
+
+  // Why the API refused a message or a pin, which the chat shows, as the
+  // desktop does. Not for a 401, which ends the session (a 403 comes as a
+  // DuvetAuthException too).
+  static String? _refusal(duvet.DuvetApiException e) => e.statusCode == 401 ? null : _serverReason(e);
 
   Future<ChatMessage> _sendTo(
     ChatTarget target,
@@ -948,14 +954,21 @@ class DuvetRepository implements ChatRepository {
     List<int> audio, {
     required String nonce,
     String format = 'ogg',
-  }) => switch (target) {
-    RoomTarget(:final roomId) => _call(
-      (api) => api.sendVoiceNote(roomId, audio, nonce: nonce, format: format),
-    ).then(_roomMessage),
-    ConversationTarget(:final conversationId) => _call(
-      (api) => api.sendDMVoiceNote(conversationId, audio, nonce: nonce, format: format),
-    ).then(_directMessage),
-  };
+  }) async {
+    try {
+      return await switch (target) {
+        RoomTarget(:final roomId) => _call(
+          (api) => api.sendVoiceNote(roomId, audio, nonce: nonce, format: format),
+        ).then(_roomMessage),
+        ConversationTarget(:final conversationId) => _call(
+          (api) => api.sendDMVoiceNote(conversationId, audio, nonce: nonce, format: format),
+        ).then(_directMessage),
+      };
+    } on duvet.DuvetApiException catch (e) {
+      if (_refusal(e) case final reason?) throw ActionFailed(reason);
+      rethrow;
+    }
+  }
 
   @override
   Future<void> sendRecording(ChatTarget target) async {
@@ -1015,16 +1028,23 @@ class DuvetRepository implements ChatRepository {
   };
 
   @override
-  Future<void> pin(ChatTarget target, String messageId, {required bool pinned}) => switch ((target, pinned)) {
-    (RoomTarget(:final roomId), true) => _call((api) => api.pinRoomMessage(roomId, messageId)),
-    (RoomTarget(:final roomId), false) => _call((api) => api.unpinRoomMessage(roomId, messageId)),
-    (ConversationTarget(:final conversationId), true) => _call(
-      (api) => api.pinConversationMessage(conversationId, messageId),
-    ),
-    (ConversationTarget(:final conversationId), false) => _call(
-      (api) => api.unpinConversationMessage(conversationId, messageId),
-    ),
-  };
+  Future<void> pin(ChatTarget target, String messageId, {required bool pinned}) async {
+    try {
+      await switch ((target, pinned)) {
+        (RoomTarget(:final roomId), true) => _call((api) => api.pinRoomMessage(roomId, messageId)),
+        (RoomTarget(:final roomId), false) => _call((api) => api.unpinRoomMessage(roomId, messageId)),
+        (ConversationTarget(:final conversationId), true) => _call(
+          (api) => api.pinConversationMessage(conversationId, messageId),
+        ),
+        (ConversationTarget(:final conversationId), false) => _call(
+          (api) => api.unpinConversationMessage(conversationId, messageId),
+        ),
+      };
+    } on duvet.DuvetApiException catch (e) {
+      if (_refusal(e) case final reason?) throw ActionFailed(reason);
+      rethrow;
+    }
+  }
 
   @override
   Future<List<ChatMessage>> thread(ChatTarget target, String messageId) async => switch (target) {

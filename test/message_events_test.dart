@@ -144,8 +144,20 @@ void main() {
             },
           ],
         },
+        // Refusals, as the API words them: a 403 (which the client raises as
+        // an auth error), a 400, and a failure with no reason.
+        ('POST', '/api/rooms/r-1/messages') => http.Response(
+          jsonEncode({'error': "you don't have permission to send messages in this room"}),
+          403,
+        ),
+        ('PUT', '/api/rooms/r-1/pins/7') => http.Response(
+          jsonEncode({'error': 'a room has 250 pinned messages at most'}),
+          400,
+        ),
+        ('PUT', '/api/rooms/r-1/pins/8') => http.Response('upstream timed out', 504),
         _ => null,
       };
+      if (json is http.Response) return json;
       if (json == null) return http.Response('not found', 404);
       return http.Response(jsonEncode(json), 200, headers: {'content-type': 'application/json'});
     });
@@ -332,6 +344,24 @@ void main() {
     await repository.logIn('gaby@duvet.chat', 'secret');
     final go = (await repository.commands('s-1')).single;
     expect(go.options.single.roomTypes, [1, 3]);
+  });
+
+  test('a send or a pin the API refuses says why, as the desktop shows it', () async {
+    await repository.logIn('gaby@duvet.chat', 'secret');
+    Matcher refused(String reason) => throwsA(isA<ActionFailed>().having((e) => e.message, 'message', reason));
+    await expectLater(
+      repository.send(_room, 'hello', nonce: 'n-1'),
+      refused('You don\'t have permission to send messages in this room'),
+    );
+    await expectLater(
+      repository.sendVoiceNote(_room, const [1, 2, 3], nonce: 'n-2'),
+      refused('You don\'t have permission to send messages in this room'),
+    );
+    await expectLater(repository.pin(_room, '7', pinned: true), refused('A room has 250 pinned messages at most'));
+    // No reason given: the client's own error, which the chat words itself.
+    await expectLater(repository.pin(_room, '8', pinned: true), throwsA(isA<duvet.DuvetApiException>()));
+    // The session goes on: a 403 is no 401.
+    expect(repository.profile.value, isNotNull);
   });
 
   test('ChatMessage.updatedBy keeps what the event leaves out', () {

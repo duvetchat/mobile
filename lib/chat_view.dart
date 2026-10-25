@@ -702,6 +702,8 @@ class _ChatViewState extends State<ChatView> {
         if (i >= 0) _entries[i] = (message: _entries[i].message, delivery: _Delivery.failed);
       });
       _announce(e is UploadTooLarge ? 'Too large to send' : 'Message not sent');
+      // Why the API refused it, as the desktop shows it.
+      if (e is ActionFailed) _toast(e.message);
     } finally {
       _cancels.remove(nonce);
     }
@@ -1293,14 +1295,18 @@ class _ChatViewState extends State<ChatView> {
     if (picked != null && mounted) await _jumpTo(picked.id);
   }
 
-  Future<void> _setPinned(ChatMessage m, bool pinned) async {
+  /// Pins or unpins a message; answers whether the server did. A refusal says
+  /// the API's reason, as the desktop does.
+  Future<bool> _setPinned(ChatMessage m, bool pinned) async {
     _replace(m.copyWith(pinned: pinned));
     try {
       await _repository.pin(widget.target, m.id, pinned: pinned);
       _announce(pinned ? 'Pinned' : 'Unpinned');
-    } catch (_) {
+      return true;
+    } catch (e) {
       _replace(m);
-      _toast(pinned ? 'Couldn’t pin the message' : 'Couldn’t unpin the message');
+      _toast(e is ActionFailed ? e.message : (pinned ? 'Couldn’t pin the message' : 'Couldn’t unpin the message'));
+      return false;
     }
   }
 

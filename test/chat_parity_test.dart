@@ -19,9 +19,9 @@ class _NoLinks implements DeepLinkSource {
   Stream<Uri> get links => const Stream.empty();
 }
 
-/// The fake, with the room permissions a test takes away, and an edit
-/// answered as the API answers it: the message alone, without its files,
-/// reactions or reply.
+/// The fake, with the room permissions a test takes away, sends and pins the
+/// API refuses, and an edit answered as the API answers it: the message
+/// alone, without its files, reactions or reply.
 class _Fake extends FakeRepository {
   final denied = <(String, int)>{};
 
@@ -31,6 +31,39 @@ class _Fake extends FakeRepository {
   @override
   bool canInRoom(String spaceId, String roomId, int bit) =>
       !denied.contains((roomId, bit)) && super.canInRoom(spaceId, roomId, bit);
+
+  /// The API's reason for refusing sends and pins, while set.
+  String? refusal;
+
+  @override
+  Future<ChatMessage> send(
+    ChatTarget target,
+    String content, {
+    required String nonce,
+    List<OutgoingFile> files = const [],
+    Sticker? sticker,
+    String? replyTo,
+    void Function(double progress)? onProgress,
+    Future<void>? cancel,
+  }) async {
+    if (refusal case final reason?) throw ActionFailed(reason);
+    return super.send(
+      target,
+      content,
+      nonce: nonce,
+      files: files,
+      sticker: sticker,
+      replyTo: replyTo,
+      onProgress: onProgress,
+      cancel: cancel,
+    );
+  }
+
+  @override
+  Future<void> pin(ChatTarget target, String messageId, {required bool pinned}) async {
+    if (refusal case final reason?) throw ActionFailed(reason);
+    return super.pin(target, messageId, pinned: pinned);
+  }
 
   @override
   Future<ChatMessage> edit(ChatTarget target, String messageId, String content) async {
@@ -734,6 +767,46 @@ void main() {
       expect(find.text('#lounge'), findsNothing);
       expect(find.text('#mods'), findsNothing);
       expect(find.text('Talk'), findsNothing);
+      semantics.dispose();
+    });
+  });
+
+  group('errors', () {
+    testWidgets('a send the API refuses says why', (tester) async {
+      await openGeneral(tester, setUp: (r) => r.refusal = 'You don’t have permission to send messages in this room');
+      await tester.enterText(find.byType(EditableText), 'Hello?');
+      await tester.pump();
+      await tapLabel(tester, 'Send');
+      expect(find.text('You don’t have permission to send messages in this room'), findsOneWidget);
+      expect(find.bySemanticsLabel('Message not sent'), findsWidgets);
+      await tester.pump(const Duration(seconds: 4));
+      semantics.dispose();
+    });
+
+    testWidgets('a pin or an unpin the API refuses says why, and stays as it was', (tester) async {
+      await openGeneral(
+        tester,
+        setUp: (r) {
+          r.refusal = 'A room has 250 pinned messages at most';
+          r.pinned['r-general'] = [r.history['r-general']!.single.copyWith(pinned: true)];
+        },
+      );
+      await longPress(tester, 'Pushed the new type ramp');
+      await tapLabel(tester, 'Pin');
+      expect(find.text('A room has 250 pinned messages at most'), findsOneWidget);
+      await tester.pump(const Duration(seconds: 4));
+      await longPress(tester, 'Pushed the new type ramp');
+      expect(find.bySemanticsLabel('Pin'), findsOneWidget);
+      await tester.tapAt(const Offset(10, 10));
+      await tester.pumpAndSettle();
+
+      // The list keeps a pin the server kept.
+      await tapLabel(tester, 'More');
+      await tapLabel(tester, 'Pinned messages');
+      await tapLabel(tester, 'Unpin Leo’s message');
+      expect(find.text('1 message in #general'), findsOneWidget);
+      expect(find.bySemanticsLabel('Unpin Leo’s message'), findsOneWidget);
+      await tester.pump(const Duration(seconds: 4));
       semantics.dispose();
     });
   });
