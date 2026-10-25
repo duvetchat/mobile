@@ -186,13 +186,15 @@ class DuvetRepository implements ChatRepository {
     try {
       await _start();
       return true;
-    } on duvet.DuvetAuthException {
-      await _endSession();
-      return false;
-    } catch (_) {
-      // Unreachable server: keep the tokens for the next try, and open with
-      // what's saved if there is anything. The tokens as they are now: a
-      // renewal may have replaced the ones read.
+    } catch (e) {
+      if (e is duvet.DuvetAuthException && _sessionEnded) {
+        await _endSession();
+        return false;
+      }
+      // Unreachable server, or a refusal its renewal got no answer to: keep
+      // the tokens for the next try, and open with what's saved if there is
+      // anything. The tokens as they are now: a renewal may have replaced the
+      // ones read.
       _closeSession();
       final home = await _cache.loadHome();
       if (home == null) rethrow;
@@ -220,14 +222,27 @@ class DuvetRepository implements ChatRepository {
       _retry = null;
       if (_wasReady) _resumed.add(null);
     } on duvet.DuvetAuthException {
-      _retry?.cancel();
-      await _endSession();
+      // Still offline, unless that was the session's end.
+      if (_sessionEnded) {
+        _retry?.cancel();
+        await _endSession();
+      }
     } catch (_) {
       // Still offline.
     } finally {
       _comingBack = false;
     }
   }
+
+  // Whether a refusal ([duvet.DuvetAuthException]) means the session ended:
+  // the API refused its renewal, which takes the client's tokens ([_call] has
+  // ended it already), or there's no session token to renew with. Otherwise
+  // its renewal failed without the API refusing it, say on the network, and
+  // the session may live on: the API may even have renewed it.
+  bool get _sessionEnded => switch (_api) {
+    final api? => !api.isAuthenticated || api.sessionToken.isEmpty,
+    null => true,
+  };
 
   void _saveHome() {
     final p = profile.value;

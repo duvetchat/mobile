@@ -743,6 +743,64 @@ void main() {
       expect(asked, contains('/api/users/@me'));
     });
 
+    test('a 401 whose renewal got no answer opens offline, signed in still, at launch as at each try after', () {
+      fakeAsync((async) {
+        // A session that loaded once, which the cache opens offline.
+        final first = newRepository();
+        first.logIn('gaby@duvet.chat', 'secret');
+        async.elapse(const Duration(seconds: 1));
+        first.dispose();
+        store.write((token: 'access-1', sessionToken: 'refresh-1', refreshedAt: null));
+        // The API renews the session, which revokes the old access token, but
+        // its answer is lost; and the answer to the renewal `me()`'s 401 asks
+        // for.
+        renewalAnswersLost = 2;
+        expiredToken = 'access-1';
+        requests.clear();
+        final restored = newRepository();
+        var ended = 0;
+        restored.signedOut.listen((_) => ended++);
+        bool? opened;
+        restored.restore().then((r) => opened = r);
+        async.flushMicrotasks();
+        List<String> paths() => [for (final r in requests) r.url.path];
+        expect(paths(), ['/api/auth/refresh', '/api/users/@me', '/api/auth/refresh']);
+        expect(opened, isTrue);
+        expect(restored.status.value, LiveStatus.offline);
+        expect(restored.profile.value?.username, 'gaby');
+
+        // The same when it tries the server again, 20 seconds on, once its
+        // renewal went once more.
+        renewalAnswersLost = 3;
+        async.elapse(const Duration(seconds: 20));
+        expect(paths().skip(3), ['/api/auth/refresh', '/api/auth/refresh', '/api/users/@me', '/api/auth/refresh']);
+        expect(restored.profile.value?.username, 'gaby');
+        expect(ended, 0);
+        expect(saved(async), (token: 'access-1', sessionToken: 'refresh-1', refreshedAt: null));
+
+        // Its renewal goes once more, and gets the tokens the API made, which
+        // the next try starts with.
+        async.elapse(DuvetRepository.renewalRetry);
+        expect(saved(async)!.token, 'access-2');
+        async.elapse(const Duration(seconds: 20));
+        final me = requests.lastWhere((r) => r.url.path == '/api/users/@me');
+        expect(me.headers['Authorization'], 'Bearer access-2');
+        expect(ended, 0);
+        restored.dispose();
+        async.flushMicrotasks();
+
+        // With no session token to renew with, a 401 is the session's end.
+        store.write((token: 'access-1', sessionToken: '', refreshedAt: clock.now()));
+        final unrenewable = newRepository();
+        unrenewable.restore().then((r) => opened = r);
+        async.flushMicrotasks();
+        expect(opened, isFalse);
+        expect(saved(async), isNull);
+        unrenewable.dispose();
+        async.flushMicrotasks();
+      }, initialTime: DateTime(2026, 10, 24, 9));
+    });
+
     test('a saved session whose renewal the API refuses at launch is forgotten, not opened offline', () async {
       await store.write((token: 'access-1', sessionToken: 'refresh-1', refreshedAt: null));
       sessionDead = true;
