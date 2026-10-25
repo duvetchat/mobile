@@ -79,16 +79,31 @@ class ChatCache {
 
   final _pending = <String, Timer>{};
 
+  // Each key's writes under way, the last one queued: they go one at a time,
+  // in the order they came. Two at once could mix in its file, and a change
+  // of the pages, which reads a page and writes it back, could write an older
+  // one over a newer.
+  final _writes = <String, Future<void>>{};
+
+  // Runs [write] once the writes of [key] before it are done.
+  Future<void> _inTurn(String key, Future<void> Function() write) {
+    late final Future<void> turn;
+    turn = _writes[key] = (_writes[key] ?? Future.value())
+        .then((_) => write())
+        .catchError((Object e) => debugPrint('cache: $e'))
+        .whenComplete(() {
+          if (identical(_writes[key], turn)) _writes.remove(key);
+        });
+    return turn;
+  }
+
   /// Writes [json] under [key] a moment later, once per burst.
   void _later(String key, Object? Function() json) {
     _pending[key]?.cancel();
-    _pending[key] = Timer(const Duration(milliseconds: 500), () async {
+    _pending[key] = Timer(const Duration(milliseconds: 500), () {
       _pending.remove(key);
-      try {
-        await _store.write(key, jsonEncode(json()));
-      } catch (e) {
-        debugPrint('cache: $e');
-      }
+      final data = json();
+      unawaited(_inTurn(key, () => _store.write(key, jsonEncode(data))));
     });
   }
 
@@ -215,23 +230,24 @@ class ChatCache {
       return;
     }
     for (final key in keys) {
+      if (clears != _clears) return;
       if (!key.startsWith(_page)) continue;
       final chatId = key.substring(_page.length);
-      try {
+      // In turn with the page's writes: read once the one under way is done,
+      // and written back before the next.
+      await _inTurn(key, () async {
         final raw = await _store.read(key);
         if (clears != _clears) return;
         // Saved again meanwhile: that page is the one to write.
         if (_pages.containsKey(chatId)) {
           changeWaiting(chatId);
-          continue;
+          return;
         }
-        if (raw == null || !changes.keys.any(raw.contains)) continue;
+        if (raw == null || !changes.keys.any(raw.contains)) return;
         if (changed(chatId, _pageFromJson(jsonDecode(raw) as Map<String, Object?>)) case final page?) {
           await _store.write(key, jsonEncode(_pageToJson(page)));
         }
-      } catch (e) {
-        debugPrint('cache: $e');
-      }
+      });
     }
   }
 

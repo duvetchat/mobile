@@ -116,8 +116,10 @@ Map<String, dynamic> _space() => {
   'owner_id': _me,
 };
 
-/// A cache store whose writes wait for [hold] while it's set. [listed] counts
-/// the times it's listed: once a pass over the pages kept.
+/// A cache store whose writes wait for [hold] while it's set, then write as a
+/// file is written: emptied, then filled a moment later, so two at once leave
+/// both in it. [listed] counts the times it's listed: once a pass over the
+/// pages kept.
 class _HeldWrites extends MemoryChatCacheStore {
   Completer<void>? hold;
   var listed = 0;
@@ -125,7 +127,9 @@ class _HeldWrites extends MemoryChatCacheStore {
   @override
   Future<void> write(String key, String json) async {
     await hold?.future;
-    await super.write(key, json);
+    data[key] = '';
+    await Future<void>.value();
+    data[key] = '${data[key] ?? ''}$json';
   }
 
   @override
@@ -515,6 +519,27 @@ void main() {
       // The first pass, then one for the three.
       expect(store.listed, 2);
       expect([for (final m in (await kept.loadPage('c-1'))!) m.authorName], ['Maya 3', 'Gaby 2']);
+    });
+
+    test('a page being written as the pages change is changed once written: the newest, in valid JSON', () async {
+      final store = _HeldWrites();
+      final kept = ChatCache(store);
+      kept.savePage('c-1', [_keptMessage('5', _maya, 'Maya')]);
+      await Future<void>.delayed(const Duration(milliseconds: 700));
+      // A newer page, being written when her new name comes.
+      final writing = store.hold = Completer<void>();
+      kept.savePage('c-1', [_keptMessage('5', _maya, 'Maya'), _keptMessage('6', _maya, 'Maya')]);
+      await Future<void>.delayed(const Duration(milliseconds: 700));
+      final changing = kept.changeMessages(_maya, (_, m) => m.changedBy(const AuthorChanged(_maya, name: 'Maya O.')));
+      await pumpEventQueue();
+      writing.complete();
+      await changing;
+      await pumpEventQueue();
+      expect(() => jsonDecode(store.data['chat_c-1']!), returnsNormally);
+      expect(
+        [for (final m in (await kept.loadPage('c-1'))!) (m.id, m.authorName)],
+        [('5', 'Maya O.'), ('6', 'Maya O.')],
+      );
     });
   });
 
