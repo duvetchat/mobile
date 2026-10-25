@@ -38,8 +38,10 @@ abstract interface class ChatRepository {
   Future<bool> restore();
 
   /// The app is in front again, after the background or a locked screen,
-  /// where its timers may not have run: the session is renewed now if that
-  /// came due meanwhile.
+  /// where its timers may not have run: the session is renewed if its tokens
+  /// are an hour old, and a connection cut off while away goes again at once,
+  /// once that renewal is done, asking the API whether the session still
+  /// stands.
   void cameToFront();
 
   Future<void> logIn(String email, String password);
