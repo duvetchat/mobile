@@ -160,8 +160,9 @@ void main() {
         ('GET', '/api/users/@me') => {..._user(_me, 'gaby', alias: 'Gaby'), 'email_verified': true},
         ('PATCH', '/api/users/@me') when (request.headers['content-type'] ?? '').startsWith('multipart/') =>
           pictureRefusal ?? _user(_me, 'gaby', avatar: _avatar),
-        // The API counts the display name's bytes.
-        ('PATCH', '/api/users/@me') when utf8.encode(body()['alias'] as String? ?? '').length > 32 => http.Response(
+        // The API counts the display name's characters, as code points, once
+        // trimmed (api#55: it counted bytes before).
+        ('PATCH', '/api/users/@me') when (body()['alias'] as String? ?? '').trim().runes.length > 32 => http.Response(
           jsonEncode({'error': 'display name must be at most 32 characters'}),
           400,
         ),
@@ -1382,6 +1383,9 @@ void main() {
 
     test('a profile change or a picture the API refuses says why, as the API says it', () async {
       await repository.logIn('gaby@duvet.chat', 'secret');
+      // 32 characters, as the app counts them too, whatever their bytes.
+      await repository.updateProfile(alias: '😀' * 32);
+      expect(repository.profile.value!.displayName, '😀' * 32);
       await expectLater(
         repository.updateProfile(alias: 'a' * 33),
         throwsA(isA<ActionFailed>().having((e) => e.message, 'message', 'Display name must be at most 32 characters')),
