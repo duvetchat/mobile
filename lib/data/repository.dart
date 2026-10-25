@@ -195,8 +195,10 @@ abstract interface class ChatRepository {
   Future<void> renameRoom(String spaceId, String roomId, String name);
   Future<void> deleteRoom(String spaceId, String roomId);
 
-  /// Moves a room to [position] among its category's (or the Space's) rooms.
-  Future<void> moveRoom(String spaceId, String roomId, int position);
+  /// Moves a room into [parentId]'s rooms (null: out of any category; a
+  /// category stays out), before the one now at [position] there, as the API
+  /// does. Past the last one's position puts it last.
+  Future<void> moveRoom(String spaceId, String roomId, {String? parentId, required int position});
   List<RoomOverwrite> overwrites(String spaceId, String roomId);
 
   /// Saves an overwrite; an empty one is removed.

@@ -424,6 +424,12 @@ class DuvetRepository implements ChatRepository {
           known.rooms[data.id] = data;
           _publishSpaces();
         }
+      // After a move: every room, as the move left their positions.
+      case duvet.RoomReorderedEvent(:final data):
+        for (final r in data.rooms) {
+          if (_spaces[r.spaceId] case final known?) known.rooms[r.id] = r;
+        }
+        _publishSpaces();
       case duvet.RoleCreatedEvent(:final data) || duvet.RoleUpdatedEvent(:final data):
         (_roles[data.spaceId] ??= {})[data.id] = data;
         _publishSpaces();
@@ -1631,10 +1637,55 @@ class DuvetRepository implements ChatRepository {
   }
 
   @override
-  Future<void> moveRoom(String spaceId, String roomId, int position) async {
-    final room = await _call((api) => api.updateRoom(spaceId, roomId, position: position));
-    _spaces[spaceId]?.rooms[room.id] = room;
-    _publishSpaces();
+  Future<void> moveRoom(String spaceId, String roomId, {String? parentId, required int position}) async {
+    final rooms = _spaces[spaceId]?.rooms;
+    final before = {...?rooms};
+    // Moved here as the API moves it, so the list doesn't jump back while
+    // the change is on its way; ROOM_REORDER confirms it.
+    final moved = rooms?[roomId];
+    if (rooms != null && moved != null) {
+      final category = moved.type == duvet.RoomType.category;
+      final to = category ? null : parentId;
+      var at = position;
+      if (moved.parentId == to && at > moved.position) at--;
+      duvet.GatewayRoom placed(duvet.GatewayRoom r, int position, String? parentId) => duvet.GatewayRoom(
+        id: r.id,
+        spaceId: r.spaceId,
+        parentId: parentId,
+        type: r.type,
+        name: r.name,
+        description: r.description,
+        position: position,
+        nsfw: r.nsfw,
+        createdAt: r.createdAt,
+        updatedAt: r.updatedAt,
+        deletedAt: r.deletedAt,
+      );
+      for (final r in rooms.values.toList()) {
+        if (r.id == roomId) continue;
+        var p = r.position;
+        if (r.parentId == moved.parentId && p > moved.position) p--;
+        if (r.parentId == to && p >= at) p++;
+        if (p != r.position) rooms[r.id] = placed(r, p, r.parentId);
+      }
+      rooms[roomId] = placed(moved, at, to);
+      _publishSpaces();
+    }
+    try {
+      final room = await _call(
+        (api) => api.updateRoom(spaceId, roomId, parentId: parentId, clearParent: parentId == null, position: position),
+      );
+      _spaces[spaceId]?.rooms[room.id] = room;
+    } catch (_) {
+      if (rooms != null) {
+        rooms
+          ..clear()
+          ..addAll(before);
+      }
+      rethrow;
+    } finally {
+      _publishSpaces();
+    }
   }
 
   @override
