@@ -19,15 +19,41 @@ import 'widgets/chrome.dart';
 import 'widgets/glass.dart';
 import 'widgets/rows.dart';
 
-/// Picks a Space's banner, an emoji or a sticker; tests swap in their own.
+/// Picks a Space's banner; tests swap in their own.
 Future<String?> Function() pickSpaceImage = () async =>
     (await ImagePicker().pickImage(source: ImageSource.gallery, maxWidth: 1024, imageQuality: 90))?.path;
 
+/// Picks an emoji's or a sticker's picture as it is: resized, Android's picker
+/// would make a GIF a still image. Tests swap in their own.
+Future<String?> Function() pickAssetImage = () async =>
+    (await ImagePicker().pickImage(source: ImageSource.gallery))?.path;
+
 /// The sides of what the desktop's image editor makes of an emoji and a
-/// sticker. The API takes them up to 512 and 1024 pixels (and 256 and 512
-/// KiB); a PNG this size is always under those.
+/// sticker: a PNG this size is always under the API's caps.
 const emojiSide = 128;
 const stickerSide = 320;
+
+/// The API's caps on an emoji's and a sticker's file: its bytes, and the
+/// pixels of each side.
+const emojiCap = (bytes: 256 * 1024, side: 512);
+const stickerCap = (bytes: 512 * 1024, side: 1024);
+
+/// A GIF's size as the API reads it (its header's screen, and its bytes),
+/// and whether it moves; null for any other picture.
+Future<({int width, int height, int bytes, bool animated})?> gifAt(String path) async {
+  final data = await File(path).readAsBytes();
+  if (data.length < 10 || !const ['GIF87a', 'GIF89a'].contains(String.fromCharCodes(data, 0, 6))) return null;
+  var animated = false;
+  try {
+    final codec = await ui.instantiateImageCodec(data);
+    animated = codec.frameCount > 1;
+    codec.dispose();
+  } catch (e) {
+    // The API says what it makes of it.
+    debugPrint('gif: $e');
+  }
+  return (width: data[6] | data[7] << 8, height: data[8] | data[9] << 8, bytes: data.length, animated: animated);
+}
 
 /// The part of the picture at [path] that [crop] frames, drawn [side] pixels
 /// square, as a PNG.
@@ -1340,20 +1366,42 @@ class _AssetsPageState extends State<AssetsPage> {
 
   String get _noun => _kind == AssetKind.emoji ? 'emoji' : 'sticker';
 
-  // Cropped square and sized as the desktop's image editor does, then named
-  // as typed (trimmed), as the desktop sends it: the API takes any text.
+  // Cropped square and sized as the desktop's image editor does (but a GIF
+  // the API takes as it is), then named as typed (trimmed), as the desktop
+  // sends it: the API takes any text.
   Future<void> _add() async {
-    final path = await pickSpaceImage();
+    final path = await pickAssetImage();
     if (path == null || !mounted) return;
-    final crop = await Navigator.of(context).push<CropRect>(
-      MaterialPageRoute(fullscreenDialog: true, builder: (_) => CropPage(path: path, aspect: 1, round: false)),
-    );
-    if (crop == null || !mounted) return;
+    final kind = _kind;
+    final cap = kind == AssetKind.emoji ? emojiCap : stickerCap;
+    // A GIF the API takes as it is goes up unchanged, still moving: cropping
+    // makes a still image of it.
+    final gif = await gifAt(path);
+    if (!mounted) return;
+    final CropRect? crop;
+    if (gif != null && gif.bytes <= cap.bytes && gif.width <= cap.side && gif.height <= cap.side) {
+      crop = null;
+    } else {
+      crop = await Navigator.of(context).push<CropRect>(
+        MaterialPageRoute(
+          fullscreenDialog: true,
+          builder: (_) => CropPage(
+            path: path,
+            aspect: 1,
+            round: false,
+            note: gif?.animated ?? false
+                ? 'This GIF is over ${cap.bytes ~/ 1024} KiB or ${cap.side} px, so it goes up still: its animation is lost'
+                : null,
+          ),
+        ),
+      );
+      if (crop == null || !mounted) return;
+    }
     final got = await askName<void>(context, title: 'Name the $_noun', action: 'Add');
     if (got == null || !mounted) return;
     final repository = context.repository;
-    final kind = _kind;
     await _try(context, 'Couldn’t add the $_noun', () async {
+      if (crop == null) return repository.addAsset(widget.spaceId, kind, got.$1, path);
       final square = await saveSquareImage(path, crop, kind == AssetKind.emoji ? emojiSide : stickerSide);
       try {
         await repository.addAsset(widget.spaceId, kind, got.$1, square);

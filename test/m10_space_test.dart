@@ -103,6 +103,40 @@ void main() {
     return path;
   }
 
+  // A GIF of [frames] one-pixel frames on a [width] × [height] screen: the
+  // size the API reads from its header.
+  String gif({required int width, required int height, int frames = 2}) {
+    final dir = Directory.systemTemp.createTempSync('duvet_gif');
+    addTearDown(() => dir.deleteSync(recursive: true));
+    final path = '${dir.path}/dance.gif';
+    File(path).writeAsBytesSync([
+      ...'GIF89a'.codeUnits,
+      width & 0xff, width >> 8, height & 0xff, height >> 8,
+      // Two colors.
+      0x80, 0, 0, 0, 0, 0, 0xff, 0xff, 0xff,
+      // It loops.
+      0x21, 0xff, 0x0b, ...'NETSCAPE2.0'.codeUnits, 0x03, 0x01, 0x00, 0x00, 0x00,
+      for (var i = 0; i < frames; i++) ...[
+        // 100 ms each, a pixel at the corner.
+        0x21, 0xf9, 0x04, 0x00, 0x0a, 0x00, 0x00, 0x00,
+        0x2c, 0, 0, 0, 0, 1, 0, 1, 0, 0,
+        0x02, 0x02, 0x44, 0x01, 0x00,
+      ],
+      0x3b,
+    ]);
+    return path;
+  }
+
+  // Pumps until [found] shows: the picture is read on the real clock.
+  Future<void> waitFor(WidgetTester tester, Finder found) async {
+    await tester.pump();
+    for (var i = 0; i < 20 && found.evaluate().isEmpty; i++) {
+      await tester.runAsync(() => Future<void>.delayed(const Duration(milliseconds: 50)));
+      await tester.pump(const Duration(milliseconds: 50));
+    }
+    await tester.pump(const Duration(milliseconds: 500));
+  }
+
   // The crop page, once its picture decodes (on the real clock; its spinner
   // never settles before): Use.
   Future<void> useCrop(WidgetTester tester) async {
@@ -369,7 +403,7 @@ void main() {
     tester,
   ) async {
     final path = await picture(tester);
-    pickSpaceImage = () async => path;
+    pickAssetImage = () async => path;
     final squares = <(String, CropRect, int)>[];
     saveSquareImage = (path, crop, side) async {
       squares.add((path, crop, side));
@@ -460,8 +494,61 @@ void main() {
     });
   });
 
+  testWidgets('a GIF the API takes as it is goes up unchanged, still moving', (tester) async {
+    final squares = <int>[];
+    saveSquareImage = (path, crop, side) async {
+      squares.add(side);
+      return '/squares/$side.png';
+    };
+    final repository = await pumpSettings(tester);
+    await tapLabel(tester, RegExp(r'^Emojis and stickers'));
+    final small = gif(width: 64, height: 64);
+    pickAssetImage = () async => small;
+    await tester.tap(find.bySemanticsLabel('Add emoji').last);
+    await waitFor(tester, find.text('Name the emoji'));
+    expect(find.byType(InteractiveViewer), findsNothing);
+    await typeName(tester, 'dance');
+    await tapLabel(tester, 'Add');
+    expect(repository.admin.last, 'emoji+ dance $small');
+
+    // Too large for an emoji, not for a sticker.
+    await tester.tap(find.text('Stickers'));
+    await tester.pumpAndSettle();
+    final large = gif(width: 600, height: 600);
+    pickAssetImage = () async => large;
+    await tester.tap(find.bySemanticsLabel('Add sticker').last);
+    await waitFor(tester, find.text('Name the sticker'));
+    await typeName(tester, 'party');
+    await tapLabel(tester, 'Add');
+    expect(repository.admin.last, 'sticker+ party $large');
+    expect(squares, isEmpty);
+    semantics.dispose();
+  });
+
+  testWidgets('a GIF too large to go up as it is goes up still, saying its animation is lost', (tester) async {
+    final squares = <int>[];
+    saveSquareImage = (path, crop, side) async {
+      squares.add(side);
+      return '/squares/$side.png';
+    };
+    final large = gif(width: 600, height: 600);
+    pickAssetImage = () async => large;
+    final repository = await pumpSettings(tester);
+    await tapLabel(tester, RegExp(r'^Emojis and stickers'));
+    await tester.tap(find.bySemanticsLabel('Add emoji').last);
+    await waitFor(tester, find.byType(InteractiveViewer));
+    // Said under the frame while it's cropped.
+    expect(find.text('This GIF is over 256 KiB or 512 px, so it goes up still: its animation is lost'), findsOneWidget);
+    await tapLabel(tester, 'Use');
+    await typeName(tester, 'dance');
+    await tapLabel(tester, 'Add');
+    expect(squares, [128]);
+    expect(repository.admin.last, 'emoji+ dance /squares/128.png');
+    semantics.dispose();
+  });
+
   testWidgets('emojis and stickers: each kind by its own permission', (tester) async {
-    pickSpaceImage = () async => '/tmp/party.png';
+    pickAssetImage = () async => '/tmp/party.png';
     final repository = await pumpSettings(
       tester,
       setUp: (r) => r

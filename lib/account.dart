@@ -882,7 +882,10 @@ class CropPage extends StatefulWidget {
 
   /// A square frame drawn round, as an avatar shows; an emoji's isn't.
   final bool round;
-  const CropPage({required this.path, required this.aspect, this.round = true, super.key});
+
+  /// Said under the frame while the picture is cropped.
+  final String? note;
+  const CropPage({required this.path, required this.aspect, this.round = true, this.note, super.key});
 
   @override
   State<CropPage> createState() => _CropPageState();
@@ -1001,6 +1004,17 @@ class _CropPageState extends State<CropPage> {
                   ],
                 ),
               ),
+              if (widget.note case final note?)
+                Positioned(
+                  left: 24,
+                  right: 24,
+                  bottom: padding.bottom + 32,
+                  child: Text(
+                    note,
+                    textAlign: TextAlign.center,
+                    style: DuvetType.snippet.copyWith(color: ink),
+                  ),
+                ),
             ],
           );
         },
