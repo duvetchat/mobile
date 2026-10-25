@@ -697,4 +697,15 @@ void main() {
       expect(bucketReads(), 1);
     });
   });
+
+  test('a bot\'s invite card is for bots: anyone else is refused, as on the desktop', () async {
+    await signIn();
+    routes[('GET', '/api/users/u-maya')] = (_) => _user('u-maya', 'maya');
+    routes[('GET', '/api/users/u-ballot')] = (_) => _user('u-ballot', 'ballot', bot: true);
+    expect((await repository.bot('u-ballot')).name, 'ballot');
+    await expectLater(
+      repository.bot('u-maya'),
+      throwsA(isA<ActionFailed>().having((e) => e.message, 'message', 'This user is not a bot.')),
+    );
+  });
 }

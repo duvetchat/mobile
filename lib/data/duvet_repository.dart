@@ -2107,6 +2107,9 @@ class DuvetRepository implements ChatRepository {
   @override
   Future<BotInfo> bot(String userId) async {
     final b = await _call((api) => api.getBotUser(userId));
+    // The route answers any user: a link to someone else's isn't a bot's
+    // invite, which the desktop refuses with this.
+    if (!b.isBot) throw const ActionFailed('This user is not a bot.');
     return BotInfo(id: b.id, name: b.alias?.isNotEmpty == true ? b.alias! : b.username, avatarUrl: avatarUrl(b.avatar));
   }
 
