@@ -608,12 +608,17 @@ void main() {
       _event('CALL_INCOMING', {'conversation_id': 'c-1', 'initiator_id': _maya, 'initiator_name': 'maya'}),
     );
     repository.handleEvent(_event('VOICE_SESSION_REPLACED', {'room_id': 'r-voice'}));
+    // A call across the user's devices: theirs, and one that rings them no more.
+    repository.handleEvent(_event('CALL_OUTGOING', {'conversation_id': 'c-2'}));
+    repository.handleEvent(_event('CALL_ONGOING', {'conversation_id': 'c-1', 'initiator_id': _maya}));
     await pumpEventQueue();
     expect(voice.map((e) => e.runtimeType), [
       duvet.ReadyEvent,
       duvet.VoiceStateUpdatedEvent,
       duvet.CallIncomingPayloadEvent,
       duvet.VoiceSessionReplacedPayloadEvent,
+      duvet.CallOutgoingPayloadEvent,
+      duvet.CallOngoingPayloadEvent,
     ]);
 
     // No gateway (it's off in these tests): nothing can go out.

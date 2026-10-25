@@ -103,9 +103,10 @@ class GatewayVoiceSignaling implements VoiceSignaling {
     duvet.WebRTCRenegotiateEvent() ||
     duvet.WebRTCRenegotiateAnswerEvent() ||
     duvet.CallIncomingPayloadEvent() ||
-    // The gateway's word that a call the user placed is going on; a gateway
-    // from before calls across devices doesn't send it.
+    // A call the user placed, and one going on without ringing them; a
+    // gateway from before calls across devices sends neither.
     duvet.CallOutgoingPayloadEvent() ||
+    duvet.CallOngoingPayloadEvent() ||
     duvet.CallAcceptedEvent() ||
     duvet.CallDeclinedEvent() ||
     duvet.CallEndedPayloadEvent() => true,
