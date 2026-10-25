@@ -229,7 +229,7 @@ void main() {
           ),
           ...r.conversations.value.where((c) => c.id != 'c-team'),
         ];
-        r.friends.value = const Friends(
+        r.friendsOnServer = const Friends(
           friends: [
             Member(userId: _maya, username: 'maya', alias: 'Maya'),
             Member(userId: _leo, username: 'leo'),
