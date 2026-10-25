@@ -28,14 +28,12 @@ typedef _MemberMove = ({String memberId, String? userId});
 /// starts and when the app comes back to the front once its tokens are an
 /// hour old, and at a check every 10 minutes once they're 23 hours old (they
 /// last 24). The gateway identifies with the REST client's token, so it takes
-/// each renewal on its next socket.
+/// each renewal on its next socket. A session that ended closes the socket
+/// with 4004, or, ended while none was open, gets the next one refused at its
+/// upgrade (401): either asks the API about it at once, which signs out of a
+/// dead one.
 ///
 /// Limits of duvet_client this works around or lives with:
-/// - The gateway refuses a token it doesn't know with a 401 at the socket's
-///   upgrade, which the client doesn't report, so a session ended while no
-///   socket was open shows as reconnecting until a request to the API ends
-///   it. One ended under an open socket closes it with 4004, which asks the
-///   API at once.
 /// - A space left while offline stays listed until the next sign-in: READY
 ///   doesn't list the spaces, it's followed by a SPACE_CREATE for each.
 class DuvetRepository implements ChatRepository {
@@ -116,8 +114,9 @@ class DuvetRepository implements ChatRepository {
   final _lastRead = <String, String>{};
   final _resumed = StreamController<void>.broadcast();
   StreamSubscription<duvet.GatewayConnectionState>? _states;
-  StreamSubscription<void>? _resumes;
+  StreamSubscription<duvet.GatewayResume>? _resumes;
   StreamSubscription<duvet.GatewayCloseReason>? _closes;
+  StreamSubscription<duvet.GatewayConnectFailure>? _failures;
   bool _wasReady = false;
 
   @override
@@ -294,6 +293,8 @@ class DuvetRepository implements ChatRepository {
     _resumes = null;
     _closes?.cancel();
     _closes = null;
+    _failures?.cancel();
+    _failures = null;
     _wasReady = false;
     _lastRead.clear();
     drafts.clear();
@@ -423,7 +424,20 @@ class DuvetRepository implements ChatRepository {
       unawaited(_renewIfDue(after).catchError((Object e) => debugPrint('session: $e')));
 
   @override
-  void cameToFront() => _renewQuietly(renewInFrontAfter);
+  void cameToFront() {
+    _renewQuietly(renewInFrontAfter);
+    if (status.value == LiveStatus.online) return;
+    // Cut off while away. Connecting goes again now, not at the end of its
+    // wait, and asks the API about the session, which may have ended
+    // meanwhile: the gateway's 401 at the socket's upgrade doesn't say so.
+    if (_retry != null) {
+      // Opened offline: starting again asks.
+      unawaited(_comeBack());
+    } else {
+      _checkSession();
+      _gateway?.retryNow();
+    }
+  }
 
   // ---------------------------------------------------------------------------
   // Gateway
@@ -447,6 +461,7 @@ class DuvetRepository implements ChatRepository {
     _states = gateway.onConnectionState.listen(handleConnectionState);
     _resumes = gateway.onResume.listen((_) => handleResume());
     _closes = gateway.onCloseReason.listen(handleCloseReason);
+    _failures = gateway.onConnectFailure.listen(handleConnectFailure);
     status.value = LiveStatus.connecting;
     gateway.connectAll().catchError((Object e) {
       debugPrint('gateway: $e');
@@ -474,8 +489,29 @@ class DuvetRepository implements ChatRepository {
   /// the next socket identifies with. Any other reason only reconnects.
   @visibleForTesting
   void handleCloseReason(duvet.GatewayCloseReason close) {
-    if (close.code != duvet.GatewayCloseCode.invalidCredentials || _api == null) return;
-    unawaited(_call((api) => api.me()).then((_) {}, onError: (Object e) => debugPrint('session: $e')));
+    if (close.code == duvet.GatewayCloseCode.invalidCredentials) _checkSession();
+  }
+
+  /// An attempt to open a socket failed. A token the gateway doesn't know (a
+  /// session that ended while no socket was open) is refused at the socket's
+  /// upgrade, with a 401, not closed with 4004: the API is asked about the
+  /// session at once on a 401, and on the first failure and every 5th
+  /// otherwise, as the desktop asks on its socket's errors.
+  @visibleForTesting
+  void handleConnectFailure(duvet.GatewayConnectFailure failure) {
+    if (failure.httpStatus == 401 || failure.failures % 5 == 1) _checkSession();
+  }
+
+  Future<void>? _sessionCheck;
+
+  // Asks the API about the session, one question at a time: a dead session
+  // gets a 401 there, which ends it ([_call]); a live one renews its tokens if
+  // it must, which the next socket identifies with.
+  void _checkSession() {
+    if (_api == null || _sessionCheck != null) return;
+    _sessionCheck = _call(
+      (api) => api.me(),
+    ).then<void>((_) {}, onError: (Object e) => debugPrint('session: $e')).whenComplete(() => _sessionCheck = null);
   }
 
   /// Applies a gateway event.

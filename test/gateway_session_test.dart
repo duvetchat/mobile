@@ -36,6 +36,12 @@ class _Gateway {
   /// Whether it takes up the sessions it's asked to resume.
   bool resumes = true;
 
+  /// While set, it refuses the socket's upgrade with this status, as the
+  /// gateway does a token it doesn't know (401) or while it can't check one
+  /// (503); and how many it refused.
+  int? refuseWith;
+  int refused = 0;
+
   /// The identifies, in order.
   final identified = <Map<String, dynamic>>[];
 
@@ -44,6 +50,12 @@ class _Gateway {
   Future<void> _handle(HttpRequest request) async {
     if (request.uri.path != '/gateway' || !WebSocketTransformer.isUpgradeRequest(request)) {
       request.response.statusCode = HttpStatus.notFound;
+      await request.response.close();
+      return;
+    }
+    if (refuseWith case final status?) {
+      refused++;
+      request.response.statusCode = status;
       await request.response.close();
       return;
     }
@@ -90,9 +102,11 @@ class _Gateway {
   Future<void> close() => _server.close(force: true);
 }
 
-/// Waits for [done], on the real clock: sockets take their time.
-Future<void> _until(bool Function() done) async {
-  for (var i = 0; i < 200 && !done(); i++) {
+/// Waits for [done], on the real clock, [within] at most: sockets take their
+/// time.
+Future<void> _until(bool Function() done, {Duration within = const Duration(seconds: 5)}) async {
+  final until = DateTime.now().add(within);
+  while (!done() && DateTime.now().isBefore(until)) {
     await Future<void>.delayed(const Duration(milliseconds: 25));
   }
   expect(done(), isTrue);
@@ -185,5 +199,33 @@ void main() {
     await _until(() => repository.profile.value == null);
     expect(requests.skip(asked).first, 'GET /api/users/@me');
     expect(ended, 1);
+  });
+
+  test('a session that ended while the socket was down, refused at the upgrade, asks the API and ends', () async {
+    var ended = 0;
+    repository.signedOut.listen((_) => ended++);
+    await signIn();
+
+    sessionDead = true;
+    gateway.refuseWith = 401;
+    await gateway.drop();
+    await _until(() => repository.profile.value == null);
+    expect(ended, 1);
+    expect(gateway.refused, 1);
+  });
+
+  test('back in front while reconnecting, the next attempt goes at once', () async {
+    await signIn();
+    int asked() => requests.where((r) => r == 'GET /api/users/@me').length;
+    final before = asked();
+    gateway.refuseWith = 503;
+    await gateway.drop();
+    // The first failure asks the API about the session, once the client waits
+    // to try again.
+    await _until(() => gateway.refused == 1 && asked() > before);
+
+    repository.cameToFront();
+    // Not after the 2 seconds and more the next wait takes.
+    await _until(() => gateway.refused == 2, within: const Duration(milliseconds: 600));
   });
 }

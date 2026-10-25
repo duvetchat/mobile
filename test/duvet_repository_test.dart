@@ -714,6 +714,34 @@ void main() {
       expect(requests.last.headers['X-Session-Token'], 'refresh-2');
     });
 
+    test('opened offline, back in front it tries the server again at once', () async {
+      await repository.logIn('gaby@duvet.chat', 'secret');
+      await Future<void>.delayed(const Duration(milliseconds: 700));
+      var reachable = false;
+      final asked = <String>[];
+      final offline = DuvetRepository(
+        store: store,
+        recentsStore: MemoryRecentChatsStore(),
+        httpClient: () => MockClient((request) async {
+          asked.add(request.url.path);
+          if (!reachable) throw const SocketException('no network');
+          return http.Response.fromStream(await client.send(request));
+        }),
+        connectGateway: false,
+        cacheStore: cache,
+      );
+      addTearDown(offline.dispose);
+      expect(await offline.restore(), isTrue);
+      expect(offline.status.value, LiveStatus.offline);
+
+      // Not at the next try, 20 seconds on.
+      reachable = true;
+      asked.clear();
+      offline.cameToFront();
+      await pumpEventQueue();
+      expect(asked, contains('/api/users/@me'));
+    });
+
     test('a saved session whose renewal the API refuses at launch is forgotten, not opened offline', () async {
       await store.write((token: 'access-1', sessionToken: 'refresh-1', refreshedAt: null));
       sessionDead = true;
@@ -841,6 +869,46 @@ void main() {
         repository.dispose();
         async.flushMicrotasks();
       }, initialTime: DateTime(2026, 10, 24, 9));
+    });
+
+    test(
+      'a failed attempt to connect asks the API about the session: on a 401 at once, else the 1st and every 5th',
+      () async {
+        await repository.logIn('gaby@duvet.chat', 'secret');
+        await pumpEventQueue();
+        int asked() => requests.where((r) => r.url.path == '/api/users/@me').length;
+        final before = asked();
+        for (var failures = 1; failures <= 11; failures++) {
+          repository.handleConnectFailure(
+            duvet.GatewayConnectFailure(failures: failures, error: const SocketException('no network')),
+          );
+          await pumpEventQueue();
+        }
+        expect(asked() - before, 3);
+
+        // The gateway didn\'t know the token.
+        repository.handleConnectFailure(
+          duvet.GatewayConnectFailure(failures: 2, httpStatus: 401, error: const SocketException('401')),
+        );
+        await pumpEventQueue();
+        expect(asked() - before, 4);
+      },
+    );
+
+    test('back in front while not connected, it asks the API about the session', () async {
+      await repository.logIn('gaby@duvet.chat', 'secret');
+      repository.handleEvent(_event('READY', {'user': _user(_me, 'gaby'), 'sessionToken': 'ws'}));
+      await pumpEventQueue();
+      int asked() => requests.where((r) => r.url.path == '/api/users/@me').length;
+      final before = asked();
+      repository.cameToFront();
+      await pumpEventQueue();
+      expect(asked(), before);
+
+      repository.handleConnectionState(duvet.GatewayConnectionState.reconnecting);
+      repository.cameToFront();
+      await pumpEventQueue();
+      expect(asked(), before + 1);
     });
 
     test('the gateway\'s 4004 asks the API about the session at once', () async {
