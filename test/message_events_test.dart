@@ -232,6 +232,33 @@ void main() {
       expect((events.last as MessageUpdated).message.content, 'see https://duvet.chat');
     });
 
+    test('the Chats tab previews the message as merged: a picture stays a photo once edited', () async {
+      await listen(_room);
+      repository.opened(_room, '# general');
+      repository.handleEvent(
+        _event('MESSAGE_CREATE', {
+          ..._answer('7', '', flags: 0),
+          'attachments': [
+            {
+              'id': 'a-1',
+              'filename': 'chart.png',
+              'content_type': 'image/png',
+              'size_bytes': 10,
+              'created_at': _at,
+              'url': 'https://api.duvet.chat/attachments/a-1',
+            },
+          ],
+        }),
+      );
+      expect(repository.recents.value.single.previewText, 'Sent a photo');
+      // Its bot edits it: the event has no files.
+      repository.handleEvent(
+        _event('MESSAGE_UPDATE', {..._answer('7', '', flags: 0), 'updated_at': '2026-10-23T09:00:30Z'}),
+      );
+      await pumpEventQueue();
+      expect(repository.recents.value.single.previewText, 'Sent a photo');
+    });
+
     test('an edit of a DM keeps its author in the Chats tab, also when the event has no user', () async {
       final events = await listen(_dm);
       repository.handleEvent(_event('DM_MESSAGE_CREATE', _dmMessage('9', 'first try')));

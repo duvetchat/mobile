@@ -624,12 +624,13 @@ class DuvetRepository implements ChatRepository {
 
   // An edit, or a link preview that came late. The event carries no files,
   // reactions, reply or pin: the newest message keeps them, as the chat does,
-  // and so does the Chats tab's preview.
+  // and the Chats tab previews it as merged (a picture's stays "Sent a
+  // photo"), or as the event has it when the newest message isn't known.
   void _updated(String chatId, ChatMessage update) {
-    if (latest.value[chatId] case final known? when known.id == update.id) {
-      latest.value = {...latest.value, chatId: known.updatedBy(update)};
-    }
-    _recents.edited(chatId, update);
+    final known = latest.value[chatId];
+    final merged = known != null && known.id == update.id ? known.updatedBy(update) : null;
+    if (merged != null) latest.value = {...latest.value, chatId: merged};
+    _recents.edited(chatId, merged ?? update);
     _messageEvents.add((chatId, MessageUpdated(update)));
   }
 
