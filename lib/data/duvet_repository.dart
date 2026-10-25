@@ -17,6 +17,9 @@ import 'repository.dart';
 import 'session_store.dart';
 import 'voice_signaling.dart';
 
+// Someone who joined a Space, with their user ID, or left it (null).
+typedef _MemberMove = ({String memberId, String? userId});
+
 /// [ChatRepository] over the Duvet API (`duvet_client`): REST for history and
 /// sending, the gateway for everything live.
 ///
@@ -150,6 +153,12 @@ class DuvetRepository implements ChatRepository {
   // The members list on its way for them, by space.
   final _memberLookups = <String, Future<void>>{};
 
+  // Who joined or left while a members list was on its way, one log per list,
+  // by space: the list may be from before them, so it lands with them on top.
+  // A list whose log is gone (the Space forgotten or left, or READY after a
+  // drop) may be from before that, and names no member IDs.
+  final _memberLogs = <String, List<List<_MemberMove>>>{};
+
   duvet.RestClient get _rest => _api ?? (throw StateError('Not signed in'));
 
   // ---------------------------------------------------------------------------
@@ -279,6 +288,7 @@ class DuvetRepository implements ChatRepository {
     _memberUsers.clear();
     _waitingRoles.clear();
     _memberLookups.clear();
+    _memberLogs.clear();
     _spaceMembers.clear();
     _loadedMembers.clear();
     _roles.clear();
@@ -608,21 +618,60 @@ class DuvetRepository implements ChatRepository {
   void _trackMembers(duvet.GatewayEventPayload event, {required bool reconnected}) {
     switch (event) {
       // Who joined or left while the socket was down comes only in the
-      // members lists fetched from now on.
+      // members lists fetched from now on, not in those on their way.
       case duvet.ReadyEvent() when reconnected:
         _spaceMembers.clear();
         _memberUsers.clear();
+        _memberLogs.clear();
       // A new session's member roles include what the waiting changes did,
       // and what happened after them.
       case duvet.SpaceCreateEvent(:final data):
         _waitingRoles.remove(data.space.id);
       case duvet.SpaceMemberAddedEvent(:final data) when data.userId != null:
-        (_memberUsers[data.spaceId] ??= {})[data.memberId] = data.userId!;
+        _memberMoved(data.spaceId, (memberId: data.memberId, userId: data.userId));
         if (_applyWaitingRoles(data.spaceId)) _publishSpaces();
       case duvet.SpaceMemberRemovedEvent(:final data):
-        _memberUsers[data.spaceId]?.remove(data.memberId);
+        _memberMoved(data.spaceId, (memberId: data.memberId, userId: null));
       default:
     }
+  }
+
+  /// Someone joined or left: their member ID, kept for role changes, and in
+  /// the logs of the members lists on their way.
+  void _memberMoved(String spaceId, _MemberMove move) {
+    if (move.userId != null) _memberUsers[spaceId] ??= {};
+    if (_memberUsers[spaceId] case final users?) _move(users, move);
+    for (final log in _memberLogs[spaceId] ?? const <List<_MemberMove>>[]) {
+      log.add(move);
+    }
+  }
+
+  static void _move(Map<String, String> users, _MemberMove move) {
+    if (move.userId case final userId?) {
+      users[move.memberId] = userId;
+    } else {
+      users.remove(move.memberId);
+    }
+  }
+
+  /// Ends a members list's [log]; answers whether it was still kept: a list
+  /// whose log the Space's forgetting, or READY after a drop, took away may
+  /// be from before it.
+  bool _endMemberLog(String spaceId, List<_MemberMove> log) {
+    final logs = _memberLogs[spaceId];
+    if (logs == null || !logs.remove(log)) return false;
+    if (logs.isEmpty) _memberLogs.remove(spaceId);
+    return true;
+  }
+
+  /// A Space forgotten or left: who's in it by member ID, and the role changes
+  /// and members lists that waited for them. If the user comes back, they come
+  /// anew: someone may have left and come back meanwhile, with another ID.
+  void _forgetMembers(String spaceId) {
+    _memberUsers.remove(spaceId);
+    _waitingRoles.remove(spaceId);
+    _memberLookups.remove(spaceId);
+    _memberLogs.remove(spaceId);
   }
 
   String? _spaceOfRole(String roleId) => _roles.entries.where((e) => e.value.containsKey(roleId)).firstOrNull?.key;
@@ -1261,6 +1310,7 @@ class DuvetRepository implements ChatRepository {
     final rooms = {...?_spaces.remove(spaceId)?.rooms.keys, ..._recents.forgetSpace(spaceId)};
     _nicknames.remove(spaceId);
     _spaceMemberIds.remove(spaceId);
+    _forgetMembers(spaceId);
     if (unread.value.any(rooms.contains)) unread.value = unread.value.difference(rooms);
     if (mentions.value.keys.any(rooms.contains)) {
       mentions.value = {...mentions.value}..removeWhere((id, _) => rooms.contains(id));
@@ -1272,6 +1322,7 @@ class DuvetRepository implements ChatRepository {
   Future<void> leaveSpace(String spaceId) async {
     await _call((api) => api.leaveSpace(spaceId));
     _spaces.remove(spaceId);
+    _forgetMembers(spaceId);
     _publishSpaces();
   }
 
@@ -2228,13 +2279,21 @@ class DuvetRepository implements ChatRepository {
 
   // Every page, up to a few thousand members: the list and mentions need names.
   Future<List<Member>> _fetchSpaceMembers(String spaceId) async {
+    // Who joins or leaves while the pages come, which they may not show.
+    final moves = <_MemberMove>[];
+    (_memberLogs[spaceId] ??= []).add(moves);
     final all = <duvet.SpaceMemberWithUser>[];
-    while (all.length < 5000) {
-      final page = await _call(
-        (api) => api.getSpaceMembers(spaceId, afterId: all.lastOrNull?.id, afterPos: all.lastOrNull?.maxPos),
-      );
-      all.addAll(page);
-      if (page.length < duvet.membersPageSize) break;
+    final bool kept;
+    try {
+      while (all.length < 5000) {
+        final page = await _call(
+          (api) => api.getSpaceMembers(spaceId, afterId: all.lastOrNull?.id, afterPos: all.lastOrNull?.maxPos),
+        );
+        all.addAll(page);
+        if (page.length < duvet.membersPageSize) break;
+      }
+    } finally {
+      kept = _endMemberLog(spaceId, moves);
     }
     // Not the members' status_id, which isn't live: presence comes from
     // SPACE_CREATE's member_statuses and USER_STATUS_UPDATE.
@@ -2258,8 +2317,14 @@ class DuvetRepository implements ChatRepository {
         if (m.alias case final alias? when alias.isNotEmpty) m.user.id: alias,
     };
     (_spaceMemberIds[spaceId] ??= {}).addAll(members.map((m) => m.userId));
-    // Made again: a member who left and came back has another ID.
-    _memberUsers[spaceId] = {for (final m in all) m.id: m.userId};
+    // Made again: a member who left and came back has another ID. Who joined
+    // or left meanwhile goes on top.
+    if (kept) {
+      final users = _memberUsers[spaceId] = {for (final m in all) m.id: m.userId};
+      for (final move in moves) {
+        _move(users, move);
+      }
+    }
     _applyWaitingRoles(spaceId);
     _loadedMembers[spaceId] = members;
     _publishSpaces();
