@@ -138,13 +138,17 @@ class DuvetRepository implements ChatRepository {
   final _spaceMemberIds = <String, Set<String>>{};
 
   // Each space's members' user IDs, by member ID (`Members.id`), which the
-  // API's role routes and events name: from the members list, and from
-  // SPACE_MEMBER_ADD.
+  // API's role routes and events name: from the latest members list, and
+  // SPACE_MEMBER_ADD since.
   final _memberUsers = <String, Map<String, String>>{};
 
-  // By space, the role changes waiting for the members list to name their
-  // member: later ones wait behind them, to apply in the order they came.
-  final _roleChanges = <String, Future<void>>{};
+  // Role changes for members not named yet, by space and member, in the order
+  // they came: they apply once a members list or SPACE_MEMBER_ADD names the
+  // member.
+  final _waitingRoles = <String, Map<String, List<({String roleId, bool added})>>>{};
+
+  // The members list on its way for them, by space.
+  final _memberLookups = <String, Future<void>>{};
 
   duvet.RestClient get _rest => _api ?? (throw StateError('Not signed in'));
 
@@ -273,7 +277,8 @@ class DuvetRepository implements ChatRepository {
     _nicknames.clear();
     _spaceMemberIds.clear();
     _memberUsers.clear();
-    _roleChanges.clear();
+    _waitingRoles.clear();
+    _memberLookups.clear();
     _spaceMembers.clear();
     _loadedMembers.clear();
     _roles.clear();
@@ -351,6 +356,7 @@ class DuvetRepository implements ChatRepository {
   @visibleForTesting
   void handleEvent(duvet.GatewayEventPayload event) {
     final me = profile.value?.id;
+    final reconnected = event is duvet.ReadyEvent && _wasReady;
     switch (event) {
       case duvet.ReadyEvent(:final data):
         status.value = LiveStatus.online;
@@ -592,17 +598,27 @@ class DuvetRepository implements ChatRepository {
 
       default:
     }
-    _noteMember(event);
+    _trackMembers(event, reconnected: reconnected);
     // After the spaces and roles took it in: voice reads them.
     _voiceSignaling.deliver(event);
   }
 
-  // Whatever else they do, SPACE_MEMBER_ADD and SPACE_MEMBER_REMOVE keep the
-  // member IDs that role changes name.
-  void _noteMember(duvet.GatewayEventPayload event) {
+  // Whatever else they do, these events keep the member IDs that role
+  // changes name, and the role changes waiting for them.
+  void _trackMembers(duvet.GatewayEventPayload event, {required bool reconnected}) {
     switch (event) {
+      // Who joined or left while the socket was down comes only in the
+      // members lists fetched from now on.
+      case duvet.ReadyEvent() when reconnected:
+        _spaceMembers.clear();
+        _memberUsers.clear();
+      // A new session's member roles include what the waiting changes did,
+      // and what happened after them.
+      case duvet.SpaceCreateEvent(:final data):
+        _waitingRoles.remove(data.space.id);
       case duvet.SpaceMemberAddedEvent(:final data) when data.userId != null:
         (_memberUsers[data.spaceId] ??= {})[data.memberId] = data.userId!;
+        if (_applyWaitingRoles(data.spaceId)) _publishSpaces();
       case duvet.SpaceMemberRemovedEvent(:final data):
         _memberUsers[data.spaceId]?.remove(data.memberId);
       default:
@@ -611,31 +627,60 @@ class DuvetRepository implements ChatRepository {
 
   String? _spaceOfRole(String roleId) => _roles.entries.where((e) => e.value.containsKey(roleId)).firstOrNull?.key;
 
-  /// A member was given a role, or lost one. A member the members list hasn't
-  /// named yet is looked up in it first: a role of the user's own changes
-  /// what they may do.
+  /// A member was given a role, or lost one. One not named yet waits for a
+  /// members list: a role of the user's own changes what they may do.
   void _memberRoleChanged(String spaceId, String memberId, String roleId, {required bool added}) {
-    void apply() {
-      final userId = _memberUsers[spaceId]?[memberId];
-      if (userId == null || !_spaces.containsKey(spaceId)) return;
-      final ids = (_memberRoles[spaceId] ??= {})[userId] ??= [];
-      if (added && !ids.contains(roleId)) ids.add(roleId);
-      if (!added) ids.remove(roleId);
-      _publishSpaces();
+    final userId = _memberUsers[spaceId]?[memberId];
+    if (userId != null && !(_waitingRoles[spaceId]?.containsKey(memberId) ?? false)) {
+      _applyRole(spaceId, userId, roleId, added: added);
+      return _publishSpaces();
     }
+    // Behind the member's earlier changes, to apply in order.
+    ((_waitingRoles[spaceId] ??= {})[memberId] ??= []).add((roleId: roleId, added: added));
+    _lookUpMembers(spaceId);
+  }
 
-    final waiting = _roleChanges[spaceId];
-    if (waiting == null && (_memberUsers[spaceId]?.containsKey(memberId) ?? false)) return apply();
-    // The list once a session, or again after someone joined or left: a
-    // member it doesn't name then has left.
-    final next = (waiting ?? _spaceMemberList(spaceId).then((_) {}, onError: (Object e) => debugPrint('roles: $e')))
-        .then((_) => apply());
-    _roleChanges[spaceId] = next;
+  void _applyRole(String spaceId, String userId, String roleId, {required bool added}) {
+    final ids = (_memberRoles[spaceId] ??= {})[userId] ??= [];
+    if (added && !ids.contains(roleId)) ids.add(roleId);
+    if (!added) ids.remove(roleId);
+  }
+
+  /// Fetches the members list again for the waiting role changes: the one
+  /// cached may be from before someone joined while the app wasn't
+  /// listening. Changes it doesn't name, or all of them when it fails, wait
+  /// for the next list or SPACE_MEMBER_ADD.
+  void _lookUpMembers(String spaceId) {
+    if (_memberLookups.containsKey(spaceId)) return;
+    final lookup = _spaceMemberList(
+      spaceId,
+      refresh: true,
+    ).then((_) {}, onError: (Object e) => debugPrint('members for roles: $e'));
+    _memberLookups[spaceId] = lookup;
     unawaited(
-      next.whenComplete(() {
-        if (identical(_roleChanges[spaceId], next)) _roleChanges.remove(spaceId);
+      lookup.whenComplete(() {
+        if (identical(_memberLookups[spaceId], lookup)) _memberLookups.remove(spaceId);
       }),
     );
+  }
+
+  /// Applies the waiting role changes of the members now named; answers
+  /// whether there were any.
+  bool _applyWaitingRoles(String spaceId) {
+    final waiting = _waitingRoles[spaceId];
+    final users = _memberUsers[spaceId];
+    if (waiting == null || users == null || !_spaces.containsKey(spaceId)) return false;
+    var applied = false;
+    for (final memberId in [...waiting.keys]) {
+      final userId = users[memberId];
+      if (userId == null) continue;
+      for (final change in waiting.remove(memberId)!) {
+        _applyRole(spaceId, userId, change.roleId, added: change.added);
+      }
+      applied = true;
+    }
+    if (waiting.isEmpty) _waitingRoles.remove(spaceId);
+    return applied;
   }
 
   // Events for whichever chat has the message.
@@ -2193,7 +2238,9 @@ class DuvetRepository implements ChatRepository {
         if (m.alias case final alias? when alias.isNotEmpty) m.user.id: alias,
     };
     (_spaceMemberIds[spaceId] ??= {}).addAll(members.map((m) => m.userId));
-    (_memberUsers[spaceId] ??= {}).addAll({for (final m in all) m.id: m.userId});
+    // Made again: a member who left and came back has another ID.
+    _memberUsers[spaceId] = {for (final m in all) m.id: m.userId};
+    _applyWaitingRoles(spaceId);
     _loadedMembers[spaceId] = members;
     _publishSpaces();
     return members;

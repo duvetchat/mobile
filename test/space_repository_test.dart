@@ -243,6 +243,107 @@ void main() {
       expect(repository.rolesOf('s-1', _leo).map((r) => r.name), ['role-mod']);
       expect(memberFetches(), 0);
     });
+
+    // Who the API lists, as it changes; while [down], the list fails.
+    late List<Map<String, dynamic>> listed;
+    late bool down;
+    void changingMembers() {
+      listed = [_member('mem-me', _me, 'gaby'), _member('mem-maya', _maya, 'maya')];
+      down = false;
+      routes[('GET', '/api/spaces/s-1/members')] = (_) => down
+          ? http.Response(
+              jsonEncode({'error': 'internal server error'}),
+              500,
+              headers: {'content-type': 'application/json'},
+            )
+          : listed;
+    }
+
+    Map<String, dynamic> roleAdd(String member) => {'member_id': member, 'role_id': 'role-mod', 'space_id': 's-1'};
+
+    test('the members list cached before someone joined unseen is fetched again for their role', () async {
+      await signIn();
+      repository.handleEvent(_event('SPACE_CREATE', _space(roles: {'role-mod': Perm.pinMessages})));
+      changingMembers();
+      await repository.members(const RoomTarget(spaceId: 's-1', roomId: 'r-general'));
+      // Leo joins while the app isn't listening: no SPACE_MEMBER_ADD.
+      listed.add(_member('mem-leo', _leo, 'leo'));
+      repository.handleEvent(_event('MEMBER_ROLE_ADD', roleAdd('mem-leo')));
+      await pumpEventQueue();
+      expect(repository.rolesOf('s-1', _leo).map((r) => r.name), ['role-mod']);
+      expect(memberFetches(), 2);
+    });
+
+    test('a role change whose members list fails waits for the next list', () async {
+      await signIn();
+      repository.handleEvent(_event('SPACE_CREATE', _space(roles: {'role-mod': Perm.pinMessages})));
+      changingMembers();
+      down = true;
+      repository.handleEvent(_event('MEMBER_ROLE_ADD', roleAdd('mem-maya')));
+      await pumpEventQueue();
+      expect(repository.rolesOf('s-1', _maya), isEmpty);
+
+      // The next list, whoever asks for it, names her.
+      down = false;
+      await repository.members(const RoomTarget(spaceId: 's-1', roomId: 'r-general'));
+      expect(repository.rolesOf('s-1', _maya).map((r) => r.name), ['role-mod']);
+    });
+
+    test('a role change that can\'t be placed yet waits for its member\'s SPACE_MEMBER_ADD', () async {
+      await signIn();
+      repository.handleEvent(_event('SPACE_CREATE', _space(roles: {'role-mod': Perm.pinMessages})));
+      changingMembers();
+      down = true;
+      repository.handleEvent(_event('MEMBER_ROLE_ADD', roleAdd('mem-leo')));
+      await pumpEventQueue();
+      repository.handleEvent(
+        _event('SPACE_MEMBER_ADD', {'space_id': 's-1', 'user_id': _leo, 'member_id': 'mem-leo', 'status_id': 1}),
+      );
+      expect(repository.rolesOf('s-1', _leo).map((r) => r.name), ['role-mod']);
+    });
+
+    test('a new session\'s SPACE_CREATE outdates the role changes still waiting', () async {
+      await signIn();
+      repository.handleEvent(_event('SPACE_CREATE', _space(roles: {'role-mod': Perm.pinMessages})));
+      changingMembers();
+      down = true;
+      repository.handleEvent(_event('MEMBER_ROLE_ADD', roleAdd('mem-maya')));
+      await pumpEventQueue();
+      // The role was taken back while the app was away: the new snapshot says so.
+      repository.handleEvent(_event('SPACE_CREATE', _space(roles: {'role-mod': Perm.pinMessages})));
+      down = false;
+      await repository.members(const RoomTarget(spaceId: 's-1', roomId: 'r-general'));
+      expect(repository.rolesOf('s-1', _maya), isEmpty);
+    });
+
+    test('READY after a drop forgets the members lists: who joined or left meanwhile shows', () async {
+      await signIn();
+      final ready = _event('READY', {'user': _user(_me, 'gaby'), 'sessionToken': 'ws'});
+      repository.handleEvent(ready);
+      repository.handleEvent(_event('SPACE_CREATE', _space(roles: {'role-mod': Perm.pinMessages})));
+      changingMembers();
+      routes[('PUT', '/api/spaces/s-1/members/mem-maya-2/roles/role-mod')] = (_) => http.Response('', 204);
+      await repository.members(const RoomTarget(spaceId: 's-1', roomId: 'r-general'));
+      // Maya left and came back while the socket was down: a new member ID.
+      listed[1] = _member('mem-maya-2', _maya, 'maya');
+      repository.handleConnectionState(duvet.GatewayConnectionState.reconnecting);
+      repository.handleEvent(ready);
+      await repository.setRole('s-1', 'role-mod', _maya, has: true);
+      expect(requests.last.url.path, '/api/spaces/s-1/members/mem-maya-2/roles/role-mod');
+      expect(memberFetches(), 2);
+    });
+
+    test('a members list fetched again replaces the member IDs it had', () async {
+      await signIn();
+      repository.handleEvent(_event('SPACE_CREATE', _space(roles: {'role-mod': Perm.pinMessages})));
+      changingMembers();
+      routes[('PUT', '/api/spaces/s-1/members/mem-maya-2/roles/role-mod')] = (_) => http.Response('', 204);
+      await repository.members(const RoomTarget(spaceId: 's-1', roomId: 'r-general'));
+      listed[1] = _member('mem-maya-2', _maya, 'maya');
+      await repository.members(const RoomTarget(spaceId: 's-1', roomId: 'r-general'), refresh: true);
+      await repository.setRole('s-1', 'role-mod', _maya, has: true);
+      expect(requests.last.url.path, '/api/spaces/s-1/members/mem-maya-2/roles/role-mod');
+    });
   });
 
   group('rooms the user can\'t see', () {
