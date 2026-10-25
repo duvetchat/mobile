@@ -192,11 +192,13 @@ class DuvetRepository implements ChatRepository {
       return false;
     } catch (_) {
       // Unreachable server: keep the tokens for the next try, and open with
-      // what's saved if there is anything.
+      // what's saved if there is anything. The tokens as they are now: a
+      // renewal may have replaced the ones read.
       _closeSession();
       final home = await _cache.loadHome();
       if (home == null) rethrow;
-      _api = duvet.RestClient(_httpClient(), router: _router, token: saved.token, sessionToken: saved.sessionToken);
+      final tokens = _saved ?? saved;
+      _api = duvet.RestClient(_httpClient(), router: _router, token: tokens.token, sessionToken: tokens.sessionToken);
       profile.value = home.profile;
       conversations.value = home.conversations;
       spaces.value = home.spaces;

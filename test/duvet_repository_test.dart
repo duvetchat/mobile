@@ -100,6 +100,9 @@ void main() {
   /// What a new avatar or banner gets, when not the user.
   http.Response? pictureRefusal;
 
+  /// `GET /api/users/@me` gets no answer: the network failed on the way.
+  late bool meUnreachable;
+
   setUp(() {
     requests = [];
     store = MemorySessionStore();
@@ -116,6 +119,7 @@ void main() {
     asking = [];
     holdAsking = null;
     pictureRefusal = null;
+    meUnreachable = false;
     client = MockClient((request) async {
       requests.add(request);
       Map<String, dynamic> body() => jsonDecode(request.body) as Map<String, dynamic>;
@@ -124,6 +128,7 @@ void main() {
         final n = ++refreshes + 1;
         return http.Response(jsonEncode({'token': 'access-$n', 'session_token': 'refresh-$n'}), 200);
       }
+      if (meUnreachable && request.url.path == '/api/users/@me') throw const SocketException('connection reset');
       final refused = sessionDead || request.headers['Authorization'] == 'Bearer $expiredToken';
       if (refused && !request.url.path.startsWith('/api/auth/')) return http.Response('', 401);
       if (request.url.path == '/api/users/@me/friends/requests') {
@@ -668,6 +673,24 @@ void main() {
       expect(await fresh.restore(), isTrue);
       expect(requests.first.url.path, '/api/users/@me');
       expect(requests.any((r) => r.url.path == '/api/auth/refresh'), isFalse);
+    });
+
+    test('opened offline after a renewal at launch, it goes on with the renewed tokens', () async {
+      // A session that loaded once, which the cache opens offline.
+      await repository.logIn('gaby@duvet.chat', 'secret');
+      await Future<void>.delayed(const Duration(milliseconds: 700));
+      await store.write((token: 'access-1', sessionToken: 'refresh-1', refreshedAt: null));
+      meUnreachable = true;
+      final offline = newRepository();
+      addTearDown(offline.dispose);
+      expect(await offline.restore(), isTrue);
+      expect(offline.status.value, LiveStatus.offline);
+      expect(refreshes, 1);
+
+      // The old ones the API revoked as it renewed them.
+      await offline.messages(const ConversationTarget('c-1'));
+      expect(requests.last.headers['Authorization'], 'Bearer access-2');
+      expect(requests.last.headers['X-Session-Token'], 'refresh-2');
     });
 
     test('a saved session whose renewal the API refuses at launch is forgotten, not opened offline', () async {
