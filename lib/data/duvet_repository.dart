@@ -1434,9 +1434,9 @@ class DuvetRepository implements ChatRepository {
     }
   }
 
-  // Why the API refused a message or a pin, which the chat shows, as the
-  // desktop does. Not for a 401, which ends the session (a 403 comes as a
-  // DuvetAuthException too).
+  // Why the API refused a request, for the user to read: its reason, as the
+  // desktop's `getApiError` shows it, for any error but a 401, which ends the
+  // session (a 403 comes as a DuvetAuthException too).
   static String? _refusal(duvet.DuvetApiException e) => e.statusCode == 401 ? null : _serverReason(e);
 
   Future<ChatMessage> _sendTo(
