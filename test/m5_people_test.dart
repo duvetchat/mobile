@@ -149,6 +149,35 @@ void main() {
     semantics.dispose();
   });
 
+  testWidgets('in a Space, a bot\'s status there comes first: its members sheet and its profile', (tester) async {
+    await pumpApp(
+      tester,
+      setUp: (r) => r.presence.value = {
+        _maya: Presence.online,
+        // Offline overall, online in this Space: the shard holding it is connected.
+        _leo: Presence.offline,
+        '$_leo:s-guild': Presence.online,
+      },
+    );
+    await tester.tap(find.descendant(of: find.byType(DuvetTabBar), matching: find.text('Spaces')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Design Guild'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('# general'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.bySemanticsLabel('More'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.bySemanticsLabel('Members'));
+    await tester.pumpAndSettle();
+    expect(find.text('ONLINE — 2'), findsOneWidget);
+
+    await tester.tap(find.bySemanticsLabel(RegExp('^leo, Online')));
+    await tester.pumpAndSettle();
+    expect(find.text('Online'), findsWidgets);
+    expect(find.text('Offline'), findsNothing);
+    semantics.dispose();
+  });
+
   testWidgets('friends: requests in and out, accept, decline, cancel, add by username', (tester) async {
     final repository = await pumpApp(
       tester,

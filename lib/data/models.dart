@@ -406,6 +406,13 @@ class Member {
 
 enum Presence { online, doNotDisturb, offline }
 
+/// [userId]'s presence in [presence] (as [ChatRepository.presence] keeps it),
+/// in the Space [spaceId] when given: a bot's there, kept under
+/// `userId:spaceId`, comes first, as the desktop reads it, then theirs
+/// everywhere.
+Presence? presenceIn(Map<String, Presence> presence, String userId, {String? spaceId}) =>
+    (spaceId == null ? null : presence['$userId:$spaceId']) ?? presence[userId];
+
 /// A space's own emoji, written `<:id:>` in a message.
 class CustomEmoji {
   final String id;

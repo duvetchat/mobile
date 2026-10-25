@@ -138,7 +138,7 @@ class _ProfileState extends State<_Profile> {
     return ListenableBuilder(
       listenable: Listenable.merge([repository.presence, repository.friends]),
       builder: (context, _) {
-        final presence = repository.presence.value[m.userId];
+        final presence = presenceIn(repository.presence.value, m.userId, spaceId: widget.spaceId);
         final f = repository.friends.value;
         final isFriend = f.friends.any((x) => x.userId == m.userId);
         final pending = _asked || f.outgoing.any((r) => r.person.userId == m.userId);

@@ -1062,6 +1062,32 @@ void main() {
       expect(repository.spaces.value.single.onlineCount, 1);
     });
 
+    test('a bot\'s status in one Space comes first there, and its overall one elsewhere', () async {
+      const bot = '00000000-0000-4000-8000-0000000000b0';
+      await repository.logIn('gaby@duvet.chat', 'secret');
+      repository.handleEvent(_event('SPACE_CREATE', space(statuses: {_me: 1}, members: [_me, bot])));
+      repository.handleEvent(
+        _event('SPACE_CREATE', {
+          ...space(statuses: {_me: 1}, members: [_me, bot]),
+          'space': {'id': 's-2', 'name': 'Bot lab', 'owner_id': _me, 'created_at': _at, 'updated_at': _at},
+        }),
+      );
+      int? online(String spaceId) => repository.spaces.value.firstWhere((s) => s.id == spaceId).onlineCount;
+
+      // The shard holding s-1 is connected; the one holding s-2 isn\'t.
+      repository.handleEvent(_event('USER_STATUS_UPDATE', {'user_id': bot, 'status_id': 1, 'space_id': 's-1'}));
+      repository.handleEvent(_event('USER_STATUS_UPDATE', {'user_id': bot, 'status_id': 0, 'space_id': 's-2'}));
+      final now = repository.presence.value;
+      expect(presenceIn(now, bot, spaceId: 's-1'), Presence.online);
+      expect(presenceIn(now, bot, spaceId: 's-2'), Presence.offline);
+      expect(presenceIn(now, bot), Presence.offline);
+      expect((online('s-1'), online('s-2')), (2, 1));
+
+      // The user\'s own status comes without a Space.
+      repository.handleEvent(_event('USER_STATUS_UPDATE', {'user_id': _me, 'status_id': 2, 'space_id': 's-1'}));
+      expect(repository.profile.value!.status, Presence.online);
+    });
+
     test('who\'s in a Space: SPACE_CREATE\'s members, the ones who join, not the ones who leave', () async {
       await repository.logIn('gaby@duvet.chat', 'secret');
       repository.handleEvent(_event('SPACE_CREATE', space(statuses: {_me: 1}, members: [_me, _maya])));

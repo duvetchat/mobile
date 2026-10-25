@@ -735,9 +735,17 @@ class DuvetRepository implements ChatRepository {
         ));
 
       case duvet.UserStatusUpdatedEvent(:final data):
-        presence.value = {...presence.value, data.userId: _presence(data.statusId)};
+        final status = _presence(data.statusId);
+        presence.value = {
+          ...presence.value,
+          data.userId: status,
+          // A bot's in one Space (its shard's there), as the desktop keeps it.
+          if (data.spaceId case final spaceId?) '${data.userId}:$spaceId': status,
+        };
         // The user's own: the status they chose, on this device or another.
-        if (_chosen(data.statusId) case final chosen? when data.userId == me) _choose(chosen);
+        if (_chosen(data.statusId) case final chosen? when data.userId == me && data.spaceId == null) {
+          _choose(chosen);
+        }
         if (_spaceMemberIds.values.any((ids) => ids.contains(data.userId))) _publishSpaces();
       case duvet.SpaceEmojiCreatedEvent(:final data) || duvet.SpaceEmojiUpdatedEvent(:final data):
         _emojis.remove(data.spaceId);
@@ -935,7 +943,9 @@ class DuvetRepository implements ChatRepository {
           sections: _sections(space.id, _visibleRooms(space.id, rooms.values)),
           onlineCount: switch (_spaceMemberIds[space.id]) {
             final ids? when ids.isNotEmpty =>
-              ids.where((id) => (now[id] ?? Presence.offline) != Presence.offline).length,
+              ids
+                  .where((id) => (presenceIn(now, id, spaceId: space.id) ?? Presence.offline) != Presence.offline)
+                  .length,
             _ => null,
           },
         ),
