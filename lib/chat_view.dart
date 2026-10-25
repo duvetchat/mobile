@@ -448,8 +448,8 @@ class _ChatViewState extends State<ChatView> {
         case MessageCreated(:final message):
           _stopTyping(message.authorId);
           _upsert(message);
-        case MessageUpdated(:final message, :final withAuthor):
-          _applyUpdate(message, withAuthor: withAuthor);
+        case MessageUpdated(:final message):
+          _applyUpdate(message);
         case MessageDeleted(:final messageId):
           _entries.removeWhere((e) => e.message.id == messageId);
           if (_editing?.id == messageId) _stopEditing();
@@ -477,11 +477,11 @@ class _ChatViewState extends State<ChatView> {
   /// An edit, or a link preview that came late, merged into the message (see
   /// [ChatMessage.updatedBy]); the replies quoting it follow its text, as on
   /// the desktop.
-  void _applyUpdate(ChatMessage update, {required bool withAuthor}) {
+  void _applyUpdate(ChatMessage update) {
     for (var i = 0; i < _entries.length; i++) {
       final m = _entries[i].message;
       if (m.id == update.id) {
-        _entries[i] = (message: m.updatedBy(update, withAuthor: withAuthor), delivery: _Delivery.sent);
+        _entries[i] = (message: m.updatedBy(update), delivery: _Delivery.sent);
       } else if (m.reply case final reply? when reply.messageId == update.id) {
         _entries[i] = (message: m.copyWith(reply: reply.withContent(update.content)), delivery: _entries[i].delivery);
       }
@@ -905,7 +905,7 @@ class _ChatViewState extends State<ChatView> {
     try {
       // The API answers the message without its files, reactions or reply.
       final saved = await _repository.edit(widget.target, editing.id, content);
-      if (mounted) setState(() => _applyUpdate(saved, withAuthor: false));
+      if (mounted) setState(() => _applyUpdate(saved));
     } catch (_) {
       _replace(editing);
       _toast('Couldn’t save your edit');
@@ -1992,8 +1992,10 @@ class _ChatViewState extends State<ChatView> {
 
   /// The entries, oldest first, with a separator where the day changes, the
   /// "New messages" divider after the last one read, and each message marked
-  /// first and last of its run: one author by ID (a webhook's own) and name,
-  /// minutes apart, as on the desktop.
+  /// first and last of its run: one author, minutes apart. A webhook has no
+  /// author ID: its own ID and the name it posts under stand in, as on the
+  /// desktop. A person's name isn't compared: the history names them by
+  /// their Space nickname, which live messages may not know.
   List<_Item> _items() {
     final items = <_Item>[];
     for (var i = 0; i < _entries.length; i++) {
@@ -2027,7 +2029,7 @@ class _ChatViewState extends State<ChatView> {
       !b.isNotice &&
       a.authorId == b.authorId &&
       a.webhookId == b.webhookId &&
-      a.authorName == b.authorName &&
+      (a.authorId != null || a.authorName == b.authorName) &&
       a.isEphemeral == b.isEphemeral &&
       _sameDay(a.createdAt, b.createdAt) &&
       b.createdAt.difference(a.createdAt).abs() <= const Duration(minutes: 5);

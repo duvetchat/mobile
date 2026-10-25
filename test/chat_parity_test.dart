@@ -173,7 +173,6 @@ void main() {
             createdAt: DateTime(2026, 10, 23, 10),
             embeds: const [MessageEmbed(title: 'The notes', url: 'https://duvet.chat/notes')],
           ),
-          withAuthor: false,
         ),
       );
       await tester.pumpAndSettle();
@@ -589,6 +588,40 @@ void main() {
     expect(find.text('WEBHOOK'), findsNWidgets(3));
     expect(find.text('Deploys'), findsNWidgets(2));
     expect(find.text('Alerts'), findsOneWidget);
+    semantics.dispose();
+  });
+
+  testWidgets('one person under two names stays one run: the history\'s nickname, a live message\'s name', (
+    tester,
+  ) async {
+    final repository = await openGeneral(
+      tester,
+      setUp: (r) => r.history['r-general'] = [
+        FakeRepository.message(
+          'n1',
+          author: FakeRepository.leo,
+          name: 'Nick',
+          text: 'From the history',
+          at: DateTime(2026, 10, 23, 9),
+        ),
+      ],
+    );
+    repository.push(
+      'r-general',
+      MessageCreated(
+        FakeRepository.message(
+          'n2',
+          author: FakeRepository.leo,
+          name: 'Leo',
+          text: 'Live',
+          at: DateTime(2026, 10, 23, 9, 1),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+    // One run: its first message's name, once.
+    expect(find.text('Nick'), findsOneWidget);
+    expect(find.text('Leo'), findsNothing);
     semantics.dispose();
   });
 

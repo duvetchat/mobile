@@ -261,6 +261,7 @@ class DuvetRepository implements ChatRepository {
     _gateway = null;
     _api = null;
     _spaces.clear();
+    _nicknames.clear();
     _spaceMemberIds.clear();
     _spaceMembers.clear();
     _loadedMembers.clear();
@@ -479,14 +480,13 @@ class DuvetRepository implements ChatRepository {
           _messageEvents.add((data.roomId, MessageDeleted(data.id)));
         } else {
           final update = _roomMessage(data);
-          final withAuthor = data.user != null;
           final kept = _ephemeral[data.roomId];
           if (!update.isEphemeral) {
-            _updated(data.roomId, update, withAuthor: withAuthor);
+            _updated(data.roomId, update);
           } else if (kept?.indexWhere((m) => m.id == data.id) case final i? when i >= 0) {
             // Only while it's shown: one dismissed stays gone, as on the desktop.
-            kept![i] = kept[i].updatedBy(update, withAuthor: withAuthor);
-            _messageEvents.add((data.roomId, MessageUpdated(update, withAuthor: withAuthor)));
+            kept![i] = kept[i].updatedBy(update);
+            _messageEvents.add((data.roomId, MessageUpdated(update)));
           }
         }
       case duvet.MessageDeletedEvent(:final data):
@@ -506,13 +506,11 @@ class DuvetRepository implements ChatRepository {
         _setLatest(id, message);
         _messageEvents.add((id, MessageCreated(message)));
       case duvet.DMMessageUpdatedEvent(:final data):
-        if (data.conversationId case final id?) _updated(id, _directMessage(data), withAuthor: data.user != null);
+        if (data.conversationId case final id?) _updated(id, _directMessage(data));
       case duvet.DMMessageDeletedEvent(:final data):
         _recents.deleted(data.conversationId, data.id);
         _messageEvents.add((data.conversationId, MessageDeleted(data.id)));
 
-      // duvet_client's events since 1.0.1 are UnknownEvents too: matched here,
-      // before the default.
       case duvet.MessagePinUpdatedEvent(:final data):
         _messageEvents.add((data.roomId, MessagePinned(data.id, pinned: data.pinnedAt != null)));
       case duvet.DMMessagePinUpdatedEvent(:final data):
@@ -625,14 +623,14 @@ class DuvetRepository implements ChatRepository {
   void _dropEphemeral(String roomId, String messageId) => _ephemeral[roomId]?.removeWhere((m) => m.id == messageId);
 
   // An edit, or a link preview that came late. The event carries no files,
-  // reactions, reply or pin, nor always the author: the newest message keeps
-  // them, as the chat does, and so does the Chats tab's preview.
-  void _updated(String chatId, ChatMessage update, {required bool withAuthor}) {
+  // reactions, reply or pin: the newest message keeps them, as the chat does,
+  // and so does the Chats tab's preview.
+  void _updated(String chatId, ChatMessage update) {
     if (latest.value[chatId] case final known? when known.id == update.id) {
-      latest.value = {...latest.value, chatId: known.updatedBy(update, withAuthor: withAuthor)};
+      latest.value = {...latest.value, chatId: known.updatedBy(update)};
     }
     _recents.edited(chatId, update);
-    _messageEvents.add((chatId, MessageUpdated(update, withAuthor: withAuthor)));
+    _messageEvents.add((chatId, MessageUpdated(update)));
   }
 
   // The one before it isn't known here: fetched again when next shown.
@@ -1124,6 +1122,7 @@ class DuvetRepository implements ChatRepository {
   /// their unread marks and mentions.
   void _forgetSpace(String spaceId) {
     final rooms = {...?_spaces.remove(spaceId)?.rooms.keys, ..._recents.forgetSpace(spaceId)};
+    _nicknames.remove(spaceId);
     _spaceMemberIds.remove(spaceId);
     if (unread.value.any(rooms.contains)) unread.value = unread.value.difference(rooms);
     if (mentions.value.keys.any(rooms.contains)) {
@@ -2010,6 +2009,10 @@ class DuvetRepository implements ChatRepository {
     for (final m in members) {
       _names[m.userId] = m.displayName;
     }
+    _nicknames[spaceId] = {
+      for (final m in all)
+        if (m.alias case final alias? when alias.isNotEmpty) m.user.id: alias,
+    };
     (_spaceMemberIds[spaceId] ??= {}).addAll(members.map((m) => m.userId));
     _loadedMembers[spaceId] = members;
     _publishSpaces();
@@ -2116,14 +2119,28 @@ class DuvetRepository implements ChatRepository {
     });
   }
 
-  // Events without a user (a link preview's update) name the author as seen
-  // before.
+  // The history names an author by their Space nickname (member_alias),
+  // which the gateway's events don't carry: a live message takes the one
+  // known, so an author reads the same in both. Events without a user (a link
+  // preview's update) name the author as seen before.
   ChatMessage _roomMessage(duvet.GatewayMessage m) {
-    final name = m.memberAlias ?? m.user?.alias ?? m.user?.username;
-    if (m.authorId != null && name != null) _names[m.authorId!] = name;
-    final known = m.authorId == null ? null : _names[m.authorId];
+    final authorId = m.authorId;
+    final spaceId = _spaceOfRoom(m.roomId);
+    final alias = m.memberAlias?.isNotEmpty == true ? m.memberAlias : null;
+    if (authorId != null && spaceId != null && alias != null) (_nicknames[spaceId] ??= {})[authorId] = alias;
+    final nickname = authorId == null ? null : _nicknames[spaceId]?[authorId];
+    final name = alias ?? nickname ?? m.user?.alias ?? m.user?.username;
+    if (authorId != null && name != null) _names[authorId] = name;
+    final known = authorId == null ? null : _names[authorId];
     return _roomMessageNamed(m, name ?? known ?? (m.webhookId != null ? 'Webhook' : 'Unknown'));
   }
+
+  // Each Space's members' nicknames, by user: from the history's
+  // member_alias, then the member list, which has them all.
+  final _nicknames = <String, Map<String, String>>{};
+
+  String? _spaceOfRoom(String roomId) =>
+      _spaces.entries.where((e) => e.value.rooms.containsKey(roomId)).firstOrNull?.key;
 
   ChatMessage _roomMessageNamed(duvet.GatewayMessage m, String authorName) => ChatMessage(
     id: m.id,

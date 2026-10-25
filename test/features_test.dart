@@ -117,7 +117,7 @@ void main() {
       repository.push(
         'r-general',
         MessageCreated(
-          FakeRepository.message('m9', author: FakeRepository.leo, name: 'Leo', text: 'ping <@$_maya> and <@$_me>'),
+          FakeRepository.message('m9', author: FakeRepository.leo, name: 'leo', text: 'ping <@$_maya> and <@$_me>'),
         ),
       );
       await tester.pumpAndSettle();

@@ -227,13 +227,14 @@ class ChatMessage {
   /// This message as an edit, or a link preview that came late, leaves it.
   /// [update] is what MESSAGE_UPDATE carries: the text, sticker, embeds,
   /// components and flags (a bot's deferred answer completes by an edit). It
-  /// has none of the files, reactions, reply or pin, which stay, and names
-  /// the author only when [withAuthor].
-  ChatMessage updatedBy(ChatMessage update, {bool withAuthor = true}) => ChatMessage(
+  /// has none of the files, reactions, reply or pin, which stay, and it can't
+  /// change who wrote it, whom the event names without their Space nickname,
+  /// if at all.
+  ChatMessage updatedBy(ChatMessage update) => ChatMessage(
     id: id,
     authorId: authorId,
-    authorName: withAuthor ? update.authorName : authorName,
-    authorAvatarUrl: withAuthor ? update.authorAvatarUrl : authorAvatarUrl,
+    authorName: authorName,
+    authorAvatarUrl: authorAvatarUrl,
     content: update.content,
     createdAt: createdAt,
     edited: update.edited,
@@ -248,7 +249,7 @@ class ChatMessage {
     pinned: pinned,
     components: update.components,
     rawComponents: update.rawComponents,
-    fromBot: withAuthor ? update.fromBot : fromBot,
+    fromBot: fromBot,
     fromWebhook: fromWebhook,
     webhookId: webhookId,
     isEphemeral: isEphemeral,
@@ -593,10 +594,7 @@ final class MessageCreated extends MessageEvent {
 /// carries, for [ChatMessage.updatedBy].
 final class MessageUpdated extends MessageEvent {
   final ChatMessage message;
-
-  /// Whether the event named the author: a link preview's doesn't.
-  final bool withAuthor;
-  const MessageUpdated(this.message, {this.withAuthor = true});
+  const MessageUpdated(this.message);
 }
 
 final class MessageDeleted extends MessageEvent {

@@ -97,6 +97,24 @@ Map<String, dynamic> _dmMessage(String id, String content, {bool withUser = true
   if (withUser) 'user': {'id': _maya, 'username': 'maya', 'alias': 'Maya'},
 };
 
+/// SPACE_CREATE for s-1, which has r-1.
+Map<String, dynamic> _space() => {
+  'space': {'id': 's-1', 'name': 'Design Guild', 'owner_id': _me, 'created_at': _at, 'updated_at': _at},
+  'rooms': {
+    'r-1': {
+      'id': 'r-1',
+      'space_id': 's-1',
+      'type': 1,
+      'name': 'general',
+      'position': 0,
+      'created_at': _at,
+      'updated_at': _at,
+    },
+  },
+  'roles_permissions': <String, dynamic>{},
+  'owner_id': _me,
+};
+
 /// The gateway's envelope for [type], parsed as the client parses it.
 duvet.GatewayEventPayload _event(String type, Map<String, dynamic> data) => duvet.GatewayEnvelope.fromJson({
   'op': 0,
@@ -119,6 +137,21 @@ void main() {
         ('POST', '/api/auth/login') => {'token': 'access-1', 'session_token': 'refresh-1'},
         ('GET', '/api/users/@me') => {..._user(_me, 'gaby', alias: 'Gaby'), 'email_verified': true},
         ('GET', '/api/users/@me/conversations') => <Object>[],
+        // Maya's Space nickname, which the history and the member list give.
+        ('GET', '/api/rooms/r-1/messages') => [
+          {..._roomMessage('7', 'first'), 'member_alias': 'Nick'},
+        ],
+        ('GET', '/api/spaces/s-1/members') => [
+          {
+            'id': 'mb-1',
+            'space_id': 's-1',
+            'user_id': _maya,
+            'alias': 'Nick',
+            'created_at': _at,
+            'updated_at': _at,
+            'user': _user(_maya, 'maya', alias: 'Maya'),
+          },
+        ],
         ('GET', '/api/spaces/s-1/commands') => {
           'applications': [
             {
@@ -195,10 +228,8 @@ void main() {
       expect(latest.embeds.single.title, 'Duvet');
       expect(repository.recents.value.single.previewAuthor, 'Maya');
 
-      // The chat merges it into its own copy: the event says it named no one.
-      final update = events.last as MessageUpdated;
-      expect(update.withAuthor, isFalse);
-      expect(update.message.authorName, 'Maya');
+      // The chat merges it into its own copy, which keeps its author.
+      expect((events.last as MessageUpdated).message.content, 'see https://duvet.chat');
     });
 
     test('an edit of a DM keeps its author in the Chats tab, also when the event has no user', () async {
@@ -211,7 +242,33 @@ void main() {
       expect(repository.recents.value.single.previewText, 'see https://duvet.chat');
       expect(repository.latest.value['c-1']!.content, 'see https://duvet.chat');
       expect(repository.latest.value['c-1']!.authorName, 'Maya');
-      expect((events.last as MessageUpdated).withAuthor, isFalse);
+      expect((events.last as MessageUpdated).message.content, 'see https://duvet.chat');
+    });
+  });
+
+  group('names', () {
+    test('a live message takes its author\'s Space nickname from the history, and an edit keeps it', () async {
+      final events = await listen(_room);
+      repository.handleEvent(_event('SPACE_CREATE', _space()));
+      final page = await repository.messages(_room);
+      expect(page.single.authorName, 'Nick');
+      // The gateway's events name her without it.
+      repository.handleEvent(_event('MESSAGE_CREATE', _roomMessage('8', 'second')));
+      repository.handleEvent(
+        _event('MESSAGE_UPDATE', {..._roomMessage('7', 'first, edited'), 'updated_at': '2026-10-23T09:00:30Z'}),
+      );
+      await pumpEventQueue();
+      expect((events.first as MessageCreated).message.authorName, 'Nick');
+      expect(page.single.updatedBy((events.last as MessageUpdated).message).authorName, 'Nick');
+    });
+
+    test('or from the member list, with no history loaded', () async {
+      final events = await listen(_room);
+      repository.handleEvent(_event('SPACE_CREATE', _space()));
+      await repository.members(_room);
+      repository.handleEvent(_event('MESSAGE_CREATE', _roomMessage('8', 'second')));
+      await pumpEventQueue();
+      expect((events.single as MessageCreated).message.authorName, 'Nick');
     });
   });
 
@@ -364,11 +421,12 @@ void main() {
     expect(repository.profile.value, isNotNull);
   });
 
-  test('ChatMessage.updatedBy keeps what the event leaves out', () {
+  test('ChatMessage.updatedBy keeps what the event leaves out, and who wrote it', () {
     final original = ChatMessage(
       id: '7',
       authorId: _maya,
-      authorName: 'Maya',
+      // As the history names her.
+      authorName: 'Nick',
       content: 'old',
       createdAt: DateTime(2026, 10, 23),
       pinned: true,
@@ -384,19 +442,18 @@ void main() {
     final update = ChatMessage(
       id: '7',
       authorId: _maya,
-      authorName: 'Unknown',
+      // As the gateway names her.
+      authorName: 'Maya',
       content: 'new',
       createdAt: DateTime(2026, 10, 23),
       edited: true,
       embeds: const [MessageEmbed(title: 'Duvet')],
     );
-    final merged = original.updatedBy(update, withAuthor: false);
+    final merged = original.updatedBy(update);
     expect((merged.content, merged.edited, merged.embeds.single.title), ('new', true, 'Duvet'));
-    expect((merged.authorName, merged.fromBot, merged.pinned), ('Maya', true, true));
+    expect((merged.authorName, merged.fromBot, merged.pinned), ('Nick', true, true));
     expect(merged.reply?.content, 'ship it?');
     expect(merged.reactions.single.emoji, '👍');
     expect(merged.attachments.single.filename, 'notes.pdf');
-    // An edit names its author: a new name shows.
-    expect(original.updatedBy(update).authorName, 'Unknown');
   });
 }
