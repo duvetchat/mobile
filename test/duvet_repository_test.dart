@@ -85,6 +85,17 @@ void main() {
   /// `refresh-N`, from 2.
   late int refreshes;
 
+  /// The renewals made, by the session token each replaced: within its grace,
+  /// the API answers that token with the same new tokens again.
+  late Map<String?, int> renewed;
+
+  /// How many of the next renewals' answers get lost on the way, though the
+  /// API renews the session.
+  late int renewalAnswersLost;
+
+  /// The API fails the renewals (500).
+  late bool renewalsBroken;
+
   /// The session ended on the server: it refuses its tokens, a renewal too.
   late bool sessionDead;
 
@@ -114,6 +125,9 @@ void main() {
     deleteReply = http.Response('', 204);
     roomNewest = _roomMessage('last', 'newest');
     refreshes = 0;
+    renewed = {};
+    renewalAnswersLost = 0;
+    renewalsBroken = false;
     sessionDead = false;
     expiredToken = null;
     asking = [];
@@ -125,7 +139,12 @@ void main() {
       Map<String, dynamic> body() => jsonDecode(request.body) as Map<String, dynamic>;
       if (request.url.path == '/api/auth/refresh') {
         if (sessionDead) return http.Response('{"error":"invalid or expired session"}', 401);
-        final n = ++refreshes + 1;
+        if (renewalsBroken) return http.Response('{"error":"internal server error"}', 500);
+        final n = renewed[request.headers['X-Session-Token']] ??= ++refreshes + 1;
+        if (renewalAnswersLost > 0) {
+          renewalAnswersLost--;
+          throw const SocketException('connection reset');
+        }
         return http.Response(jsonEncode({'token': 'access-$n', 'session_token': 'refresh-$n'}), 200);
       }
       if (meUnreachable && request.url.path == '/api/users/@me') throw const SocketException('connection reset');
@@ -648,11 +667,13 @@ void main() {
       }, initialTime: DateTime(2026, 10, 24, 9));
     });
 
-    test('a saved session that came due, or of unknown age, is renewed before it starts', () async {
-      final dayOld = DateTime.now().subtract(const Duration(hours: 23));
-      for (final refreshedAt in [dayOld, null]) {
+    test('a saved session over an hour old, or of unknown age, is renewed before it starts', () async {
+      final now = DateTime.now();
+      final ages = [const Duration(hours: 23), const Duration(minutes: 61)];
+      for (final refreshedAt in [for (final age in ages) now.subtract(age), null]) {
         requests.clear();
         refreshes = 0;
+        renewed.clear();
         await store.write((token: 'access-1', sessionToken: 'refresh-1', refreshedAt: refreshedAt));
         final restored = newRepository();
         addTearDown(restored.dispose);
@@ -664,10 +685,10 @@ void main() {
         await pumpEventQueue();
       }
 
-      // One renewed an hour ago isn't.
+      // One renewed less than an hour ago isn't.
       requests.clear();
-      final hourOld = DateTime.now().subtract(const Duration(hours: 1));
-      await store.write((token: 'access-5', sessionToken: 'refresh-5', refreshedAt: hourOld));
+      final recent = DateTime.now().subtract(const Duration(minutes: 59));
+      await store.write((token: 'access-5', sessionToken: 'refresh-5', refreshedAt: recent));
       final fresh = newRepository();
       addTearDown(fresh.dispose);
       expect(await fresh.restore(), isTrue);
@@ -707,21 +728,101 @@ void main() {
       expect(requests.map((r) => r.url.path), ['/api/auth/refresh']);
     });
 
-    test('back in front, it\'s renewed if that came due while its timer couldn\'t run', () async {
+    test('back in front, it\'s renewed once its tokens are an hour old, its timer having run or not', () async {
       var now = DateTime(2026, 10, 24, 9);
       await withClock(Clock(() => now), () async {
         await repository.logIn('gaby@duvet.chat', 'secret');
+        now = now.add(const Duration(minutes: 59));
         repository.cameToFront();
         await pumpEventQueue();
         expect(refreshes, 0);
+
+        now = now.add(const Duration(minutes: 2));
+        repository.cameToFront();
+        await pumpEventQueue();
+        expect(refreshes, 1);
+        expect(await store.read(), (token: 'access-2', sessionToken: 'refresh-2', refreshedAt: now));
 
         // Asleep for a day: no timer ran meanwhile.
         now = now.add(const Duration(hours: 23));
         repository.cameToFront();
         await pumpEventQueue();
-        expect(refreshes, 1);
-        expect(await store.read(), (token: 'access-2', sessionToken: 'refresh-2', refreshedAt: now));
+        expect(refreshes, 2);
       });
+    });
+
+    test('a renewal that got no answer goes once more, 5 seconds on, and gets the tokens the API made', () {
+      fakeAsync((async) {
+        final repository = newRepository();
+        repository.logIn('gaby@duvet.chat', 'secret');
+        async.flushMicrotasks();
+        List<String?> renewals() => [
+          for (final r in requests)
+            if (r.url.path == '/api/auth/refresh') r.headers['X-Session-Token'],
+        ];
+
+        renewalAnswersLost = 1;
+        async.elapse(const Duration(hours: 23));
+        expect(renewals(), ['refresh-1']);
+        expect(saved(async)!.token, 'access-1');
+        async.elapse(const Duration(seconds: 4));
+        expect(renewals(), hasLength(1));
+        async.elapse(const Duration(seconds: 1));
+        // The same session token, which the API answers with what it made.
+        expect(renewals(), ['refresh-1', 'refresh-1']);
+        expect(refreshes, 1);
+        expect(saved(async), (token: 'access-2', sessionToken: 'refresh-2', refreshedAt: clock.now()));
+        repository.dispose();
+        async.flushMicrotasks();
+      }, initialTime: DateTime(2026, 10, 24, 9));
+    });
+
+    test('once only, and not when the API answered: those wait for the next check', () {
+      fakeAsync((async) {
+        final repository = newRepository();
+        repository.logIn('gaby@duvet.chat', 'secret');
+        async.flushMicrotasks();
+        int renewals() => requests.where((r) => r.url.path == '/api/auth/refresh').length;
+
+        // No answer twice: no third try until the next check.
+        renewalAnswersLost = 2;
+        async.elapse(const Duration(hours: 23, seconds: 5));
+        expect(renewals(), 2);
+        async.elapse(const Duration(minutes: 9, seconds: 50));
+        expect(renewals(), 2);
+        async.elapse(const Duration(seconds: 10));
+        expect(renewals(), 3);
+        expect(saved(async)!.token, 'access-2');
+
+        // An error the API answered isn\'t a lost answer.
+        renewalsBroken = true;
+        async.elapse(const Duration(hours: 23));
+        expect(renewals(), 4);
+        async.elapse(const Duration(seconds: 30));
+        expect(renewals(), 4);
+        repository.dispose();
+        async.flushMicrotasks();
+      }, initialTime: DateTime(2026, 10, 24, 9));
+    });
+
+    test('tokens dated ahead of the clock, as it was then, count from now rather than never', () {
+      fakeAsync((async) {
+        final ahead = clock.now().add(const Duration(days: 2));
+        store.write((token: 'access-1', sessionToken: 'refresh-1', refreshedAt: ahead));
+        final repository = newRepository();
+        repository.restore();
+        async.flushMicrotasks();
+        expect(repository.profile.value, isNotNull);
+        expect(refreshes, 0);
+        expect(saved(async)!.refreshedAt, clock.now());
+
+        async.elapse(const Duration(minutes: 61));
+        repository.cameToFront();
+        async.flushMicrotasks();
+        expect(refreshes, 1);
+        repository.dispose();
+        async.flushMicrotasks();
+      }, initialTime: DateTime(2026, 10, 24, 9));
     });
 
     test('a renewal the API refuses ends it, as the next request would', () {

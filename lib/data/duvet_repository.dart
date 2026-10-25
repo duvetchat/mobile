@@ -24,11 +24,11 @@ typedef _MemberMove = ({String memberId, String? userId});
 /// [ChatRepository] over the Duvet API (`duvet_client`): REST for history and
 /// sending, the gateway for everything live.
 ///
-/// The session is renewed before it runs out, as the desktop app's is:
-/// 23 hours after its tokens were issued, checked as it starts, every
-/// 10 minutes and when the app comes back to the front. The gateway
-/// identifies with the REST client's token, so it takes each renewal on its
-/// next socket.
+/// The session is renewed before it runs out, as the desktop app's is: as it
+/// starts and when the app comes back to the front once its tokens are an
+/// hour old, and at a check every 10 minutes once they're 23 hours old (they
+/// last 24). The gateway identifies with the REST client's token, so it takes
+/// each renewal on its next socket.
 ///
 /// Limits of duvet_client this works around or lives with:
 /// - The gateway refuses a token it doesn't know with a 401 at the socket's
@@ -258,14 +258,14 @@ class DuvetRepository implements ChatRepository {
   Future<void> _start() async {
     // Before the gateway connects: a renewal during its identify would revoke
     // the token it identifies with.
-    await _renewIfDue();
+    await _renewIfDue(renewInFrontAfter);
     final me = await _call((api) => api.me());
     _setProfile(me);
     _names[me.id] = profile.value!.displayName;
     _recentsLoaded = _recents.load(me.id);
     unawaited(refreshConversations().catchError((Object e) => debugPrint('conversations: $e')));
     _renewals?.cancel();
-    _renewals = Timer.periodic(renewalCheck, (_) => _renewQuietly());
+    _renewals = Timer.periodic(renewalCheck, (_) => _renewQuietly(renewAfter));
     if (_connectsGateway) _connectGateway();
   }
 
@@ -361,41 +361,69 @@ class DuvetRepository implements ChatRepository {
     await _store.write(current);
   }
 
-  /// How old the session's tokens get before they're renewed: they last
-  /// 24 hours from the login or the last renewal, so an hour early, as the
-  /// desktop app renews them.
+  /// How old the session's tokens get before the 10-minute check renews
+  /// them: they last 24 hours from the login or the last renewal, so an hour
+  /// early, as the desktop app renews them.
   static const renewAfter = Duration(hours: 23);
 
-  /// How often a session checks whether its renewal is due, besides as it
-  /// starts and when the app comes back to the front.
+  /// How old they get before they're renewed as the session starts and when
+  /// the app comes back to the front, as the desktop app has it.
+  static const renewInFrontAfter = Duration(hours: 1);
+
+  /// How often a session checks whether its renewal is due.
   static const renewalCheck = Duration(minutes: 10);
+
+  /// When a renewal got no answer, it goes once more this much later: the API
+  /// may have renewed the session and its answer been lost, and for 30
+  /// seconds it answers the old session token with the same new tokens.
+  static const renewalRetry = Duration(seconds: 5);
 
   Timer? _renewals;
 
-  // Renews the session once its tokens are [renewAfter] old, or of unknown
-  // age. Tokens the client got since they were saved (a login, a renewal on a
-  // 401) aren't due: the API issued them just now. A refusal ends the session
-  // ([_call]) and is thrown; anything else waits for the next check.
-  Future<void> _renewIfDue() async {
+  // Renews the session once its tokens are [after] old, or of unknown age.
+  // Tokens the client got since they were saved (a login, a renewal on a 401)
+  // aren't due: the API issued them just now. A date ahead of the clock (it
+  // was ahead then) counts from now. A refusal ends the session ([_call]) and
+  // is thrown; a renewal that got no answer goes once more [renewalRetry]
+  // later, and any other failure waits for the next check.
+  Future<void> _renewIfDue(Duration after, {bool retry = true}) async {
     final api = _api;
     final saved = _saved;
     if (api == null || saved == null || saved.token != api.token || api.sessionToken.isEmpty) return;
-    if (saved.refreshedAt case final at? when clock.now().difference(at) < renewAfter) return;
+    final now = clock.now();
+    var at = saved.refreshedAt;
+    if (at != null && at.isAfter(now)) {
+      at = now;
+      final clamped = (token: saved.token, sessionToken: saved.sessionToken, refreshedAt: now);
+      _saved = clamped;
+      unawaited(_store.write(clamped).catchError((Object e) => debugPrint('session: $e')));
+    }
+    if (at != null && now.difference(at) < after) return;
     try {
       await _call((api) => api.refreshSession());
-    } on duvet.DuvetAuthException {
-      rethrow;
+    } on duvet.DuvetApiException catch (e) {
+      if (e is duvet.DuvetAuthException) rethrow;
+      debugPrint('session: $e');
     } catch (e) {
       debugPrint('session: $e');
+      if (retry) {
+        unawaited(
+          Future<void>.delayed(
+            renewalRetry,
+            () => _renewIfDue(after, retry: false),
+          ).catchError((Object e) => debugPrint('session: $e')),
+        );
+      }
     }
   }
 
   // From the timer, or the app coming to the front: a refusal has ended the
   // session already.
-  void _renewQuietly() => unawaited(_renewIfDue().catchError((Object e) => debugPrint('session: $e')));
+  void _renewQuietly(Duration after) =>
+      unawaited(_renewIfDue(after).catchError((Object e) => debugPrint('session: $e')));
 
   @override
-  void cameToFront() => _renewQuietly();
+  void cameToFront() => _renewQuietly(renewInFrontAfter);
 
   // ---------------------------------------------------------------------------
   // Gateway
