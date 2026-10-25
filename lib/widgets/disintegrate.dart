@@ -10,7 +10,8 @@ import 'package:flutter/rendering.dart';
 /// was, sweeping from the leading edge to the trailing one. It takes the
 /// picture at once, so whatever [key] shows can go right after. Nothing
 /// happens with reduced motion, or when [key] isn't on screen in a
-/// [RepaintBoundary]: then it's null, else done once the dust has gone.
+/// [RepaintBoundary]: then it's null, else done once the dust has gone, in
+/// [_cap] at most.
 Future<void>? disintegrate(BuildContext context, GlobalKey key) {
   if (MediaQuery.disableAnimationsOf(context)) return null;
   final overlay = Overlay.maybeOf(context, rootOverlay: true);
@@ -29,24 +30,34 @@ Future<void>? disintegrate(BuildContext context, GlobalKey key) {
   }
   final done = Completer<void>();
   late final OverlayEntry entry;
+  late final Timer cap;
+  // Its picture goes with it: disposed as the dust's state is.
+  void finish() {
+    if (done.isCompleted) return;
+    cap.cancel();
+    entry
+      ..remove()
+      ..dispose();
+    done.complete();
+  }
+
   entry = OverlayEntry(
     builder: (_) => Positioned.fromRect(
       rect: rect,
       child: IgnorePointer(
-        child: _Dust(
-          image: image,
-          scale: scale,
-          onDone: () {
-            entry.remove();
-            done.complete();
-          },
-        ),
+        child: _Dust(image: image, scale: scale, onDone: finish),
       ),
     ),
   );
   overlay.insert(entry);
+  // Not for ever, should its pixels never be read: else the picture would
+  // stay drawn over the app.
+  cap = Timer(_cap, finish);
   return done.future;
 }
+
+/// The longest the dust stays, reading the picture included.
+const _cap = Duration(milliseconds: 2500);
 
 /// How long the dust takes to go, from the moment the picture's pixels are
 /// read.

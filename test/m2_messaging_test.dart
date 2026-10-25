@@ -223,19 +223,25 @@ void main() {
     expect(find.text('Delete this message?'), findsOneWidget);
     expect(find.text('It will be removed for everyone in this conversation. This can’t be undone.'), findsOneWidget);
 
-    await tapLabel(tester, 'Delete for everyone');
-    // Once the sheet has gone: it's asked for at once, and the message goes to
-    // dust in its place, hidden, before the list closes up.
-    await tester.pump(const Duration(milliseconds: 300));
+    await tester.tap(find.bySemanticsLabel('Delete for everyone').last);
+    // Asked for at once, before the sheet has gone: leaving now can't lose it.
+    await tester.pump();
     expect(repository.deletes, ['m2']);
+    // Once the sheet has gone, the message goes to dust in its place, hidden,
+    // before the list closes up.
+    await tester.pump(const Duration(milliseconds: 400));
     final bubble = find.text('Yes, way better than the side panels.');
     final hidden = find.ancestor(
       of: bubble,
       matching: find.byWidgetPredicate((w) => w.runtimeType.toString() == '_Vanish'),
     );
     expect((tester.widget(hidden) as dynamic).hidden, isTrue);
+    final dust = find.byWidgetPredicate((w) => w.runtimeType.toString() == '_Dust');
+    expect(dust, findsOneWidget);
+    // Here its pixels are never read: the dust goes anyway, picture and all.
     await tester.pump(const Duration(seconds: 3));
     await tester.pumpAndSettle();
+    expect(dust, findsNothing);
     expect(bubble, findsNothing);
     expect(tester.testTextInput.isVisible, isFalse);
     semantics.dispose();
