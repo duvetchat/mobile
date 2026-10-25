@@ -738,7 +738,7 @@ void main() {
         expect(h.voice.call?.phase, CallPhase.calling);
 
         // The gateway\'s word that it has the call: not again.
-        h.gateway.push(const duvet.UnknownEvent('CALL_OUTGOING', {'conversation_id': 'c-maya'}));
+        h.gateway.push(const duvet.CallOutgoingPayloadEvent(duvet.CallOutgoingEvent(conversationId: 'c-maya')));
         h.gateway.resumed(number: 3);
         async.flushMicrotasks();
         expect(placed(h.gateway), 2);

@@ -731,9 +731,9 @@ class VoiceController extends ChangeNotifier {
         _onDeclined(data);
       case duvet.CallEndedPayloadEvent(:final data):
         _onEnded(data.conversationId);
-      case duvet.UnknownEvent(type: 'CALL_OUTGOING', :final rawData):
+      case duvet.CallOutgoingPayloadEvent(:final data):
         // The gateway has the call this phone placed.
-        if (_call case final c? when c.outgoing && rawData?['conversation_id'] == c.conversationId) _placeHeard = true;
+        if (_call case final c? when c.outgoing && data.conversationId == c.conversationId) _placeHeard = true;
       default:
     }
   }
