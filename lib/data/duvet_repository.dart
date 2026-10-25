@@ -1209,7 +1209,8 @@ class DuvetRepository implements ChatRepository {
   }
 
   // Someone changed their profile: every list that shows them takes it, as
-  // the desktop's do, and the conversations they're in are named again.
+  // the desktop's do, the conversations they're in are named again, and
+  // their messages show their new name and avatar ([_authorChanged]).
   // (Members' own names in a Space can't be set: a Space's list shows the
   // user's.)
   void _userUpdated(duvet.UserUpdateEvent u) {
@@ -1237,7 +1238,8 @@ class DuvetRepository implements ChatRepository {
       return found;
     }
 
-    _names[u.id] = u.alias?.isNotEmpty == true ? u.alias! : u.username;
+    final name = _names[u.id] = u.alias?.isNotEmpty == true ? u.alias! : u.username;
+    _authorChanged(u.id, name, avatarUrl(u.avatar));
     for (final list in _loadedMembers.values) {
       patch(list);
     }
@@ -1267,6 +1269,31 @@ class DuvetRepository implements ChatRepository {
       );
     }
   }
+
+  // [userId] goes by [name] now, with the avatar at [avatar]: their messages
+  // show it wherever the app holds them, as the desktop renames the messages
+  // it has, and so do the replies' quotes of theirs, each chat naming them
+  // as [_nameIn] says. The open chats, each chat's newest message, the bots'
+  // answers to the user alone, and the Chats tab's previews.
+  void _authorChanged(String userId, String name, String? avatar) {
+    AuthorChanged changeIn(String chatId) =>
+        AuthorChanged(userId, name: _nameIn(chatId, userId, name), avatarUrl: avatar);
+    // [messageEvents] names them as each chat does.
+    _messageEvents.add((_anyChat, AuthorChanged(userId, name: name, avatarUrl: avatar)));
+    final renamed = {for (final MapEntry(key: id, value: m) in latest.value.entries) id: m.changedBy(changeIn(id))};
+    if (renamed.entries.any((e) => !identical(e.value, latest.value[e.key]))) latest.value = renamed;
+    for (final MapEntry(key: roomId, value: kept) in _ephemeral.entries) {
+      for (var i = 0; i < kept.length; i++) {
+        kept[i] = kept[i].changedBy(changeIn(roomId));
+      }
+    }
+    _recents.renamed(userId, (target) => changeIn(target.id).name);
+  }
+
+  // [name], the one [userId] goes by, as the chat [chatId] names them: a
+  // room by their nickname in its Space, if they have one there, as its
+  // history does.
+  String _nameIn(String chatId, String userId, String name) => _nicknames[_spaceOfRoom(chatId)]?[userId] ?? name;
 
   @override
   Future<List<ChatMessage>> messages(ChatTarget target, {String? before}) async {
@@ -1300,8 +1327,19 @@ class DuvetRepository implements ChatRepository {
   }
 
   @override
-  Stream<MessageEvent> messageEvents(ChatTarget target) =>
-      _messageEvents.stream.where((e) => e.$1 == target.id || e.$1 == _anyChat).map((e) => e.$2);
+  Stream<MessageEvent> messageEvents(ChatTarget target) => _messageEvents.stream
+      .where((e) => e.$1 == target.id || e.$1 == _anyChat)
+      .map(
+        (e) => switch (e.$2) {
+          // As this chat names them.
+          AuthorChanged(:final userId, :final name, :final avatarUrl) => AuthorChanged(
+            userId,
+            name: _nameIn(target.id, userId, name),
+            avatarUrl: avatarUrl,
+          ),
+          final event => event,
+        },
+      );
 
   @override
   Future<List<ChatMessage>> messagesAfter(ChatTarget target, String messageId) async {

@@ -473,6 +473,14 @@ class _ChatViewState extends State<ChatView> {
               delivery: _entries[i].delivery,
             );
           }
+        // Someone's new name and avatar: on their messages, as the desktop
+        // renames those it has, and on the replies' quotes of them.
+        case AuthorChanged():
+          for (var i = 0; i < _entries.length; i++) {
+            final m = _entries[i].message;
+            final changed = m.changedBy(event);
+            if (!identical(changed, m)) _entries[i] = (message: changed, delivery: _entries[i].delivery);
+          }
       }
     });
     if (event is MessageCreated) _readIfSeen();

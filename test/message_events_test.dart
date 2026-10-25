@@ -299,6 +299,107 @@ void main() {
     });
   });
 
+  group('profile changes', () {
+    const avatar = '00000000-0000-4000-8000-0000000000cc';
+    const avatarUrl = 'https://api.duvet.chat/attachments/$avatar';
+
+    // Maya's new name and avatar.
+    duvet.GatewayEventPayload renamed() =>
+        _event('USER_UPDATE', {'id': _maya, 'username': 'maya', 'alias': 'Maya O.', 'avatar': avatar});
+
+    // Who the Chats tab says wrote each chat's newest message.
+    Map<String, String?> previewAuthors() => {for (final c in repository.recents.value) c.target.id: c.previewAuthor};
+
+    // The DM's events, as its open chat gets them.
+    List<MessageEvent> listenToDm() {
+      final events = <MessageEvent>[];
+      final sub = repository.messageEvents(_dm).listen(events.add);
+      addTearDown(sub.cancel);
+      return events;
+    }
+
+    test('someone\'s new name and avatar reach their messages: in open chats, the newest, the Chats tab', () async {
+      final roomEvents = await listen(_room);
+      final dmEvents = listenToDm();
+      repository.opened(_room, '# general');
+      repository.handleEvent(_event('MESSAGE_CREATE', _roomMessage('8', 'second')));
+      repository.handleEvent(_event('DM_MESSAGE_CREATE', _dmMessage('9', 'third')));
+
+      repository.handleEvent(renamed());
+      await pumpEventQueue();
+
+      for (final events in [roomEvents, dmEvents]) {
+        final change = events.whereType<AuthorChanged>().single;
+        expect((change.userId, change.name, change.avatarUrl), (_maya, 'Maya O.', avatarUrl));
+      }
+      for (final chatId in ['r-1', 'c-1']) {
+        final newest = repository.latest.value[chatId]!;
+        expect((newest.authorName, newest.authorAvatarUrl), ('Maya O.', avatarUrl));
+      }
+      expect(previewAuthors(), {'r-1': 'Maya O.', 'c-1': 'Maya O.'});
+    });
+
+    test('in a Space\'s rooms, their nickname there still names them, beside their new avatar', () async {
+      final roomEvents = await listen(_room);
+      final dmEvents = listenToDm();
+      repository.handleEvent(_event('SPACE_CREATE', _space()));
+      repository.opened(_room, '# general');
+      // The history names her Nick.
+      expect((await repository.messages(_room)).single.authorName, 'Nick');
+      repository.handleEvent(_event('MESSAGE_CREATE', _roomMessage('8', 'second')));
+      repository.handleEvent(_event('DM_MESSAGE_CREATE', _dmMessage('9', 'third')));
+
+      repository.handleEvent(renamed());
+      await pumpEventQueue();
+
+      final inRoom = roomEvents.whereType<AuthorChanged>().single;
+      expect((inRoom.name, inRoom.avatarUrl), ('Nick', avatarUrl));
+      expect(dmEvents.whereType<AuthorChanged>().single.name, 'Maya O.');
+      final newest = repository.latest.value['r-1']!;
+      expect((newest.authorName, newest.authorAvatarUrl), ('Nick', avatarUrl));
+      expect(repository.latest.value['c-1']!.authorName, 'Maya O.');
+      expect(previewAuthors(), {'r-1': 'Nick', 'c-1': 'Maya O.'});
+    });
+
+    test('a webhook\'s messages keep the name and avatar they were sent with', () async {
+      const hookAvatar = '00000000-0000-4000-8000-0000000000dd';
+      await listen(_room);
+      repository.opened(_room, '# general');
+      // A webhook posting under her name, with an avatar of its own.
+      repository.handleEvent(
+        _event('MESSAGE_CREATE', {
+          'id': '13',
+          'room_id': 'r-1',
+          'author_id': null,
+          'webhook_id': 'w-1',
+          'content': 'Deployed',
+          'type': 0,
+          'created_at': _at,
+          'updated_at': _at,
+          'user': {..._user('w-1', 'Maya'), 'avatar': hookAvatar, 'is_bot': true},
+        }),
+      );
+      repository.handleEvent(_event('DM_MESSAGE_CREATE', _dmMessage('9', 'third')));
+
+      repository.handleEvent(renamed());
+      await pumpEventQueue();
+
+      final hook = repository.latest.value['r-1']!;
+      expect((hook.authorName, hook.authorAvatarUrl), ('Maya', 'https://api.duvet.chat/attachments/$hookAvatar'));
+      expect(previewAuthors(), {'r-1': 'Maya', 'c-1': 'Maya O.'});
+    });
+
+    test('a bot\'s answers to the user alone, kept apart from the room\'s, take its new name too', () async {
+      await listen(_room);
+      repository.handleEvent(_event('MESSAGE_CREATE', _answer('8', 'Only for you')));
+      repository.handleEvent(
+        _event('USER_UPDATE', {'id': _ballot, 'username': 'ballot', 'alias': 'Ballot 2', 'avatar': avatar}),
+      );
+      final answer = repository.ephemeralIn(_room).single;
+      expect((answer.authorName, answer.authorAvatarUrl), ('Ballot 2', avatarUrl));
+    });
+  });
+
   group('bots\' answers', () {
     test('one to the user alone is kept apart: the room stays read, and it isn\'t the preview', () async {
       final events = await listen(_room);
@@ -523,5 +624,43 @@ void main() {
     expect(merged.reply?.content, 'ship it?');
     expect(merged.reactions.single.emoji, '👍');
     expect(merged.attachments.single.filename, 'notes.pdf');
+  });
+
+  test('ChatMessage.changedBy names its author anew, and its reply\'s quote of them, never a webhook', () {
+    const change = AuthorChanged(_maya, name: 'Maya O.', avatarUrl: 'https://x/new');
+    ChatMessage message({String? author = _maya, bool webhook = false, MessageReply? reply}) => ChatMessage(
+      id: '7',
+      authorId: author,
+      authorName: 'Maya',
+      authorAvatarUrl: 'https://x/old',
+      content: 'ready?',
+      createdAt: DateTime(2026, 10, 23),
+      pinned: true,
+      fromWebhook: webhook,
+      webhookId: webhook ? 'w-1' : null,
+      reply: reply,
+    );
+    final hers = message().changedBy(change);
+    expect(
+      (hers.authorName, hers.authorAvatarUrl, hers.content, hers.pinned),
+      ('Maya O.', 'https://x/new', 'ready?', true),
+    );
+    final quoting = message(
+      author: _me,
+      reply: const MessageReply(
+        messageId: '1',
+        authorId: _maya,
+        authorName: 'Maya',
+        content: 'go',
+        mentionAuthor: true,
+      ),
+    ).changedBy(change);
+    expect((quoting.authorName, quoting.authorAvatarUrl), ('Maya', 'https://x/old'));
+    expect((quoting.reply?.authorName, quoting.reply?.content, quoting.reply?.mentionAuthor), ('Maya O.', 'go', true));
+    // A webhook's message keeps the name and avatar it was sent with,
+    // whatever it says of its author; and one with nothing of hers stays.
+    for (final m in [message(webhook: true), message(author: _me)]) {
+      expect(m.changedBy(change), same(m));
+    }
   });
 }
