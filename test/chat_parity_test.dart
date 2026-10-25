@@ -7,6 +7,7 @@ import 'package:duvet/data/models.dart';
 import 'package:duvet/deep_links.dart';
 import 'package:duvet/main.dart';
 import 'package:duvet/widgets/chrome.dart';
+import 'package:duvet/widgets/rows.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -716,6 +717,18 @@ void main() {
       ],
     );
 
+    const roll = BotCommand(
+      id: 'cmd-roll',
+      applicationId: 'app-ballot',
+      appName: 'Ballot',
+      name: 'roll',
+      description: 'Roll the dice',
+      options: [
+        BotCommandOption(type: OptionKind.integer, name: 'sides'),
+        BotCommandOption(type: OptionKind.number, name: 'odds'),
+      ],
+    );
+
     // A category, a room the user can't see, a voice room.
     void rooms(_Fake r) {
       r.adminRoomList['s-guild'] = const [
@@ -775,6 +788,27 @@ void main() {
       await tapLabel(tester, 'Send /note');
       expect(find.text('Takes 6000 characters at most'), findsOneWidget);
       expect(repository.interactions, hasLength(1));
+      semantics.dispose();
+    });
+
+    testWidgets('a command\'s numbers are what the API takes: integers in digits, numbers finite', (tester) async {
+      final repository = await openGeneral(tester, setUp: (r) => r.botCommands = const [roll]);
+      await tester.enterText(find.byType(EditableText), '/roll');
+      await tester.pumpAndSettle();
+      await tapLabel(tester, RegExp(r'^/roll'));
+      Finder field(int i) =>
+          find.descendant(of: find.byType(DuvetTextField).at(i), matching: find.byType(EditableText));
+      for (final (sides, odds) in [('0x1F', 'NaN'), ('+5', 'Infinity'), ('9007199254740992', '1e400')]) {
+        await tester.enterText(field(0), sides);
+        await tester.enterText(field(1), odds);
+        await tapLabel(tester, 'Send /roll');
+        expect(find.text('A whole number'), findsOneWidget, reason: sides);
+        expect(find.text('A number'), findsOneWidget, reason: odds);
+      }
+      await tester.enterText(field(0), '9007199254740991');
+      await tester.enterText(field(1), '0.5');
+      await tapLabel(tester, 'Send /roll');
+      expect(repository.interactions, ['command roll sides=9007199254740991 odds=0.5']);
       semantics.dispose();
     });
 

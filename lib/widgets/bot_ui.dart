@@ -776,7 +776,7 @@ class _CommandFormState extends State<_CommandForm> {
           }
           values[o.name] = text;
         } else {
-          final n = o.type == OptionKind.integer ? int.tryParse(text) : num.tryParse(text);
+          final n = _numberIn(o, text);
           if (n == null) {
             problems[o.name] = o.type == OptionKind.integer ? 'A whole number' : 'A number';
             continue;
@@ -796,6 +796,22 @@ class _CommandFormState extends State<_CommandForm> {
     }
     Navigator.of(context).pop(values);
   }
+
+  // The number in an integer or number option's text, as the desktop reads it
+  // and the API takes it (commands.CheckUse): an integer in plain digits,
+  // within ±(2^53 - 1); any other number finite, within ±2^53. Null for
+  // anything else, NaN and infinities among them, which JSON can't carry.
+  static num? _numberIn(BotCommandOption o, String text) {
+    if (o.type == OptionKind.integer) {
+      final n = RegExp(r'^-?\d+$').hasMatch(text) ? int.tryParse(text) : null;
+      return n != null && n.abs() <= _maxSafeInteger ? n : null;
+    }
+    final n = num.tryParse(text);
+    return n != null && n.isFinite && n.abs() <= _maxNumber ? n : null;
+  }
+
+  static const _maxSafeInteger = 9007199254740991;
+  static const _maxNumber = 9007199254740992;
 
   @override
   Widget build(BuildContext context) {
