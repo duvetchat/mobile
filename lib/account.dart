@@ -879,7 +879,10 @@ class CropPage extends StatefulWidget {
 
   /// Width over height: 1 for an avatar, 3 for a banner.
   final double aspect;
-  const CropPage({required this.path, required this.aspect, super.key});
+
+  /// A square frame drawn round, as an avatar shows; an emoji's isn't.
+  final bool round;
+  const CropPage({required this.path, required this.aspect, this.round = true, super.key});
 
   @override
   State<CropPage> createState() => _CropPageState();
@@ -953,7 +956,7 @@ class _CropPageState extends State<CropPage> {
                           label: 'Picture to crop. Pinch to zoom, drag to move',
                           child: ClipRRect(
                             borderRadius: BorderRadius.circular(
-                              widget.aspect == 1 ? frame.width / 2 : DuvetTokens.radiusCard,
+                              widget.aspect == 1 && widget.round ? frame.width / 2 : DuvetTokens.radiusCard,
                             ),
                             child: InteractiveViewer(
                               transformationController: _transform,

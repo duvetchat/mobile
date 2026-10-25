@@ -1,3 +1,6 @@
+import 'dart:io';
+import 'dart:ui' as ui;
+
 import 'package:duvet/data/emoji_catalog.dart';
 import 'package:duvet/data/models.dart';
 import 'package:duvet/deep_links.dart';
@@ -80,6 +83,34 @@ void main() {
   Future<void> typeName(WidgetTester tester, String name) async {
     await tester.enterText(find.byType(EditableText).last, name);
     await tester.pump();
+  }
+
+  // A 400 × 200 picture on disk: blue on its left half, red on its right.
+  Future<String> picture(WidgetTester tester) async {
+    final dir = Directory.systemTemp.createTempSync('duvet_square');
+    addTearDown(() => dir.deleteSync(recursive: true));
+    final path = '${dir.path}/two halves.png';
+    await tester.runAsync(() async {
+      final recorder = ui.PictureRecorder();
+      Canvas(recorder)
+        ..drawRect(const Rect.fromLTWH(0, 0, 200, 200), Paint()..color = const Color(0xFF0000FF))
+        ..drawRect(const Rect.fromLTWH(200, 0, 200, 200), Paint()..color = const Color(0xFFFF0000));
+      final image = await recorder.endRecording().toImage(400, 200);
+      File(path).writeAsBytesSync((await image.toByteData(format: ui.ImageByteFormat.png))!.buffer.asUint8List());
+    });
+    return path;
+  }
+
+  // The crop page, once its picture decodes (on the real clock; its spinner
+  // never settles before): Use.
+  Future<void> useCrop(WidgetTester tester) async {
+    await tester.pump();
+    for (var i = 0; i < 20 && find.byType(InteractiveViewer).evaluate().isEmpty; i++) {
+      await tester.runAsync(() => Future<void>.delayed(const Duration(milliseconds: 50)));
+      await tester.pump(const Duration(milliseconds: 50));
+    }
+    await tester.pump(const Duration(milliseconds: 500));
+    await tapLabel(tester, 'Use');
   }
 
   test('role colors stay readable on both themes', () {
@@ -332,15 +363,26 @@ void main() {
     semantics.dispose();
   });
 
-  testWidgets('emojis and stickers: add with the name as typed, as the API takes it; rename, delete', (tester) async {
-    pickSpaceImage = () async => '/tmp/party.png';
+  testWidgets('emojis and stickers: cropped square, 128 and 320 px as the desktop makes them; named as typed', (
+    tester,
+  ) async {
+    final path = await picture(tester);
+    pickSpaceImage = () async => path;
+    final squares = <(String, CropRect, int)>[];
+    saveSquareImage = (path, crop, side) async {
+      squares.add((path, crop, side));
+      return '/squares/$side.png';
+    };
     final repository = await pumpSettings(tester);
     await tapLabel(tester, RegExp(r'^Emojis and stickers'));
     expect(find.text('No emojis yet'), findsOneWidget);
-    await tapLabel(tester, 'Add emoji');
+    await tester.tap(find.bySemanticsLabel('Add emoji').last);
+    await useCrop(tester);
     await typeName(tester, 'party time!');
     await tapLabel(tester, 'Add');
-    expect(repository.admin.last, 'emoji+ party time! /tmp/party.png');
+    // A square of the picture's full height, where the frame starts.
+    expect(squares.single, (path, (x: 0.0, y: 0.0, w: 200.0, h: 200.0), 128));
+    expect(repository.admin.last, 'emoji+ party time! /squares/128.png');
     await tapLabel(tester, ':party time!:');
     await tapLabel(tester, 'Rename');
     await typeName(tester, 'fiesta-time');
@@ -353,11 +395,27 @@ void main() {
 
     await tester.tap(find.text('Stickers'));
     await tester.pumpAndSettle();
-    await tapLabel(tester, 'Add sticker');
+    await tester.tap(find.bySemanticsLabel('Add sticker').last);
+    await useCrop(tester);
     await typeName(tester, 'Wave');
     await tapLabel(tester, 'Add');
-    expect(repository.admin.last, 'sticker+ Wave /tmp/party.png');
+    expect(squares.last.$3, 320);
+    expect(repository.admin.last, 'sticker+ Wave /squares/320.png');
     semantics.dispose();
+  });
+
+  testWidgets('a square is what the frame shows, drawn at its size', (tester) async {
+    final path = await picture(tester);
+    await tester.runAsync(() async {
+      // The red half, as an emoji.
+      final png = await squarePng(path, (x: 200, y: 0, w: 200, h: 200), emojiSide);
+      final square = (await (await ui.instantiateImageCodec(png)).getNextFrame()).image;
+      expect((square.width, square.height), (128, 128));
+      final rgba = (await square.toByteData())!;
+      for (final at in [0, (64 * 128 + 64) * 4, rgba.lengthInBytes - 4]) {
+        expect([for (var i = 0; i < 4; i++) rgba.getUint8(at + i)], [255, 0, 0, 255]);
+      }
+    });
   });
 
   testWidgets('emojis and stickers: each kind by its own permission', (tester) async {

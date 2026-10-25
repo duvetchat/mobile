@@ -1,9 +1,14 @@
+import 'dart:async';
+import 'dart:io';
+import 'dart:ui' as ui;
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:forui/forui.dart';
 import 'package:image_picker/image_picker.dart';
+import 'package:path_provider/path_provider.dart';
 
-import 'account.dart' show formatBytes;
+import 'account.dart' show CropPage, formatBytes;
 import 'data/models.dart';
 import 'data/scope.dart';
 import 'people.dart' show SquareCheck;
@@ -17,6 +22,53 @@ import 'widgets/rows.dart';
 /// Picks a Space's banner, an emoji or a sticker; tests swap in their own.
 Future<String?> Function() pickSpaceImage = () async =>
     (await ImagePicker().pickImage(source: ImageSource.gallery, maxWidth: 1024, imageQuality: 90))?.path;
+
+/// The sides of what the desktop's image editor makes of an emoji and a
+/// sticker. The API takes them up to 512 and 1024 pixels (and 256 and 512
+/// KiB); a PNG this size is always under those.
+const emojiSide = 128;
+const stickerSide = 320;
+
+/// The part of the picture at [path] that [crop] frames, drawn [side] pixels
+/// square, as a PNG.
+Future<Uint8List> squarePng(String path, CropRect crop, int side) async {
+  final codec = await ui.instantiateImageCodec(await File(path).readAsBytes());
+  final ui.Image picture;
+  try {
+    picture = (await codec.getNextFrame()).image;
+  } finally {
+    codec.dispose();
+  }
+  final recorder = ui.PictureRecorder();
+  Canvas(recorder).drawImageRect(
+    picture,
+    Rect.fromLTWH(crop.x, crop.y, crop.w, crop.h),
+    Rect.fromLTWH(0, 0, side.toDouble(), side.toDouble()),
+    Paint()..filterQuality = FilterQuality.high,
+  );
+  final drawing = recorder.endRecording();
+  final square = await drawing.toImage(side, side);
+  try {
+    return (await square.toByteData(format: ui.ImageByteFormat.png))!.buffer.asUint8List();
+  } finally {
+    picture.dispose();
+    drawing.dispose();
+    square.dispose();
+  }
+}
+
+/// [squarePng] in a file to upload, named after the picture, as the desktop
+/// names it; answers its path. Tests swap in their own.
+Future<String> Function(String path, CropRect crop, int side) saveSquareImage = (path, crop, side) async {
+  final png = await squarePng(path, crop, side);
+  final name = path.split(Platform.pathSeparator).last;
+  final dot = name.lastIndexOf('.');
+  final dir = Directory('${(await getTemporaryDirectory()).path}/square');
+  await dir.create(recursive: true);
+  final file = File('${dir.path}/${dot > 0 ? name.substring(0, dot) : 'image'}.png');
+  await file.writeAsBytes(png, flush: true);
+  return file.path;
+};
 
 /// Space settings: the Space, then its rooms, emojis and stickers; its
 /// roles and invites; its webhooks and storage. Each row shows only to those
@@ -1288,18 +1340,28 @@ class _AssetsPageState extends State<AssetsPage> {
 
   String get _noun => _kind == AssetKind.emoji ? 'emoji' : 'sticker';
 
-  // Names go as typed (trimmed), as the desktop sends them: the API takes
-  // any text.
+  // Cropped square and sized as the desktop's image editor does, then named
+  // as typed (trimmed), as the desktop sends it: the API takes any text.
   Future<void> _add() async {
     final path = await pickSpaceImage();
     if (path == null || !mounted) return;
+    final crop = await Navigator.of(context).push<CropRect>(
+      MaterialPageRoute(fullscreenDialog: true, builder: (_) => CropPage(path: path, aspect: 1, round: false)),
+    );
+    if (crop == null || !mounted) return;
     final got = await askName<void>(context, title: 'Name the $_noun', action: 'Add');
     if (got == null || !mounted) return;
-    await _try(
-      context,
-      'Couldn’t add the $_noun',
-      () => context.repository.addAsset(widget.spaceId, _kind, got.$1, path),
-    );
+    final repository = context.repository;
+    final kind = _kind;
+    await _try(context, 'Couldn’t add the $_noun', () async {
+      final square = await saveSquareImage(path, crop, kind == AssetKind.emoji ? emojiSide : stickerSide);
+      try {
+        await repository.addAsset(widget.spaceId, kind, got.$1, square);
+      } finally {
+        // Best effort: the list needn't wait for it.
+        unawaited(File(square).delete().then((_) {}, onError: (Object e) => debugPrint('square image: $e')));
+      }
+    });
     if (mounted) _reload();
   }
 
