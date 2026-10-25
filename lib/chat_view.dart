@@ -28,6 +28,7 @@ import 'theme.dart';
 import 'widgets/avatar.dart';
 import 'widgets/bot_ui.dart';
 import 'widgets/chrome.dart';
+import 'widgets/disintegrate.dart';
 import 'widgets/composer_controller.dart';
 import 'widgets/depth.dart';
 import 'widgets/emoji_picker.dart';
@@ -144,6 +145,11 @@ class _ChatViewState extends State<ChatView> {
   String? _unreadAfter;
   final _dividerKey = GlobalKey();
   final _keys = <String, GlobalKey>{};
+
+  /// Messages being deleted, gone to dust: their place stays a moment,
+  /// then [_closing] it closes up.
+  final _vanishing = <String>{};
+  final _closing = <String>{};
   String? _flash;
 
   // The chat is read where the reader sees it, as the desktop acks it: with
@@ -455,7 +461,8 @@ class _ChatViewState extends State<ChatView> {
         case MessageUpdated(:final message):
           _applyUpdate(message);
         case MessageDeleted(:final messageId):
-          _entries.removeWhere((e) => e.message.id == messageId);
+          // One the user deleted is going to dust: that takes it away after.
+          if (!_vanishing.contains(messageId)) _closeUp(messageId);
           if (_editing?.id == messageId) _stopEditing();
         case MessagePinned(:final messageId, :final pinned):
           final i = _entries.indexWhere((e) => e.message.id == messageId);
@@ -924,6 +931,22 @@ class _ChatViewState extends State<ChatView> {
     });
   }
 
+  /// Takes a message away by easing its place shut, so the messages around
+  /// don't jump; at once with reduced motion.
+  void _closeUp(String messageId) {
+    if (MediaQuery.disableAnimationsOf(context) || !_entries.any((e) => e.message.id == messageId)) {
+      _entries.removeWhere((e) => e.message.id == messageId);
+      return;
+    }
+    _vanishing.add(messageId);
+    _closing.add(messageId);
+    Future<void>.delayed(_Vanish.closing, () {
+      _vanishing.remove(messageId);
+      _closing.remove(messageId);
+      if (mounted) setState(() => _entries.removeWhere((e) => e.message.id == messageId));
+    });
+  }
+
   Future<void> _confirmDelete(ChatMessage m) async {
     final confirmed = await _showDeleteSheet(
       context,
@@ -933,15 +956,35 @@ class _ChatViewState extends State<ChatView> {
       where: _where,
     );
     if (confirmed != true || !mounted) return;
+    // Once the sheet is gone and the keyboard down, so the list stands still
+    // under the dust.
+    await Future<void>.delayed(DuvetTokens.panelOut);
+    for (var t = 0; t < 12 && mounted && MediaQuery.viewInsetsOf(context).bottom > 0; t++) {
+      await Future<void>.delayed(const Duration(milliseconds: 50));
+    }
+    if (!mounted) return;
     final i = _entries.indexWhere((e) => e.message.id == m.id);
     if (i < 0) return;
     final removed = _entries[i];
-    setState(() => _entries.removeAt(i));
-    try {
-      await _repository.delete(widget.target, m.id);
+    final deleted = _repository.delete(widget.target, m.id).then((_) => true, onError: (_) => false);
+    // Its place stays, empty, while the dust goes; then the list closes up.
+    if (_keys[m.id] case final key?) {
+      if (disintegrate(context, key) case final dust?) {
+        setState(() => _vanishing.add(m.id));
+        // Not for ever, should its picture never be read.
+        await dust.timeout(const Duration(milliseconds: 2500), onTimeout: () {});
+        // The dust gone, the messages around ease together.
+        if (mounted) setState(() => _closing.add(m.id));
+        await Future<void>.delayed(_Vanish.closing);
+        _vanishing.remove(m.id);
+        _closing.remove(m.id);
+        if (!mounted) return;
+      }
+    }
+    setState(() => _entries.removeWhere((e) => e.message.id == m.id));
+    if (await deleted) {
       _announce('Message deleted');
-    } catch (_) {
-      if (!mounted) return;
+    } else if (mounted) {
       setState(() => _entries.insert(min(i, _entries.length), removed));
       _toast('Couldn’t delete the message');
     }
@@ -1430,6 +1473,10 @@ class _ChatViewState extends State<ChatView> {
     if (items.isEmpty && !sent) return;
     final box = anchor.findRenderObject() as RenderBox?;
     if (box == null || !box.attached) return;
+    // Out of the composer: or the menu and any sheet after it hand the
+    // keyboard back as they close. Replying, editing and mentioning focus
+    // it again.
+    _focus.unfocus();
     final picked = await _showMessageActions(
       context,
       bubble: box.localToGlobal(Offset.zero) & box.size,
@@ -1987,7 +2034,14 @@ class _ChatViewState extends State<ChatView> {
                 ? _Notice(text: '${entry.message.authorName} pinned a message')
                 : KeyedSubtree(
                     key: _keyFor(entry.message.id),
-                    child: _bubbleFor(entry, first: first, last: last),
+                    // Its own layer, for the picture a delete breaks up.
+                    child: RepaintBoundary(
+                      child: _Vanish(
+                        hidden: _vanishing.contains(entry.message.id),
+                        closed: _closing.contains(entry.message.id),
+                        child: _bubbleFor(entry, first: first, last: last),
+                      ),
+                    ),
                   ),
         };
       },
@@ -2037,6 +2091,32 @@ class _ChatViewState extends State<ChatView> {
       a.isEphemeral == b.isEphemeral &&
       _sameDay(a.createdAt, b.createdAt) &&
       b.createdAt.difference(a.createdAt).abs() <= const Duration(minutes: 5);
+}
+
+/// A message on its way out: hidden while it goes to dust, its place held,
+/// then that place eased shut.
+class _Vanish extends StatelessWidget {
+  final bool hidden;
+  final bool closed;
+  final Widget child;
+  const _Vanish({required this.hidden, required this.closed, required this.child});
+
+  static const closing = Duration(milliseconds: 450);
+
+  @override
+  Widget build(BuildContext context) => ClipRect(
+    // Only while it closes: a bubble's shadow reaches past its row.
+    clipBehavior: hidden ? Clip.hardEdge : Clip.none,
+    child: AnimatedAlign(
+      alignment: Alignment.topCenter,
+      heightFactor: closed ? 0 : 1,
+      duration: closing,
+      curve: Curves.easeInOutCubic,
+      // Hidden at once for dust, which takes its place; faded as it closes
+      // when it goes without.
+      child: AnimatedOpacity(opacity: hidden ? 0 : 1, duration: closed ? closing * 0.6 : Duration.zero, child: child),
+    ),
+  );
 }
 
 sealed class _Item {
