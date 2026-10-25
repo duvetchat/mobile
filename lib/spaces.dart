@@ -571,7 +571,7 @@ class _DeleteSpaceState extends State<_DeleteSpace> {
     final colors = context.theme.colors;
     final matches = _name.text.trim() == widget.space.name.trim();
     return Padding(
-      padding: EdgeInsets.fromLTRB(24, 16, 24, 24 + MediaQuery.viewInsetsOf(context).bottom),
+      padding: const EdgeInsets.fromLTRB(24, 16, 24, 24),
       child: Column(
         mainAxisSize: MainAxisSize.min,
         crossAxisAlignment: CrossAxisAlignment.stretch,

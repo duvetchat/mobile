@@ -158,14 +158,17 @@ void main() {
   testWidgets('rooms: create, rename, move, permissions, delete', (tester) async {
     final repository = await pumpSettings(tester);
     await tapLabel(tester, RegExp(r'^Rooms'));
-    await tapLabel(tester, 'New room');
+    await tapLabel(tester, 'Create room');
+    await tapLabel(tester, RegExp(r'^Text room'));
     await typeName(tester, 'crit');
     await tapLabel(tester, 'Create');
     expect(repository.admin.last, 'room+ crit text');
 
-    await tapLabel(tester, RegExp(r'^# crit'));
-    await tapLabel(tester, 'Move up');
-    expect(repository.admin.last, startsWith('room> r-crit'));
+    // Dragged by its grip to the top: before #general.
+    await tester.drag(find.byKey(const ValueKey('grip')).last, const Offset(0, -400));
+    await tester.pumpAndSettle();
+    expect(repository.admin.last, 'room> r-crit - 0');
+    expect(repository.adminRooms('s-guild').first.id, 'r-crit');
 
     await tapLabel(tester, RegExp(r'^# crit'));
     await tapLabel(tester, 'Rename');
@@ -191,6 +194,56 @@ void main() {
     await tapLabel(tester, 'Delete');
     expect(repository.admin.last, 'room- r-crit');
     expect(find.text('design-crit'), findsNothing);
+    semantics.dispose();
+  });
+
+  testWidgets('rooms: a category moves with its rooms; a room moves to another', (tester) async {
+    final repository = await pumpSettings(
+      tester,
+      setUp: (r) => r.adminRoomList['s-guild'] = [
+        const AdminRoom(id: 'r-general', name: 'general', kind: AdminRoomKind.text),
+        const AdminRoom(id: 'r-crit', name: 'crit', kind: AdminRoomKind.text, parentId: 'c-work'),
+        const AdminRoom(id: 'r-games', name: 'games', kind: AdminRoomKind.text, parentId: 'c-fun'),
+        const AdminRoom(id: 'c-work', name: 'Work', kind: AdminRoomKind.category, position: 1),
+        const AdminRoom(id: 'c-fun', name: 'Fun', kind: AdminRoomKind.category, position: 2),
+      ],
+    );
+    await tapLabel(tester, RegExp(r'^Rooms'));
+    List<String> order() => [
+      for (final r in repository.adminRooms('s-guild')) '${r.id}@${r.parentId ?? '-'}:${r.position}',
+    ];
+
+    // What a screen reader offers in place of a drag.
+    Future<void> move(Pattern label, String action) async {
+      final id = CustomSemanticsAction.getIdentifier(CustomSemanticsAction(label: action));
+      var node = tester.getSemantics(find.bySemanticsLabel(label).last);
+      while (!(node.getSemanticsData().customSemanticsActionIds?.contains(id) ?? false)) {
+        node = node.parent!;
+      }
+      node.owner!.performAction(node.id, SemanticsAction.customAction, id);
+      await tester.pumpAndSettle();
+    }
+
+    // Fun goes up over Work, its room with it.
+    await move('Category Fun', 'Move up');
+    expect(repository.admin.last, 'room> c-fun - 1');
+    expect(order(), containsAll(['c-fun@-:1', 'c-work@-:2', 'r-games@c-fun:0']));
+    expect(
+      tester.getTopLeft(find.text('# games', findRichText: true)).dy,
+      lessThan(tester.getTopLeft(find.text('# crit', findRichText: true)).dy),
+    );
+
+    // Into Work from its options: last there.
+    await tapLabel(tester, RegExp(r'^# general'));
+    await tapLabel(tester, 'Move to…');
+    await tapLabel(tester, 'Work');
+    expect(repository.admin.last, 'room> r-general c-work 1');
+    expect(order(), containsAll(['r-crit@c-work:0', 'r-general@c-work:1']));
+
+    // And up within Work.
+    await move(RegExp(r'^# general'), 'Move up');
+    expect(repository.admin.last, 'room> r-general c-work 0');
+    expect(order(), containsAll(['r-general@c-work:0', 'r-crit@c-work:1']));
     semantics.dispose();
   });
 
