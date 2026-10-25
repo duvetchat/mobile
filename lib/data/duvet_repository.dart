@@ -618,11 +618,13 @@ class DuvetRepository implements ChatRepository {
   void _trackMembers(duvet.GatewayEventPayload event, {required bool reconnected}) {
     switch (event) {
       // Who joined or left while the socket was down comes only in the
-      // members lists fetched from now on, not in those on their way.
+      // members lists fetched from now on, not in those on their way, so a
+      // lookup on its way doesn't hold up the next one.
       case duvet.ReadyEvent() when reconnected:
         _spaceMembers.clear();
         _memberUsers.clear();
         _memberLogs.clear();
+        _memberLookups.clear();
       // A new session's member roles include what the waiting changes did,
       // and what happened after them.
       case duvet.SpaceCreateEvent(:final data):
@@ -1849,11 +1851,12 @@ class DuvetRepository implements ChatRepository {
     _roomGone(spaceId, roomId);
   }
 
-  /// A room was deleted. A category's rooms stay, outside any category, where
-  /// the API moves them: they keep their places until ROOM_REORDER, which
-  /// follows ROOM_DELETE, gives them their new ones (after the last of the
-  /// top level, in the order they had). They aren't numbered here: the
-  /// desktop waits for it too.
+  /// A room was deleted. The API numbers its level 0, 1, 2… again, and moves a
+  /// category's rooms out of it, after the last place of the top level, in the
+  /// order they had: here they stay, outside any category. The rooms that moved
+  /// keep their places until ROOM_REORDER, which follows ROOM_DELETE whenever
+  /// the deletion moved others, gives them their new ones. They aren't
+  /// numbered here: the desktop waits for it too.
   void _roomGone(String spaceId, String roomId) {
     final rooms = _spaces[spaceId]?.rooms;
     if (rooms == null) return;

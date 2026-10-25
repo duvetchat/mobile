@@ -465,6 +465,39 @@ void main() {
       expect(requests.last.url.path, '/api/spaces/s-1/members/mem-maya-2/roles/role-mod');
       expect(memberFetches(), 2);
     });
+
+    test('a lookup on its way as the socket drops doesn\'t hold up the next one once READY comes again', () async {
+      await signIn();
+      final ready = _event('READY', {'user': _user(_me, 'gaby'), 'sessionToken': 'ws'});
+      repository.handleEvent(ready);
+      repository.handleEvent(_event('SPACE_CREATE', _space(roles: {'role-mod': Perm.pinMessages})));
+      final held = Completer<void>();
+      routes[('GET', '/api/spaces/s-1/members')] = (_) async {
+        if (memberFetches() == 1) {
+          await held.future;
+          return [_member('mem-me', _me, 'gaby'), _member('mem-maya', _maya, 'maya')];
+        }
+        return [_member('mem-me', _me, 'gaby'), _member('mem-maya', _maya, 'maya'), _member('mem-leo', _leo, 'leo')];
+      };
+      // A role for someone not named yet asks for the members list.
+      repository.handleEvent(
+        _event('MEMBER_ROLE_ADD', {'member_id': 'mem-maya', 'role_id': 'role-mod', 'space_id': 's-1'}),
+      );
+      await pumpEventQueue();
+      expect(memberFetches(), 1);
+      // The socket drops and READY comes again with the Space; then a role for
+      // someone else not named, before the old list lands.
+      repository.handleConnectionState(duvet.GatewayConnectionState.reconnecting);
+      repository.handleEvent(ready);
+      repository.handleEvent(_event('SPACE_CREATE', _space(roles: {'role-mod': Perm.pinMessages})));
+      repository.handleEvent(
+        _event('MEMBER_ROLE_ADD', {'member_id': 'mem-leo', 'role_id': 'role-mod', 'space_id': 's-1'}),
+      );
+      await pumpEventQueue();
+      held.complete();
+      await pumpEventQueue();
+      expect(repository.rolesOf('s-1', _leo).map((r) => r.name), ['role-mod']);
+    });
   });
 
   group('rooms the user can\'t see', () {
@@ -677,6 +710,62 @@ void main() {
           'r-mods': ('c-staff', 0),
           'r-crit': (null, 3),
           'r-lounge': (null, 4),
+        });
+      });
+    }
+
+    // As the API deletes a plain room: ROOM_DELETE, then, as the rooms after it
+    // in its level moved up to close its place, ROOM_REORDER with every room of
+    // the Space, the level numbered 0, 1, 2… again.
+    for (final (before, answer) in [(2, 'after both events'), (1, 'between the events'), (0, 'before both events')]) {
+      test('a deleted room\'s place closes up as ROOM_REORDER numbers its level again: '
+          'the delete answered $answer', () async {
+        await signIn();
+        repository.handleEvent(
+          _event(
+            'SPACE_CREATE',
+            _space(
+              rooms: {
+                'r-general': _room('r-general'),
+                'c-talk': _room('c-talk', type: 3, position: 1),
+                'r-crit': _room('r-crit', parent: 'c-talk'),
+                'r-memes': _room('r-memes', position: 1, parent: 'c-talk'),
+                'r-lounge': _room('r-lounge', type: 2, position: 2, parent: 'c-talk'),
+              },
+            ),
+          ),
+        );
+        final events = [
+          _event('ROOM_DELETE', {'id': 'r-memes', 'space_id': 's-1'}),
+          _event('ROOM_REORDER', {
+            'rooms': [
+              _room('r-general'),
+              _room('c-talk', type: 3, position: 1),
+              _room('r-crit', parent: 'c-talk'),
+              _room('r-lounge', type: 2, position: 1, parent: 'c-talk'),
+            ],
+          }),
+        ];
+        Map<String, (String?, int)> places() => {
+          for (final r in repository.adminRooms('s-1')) r.id: (r.parentId, r.position),
+        };
+        routes[('DELETE', '/api/spaces/s-1/rooms/r-memes')] = (_) {
+          events.take(before).forEach(repository.handleEvent);
+          return http.Response('', 204);
+        };
+
+        await repository.deleteRoom('s-1', 'r-memes');
+        events.skip(before).forEach(repository.handleEvent);
+
+        expect(sections(), {
+          null: ['r-general'],
+          'c-talk': ['r-crit', 'r-lounge'],
+        });
+        expect(places(), {
+          'r-general': (null, 0),
+          'c-talk': (null, 1),
+          'r-crit': ('c-talk', 0),
+          'r-lounge': ('c-talk', 1),
         });
       });
     }
