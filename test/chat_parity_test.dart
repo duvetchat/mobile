@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:clock/clock.dart';
 import 'package:duvet/data/emoji_catalog.dart';
 import 'package:duvet/data/gifs.dart';
@@ -34,6 +36,17 @@ class _Fake extends FakeRepository {
 
   /// The API's reason for refusing sends and pins, while set.
   String? refusal;
+
+  /// Holds back the history while set; and the chats whose history came.
+  Completer<void>? holdHistory;
+  final opens = <String>[];
+
+  @override
+  Future<List<ChatMessage>> messages(ChatTarget target, {String? before}) async {
+    await holdHistory?.future;
+    if (before == null) opens.add(target.id);
+    return super.messages(target, before: before);
+  }
 
   @override
   Future<ChatMessage> send(
@@ -534,6 +547,28 @@ void main() {
       }
       await tester.pumpAndSettle();
       expect(repository.reads.last.$2, 'n1');
+      semantics.dispose();
+    });
+
+    testWidgets('a chat that opens as the app goes to the background is read once it comes back', (tester) async {
+      final repository = await pumpApp(tester, (r) => r.holdHistory = Completer<void>());
+      await tester.tap(find.text('Maya'));
+      // Its history is loading: a spinner, which never settles.
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 500));
+      for (final state in [AppLifecycleState.inactive, AppLifecycleState.hidden, AppLifecycleState.paused]) {
+        tester.binding.handleAppLifecycleStateChanged(state);
+      }
+      repository.holdHistory!.complete();
+      await tester.pump();
+      expect(repository.opens, ['c-maya']);
+      expect(repository.reads, isEmpty);
+
+      for (final state in [AppLifecycleState.hidden, AppLifecycleState.inactive, AppLifecycleState.resumed]) {
+        tester.binding.handleAppLifecycleStateChanged(state);
+      }
+      await tester.pumpAndSettle();
+      expect(repository.reads.single.$2, 'm2');
       semantics.dispose();
     });
 

@@ -146,11 +146,13 @@ class _ChatViewState extends State<ChatView> {
   final _keys = <String, GlobalKey>{};
   String? _flash;
 
-  // New messages are read where the reader sees them, as the desktop acks
-  // them: at the bottom of the list, with the app in front and this chat on
-  // top. The newest one read from here is acked once.
+  // The chat is read where the reader sees it, as the desktop acks it: with
+  // the app in front and this chat on top, on opening wherever the list opens
+  // (once it's seen, if it opened unseen), then at the bottom of the list. The
+  // newest message read from here is acked once.
   bool _atBottom = true;
   bool _onTop = true;
+  bool _opening = false;
   String? _acked;
   late final AppLifecycleListener _lifecycle;
 
@@ -310,7 +312,8 @@ class _ChatViewState extends State<ChatView> {
       });
       if (thread == null) {
         _repository.opened(widget.target, widget.title, latest: page.lastOrNull);
-        _markRead();
+        _opening = true;
+        _readIfSeen();
       }
       if (widget.jumpTo case final id?) {
         WidgetsBinding.instance.addPostFrameCallback((_) => _jumpTo(id));
@@ -412,8 +415,7 @@ class _ChatViewState extends State<ChatView> {
     if (atBottom) _readIfSeen();
   }
 
-  /// Reads the chat up to its newest message: opening it does, wherever it
-  /// opens, and new messages do when seen ([_readIfSeen]).
+  /// Reads the chat up to its newest message.
   void _markRead() {
     final newest = _history.lastOrNull;
     if (newest == null || newest.id == _acked) return;
@@ -421,10 +423,12 @@ class _ChatViewState extends State<ChatView> {
     _repository.markRead(widget.target, newest.id);
   }
 
-  /// Reads what came if the reader sees it: at the bottom of the chat (not a
-  /// thread), with the app in front and nothing opened over the chat.
+  /// Reads the chat if the reader sees it: the app in front and nothing
+  /// opened over the chat (not a thread), and, past its opening, the bottom
+  /// of the list.
   void _readIfSeen() {
-    if (!mounted || widget.threadOf != null || !_atBottom || !_onTop || !_inFront) return;
+    if (!mounted || widget.threadOf != null || !_onTop || !_inFront || !(_atBottom || _opening)) return;
+    _opening = false;
     _markRead();
   }
 
