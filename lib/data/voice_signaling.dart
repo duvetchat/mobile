@@ -11,7 +11,7 @@ import 'package:duvet_client/duvet.dart' as duvet;
 /// open, when it would be lost.
 abstract interface class VoiceSignaling {
   /// READY, SPACE_CREATE, SPACE_DELETE, ROOM_DELETE and the voice and call
-  /// events, as they arrive.
+  /// events (CALL_OUTGOING as an [duvet.UnknownEvent]), as they arrive.
   Stream<duvet.GatewayEventPayload> get events;
 
   /// The number of the gateway socket open now, or null while none is. A
@@ -106,6 +106,9 @@ class GatewayVoiceSignaling implements VoiceSignaling {
     duvet.CallAcceptedEvent() ||
     duvet.CallDeclinedEvent() ||
     duvet.CallEndedPayloadEvent() => true,
+    // The gateway's word that a call the user placed is going on: duvet_client
+    // doesn't parse it yet, and a gateway from before it doesn't send it.
+    duvet.UnknownEvent(type: 'CALL_OUTGOING') => true,
     _ => false,
   };
 

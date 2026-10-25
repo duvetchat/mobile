@@ -269,6 +269,11 @@ class VoiceController extends ChangeNotifier {
   int? _callOn;
   bool _answerHeard = false;
 
+  // Whom a call placed here rang, and whether the gateway has the call: its
+  // CALL_OUTGOING came, someone answered or declined, or READY listed it.
+  List<String> _placedWith = const [];
+  bool _placeHeard = false;
+
   // The gateway ends a call nobody answered this long after it rang.
   static const _ringTimeout = Duration(seconds: 30);
 
@@ -726,6 +731,9 @@ class VoiceController extends ChangeNotifier {
         _onDeclined(data);
       case duvet.CallEndedPayloadEvent(:final data):
         _onEnded(data.conversationId);
+      case duvet.UnknownEvent(type: 'CALL_OUTGOING', :final rawData):
+        // The gateway has the call this phone placed.
+        if (_call case final c? when c.outgoing && rawData?['conversation_id'] == c.conversationId) _placeHeard = true;
       default:
     }
   }
@@ -743,6 +751,7 @@ class VoiceController extends ChangeNotifier {
     // one placed or answered on this session's own socket went out after its
     // identify, and READY was made before it.
     final call = _call;
+    if (call != null && call.outgoing && _calls.contains(call.conversationId)) _placeHeard = true;
     if (call != null && !_calls.contains(call.conversationId)) {
       if (_callOn == _signaling.connection) {
         _calls = {..._calls, call.conversationId};
@@ -796,8 +805,15 @@ class VoiceController extends ChangeNotifier {
   // it: it goes again on this one, as READY sends them again on a new
   // session. A join answered meanwhile came replayed before this.
   void _onResume() {
-    _answerAgain();
     final connection = _signaling.connection;
+    // A call placed on an older socket whose CALL_INITIATE may never have
+    // reached the gateway, which would leave the caller calling no one: placed
+    // again. The gateway takes another one for a call it has as nothing.
+    if (_call case final c? when c.phase == CallPhase.calling && !_placeHeard && _callOn != connection) {
+      _signaling.initiateCall(c.conversationId, _placedWith);
+      _callOn = connection;
+    }
+    _answerAgain();
     if (_joining && _target != null && _joinedOn != null && _joinedOn != connection && !_answered) {
       unawaited(_connect());
     }
@@ -958,6 +974,7 @@ class VoiceController extends ChangeNotifier {
   void _onDeclined(duvet.CallResponseEvent data) {
     final call = _call;
     if (call == null || call.conversationId != data.conversationId || call.phase != CallPhase.calling) return;
+    _placeHeard = true;
     _notice('${_repository.nameOf(data.userId) ?? 'They'} declined');
   }
 
@@ -1041,6 +1058,8 @@ class VoiceController extends ChangeNotifier {
       startedAt: _now(),
     );
     _callOn = _signaling.connection;
+    _placedWith = ids;
+    _placeHeard = false;
     _calls = {..._calls, conversationId};
     _mic = mic;
     if (mic != null) _keepAlive(CallVoice(conversationId));

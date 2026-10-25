@@ -721,6 +721,76 @@ void main() {
     );
 
     int answers(FakeVoiceSignaling gateway) => gateway.types.where((t) => t == 'CALL_ACCEPT').length;
+    int placed(FakeVoiceSignaling gateway) => gateway.types.where((t) => t == 'CALL_INITIATE').length;
+
+    _voice(
+      'a call placed on a socket that dropped before the gateway had it is placed again on the session it resumes',
+      (async, h) {
+        h.gateway.ready(number: 1);
+        h.voice.startCall('c-maya');
+        async.flushMicrotasks();
+        final first = h.gateway.last('CALL_INITIATE');
+        h.gateway.socket = null;
+        h.gateway.resumed(number: 2);
+        async.flushMicrotasks();
+        expect(placed(h.gateway), 2);
+        expect(h.gateway.last('CALL_INITIATE'), first);
+        expect(h.voice.call?.phase, CallPhase.calling);
+
+        // The gateway\'s word that it has the call: not again.
+        h.gateway.push(const duvet.UnknownEvent('CALL_OUTGOING', {'conversation_id': 'c-maya'}));
+        h.gateway.resumed(number: 3);
+        async.flushMicrotasks();
+        expect(placed(h.gateway), 2);
+      },
+    );
+
+    _voice('a placed call the gateway has isn\'t placed again: someone declined, or READY lists it', (async, h) {
+      h.gateway.ready(number: 1);
+      h.voice.startCall('c-maya');
+      async.flushMicrotasks();
+      h.gateway.push(
+        const duvet.CallDeclinedEvent(duvet.CallResponseEvent(conversationId: 'c-maya', userId: FakeRepository.maya)),
+      );
+      h.gateway.resumed(number: 2);
+      async.flushMicrotasks();
+      expect(placed(h.gateway), 1);
+      h.voice.hangUp();
+
+      h.voice.startCall('c-maya');
+      async.flushMicrotasks();
+      h.gateway.ready(
+        number: 3,
+        calls: [
+          duvet.GatewayReadyActiveCall.fromJson({'conversation_id': 'c-maya', 'initiator_id': FakeRepository.me.id}),
+        ],
+      );
+      async.flushMicrotasks();
+      h.gateway.resumed(number: 4);
+      async.flushMicrotasks();
+      expect(placed(h.gateway), 2);
+      expect(h.voice.call?.phase, CallPhase.calling);
+    });
+
+    _voice('a call cancelled, or answered, isn\'t placed again', (async, h) {
+      h.gateway.ready(number: 1);
+      h.voice.startCall('c-maya');
+      async.flushMicrotasks();
+      h.voice.hangUp();
+      h.gateway.resumed(number: 2);
+      async.flushMicrotasks();
+      expect(placed(h.gateway), 1);
+
+      h.voice.startCall('c-maya');
+      async.flushMicrotasks();
+      h.gateway.push(
+        const duvet.CallAcceptedEvent(duvet.CallResponseEvent(conversationId: 'c-maya', userId: FakeRepository.maya)),
+      );
+      async.flushMicrotasks();
+      h.gateway.resumed(number: 3);
+      async.flushMicrotasks();
+      expect(placed(h.gateway), 2);
+    });
 
     _voice('an answer the gateway hadn\'t heard when its socket dropped goes again on the session it resumes', (
       async,

@@ -73,6 +73,10 @@ class _Gateway {
   /// A Space the user owns, with a voice room, that each READY is followed by.
   bool sendsSpace = false;
 
+  /// Whether it says it has a call the user placed (CALL_OUTGOING), as a
+  /// gateway from after the calls across devices does.
+  bool tellsOutgoing = false;
+
   ApiRouter get router => ApiRouter(api: '127.0.0.1:${_server.port}', ws: '127.0.0.1:${_server.port}', secure: false);
 
   Future<void> _handle(HttpRequest request) async {
@@ -107,6 +111,9 @@ class _Gateway {
           }
         case 'heartbeat':
           socket.add(jsonEncode({'event': 'heartbeat_ack'}));
+        case 'CALL_INITIATE' when tellsOutgoing:
+          final call = message['data'] as Map<String, dynamic>;
+          _send('CALL_OUTGOING', {'conversation_id': call['conversation_id']});
       }
     });
   }
@@ -282,6 +289,39 @@ void main() {
       await _until(() => gateway.received.contains((2, 'VOICE_JOIN')));
       expect(gateway.identified.last, containsPair('session_token', 'gw-1'));
       expect(gateway.received.where((r) => r.$2 == 'VOICE_JOIN'), hasLength(2));
+    },
+  );
+
+  test(
+    'a call placed just as the socket dropped is placed again once the session resumes, unless the gateway had it',
+    () async {
+      await signIn();
+      final voice = VoiceController(
+        repository: repository,
+        engine: FakeVoiceEngine(),
+        historyStore: MemoryCallHistoryStore(),
+        inFront: () => true,
+      );
+      addTearDown(voice.dispose);
+      int placed() => gateway.received.where((r) => r.$2 == 'CALL_INITIATE').length;
+
+      // Nothing came back for it: placed again on the session resumed.
+      await voice.startCall('c-1');
+      await _until(() => gateway.received.contains((1, 'CALL_INITIATE')));
+      await gateway.drop();
+      await _until(() => gateway.received.contains((2, 'CALL_INITIATE')));
+      expect(placed(), 2);
+      voice.hangUp();
+
+      // The gateway said it had it: not again.
+      gateway.tellsOutgoing = true;
+      await voice.startCall('c-1');
+      await _until(() => placed() == 3);
+      await Future<void>.delayed(const Duration(milliseconds: 100));
+      await gateway.drop();
+      await _until(() => gateway.identified.length == 3 && repository.status.value == LiveStatus.online);
+      await Future<void>.delayed(const Duration(milliseconds: 100));
+      expect(placed(), 3);
     },
   );
 }
