@@ -547,6 +547,28 @@ void main() {
     semantics.dispose();
   });
 
+  testWidgets('a still GIF is cropped as any picture is, though the API would take it as it is', (tester) async {
+    final squares = <int>[];
+    saveSquareImage = (path, crop, side) async {
+      squares.add(side);
+      return '/squares/$side.png';
+    };
+    final still = gif(width: 64, height: 64, frames: 1);
+    pickAssetImage = () async => still;
+    final repository = await pumpSettings(tester);
+    await tapLabel(tester, RegExp(r'^Emojis and stickers'));
+    await tester.tap(find.bySemanticsLabel('Add emoji').last);
+    await waitFor(tester, find.byType(InteractiveViewer));
+    // It has no animation to lose.
+    expect(find.textContaining('animation is lost'), findsNothing);
+    await tapLabel(tester, 'Use');
+    await typeName(tester, 'dot');
+    await tapLabel(tester, 'Add');
+    expect(squares, [128]);
+    expect(repository.admin.last, 'emoji+ dot /squares/128.png');
+    semantics.dispose();
+  });
+
   testWidgets('emojis and stickers: each kind by its own permission', (tester) async {
     pickAssetImage = () async => '/tmp/party.png';
     final repository = await pumpSettings(

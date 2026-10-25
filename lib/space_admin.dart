@@ -1368,20 +1368,21 @@ class _AssetsPageState extends State<AssetsPage> {
 
   String get _noun => _kind == AssetKind.emoji ? 'emoji' : 'sticker';
 
-  // Cropped square and sized as the desktop's image editor does (but a GIF
-  // the API takes as it is), then named as typed (trimmed), as the desktop
-  // sends it: the API takes any text.
+  // Cropped square and sized as the desktop's image editor does (but a moving
+  // GIF the API takes as it is), then named as typed (trimmed), as the
+  // desktop sends it: the API takes any text.
   Future<void> _add() async {
     final path = await pickAssetImage();
     if (path == null || !mounted) return;
     final kind = _kind;
     final cap = kind == AssetKind.emoji ? emojiCap : stickerCap;
-    // A GIF the API takes as it is goes up unchanged, still moving: cropping
-    // makes a still image of it.
+    // A moving GIF the API takes as it is goes up unchanged, still moving:
+    // cropping makes a still image of it. A still GIF is cropped as any
+    // picture is.
     final gif = await gifAt(path);
     if (!mounted) return;
     final CropRect? crop;
-    if (gif != null && gif.bytes <= cap.bytes && gif.width <= cap.side && gif.height <= cap.side) {
+    if (gif != null && gif.animated && gif.bytes <= cap.bytes && gif.width <= cap.side && gif.height <= cap.side) {
       crop = null;
     } else {
       crop = await Navigator.of(context).push<CropRect>(
