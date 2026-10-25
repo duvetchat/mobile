@@ -482,6 +482,20 @@ void main() {
       expect(store.data, isEmpty);
     });
 
+    test('signing out while a page is being written leaves none behind either', () async {
+      final store = _HeldWrites();
+      final kept = ChatCache(store);
+      final writing = store.hold = Completer<void>();
+      kept.savePage('c-1', [_keptMessage('5', _maya, 'Maya')]);
+      // Its write under way when the user signs out.
+      await Future<void>.delayed(const Duration(milliseconds: 700));
+      final clearing = kept.clear();
+      writing.complete();
+      await clearing;
+      await pumpEventQueue();
+      expect(store.data, isEmpty);
+    });
+
     test('the same name and avatar again, from another Space or with a new bio, read no page again', () async {
       await listen(_dm);
       // A page kept that names her.

@@ -259,9 +259,10 @@ class ChatCache {
     _pending.clear();
     _pages.clear();
     _queued = null;
-    // A change of the pages under way writes nothing more: it ends before
-    // the store goes.
+    // A change of the pages under way writes nothing more, and it and the
+    // writes under way end before the store goes.
     await _changes;
+    await Future.wait([..._writes.values]);
     try {
       await _store.clear();
     } catch (e) {
