@@ -111,8 +111,11 @@ void main() {
     // The open chat stays read.
     expect(repository.unread.value, isNot(contains('c-maya')));
 
+    // Someone's delete: its place eases shut, then it's gone.
     repository.push('c-maya', const MessageDeleted('m4'));
     await tester.pump();
+    expect(find.text('Shipping it'), findsOneWidget);
+    await tester.pump(const Duration(milliseconds: 500));
     expect(find.text('Shipping it'), findsNothing);
   });
 

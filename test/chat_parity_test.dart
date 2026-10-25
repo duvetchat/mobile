@@ -272,6 +272,9 @@ void main() {
       await tapLabel(tester, 'Delete');
       expect(find.text('Delete this message?'), findsOneWidget);
       await tapLabel(tester, 'Delete for everyone');
+      // After the dust.
+      await tester.pump(const Duration(seconds: 3));
+      await tester.pumpAndSettle();
       expect(repository.deletes, ['m3']);
       expect(find.text('Pushed the new type ramp'), findsNothing);
       semantics.dispose();
