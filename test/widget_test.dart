@@ -180,6 +180,19 @@ void main() {
     expect(find.text('Leo'), findsOneWidget);
   });
 
+  testWidgets('back in front, the app tells the session, which renews if that came due', (tester) async {
+    final repository = await pumpApp(tester);
+    expect(repository.cameToFrontTimes, 0);
+    for (final state in [AppLifecycleState.inactive, AppLifecycleState.hidden, AppLifecycleState.paused]) {
+      tester.binding.handleAppLifecycleStateChanged(state);
+    }
+    expect(repository.cameToFrontTimes, 0);
+    for (final state in [AppLifecycleState.hidden, AppLifecycleState.inactive, AppLifecycleState.resumed]) {
+      tester.binding.handleAppLifecycleStateChanged(state);
+    }
+    expect(repository.cameToFrontTimes, 1);
+  });
+
   testWidgets('signing out returns to the login screen', (tester) async {
     await pumpApp(tester);
     await tester.tap(find.text('You').last);

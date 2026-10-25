@@ -11,16 +11,27 @@ import 'package:duvet_client/duvet.dart' as duvet;
 /// open, when it would be lost.
 abstract interface class VoiceSignaling {
   /// READY, SPACE_CREATE, SPACE_DELETE, ROOM_DELETE and the voice and call
-  /// events, as they arrive.
+  /// events (CALL_OUTGOING as an [duvet.UnknownEvent]), as they arrive.
   Stream<duvet.GatewayEventPayload> get events;
 
-  /// The number of the gateway socket open now, or null while none is. Each
-  /// socket gets a READY: a session of its own.
+  /// The number of the gateway socket open now, or null while none is. A
+  /// socket the gateway resumed the session on carries on the one before;
+  /// any other gets a READY: a session of its own.
   int? get connection;
 
   /// How long the gateway had been silent before its last READY: how long
   /// the phone was cut off (asleep, say) before this session.
   Duration get silenceBeforeReady;
+
+  /// Makes the next socket start a new session, with READY, rather than
+  /// resume this one, until a READY comes: voice joins on READY, which a
+  /// resumed session doesn't send.
+  void wantFreshSession();
+
+  /// Fires when the gateway took the session up again on a new socket, with
+  /// no READY: what went out on the socket that dropped, still unanswered,
+  /// may have been lost with it.
+  Stream<void> get resumes;
 
   bool joinVoice(String roomId, duvet.SessionDescription offer, {required bool videoOff});
   bool leaveVoice(String roomId);
@@ -50,18 +61,25 @@ abstract interface class VoiceSignaling {
 /// events through [deliver].
 class GatewayVoiceSignaling implements VoiceSignaling {
   final _events = StreamController<duvet.GatewayEventPayload>.broadcast();
+  final _resumes = StreamController<void>.broadcast();
   duvet.GatewayManager? _manager;
   duvet.WebRTCController? _rtc;
+  StreamSubscription<duvet.GatewayResume>? _resumed;
 
   /// The gateway of a new session.
   void attach(duvet.GatewayManager manager) {
     detach();
     _manager = manager;
     _rtc = duvet.WebRTCController(manager);
+    _resumed = manager.onResume.listen((_) {
+      if (!_resumes.isClosed) _resumes.add(null);
+    });
   }
 
   /// The session ended: nothing goes out until the next one.
   void detach() {
+    _resumed?.cancel();
+    _resumed = null;
     _rtc?.dispose();
     _rtc = null;
     _manager = null;
@@ -88,6 +106,9 @@ class GatewayVoiceSignaling implements VoiceSignaling {
     duvet.CallAcceptedEvent() ||
     duvet.CallDeclinedEvent() ||
     duvet.CallEndedPayloadEvent() => true,
+    // The gateway's word that a call the user placed is going on: duvet_client
+    // doesn't parse it yet, and a gateway from before it doesn't send it.
+    duvet.UnknownEvent(type: 'CALL_OUTGOING') => true,
     _ => false,
   };
 
@@ -99,6 +120,12 @@ class GatewayVoiceSignaling implements VoiceSignaling {
 
   @override
   Duration get silenceBeforeReady => _manager?.silenceBeforeReady ?? Duration.zero;
+
+  @override
+  void wantFreshSession() => _manager?.wantFreshSession();
+
+  @override
+  Stream<void> get resumes => _resumes.stream;
 
   @override
   bool joinVoice(String roomId, duvet.SessionDescription offer, {required bool videoOff}) =>
@@ -152,5 +179,6 @@ class GatewayVoiceSignaling implements VoiceSignaling {
   void dispose() {
     detach();
     _events.close();
+    _resumes.close();
   }
 }

@@ -37,6 +37,13 @@ abstract interface class ChatRepository {
   /// Resumes a saved session; answers whether there was one that still works.
   Future<bool> restore();
 
+  /// The app is in front again, after the background or a locked screen,
+  /// where its timers may not have run: the session is renewed if its tokens
+  /// are an hour old, and a connection cut off while away goes again at once,
+  /// once that renewal is done, asking the API whether the session still
+  /// stands.
+  void cameToFront();
+
   Future<void> logIn(String email, String password);
 
   Future<void> logOut();
@@ -144,6 +151,10 @@ abstract interface class ChatRepository {
 
   /// [userId]'s roles in a Space, highest first.
   List<RoleTag> rolesOf(String spaceId, String userId);
+
+  /// Whether [userId] is in the Space, as far as the gateway and the member
+  /// lists loaded have told.
+  bool isMember(String spaceId, String userId);
 
   /// Makes an account, then signs in to it; the API emails a link to verify
   /// the address.
@@ -292,7 +303,9 @@ abstract interface class ChatRepository {
   /// when it doesn't (and in conversations).
   String? lastReadOf(ChatTarget target);
 
-  /// Fires when the gateway is back after a drop: chats fetch what they missed.
+  /// Fires when the gateway is back after a drop with a new session (READY):
+  /// chats fetch what they missed. When it resumes the session instead, it
+  /// replays what was missed, and this doesn't fire.
   Stream<void> get resumed;
 
   /// What's unsent per chat, by chat ID; kept for the session.
@@ -309,7 +322,8 @@ abstract interface class ChatRepository {
   String? emojiNameOf(String emojiId);
 
   /// Who's online, by user ID, as the gateway reports it; someone missing
-  /// hasn't been reported this session.
+  /// hasn't been reported this session. A bot's status in one Space, which
+  /// comes first there ([presenceIn]), is kept under [spacePresenceKey] too.
   ValueListenable<Map<String, Presence>> get presence;
 
   /// The emoji the chat can use beyond Unicode's: its space's. None in DMs.

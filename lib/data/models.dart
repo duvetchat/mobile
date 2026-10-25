@@ -257,6 +257,46 @@ class ChatMessage {
     isComponentsV2: update.isComponentsV2,
   );
 
+  /// This message once [change] took place: the name and avatar of its
+  /// author, if they're the one who changed (a webhook's message keeps the
+  /// name and avatar it was sent with), and the name on its reply's quote,
+  /// if it quotes them. Itself when that leaves it as it was.
+  ChatMessage changedBy(AuthorChanged change) {
+    final wrote =
+        authorId == change.userId && !fromWebhook && (authorName != change.name || authorAvatarUrl != change.avatarUrl);
+    final quote = switch (reply) {
+      final r? when r.authorId == change.userId && r.authorName != change.name => r.withAuthorName(change.name),
+      _ => null,
+    };
+    if (!wrote && quote == null) return this;
+    return ChatMessage(
+      id: id,
+      authorId: authorId,
+      authorName: wrote ? change.name : authorName,
+      authorAvatarUrl: wrote ? change.avatarUrl : authorAvatarUrl,
+      content: content,
+      createdAt: createdAt,
+      edited: edited,
+      nonce: nonce,
+      isNotice: isNotice,
+      attachments: attachments,
+      stickerUrl: stickerUrl,
+      embeds: embeds,
+      reply: quote ?? reply,
+      reactions: reactions,
+      isVoice: isVoice,
+      pinned: pinned,
+      components: components,
+      rawComponents: rawComponents,
+      fromBot: fromBot,
+      fromWebhook: fromWebhook,
+      webhookId: webhookId,
+      isEphemeral: isEphemeral,
+      isLoading: isLoading,
+      isComponentsV2: isComponentsV2,
+    );
+  }
+
   /// With [userId]'s reaction [emoji] added or taken away.
   ChatMessage reacted(String emoji, String userId, {required bool add, String? emojiId}) {
     final list = [...reactions];
@@ -299,6 +339,15 @@ class MessageReply {
 
   /// The same quote, of the message as edited to [content].
   MessageReply withContent(String content) => MessageReply(
+    messageId: messageId,
+    authorId: authorId,
+    authorName: authorName,
+    content: content,
+    mentionAuthor: mentionAuthor,
+  );
+
+  /// The same quote, its author named [authorName].
+  MessageReply withAuthorName(String authorName) => MessageReply(
     messageId: messageId,
     authorId: authorId,
     authorName: authorName,
@@ -405,6 +454,17 @@ class Member {
 }
 
 enum Presence { online, doNotDisturb, offline }
+
+/// The key [ChatRepository.presence] keeps a bot's presence in the Space
+/// [spaceId] under, as the desktop keys it: `userId:spaceId`.
+String spacePresenceKey(String userId, String spaceId) => '$userId:$spaceId';
+
+/// [userId]'s presence in [presence] (as [ChatRepository.presence] keeps it),
+/// in the Space [spaceId] when given: a bot's there, kept under
+/// [spacePresenceKey], comes first, as the desktop reads it, then theirs
+/// everywhere.
+Presence? presenceIn(Map<String, Presence> presence, String userId, {String? spaceId}) =>
+    (spaceId == null ? null : presence[spacePresenceKey(userId, spaceId)]) ?? presence[userId];
 
 /// A space's own emoji, written `<:id:>` in a message.
 class CustomEmoji {
@@ -607,6 +667,17 @@ final class MessagePinned extends MessageEvent {
   final String messageId;
   final bool pinned;
   const MessagePinned(this.messageId, {required this.pinned});
+}
+
+/// Someone changed their name or avatar: the messages they wrote show the new
+/// ones, and so do the replies' quotes of theirs (see
+/// [ChatMessage.changedBy]). [name] is the one the chat shows them by: in a
+/// Space's room, their nickname there, if they have one.
+final class AuthorChanged extends MessageEvent {
+  final String userId;
+  final String name;
+  final String? avatarUrl;
+  const AuthorChanged(this.userId, {required this.name, this.avatarUrl});
 }
 
 /// Someone reacted to a message, or took a reaction back. The gateway doesn't

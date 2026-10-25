@@ -439,6 +439,8 @@ class _ChatViewState extends State<ChatView> {
 
   void _onEvent(MessageEvent event) {
     if (event case ReactionChanged(:final messageId) when !_entries.any((e) => e.message.id == messageId)) return;
+    // A profile change that shows nothing new on the messages here.
+    if (event is AuthorChanged && _entries.every((e) => identical(e.message.changedBy(event), e.message))) return;
     // A thread takes the replies to its messages, and its own sends.
     if (widget.threadOf != null) {
       if (event case MessageCreated(
@@ -472,6 +474,14 @@ class _ChatViewState extends State<ChatView> {
               message: m.reacted(emoji, userId, add: added, emojiId: emojiId),
               delivery: _entries[i].delivery,
             );
+          }
+        // Someone's new name and avatar: on their messages, as the desktop
+        // renames those it has, and on the replies' quotes of them.
+        case AuthorChanged():
+          for (var i = 0; i < _entries.length; i++) {
+            final m = _entries[i].message;
+            final changed = m.changedBy(event);
+            if (!identical(changed, m)) _entries[i] = (message: changed, delivery: _entries[i].delivery);
           }
       }
     });

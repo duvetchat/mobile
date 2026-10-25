@@ -6,6 +6,7 @@ import 'package:duvet/data/gifs.dart';
 import 'package:duvet/data/models.dart';
 import 'package:duvet/deep_links.dart';
 import 'package:duvet/main.dart';
+import 'package:duvet/widgets/avatar.dart';
 import 'package:duvet/widgets/chrome.dart';
 import 'package:duvet/widgets/rows.dart';
 import 'package:flutter/material.dart';
@@ -673,6 +674,60 @@ void main() {
     expect(find.text('Nick'), findsOneWidget);
     expect(find.text('Leo'), findsNothing);
     semantics.dispose();
+  });
+
+  group('profile changes', () {
+    const avatar = 'https://api.duvet.chat/attachments/00000000-0000-4000-8000-0000000000cc';
+    Finder avatarAt(String url) => find.byWidgetPredicate((w) => w is UserAvatar && w.url == url);
+
+    testWidgets('someone\'s new name and avatar show on their messages and the quotes of them, not a webhook\'s', (
+      tester,
+    ) async {
+      final repository = await openGeneral(
+        tester,
+        setUp: (r) => r.history['r-general'] = [
+          FakeRepository.message('h1', author: _maya, name: 'Maya', text: 'Ship the ramp?'),
+          // A webhook posting under her name.
+          ChatMessage(
+            id: 'h2',
+            authorId: null,
+            authorName: 'Maya',
+            fromBot: true,
+            fromWebhook: true,
+            webhookId: 'w-1',
+            content: 'Deployed',
+            createdAt: DateTime(2026, 10, 23, 9, 1),
+          ),
+          FakeRepository.message(
+            'h3',
+            author: FakeRepository.leo,
+            name: 'Leo',
+            text: 'Shipped',
+            at: DateTime(2026, 10, 23, 9, 2),
+            reply: const MessageReply(messageId: 'h1', authorId: _maya, authorName: 'Maya', content: 'Ship the ramp?'),
+          ),
+        ],
+      );
+      expect(find.text('Maya'), findsNWidgets(2));
+
+      repository.push('r-general', const AuthorChanged(_maya, name: 'Maya O.', avatarUrl: avatar));
+      await tester.pumpAndSettle();
+      expect(find.text('Maya O.'), findsOneWidget);
+      expect(avatarAt(avatar), findsOneWidget);
+      expect(find.bySemanticsLabel(RegExp(r'^Replying to Maya O\.: Ship the ramp\?')), findsOneWidget);
+      // The webhook's.
+      expect(find.text('Maya'), findsOneWidget);
+      semantics.dispose();
+    });
+
+    testWidgets('and on theirs in a DM', (tester) async {
+      final repository = await openMaya(tester);
+      repository.push('c-maya', const AuthorChanged(_maya, name: 'Maya O.', avatarUrl: avatar));
+      await tester.pumpAndSettle();
+      expect(find.text('Maya O.'), findsOneWidget);
+      expect(avatarAt(avatar), findsOneWidget);
+      semantics.dispose();
+    });
   });
 
   testWidgets('a sticker or a GIF sent while replying answers that message, and the strip closes', (tester) async {

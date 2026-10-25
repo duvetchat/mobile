@@ -243,6 +243,29 @@ class RecentChats {
     }
   }
 
+  /// [userId] changed their name: the previews of their messages name them
+  /// as [nameIn] says each chat does, and the list stays as it is when they
+  /// all do already. A webhook's message has no author ID: its preview keeps
+  /// the name it was sent with.
+  void renamed(String userId, String Function(ChatTarget target) nameIn) {
+    if (!chats.value.any((c) => c.previewAuthorId == userId && c.previewAuthor != nameIn(c.target))) return;
+    _publish([
+      for (final c in chats.value)
+        if (c.previewAuthorId == userId)
+          RecentChat(
+            target: c.target,
+            title: c.title,
+            at: c.at,
+            previewId: c.previewId,
+            previewAuthorId: c.previewAuthorId,
+            previewAuthor: nameIn(c.target),
+            previewText: c.previewText,
+          )
+        else
+          c,
+    ]);
+  }
+
   /// The previewed message was deleted: the one before it isn't known here.
   void deleted(String chatId, String messageId) {
     if (_find(chatId) case final known? when known.previewId == messageId) {

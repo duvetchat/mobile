@@ -16,6 +16,9 @@ abstract interface class ChatCacheStore {
   Future<String?> read(String key);
   Future<void> write(String key, String json);
   Future<void> clear();
+
+  /// The keys of what's kept.
+  Future<List<String>> keys();
 }
 
 class FileChatCacheStore implements ChatCacheStore {
@@ -43,6 +46,14 @@ class FileChatCacheStore implements ChatCacheStore {
     final dir = await _dir();
     if (await dir.exists()) await dir.delete(recursive: true);
   }
+
+  // The files' names, without `.json`: keys as [_name] makes them, which
+  // [read] and [write] take as they are.
+  @override
+  Future<List<String>> keys() async => [
+    await for (final file in (await _dir()).list())
+      if (file is File && file.path.endsWith('.json')) file.uri.pathSegments.last.replaceFirst(RegExp(r'\.json$'), ''),
+  ];
 }
 
 class MemoryChatCacheStore implements ChatCacheStore {
@@ -53,7 +64,12 @@ class MemoryChatCacheStore implements ChatCacheStore {
   Future<void> write(String key, String json) async => data[key] = json;
   @override
   Future<void> clear() async => data.clear();
+  @override
+  Future<List<String>> keys() async => [...data.keys];
 }
+
+// A change of the pages' messages ([ChatCache.changeMessages]).
+typedef _Change = ChatMessage Function(String chatId, ChatMessage m);
 
 /// The cache over a store, with the models' JSON.
 class ChatCache {
@@ -63,16 +79,31 @@ class ChatCache {
 
   final _pending = <String, Timer>{};
 
+  // Each key's writes under way, the last one queued: they go one at a time,
+  // in the order they came. Two at once could mix in its file, and a change
+  // of the pages, which reads a page and writes it back, could write an older
+  // one over a newer.
+  final _writes = <String, Future<void>>{};
+
+  // Runs [write] once the writes of [key] before it are done.
+  Future<void> _inTurn(String key, Future<void> Function() write) {
+    late final Future<void> turn;
+    turn = _writes[key] = (_writes[key] ?? Future.value())
+        .then((_) => write())
+        .catchError((Object e) => debugPrint('cache: $e'))
+        .whenComplete(() {
+          if (identical(_writes[key], turn)) _writes.remove(key);
+        });
+    return turn;
+  }
+
   /// Writes [json] under [key] a moment later, once per burst.
   void _later(String key, Object? Function() json) {
     _pending[key]?.cancel();
-    _pending[key] = Timer(const Duration(milliseconds: 500), () async {
+    _pending[key] = Timer(const Duration(milliseconds: 500), () {
       _pending.remove(key);
-      try {
-        await _store.write(key, jsonEncode(json()));
-      } catch (e) {
-        debugPrint('cache: $e');
-      }
+      final data = json();
+      unawaited(_inTurn(key, () => _store.write(key, jsonEncode(data))));
     });
   }
 
@@ -114,32 +145,125 @@ class ChatCache {
     }
   }
 
+  static const _page = 'chat_';
+
+  // The pages saved and not written yet, by chat ID.
+  final _pages = <String, List<ChatMessage>>{};
+
+  static Map<String, Object?> _pageToJson(List<ChatMessage> page) => {
+    'messages': [for (final m in page) messageToJson(m)],
+  };
+
+  static List<ChatMessage> _pageFromJson(Map<String, Object?> j) => [
+    for (final m in j['messages']! as List) messageFromJson(m as Map<String, Object?>),
+  ];
+
   void savePage(String chatId, List<ChatMessage> page) {
-    final last = page.length > pageSize ? page.sublist(page.length - pageSize) : page;
-    _later(
-      'chat_$chatId',
-      () => {
-        'messages': [for (final m in last) messageToJson(m)],
-      },
-    );
+    _pages[chatId] = page.length > pageSize ? page.sublist(page.length - pageSize) : page;
+    _later('$_page$chatId', () => _pageToJson(_pages.remove(chatId)!));
   }
 
   Future<List<ChatMessage>?> loadPage(String chatId) async {
-    final j = await _read('chat_$chatId');
+    final j = await _read('$_page$chatId');
     if (j == null) return null;
     try {
-      return [for (final m in j['messages']! as List) messageFromJson(m as Map<String, Object?>)];
+      return _pageFromJson(j);
     } catch (e) {
       debugPrint('cache: $e');
       return null;
     }
   }
 
+  // How many times it was cleared: a change of the pages begun before writes
+  // nothing after.
+  var _clears = 0;
+
+  // The passes over the pages that change them, one after another.
+  Future<void> _changes = Future.value();
+
+  // The changes the pass queued last makes, by ID, until it begins: one
+  // queued meanwhile for an ID takes the place of the one before.
+  Map<String, _Change>? _queued;
+
+  /// Changes the messages of the pages kept, those not written yet included:
+  /// [change] answers each as it's to be kept, given its chat's ID, or the
+  /// very message to leave it as it is. Only the pages with [id] in them (a
+  /// user's, say) are parsed: no other can change. The changes queued while
+  /// a pass is under way wait for one more pass, which makes the last one
+  /// queued for each ID.
+  Future<void> changeMessages(String id, ChatMessage Function(String chatId, ChatMessage m) change) {
+    if (_queued case final queued?) {
+      queued[id] = change;
+      return _changes;
+    }
+    final queued = _queued = {id: change};
+    final clears = _clears;
+    return _changes = _changes
+        .then((_) {
+          if (identical(_queued, queued)) _queued = null;
+          return _change(clears, queued);
+        })
+        .catchError((Object e) => debugPrint('cache: $e'));
+  }
+
+  Future<void> _change(int clears, Map<String, _Change> changes) async {
+    // The page changed, or null when none of its messages is.
+    List<ChatMessage>? changed(String chatId, List<ChatMessage> page) {
+      final after = [for (final m in page) changes.values.fold(m, (was, change) => change(chatId, was))];
+      return after.indexed.every((e) => identical(e.$2, page[e.$1])) ? null : after;
+    }
+
+    // One not written yet changes before it is.
+    void changeWaiting(String chatId) {
+      if (changed(chatId, _pages[chatId]!) case final page?) _pages[chatId] = page;
+    }
+
+    if (clears != _clears) return;
+    for (final chatId in [..._pages.keys]) {
+      changeWaiting(chatId);
+    }
+    final List<String> keys;
+    try {
+      keys = await _store.keys();
+    } catch (e) {
+      debugPrint('cache: $e');
+      return;
+    }
+    // A page whose first write is under way isn't listed yet: it takes its turn after that write too.
+    for (final key in {...keys, ..._writes.keys}) {
+      if (clears != _clears) return;
+      if (!key.startsWith(_page)) continue;
+      final chatId = key.substring(_page.length);
+      // In turn with the page's writes: read once the one under way is done,
+      // and written back before the next.
+      await _inTurn(key, () async {
+        final raw = await _store.read(key);
+        if (clears != _clears) return;
+        // Saved again meanwhile: that page is the one to write.
+        if (_pages.containsKey(chatId)) {
+          changeWaiting(chatId);
+          return;
+        }
+        if (raw == null || !changes.keys.any(raw.contains)) return;
+        if (changed(chatId, _pageFromJson(jsonDecode(raw) as Map<String, Object?>)) case final page?) {
+          await _store.write(key, jsonEncode(_pageToJson(page)));
+        }
+      });
+    }
+  }
+
   Future<void> clear() async {
+    _clears++;
     for (final t in _pending.values) {
       t.cancel();
     }
     _pending.clear();
+    _pages.clear();
+    _queued = null;
+    // A change of the pages under way writes nothing more, and it and the
+    // writes under way end before the store goes.
+    await _changes;
+    await Future.wait([..._writes.values]);
     try {
       await _store.clear();
     } catch (e) {

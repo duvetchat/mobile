@@ -45,8 +45,18 @@ class _DuvetAppState extends State<DuvetApp> {
         historyStore: const SecureCallHistoryStore(),
       );
 
+  late final AppLifecycleListener _lifecycle;
+
+  @override
+  void initState() {
+    super.initState();
+    // Back in front, the session catches up on a renewal its timer missed.
+    _lifecycle = AppLifecycleListener(onResume: () => widget.repository.cameToFront());
+  }
+
   @override
   void dispose() {
+    _lifecycle.dispose();
     // Before the repository: it listens to it.
     if (widget.voice == null) _voice.dispose();
     widget.repository.dispose();

@@ -83,7 +83,12 @@ class _MembersSheetState extends State<_MembersSheet> {
                       .toList();
             // Not reported isn't offline: those go under Members, with no
             // status shown.
-            Presence? of(Member m) => presence[m.userId];
+            // In a Space, a bot's there comes first.
+            final spaceId = switch (widget.target) {
+              RoomTarget(:final spaceId) => spaceId,
+              ConversationTarget() => null,
+            };
+            Presence? of(Member m) => presenceIn(presence, m.userId, spaceId: spaceId);
             bool away(Member m) => of(m) == null || of(m) == Presence.offline;
             final rest = [
               for (final m in shown)

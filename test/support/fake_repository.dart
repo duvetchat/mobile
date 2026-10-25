@@ -151,7 +151,7 @@ class FakeRepository implements ChatRepository {
   Future<List<ChatMessage>> thread(ChatTarget target, String messageId) async => [...?threads[messageId]];
 
   @override
-  List<Member> get people => everyone;
+  List<Member> people = everyone;
 
   final created = <(String, String?, String?)>[];
   final left = <String>[];
@@ -225,8 +225,18 @@ class FakeRepository implements ChatRepository {
   @override
   List<RoleTag> rolesOf(String spaceId, String userId) => roleTags[userId] ?? const [];
 
+  /// Who's in each Space, by its ID.
+  final spaceMembers = <String, Set<String>>{};
+
+  @override
+  bool isMember(String spaceId, String userId) => spaceMembers[spaceId]?.contains(userId) ?? false;
+
+  /// Why the server refuses to make or change a group, if it does.
+  String? conversationRefused;
+
   @override
   Future<ConversationSummary> createGroup(String name, List<String> userIds) async {
+    if (conversationRefused != null) throw ActionFailed(conversationRefused!);
     conversationCalls.add('group $name ${userIds.join(',')}');
     const group = ConversationSummary(id: 'c-new', title: 'New group', isGroup: true, memberCount: 3);
     conversations.value = [group, ...conversations.value];
@@ -238,8 +248,10 @@ class FakeRepository implements ChatRepository {
       conversationCalls.add('rename $conversationId $name');
 
   @override
-  Future<void> addToConversation(String conversationId, String userId) async =>
-      conversationCalls.add('add $conversationId $userId');
+  Future<void> addToConversation(String conversationId, String userId) async {
+    if (conversationRefused != null) throw ActionFailed(conversationRefused!);
+    conversationCalls.add('add $conversationId $userId');
+  }
 
   @override
   Future<void> removeFromConversation(String conversationId, String userId) async =>
@@ -293,8 +305,13 @@ class FakeRepository implements ChatRepository {
   @override
   Future<void> changeEmail(String token, String email) async => account.add('change $token $email');
 
+  /// Why the server refuses a profile change or a picture, if it does.
+  String? profileRefused;
+  String? pictureRefused;
+
   @override
   Future<void> updateProfile({required String alias, String? bio}) async {
+    if (profileRefused != null) throw ActionFailed(profileRefused!);
     account.add('alias $alias');
     if (bio != null) account.add('bio $bio');
     final p = profile.value!;
@@ -322,8 +339,10 @@ class FakeRepository implements ChatRepository {
   }
 
   @override
-  Future<void> uploadProfileImage(ProfileImage kind, String path, CropRect crop) async =>
-      account.add('${kind.name} $path ${crop.w.round()}x${crop.h.round()}');
+  Future<void> uploadProfileImage(ProfileImage kind, String path, CropRect crop) async {
+    if (pictureRefused != null) throw ActionFailed(pictureRefused!);
+    account.add('${kind.name} $path ${crop.w.round()}x${crop.h.round()}');
+  }
 
   @override
   Future<List<MyFile>> myFiles() async => [...files];
@@ -794,6 +813,12 @@ class FakeRepository implements ChatRepository {
     if (signedIn) _seed();
     return signedIn;
   }
+
+  /// How many times the app came back to the front.
+  int cameToFrontTimes = 0;
+
+  @override
+  void cameToFront() => cameToFrontTimes++;
 
   @override
   Future<void> logIn(String email, String password) async {
