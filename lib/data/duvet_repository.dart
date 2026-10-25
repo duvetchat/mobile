@@ -17,6 +17,9 @@ import 'repository.dart';
 import 'session_store.dart';
 import 'voice_signaling.dart';
 
+// Someone who joined a Space, with their user ID, or left it (null).
+typedef _MemberMove = ({String memberId, String? userId});
+
 /// [ChatRepository] over the Duvet API (`duvet_client`): REST for history and
 /// sending, the gateway for everything live.
 ///
@@ -136,6 +139,25 @@ class DuvetRepository implements ChatRepository {
   // Who's in each space, as far as known: SPACE_CREATE's member_statuses (the
   // members not offline), then the member list once fetched.
   final _spaceMemberIds = <String, Set<String>>{};
+
+  // Each space's members' user IDs, by member ID (`Members.id`), which the
+  // API's role routes and events name: from the latest members list, and
+  // SPACE_MEMBER_ADD since.
+  final _memberUsers = <String, Map<String, String>>{};
+
+  // Role changes for members not named yet, by space and member, in the order
+  // they came: they apply once a members list or SPACE_MEMBER_ADD names the
+  // member.
+  final _waitingRoles = <String, Map<String, List<({String roleId, bool added})>>>{};
+
+  // The members list on its way for them, by space.
+  final _memberLookups = <String, Future<void>>{};
+
+  // Who joined or left while a members list was on its way, one log per list,
+  // by space: the list may be from before them, so it lands with them on top.
+  // A list whose log is gone (the Space forgotten or left, or READY after a
+  // drop) may be from before that, and names no member IDs.
+  final _memberLogs = <String, List<List<_MemberMove>>>{};
 
   duvet.RestClient get _rest => _api ?? (throw StateError('Not signed in'));
 
@@ -263,6 +285,10 @@ class DuvetRepository implements ChatRepository {
     _spaces.clear();
     _nicknames.clear();
     _spaceMemberIds.clear();
+    _memberUsers.clear();
+    _waitingRoles.clear();
+    _memberLookups.clear();
+    _memberLogs.clear();
     _spaceMembers.clear();
     _loadedMembers.clear();
     _roles.clear();
@@ -340,6 +366,7 @@ class DuvetRepository implements ChatRepository {
   @visibleForTesting
   void handleEvent(duvet.GatewayEventPayload event) {
     final me = profile.value?.id;
+    final reconnected = event is duvet.ReadyEvent && _wasReady;
     switch (event) {
       case duvet.ReadyEvent(:final data):
         status.value = LiveStatus.online;
@@ -424,6 +451,17 @@ class DuvetRepository implements ChatRepository {
           known.rooms[data.id] = data;
           _publishSpaces();
         }
+      // Every room of a Space after one moved: their places, as the desktop
+      // takes them.
+      case duvet.RoomReorderedEvent(:final data):
+        for (final moved in data.rooms) {
+          for (final (space: _, :rooms) in _spaces.values) {
+            if (rooms[moved.id] case final r?) {
+              rooms[moved.id] = _placed(r, parentId: moved.parentId, position: moved.position);
+            }
+          }
+        }
+        _publishSpaces();
       case duvet.RoleCreatedEvent(:final data) || duvet.RoleUpdatedEvent(:final data):
         (_roles[data.spaceId] ??= {})[data.id] = data;
         _publishSpaces();
@@ -433,14 +471,15 @@ class DuvetRepository implements ChatRepository {
           ids.remove(data.id);
         }
         _publishSpaces();
+      // They name the member by member ID; MEMBER_ROLE_REMOVE names no space,
+      // which the role tells.
       case duvet.MemberRoleAddedEvent(:final data):
-        if (data.spaceId case final spaceId?) {
-          final ids = (_memberRoles[spaceId] ??= {})[data.memberId] ??= [];
-          if (!ids.contains(data.roleId)) ids.add(data.roleId);
+        if (data.spaceId ?? _spaceOfRole(data.roleId) case final spaceId?) {
+          _memberRoleChanged(spaceId, data.memberId, data.roleId, added: true);
         }
       case duvet.MemberRoleRemovedEvent(:final data):
-        for (final members in data.spaceId == null ? _memberRoles.values : [?_memberRoles[data.spaceId]]) {
-          members[data.memberId]?.remove(data.roleId);
+        if (data.spaceId ?? _spaceOfRole(data.roleId) case final spaceId?) {
+          _memberRoleChanged(spaceId, data.memberId, data.roleId, added: false);
         }
       case duvet.RoomOverwriteUpdateEvent(:final data):
         for (final (:space, :rooms) in _spaces.values) {
@@ -450,14 +489,16 @@ class DuvetRepository implements ChatRepository {
             ..removeWhere((o) => o.targetId == data.targetId)
             ..add(data);
         }
+        // It may change which rooms the user sees.
+        _publishSpaces();
       case duvet.RoomOverwriteDeletedEvent(:final data):
         for (final rooms in _overwrites.values) {
           rooms[data.roomId]?.removeWhere((o) => o.targetId == data.targetId);
         }
+        _publishSpaces();
 
       case duvet.RoomDeletedEvent(:final data):
-        _spaces[data.spaceId]?.rooms.remove(data.id);
-        _publishSpaces();
+        _roomGone(data.spaceId, data.id);
 
       case duvet.MessageCreateEvent(:final data):
         if (data.deletedAt != null) break;
@@ -567,8 +608,130 @@ class DuvetRepository implements ChatRepository {
 
       default:
     }
+    _trackMembers(event, reconnected: reconnected);
     // After the spaces and roles took it in: voice reads them.
     _voiceSignaling.deliver(event);
+  }
+
+  // Whatever else they do, these events keep the member IDs that role
+  // changes name, and the role changes waiting for them.
+  void _trackMembers(duvet.GatewayEventPayload event, {required bool reconnected}) {
+    switch (event) {
+      // Who joined or left while the socket was down comes only in the
+      // members lists fetched from now on, not in those on their way, so a
+      // lookup on its way doesn't hold up the next one.
+      case duvet.ReadyEvent() when reconnected:
+        _spaceMembers.clear();
+        _memberUsers.clear();
+        _memberLogs.clear();
+        _memberLookups.clear();
+      // A new session's member roles include what the waiting changes did,
+      // and what happened after them.
+      case duvet.SpaceCreateEvent(:final data):
+        _waitingRoles.remove(data.space.id);
+      case duvet.SpaceMemberAddedEvent(:final data) when data.userId != null:
+        _memberMoved(data.spaceId, (memberId: data.memberId, userId: data.userId));
+        if (_applyWaitingRoles(data.spaceId)) _publishSpaces();
+      case duvet.SpaceMemberRemovedEvent(:final data):
+        _memberMoved(data.spaceId, (memberId: data.memberId, userId: null));
+      default:
+    }
+  }
+
+  /// Someone joined or left: their member ID, kept for role changes, and in
+  /// the logs of the members lists on their way.
+  void _memberMoved(String spaceId, _MemberMove move) {
+    if (move.userId != null) _memberUsers[spaceId] ??= {};
+    if (_memberUsers[spaceId] case final users?) _move(users, move);
+    for (final log in _memberLogs[spaceId] ?? const <List<_MemberMove>>[]) {
+      log.add(move);
+    }
+  }
+
+  static void _move(Map<String, String> users, _MemberMove move) {
+    if (move.userId case final userId?) {
+      users[move.memberId] = userId;
+    } else {
+      users.remove(move.memberId);
+    }
+  }
+
+  /// Ends a members list's [log]; answers whether it was still kept: a list
+  /// whose log the Space's forgetting, or READY after a drop, took away may
+  /// be from before it.
+  bool _endMemberLog(String spaceId, List<_MemberMove> log) {
+    final logs = _memberLogs[spaceId];
+    if (logs == null || !logs.remove(log)) return false;
+    if (logs.isEmpty) _memberLogs.remove(spaceId);
+    return true;
+  }
+
+  /// A Space forgotten or left: who's in it by member ID, and the role changes
+  /// and members lists that waited for them. If the user comes back, they come
+  /// anew: someone may have left and come back meanwhile, with another ID.
+  void _forgetMembers(String spaceId) {
+    _memberUsers.remove(spaceId);
+    _waitingRoles.remove(spaceId);
+    _memberLookups.remove(spaceId);
+    _memberLogs.remove(spaceId);
+  }
+
+  String? _spaceOfRole(String roleId) => _roles.entries.where((e) => e.value.containsKey(roleId)).firstOrNull?.key;
+
+  /// A member was given a role, or lost one. One not named yet waits for a
+  /// members list: a role of the user's own changes what they may do.
+  void _memberRoleChanged(String spaceId, String memberId, String roleId, {required bool added}) {
+    final userId = _memberUsers[spaceId]?[memberId];
+    if (userId != null && !(_waitingRoles[spaceId]?.containsKey(memberId) ?? false)) {
+      _applyRole(spaceId, userId, roleId, added: added);
+      return _publishSpaces();
+    }
+    // Behind the member's earlier changes, to apply in order.
+    ((_waitingRoles[spaceId] ??= {})[memberId] ??= []).add((roleId: roleId, added: added));
+    _lookUpMembers(spaceId);
+  }
+
+  void _applyRole(String spaceId, String userId, String roleId, {required bool added}) {
+    final ids = (_memberRoles[spaceId] ??= {})[userId] ??= [];
+    if (added && !ids.contains(roleId)) ids.add(roleId);
+    if (!added) ids.remove(roleId);
+  }
+
+  /// Fetches the members list again for the waiting role changes: the one
+  /// cached may be from before someone joined while the app wasn't
+  /// listening. Changes it doesn't name, or all of them when it fails, wait
+  /// for the next list or SPACE_MEMBER_ADD.
+  void _lookUpMembers(String spaceId) {
+    if (_memberLookups.containsKey(spaceId)) return;
+    final lookup = _spaceMemberList(
+      spaceId,
+      refresh: true,
+    ).then((_) {}, onError: (Object e) => debugPrint('members for roles: $e'));
+    _memberLookups[spaceId] = lookup;
+    unawaited(
+      lookup.whenComplete(() {
+        if (identical(_memberLookups[spaceId], lookup)) _memberLookups.remove(spaceId);
+      }),
+    );
+  }
+
+  /// Applies the waiting role changes of the members now named; answers
+  /// whether there were any.
+  bool _applyWaitingRoles(String spaceId) {
+    final waiting = _waitingRoles[spaceId];
+    final users = _memberUsers[spaceId];
+    if (waiting == null || users == null || !_spaces.containsKey(spaceId)) return false;
+    var applied = false;
+    for (final memberId in [...waiting.keys]) {
+      final userId = users[memberId];
+      if (userId == null) continue;
+      for (final change in waiting.remove(memberId)!) {
+        _applyRole(spaceId, userId, change.roleId, added: change.added);
+      }
+      applied = true;
+    }
+    if (waiting.isEmpty) _waitingRoles.remove(spaceId);
+    return applied;
   }
 
   // Events for whichever chat has the message.
@@ -588,7 +751,7 @@ class DuvetRepository implements ChatRepository {
           id: space.id,
           name: space.name,
           iconUrl: avatarUrl(space.icon),
-          sections: _sections(space.id, rooms.values),
+          sections: _sections(space.id, _visibleRooms(space.id, rooms.values)),
           onlineCount: switch (_spaceMemberIds[space.id]) {
             final ids? when ids.isNotEmpty =>
               ids.where((id) => (now[id] ?? Presence.offline) != Presence.offline).length,
@@ -708,6 +871,26 @@ class DuvetRepository implements ChatRepository {
   @override
   String previewOf(ChatMessage message) =>
       recent.previewOf(message, (content) => readableContent(content, nameOf: nameOf, emojiNameOf: emojiNameOf));
+
+  /// The rooms the user may see, as the desktop lists them: those they have
+  /// ViewChannels in, and the categories with one of those, whether or not
+  /// they may see the category itself (its header shows, with only those
+  /// rooms). An empty category shows when they may see it.
+  List<duvet.GatewayRoom> _visibleRooms(String spaceId, Iterable<duvet.GatewayRoom> all) {
+    final rooms = [
+      for (final r in all)
+        if (r.deletedAt == null) r,
+    ];
+    final seen = {
+      for (final r in rooms)
+        if (canInRoom(spaceId, r.id, Perm.viewChannels)) r.id,
+    };
+    bool shown(duvet.GatewayRoom r) => r.type != duvet.RoomType.category
+        ? seen.contains(r.id)
+        : rooms.any((c) => c.parentId == r.id && seen.contains(c.id)) ||
+              (seen.contains(r.id) && !rooms.any((c) => c.parentId == r.id));
+    return rooms.where(shown).toList();
+  }
 
   /// The rooms outside any category, then each category's, by position.
   static List<RoomSection> _sections(String spaceId, Iterable<duvet.GatewayRoom> all) {
@@ -1073,7 +1256,11 @@ class DuvetRepository implements ChatRepository {
 
   @override
   Future<String> createSpace(String name, {String? description, String? iconPath}) async {
-    final created = await _call((api) => api.createSpace(name, description: description));
+    // Unanswered, it may have been made, and trying again would make another.
+    final created = await _explained(
+      (api) => api.createSpace(name, description: description),
+      unanswered: 'Duvet didn’t answer. Check Spaces before trying again: it may have been made.',
+    );
     final id = created.id;
     // Shown at once: the gateway's SPACE_CREATE, with the rest, may come later.
     if (!_spaces.containsKey(id)) {
@@ -1125,6 +1312,7 @@ class DuvetRepository implements ChatRepository {
     final rooms = {...?_spaces.remove(spaceId)?.rooms.keys, ..._recents.forgetSpace(spaceId)};
     _nicknames.remove(spaceId);
     _spaceMemberIds.remove(spaceId);
+    _forgetMembers(spaceId);
     if (unread.value.any(rooms.contains)) unread.value = unread.value.difference(rooms);
     if (mentions.value.keys.any(rooms.contains)) {
       mentions.value = {...mentions.value}..removeWhere((id, _) => rooms.contains(id));
@@ -1136,6 +1324,7 @@ class DuvetRepository implements ChatRepository {
   Future<void> leaveSpace(String spaceId) async {
     await _call((api) => api.leaveSpace(spaceId));
     _spaces.remove(spaceId);
+    _forgetMembers(spaceId);
     _publishSpaces();
   }
 
@@ -1143,22 +1332,50 @@ class DuvetRepository implements ChatRepository {
   Future<String> createInvite(String spaceId, String roomId, {Duration? maxAge}) async {
     final String code;
     try {
-      code = await _call((api) => api.createRoomInvite(spaceId, roomId, maxAge?.inSeconds ?? 0));
+      code = await _explained((api) => api.createRoomInvite(spaceId, roomId, maxAge?.inSeconds ?? 0));
     } on duvet.DuvetApiException catch (e) {
-      debugPrint('invite: $e');
+      // One without the API's reason.
       final room = _spaces[spaceId]?.rooms[roomId]?.name;
       throw ActionFailed(switch (e.statusCode) {
         403 => 'You can’t invite people${room == null ? '' : ' to #$room'}',
-        400 => _serverReason(e) ?? 'The server refused the link',
+        400 => 'The server refused the link',
         _ => 'The server couldn’t make a link (${e.statusCode})',
       });
-    } on TimeoutException {
-      throw const ActionFailed('Duvet didn’t answer. Check your connection and try again.');
-    } on IOException catch (e) {
-      debugPrint('invite: $e');
-      throw const ActionFailed('No connection. Check it and try again.');
     }
     return '$duvetDomain/invite?code=${Uri.encodeQueryComponent(code)}';
+  }
+
+  /// Runs a request whose refusal the user should read: the API's reason, as
+  /// the desktop's `getApiError` shows it, or that Duvet couldn't be reached.
+  /// A 401 is the session's, which [_call] renews or ends. With [unanswered],
+  /// a request whose answer never came says that instead: it timed out, or
+  /// its connection failed, before or after it reached the server, which the
+  /// HTTP client doesn't tell apart. It may have gone through.
+  Future<T> _explained<T>(Future<T> Function(duvet.RestClient api) request, {String? unanswered}) async {
+    try {
+      return await _call(request);
+    } on duvet.DuvetApiException catch (e) {
+      if (e.statusCode == 401) rethrow;
+      debugPrint('refused: $e');
+      if (_serverReason(e) case final reason?) throw ActionFailed(reason);
+      rethrow;
+    } on TimeoutException {
+      throw ActionFailed(unanswered ?? 'Duvet didn’t answer. Check your connection and try again.');
+    } on http.RequestAbortedException {
+      rethrow;
+    } on SocketException catch (e) {
+      throw _offline(e, unanswered);
+    } on http.ClientException catch (e) {
+      throw _offline(e, unanswered);
+    }
+  }
+
+  // The server out of reach: the socket's errors, and the HTTP client's for
+  // them. Not other I/O, a file that can't be read, say. A request that may
+  // have gone through says [unanswered] instead.
+  static ActionFailed _offline(Object e, String? unanswered) {
+    debugPrint('offline: $e');
+    return ActionFailed(unanswered ?? 'No connection. Check it and try again.');
   }
 
   // The `error` of an API error's JSON body, if it has one.
@@ -1199,9 +1416,10 @@ class DuvetRepository implements ChatRepository {
   @override
   List<RoleTag> rolesOf(String spaceId, String userId) {
     final roles = _roles[spaceId] ?? const {};
+    // Not the default role, which everyone has: its ID is the Space's.
     final mine = [
       for (final id in _memberRoles[spaceId]?[userId] ?? const <String>[])
-        if (roles[id] case final r? when r.name != '@everyone') r,
+        if (roles[id] case final r? when r.id != spaceId) r,
     ]..sort((a, b) => b.position.compareTo(a.position));
     return [for (final r in mine) RoleTag(r.name, color: r.colorFrom == null ? null : 0xFF000000 | r.colorFrom!)];
   }
@@ -1556,6 +1774,7 @@ class DuvetRepository implements ChatRepository {
       memberCount: _spaceMemberIds[spaceId]?.length ?? 0,
       owner: space.ownerId == profile.value?.id,
       perms: _permsIn(spaceId),
+      managesRooms: adminRooms(spaceId).any((r) => canInRoom(spaceId, r.id, Perm.manageChannels)),
     );
   }
 
@@ -1589,7 +1808,10 @@ class DuvetRepository implements ChatRepository {
 
   @override
   List<AdminRoom> adminRooms(String spaceId) => [
-    for (final r in (_spaces[spaceId]?.rooms.values.toList() ?? [])..sort((a, b) => a.position.compareTo(b.position)))
+    for (final r in _visibleRooms(
+      spaceId,
+      _spaces[spaceId]?.rooms.values ?? const [],
+    )..sort((a, b) => a.position.compareTo(b.position)))
       AdminRoom(
         id: r.id,
         name: r.name,
@@ -1605,7 +1827,7 @@ class DuvetRepository implements ChatRepository {
 
   @override
   Future<void> createRoom(String spaceId, String name, AdminRoomKind kind, {String? parentId}) async {
-    final room = await _call(
+    final room = await _explained(
       (api) => api.createRoom(spaceId, name, switch (kind) {
         AdminRoomKind.voice => duvet.RoomType.voice,
         AdminRoomKind.category => duvet.RoomType.category,
@@ -1618,21 +1840,70 @@ class DuvetRepository implements ChatRepository {
 
   @override
   Future<void> renameRoom(String spaceId, String roomId, String name) async {
-    final room = await _call((api) => api.updateRoom(spaceId, roomId, name: name));
+    final room = await _explained((api) => api.updateRoom(spaceId, roomId, name: name));
     _spaces[spaceId]?.rooms[room.id] = room;
     _publishSpaces();
   }
 
   @override
   Future<void> deleteRoom(String spaceId, String roomId) async {
-    await _call((api) => api.deleteRoom(spaceId, roomId));
-    _spaces[spaceId]?.rooms.remove(roomId);
+    await _explained((api) => api.deleteRoom(spaceId, roomId));
+    _roomGone(spaceId, roomId);
+  }
+
+  /// A room was deleted. The API numbers its level 0, 1, 2… again, and moves a
+  /// category's rooms out of it, after the last place of the top level, in the
+  /// order they had: here they stay, outside any category. The rooms that moved
+  /// keep their places until ROOM_REORDER, which follows ROOM_DELETE whenever
+  /// the deletion moved others, gives them their new ones. They aren't
+  /// numbered here: the desktop waits for it too.
+  void _roomGone(String spaceId, String roomId) {
+    final rooms = _spaces[spaceId]?.rooms;
+    if (rooms == null) return;
+    rooms.remove(roomId);
+    for (final r in [...rooms.values]) {
+      if (r.parentId == roomId) rooms[r.id] = _placed(r, parentId: null, position: r.position);
+    }
+    _publishSpaces();
+  }
+
+  /// [r] at another [position], in [parentId] (null: outside any category).
+  static duvet.GatewayRoom _placed(duvet.GatewayRoom r, {required String? parentId, required int position}) =>
+      duvet.GatewayRoom(
+        id: r.id,
+        spaceId: r.spaceId,
+        parentId: parentId,
+        type: r.type,
+        name: r.name,
+        description: r.description,
+        position: position,
+        nsfw: r.nsfw,
+        createdAt: r.createdAt,
+        updatedAt: r.updatedAt,
+        deletedAt: r.deletedAt,
+      );
+
+  @override
+  Future<void> moveRoom(String spaceId, String roomId, int position) async {
+    final room = await _explained((api) => api.updateRoom(spaceId, roomId, position: position));
+    // The rooms it moved past follow in ROOM_REORDER.
+    _spaces[spaceId]?.rooms[room.id] = room;
     _publishSpaces();
   }
 
   @override
-  Future<void> moveRoom(String spaceId, String roomId, int position) async {
-    final room = await _call((api) => api.updateRoom(spaceId, roomId, position: position));
+  Future<void> setRoomCategory(String spaceId, String roomId, String? categoryId) async {
+    // Out of a category: after the rooms outside any (the categories, which
+    // share their positions, are listed apart).
+    final loose = [
+      for (final r in _spaces[spaceId]?.rooms.values ?? const <duvet.GatewayRoom>[])
+        if (r.parentId == null && r.type != duvet.RoomType.category && r.id != roomId) r.position,
+    ];
+    final position = categoryId != null ? 0 : loose.fold(-1, (a, b) => a > b ? a : b) + 1;
+    final room = await _explained(
+      (api) =>
+          api.updateRoom(spaceId, roomId, parentId: categoryId, clearParent: categoryId == null, position: position),
+    );
     _spaces[spaceId]?.rooms[room.id] = room;
     _publishSpaces();
   }
@@ -1648,11 +1919,15 @@ class DuvetRepository implements ChatRepository {
   Future<void> setOverwrite(String spaceId, String roomId, RoomOverwrite overwrite) async {
     final list = (_overwrites[spaceId] ??= {})[roomId] ??= [];
     if (overwrite.isEmpty) {
-      await _call((api) => api.deleteRoomOverwrite(spaceId, roomId, overwrite.targetId));
+      // Without one it's as the roles say already, and the API would answer
+      // a 404.
+      if (!list.any((o) => o.targetId == overwrite.targetId && o.deletedAt == null)) return;
+      await _explained((api) => api.deleteRoomOverwrite(spaceId, roomId, overwrite.targetId));
       list.removeWhere((o) => o.targetId == overwrite.targetId);
+      _publishSpaces();
       return;
     }
-    final saved = await _call(
+    final saved = await _explained(
       (api) => api.upsertRoomOverwrite(
         spaceId,
         roomId,
@@ -1665,6 +1940,7 @@ class DuvetRepository implements ChatRepository {
     list
       ..removeWhere((o) => o.targetId == overwrite.targetId)
       ..add(saved);
+    _publishSpaces();
   }
 
   SpaceRole _role(String spaceId, duvet.GatewayRole r) => SpaceRole(
@@ -1690,7 +1966,7 @@ class DuvetRepository implements ChatRepository {
 
   @override
   Future<SpaceRole> createRole(String spaceId, String name) async {
-    final r = await _call((api) => api.createRole(spaceId, name));
+    final r = await _explained((api) => api.createRole(spaceId, name));
     (_roles[spaceId] ??= {})[r.id] = r;
     return _role(spaceId, r);
   }
@@ -1704,7 +1980,7 @@ class DuvetRepository implements ChatRepository {
     bool clearColor = false,
     int? perms,
   }) async {
-    final r = await _call(
+    final r = await _explained(
       (api) =>
           api.updateRole(spaceId, roleId, name: name, colorFrom: color, permissions: perms, clearColors: clearColor),
     );
@@ -1714,11 +1990,12 @@ class DuvetRepository implements ChatRepository {
 
   @override
   Future<void> deleteRole(String spaceId, String roleId) async {
-    await _call((api) => api.deleteRole(spaceId, roleId));
+    await _explained((api) => api.deleteRole(spaceId, roleId));
     _roles[spaceId]?.remove(roleId);
     for (final ids in _memberRoles[spaceId]?.values ?? const <List<String>>[]) {
       ids.remove(roleId);
     }
+    _publishSpaces();
   }
 
   @override
@@ -1729,12 +2006,20 @@ class DuvetRepository implements ChatRepository {
 
   @override
   Future<void> setRole(String spaceId, String roleId, String userId, {required bool has}) async {
-    await _call(
+    // The API names the member by member ID, which the members list gives.
+    String? memberIdOf() => _memberUsers[spaceId]?.entries.where((e) => e.value == userId).firstOrNull?.key;
+    if (memberIdOf() == null) await _spaceMemberList(spaceId, refresh: true);
+    final memberId = memberIdOf();
+    // What the API answers for someone who isn't in the Space.
+    if (memberId == null) throw const ActionFailed('Member not found');
+    await _explained(
       (api) =>
-          has ? api.assignRoleToMember(spaceId, roleId, userId) : api.removeRoleFromMember(spaceId, roleId, userId),
+          has ? api.assignRoleToMember(spaceId, roleId, memberId) : api.removeRoleFromMember(spaceId, roleId, memberId),
     );
     final ids = (_memberRoles[spaceId] ??= {})[userId] ??= [];
     has ? (ids.contains(roleId) ? null : ids.add(roleId)) : ids.remove(roleId);
+    // The user's own roles change what they may do.
+    _publishSpaces();
   }
 
   @override
@@ -1754,7 +2039,8 @@ class DuvetRepository implements ChatRepository {
   }
 
   @override
-  Future<void> revokeInvite(String spaceId, String inviteId) => _call((api) => api.revokeInvite(spaceId, inviteId));
+  Future<void> revokeInvite(String spaceId, String inviteId) =>
+      _explained((api) => api.revokeInvite(spaceId, inviteId));
 
   @override
   Future<List<SpaceAsset>> assets(String spaceId, AssetKind kind) async => switch (kind) {
@@ -1775,7 +2061,7 @@ class DuvetRepository implements ChatRepository {
 
   @override
   Future<void> addAsset(String spaceId, AssetKind kind, String name, String path) async {
-    await _call(
+    await _explained(
       (api) => kind == AssetKind.emoji
           ? api.createEmoji(spaceId, name, File(path))
           : api.createSticker(spaceId, name, File(path)),
@@ -1785,7 +2071,7 @@ class DuvetRepository implements ChatRepository {
 
   @override
   Future<void> renameAsset(String spaceId, AssetKind kind, String id, String name) async {
-    await _call(
+    await _explained(
       (api) => kind == AssetKind.emoji ? api.updateEmoji(spaceId, id, name) : api.updateSticker(spaceId, id, name),
     );
     _assetsChanged(spaceId);
@@ -1793,7 +2079,7 @@ class DuvetRepository implements ChatRepository {
 
   @override
   Future<void> deleteAsset(String spaceId, AssetKind kind, String id) async {
-    await _call((api) => kind == AssetKind.emoji ? api.deleteEmoji(spaceId, id) : api.deleteSticker(spaceId, id));
+    await _explained((api) => kind == AssetKind.emoji ? api.deleteEmoji(spaceId, id) : api.deleteSticker(spaceId, id));
     _assetsChanged(spaceId);
   }
 
@@ -1822,25 +2108,29 @@ class DuvetRepository implements ChatRepository {
 
   @override
   Future<String> createWebhook(String spaceId, String roomId, String name) async {
-    final created = await _call((api) => api.createWebhook(spaceId, roomId, name));
+    final created = await _explained((api) => api.createWebhook(spaceId, roomId, name));
     return _webhookUrl(created.webhook.id, created.token);
   }
 
   @override
   Future<String> resetWebhook(String spaceId, SpaceWebhook webhook) async {
-    final token = await _call((api) => api.resetWebhookToken(spaceId, webhook.roomId, webhook.id));
+    final token = await _explained((api) => api.resetWebhookToken(spaceId, webhook.roomId, webhook.id));
     return _webhookUrl(webhook.id, token);
   }
 
   @override
   Future<void> deleteWebhook(String spaceId, SpaceWebhook webhook) =>
-      _call((api) => api.deleteWebhook(spaceId, webhook.roomId, webhook.id));
+      _explained((api) => api.deleteWebhook(spaceId, webhook.roomId, webhook.id));
 
   @override
   Future<SpaceStorage> spaceStorage(String spaceId) async {
+    // The files and what they take are any member's to read; the buckets take
+    // ManageSpaceBuckets, which the page may show without.
     final (used, buckets, files) = await (
       _call((api) => api.getSpaceStorageUsed(spaceId)),
-      _call((api) => api.getSpaceBuckets(spaceId)),
+      Perm.has(_permsIn(spaceId), Perm.manageBuckets)
+          ? _call((api) => api.getSpaceBuckets(spaceId))
+          : Future.value(const <duvet.StorageBucket>[]),
       _call((api) => api.getSpaceAttachments(spaceId)),
     ).wait;
     return SpaceStorage(
@@ -1936,21 +2226,24 @@ class DuvetRepository implements ChatRepository {
   @override
   Future<BotInfo> bot(String userId) async {
     final b = await _call((api) => api.getBotUser(userId));
+    // The route answers any user: a link to someone else's isn't a bot's
+    // invite, which the desktop refuses with this.
+    if (!b.isBot) throw const ActionFailed('This user is not a bot.');
     return BotInfo(id: b.id, name: b.alias?.isNotEmpty == true ? b.alias! : b.username, avatarUrl: avatarUrl(b.avatar));
   }
 
   @override
-  Future<void> addBot(String spaceId, String botId) => _call((api) => api.addBotToSpace(spaceId, botId));
+  Future<void> addBot(String spaceId, String botId) => _explained((api) => api.addBotToSpace(spaceId, botId));
 
   @override
   List<({String id, String name})> spaceRoles(String spaceId) => [
     for (final r in (_roles[spaceId]?.values.toList() ?? [])..sort((a, b) => b.position.compareTo(a.position)))
-      if (r.name != '@everyone') (id: r.id, name: r.name),
+      if (r.id != spaceId) (id: r.id, name: r.name),
   ];
 
   @override
   Future<InvitePreview> invite(String code) async {
-    final info = await _call((api) => api.getInvite(code));
+    final info = await _explained((api) => api.getInvite(code));
     return InvitePreview(
       code: info.code,
       spaceId: info.spaceId,
@@ -1962,7 +2255,7 @@ class DuvetRepository implements ChatRepository {
   }
 
   @override
-  Future<String> joinInvite(String code) async => (await _call((api) => api.joinInvite(code))).spaceId;
+  Future<String> joinInvite(String code) async => (await _explained((api) => api.joinInvite(code))).spaceId;
 
   @override
   Future<List<Member>> members(ChatTarget target, {bool refresh = false}) async {
@@ -1971,27 +2264,39 @@ class DuvetRepository implements ChatRepository {
         if (refresh || !_conversationMembers.containsKey(conversationId)) await refreshConversations();
         return _conversationMembers[conversationId] ?? const [];
       case RoomTarget(:final spaceId):
-        if (refresh) _spaceMembers.remove(spaceId);
-        final pending = _spaceMembers[spaceId] ??= _fetchSpaceMembers(spaceId);
-        try {
-          return await pending;
-        } catch (_) {
-          // Not cached: the next look tries again.
-          if (identical(_spaceMembers[spaceId], pending)) _spaceMembers.remove(spaceId);
-          rethrow;
-        }
+        return _spaceMemberList(spaceId, refresh: refresh);
+    }
+  }
+
+  Future<List<Member>> _spaceMemberList(String spaceId, {bool refresh = false}) async {
+    if (refresh) _spaceMembers.remove(spaceId);
+    final pending = _spaceMembers[spaceId] ??= _fetchSpaceMembers(spaceId);
+    try {
+      return await pending;
+    } catch (_) {
+      // Not cached: the next look tries again.
+      if (identical(_spaceMembers[spaceId], pending)) _spaceMembers.remove(spaceId);
+      rethrow;
     }
   }
 
   // Every page, up to a few thousand members: the list and mentions need names.
   Future<List<Member>> _fetchSpaceMembers(String spaceId) async {
+    // Who joins or leaves while the pages come, which they may not show.
+    final moves = <_MemberMove>[];
+    (_memberLogs[spaceId] ??= []).add(moves);
     final all = <duvet.SpaceMemberWithUser>[];
-    while (all.length < 5000) {
-      final page = await _call(
-        (api) => api.getSpaceMembers(spaceId, afterId: all.lastOrNull?.id, afterPos: all.lastOrNull?.maxPos),
-      );
-      all.addAll(page);
-      if (page.length < duvet.membersPageSize) break;
+    final bool kept;
+    try {
+      while (all.length < 5000) {
+        final page = await _call(
+          (api) => api.getSpaceMembers(spaceId, afterId: all.lastOrNull?.id, afterPos: all.lastOrNull?.maxPos),
+        );
+        all.addAll(page);
+        if (page.length < duvet.membersPageSize) break;
+      }
+    } finally {
+      kept = _endMemberLog(spaceId, moves);
     }
     // Not the members' status_id, which isn't live: presence comes from
     // SPACE_CREATE's member_statuses and USER_STATUS_UPDATE.
@@ -2015,6 +2320,15 @@ class DuvetRepository implements ChatRepository {
         if (m.alias case final alias? when alias.isNotEmpty) m.user.id: alias,
     };
     (_spaceMemberIds[spaceId] ??= {}).addAll(members.map((m) => m.userId));
+    // Made again: a member who left and came back has another ID. Who joined
+    // or left meanwhile goes on top.
+    if (kept) {
+      final users = _memberUsers[spaceId] = {for (final m in all) m.id: m.userId};
+      for (final move in moves) {
+        _move(users, move);
+      }
+    }
+    _applyWaitingRoles(spaceId);
     _loadedMembers[spaceId] = members;
     _publishSpaces();
     return members;

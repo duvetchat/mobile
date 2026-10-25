@@ -879,7 +879,13 @@ class CropPage extends StatefulWidget {
 
   /// Width over height: 1 for an avatar, 3 for a banner.
   final double aspect;
-  const CropPage({required this.path, required this.aspect, super.key});
+
+  /// A square frame drawn round, as an avatar shows; an emoji's isn't.
+  final bool round;
+
+  /// Said under the frame while the picture is cropped.
+  final String? note;
+  const CropPage({required this.path, required this.aspect, this.round = true, this.note, super.key});
 
   @override
   State<CropPage> createState() => _CropPageState();
@@ -888,6 +894,7 @@ class CropPage extends StatefulWidget {
 class _CropPageState extends State<CropPage> {
   final _transform = TransformationController();
   Size? _image;
+  bool _centered = false;
 
   @override
   void initState() {
@@ -941,6 +948,16 @@ class _CropPageState extends State<CropPage> {
           final frame = Size(width, width / widget.aspect);
           // The picture covers the frame at scale 1.
           final scale = image == null ? 1.0 : math.max(frame.width / image.width, frame.height / image.height);
+          if (image != null && !_centered) {
+            // From its middle, as the desktop's editor starts: set before the
+            // viewer that reads it is first built.
+            _centered = true;
+            _transform.value = Matrix4.translationValues(
+              -(image.width * scale - frame.width) / 2,
+              -(image.height * scale - frame.height) / 2,
+              0,
+            );
+          }
           return Stack(
             children: [
               Center(
@@ -953,7 +970,7 @@ class _CropPageState extends State<CropPage> {
                           label: 'Picture to crop. Pinch to zoom, drag to move',
                           child: ClipRRect(
                             borderRadius: BorderRadius.circular(
-                              widget.aspect == 1 ? frame.width / 2 : DuvetTokens.radiusCard,
+                              widget.aspect == 1 && widget.round ? frame.width / 2 : DuvetTokens.radiusCard,
                             ),
                             child: InteractiveViewer(
                               transformationController: _transform,
@@ -987,6 +1004,17 @@ class _CropPageState extends State<CropPage> {
                   ],
                 ),
               ),
+              if (widget.note case final note?)
+                Positioned(
+                  left: 24,
+                  right: 24,
+                  bottom: padding.bottom + 32,
+                  child: Text(
+                    note,
+                    textAlign: TextAlign.center,
+                    style: DuvetType.snippet.copyWith(color: ink),
+                  ),
+                ),
             ],
           );
         },

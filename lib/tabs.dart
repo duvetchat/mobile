@@ -148,9 +148,16 @@ class ChatsTab extends StatelessWidget {
       return named && chat.previewAuthor != null ? '${chat.previewAuthor}: $text' : text;
     }
 
+    // A room the user can't see (any more) goes, once its Space lists its
+    // rooms without it.
+    bool hidden(ChatTarget t) => switch (t) {
+      RoomTarget(:final spaceId, :final roomId) => spacesById[spaceId]?.rooms.every((r) => r.id != roomId) ?? false,
+      ConversationTarget() => false,
+    };
+
     final listed = {for (final r in recents) r.target.id};
     final rows = [
-      for (final chat in recents)
+      for (final chat in recents.where((c) => !hidden(c.target)))
         switch (chat.target) {
           RoomTarget(:final spaceId, :final roomId) => () {
             final space = spacesById[spaceId];

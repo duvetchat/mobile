@@ -278,7 +278,7 @@ void main() {
     await tester.enterText(find.byType(EditableText).first, 'Cumbia Collective');
     await tester.pump();
     expect(find.text('Cumbia Collective'), findsWidgets);
-    expect(find.text('17 of 50 characters'), findsOneWidget);
+    expect(find.text('17 of 64 characters'), findsOneWidget);
     await tapLabel(tester, 'Create Space');
     expect(repository.created.single.$1, 'Cumbia Collective');
     semantics.dispose();

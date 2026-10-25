@@ -102,6 +102,11 @@ class SpaceProfile {
 
   /// The user's permissions in the Space (every bit for its owner).
   final int perms;
+
+  /// May manage some room the user sees: ManageChannels there, which the API
+  /// checks room by room, overwrites included. Making a room takes it in the
+  /// Space ([can]).
+  final bool managesRooms;
   const SpaceProfile({
     required this.id,
     required this.name,
@@ -111,12 +116,13 @@ class SpaceProfile {
     this.memberCount = 0,
     this.owner = false,
     this.perms = 0,
+    this.managesRooms = false,
   });
 
   bool can(int bit) => owner || Perm.has(perms, bit);
 
   /// May change anything in Space settings.
-  bool get helpsRun => owner || perms & Perm.anyAdmin != 0;
+  bool get helpsRun => owner || perms & Perm.anyAdmin != 0 || managesRooms;
 
   /// What the header says about the user.
   String get standing => owner

@@ -1,9 +1,14 @@
+import 'dart:async';
+import 'dart:io';
+import 'dart:ui' as ui;
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:forui/forui.dart';
 import 'package:image_picker/image_picker.dart';
+import 'package:path_provider/path_provider.dart';
 
-import 'account.dart' show formatBytes;
+import 'account.dart' show CropPage, formatBytes;
 import 'data/models.dart';
 import 'data/scope.dart';
 import 'people.dart' show SquareCheck;
@@ -14,9 +19,106 @@ import 'widgets/chrome.dart';
 import 'widgets/glass.dart';
 import 'widgets/rows.dart';
 
-/// Picks a Space's banner, an emoji or a sticker; tests swap in their own.
+/// Picks a Space's banner; tests swap in their own.
 Future<String?> Function() pickSpaceImage = () async =>
     (await ImagePicker().pickImage(source: ImageSource.gallery, maxWidth: 1024, imageQuality: 90))?.path;
+
+/// Picks an emoji's or a sticker's picture as it is: resized, Android's picker
+/// would make a GIF a still image. Tests swap in their own.
+Future<String?> Function() pickAssetImage = () async =>
+    (await ImagePicker().pickImage(source: ImageSource.gallery))?.path;
+
+/// The sides of what the desktop's image editor makes of an emoji and a
+/// sticker: a PNG this size is always under the API's caps.
+const emojiSide = 128;
+const stickerSide = 320;
+
+/// The API's caps on an emoji's and a sticker's file: its bytes, and the
+/// pixels of each side.
+const emojiCap = (bytes: 256 * 1024, side: 512);
+const stickerCap = (bytes: 512 * 1024, side: 1024);
+
+/// A GIF's size as the API reads it (its header's screen, and its bytes),
+/// whether it moves, and whether it can be read at all; null for any other
+/// picture, of which only the header is read.
+Future<({int width, int height, int bytes, bool animated, bool readable})?> gifAt(String path) async {
+  final file = File(path);
+  final opened = await file.open();
+  final Uint8List header;
+  try {
+    header = await opened.read(10);
+  } finally {
+    await opened.close();
+  }
+  if (header.length < 10 || !const ['GIF87a', 'GIF89a'].contains(String.fromCharCodes(header, 0, 6))) return null;
+  // Its frames tell whether it moves.
+  final data = await file.readAsBytes();
+  var animated = false;
+  var readable = true;
+  try {
+    final codec = await ui.instantiateImageCodec(data);
+    animated = codec.frameCount > 1;
+    codec.dispose();
+  } catch (e) {
+    // The cropper couldn't show it either: the caller says so.
+    debugPrint('gif: $e');
+    readable = false;
+  }
+  return (
+    width: header[6] | header[7] << 8,
+    height: header[8] | header[9] << 8,
+    bytes: data.length,
+    animated: animated,
+    readable: readable,
+  );
+}
+
+/// The part of the picture at [path] that [crop] frames, drawn [side] pixels
+/// square, as a PNG.
+Future<Uint8List> squarePng(String path, CropRect crop, int side) async {
+  final codec = await ui.instantiateImageCodec(await File(path).readAsBytes());
+  final ui.Image picture;
+  try {
+    picture = (await codec.getNextFrame()).image;
+  } finally {
+    codec.dispose();
+  }
+  final recorder = ui.PictureRecorder();
+  Canvas(recorder).drawImageRect(
+    picture,
+    Rect.fromLTWH(crop.x, crop.y, crop.w, crop.h),
+    Rect.fromLTWH(0, 0, side.toDouble(), side.toDouble()),
+    Paint()..filterQuality = FilterQuality.high,
+  );
+  final drawing = recorder.endRecording();
+  final square = await drawing.toImage(side, side);
+  try {
+    return (await square.toByteData(format: ui.ImageByteFormat.png))!.buffer.asUint8List();
+  } finally {
+    picture.dispose();
+    drawing.dispose();
+    square.dispose();
+  }
+}
+
+/// [squarePng] in a file to upload, named after the picture, as the desktop
+/// names it; answers its path. Tests swap in their own.
+Future<String> Function(String path, CropRect crop, int side) saveSquareImage = (path, crop, side) async {
+  final png = await squarePng(path, crop, side);
+  final name = path.split(Platform.pathSeparator).last;
+  final dot = name.lastIndexOf('.');
+  final dir = Directory('${(await getTemporaryDirectory()).path}/square');
+  await dir.create(recursive: true);
+  final file = File('${dir.path}/${dot > 0 ? name.substring(0, dot) : 'image'}.png');
+  await file.writeAsBytes(png, flush: true);
+  return file.path;
+};
+
+/// The position that moves [siblings]' room at [index] [up] or down one place,
+/// as the API takes it: the place it's inserted at, counted before it leaves
+/// its own. So the room above's, or one past the room below's.
+int movedPosition(List<AdminRoom> siblings, int index, {required bool up}) =>
+    up ? siblings[index - 1].position : siblings[index + 1].position + 1;
 
 /// Space settings: the Space, then its rooms, emojis and stickers; its
 /// roles and invites; its webhooks and storage. Each row shows only to those
@@ -97,7 +199,8 @@ class _SpaceSettingsPageState extends State<SpaceSettingsPage> {
                   detail: 'Name, icon, banner',
                   onPressed: () => _open(SpaceOverviewPage(spaceId: id)),
                 ),
-              if (profile.can(Perm.manageChannels))
+              // ManageChannels in the Space makes rooms; in a room, runs it.
+              if (profile.can(Perm.manageChannels) || profile.managesRooms)
                 GlassRow(
                   icon: FLucideIcons.hash,
                   label: 'Rooms',
@@ -555,6 +658,8 @@ class _RoomsAdminPageState extends State<RoomsAdminPage> {
   Future<void> _options(AdminRoom room, List<AdminRoom> siblings) async {
     final i = siblings.indexOf(room);
     final label = room.kind == AdminRoomKind.category ? room.name : '#${room.name}';
+    final categories = _all.where((r) => r.kind == AdminRoomKind.category).toList();
+    final category = categories.where((c) => c.id == room.parentId).firstOrNull;
     final picked = await showGlassSheet<String>(
       context,
       label: label,
@@ -570,6 +675,14 @@ class _RoomsAdminPageState extends State<RoomsAdminPage> {
               icon: FLucideIcons.arrowDown,
               label: 'Move down',
               onPressed: () => Navigator.of(context).pop('down'),
+            ),
+          // Categories don't nest.
+          if (room.kind != AdminRoomKind.category && categories.isNotEmpty)
+            GlassRow(
+              icon: FLucideIcons.folder,
+              label: 'Category',
+              detail: category?.name ?? 'No category',
+              onPressed: () => Navigator.of(context).pop('category'),
             ),
           if (room.kind != AdminRoomKind.category)
             GlassRow(
@@ -595,8 +708,39 @@ class _RoomsAdminPageState extends State<RoomsAdminPage> {
         if (got == null || !mounted) return;
         await _try(context, 'Couldn’t rename $label', () => repository.renameRoom(id, room.id, got.$1));
       case 'up' || 'down':
-        final other = siblings[picked == 'up' ? i - 1 : i + 1];
-        await _try(context, 'Couldn’t move $label', () => repository.moveRoom(id, room.id, other.position));
+        await _try(
+          context,
+          'Couldn’t move $label',
+          () => repository.moveRoom(id, room.id, movedPosition(siblings, i, up: picked == 'up')),
+        );
+      case 'category':
+        final into = await showGlassSheet<String>(
+          context,
+          label: 'Put $label in',
+          builder: (context, scroll) => ListView(
+            controller: scroll,
+            children: [
+              SheetTitle(title: 'Put $label in'),
+              GlassRow(
+                label: 'No category',
+                selected: category == null,
+                onPressed: () => Navigator.of(context).pop(''),
+              ),
+              for (final c in categories)
+                GlassRow(
+                  label: c.name,
+                  selected: c.id == category?.id,
+                  onPressed: () => Navigator.of(context).pop(c.id),
+                ),
+            ],
+          ),
+        );
+        if (into == null || into == (category?.id ?? '') || !mounted) return;
+        await _try(
+          context,
+          'Couldn’t move $label',
+          () => repository.setRoomCategory(id, room.id, into.isEmpty ? null : into),
+        );
       case 'perms':
         await Navigator.of(context).push(
           MaterialPageRoute<void>(
@@ -619,42 +763,62 @@ class _RoomsAdminPageState extends State<RoomsAdminPage> {
   }
 
   @override
-  Widget build(BuildContext context) {
-    final colors = context.theme.colors;
-    final all = _all;
-    final categories = all.where((r) => r.kind == AdminRoomKind.category).toList();
-    final loose = all.where((r) => r.kind != AdminRoomKind.category && r.parentId == null).toList();
-    Widget roomRow(AdminRoom r, List<AdminRoom> siblings) => ListRow(
-      title: r.name,
-      hash: r.kind == AdminRoomKind.text,
-      leading: r.kind == AdminRoomKind.voice
-          ? ExcludeSemantics(child: Icon(FLucideIcons.volume2, size: 20, color: colors.mutedForeground))
-          : null,
-      detail: r.kind == AdminRoomKind.voice ? 'Voice room. Double tap for options' : 'Double tap for options',
-      onTap: () => _options(r, siblings),
-    );
-    return AdminPage(
-      title: 'Rooms',
-      actions: [IconAction(icon: FLucideIcons.plus, label: 'New room', onPressed: _create)],
-      children: [
-        for (final r in loose) roomRow(r, loose),
-        for (final c in categories) ...[
-          Semantics(
-            container: true,
-            button: true,
-            label: 'Category ${c.name}',
-            hint: 'Double tap for options',
-            excludeSemantics: true,
-            onTap: () => _options(c, categories),
-            child: GestureDetector(onTap: () => _options(c, categories), child: Overline(c.name)),
-          ),
-          for (final r in all.where((r) => r.parentId == c.id && r.kind != AdminRoomKind.category).toList())
-            roomRow(r, all.where((o) => o.parentId == c.id && o.kind != AdminRoomKind.category).toList()),
+  Widget build(BuildContext context) => ValueListenableBuilder(
+    // Moves and deletions elsewhere (ROOM_REORDER) show as they come.
+    valueListenable: context.repository.spaces,
+    builder: (context, _, _) {
+      final colors = context.theme.colors;
+      final repository = context.repository;
+      final all = _all;
+      final categories = all.where((r) => r.kind == AdminRoomKind.category).toList();
+      final categoryIds = {for (final c in categories) c.id};
+      // As the Space's list has them: a room whose category isn't listed is
+      // outside any.
+      final loose = all.where((r) => r.kind != AdminRoomKind.category && !categoryIds.contains(r.parentId)).toList();
+      // The API checks ManageChannels in the room itself, overwrites included,
+      // to change, move or delete it, and in the Space to make one.
+      bool manages(AdminRoom r) => repository.canInRoom(widget.spaceId, r.id, Perm.manageChannels);
+      final makes = repository.spaceProfile(widget.spaceId)?.can(Perm.manageChannels) ?? false;
+      Widget roomRow(AdminRoom r, List<AdminRoom> siblings) => ListRow(
+        title: r.name,
+        hash: r.kind == AdminRoomKind.text,
+        leading: r.kind == AdminRoomKind.voice
+            ? ExcludeSemantics(child: Icon(FLucideIcons.volume2, size: 20, color: colors.mutedForeground))
+            : null,
+        detail: switch ((r.kind == AdminRoomKind.voice, manages(r))) {
+          (true, true) => 'Voice room. Double tap for options',
+          (true, false) => 'Voice room',
+          (false, true) => 'Double tap for options',
+          (false, false) => null,
+        },
+        onTap: manages(r) ? () => _options(r, siblings) : null,
+      );
+      return AdminPage(
+        title: 'Rooms',
+        actions: [if (makes) IconAction(icon: FLucideIcons.plus, label: 'New room', onPressed: _create)],
+        children: [
+          for (final r in loose) roomRow(r, loose),
+          for (final c in categories) ...[
+            if (manages(c))
+              Semantics(
+                container: true,
+                button: true,
+                label: 'Category ${c.name}',
+                hint: 'Double tap for options',
+                excludeSemantics: true,
+                onTap: () => _options(c, categories),
+                child: GestureDetector(onTap: () => _options(c, categories), child: Overline(c.name)),
+              )
+            else
+              Overline(c.name),
+            for (final r in all.where((r) => r.parentId == c.id && r.kind != AdminRoomKind.category).toList())
+              roomRow(r, all.where((o) => o.parentId == c.id && o.kind != AdminRoomKind.category).toList()),
+          ],
+          if (all.isEmpty) const ListNote('No rooms yet'),
         ],
-        if (all.isEmpty) const ListNote('No rooms yet'),
-      ],
-    );
-  }
+      );
+    },
+  );
 }
 
 /// What each role may do in one room: allowed, denied, or as the role says.
@@ -775,8 +939,8 @@ class _RolesPageState extends State<RolesPage> {
     try {
       final role = await repository.createRole(widget.spaceId, got.$1);
       if (mounted) await _edit(role);
-    } catch (_) {
-      if (mounted) _toast(context, 'Couldn’t create the role');
+    } catch (e) {
+      if (mounted) _toast(context, e is ActionFailed ? e.message : 'Couldn’t create the role');
     }
   }
 
@@ -1198,7 +1362,8 @@ class AssetsPage extends StatefulWidget {
 }
 
 class _AssetsPageState extends State<AssetsPage> {
-  AssetKind _kind = AssetKind.emoji;
+  // The kind the user may change first.
+  late AssetKind _kind = _may(AssetKind.emoji) || !_may(AssetKind.sticker) ? AssetKind.emoji : AssetKind.sticker;
   late Future<List<SpaceAsset>> _list;
 
   @override
@@ -1207,26 +1372,70 @@ class _AssetsPageState extends State<AssetsPage> {
     _list = context.repository.assets(widget.spaceId, _kind);
   }
 
+  /// Each kind takes its own permission, as in the API and the desktop's
+  /// tabs: both lists show, the controls only where it's held.
+  bool _may(AssetKind kind) =>
+      context.repository
+          .spaceProfile(widget.spaceId)
+          ?.can(kind == AssetKind.emoji ? Perm.manageEmojis : Perm.manageStickers) ??
+      false;
+
   void _reload() => setState(() {
     _list = context.repository.assets(widget.spaceId, _kind);
   });
 
   String get _noun => _kind == AssetKind.emoji ? 'emoji' : 'sticker';
 
-  // Emoji names are `:like_this:`.
-  static String _clean(String name) => name.replaceAll(RegExp(r'[^A-Za-z0-9_]'), '_');
-
+  // Cropped square and sized as the desktop's image editor does (but a moving
+  // GIF the API takes as it is), then named as typed (trimmed), as the
+  // desktop sends it: the API takes any text.
   Future<void> _add() async {
-    final path = await pickSpaceImage();
+    final path = await pickAssetImage();
     if (path == null || !mounted) return;
+    final kind = _kind;
+    final cap = kind == AssetKind.emoji ? emojiCap : stickerCap;
+    // A moving GIF the API takes as it is goes up unchanged, still moving:
+    // cropping makes a still image of it. A still GIF is cropped as any
+    // picture is.
+    final gif = await gifAt(path);
+    if (!mounted) return;
+    // The cropper would close on it without a word.
+    if (gif != null && !gif.readable) {
+      _toast(context, 'Couldn’t read this GIF');
+      return;
+    }
+    final CropRect? crop;
+    if (gif != null && gif.animated && gif.bytes <= cap.bytes && gif.width <= cap.side && gif.height <= cap.side) {
+      crop = null;
+    } else {
+      crop = await Navigator.of(context).push<CropRect>(
+        MaterialPageRoute(
+          fullscreenDialog: true,
+          builder: (_) => CropPage(
+            path: path,
+            aspect: 1,
+            round: false,
+            note: gif?.animated ?? false
+                ? 'This GIF is over ${cap.bytes ~/ 1024} KiB or ${cap.side} px, so it goes up still: its animation is lost'
+                : null,
+          ),
+        ),
+      );
+      if (crop == null || !mounted) return;
+    }
     final got = await askName<void>(context, title: 'Name the $_noun', action: 'Add');
     if (got == null || !mounted) return;
-    final name = _kind == AssetKind.emoji ? _clean(got.$1) : got.$1;
-    await _try(
-      context,
-      'Couldn’t add the $_noun',
-      () => context.repository.addAsset(widget.spaceId, _kind, name, path),
-    );
+    final repository = context.repository;
+    await _try(context, 'Couldn’t add the $_noun', () async {
+      if (crop == null) return repository.addAsset(widget.spaceId, kind, got.$1, path);
+      final square = await saveSquareImage(path, crop, kind == AssetKind.emoji ? emojiSide : stickerSide);
+      try {
+        await repository.addAsset(widget.spaceId, kind, got.$1, square);
+      } finally {
+        // Best effort: the list needn't wait for it.
+        unawaited(File(square).delete().then((_) {}, onError: (Object e) => debugPrint('square image: $e')));
+      }
+    });
     if (mounted) _reload();
   }
 
@@ -1254,8 +1463,7 @@ class _AssetsPageState extends State<AssetsPage> {
       case 'rename':
         final got = await askName<void>(context, title: 'Rename ${a.name}', initial: a.name);
         if (got == null || !mounted) return;
-        final name = _kind == AssetKind.emoji ? _clean(got.$1) : got.$1;
-        await _try(context, 'Couldn’t rename it', () => repository.renameAsset(widget.spaceId, _kind, a.id, name));
+        await _try(context, 'Couldn’t rename it', () => repository.renameAsset(widget.spaceId, _kind, a.id, got.$1));
       case 'delete':
         final sure = await confirmDestructive(
           context,
@@ -1273,13 +1481,14 @@ class _AssetsPageState extends State<AssetsPage> {
   Widget build(BuildContext context) {
     final colors = context.theme.colors;
     final size = _kind == AssetKind.emoji ? 48.0 : 96.0;
+    final may = _may(_kind);
     return FutureBuilder(
       future: _list,
       builder: (context, snapshot) {
         final list = snapshot.data;
         return AdminPage(
           title: 'Emojis and stickers',
-          actions: [IconAction(icon: FLucideIcons.plus, label: 'Add $_noun', onPressed: _add)],
+          actions: [if (may) IconAction(icon: FLucideIcons.plus, label: 'Add $_noun', onPressed: _add)],
           children: [
             Wrap(
               spacing: 8,
@@ -1313,14 +1522,14 @@ class _AssetsPageState extends State<AssetsPage> {
                   for (final a in list)
                     Semantics(
                       container: true,
-                      button: true,
+                      button: may,
                       label: _kind == AssetKind.emoji ? ':${a.name}:' : a.name,
-                      hint: 'Double tap for options',
+                      hint: may ? 'Double tap for options' : null,
                       excludeSemantics: true,
-                      onTap: () => _options(a),
+                      onTap: may ? () => _options(a) : null,
                       child: GestureDetector(
                         behavior: HitTestBehavior.opaque,
-                        onTap: () => _options(a),
+                        onTap: may ? () => _options(a) : null,
                         child: SizedBox(
                           width: size + 24,
                           child: Column(
@@ -1434,8 +1643,8 @@ class _WebhooksPageState extends State<WebhooksPage> {
     try {
       final url = await repository.createWebhook(widget.spaceId, got.$2 ?? rooms.first.id, got.$1);
       if (mounted) await _showOnce(got.$1, url);
-    } catch (_) {
-      if (mounted) _toast(context, 'Couldn’t create the webhook');
+    } catch (e) {
+      if (mounted) _toast(context, e is ActionFailed ? e.message : 'Couldn’t create the webhook');
     }
     if (mounted) _reload();
   }
@@ -1470,8 +1679,8 @@ class _WebhooksPageState extends State<WebhooksPage> {
         try {
           final url = await repository.resetWebhook(widget.spaceId, w);
           if (mounted) await _showOnce(w.name, url);
-        } catch (_) {
-          if (mounted) _toast(context, 'Couldn’t make a new URL');
+        } catch (e) {
+          if (mounted) _toast(context, e is ActionFailed ? e.message : 'Couldn’t make a new URL');
         }
       case 'delete':
         final sure = await confirmDestructive(

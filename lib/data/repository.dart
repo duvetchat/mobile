@@ -195,11 +195,17 @@ abstract interface class ChatRepository {
   Future<void> renameRoom(String spaceId, String roomId, String name);
   Future<void> deleteRoom(String spaceId, String roomId);
 
-  /// Moves a room to [position] among its category's (or the Space's) rooms.
+  /// Moves a room among its category's (or the Space's) rooms, to [position]
+  /// as the API takes it: the place it's inserted at, counted before it leaves
+  /// its own, so one past the room it goes after when it moves down.
   Future<void> moveRoom(String spaceId, String roomId, int position);
+
+  /// Puts a room in a category, or outside any (null): first in a category,
+  /// as the desktop drops one in, or last among the rooms outside any.
+  Future<void> setRoomCategory(String spaceId, String roomId, String? categoryId);
   List<RoomOverwrite> overwrites(String spaceId, String roomId);
 
-  /// Saves an overwrite; an empty one is removed.
+  /// Saves an overwrite; an empty one is removed, where there is one.
   Future<void> setOverwrite(String spaceId, String roomId, RoomOverwrite overwrite);
 
   /// Roles, highest first, @everyone last.
@@ -252,7 +258,8 @@ abstract interface class ChatRepository {
   Future<BotInfo> bot(String userId);
   Future<void> addBot(String spaceId, String botId);
 
-  /// The Space's roles, highest first: for role selects and options.
+  /// The Space's roles, highest first, but the one everyone has: for role
+  /// selects and options.
   List<({String id, String name})> spaceRoles(String spaceId);
 
   /// What an invite code leads to.

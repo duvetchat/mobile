@@ -965,11 +965,12 @@ class _BotInviteCardState extends State<BotInviteCard> {
     try {
       await repository.addBot(space.id, bot.id);
       if (mounted) setState(() => _added = space.name);
-    } catch (_) {
+    } catch (e) {
+      // The API's reason, as the desktop shows it.
       if (mounted) {
         showFToast(
           context: context,
-          title: Text('Couldn’t add ${bot.name}: you may not manage ${space.name}'),
+          title: Text(e is ActionFailed ? e.message : 'Couldn’t add ${bot.name} to ${space.name}'),
           duration: const Duration(seconds: 3),
         );
       }

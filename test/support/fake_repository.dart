@@ -160,6 +160,7 @@ class FakeRepository implements ChatRepository {
   @override
   Future<String> createSpace(String name, {String? description, String? iconPath}) async {
     created.add((name, description, iconPath));
+    _refuse('createSpace');
     return 's-new';
   }
 
@@ -338,6 +339,14 @@ class FakeRepository implements ChatRepository {
 
   // Running a Space: what the admin screens did, in order.
   final admin = <String>[];
+
+  /// Why the server refuses a call, by the method's name, as the real
+  /// repository says it (the API's reason).
+  final refusals = <String, String>{};
+  void _refuse(String call) {
+    if (refusals[call] case final why?) throw ActionFailed(why);
+  }
+
   int spacePerms = Perm.all;
   bool spaceOwner = true;
   final adminRoomList = <String, List<AdminRoom>>{};
@@ -356,8 +365,15 @@ class FakeRepository implements ChatRepository {
   final noJoin = <String>{};
   final noSpeak = <String>{};
 
+  /// Permissions the user lacks in a room, by room ID.
+  final deniedInRoom = <String, int>{};
+
+  /// What [spaceProfile] says of ManageChannels in some room.
+  bool managesRooms = false;
+
   @override
   bool canInRoom(String spaceId, String roomId, int bit) => switch (bit) {
+    _ when (deniedInRoom[roomId] ?? 0) & bit != 0 => false,
     Perm.createInvites => !noInvites.contains(roomId),
     Perm.joinVoice => !noJoin.contains(roomId),
     Perm.speakInVoice => !noSpeak.contains(roomId),
@@ -374,6 +390,7 @@ class FakeRepository implements ChatRepository {
       memberCount: everyone.length,
       owner: spaceOwner,
       perms: spacePerms,
+      managesRooms: managesRooms,
     );
   }
 
@@ -453,6 +470,15 @@ class FakeRepository implements ChatRepository {
   }
 
   @override
+  Future<void> setRoomCategory(String spaceId, String roomId, String? categoryId) async {
+    admin.add('room^ $roomId ${categoryId ?? 'none'}');
+    final rooms = adminRooms(spaceId);
+    final i = rooms.indexWhere((r) => r.id == roomId);
+    final r = rooms[i];
+    rooms[i] = AdminRoom(id: r.id, name: r.name, kind: r.kind, parentId: categoryId, position: r.position);
+  }
+
+  @override
   List<RoomOverwrite> overwrites(String spaceId, String roomId) => [...?overwriteList[roomId]];
 
   @override
@@ -489,6 +515,7 @@ class FakeRepository implements ChatRepository {
   @override
   Future<SpaceRole> createRole(String spaceId, String name) async {
     admin.add('role+ $name');
+    _refuse('createRole');
     roles(spaceId);
     final role = SpaceRole(id: 'role-$name', name: name, position: 1);
     roleList[spaceId]!.insert(roleList[spaceId]!.length - 1, role);
@@ -575,6 +602,7 @@ class FakeRepository implements ChatRepository {
   @override
   Future<String> createWebhook(String spaceId, String roomId, String name) async {
     admin.add('hook+ $roomId $name');
+    _refuse('createWebhook');
     webhookList = [
       ...webhookList,
       SpaceWebhook(id: 'w-$name', roomId: roomId, roomName: 'general', name: name, createdAt: DateTime(2026, 10, 23)),
@@ -585,6 +613,7 @@ class FakeRepository implements ChatRepository {
   @override
   Future<String> resetWebhook(String spaceId, SpaceWebhook webhook) async {
     admin.add('hook~ ${webhook.id}');
+    _refuse('resetWebhook');
     return 'https://api.duvet.chat/api/webhooks/${webhook.id}/fresh';
   }
 
@@ -634,17 +663,26 @@ class FakeRepository implements ChatRepository {
   Future<BotInfo> bot(String userId) async => BotInfo(id: userId, name: 'Ballot');
 
   @override
-  Future<void> addBot(String spaceId, String botId) async => botsAdded.add((spaceId, botId));
+  Future<void> addBot(String spaceId, String botId) async {
+    _refuse('addBot');
+    botsAdded.add((spaceId, botId));
+  }
 
   @override
   List<({String id, String name})> spaceRoles(String spaceId) => const [(id: 'role-mod', name: 'Moderator')];
 
   @override
-  Future<InvitePreview> invite(String code) async => invites[code] ?? (throw Exception('no such invite'));
+  Future<InvitePreview> invite(String code) async {
+    // A request takes a moment: the preview waits for its answer.
+    await Future<void>.delayed(const Duration(milliseconds: 100));
+    _refuse('invite');
+    return invites[code] ?? (throw Exception('no such invite'));
+  }
 
   @override
   Future<String> joinInvite(String code) async {
     joined.add(code);
+    _refuse('joinInvite');
     return invites[code]!.spaceId;
   }
 

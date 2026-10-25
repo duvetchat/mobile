@@ -1,3 +1,7 @@
+import 'dart:io';
+import 'dart:ui' as ui;
+
+import 'package:duvet/account.dart';
 import 'package:duvet/data/emoji_catalog.dart';
 import 'package:duvet/data/models.dart';
 import 'package:duvet/deep_links.dart';
@@ -9,6 +13,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:forui/forui.dart';
 
 import 'support/fake_repository.dart';
 
@@ -80,6 +85,68 @@ void main() {
   Future<void> typeName(WidgetTester tester, String name) async {
     await tester.enterText(find.byType(EditableText).last, name);
     await tester.pump();
+  }
+
+  // A 400 × 200 picture on disk: blue on its left half, red on its right.
+  Future<String> picture(WidgetTester tester) async {
+    final dir = Directory.systemTemp.createTempSync('duvet_square');
+    addTearDown(() => dir.deleteSync(recursive: true));
+    final path = '${dir.path}/two halves.png';
+    await tester.runAsync(() async {
+      final recorder = ui.PictureRecorder();
+      Canvas(recorder)
+        ..drawRect(const Rect.fromLTWH(0, 0, 200, 200), Paint()..color = const Color(0xFF0000FF))
+        ..drawRect(const Rect.fromLTWH(200, 0, 200, 200), Paint()..color = const Color(0xFFFF0000));
+      final image = await recorder.endRecording().toImage(400, 200);
+      File(path).writeAsBytesSync((await image.toByteData(format: ui.ImageByteFormat.png))!.buffer.asUint8List());
+    });
+    return path;
+  }
+
+  // A GIF of [frames] one-pixel frames on a [width] × [height] screen: the
+  // size the API reads from its header.
+  String gif({required int width, required int height, int frames = 2}) {
+    final dir = Directory.systemTemp.createTempSync('duvet_gif');
+    addTearDown(() => dir.deleteSync(recursive: true));
+    final path = '${dir.path}/dance.gif';
+    File(path).writeAsBytesSync([
+      ...'GIF89a'.codeUnits,
+      width & 0xff, width >> 8, height & 0xff, height >> 8,
+      // Two colors.
+      0x80, 0, 0, 0, 0, 0, 0xff, 0xff, 0xff,
+      // It loops.
+      0x21, 0xff, 0x0b, ...'NETSCAPE2.0'.codeUnits, 0x03, 0x01, 0x00, 0x00, 0x00,
+      for (var i = 0; i < frames; i++) ...[
+        // 100 ms each, a pixel at the corner.
+        0x21, 0xf9, 0x04, 0x00, 0x0a, 0x00, 0x00, 0x00,
+        0x2c, 0, 0, 0, 0, 1, 0, 1, 0, 0,
+        0x02, 0x02, 0x44, 0x01, 0x00,
+      ],
+      0x3b,
+    ]);
+    return path;
+  }
+
+  // Pumps until [found] shows: the picture is read on the real clock.
+  Future<void> waitFor(WidgetTester tester, Finder found) async {
+    await tester.pump();
+    for (var i = 0; i < 20 && found.evaluate().isEmpty; i++) {
+      await tester.runAsync(() => Future<void>.delayed(const Duration(milliseconds: 50)));
+      await tester.pump(const Duration(milliseconds: 50));
+    }
+    await tester.pump(const Duration(milliseconds: 500));
+  }
+
+  // The crop page, once its picture decodes (on the real clock; its spinner
+  // never settles before): Use.
+  Future<void> useCrop(WidgetTester tester) async {
+    await tester.pump();
+    for (var i = 0; i < 20 && find.byType(InteractiveViewer).evaluate().isEmpty; i++) {
+      await tester.runAsync(() => Future<void>.delayed(const Duration(milliseconds: 50)));
+      await tester.pump(const Duration(milliseconds: 50));
+    }
+    await tester.pump(const Duration(milliseconds: 500));
+    await tapLabel(tester, 'Use');
   }
 
   test('role colors stay readable on both themes', () {
@@ -165,7 +232,8 @@ void main() {
 
     await tapLabel(tester, RegExp(r'^# crit'));
     await tapLabel(tester, 'Move up');
-    expect(repository.admin.last, startsWith('room> r-crit'));
+    // The room above's place.
+    expect(repository.admin.last, 'room> r-crit 1');
 
     await tapLabel(tester, RegExp(r'^# crit'));
     await tapLabel(tester, 'Rename');
@@ -191,6 +259,68 @@ void main() {
     await tapLabel(tester, 'Delete');
     expect(repository.admin.last, 'room- r-crit');
     expect(find.text('design-crit'), findsNothing);
+    semantics.dispose();
+  });
+
+  testWidgets('rooms: down goes one past the room below, as the API takes it; into a category and out', (tester) async {
+    final repository = await pumpSettings(
+      tester,
+      setUp: (r) => r.adminRoomList['s-guild'] = [
+        const AdminRoom(id: 'r-general', name: 'general', kind: AdminRoomKind.text),
+        const AdminRoom(id: 'r-crit', name: 'crit', kind: AdminRoomKind.text, position: 1),
+        const AdminRoom(id: 'c-talk', name: 'Talk', kind: AdminRoomKind.category, position: 2),
+        const AdminRoom(id: 'r-lounge', name: 'lounge', kind: AdminRoomKind.voice, parentId: 'c-talk'),
+      ],
+    );
+    await tapLabel(tester, RegExp(r'^Rooms'));
+    await tapLabel(tester, RegExp(r'^# general'));
+    await tapLabel(tester, 'Move down');
+    expect(repository.admin.last, 'room> r-general 2');
+
+    await tapLabel(tester, RegExp(r'^# crit'));
+    await tapLabel(tester, RegExp(r'^Category, No category'));
+    await tapLabel(tester, 'Talk');
+    expect(repository.admin.last, 'room^ r-crit c-talk');
+
+    await tapLabel(tester, RegExp(r'^# crit'));
+    await tapLabel(tester, RegExp(r'^Category, Talk'));
+    await tapLabel(tester, 'No category');
+    expect(repository.admin.last, 'room^ r-crit none');
+    semantics.dispose();
+  });
+
+  testWidgets('rooms: ManageChannels counts in each room; making one takes it in the Space', (tester) async {
+    await pumpSettings(
+      tester,
+      setUp: (r) => r
+        ..spaceOwner = false
+        ..spacePerms = Perm.manageChannels
+        // An overwrite takes it away in #lounge.
+        ..deniedInRoom['r-lounge'] = Perm.manageChannels,
+    );
+    await tapLabel(tester, RegExp(r'^Rooms'));
+    expect(find.bySemanticsLabel('New room'), findsOneWidget);
+    expect(find.bySemanticsLabel('lounge, Voice room'), findsOneWidget);
+    await tapLabel(tester, 'lounge, Voice room');
+    expect(find.bySemanticsLabel('Rename'), findsNothing);
+    await tapLabel(tester, RegExp(r'^# general, Double tap for options'));
+    expect(find.bySemanticsLabel('Rename'), findsOneWidget);
+    semantics.dispose();
+  });
+
+  testWidgets('rooms: a room\'s overwrite alone opens Space settings, for that room', (tester) async {
+    await pumpSettings(
+      tester,
+      setUp: (r) => r
+        ..spaceOwner = false
+        ..spacePerms = Perm.viewChannels | Perm.sendMessages
+        ..managesRooms = true
+        ..deniedInRoom['r-lounge'] = Perm.manageChannels,
+    );
+    await tapLabel(tester, RegExp(r'^Rooms'));
+    expect(find.bySemanticsLabel('New room'), findsNothing);
+    await tapLabel(tester, RegExp(r'^# general'));
+    expect(find.bySemanticsLabel('Rename'), findsOneWidget);
     semantics.dispose();
   });
 
@@ -269,26 +399,214 @@ void main() {
     semantics.dispose();
   });
 
-  testWidgets('emojis and stickers: add with a clean name, rename, delete', (tester) async {
-    pickSpaceImage = () async => '/tmp/party.png';
+  testWidgets('emojis and stickers: cropped square, 128 and 320 px as the desktop makes them; named as typed', (
+    tester,
+  ) async {
+    final path = await picture(tester);
+    pickAssetImage = () async => path;
+    final squares = <(String, CropRect, int)>[];
+    saveSquareImage = (path, crop, side) async {
+      squares.add((path, crop, side));
+      return '/squares/$side.png';
+    };
     final repository = await pumpSettings(tester);
     await tapLabel(tester, RegExp(r'^Emojis and stickers'));
     expect(find.text('No emojis yet'), findsOneWidget);
-    await tapLabel(tester, 'Add emoji');
-    await typeName(tester, 'party time');
+    await tester.tap(find.bySemanticsLabel('Add emoji').last);
+    await useCrop(tester);
+    await typeName(tester, 'party time!');
     await tapLabel(tester, 'Add');
-    expect(repository.admin.last, 'emoji+ party_time /tmp/party.png');
-    await tapLabel(tester, ':party_time:');
+    // A square of the picture's full height, from its middle.
+    final (picked, crop, side) = squares.single;
+    expect((picked, side), (path, 128));
+    expect([crop.x, crop.y, crop.w, crop.h].map((v) => v.round()), [100, 0, 200, 200]);
+    expect(repository.admin.last, 'emoji+ party time! /squares/128.png');
+    await tapLabel(tester, ':party time!:');
+    await tapLabel(tester, 'Rename');
+    await typeName(tester, 'fiesta-time');
+    await tapLabel(tester, 'Save');
+    expect(repository.admin.last, 'emoji~ emoji-party time! fiesta-time');
+    await tapLabel(tester, ':fiesta-time:');
     await tapLabel(tester, 'Delete');
     await tapLabel(tester, 'Delete emoji');
-    expect(repository.admin.last, 'emoji- emoji-party_time');
+    expect(repository.admin.last, 'emoji- emoji-party time!');
 
     await tester.tap(find.text('Stickers'));
     await tester.pumpAndSettle();
-    await tapLabel(tester, 'Add sticker');
+    await tester.tap(find.bySemanticsLabel('Add sticker').last);
+    await useCrop(tester);
     await typeName(tester, 'Wave');
     await tapLabel(tester, 'Add');
-    expect(repository.admin.last, 'sticker+ Wave /tmp/party.png');
+    expect(squares.last.$3, 320);
+    expect(repository.admin.last, 'sticker+ Wave /squares/320.png');
+    semantics.dispose();
+  });
+
+  testWidgets('the cropper starts centered, as the desktop\'s: a square, a banner', (tester) async {
+    final path = await picture(tester);
+    final crops = <double, CropRect?>{};
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: Duvet.material(Brightness.light),
+        home: FTheme(
+          data: Duvet.theme(Brightness.light),
+          child: Builder(
+            builder: (context) => Scaffold(
+              body: Column(
+                children: [
+                  for (final aspect in [1.0, 3.0])
+                    TextButton(
+                      onPressed: () async => crops[aspect] = await Navigator.of(context).push<CropRect>(
+                        MaterialPageRoute(
+                          builder: (_) => CropPage(path: path, aspect: aspect),
+                        ),
+                      ),
+                      child: Text('Crop $aspect'),
+                    ),
+                ],
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+    for (final aspect in [1.0, 3.0]) {
+      await tester.tap(find.text('Crop $aspect'));
+      await useCrop(tester);
+    }
+    List<int> rounded(CropRect? c) => [c!.x, c.y, c.w, c.h].map((v) => v.round()).toList();
+    // 400 × 200: the middle square, and the middle third of its height.
+    expect(rounded(crops[1.0]), [100, 0, 200, 200]);
+    expect(rounded(crops[3.0]), [0, 33, 400, 133]);
+  });
+
+  testWidgets('a square is what the frame shows, drawn at its size', (tester) async {
+    final path = await picture(tester);
+    await tester.runAsync(() async {
+      // The red half, as an emoji.
+      final png = await squarePng(path, (x: 200, y: 0, w: 200, h: 200), emojiSide);
+      final square = (await (await ui.instantiateImageCodec(png)).getNextFrame()).image;
+      expect((square.width, square.height), (128, 128));
+      final rgba = (await square.toByteData())!;
+      for (final at in [0, (64 * 128 + 64) * 4, rgba.lengthInBytes - 4]) {
+        expect([for (var i = 0; i < 4; i++) rgba.getUint8(at + i)], [255, 0, 0, 255]);
+      }
+    });
+  });
+
+  testWidgets('a GIF the API takes as it is goes up unchanged, still moving', (tester) async {
+    final squares = <int>[];
+    saveSquareImage = (path, crop, side) async {
+      squares.add(side);
+      return '/squares/$side.png';
+    };
+    final repository = await pumpSettings(tester);
+    await tapLabel(tester, RegExp(r'^Emojis and stickers'));
+    final small = gif(width: 64, height: 64);
+    pickAssetImage = () async => small;
+    await tester.tap(find.bySemanticsLabel('Add emoji').last);
+    await waitFor(tester, find.text('Name the emoji'));
+    expect(find.byType(InteractiveViewer), findsNothing);
+    await typeName(tester, 'dance');
+    await tapLabel(tester, 'Add');
+    expect(repository.admin.last, 'emoji+ dance $small');
+
+    // Too large for an emoji, not for a sticker.
+    await tester.tap(find.text('Stickers'));
+    await tester.pumpAndSettle();
+    final large = gif(width: 600, height: 600);
+    pickAssetImage = () async => large;
+    await tester.tap(find.bySemanticsLabel('Add sticker').last);
+    await waitFor(tester, find.text('Name the sticker'));
+    await typeName(tester, 'party');
+    await tapLabel(tester, 'Add');
+    expect(repository.admin.last, 'sticker+ party $large');
+    expect(squares, isEmpty);
+    semantics.dispose();
+  });
+
+  testWidgets('a GIF too large to go up as it is goes up still, saying its animation is lost', (tester) async {
+    final squares = <int>[];
+    saveSquareImage = (path, crop, side) async {
+      squares.add(side);
+      return '/squares/$side.png';
+    };
+    final large = gif(width: 600, height: 600);
+    pickAssetImage = () async => large;
+    final repository = await pumpSettings(tester);
+    await tapLabel(tester, RegExp(r'^Emojis and stickers'));
+    await tester.tap(find.bySemanticsLabel('Add emoji').last);
+    await waitFor(tester, find.byType(InteractiveViewer));
+    // Said under the frame while it's cropped.
+    expect(find.text('This GIF is over 256 KiB or 512 px, so it goes up still: its animation is lost'), findsOneWidget);
+    await tapLabel(tester, 'Use');
+    await typeName(tester, 'dance');
+    await tapLabel(tester, 'Add');
+    expect(squares, [128]);
+    expect(repository.admin.last, 'emoji+ dance /squares/128.png');
+    semantics.dispose();
+  });
+
+  testWidgets('a still GIF is cropped as any picture is, though the API would take it as it is', (tester) async {
+    final squares = <int>[];
+    saveSquareImage = (path, crop, side) async {
+      squares.add(side);
+      return '/squares/$side.png';
+    };
+    final still = gif(width: 64, height: 64, frames: 1);
+    pickAssetImage = () async => still;
+    final repository = await pumpSettings(tester);
+    await tapLabel(tester, RegExp(r'^Emojis and stickers'));
+    await tester.tap(find.bySemanticsLabel('Add emoji').last);
+    await waitFor(tester, find.byType(InteractiveViewer));
+    // It has no animation to lose.
+    expect(find.textContaining('animation is lost'), findsNothing);
+    await tapLabel(tester, 'Use');
+    await typeName(tester, 'dot');
+    await tapLabel(tester, 'Add');
+    expect(squares, [128]);
+    expect(repository.admin.last, 'emoji+ dot /squares/128.png');
+    semantics.dispose();
+  });
+
+  testWidgets('a GIF that can\'t be read says so, instead of a cropper that closes without a word', (tester) async {
+    final dir = Directory.systemTemp.createTempSync('duvet_gif');
+    addTearDown(() => dir.deleteSync(recursive: true));
+    final broken = '${dir.path}/broken.gif';
+    // A GIF's header and screen, then nothing a decoder can read.
+    File(broken).writeAsBytesSync([...'GIF89a'.codeUnits, 64, 0, 64, 0, 1, 2, 3]);
+    pickAssetImage = () async => broken;
+    final repository = await pumpSettings(tester);
+    await tapLabel(tester, RegExp(r'^Emojis and stickers'));
+    await tester.tap(find.bySemanticsLabel('Add emoji').last);
+    await waitFor(tester, find.text('Couldn’t read this GIF'));
+    expect(find.text('Couldn’t read this GIF'), findsOneWidget);
+    expect(find.byType(InteractiveViewer), findsNothing);
+    expect(repository.admin.where((a) => a.startsWith('emoji+')), isEmpty);
+    await tester.pump(const Duration(seconds: 4));
+    semantics.dispose();
+  });
+
+  testWidgets('emojis and stickers: each kind by its own permission', (tester) async {
+    pickAssetImage = () async => '/tmp/party.png';
+    final repository = await pumpSettings(
+      tester,
+      setUp: (r) => r
+        ..spaceOwner = false
+        ..spacePerms = Perm.manageStickers
+        ..assetList[AssetKind.emoji]!.add(const SpaceAsset(id: 'e-1', name: 'party', url: 'https://x/party.png')),
+    );
+    await tapLabel(tester, RegExp(r'^Emojis and stickers'));
+    // Stickers first, the kind the user may change.
+    expect(find.bySemanticsLabel('Add sticker'), findsOneWidget);
+    await tester.tap(find.text('Emojis'));
+    await tester.pumpAndSettle();
+    expect(find.bySemanticsLabel('Add emoji'), findsNothing);
+    // Listed, but without options.
+    await tester.tap(find.bySemanticsLabel(':party:').last);
+    await tester.pumpAndSettle();
+    expect(find.bySemanticsLabel('Rename'), findsNothing);
+    expect(repository.admin, isEmpty);
     semantics.dispose();
   });
 
@@ -318,6 +636,29 @@ void main() {
     await tapLabel(tester, 'Delete');
     await tapLabel(tester, 'Delete webhook');
     expect(repository.admin.last, 'hook- w-CI');
+    semantics.dispose();
+  });
+
+  testWidgets('webhooks: a refusal says the API\'s reason', (tester) async {
+    await pumpSettings(
+      tester,
+      setUp: (r) => r
+        ..refusals['createWebhook'] = 'Webhooks can only be created on text rooms'
+        ..refusals['resetWebhook'] = 'Webhook not found'
+        ..webhookList = [
+          SpaceWebhook(id: 'w-ci', roomId: 'r-general', roomName: 'general', name: 'CI', createdAt: DateTime(2026, 10)),
+        ],
+    );
+    await tapLabel(tester, RegExp(r'^Webhooks'));
+    await tapLabel(tester, 'New webhook');
+    await typeName(tester, 'Deploys');
+    await tapLabel(tester, 'Create');
+    expect(find.text('Webhooks can only be created on text rooms'), findsOneWidget);
+    await tester.pump(const Duration(seconds: 4));
+    await tapLabel(tester, RegExp(r'^CI'));
+    await tapLabel(tester, RegExp(r'^New URL'));
+    expect(find.text('Webhook not found'), findsOneWidget);
+    await tester.pump(const Duration(seconds: 4));
     semantics.dispose();
   });
 
