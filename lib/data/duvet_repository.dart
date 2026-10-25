@@ -1846,7 +1846,7 @@ class DuvetRepository implements ChatRepository {
   Future<void> updateProfile({required String alias, String? bio}) async {
     final trimmed = alias.trim();
     final about = bio?.trim();
-    final me = await _call(
+    final me = await _attempt(
       (api) => api.updateUser(alias: trimmed.isEmpty ? null : trimmed, clearAlias: trimmed.isEmpty, custom: about),
     );
     _setProfile(me);
@@ -1886,7 +1886,7 @@ class DuvetRepository implements ChatRepository {
   @override
   Future<void> uploadProfileImage(ProfileImage kind, String path, CropRect crop) async {
     final bytes = await File(path).readAsBytes();
-    final me = await _call(
+    final me = await _attempt(
       (api) => api.uploadProfileImage(
         kind == ProfileImage.avatar ? duvet.ProfileImageKind.avatar : duvet.ProfileImageKind.banner,
         bytes,

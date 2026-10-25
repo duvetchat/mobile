@@ -305,8 +305,13 @@ class FakeRepository implements ChatRepository {
   @override
   Future<void> changeEmail(String token, String email) async => account.add('change $token $email');
 
+  /// Why the server refuses a profile change or a picture, if it does.
+  String? profileRefused;
+  String? pictureRefused;
+
   @override
   Future<void> updateProfile({required String alias, String? bio}) async {
+    if (profileRefused != null) throw ActionFailed(profileRefused!);
     account.add('alias $alias');
     if (bio != null) account.add('bio $bio');
     final p = profile.value!;
@@ -334,8 +339,10 @@ class FakeRepository implements ChatRepository {
   }
 
   @override
-  Future<void> uploadProfileImage(ProfileImage kind, String path, CropRect crop) async =>
-      account.add('${kind.name} $path ${crop.w.round()}x${crop.h.round()}');
+  Future<void> uploadProfileImage(ProfileImage kind, String path, CropRect crop) async {
+    if (pictureRefused != null) throw ActionFailed(pictureRefused!);
+    account.add('${kind.name} $path ${crop.w.round()}x${crop.h.round()}');
+  }
 
   @override
   Future<List<MyFile>> myFiles() async => [...files];

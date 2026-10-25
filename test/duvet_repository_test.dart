@@ -97,6 +97,9 @@ void main() {
   /// While set, holds that answer, as it was when asked.
   Completer<void>? holdAsking;
 
+  /// What a new avatar or banner gets, when not the user.
+  http.Response? pictureRefusal;
+
   setUp(() {
     requests = [];
     store = MemorySessionStore();
@@ -112,6 +115,7 @@ void main() {
     expiredToken = null;
     asking = [];
     holdAsking = null;
+    pictureRefusal = null;
     client = MockClient((request) async {
       requests.add(request);
       Map<String, dynamic> body() => jsonDecode(request.body) as Map<String, dynamic>;
@@ -130,6 +134,13 @@ void main() {
       final json = switch ((request.method, request.url.path)) {
         ('POST', '/api/auth/login') => {'token': 'access-1', 'session_token': 'refresh-1'},
         ('GET', '/api/users/@me') => {..._user(_me, 'gaby', alias: 'Gaby'), 'email_verified': true},
+        ('PATCH', '/api/users/@me') when (request.headers['content-type'] ?? '').startsWith('multipart/') =>
+          pictureRefusal ?? _user(_me, 'gaby', avatar: _avatar),
+        // The API counts the display name's bytes.
+        ('PATCH', '/api/users/@me') when utf8.encode(body()['alias'] as String? ?? '').length > 32 => http.Response(
+          jsonEncode({'error': 'display name must be at most 32 characters'}),
+          400,
+        ),
         // An API from before bios ignores `custom`, and answers the bio it had.
         ('PATCH', '/api/users/@me') => {
           ..._user(_me, 'gaby', alias: body()['alias'] as String?),
@@ -1161,6 +1172,27 @@ void main() {
 
       await repository.updateProfile(alias: 'Gabriela', bio: '');
       expect(repository.profile.value!.bio, isNull);
+    });
+
+    test('a profile change or a picture the API refuses says why, as the API says it', () async {
+      await repository.logIn('gaby@duvet.chat', 'secret');
+      await expectLater(
+        repository.updateProfile(alias: 'a' * 33),
+        throwsA(isA<ActionFailed>().having((e) => e.message, 'message', 'Display name must be at most 32 characters')),
+      );
+
+      final dir = Directory.systemTemp.createTempSync('duvet_picture');
+      addTearDown(() => dir.deleteSync(recursive: true));
+      final path = '${dir.path}/me.png';
+      File(path).writeAsBytesSync([1, 2, 3]);
+      const crop = (x: 0.0, y: 0.0, w: 1.0, h: 1.0);
+      await repository.uploadProfileImage(ProfileImage.avatar, path, crop);
+      expect(repository.profile.value!.avatarUrl, 'https://api.duvet.chat/attachments/$_avatar');
+      pictureRefusal = http.Response(jsonEncode({'error': 'file is too large'}), 413);
+      await expectLater(
+        repository.uploadProfileImage(ProfileImage.banner, path, crop),
+        throwsA(isA<ActionFailed>().having((e) => e.message, 'message', 'File is too large')),
+      );
     });
 
     test('an API from before bios saves the rest, and says it needs the latest API', () async {

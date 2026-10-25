@@ -237,8 +237,8 @@ void main() {
     semantics.dispose();
   });
 
-  testWidgets('a new avatar is cropped to the frame before it goes up', (tester) async {
-    final repository = await pumpApp(tester);
+  // A 400 × 200 picture, which the picker hands over.
+  Future<String> pickable(WidgetTester tester) async {
     final dir = Directory.systemTemp.createTempSync('duvet_crop');
     addTearDown(() => dir.deleteSync(recursive: true));
     final path = '${dir.path}/me.png';
@@ -250,10 +250,13 @@ void main() {
       File(path).writeAsBytesSync(png!.buffer.asUint8List());
     });
     pickProfilePicture = () async => path;
+    return path;
+  }
 
-    await openYou(tester);
-    await tapLabel(tester, 'Edit');
-    await tester.tap(find.bySemanticsLabel('Change profile photo'));
+  // Picks the picture for [label] (Change profile photo, Change banner) and
+  // crops it as it opens.
+  Future<void> cropPicture(WidgetTester tester, String label) async {
+    await tester.tap(find.bySemanticsLabel(label));
     // The picture decodes on the real clock.
     for (var i = 0; i < 20 && find.byType(InteractiveViewer).evaluate().isEmpty; i++) {
       await tester.runAsync(() => Future<void>.delayed(const Duration(milliseconds: 50)));
@@ -261,8 +264,79 @@ void main() {
     }
     await tester.pump(const Duration(milliseconds: 500));
     await tapLabel(tester, 'Use');
-    // A square from the 400 × 200 picture: its full height.
-    expect(repository.account.single, 'avatar $path 200x200');
+  }
+
+  testWidgets('a new avatar and banner, cropped to their frames, go up on Save', (tester) async {
+    final repository = await pumpApp(tester);
+    final path = await pickable(tester);
+    await openYou(tester);
+    await tapLabel(tester, 'Edit');
+    await cropPicture(tester, 'Change profile photo');
+    await cropPicture(tester, 'Change banner');
+    expect(repository.account, isEmpty);
+
+    await tapLabel(tester, 'Save');
+    // A square from the 400 × 200 picture, its full height; a banner 3 to 1,
+    // its full width. Then the rest.
+    expect(repository.account, ['avatar $path 200x200', 'banner $path 400x133', 'alias Gaby']);
+    expect(find.text('Edit profile'), findsNothing);
+    semantics.dispose();
+  });
+
+  testWidgets('Cancel drops the pictures picked: nothing goes up', (tester) async {
+    final repository = await pumpApp(tester);
+    await pickable(tester);
+    await openYou(tester);
+    await tapLabel(tester, 'Edit');
+    await cropPicture(tester, 'Change profile photo');
+    await tapLabel(tester, 'Cancel');
+    expect(find.text('Edit profile'), findsNothing);
+    expect(repository.account, isEmpty);
+    semantics.dispose();
+  });
+
+  testWidgets('a picture the server refuses says why, and stays to try again', (tester) async {
+    final repository = await pumpApp(tester);
+    final path = await pickable(tester);
+    await openYou(tester);
+    await tapLabel(tester, 'Edit');
+    await cropPicture(tester, 'Change profile photo');
+    repository.pictureRefused = 'File is too large';
+    await tapLabel(tester, 'Save');
+    expect(find.text('File is too large'), findsOneWidget);
+    expect(find.text('Edit profile'), findsOneWidget);
+    expect(repository.account, isEmpty);
+
+    repository.pictureRefused = null;
+    await tester.pump(const Duration(seconds: 4));
+    await tapLabel(tester, 'Save');
+    expect(repository.account, ['avatar $path 200x200', 'alias Gaby']);
+    semantics.dispose();
+  });
+
+  testWidgets('the display name takes 32 characters at most, as the API does', (tester) async {
+    final repository = await pumpApp(tester);
+    await openYou(tester);
+    await tapLabel(tester, 'Edit');
+    bool saveEnabled() =>
+        tester.getSemantics(find.bySemanticsLabel('Save').last).flagsCollection.isEnabled.toString().contains('isTrue');
+    final name = find.byType(EditableText).first;
+
+    await tester.enterText(name, 'a' * 33);
+    await tester.pump();
+    expect(find.text('Too long: 33 of 32 characters'), findsOneWidget);
+    expect(saveEnabled(), isFalse);
+    // Trimmed, and by code points: 😀 is one.
+    await tester.enterText(name, '  ${'😀' * 32}  ');
+    await tester.pump();
+    expect(find.textContaining('Too long'), findsNothing);
+    expect(saveEnabled(), isTrue);
+
+    // The API's own reason, should it refuse anyway.
+    repository.profileRefused = 'Display name must be at most 32 characters';
+    await tapLabel(tester, 'Save');
+    expect(find.text('Display name must be at most 32 characters'), findsOneWidget);
+    await tester.pump(const Duration(seconds: 4));
     semantics.dispose();
   });
 
