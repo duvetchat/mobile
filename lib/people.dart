@@ -950,11 +950,16 @@ class GroupInfoPage extends StatefulWidget {
 
 class _GroupInfoPageState extends State<GroupInfoPage> {
   List<Member> _members = const [];
+  bool _friendsAsked = false;
 
   @override
   void didChangeDependencies() {
     super.didChangeDependencies();
     _reload();
+    // The friends Add people offers, loaded as the new conversation does.
+    if (_friendsAsked) return;
+    _friendsAsked = true;
+    context.repository.loadFriends().catchError((Object e) => debugPrint('friends: $e'));
   }
 
   Future<void> _reload({bool refresh = false}) async {
