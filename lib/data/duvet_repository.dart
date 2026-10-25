@@ -2005,9 +2005,13 @@ class DuvetRepository implements ChatRepository {
 
   @override
   Future<SpaceStorage> spaceStorage(String spaceId) async {
+    // The files and what they take are any member's to read; the buckets take
+    // ManageSpaceBuckets, which the page may show without.
     final (used, buckets, files) = await (
       _call((api) => api.getSpaceStorageUsed(spaceId)),
-      _call((api) => api.getSpaceBuckets(spaceId)),
+      Perm.has(_permsIn(spaceId), Perm.manageBuckets)
+          ? _call((api) => api.getSpaceBuckets(spaceId))
+          : Future.value(const <duvet.StorageBucket>[]),
       _call((api) => api.getSpaceAttachments(spaceId)),
     ).wait;
     return SpaceStorage(

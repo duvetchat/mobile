@@ -643,4 +643,58 @@ void main() {
       );
     });
   });
+
+  group('a Space\'s storage', () {
+    void storage() {
+      routes[('GET', '/api/spaces/s-1/attachments/storage')] = (_) => {'total_size': 3072};
+      routes[('GET', '/api/spaces/s-1/attachments')] = (_) => [
+        {'id': 'a-1', 'filename': 'poster.png', 'content_type': 'image/png', 'size_bytes': 3072, 'created_at': _at},
+      ];
+      routes[('GET', '/api/spaces/s-1/buckets')] = (_) => [
+        {
+          'id': 'b-1',
+          'owner_id': 's-1',
+          'name': 'Guild bucket',
+          'endpoint': 'https://s3.example.com',
+          'bucket_name': 'guild',
+          'access_key_id': 'key',
+          'is_active': true,
+          'used_bytes': 3072,
+          'created_at': _at,
+          'updated_at': _at,
+        },
+      ];
+    }
+
+    int bucketReads() => requests.where((r) => r.url.path == '/api/spaces/s-1/buckets').length;
+
+    test('with ManageSpaceAttachments alone: its files, and no buckets, which take ManageSpaceBuckets', () async {
+      await signIn();
+      repository.handleEvent(
+        _event('SPACE_CREATE', _space(roles: {'role-files': Perm.manageAttachments}, mine: ['role-files'])),
+      );
+      storage();
+      // As the API answers them.
+      routes[('GET', '/api/spaces/s-1/buckets')] = (_) => http.Response(
+        jsonEncode({'error': 'you don\'t have permission to manage storage buckets for this space'}),
+        403,
+        headers: {'content-type': 'application/json'},
+      );
+      final s = await repository.spaceStorage('s-1');
+      expect((s.used, s.files.single.name), (3072, 'poster.png'));
+      expect(s.buckets, isEmpty);
+      expect(bucketReads(), 0);
+    });
+
+    test('with ManageSpaceBuckets: its buckets too', () async {
+      await signIn();
+      repository.handleEvent(
+        _event('SPACE_CREATE', _space(roles: {'role-store': Perm.manageBuckets}, mine: ['role-store'])),
+      );
+      storage();
+      final s = await repository.spaceStorage('s-1');
+      expect(s.buckets.single.name, 'Guild bucket');
+      expect(bucketReads(), 1);
+    });
+  });
 }
