@@ -525,7 +525,7 @@ class _ChatViewState extends State<ChatView> {
   void _onComposerChanged() {
     final query = _composer.query;
     final text = _composer.text;
-    final slash = _commands.isNotEmpty && _editing == null && RegExp(r'^/\S*$').hasMatch(text)
+    final slash = _commands.isNotEmpty && _editing == null && _canUseCommands && RegExp(r'^/\S*$').hasMatch(text)
         ? text.substring(1)
         : null;
     if (query != _query || _canSend != _couldSend || slash != _slash) {
@@ -556,7 +556,7 @@ class _ChatViewState extends State<ChatView> {
     final content = _composer.encoded.trim();
     if (content.isEmpty && _files.isEmpty) return;
     // `/name` of a command runs it.
-    if (_files.isEmpty && content.startsWith('/')) {
+    if (_files.isEmpty && content.startsWith('/') && _canUseCommands) {
       final command = _commands.where((c) => '/${c.name}' == content).firstOrNull;
       if (command != null) return _runCommand(command);
     }
@@ -1470,6 +1470,13 @@ class _ChatViewState extends State<ChatView> {
     ConversationTarget() => true,
   };
 
+  /// Commands are for the rooms the user can write in, as on the desktop;
+  /// conversations have none.
+  bool get _canUseCommands => switch (widget.target) {
+    RoomTarget(:final spaceId, :final roomId) => _repository.canInRoom(spaceId, roomId, Perm.sendMessages),
+    ConversationTarget() => false,
+  };
+
   /// Someone else's message is deleted with ManageMessages in a room; in a
   /// conversation, each member deletes only their own.
   bool get _canDeleteOthers => switch (widget.target) {
@@ -1488,7 +1495,9 @@ class _ChatViewState extends State<ChatView> {
   }
 
   /// What a select offers: its options, or this chat's people, rooms or
-  /// roles; its defaults chosen.
+  /// roles; its defaults chosen. The rooms are those the user can see, of the
+  /// types it takes, by position: the API takes no others, and the desktop
+  /// offers no others.
   List<ComponentOption> _selectChoices(UiComponent select) {
     final defaults = select.defaultValues.toSet();
     ComponentOption option(String label, String value, [String? description]) =>
@@ -1503,24 +1512,32 @@ class _ChatViewState extends State<ChatView> {
       ComponentKind.roleSelect => roles,
       ComponentKind.mentionableSelect => [...people, ...roles],
       ComponentKind.roomSelect when target is RoomTarget => [
-        for (final section
-            in _repository.spaces.value.where((s) => s.id == target.spaceId).firstOrNull?.sections ??
-                const <RoomSection>[])
-          for (final r in section.rooms) option('#${r.name}', r.id),
+        for (final r in _repository.adminRooms(target.spaceId))
+          if ((select.roomTypes.isEmpty || select.roomTypes.contains(_roomType(r.kind))) &&
+              _repository.canInRoom(target.spaceId, r.id, Perm.viewChannels))
+            option(r.kind == AdminRoomKind.category ? r.name : '#${r.name}', r.id),
       ],
       ComponentKind.roomSelect => const [],
       _ => select.options,
     };
   }
 
-  List<ComponentOption> _optionChoices(int type) => _selectChoices(
+  /// A room's type as the API numbers it, in `room_types`.
+  static int _roomType(AdminRoomKind kind) => switch (kind) {
+    AdminRoomKind.text => 1,
+    AdminRoomKind.voice => 2,
+    AdminRoomKind.category => 3,
+  };
+
+  List<ComponentOption> _optionChoices(BotCommandOption o) => _selectChoices(
     UiComponent(
-      type: switch (type) {
+      type: switch (o.type) {
         OptionKind.user => ComponentKind.userSelect,
         OptionKind.role => ComponentKind.roleSelect,
         OptionKind.room => ComponentKind.roomSelect,
         _ => ComponentKind.mentionableSelect,
       },
+      roomTypes: o.roomTypes,
     ),
   );
 

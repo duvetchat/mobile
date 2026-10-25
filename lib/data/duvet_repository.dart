@@ -1861,6 +1861,7 @@ class DuvetRepository implements ChatRepository {
                   maxValue: o.maxValue,
                   minLength: o.minLength,
                   maxLength: o.maxLength,
+                  roomTypes: [for (final t in o.roomTypes ?? const <duvet.RoomType>[]) t.value],
                 ),
             ],
           ),

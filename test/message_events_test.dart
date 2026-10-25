@@ -119,6 +119,31 @@ void main() {
         ('POST', '/api/auth/login') => {'token': 'access-1', 'session_token': 'refresh-1'},
         ('GET', '/api/users/@me') => {..._user(_me, 'gaby', alias: 'Gaby'), 'email_verified': true},
         ('GET', '/api/users/@me/conversations') => <Object>[],
+        ('GET', '/api/spaces/s-1/commands') => {
+          'applications': [
+            {
+              'id': 'app-1',
+              'name': 'Ballot',
+              'bot': {'id': _ballot, 'username': 'ballot'},
+            },
+          ],
+          'commands': [
+            {
+              'id': 'cmd-go',
+              'type': 1,
+              'application_id': 'app-1',
+              'name': 'go',
+              'options': [
+                {
+                  'type': 7,
+                  'name': 'where',
+                  'description': 'A room',
+                  'room_types': [1, 3],
+                },
+              ],
+            },
+          ],
+        },
         _ => null,
       };
       if (json == null) return http.Response('not found', 404);
@@ -301,6 +326,12 @@ void main() {
     final m = (events.single as MessageCreated).message;
     expect((m.webhookId, m.fromWebhook, m.authorId), ('w-1', true, null));
     expect(messageFromJson(jsonDecode(jsonEncode(messageToJson(m))) as Map<String, Object?>).webhookId, 'w-1');
+  });
+
+  test('a command\'s room option keeps the room types it takes', () async {
+    await repository.logIn('gaby@duvet.chat', 'secret');
+    final go = (await repository.commands('s-1')).single;
+    expect(go.options.single.roomTypes, [1, 3]);
   });
 
   test('ChatMessage.updatedBy keeps what the event leaves out', () {

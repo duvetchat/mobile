@@ -712,11 +712,12 @@ class BotTag extends StatelessWidget {
 // -----------------------------------------------------------------------------
 
 /// A command's options, to fill before it runs: texts, numbers, a switch,
-/// choices, members, rooms, roles. Answers the values by name.
+/// choices, members, rooms, roles. Answers the values by name, once they
+/// pass the API's checks.
 Future<Map<String, Object>?> showCommandForm(
   BuildContext context, {
   required BotCommand command,
-  required List<ComponentOption> Function(int optionType) choicesFor,
+  required List<ComponentOption> Function(BotCommandOption option) choicesFor,
 }) => showGlassSheet<Map<String, Object>>(
   context,
   label: '/${command.name}',
@@ -726,7 +727,7 @@ Future<Map<String, Object>?> showCommandForm(
 
 class _CommandForm extends StatefulWidget {
   final BotCommand command;
-  final List<ComponentOption> Function(int optionType) choicesFor;
+  final List<ComponentOption> Function(BotCommandOption option) choicesFor;
   final ScrollController scroll;
   const _CommandForm({required this.command, required this.choicesFor, required this.scroll});
 
@@ -761,6 +762,18 @@ class _CommandFormState extends State<_CommandForm> {
         if (text.isEmpty) {
           values.remove(o.name);
         } else if (o.type == OptionKind.string) {
+          // Counted in characters, as the API counts them: 6000 at most when
+          // the option says no other, as on the desktop.
+          final length = text.runes.length;
+          final max = o.maxLength ?? 6000;
+          if (o.minLength case final min? when length < min) {
+            problems[o.name] = 'Takes $min characters at least';
+            continue;
+          }
+          if (length > max) {
+            problems[o.name] = 'Takes $max characters at most';
+            continue;
+          }
           values[o.name] = text;
         } else {
           final n = o.type == OptionKind.integer ? int.tryParse(text) : num.tryParse(text);
@@ -853,7 +866,7 @@ class _CommandFormState extends State<_CommandForm> {
         ? [for (final ch in o.choices) ComponentOption(label: ch.name, value: '${ch.value}')]
         : o.type == OptionKind.boolean
         ? const [ComponentOption(label: 'Yes', value: 'true'), ComponentOption(label: 'No', value: 'false')]
-        : widget.choicesFor(o.type);
+        : widget.choicesFor(o);
     final raw = {for (final ch in o.choices) '${ch.value}': ch.value};
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,

@@ -586,6 +586,157 @@ void main() {
     expect(find.textContaining('Replying to Leo'), findsNothing);
     semantics.dispose();
   });
+
+  group('commands and selects', () {
+    const echo = BotCommand(
+      id: 'cmd-echo',
+      applicationId: 'app-ballot',
+      appName: 'Ballot',
+      name: 'echo',
+      description: 'Say it back',
+      options: [BotCommandOption(type: OptionKind.string, name: 'text', required: true, minLength: 3, maxLength: 5)],
+    );
+    const note = BotCommand(
+      id: 'cmd-note',
+      applicationId: 'app-ballot',
+      appName: 'Ballot',
+      name: 'note',
+      description: 'Keep a note',
+      options: [BotCommandOption(type: OptionKind.string, name: 'text', required: true)],
+    );
+    const goTo = BotCommand(
+      id: 'cmd-go',
+      applicationId: 'app-ballot',
+      appName: 'Ballot',
+      name: 'go',
+      description: 'Go somewhere',
+      options: [
+        BotCommandOption(type: OptionKind.room, name: 'where', required: true, roomTypes: [1]),
+      ],
+    );
+
+    // A category, a room the user can't see, a voice room.
+    void rooms(_Fake r) {
+      r.adminRoomList['s-guild'] = const [
+        AdminRoom(id: 'cat', name: 'Talk', kind: AdminRoomKind.category, position: 0),
+        AdminRoom(id: 'r-general', name: 'general', kind: AdminRoomKind.text, position: 1),
+        AdminRoom(id: 'r-mods', name: 'mods', kind: AdminRoomKind.text, position: 2),
+        AdminRoom(id: 'r-lounge', name: 'lounge', kind: AdminRoomKind.voice, position: 3),
+      ];
+      r.deny(Perm.viewChannels, 'r-mods');
+    }
+
+    testWidgets('commands are for the rooms the user can write in', (tester) async {
+      final repository = await openGeneral(
+        tester,
+        setUp: (r) {
+          r.botCommands = const [echo];
+          r.deny(Perm.sendMessages);
+        },
+      );
+      await tester.enterText(find.byType(EditableText), '/e');
+      await tester.pumpAndSettle();
+      expect(find.bySemanticsLabel(RegExp(r'^Commands')), findsNothing);
+      await tester.enterText(find.byType(EditableText), '/echo');
+      await tester.pump();
+      await tapLabel(tester, 'Send');
+      expect(find.text('/echo'), findsWidgets);
+      expect(find.bySemanticsLabel('Send /echo'), findsNothing);
+      expect(repository.sent.last.content, '/echo');
+
+      repository.denied.clear();
+      await tester.enterText(find.byType(EditableText), '/ec');
+      await tester.pumpAndSettle();
+      expect(find.bySemanticsLabel(RegExp(r'^Commands, 1')), findsOneWidget);
+      semantics.dispose();
+    });
+
+    testWidgets('a command\'s texts take the lengths the API does', (tester) async {
+      final repository = await openGeneral(tester, setUp: (r) => r.botCommands = const [echo, note]);
+      await tester.enterText(find.byType(EditableText), '/echo');
+      await tester.pumpAndSettle();
+      await tapLabel(tester, RegExp(r'^/echo'));
+      await tester.enterText(find.byType(EditableText).last, 'ab');
+      await tapLabel(tester, 'Send /echo');
+      expect(find.text('Takes 3 characters at least'), findsOneWidget);
+      await tester.enterText(find.byType(EditableText).last, 'abcdef');
+      await tapLabel(tester, 'Send /echo');
+      expect(find.text('Takes 5 characters at most'), findsOneWidget);
+      await tester.enterText(find.byType(EditableText).last, 'abcd');
+      await tapLabel(tester, 'Send /echo');
+      expect(repository.interactions, ['command echo text=abcd']);
+
+      // 6000 at most, when the option says nothing.
+      await tester.enterText(find.byType(EditableText), '/note');
+      await tester.pumpAndSettle();
+      await tapLabel(tester, RegExp(r'^/note'));
+      await tester.enterText(find.byType(EditableText).last, 'x' * 6001);
+      await tapLabel(tester, 'Send /note');
+      expect(find.text('Takes 6000 characters at most'), findsOneWidget);
+      expect(repository.interactions, hasLength(1));
+      semantics.dispose();
+    });
+
+    testWidgets('a room select offers the rooms the user can see, of the types it takes', (tester) async {
+      ChatMessage picker(String id, String placeholder, List<int> types) => ChatMessage(
+        id: id,
+        authorId: 'u-ballot',
+        authorName: 'Ballot',
+        fromBot: true,
+        content: 'Where to?',
+        createdAt: DateTime(2026, 10, 23, 9, 5),
+        components: componentsFromJson([
+          {
+            'type': 1,
+            'components': [
+              {'type': 8, 'custom_id': id, 'placeholder': placeholder, 'room_types': ?(types.isEmpty ? null : types)},
+            ],
+          },
+        ]),
+      );
+      await openGeneral(
+        tester,
+        setUp: (r) {
+          rooms(r);
+          r.history['r-general'] = [
+            picker('any', 'Pick a room', const []),
+            picker('voice', 'Pick a voice room', const [2]),
+          ];
+        },
+      );
+      await tapLabel(tester, 'Pick a room');
+      expect(find.text('Talk'), findsOneWidget);
+      expect(find.text('#general'), findsOneWidget);
+      expect(find.text('#lounge'), findsOneWidget);
+      expect(find.text('#mods'), findsNothing);
+      await tester.tapAt(const Offset(10, 10));
+      await tester.pumpAndSettle();
+
+      await tapLabel(tester, 'Pick a voice room');
+      expect(find.text('#lounge'), findsOneWidget);
+      expect(find.text('#general'), findsNothing);
+      expect(find.text('Talk'), findsNothing);
+      semantics.dispose();
+    });
+
+    testWidgets('a command\'s room option offers the same, of its own room types', (tester) async {
+      await openGeneral(
+        tester,
+        setUp: (r) {
+          rooms(r);
+          r.botCommands = const [goTo];
+        },
+      );
+      await tester.enterText(find.byType(EditableText), '/go');
+      await tester.pumpAndSettle();
+      await tapLabel(tester, RegExp(r'^/go'));
+      expect(find.text('#general'), findsOneWidget);
+      expect(find.text('#lounge'), findsNothing);
+      expect(find.text('#mods'), findsNothing);
+      expect(find.text('Talk'), findsNothing);
+      semantics.dispose();
+    });
+  });
 }
 
 class _Gifs implements GifSource {
