@@ -135,6 +135,21 @@ class ChatMessage {
   /// A webhook sent it: its tag says WEBHOOK, as on the desktop.
   final bool fromWebhook;
 
+  /// The webhook that sent it, which has no author ID: what tells two
+  /// webhooks' messages apart, as on the desktop.
+  final String? webhookId;
+
+  /// A bot's answer to the user alone (the EPHEMERAL flag): no history has
+  /// it, and nothing of the room's (replies, reactions, pins) applies to it.
+  final bool isEphemeral;
+
+  /// A bot's deferred answer, not completed yet (the LOADING flag).
+  final bool isLoading;
+
+  /// Its components are all of it (the IS_COMPONENTS_V2 flag), its text their
+  /// text displays.
+  final bool isComponentsV2;
+
   const ChatMessage({
     required this.id,
     required this.authorId,
@@ -156,9 +171,23 @@ class ChatMessage {
     this.rawComponents = const [],
     this.fromBot = false,
     this.fromWebhook = false,
+    this.webhookId,
+    this.isEphemeral = false,
+    this.isLoading = false,
+    this.isComponentsV2 = false,
   });
 
   int get attachmentCount => attachments.length;
+
+  /// The text it shows: its content, or a v2 message's text displays.
+  String get text => isComponentsV2 ? _texts(components).join('\n') : content;
+
+  static Iterable<String> _texts(List<UiComponent> components) sync* {
+    for (final c in components) {
+      if (c.type == ComponentKind.textDisplay && (c.content?.isNotEmpty ?? false)) yield c.content!;
+      yield* _texts(c.children);
+    }
+  }
 
   ChatMessage copyWith({
     String? id,
@@ -167,6 +196,7 @@ class ChatMessage {
     bool? edited,
     List<Reaction>? reactions,
     bool? pinned,
+    MessageReply? reply,
   }) => ChatMessage(
     id: id ?? this.id,
     authorId: authorId,
@@ -180,7 +210,7 @@ class ChatMessage {
     attachments: attachments,
     stickerUrl: stickerUrl,
     embeds: embeds,
-    reply: reply,
+    reply: reply ?? this.reply,
     reactions: reactions ?? this.reactions,
     isVoice: isVoice,
     pinned: pinned ?? this.pinned,
@@ -188,6 +218,43 @@ class ChatMessage {
     rawComponents: rawComponents,
     fromBot: fromBot,
     fromWebhook: fromWebhook,
+    webhookId: webhookId,
+    isEphemeral: isEphemeral,
+    isLoading: isLoading,
+    isComponentsV2: isComponentsV2,
+  );
+
+  /// This message as an edit, or a link preview that came late, leaves it.
+  /// [update] is what MESSAGE_UPDATE carries: the text, sticker, embeds,
+  /// components and flags (a bot's deferred answer completes by an edit). It
+  /// has none of the files, reactions, reply or pin, which stay, and it can't
+  /// change who wrote it, whom the event names without their Space nickname,
+  /// if at all.
+  ChatMessage updatedBy(ChatMessage update) => ChatMessage(
+    id: id,
+    authorId: authorId,
+    authorName: authorName,
+    authorAvatarUrl: authorAvatarUrl,
+    content: update.content,
+    createdAt: createdAt,
+    edited: update.edited,
+    nonce: nonce,
+    isNotice: isNotice,
+    attachments: attachments,
+    stickerUrl: update.stickerUrl,
+    embeds: update.embeds,
+    reply: reply,
+    reactions: reactions,
+    isVoice: isVoice,
+    pinned: pinned,
+    components: update.components,
+    rawComponents: update.rawComponents,
+    fromBot: fromBot,
+    fromWebhook: fromWebhook,
+    webhookId: webhookId,
+    isEphemeral: isEphemeral,
+    isLoading: update.isLoading,
+    isComponentsV2: update.isComponentsV2,
   );
 
   /// With [userId]'s reaction [emoji] added or taken away.
@@ -218,7 +285,26 @@ class MessageReply {
   final String? authorId;
   final String authorName;
   final String content;
-  const MessageReply({required this.messageId, required this.authorName, required this.content, this.authorId});
+
+  /// The reply mentions the author of the message it answers (the API's
+  /// `mention_author`): it's highlighted for them.
+  final bool mentionAuthor;
+  const MessageReply({
+    required this.messageId,
+    required this.authorName,
+    required this.content,
+    this.authorId,
+    this.mentionAuthor = false,
+  });
+
+  /// The same quote, of the message as edited to [content].
+  MessageReply withContent(String content) => MessageReply(
+    messageId: messageId,
+    authorId: authorId,
+    authorName: authorName,
+    content: content,
+    mentionAuthor: mentionAuthor,
+  );
 }
 
 /// One emoji's reactions on a message: a Unicode emoji, or a custom one by
@@ -504,6 +590,8 @@ final class MessageCreated extends MessageEvent {
   const MessageCreated(this.message);
 }
 
+/// A message edited, or given a link preview: [message] has what the event
+/// carries, for [ChatMessage.updatedBy].
 final class MessageUpdated extends MessageEvent {
   final ChatMessage message;
   const MessageUpdated(this.message);
@@ -512,6 +600,13 @@ final class MessageUpdated extends MessageEvent {
 final class MessageDeleted extends MessageEvent {
   final String messageId;
   const MessageDeleted(this.messageId);
+}
+
+/// Someone pinned a message, or unpinned it, here or on another device.
+final class MessagePinned extends MessageEvent {
+  final String messageId;
+  final bool pinned;
+  const MessagePinned(this.messageId, {required this.pinned});
 }
 
 /// Someone reacted to a message, or took a reaction back. The gateway doesn't
@@ -531,11 +626,13 @@ final class ReactionChanged extends MessageEvent {
   });
 }
 
-/// Someone started typing in a chat.
+/// Someone started typing in a chat, or recording a voice message: either
+/// replaces the other.
 class TypingUser {
   final String userId;
   final String name;
-  const TypingUser({required this.userId, required this.name});
+  final bool recording;
+  const TypingUser({required this.userId, required this.name, this.recording = false});
 }
 
 /// A row of the Chats tab.

@@ -63,10 +63,18 @@ abstract interface class ChatRepository {
   /// Who starts typing in the chat.
   Stream<TypingUser> typing(ChatTarget target);
 
+  /// A room's ephemeral messages: its bots' answers to the user alone, which
+  /// no history has. They last the session, until dismissed.
+  List<ChatMessage> ephemeralIn(ChatTarget target);
+
+  /// The user dismissed an ephemeral message: it goes.
+  void dismissEphemeral(ChatTarget target, String messageId);
+
   /// Sends [content] with [files], or a sticker, in reply to [replyTo] if
   /// given; [nonce] matches the gateway's echo to it. With files,
   /// [onProgress] follows the upload (0 to 1) and completing [cancel] stops
-  /// it. A file the server finds too large throws [UploadTooLarge].
+  /// it. A file the server finds too large throws [UploadTooLarge], and a
+  /// refusal the API explains an [ActionFailed] with its reason.
   Future<ChatMessage> send(
     ChatTarget target,
     String content, {
@@ -78,7 +86,8 @@ abstract interface class ChatRepository {
     Future<void>? cancel,
   });
 
-  /// Sends a voice note: [audio] in [format] (`ogg` for Ogg/Opus).
+  /// Sends a voice note: [audio] in [format] (`ogg` for Ogg/Opus). A refusal
+  /// the API explains throws an [ActionFailed] with its reason.
   Future<ChatMessage> sendVoiceNote(ChatTarget target, List<int> audio, {required String nonce, String format});
 
   /// Tells the chat the user is recording a voice note.
@@ -93,7 +102,8 @@ abstract interface class ChatRepository {
   /// The chat's pinned messages, the last pinned first.
   Future<List<ChatMessage>> pins(ChatTarget target);
 
-  /// Pins a message, or unpins it.
+  /// Pins a message, or unpins it. A refusal the API explains throws an
+  /// [ActionFailed] with its reason.
   Future<void> pin(ChatTarget target, String messageId, {required bool pinned});
 
   /// A message's reply thread, oldest first: its root and every reply under it.

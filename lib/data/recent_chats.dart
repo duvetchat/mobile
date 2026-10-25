@@ -225,9 +225,22 @@ class RecentChats {
     }
   }
 
-  /// The previewed message was edited.
+  /// The previewed message was edited: its text changes, not who wrote it,
+  /// whom the event may not name.
   void edited(String chatId, ChatMessage m) {
-    if (_find(chatId) case final known? when known.previewId == m.id) _put(known._withMessage(m, _readable));
+    if (_find(chatId) case final known? when known.previewId == m.id) {
+      _put(
+        RecentChat(
+          target: known.target,
+          title: known.title,
+          at: known.at,
+          previewId: known.previewId,
+          previewAuthorId: known.previewAuthorId,
+          previewAuthor: known.previewAuthor,
+          previewText: previewOf(m, _readable),
+        ),
+      );
+    }
   }
 
   /// The previewed message was deleted: the one before it isn't known here.

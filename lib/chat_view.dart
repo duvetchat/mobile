@@ -4,6 +4,7 @@ import 'dart:math';
 import 'dart:math' as math;
 import 'dart:ui' show ImageFilter;
 
+import 'package:clock/clock.dart' as time show clock;
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
@@ -110,7 +111,7 @@ class _ChatViewState extends State<ChatView> {
   bool _loadingOlder = false;
   bool _hasOlder = false;
 
-  final _typing = <String, ({String name, Timer expiry})>{};
+  final _typing = <String, ({String name, bool recording, Timer expiry})>{};
   DateTime _lastTypingSent = DateTime.fromMillisecondsSinceEpoch(0);
 
   // Who can be mentioned, the space's emoji and stickers, the Unicode set.
@@ -145,17 +146,35 @@ class _ChatViewState extends State<ChatView> {
   final _keys = <String, GlobalKey>{};
   String? _flash;
 
+  // The chat is read where the reader sees it, as the desktop acks it: with
+  // the app in front and this chat on top, on opening wherever the list opens
+  // (once it's seen, if it opened unseen), then at the bottom of the list. The
+  // newest message read from here is acked once.
+  bool _atBottom = true;
+  bool _onTop = true;
+  bool _opening = false;
+  String? _acked;
+  late final AppLifecycleListener _lifecycle;
+
   @override
   void initState() {
     super.initState();
     EmojiCatalog.load().then((c) {
       if (mounted) setState(() => _catalog = c);
     }, onError: (Object e) => debugPrint('emoji: $e'));
+    _lifecycle = AppLifecycleListener(onResume: _readIfSeen);
   }
 
   @override
   void didChangeDependencies() {
     super.didChangeDependencies();
+    // Back on top (a thread or a chat opened over this one was closed): what
+    // came meanwhile is read, at the bottom, once this build is done.
+    final onTop = ModalRoute.of(context)?.isCurrent ?? true;
+    if (onTop != _onTop) {
+      _onTop = onTop;
+      if (onTop) WidgetsBinding.instance.addPostFrameCallback((_) => _readIfSeen());
+    }
     if (_events != null) return;
     _repository = context.repository;
     // Listen before loading, so nothing sent meanwhile is missed.
@@ -183,6 +202,7 @@ class _ChatViewState extends State<ChatView> {
     for (final c in _cancels.values) {
       if (!c.isCompleted) c.complete();
     }
+    _lifecycle.dispose();
     _events?.cancel();
     _typingSub?.cancel();
     _resumedSub?.cancel();
@@ -271,12 +291,20 @@ class _ChatViewState extends State<ChatView> {
           : await _repository.thread(widget.target, thread);
       if (!mounted) return;
       final loaded = {for (final m in page) m.id};
+      // Keep what the gateway pushed while the page loaded.
+      final pushed = [
+        for (final e in _entries)
+          if (!loaded.contains(e.message.id)) e,
+      ];
+      final shown = {...loaded, for (final e in pushed) e.message.id};
+      // The bots' answers to the user alone, which no history has, show among
+      // the room's messages, by time.
+      final ephemeral = [
+        for (final m in thread == null ? _repository.ephemeralIn(widget.target) : const <ChatMessage>[])
+          if (!shown.contains(m.id)) m,
+      ];
       setState(() {
-        // Keep what the gateway pushed while the page loaded.
-        _entries = [
-          for (final m in page) (message: m, delivery: _Delivery.sent),
-          ..._entries.where((e) => !loaded.contains(e.message.id)),
-        ];
+        _entries = [for (final m in _byTime(page, ephemeral)) (message: m, delivery: _Delivery.sent), ...pushed];
         _hasOlder = thread == null && page.length >= _pageSize;
         _loading = false;
         // Nothing after the last read: no divider.
@@ -284,7 +312,8 @@ class _ChatViewState extends State<ChatView> {
       });
       if (thread == null) {
         _repository.opened(widget.target, widget.title, latest: page.lastOrNull);
-        _markRead();
+        _opening = true;
+        _readIfSeen();
       }
       if (widget.jumpTo case final id?) {
         WidgetsBinding.instance.addPostFrameCallback((_) => _jumpTo(id));
@@ -303,6 +332,26 @@ class _ChatViewState extends State<ChatView> {
     }
   }
 
+  /// [list] (the oldest first) with [more] put in by time, after those as old.
+  static List<ChatMessage> _byTime(List<ChatMessage> list, List<ChatMessage> more) {
+    final all = [...list];
+    for (final m in more) {
+      var i = all.length;
+      while (i > 0 && all[i - 1].createdAt.isAfter(m.createdAt)) {
+        i--;
+      }
+      all.insert(i, m);
+    }
+    return all;
+  }
+
+  /// The room's own messages that were sent, the oldest first: what paging,
+  /// catching up and reading go by. An ephemeral one isn't the room's.
+  Iterable<ChatMessage> get _history => [
+    for (final e in _entries)
+      if (e.delivery == _Delivery.sent && !e.message.isEphemeral) e.message,
+  ];
+
   /// Brings the "New messages" divider into view, near the top.
   Future<void> _showDivider() async {
     if (!mounted || !_entries.any((e) => e.message.id == _unreadAfter)) return;
@@ -313,11 +362,11 @@ class _ChatViewState extends State<ChatView> {
   }
 
   Future<void> _loadOlder() async {
-    final oldest = _entries.where((e) => e.delivery == _Delivery.sent).firstOrNull;
+    final oldest = _history.firstOrNull;
     if (_loadingOlder || !_hasOlder || oldest == null) return;
     setState(() => _loadingOlder = true);
     try {
-      final page = await _repository.messages(widget.target, before: oldest.message.id);
+      final page = await _repository.messages(widget.target, before: oldest.id);
       if (!mounted) return;
       final known = {for (final e in _entries) e.message.id};
       setState(() {
@@ -338,7 +387,7 @@ class _ChatViewState extends State<ChatView> {
   /// What came while the socket was down: everything after the newest
   /// message here.
   Future<void> _catchUp() async {
-    final newest = _entries.where((e) => e.delivery == _Delivery.sent).lastOrNull?.message;
+    final newest = _history.lastOrNull;
     if (newest == null) return;
     try {
       final missed = await _repository.messagesAfter(widget.target, newest.id);
@@ -348,21 +397,45 @@ class _ChatViewState extends State<ChatView> {
           _upsert(m);
         }
       });
-      _markRead();
+      _readIfSeen();
     } catch (e) {
       debugPrint('catch up: $e');
     }
   }
 
-  // The list is reversed: its end is the top, the oldest messages.
+  // The list is reversed: its end is the top, the oldest messages, and its
+  // start the bottom, within 50 points of which (as on the desktop) the
+  // newest are in view.
   void _onScroll() {
-    if (_scroll.position.extentAfter < 400) _loadOlder();
+    final position = _scroll.position;
+    if (position.extentAfter < 400) _loadOlder();
+    final atBottom = position.pixels <= 50;
+    if (atBottom == _atBottom) return;
+    _atBottom = atBottom;
+    if (atBottom) _readIfSeen();
   }
 
+  /// Reads the chat up to its newest message.
   void _markRead() {
-    final newest = _entries.where((e) => e.delivery == _Delivery.sent).lastOrNull?.message;
-    if (newest != null) _repository.markRead(widget.target, newest.id);
+    final newest = _history.lastOrNull;
+    if (newest == null || newest.id == _acked) return;
+    _acked = newest.id;
+    _repository.markRead(widget.target, newest.id);
   }
+
+  /// Reads the chat if the reader sees it: the app in front and nothing
+  /// opened over the chat (not a thread), and, past its opening, the bottom
+  /// of the list.
+  void _readIfSeen() {
+    if (!mounted || widget.threadOf != null || !_onTop || !_inFront || !(_atBottom || _opening)) return;
+    _opening = false;
+    _markRead();
+  }
+
+  static bool get _inFront => switch (WidgetsBinding.instance.lifecycleState) {
+    null || AppLifecycleState.resumed || AppLifecycleState.inactive => true,
+    _ => false,
+  };
 
   void _onEvent(MessageEvent event) {
     if (event case ReactionChanged(:final messageId) when !_entries.any((e) => e.message.id == messageId)) return;
@@ -380,11 +453,15 @@ class _ChatViewState extends State<ChatView> {
           _stopTyping(message.authorId);
           _upsert(message);
         case MessageUpdated(:final message):
-          final i = _entries.indexWhere((e) => e.message.id == message.id);
-          if (i >= 0) _entries[i] = (message: message, delivery: _Delivery.sent);
+          _applyUpdate(message);
         case MessageDeleted(:final messageId):
           _entries.removeWhere((e) => e.message.id == messageId);
           if (_editing?.id == messageId) _stopEditing();
+        case MessagePinned(:final messageId, :final pinned):
+          final i = _entries.indexWhere((e) => e.message.id == messageId);
+          if (i >= 0) {
+            _entries[i] = (message: _entries[i].message.copyWith(pinned: pinned), delivery: _entries[i].delivery);
+          }
         case ReactionChanged(:final messageId, :final userId, :final emoji, :final emojiId, :final added):
           final i = _entries.indexWhere((e) => e.message.id == messageId);
           // The user's own come back as an echo of what's shown already.
@@ -398,7 +475,21 @@ class _ChatViewState extends State<ChatView> {
           }
       }
     });
-    if (event is MessageCreated) _markRead();
+    if (event is MessageCreated) _readIfSeen();
+  }
+
+  /// An edit, or a link preview that came late, merged into the message (see
+  /// [ChatMessage.updatedBy]); the replies quoting it follow its text, as on
+  /// the desktop.
+  void _applyUpdate(ChatMessage update) {
+    for (var i = 0; i < _entries.length; i++) {
+      final m = _entries[i].message;
+      if (m.id == update.id) {
+        _entries[i] = (message: m.updatedBy(update), delivery: _Delivery.sent);
+      } else if (m.reply case final reply? when reply.messageId == update.id) {
+        _entries[i] = (message: m.copyWith(reply: reply.withContent(update.content)), delivery: _entries[i].delivery);
+      }
+    }
   }
 
   /// Adds a message, or replaces the one it is: the same ID, or the pending
@@ -416,11 +507,14 @@ class _ChatViewState extends State<ChatView> {
     }
   }
 
+  // Recording a voice message lasts as long as typing does, and either
+  // replaces the other.
   void _onTyping(TypingUser user) {
     setState(() {
       _typing[user.userId]?.expiry.cancel();
       _typing[user.userId] = (
         name: user.name,
+        recording: user.recording,
         expiry: Timer(_typingFor, () {
           if (mounted) setState(() => _typing.remove(user.userId));
         }),
@@ -435,7 +529,7 @@ class _ChatViewState extends State<ChatView> {
   void _onComposerChanged() {
     final query = _composer.query;
     final text = _composer.text;
-    final slash = _commands.isNotEmpty && _editing == null && RegExp(r'^/\S*$').hasMatch(text)
+    final slash = _commands.isNotEmpty && _editing == null && _canUseCommands && RegExp(r'^/\S*$').hasMatch(text)
         ? text.substring(1)
         : null;
     if (query != _query || _canSend != _couldSend || slash != _slash) {
@@ -466,7 +560,7 @@ class _ChatViewState extends State<ChatView> {
     final content = _composer.encoded.trim();
     if (content.isEmpty && _files.isEmpty) return;
     // `/name` of a command runs it.
-    if (_files.isEmpty && content.startsWith('/')) {
+    if (_files.isEmpty && content.startsWith('/') && _canUseCommands) {
       final command = _commands.where((c) => '/${c.name}' == content).firstOrNull;
       if (command != null) return _runCommand(command);
     }
@@ -502,10 +596,18 @@ class _ChatViewState extends State<ChatView> {
 
   static String _megabytes(int bytes) => '${(bytes / (1024 * 1024)).round()} MB';
 
-  void _sendSticker(Sticker sticker) =>
-      _queue((content: '', files: const [], sticker: sticker, replyTo: null, voice: null));
+  void _sendSticker(Sticker sticker) => _sendPicked(sticker: sticker);
 
-  void _sendGif(String url) => _queue((content: url, files: const [], sticker: null, replyTo: null, voice: null));
+  void _sendGif(String url) => _sendPicked(content: url);
+
+  // A sticker or a GIF answers the message being replied to, as a text does
+  // (on the desktop they all go out the same way), and the strip closes.
+  void _sendPicked({String content = '', Sticker? sticker}) {
+    final reply = _replyTo;
+    if (reply != null) setState(() => _replyTo = null);
+    final to = reply?.messageId ?? widget.threadOf;
+    _queue((content: content, files: const [], sticker: sticker, replyTo: to, voice: null), reply: reply);
+  }
 
   void _sendVoice(Recording recording) =>
       _queue((content: '', files: const [], sticker: null, replyTo: null, voice: recording));
@@ -604,6 +706,8 @@ class _ChatViewState extends State<ChatView> {
         if (i >= 0) _entries[i] = (message: _entries[i].message, delivery: _Delivery.failed);
       });
       _announce(e is UploadTooLarge ? 'Too large to send' : 'Message not sent');
+      // Why the API refused it, as the desktop shows it.
+      if (e is ActionFailed) _toast(e.message);
     } finally {
       _cancels.remove(nonce);
     }
@@ -755,7 +859,7 @@ class _ChatViewState extends State<ChatView> {
   // ---------------------------------------------------------------------------
 
   void _startReply(ChatMessage m) {
-    if (m.id.startsWith('pending:') || m.isNotice) return;
+    if (m.id.startsWith('pending:') || m.isNotice || m.isEphemeral) return;
     HapticFeedback.selectionClick();
     setState(() {
       if (_editing != null) _stopEditing();
@@ -771,6 +875,12 @@ class _ChatViewState extends State<ChatView> {
   }
 
   void _cancelReply() => setState(() => _replyTo = null);
+
+  /// Dismisses a bot's answer to the user alone: it goes for the session.
+  void _dismiss(ChatMessage m) {
+    _repository.dismissEphemeral(widget.target, m.id);
+    setState(() => _entries.removeWhere((e) => e.message.id == m.id));
+  }
 
   void _startEditing(ChatMessage m) {
     final directory = _directory;
@@ -797,7 +907,9 @@ class _ChatViewState extends State<ChatView> {
     // Shown at once; put back if the server says no.
     _replace(editing.copyWith(content: content, edited: true));
     try {
-      _replace(await _repository.edit(widget.target, editing.id, content));
+      // The API answers the message without its files, reactions or reply.
+      final saved = await _repository.edit(widget.target, editing.id, content);
+      if (mounted) setState(() => _applyUpdate(saved));
     } catch (_) {
       _replace(editing);
       _toast('Couldn’t save your edit');
@@ -813,7 +925,13 @@ class _ChatViewState extends State<ChatView> {
   }
 
   Future<void> _confirmDelete(ChatMessage m) async {
-    final confirmed = await _showDeleteSheet(context, message: m, directory: _directory, where: _where);
+    final confirmed = await _showDeleteSheet(
+      context,
+      message: m,
+      mine: m.authorId != null && m.authorId == _me,
+      directory: _directory,
+      where: _where,
+    );
     if (confirmed != true || !mounted) return;
     final i = _entries.indexWhere((e) => e.message.id == m.id);
     if (i < 0) return;
@@ -1172,22 +1290,27 @@ class _ChatViewState extends State<ChatView> {
   Future<void> _openPins() async {
     final picked = await showPinsSheet(
       context,
-      pins: _repository.pins(widget.target),
+      pins: () => _repository.pins(widget.target),
+      changes: _repository.messageEvents(widget.target).where((e) => e is MessagePinned),
       where: _where,
       directory: _directory,
-      onUnpin: (m) => _setPinned(m, false),
+      onUnpin: _canPin ? (m) => _setPinned(m, false) : null,
     );
     if (picked != null && mounted) await _jumpTo(picked.id);
   }
 
-  Future<void> _setPinned(ChatMessage m, bool pinned) async {
+  /// Pins or unpins a message; answers whether the server did. A refusal says
+  /// the API's reason, as the desktop does.
+  Future<bool> _setPinned(ChatMessage m, bool pinned) async {
     _replace(m.copyWith(pinned: pinned));
     try {
       await _repository.pin(widget.target, m.id, pinned: pinned);
       _announce(pinned ? 'Pinned' : 'Unpinned');
-    } catch (_) {
+      return true;
+    } catch (e) {
       _replace(m);
-      _toast(pinned ? 'Couldn’t pin the message' : 'Couldn’t unpin the message');
+      _toast(e is ActionFailed ? e.message : (pinned ? 'Couldn’t pin the message' : 'Couldn’t unpin the message'));
+      return false;
     }
   }
 
@@ -1279,7 +1402,32 @@ class _ChatViewState extends State<ChatView> {
       emojiNameOf: (id) => directory.emojiOf(id)?.name,
     );
     final mine = m.authorId != null && m.authorId == _me;
-    final sent = entry.delivery == _Delivery.sent;
+    // Nothing of the room's applies to a bot's answer to the user alone: no
+    // reactions, replies, pins or deleting, as on the desktop.
+    final sent = entry.delivery == _Delivery.sent && !m.isEphemeral;
+    final canPin = _canPin;
+    final canDelete = mine || _canDeleteOthers;
+    final items = [
+      if (sent) const GlassMenuItem(icon: FLucideIcons.reply, label: 'Reply', value: _Action.reply),
+      if (sent && widget.threadOf == null)
+        const GlassMenuItem(icon: FLucideIcons.messagesSquare, label: 'View thread', value: _Action.thread),
+      if (readable.isNotEmpty) const GlassMenuItem(icon: FLucideIcons.copy, label: 'Copy text', value: _Action.copy),
+      if (sent && !m.isNotice && canPin)
+        m.pinned
+            ? const GlassMenuItem(icon: FLucideIcons.pinOff, label: 'Unpin', value: _Action.unpin)
+            : const GlassMenuItem(icon: FLucideIcons.pin, label: 'Pin', value: _Action.pin),
+      if (mine && sent && m.content.isNotEmpty && m.stickerUrl == null)
+        const GlassMenuItem(icon: FLucideIcons.pencil, label: 'Edit', value: _Action.edit),
+      if (!mine && m.authorId != null && !m.isEphemeral)
+        GlassMenuItem(icon: FLucideIcons.atSign, label: 'Mention ${m.authorName}', value: _Action.mention),
+      if (entry.delivery == _Delivery.failed)
+        const GlassMenuItem(icon: FLucideIcons.rotateCw, label: 'Send again', value: _Action.retry),
+      if (canDelete && sent)
+        const GlassMenuItem(icon: FLucideIcons.trash2, label: 'Delete', value: _Action.delete, destructive: true),
+      if (entry.delivery == _Delivery.failed)
+        const GlassMenuItem(icon: FLucideIcons.trash2, label: 'Delete', value: _Action.discard, destructive: true),
+    ];
+    if (items.isEmpty && !sent) return;
     final box = anchor.findRenderObject() as RenderBox?;
     if (box == null || !box.attached) return;
     final picked = await _showMessageActions(
@@ -1289,26 +1437,7 @@ class _ChatViewState extends State<ChatView> {
       me: _me,
       reactions: sent ? m.reactions : null,
       catalog: _catalog,
-      items: [
-        if (sent) const GlassMenuItem(icon: FLucideIcons.reply, label: 'Reply', value: _Action.reply),
-        if (sent && widget.threadOf == null)
-          const GlassMenuItem(icon: FLucideIcons.messagesSquare, label: 'View thread', value: _Action.thread),
-        if (readable.isNotEmpty) const GlassMenuItem(icon: FLucideIcons.copy, label: 'Copy text', value: _Action.copy),
-        if (sent && !m.isNotice)
-          m.pinned
-              ? const GlassMenuItem(icon: FLucideIcons.pinOff, label: 'Unpin', value: _Action.unpin)
-              : const GlassMenuItem(icon: FLucideIcons.pin, label: 'Pin', value: _Action.pin),
-        if (mine && sent && m.content.isNotEmpty && m.stickerUrl == null)
-          const GlassMenuItem(icon: FLucideIcons.pencil, label: 'Edit', value: _Action.edit),
-        if (!mine && m.authorId != null)
-          GlassMenuItem(icon: FLucideIcons.atSign, label: 'Mention ${m.authorName}', value: _Action.mention),
-        if (entry.delivery == _Delivery.failed)
-          const GlassMenuItem(icon: FLucideIcons.rotateCw, label: 'Send again', value: _Action.retry),
-        if (mine && sent)
-          const GlassMenuItem(icon: FLucideIcons.trash2, label: 'Delete', value: _Action.delete, destructive: true),
-        if (entry.delivery == _Delivery.failed)
-          const GlassMenuItem(icon: FLucideIcons.trash2, label: 'Delete', value: _Action.discard, destructive: true),
-      ],
+      items: items,
     );
     if (!mounted || picked == null) return;
     switch (picked) {
@@ -1344,6 +1473,27 @@ class _ChatViewState extends State<ChatView> {
     }
   }
 
+  /// Pins take PinMessages in a room, as the API has it; every member of a
+  /// conversation pins.
+  bool get _canPin => switch (widget.target) {
+    RoomTarget(:final spaceId, :final roomId) => _repository.canInRoom(spaceId, roomId, Perm.pinMessages),
+    ConversationTarget() => true,
+  };
+
+  /// Commands are for the rooms the user can write in, as on the desktop;
+  /// conversations have none.
+  bool get _canUseCommands => switch (widget.target) {
+    RoomTarget(:final spaceId, :final roomId) => _repository.canInRoom(spaceId, roomId, Perm.sendMessages),
+    ConversationTarget() => false,
+  };
+
+  /// Someone else's message is deleted with ManageMessages in a room; in a
+  /// conversation, each member deletes only their own.
+  bool get _canDeleteOthers => switch (widget.target) {
+    RoomTarget(:final spaceId, :final roomId) => _repository.canInRoom(spaceId, roomId, Perm.manageMessages),
+    ConversationTarget() => false,
+  };
+
   // ---------------------------------------------------------------------------
   // Bots
   // ---------------------------------------------------------------------------
@@ -1355,7 +1505,9 @@ class _ChatViewState extends State<ChatView> {
   }
 
   /// What a select offers: its options, or this chat's people, rooms or
-  /// roles; its defaults chosen.
+  /// roles; its defaults chosen. The rooms are those the user can see, of the
+  /// types it takes, by position: the API takes no others, and the desktop
+  /// offers no others.
   List<ComponentOption> _selectChoices(UiComponent select) {
     final defaults = select.defaultValues.toSet();
     ComponentOption option(String label, String value, [String? description]) =>
@@ -1370,24 +1522,32 @@ class _ChatViewState extends State<ChatView> {
       ComponentKind.roleSelect => roles,
       ComponentKind.mentionableSelect => [...people, ...roles],
       ComponentKind.roomSelect when target is RoomTarget => [
-        for (final section
-            in _repository.spaces.value.where((s) => s.id == target.spaceId).firstOrNull?.sections ??
-                const <RoomSection>[])
-          for (final r in section.rooms) option('#${r.name}', r.id),
+        for (final r in _repository.adminRooms(target.spaceId))
+          if ((select.roomTypes.isEmpty || select.roomTypes.contains(_roomType(r.kind))) &&
+              _repository.canInRoom(target.spaceId, r.id, Perm.viewChannels))
+            option(r.kind == AdminRoomKind.category ? r.name : '#${r.name}', r.id),
       ],
       ComponentKind.roomSelect => const [],
       _ => select.options,
     };
   }
 
-  List<ComponentOption> _optionChoices(int type) => _selectChoices(
+  /// A room's type as the API numbers it, in `room_types`.
+  static int _roomType(AdminRoomKind kind) => switch (kind) {
+    AdminRoomKind.text => 1,
+    AdminRoomKind.voice => 2,
+    AdminRoomKind.category => 3,
+  };
+
+  List<ComponentOption> _optionChoices(BotCommandOption o) => _selectChoices(
     UiComponent(
-      type: switch (type) {
+      type: switch (o.type) {
         OptionKind.user => ComponentKind.userSelect,
         OptionKind.role => ComponentKind.roleSelect,
         OptionKind.room => ComponentKind.roomSelect,
         _ => ComponentKind.mentionableSelect,
       },
+      roomTypes: o.roomTypes,
     ),
   );
 
@@ -1677,7 +1837,16 @@ class _ChatViewState extends State<ChatView> {
                   child: Column(
                     mainAxisSize: MainAxisSize.min,
                     children: [
-                      _TypingLine(names: [for (final t in _typing.values) t.name]),
+                      _TypingLine(
+                        typing: [
+                          for (final t in _typing.values)
+                            if (!t.recording) t.name,
+                        ],
+                        recording: [
+                          for (final t in _typing.values)
+                            if (t.recording) t.name,
+                        ],
+                      ),
                       if (_files.isNotEmpty && _editing == null)
                         _AttachmentTray(files: _files, onRemove: (f) => setState(() => _files.remove(f))),
                       _ComposerStrip(
@@ -1775,6 +1944,7 @@ class _ChatViewState extends State<ChatView> {
       onOpenAuthor: () => _openAuthor(m),
       onUseComponent: (component, values) => _useComponent(m, component, values),
       selectChoices: _selectChoices,
+      onDismiss: m.isEphemeral ? () => _dismiss(m) : null,
     );
   }
 
@@ -1826,7 +1996,10 @@ class _ChatViewState extends State<ChatView> {
 
   /// The entries, oldest first, with a separator where the day changes, the
   /// "New messages" divider after the last one read, and each message marked
-  /// first and last of its run: one author, minutes apart.
+  /// first and last of its run: one author, minutes apart. A webhook has no
+  /// author ID: its own ID and the name it posts under stand in, as on the
+  /// desktop. A person's name isn't compared: the history names them by
+  /// their Space nickname, which live messages may not know.
   List<_Item> _items() {
     final items = <_Item>[];
     for (var i = 0; i < _entries.length; i++) {
@@ -1859,6 +2032,9 @@ class _ChatViewState extends State<ChatView> {
       !a.isNotice &&
       !b.isNotice &&
       a.authorId == b.authorId &&
+      a.webhookId == b.webhookId &&
+      (a.authorId != null || a.authorName == b.authorName) &&
+      a.isEphemeral == b.isEphemeral &&
       _sameDay(a.createdAt, b.createdAt) &&
       b.createdAt.difference(a.createdAt).abs() <= const Duration(minutes: 5);
 }

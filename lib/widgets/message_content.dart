@@ -393,7 +393,7 @@ class MessageAttachments extends StatelessWidget {
         for (final f in files)
           Padding(
             padding: EdgeInsets.only(top: images.isEmpty && f == files.first ? 0 : 4),
-            child: _uploading(f, tile(f)),
+            child: _uploading(f, f.isSpoiler ? _SpoilerCover(attachment: f, child: tile(f)) : tile(f)),
           ),
       ],
     );
@@ -424,6 +424,62 @@ class MessageAttachments extends StatelessWidget {
           ),
         ),
       ],
+    );
+  }
+}
+
+/// A spoiler video, audio or file: blurred under a cover until a tap reveals
+/// it, as the desktop has it; what it hides takes no taps meanwhile.
+/// Pictures have their own cover ([_Picture]).
+class _SpoilerCover extends StatefulWidget {
+  final MessageAttachment attachment;
+  final Widget child;
+  const _SpoilerCover({required this.attachment, required this.child});
+
+  @override
+  State<_SpoilerCover> createState() => _SpoilerCoverState();
+}
+
+class _SpoilerCoverState extends State<_SpoilerCover> {
+  bool _revealed = false;
+
+  void _reveal() => setState(() => _revealed = true);
+
+  @override
+  Widget build(BuildContext context) {
+    if (_revealed) return widget.child;
+    final a = widget.attachment;
+    final kind = a.isVideo
+        ? 'Video'
+        : a.isAudio
+        ? 'Audio file'
+        : 'File';
+    return Semantics(
+      container: true,
+      button: true,
+      label: 'Spoiler, $kind, ${a.displayName}',
+      hint: 'Double tap to reveal',
+      excludeSemantics: true,
+      onTap: _reveal,
+      child: GestureDetector(
+        behavior: HitTestBehavior.opaque,
+        onTap: _reveal,
+        child: ClipRRect(
+          borderRadius: BorderRadius.circular(DuvetTokens.radiusButton),
+          child: Stack(
+            alignment: Alignment.center,
+            children: [
+              IgnorePointer(
+                child: ImageFiltered(
+                  imageFilter: ImageFilter.blur(sigmaX: 12, sigmaY: 12, tileMode: TileMode.decal),
+                  child: widget.child,
+                ),
+              ),
+              const _Badge(text: 'Spoiler'),
+            ],
+          ),
+        ),
+      ),
     );
   }
 }

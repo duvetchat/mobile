@@ -277,10 +277,12 @@ class _QuickReactions extends StatelessWidget {
   }
 }
 
-/// Confirms deleting the user's own message, for everyone in [where].
+/// Confirms deleting a message, for everyone in [where]: the user's own, or
+/// with ManageMessages someone else's.
 Future<bool?> _showDeleteSheet(
   BuildContext context, {
   required ChatMessage message,
+  required bool mine,
   required MessageDirectory directory,
   required String where,
 }) => showGlassDialogSheet<bool>(
@@ -310,25 +312,26 @@ Future<bool?> _showDeleteSheet(
             child: InsetShadow(
               shadows: tokens.shadowWell,
               borderRadius: BorderRadius.circular(DuvetTokens.radiusButton),
+              // Its bubble as the chat shows it: the user's own on the accent.
               child: Align(
-                alignment: Alignment.centerRight,
+                alignment: mine ? Alignment.centerRight : Alignment.centerLeft,
                 child: Container(
                   padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
                   decoration: BoxDecoration(
-                    color: Duvet.accent,
+                    color: mine ? Duvet.accent : colors.card,
                     borderRadius: BorderRadius.circular(DuvetTokens.radiusButton),
                   ),
                   child: message.content.isEmpty
                       ? Text(
                           readableAttachments(message),
-                          style: DuvetType.body.copyWith(color: colors.primaryForeground),
+                          style: DuvetType.body.copyWith(color: mine ? colors.primaryForeground : colors.foreground),
                         )
                       : MessageText(
                           content: message.content,
                           directory: directory,
-                          onAccent: true,
+                          onAccent: mine,
                           singleLine: true,
-                          style: DuvetType.body.copyWith(color: colors.primaryForeground),
+                          style: DuvetType.body.copyWith(color: mine ? colors.primaryForeground : colors.foreground),
                         ),
                 ),
               ),
