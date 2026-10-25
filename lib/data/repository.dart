@@ -321,7 +321,7 @@ abstract interface class ChatRepository {
 
   /// Who's online, by user ID, as the gateway reports it; someone missing
   /// hasn't been reported this session. A bot's status in one Space, which
-  /// comes first there ([presenceIn]), is kept under `userId:spaceId` too.
+  /// comes first there ([presenceIn]), is kept under [spacePresenceKey] too.
   ValueListenable<Map<String, Presence>> get presence;
 
   /// The emoji the chat can use beyond Unicode's: its space's. None in DMs.

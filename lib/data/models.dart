@@ -406,12 +406,16 @@ class Member {
 
 enum Presence { online, doNotDisturb, offline }
 
+/// The key [ChatRepository.presence] keeps a bot's presence in the Space
+/// [spaceId] under, as the desktop keys it: `userId:spaceId`.
+String spacePresenceKey(String userId, String spaceId) => '$userId:$spaceId';
+
 /// [userId]'s presence in [presence] (as [ChatRepository.presence] keeps it),
 /// in the Space [spaceId] when given: a bot's there, kept under
-/// `userId:spaceId`, comes first, as the desktop reads it, then theirs
+/// [spacePresenceKey], comes first, as the desktop reads it, then theirs
 /// everywhere.
 Presence? presenceIn(Map<String, Presence> presence, String userId, {String? spaceId}) =>
-    (spaceId == null ? null : presence['$userId:$spaceId']) ?? presence[userId];
+    (spaceId == null ? null : presence[spacePresenceKey(userId, spaceId)]) ?? presence[userId];
 
 /// A space's own emoji, written `<:id:>` in a message.
 class CustomEmoji {

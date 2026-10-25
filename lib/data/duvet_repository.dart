@@ -740,7 +740,7 @@ class DuvetRepository implements ChatRepository {
           ...presence.value,
           data.userId: status,
           // A bot's in one Space (its shard's there), as the desktop keeps it.
-          if (data.spaceId case final spaceId?) '${data.userId}:$spaceId': status,
+          if (data.spaceId case final spaceId?) spacePresenceKey(data.userId, spaceId): status,
         };
         // The user's own: the status they chose, on this device or another.
         if (_chosen(data.statusId) case final chosen? when data.userId == me && data.spaceId == null) {
