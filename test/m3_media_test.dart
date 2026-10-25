@@ -87,15 +87,15 @@ class _Gifs implements GifSource {
   final searched = <String>[];
   static const party = Gif(
     id: 'g1',
-    url: 'https://media.tenor.com/party.gif',
-    preview: 'https://media.tenor.com/party-tiny.gif',
+    url: 'https://static.klipy.com/party.gif',
+    preview: 'https://static.klipy.com/party-tiny.gif',
     width: 200,
     height: 150,
     description: 'party',
   );
 
   @override
-  String get attribution => 'GIFs from Tenor';
+  String get attribution => 'GIFs from KLIPY';
 
   @override
   Future<List<Gif>> trending() async => const [party];
@@ -181,28 +181,32 @@ void main() {
       expect(parseDeepLink('https://example.com'), isNull);
     });
 
-    test('Tenor results, upload shares, fallback waveforms', () {
-      final gifs = TenorGifs.parse({
-        'results': [
-          {
-            'id': '7',
-            'content_description': 'cat dance',
-            'media': [
-              {
-                'gif': {
-                  'url': 'https://t/g.gif',
-                  'dims': [400, 300],
+    test('KLIPY results, upload shares, fallback waveforms', () {
+      final gifs = KlipyGifs.parse({
+        'result': true,
+        'data': {
+          'data': [
+            {
+              'id': 7,
+              'type': 'gif',
+              'title': 'cat dance',
+              'file': {
+                'md': {
+                  'gif': {'url': 'https://k/g.gif', 'width': 400, 'height': 300},
                 },
-                'tinygif': {
-                  'url': 'https://t/tiny.gif',
-                  'dims': [200, 150],
+                'sm': {
+                  'gif': {'url': 'https://k/small.gif', 'width': 200, 'height': 150},
                 },
               },
-            ],
-          },
-        ],
+            },
+            {'id': 8, 'type': 'ad'},
+          ],
+        },
       });
-      expect((gifs.single.url, gifs.single.preview, gifs.single.width), ('https://t/g.gif', 'https://t/tiny.gif', 200));
+      expect(
+        (gifs.single.url, gifs.single.preview, gifs.single.width),
+        ('https://k/g.gif', 'https://k/small.gif', 200),
+      );
 
       const files = [
         MessageAttachment(id: 'a', filename: 'a', contentType: 'image/png', url: '', sizeBytes: 100),
@@ -332,7 +336,7 @@ void main() {
     await tapLabel(tester, 'Emoji and stickers');
     await tester.tap(find.text('GIFs'));
     await tester.pumpAndSettle();
-    expect(find.text('GIFs from Tenor'), findsOneWidget);
+    expect(find.text('GIFs from KLIPY'), findsOneWidget);
     await tester.tap(find.text('Celebrate'));
     await tester.pumpAndSettle();
     expect(gifs.searched, ['Celebrate']);

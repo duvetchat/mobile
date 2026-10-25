@@ -22,8 +22,8 @@ class Gif {
   });
 }
 
-/// Where GIFs come from: Tenor, with the desktop app's key and requests
-/// (`GifPicker.svelte`).
+/// Where GIFs come from: KLIPY (desktop's `GifPicker.svelte` still asks
+/// Tenor).
 abstract interface class GifSource {
   Future<List<Gif>> trending();
   Future<List<Gif>> search(String query);
@@ -32,50 +32,52 @@ abstract interface class GifSource {
   String get attribution;
 
   /// The app's; tests swap in their own.
-  static GifSource instance = TenorGifs();
+  static GifSource instance = KlipyGifs();
 }
 
-class TenorGifs implements GifSource {
-  static const _key = 'LIVDSRZULELA';
+class KlipyGifs implements GifSource {
+  static const _key = 'wrQpsWVVgJF6SQwLGINJ4D8uEJsya3rB0gmmwKF3SgN5SdkGZH3z6r2L0z2JJqUF';
   static const _limit = 20;
   final http.Client Function() _client;
-  TenorGifs({http.Client Function()? client}) : _client = client ?? http.Client.new;
+  KlipyGifs({http.Client Function()? client}) : _client = client ?? http.Client.new;
 
   @override
-  String get attribution => 'GIFs from Tenor';
+  String get attribution => 'GIFs from KLIPY';
 
   @override
-  Future<List<Gif>> trending() => _get(Uri.https('g.tenor.com', '/v1/trending', {'key': _key, 'limit': '$_limit'}));
+  Future<List<Gif>> trending() => _get('trending', {'per_page': '$_limit'});
 
   @override
-  Future<List<Gif>> search(String query) => query.trim().isEmpty
-      ? trending()
-      : _get(Uri.https('g.tenor.com', '/v1/search', {'q': query.trim(), 'key': _key, 'limit': '$_limit'}));
+  Future<List<Gif>> search(String query) =>
+      query.trim().isEmpty ? trending() : _get('search', {'q': query.trim(), 'per_page': '$_limit'});
 
-  Future<List<Gif>> _get(Uri uri) async {
+  Future<List<Gif>> _get(String path, Map<String, String> query) async {
+    final uri = Uri.https('api.klipy.com', '/api/v1/$_key/gifs/$path', query);
     final client = _client();
     try {
       final response = await client.get(uri).timeout(const Duration(seconds: 10));
-      if (response.statusCode != 200) throw http.ClientException('Tenor answered ${response.statusCode}', uri);
+      if (response.statusCode != 200) throw http.ClientException('KLIPY answered ${response.statusCode}', uri);
       return parse(jsonDecode(response.body));
     } finally {
       client.close();
     }
   }
 
-  /// Tenor v1's results: each one's GIF and its tiny preview.
+  /// KLIPY's results: each one's medium GIF to send and its small one for the
+  /// grid. Ads (any `type` but `gif`) are left out.
   static List<Gif> parse(Object? json) => [
-    for (final r in (json as Map?)?['results'] as List? ?? const [])
-      if (r is Map)
-        if ((r['media'] as List?)?.firstOrNull case final Map media)
-          if ((media['gif'] as Map?)?['url'] case final String url)
-            Gif(
-              id: '${r['id']}',
-              url: url,
-              preview: ((media['tinygif'] ?? media['nanogif'] ?? media['gif']) as Map)['url'] as String,
-              width: (((media['tinygif'] ?? media['gif']) as Map)['dims'] as List?)?.first.toDouble() ?? 1,
-              height: (((media['tinygif'] ?? media['gif']) as Map)['dims'] as List?)?.last.toDouble() ?? 1,
-              description: (r['content_description'] ?? r['title'] ?? '') as String,
-            ),
+    for (final r in ((json as Map?)?['data'] as Map?)?['data'] as List? ?? const [])
+      if (r is Map && r['type'] == 'gif')
+        if (r['file'] case final Map file)
+          if (((file['md'] ?? file['hd']) as Map?)?['gif'] case {'url': final String url})
+            if (((file['sm'] ?? file['xs'] ?? file['md']) as Map?)?['gif'] case final Map small)
+              Gif(
+                id: '${r['id']}',
+                url: url,
+                preview: small['url'] as String? ?? url,
+                width: (small['width'] as num?)?.toDouble() ?? 1,
+                height: (small['height'] as num?)?.toDouble() ?? 1,
+                description: r['title'] as String? ?? '',
+              ),
   ];
 }
