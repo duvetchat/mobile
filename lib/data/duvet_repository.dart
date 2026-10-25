@@ -442,7 +442,7 @@ class DuvetRepository implements ChatRepository {
           _publishSpaces();
         }
       // Every room of a Space after one moved: their places, as the desktop
-      // takes them. An UnknownEvent too, for older code: matched before any.
+      // takes them.
       case duvet.RoomReorderedEvent(:final data):
         for (final moved in data.rooms) {
           for (final (space: _, :rooms) in _spaces.values) {
