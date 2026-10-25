@@ -116,16 +116,28 @@ Map<String, dynamic> _space() => {
   'owner_id': _me,
 };
 
-/// A cache store whose writes wait for [hold] while it's set.
+/// A cache store whose writes wait for [hold] while it's set. [listed] counts
+/// the times it's listed: once a pass over the pages kept.
 class _HeldWrites extends MemoryChatCacheStore {
   Completer<void>? hold;
+  var listed = 0;
 
   @override
   Future<void> write(String key, String json) async {
     await hold?.future;
     await super.write(key, json);
   }
+
+  @override
+  Future<List<String>> keys() {
+    listed++;
+    return super.keys();
+  }
 }
+
+/// A message of [authorId]'s as a page kept has it.
+ChatMessage _keptMessage(String id, String authorId, String name) =>
+    ChatMessage(id: id, authorId: authorId, authorName: name, content: id, createdAt: DateTime(2026, 10, 23));
 
 /// The gateway's envelope for [type], parsed as the client parses it.
 duvet.GatewayEventPayload _event(String type, Map<String, dynamic> data) => duvet.GatewayEnvelope.fromJson({
@@ -140,11 +152,11 @@ duvet.GatewayEventPayload _event(String type, Map<String, dynamic> data) => duve
 void main() {
   late List<http.Request> requests;
   late DuvetRepository repository;
-  late MemoryChatCacheStore cache;
+  late _HeldWrites cache;
 
   setUp(() {
     requests = [];
-    cache = MemoryChatCacheStore();
+    cache = _HeldWrites();
     final client = MockClient((request) async {
       requests.add(request);
       final json = switch ((request.method, request.url.path)) {
@@ -464,6 +476,45 @@ void main() {
       // Once the write under way is done too.
       await pumpEventQueue();
       expect(store.data, isEmpty);
+    });
+
+    test('the same name and avatar again, from another Space or with a new bio, read no page again', () async {
+      await listen(_dm);
+      // A page kept that names her.
+      await repository.messages(_dm);
+      await Future<void>.delayed(const Duration(milliseconds: 700));
+      for (final update in [
+        renamed(),
+        // The API sends it once per Space she shares with the user.
+        renamed(),
+        // Her new bio.
+        _event('USER_UPDATE', {'id': _maya, 'username': 'maya', 'alias': 'Maya O.', 'avatar': avatar, 'custom': 'Hi'}),
+      ]) {
+        repository.handleEvent(update);
+        // The pass over the pages it makes, if any, done.
+        await pumpEventQueue();
+      }
+      expect(cache.listed, 1);
+      expect((await ChatCache(cache).loadPage('c-1'))!.first.authorName, 'Maya O.');
+    });
+
+    test('changes queued while the pages change wait for one pass, which makes the latest of each', () async {
+      final store = _HeldWrites();
+      final kept = ChatCache(store);
+      kept.savePage('c-1', [_keptMessage('5', _maya, 'Maya'), _keptMessage('6', _me, 'Gaby')]);
+      await Future<void>.delayed(const Duration(milliseconds: 700));
+      Future<void> rename(String id, String name) =>
+          kept.changeMessages(id, (_, m) => m.changedBy(AuthorChanged(id, name: name)));
+      // Her first change, being written while more come.
+      final writing = store.hold = Completer<void>();
+      unawaited(rename(_maya, 'Maya O.'));
+      await pumpEventQueue();
+      final queued = [rename(_maya, 'Maya 1'), rename(_me, 'Gaby 2'), rename(_maya, 'Maya 3')];
+      writing.complete();
+      await Future.wait(queued);
+      // The first pass, then one for the three.
+      expect(store.listed, 2);
+      expect([for (final m in (await kept.loadPage('c-1'))!) m.authorName], ['Maya 3', 'Gaby 2']);
     });
   });
 

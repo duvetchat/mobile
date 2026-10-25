@@ -342,6 +342,7 @@ class DuvetRepository implements ChatRepository {
     friends.value = Friends.none;
     _conversationMembers.clear();
     _names.clear();
+    _authors.clear();
     _emojiNames.clear();
     _emojis.clear();
     _stickers.clear();
@@ -552,6 +553,10 @@ class DuvetRepository implements ChatRepository {
           for (final e in presence.value.entries)
             if (e.key == me) e.key: e.value,
         };
+        // Profile changes made with no session went unheard: anyone's next
+        // one reaches their messages, even with the name and avatar the one
+        // before gave them.
+        _authors.clear();
         // Connected, the user shows the status they chose. A gateway from
         // before statuses doesn't say: online.
         if (_chosen(data.user.status) case final chosen?) {
@@ -1270,6 +1275,10 @@ class DuvetRepository implements ChatRepository {
     }
   }
 
+  // The name and avatar each user's messages were last given
+  // ([_authorChanged]), by user ID, this gateway session.
+  final _authors = <String, (String, String?)>{};
+
   // [userId] goes by [name] now, with the avatar at [avatar]: their messages
   // show it wherever the app holds them, as the desktop renames the messages
   // it has, and so do the replies' quotes of theirs, each chat naming them
@@ -1277,6 +1286,11 @@ class DuvetRepository implements ChatRepository {
   // answers to the user alone, the Chats tab's previews, and the pages kept
   // for offline.
   void _authorChanged(String userId, String name, String? avatar) {
+    // USER_UPDATE comes once per Space the user shares with them, and for a
+    // new bio or badges too: the name and avatar last given to their messages
+    // change nothing again, and the pages kept aren't read again for them.
+    if (_authors[userId] == (name, avatar)) return;
+    _authors[userId] = (name, avatar);
     AuthorChanged changeIn(String chatId) =>
         AuthorChanged(userId, name: _nameIn(chatId, userId, name), avatarUrl: avatar);
     // [messageEvents] names them as each chat does.

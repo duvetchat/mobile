@@ -439,6 +439,8 @@ class _ChatViewState extends State<ChatView> {
 
   void _onEvent(MessageEvent event) {
     if (event case ReactionChanged(:final messageId) when !_entries.any((e) => e.message.id == messageId)) return;
+    // A profile change that shows nothing new on the messages here.
+    if (event is AuthorChanged && _entries.every((e) => identical(e.message.changedBy(event), e.message))) return;
     // A thread takes the replies to its messages, and its own sends.
     if (widget.threadOf != null) {
       if (event case MessageCreated(

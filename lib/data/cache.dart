@@ -68,6 +68,9 @@ class MemoryChatCacheStore implements ChatCacheStore {
   Future<List<String>> keys() async => [...data.keys];
 }
 
+// A change of the pages' messages ([ChatCache.changeMessages]).
+typedef _Change = ChatMessage Function(String chatId, ChatMessage m);
+
 /// The cache over a store, with the models' JSON.
 class ChatCache {
   static const pageSize = 50;
@@ -160,24 +163,38 @@ class ChatCache {
   // nothing after.
   var _clears = 0;
 
-  // The changes of the pages, one after another.
+  // The passes over the pages that change them, one after another.
   Future<void> _changes = Future.value();
+
+  // The changes the pass queued last makes, by ID, until it begins: one
+  // queued meanwhile for an ID takes the place of the one before.
+  Map<String, _Change>? _queued;
 
   /// Changes the messages of the pages kept, those not written yet included:
   /// [change] answers each as it's to be kept, given its chat's ID, or the
   /// very message to leave it as it is. Only the pages with [id] in them (a
-  /// user's, say) are parsed: no other can change.
+  /// user's, say) are parsed: no other can change. The changes queued while
+  /// a pass is under way wait for one more pass, which makes the last one
+  /// queued for each ID.
   Future<void> changeMessages(String id, ChatMessage Function(String chatId, ChatMessage m) change) {
+    if (_queued case final queued?) {
+      queued[id] = change;
+      return _changes;
+    }
+    final queued = _queued = {id: change};
     final clears = _clears;
     return _changes = _changes
-        .then((_) => _change(clears, id, change))
+        .then((_) {
+          if (identical(_queued, queued)) _queued = null;
+          return _change(clears, queued);
+        })
         .catchError((Object e) => debugPrint('cache: $e'));
   }
 
-  Future<void> _change(int clears, String id, ChatMessage Function(String chatId, ChatMessage m) change) async {
+  Future<void> _change(int clears, Map<String, _Change> changes) async {
     // The page changed, or null when none of its messages is.
     List<ChatMessage>? changed(String chatId, List<ChatMessage> page) {
-      final after = [for (final m in page) change(chatId, m)];
+      final after = [for (final m in page) changes.values.fold(m, (was, change) => change(chatId, was))];
       return after.indexed.every((e) => identical(e.$2, page[e.$1])) ? null : after;
     }
 
@@ -208,7 +225,7 @@ class ChatCache {
           changeWaiting(chatId);
           continue;
         }
-        if (raw == null || !raw.contains(id)) continue;
+        if (raw == null || !changes.keys.any(raw.contains)) continue;
         if (changed(chatId, _pageFromJson(jsonDecode(raw) as Map<String, Object?>)) case final page?) {
           await _store.write(key, jsonEncode(_pageToJson(page)));
         }
@@ -225,6 +242,7 @@ class ChatCache {
     }
     _pending.clear();
     _pages.clear();
+    _queued = null;
     // A change of the pages under way writes nothing more: it ends before
     // the store goes.
     await _changes;

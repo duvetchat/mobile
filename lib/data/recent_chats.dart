@@ -244,10 +244,11 @@ class RecentChats {
   }
 
   /// [userId] changed their name: the previews of their messages name them
-  /// as [nameIn] says each chat does. A webhook's message has no author ID:
-  /// its preview keeps the name it was sent with.
+  /// as [nameIn] says each chat does, and the list stays as it is when they
+  /// all do already. A webhook's message has no author ID: its preview keeps
+  /// the name it was sent with.
   void renamed(String userId, String Function(ChatTarget target) nameIn) {
-    if (!chats.value.any((c) => c.previewAuthorId == userId)) return;
+    if (!chats.value.any((c) => c.previewAuthorId == userId && c.previewAuthor != nameIn(c.target))) return;
     _publish([
       for (final c in chats.value)
         if (c.previewAuthorId == userId)
