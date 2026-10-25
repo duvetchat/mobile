@@ -602,6 +602,7 @@ class FakeRepository implements ChatRepository {
   @override
   Future<String> createWebhook(String spaceId, String roomId, String name) async {
     admin.add('hook+ $roomId $name');
+    _refuse('createWebhook');
     webhookList = [
       ...webhookList,
       SpaceWebhook(id: 'w-$name', roomId: roomId, roomName: 'general', name: name, createdAt: DateTime(2026, 10, 23)),
@@ -612,6 +613,7 @@ class FakeRepository implements ChatRepository {
   @override
   Future<String> resetWebhook(String spaceId, SpaceWebhook webhook) async {
     admin.add('hook~ ${webhook.id}');
+    _refuse('resetWebhook');
     return 'https://api.duvet.chat/api/webhooks/${webhook.id}/fresh';
   }
 

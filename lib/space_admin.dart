@@ -1569,8 +1569,8 @@ class _WebhooksPageState extends State<WebhooksPage> {
     try {
       final url = await repository.createWebhook(widget.spaceId, got.$2 ?? rooms.first.id, got.$1);
       if (mounted) await _showOnce(got.$1, url);
-    } catch (_) {
-      if (mounted) _toast(context, 'Couldn’t create the webhook');
+    } catch (e) {
+      if (mounted) _toast(context, e is ActionFailed ? e.message : 'Couldn’t create the webhook');
     }
     if (mounted) _reload();
   }
@@ -1605,8 +1605,8 @@ class _WebhooksPageState extends State<WebhooksPage> {
         try {
           final url = await repository.resetWebhook(widget.spaceId, w);
           if (mounted) await _showOnce(w.name, url);
-        } catch (_) {
-          if (mounted) _toast(context, 'Couldn’t make a new URL');
+        } catch (e) {
+          if (mounted) _toast(context, e is ActionFailed ? e.message : 'Couldn’t make a new URL');
         }
       case 'delete':
         final sure = await confirmDestructive(

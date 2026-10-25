@@ -772,6 +772,35 @@ void main() {
       expect(repository.profile.value, isNull);
     });
 
+    test('webhooks', () async {
+      await signIn();
+      final hook = SpaceWebhook(
+        id: 'w-1',
+        roomId: 'r-general',
+        roomName: 'general',
+        name: 'CI',
+        createdAt: DateTime(2026, 10, 24),
+      );
+      await refuses(
+        'POST',
+        '/api/spaces/s-1/rooms/r-general/webhooks',
+        () => repository.createWebhook('s-1', 'r-general', 'CI'),
+        reason: 'you don\'t have permission to manage webhooks in this space',
+      );
+      await refuses(
+        'POST',
+        '/api/spaces/s-1/rooms/r-general/webhooks/w-1/reset-token',
+        () => repository.resetWebhook('s-1', hook),
+        status: 404,
+        reason: 'webhook not found',
+      );
+      await refuses(
+        'DELETE',
+        '/api/spaces/s-1/rooms/r-general/webhooks/w-1',
+        () => repository.deleteWebhook('s-1', hook),
+      );
+    });
+
     test('making a Space says why it was refused; an unanswered one is left to say it may have been made', () async {
       await signIn();
       await refuses(

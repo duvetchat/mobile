@@ -2048,19 +2048,19 @@ class DuvetRepository implements ChatRepository {
 
   @override
   Future<String> createWebhook(String spaceId, String roomId, String name) async {
-    final created = await _call((api) => api.createWebhook(spaceId, roomId, name));
+    final created = await _explained((api) => api.createWebhook(spaceId, roomId, name));
     return _webhookUrl(created.webhook.id, created.token);
   }
 
   @override
   Future<String> resetWebhook(String spaceId, SpaceWebhook webhook) async {
-    final token = await _call((api) => api.resetWebhookToken(spaceId, webhook.roomId, webhook.id));
+    final token = await _explained((api) => api.resetWebhookToken(spaceId, webhook.roomId, webhook.id));
     return _webhookUrl(webhook.id, token);
   }
 
   @override
   Future<void> deleteWebhook(String spaceId, SpaceWebhook webhook) =>
-      _call((api) => api.deleteWebhook(spaceId, webhook.roomId, webhook.id));
+      _explained((api) => api.deleteWebhook(spaceId, webhook.roomId, webhook.id));
 
   @override
   Future<SpaceStorage> spaceStorage(String spaceId) async {

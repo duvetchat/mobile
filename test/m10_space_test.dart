@@ -470,6 +470,29 @@ void main() {
     semantics.dispose();
   });
 
+  testWidgets('webhooks: a refusal says the API\'s reason', (tester) async {
+    await pumpSettings(
+      tester,
+      setUp: (r) => r
+        ..refusals['createWebhook'] = 'Webhooks can only be created on text rooms'
+        ..refusals['resetWebhook'] = 'Webhook not found'
+        ..webhookList = [
+          SpaceWebhook(id: 'w-ci', roomId: 'r-general', roomName: 'general', name: 'CI', createdAt: DateTime(2026, 10)),
+        ],
+    );
+    await tapLabel(tester, RegExp(r'^Webhooks'));
+    await tapLabel(tester, 'New webhook');
+    await typeName(tester, 'Deploys');
+    await tapLabel(tester, 'Create');
+    expect(find.text('Webhooks can only be created on text rooms'), findsOneWidget);
+    await tester.pump(const Duration(seconds: 4));
+    await tapLabel(tester, RegExp(r'^CI'));
+    await tapLabel(tester, RegExp(r'^New URL'));
+    expect(find.text('Webhook not found'), findsOneWidget);
+    await tester.pump(const Duration(seconds: 4));
+    semantics.dispose();
+  });
+
   testWidgets('storage: what the files take, where they are kept, the largest', (tester) async {
     await pumpSettings(
       tester,
