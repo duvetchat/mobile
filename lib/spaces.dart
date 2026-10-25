@@ -312,8 +312,8 @@ class _PlusButton extends StatelessWidget {
 Future<String?> Function() pickSpaceIcon = () async =>
     (await ImagePicker().pickImage(source: ImageSource.gallery, maxWidth: 512, imageQuality: 90))?.path;
 
-/// New Space: a live preview of its card, a name (up to 50), what it's about,
-/// and Create.
+/// New Space: a live preview of its card, a name (up to 64 characters), what
+/// it's about (up to 256), and Create.
 Future<void> showCreateSpaceSheet(BuildContext context) async {
   final spaceId = await Navigator.of(
     context,
@@ -335,7 +335,9 @@ class CreateSpacePage extends StatefulWidget {
 }
 
 class _CreateSpacePageState extends State<CreateSpacePage> {
-  static const _max = 50;
+  // The API's columns, which count characters (an emoji is one).
+  static const _maxName = 64;
+  static const _maxAbout = 256;
   final _name = TextEditingController();
   final _about = TextEditingController();
   String? _icon;
@@ -346,6 +348,7 @@ class _CreateSpacePageState extends State<CreateSpacePage> {
   void initState() {
     super.initState();
     _name.addListener(() => setState(() {}));
+    _about.addListener(() => setState(() {}));
   }
 
   @override
@@ -357,7 +360,7 @@ class _CreateSpacePageState extends State<CreateSpacePage> {
 
   Future<void> _create() async {
     final name = _name.text.trim();
-    if (name.isEmpty || name.length > _max) return;
+    if (name.isEmpty || name.runes.length > _maxName || _about.text.trim().runes.length > _maxAbout) return;
     setState(() {
       _creating = true;
       _error = null;
@@ -389,7 +392,8 @@ class _CreateSpacePageState extends State<CreateSpacePage> {
     final tokens = context.duvet;
     final padding = MediaQuery.paddingOf(context);
     final name = _name.text.trim();
-    final tooLong = name.length > _max;
+    final about = _about.text.trim();
+    final tooLong = name.runes.length > _maxName || about.runes.length > _maxAbout;
     return Scaffold(
       backgroundColor: colors.background,
       body: Stack(
@@ -463,8 +467,8 @@ class _CreateSpacePageState extends State<CreateSpacePage> {
                   controller: _name,
                   autofocus: true,
                   textInputAction: TextInputAction.next,
-                  error: tooLong ? 'Up to $_max characters' : null,
-                  helper: '${name.length} of $_max characters',
+                  error: name.runes.length > _maxName ? 'Up to $_maxName characters' : null,
+                  helper: '${name.runes.length} of $_maxName characters',
                 ),
                 const SizedBox(height: 24),
                 DuvetTextField(
@@ -472,6 +476,8 @@ class _CreateSpacePageState extends State<CreateSpacePage> {
                   controller: _about,
                   hint: 'Shown on invites',
                   maxLines: 4,
+                  error: about.runes.length > _maxAbout ? 'Up to $_maxAbout characters' : null,
+                  helper: '${about.runes.length} of $_maxAbout characters',
                 ),
                 const SizedBox(height: 16),
                 Text(

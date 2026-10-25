@@ -3,6 +3,7 @@ import 'package:duvet/data/models.dart';
 import 'package:duvet/deep_links.dart';
 import 'package:duvet/main.dart';
 import 'package:duvet/widgets/chrome.dart';
+import 'package:duvet/widgets/rows.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -139,5 +140,41 @@ void main() {
       await tester.pump(const Duration(seconds: 4));
       semantics.dispose();
     });
+  });
+
+  testWidgets('a new Space takes the API\'s limits: a name of 64 characters, a description of 256', (tester) async {
+    final repository = await pumpApp(tester);
+    await tester.tap(find.descendant(of: find.byType(DuvetTabBar), matching: find.text('Spaces')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.bySemanticsLabel('Join or create a Space').last);
+    await tester.pumpAndSettle();
+    await tester.tap(find.bySemanticsLabel('Create a Space').last);
+    await tester.pumpAndSettle();
+    bool creates() => tester.widget<DuvetButton>(find.widgetWithText(DuvetButton, 'Create Space')).onPressed != null;
+    final name = find.byType(EditableText).first;
+    final about = find.byType(EditableText).last;
+
+    // Counted as the API counts them: an emoji is one.
+    await tester.enterText(name, '${'a' * 63}🎉');
+    await tester.pump();
+    expect(find.text('64 of 64 characters'), findsOneWidget);
+    expect(creates(), isTrue);
+    await tester.enterText(name, 'a' * 65);
+    await tester.pump();
+    expect(find.text('Up to 64 characters'), findsOneWidget);
+    expect(creates(), isFalse);
+
+    await tester.enterText(name, 'Cumbia Collective');
+    await tester.enterText(about, 'b' * 257);
+    await tester.pump();
+    expect(find.text('Up to 256 characters'), findsOneWidget);
+    expect(creates(), isFalse);
+    await tester.enterText(about, 'b' * 256);
+    await tester.pump();
+    expect(find.text('256 of 256 characters'), findsOneWidget);
+    await tester.tap(find.widgetWithText(DuvetButton, 'Create Space'));
+    await tester.pumpAndSettle();
+    expect(repository.created.single, ('Cumbia Collective', 'b' * 256, null));
+    semantics.dispose();
   });
 }
