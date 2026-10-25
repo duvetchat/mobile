@@ -670,6 +670,20 @@ void main() {
       expect(requests.any((r) => r.url.path == '/api/auth/refresh'), isFalse);
     });
 
+    test('a saved session whose renewal the API refuses at launch is forgotten, not opened offline', () async {
+      await store.write((token: 'access-1', sessionToken: 'refresh-1', refreshedAt: null));
+      sessionDead = true;
+      final dead = newRepository();
+      addTearDown(dead.dispose);
+      var ended = 0;
+      dead.signedOut.listen((_) => ended++);
+      expect(await dead.restore(), isFalse);
+      expect(ended, 1);
+      expect(dead.profile.value, isNull);
+      expect(await store.read(), isNull);
+      expect(requests.map((r) => r.url.path), ['/api/auth/refresh']);
+    });
+
     test('back in front, it\'s renewed if that came due while its timer couldn\'t run', () async {
       var now = DateTime(2026, 10, 24, 9);
       await withClock(Clock(() => now), () async {
