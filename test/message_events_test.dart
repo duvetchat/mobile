@@ -448,6 +448,47 @@ void main() {
     expect(repository.profile.value, isNotNull);
   });
 
+  test('a send whose session has ended signs out, once, and is no refusal to show', () async {
+    var renewals = 0;
+    final client = MockClient((request) async {
+      switch ((request.method, request.url.path)) {
+        case ('POST', '/api/auth/login'):
+          return http.Response(jsonEncode({'token': 'access-1', 'session_token': 'refresh-1'}), 200);
+        case ('GET', '/api/users/@me'):
+          return http.Response(jsonEncode({..._user(_me, 'gaby'), 'email_verified': true}), 200);
+        case ('GET', '/api/users/@me/conversations'):
+          return http.Response('[]', 200);
+        // The token has run out, and its renewal is refused.
+        case ('POST', '/api/rooms/r-1/messages'):
+          return http.Response(jsonEncode({'error': 'unauthorized'}), 401);
+        case ('POST', '/api/auth/refresh'):
+          renewals++;
+          return http.Response(jsonEncode({'error': 'invalid session'}), 401);
+      }
+      return http.Response('not found', 404);
+    });
+    final ended = DuvetRepository(
+      store: MemorySessionStore(),
+      recentsStore: MemoryRecentChatsStore(),
+      httpClient: () => client,
+      connectGateway: false,
+      cacheStore: MemoryChatCacheStore(),
+    );
+    addTearDown(ended.dispose);
+    await ended.logIn('gaby@duvet.chat', 'secret');
+    var signedOut = 0;
+    ended.signedOut.listen((_) => signedOut++);
+
+    await expectLater(
+      ended.send(_room, 'hello', nonce: 'n-1'),
+      throwsA(isA<duvet.DuvetAuthException>().having((e) => e.statusCode, 'statusCode', 401)),
+    );
+    await pumpEventQueue();
+    expect(renewals, 1);
+    expect(signedOut, 1);
+    expect(ended.profile.value, isNull);
+  });
+
   test('ChatMessage.updatedBy keeps what the event leaves out, and who wrote it', () {
     final original = ChatMessage(
       id: '7',

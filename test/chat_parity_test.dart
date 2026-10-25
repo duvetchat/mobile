@@ -277,6 +277,20 @@ void main() {
       semantics.dispose();
     });
 
+    testWidgets('in a DM every member pins, and deletes only their own, as the API has it', (tester) async {
+      await openMaya(tester);
+      await longPress(tester, 'Hey! Did you see the new tab bar?');
+      expect(find.bySemanticsLabel('Pin'), findsOneWidget);
+      expect(find.bySemanticsLabel('Delete'), findsNothing);
+      await tester.tapAt(const Offset(10, 10));
+      await tester.pumpAndSettle();
+
+      await longPress(tester, 'Yes, way better than the side panels.');
+      expect(find.bySemanticsLabel('Pin'), findsOneWidget);
+      expect(find.bySemanticsLabel('Delete'), findsOneWidget);
+      semantics.dispose();
+    });
+
     testWidgets('without PinMessages, a room offers neither Pin nor Unpin', (tester) async {
       await openGeneral(
         tester,
@@ -788,6 +802,22 @@ void main() {
       await tapLabel(tester, 'Send /note');
       expect(find.text('Takes 6000 characters at most'), findsOneWidget);
       expect(repository.interactions, hasLength(1));
+      semantics.dispose();
+    });
+
+    testWidgets('an emoji is one character in a command\'s text, as the API counts it', (tester) async {
+      final repository = await openGeneral(tester, setUp: (r) => r.botCommands = const [echo]);
+      await tester.enterText(find.byType(EditableText), '/echo');
+      await tester.pumpAndSettle();
+      await tapLabel(tester, RegExp(r'^/echo'));
+      // Two characters, though four UTF-16 units.
+      await tester.enterText(find.byType(EditableText).last, '😀😀');
+      await tapLabel(tester, 'Send /echo');
+      expect(find.text('Takes 3 characters at least'), findsOneWidget);
+      // Five characters, though ten units.
+      await tester.enterText(find.byType(EditableText).last, '😀😀😀😀😀');
+      await tapLabel(tester, 'Send /echo');
+      expect(repository.interactions, ['command echo text=😀😀😀😀😀']);
       semantics.dispose();
     });
 
