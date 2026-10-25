@@ -1639,7 +1639,8 @@ class DuvetRepository implements ChatRepository {
   @override
   Future<void> moveRoom(String spaceId, String roomId, {String? parentId, required int position}) async {
     final rooms = _spaces[spaceId]?.rooms;
-    final before = {...?rooms};
+    // Each room this moved: where it was, and where it went.
+    final shifted = <String, ({int from, String? fromParent, int to, String? toParent})>{};
     // Moved here as the API moves it, so the list doesn't jump back while
     // the change is on its way; ROOM_REORDER confirms it.
     final moved = rooms?[roomId];
@@ -1666,9 +1667,13 @@ class DuvetRepository implements ChatRepository {
         var p = r.position;
         if (r.parentId == moved.parentId && p > moved.position) p--;
         if (r.parentId == to && p >= at) p++;
-        if (p != r.position) rooms[r.id] = placed(r, p, r.parentId);
+        if (p != r.position) {
+          rooms[r.id] = placed(r, p, r.parentId);
+          shifted[r.id] = (from: r.position, fromParent: r.parentId, to: p, toParent: r.parentId);
+        }
       }
       rooms[roomId] = placed(moved, at, to);
+      shifted[roomId] = (from: moved.position, fromParent: moved.parentId, to: at, toParent: to);
       _publishSpaces();
     }
     try {
@@ -1677,10 +1682,25 @@ class DuvetRepository implements ChatRepository {
       );
       _spaces[spaceId]?.rooms[room.id] = room;
     } catch (_) {
-      if (rooms != null) {
-        rooms
-          ..clear()
-          ..addAll(before);
+      // Back where they were: only the rooms this moved, and only where
+      // nothing else has moved them since.
+      for (final MapEntry(key: id, value: m) in shifted.entries) {
+        final r = rooms?[id];
+        if (r != null && r.position == m.to && r.parentId == m.toParent) {
+          rooms![id] = duvet.GatewayRoom(
+            id: r.id,
+            spaceId: r.spaceId,
+            parentId: m.fromParent,
+            type: r.type,
+            name: r.name,
+            description: r.description,
+            position: m.from,
+            nsfw: r.nsfw,
+            createdAt: r.createdAt,
+            updatedAt: r.updatedAt,
+            deletedAt: r.deletedAt,
+          );
+        }
       }
       rethrow;
     } finally {

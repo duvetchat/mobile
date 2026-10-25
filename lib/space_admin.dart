@@ -257,21 +257,32 @@ class AdminPage extends StatelessWidget {
               left: 0,
               right: 0,
               bottom: 0,
-              // The list fades out under the button rather than ending at a
-              // bar's edge.
-              child: DecoratedBox(
-                decoration: BoxDecoration(
-                  gradient: LinearGradient(
-                    begin: Alignment.topCenter,
-                    end: Alignment.bottomCenter,
-                    colors: [context.theme.colors.background.withValues(alpha: 0), context.theme.colors.background],
-                    stops: const [0, 0.45],
+              child: Stack(
+                children: [
+                  // The list fades out under the button rather than ending at
+                  // a bar's edge; rows show through, and take taps, beside it.
+                  Positioned.fill(
+                    child: IgnorePointer(
+                      child: DecoratedBox(
+                        decoration: BoxDecoration(
+                          gradient: LinearGradient(
+                            begin: Alignment.topCenter,
+                            end: Alignment.bottomCenter,
+                            colors: [
+                              context.theme.colors.background.withValues(alpha: 0),
+                              context.theme.colors.background,
+                            ],
+                            stops: const [0, 0.45],
+                          ),
+                        ),
+                      ),
+                    ),
                   ),
-                ),
-                child: Padding(
-                  padding: EdgeInsets.fromLTRB(16, 24, 16, 16 + padding.bottom),
-                  child: Center(child: bottom),
-                ),
+                  Padding(
+                    padding: EdgeInsets.fromLTRB(16, 24, 16, 16 + padding.bottom),
+                    child: Center(child: bottom),
+                  ),
+                ],
               ),
             ),
           Positioned(

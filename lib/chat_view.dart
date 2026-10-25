@@ -150,6 +150,9 @@ class _ChatViewState extends State<ChatView> {
   /// then [_closing] it closes up.
   final _vanishing = <String>{};
   final _closing = <String>{};
+
+  /// Messages the user deleted, from the confirming to the list closing up.
+  final _deleting = <String>{};
   String? _flash;
 
   // The chat is read where the reader sees it, as the desktop acks it: with
@@ -462,7 +465,7 @@ class _ChatViewState extends State<ChatView> {
           _applyUpdate(message);
         case MessageDeleted(:final messageId):
           // One the user deleted is going to dust: that takes it away after.
-          if (!_vanishing.contains(messageId)) _closeUp(messageId);
+          if (!_deleting.contains(messageId)) _closeUp(messageId);
           if (_editing?.id == messageId) _stopEditing();
         case MessagePinned(:final messageId, :final pinned):
           final i = _entries.indexWhere((e) => e.message.id == messageId);
@@ -956,37 +959,43 @@ class _ChatViewState extends State<ChatView> {
       where: _where,
     );
     if (confirmed != true || !mounted) return;
-    // Once the sheet is gone and the keyboard down, so the list stands still
-    // under the dust.
-    await Future<void>.delayed(DuvetTokens.panelOut);
-    for (var t = 0; t < 12 && mounted && MediaQuery.viewInsetsOf(context).bottom > 0; t++) {
-      await Future<void>.delayed(const Duration(milliseconds: 50));
-    }
-    if (!mounted) return;
-    final i = _entries.indexWhere((e) => e.message.id == m.id);
-    if (i < 0) return;
-    final removed = _entries[i];
+    // Asked for at once, so leaving the chat as the sheet closes can't lose
+    // it; its MESSAGE_DELETE waits for the dust.
+    _deleting.add(m.id);
     final deleted = _repository.delete(widget.target, m.id).then((_) => true, onError: (_) => false);
-    // Its place stays, empty, while the dust goes; then the list closes up.
-    if (_keys[m.id] case final key?) {
-      if (disintegrate(context, key) case final dust?) {
-        setState(() => _vanishing.add(m.id));
-        // Not for ever, should its picture never be read.
-        await dust.timeout(const Duration(milliseconds: 2500), onTimeout: () {});
-        // The dust gone, the messages around ease together.
-        if (mounted) setState(() => _closing.add(m.id));
-        await Future<void>.delayed(_Vanish.closing);
-        _vanishing.remove(m.id);
-        _closing.remove(m.id);
-        if (!mounted) return;
+    try {
+      // Once the sheet is gone and the keyboard down, so the list stands
+      // still under the dust.
+      await Future<void>.delayed(DuvetTokens.panelOut);
+      for (var t = 0; t < 12 && mounted && MediaQuery.viewInsetsOf(context).bottom > 0; t++) {
+        await Future<void>.delayed(const Duration(milliseconds: 50));
       }
-    }
-    setState(() => _entries.removeWhere((e) => e.message.id == m.id));
-    if (await deleted) {
-      _announce('Message deleted');
-    } else if (mounted) {
-      setState(() => _entries.insert(min(i, _entries.length), removed));
-      _toast('Couldn’t delete the message');
+      if (!mounted) return;
+      final i = _entries.indexWhere((e) => e.message.id == m.id);
+      if (i < 0) return;
+      final removed = _entries[i];
+      // Its place stays, empty, while the dust goes; then the list closes up.
+      if (_keys[m.id] case final key?) {
+        if (disintegrate(context, key) case final dust?) {
+          setState(() => _vanishing.add(m.id));
+          await dust;
+          // The dust gone, the messages around ease together.
+          if (mounted) setState(() => _closing.add(m.id));
+          await Future<void>.delayed(_Vanish.closing);
+          _vanishing.remove(m.id);
+          _closing.remove(m.id);
+          if (!mounted) return;
+        }
+      }
+      setState(() => _entries.removeWhere((e) => e.message.id == m.id));
+      if (await deleted) {
+        _announce('Message deleted');
+      } else if (mounted) {
+        setState(() => _entries.insert(min(i, _entries.length), removed));
+        _toast('Couldn’t delete the message');
+      }
+    } finally {
+      _deleting.remove(m.id);
     }
   }
 
