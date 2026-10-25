@@ -1,6 +1,7 @@
 import 'dart:io';
 import 'dart:ui' as ui;
 
+import 'package:duvet/account.dart';
 import 'package:duvet/data/emoji_catalog.dart';
 import 'package:duvet/data/models.dart';
 import 'package:duvet/deep_links.dart';
@@ -12,6 +13,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:forui/forui.dart';
 
 import 'support/fake_repository.dart';
 
@@ -380,8 +382,10 @@ void main() {
     await useCrop(tester);
     await typeName(tester, 'party time!');
     await tapLabel(tester, 'Add');
-    // A square of the picture's full height, where the frame starts.
-    expect(squares.single, (path, (x: 0.0, y: 0.0, w: 200.0, h: 200.0), 128));
+    // A square of the picture's full height, from its middle.
+    final (picked, crop, side) = squares.single;
+    expect((picked, side), (path, 128));
+    expect([crop.x, crop.y, crop.w, crop.h].map((v) => v.round()), [100, 0, 200, 200]);
     expect(repository.admin.last, 'emoji+ party time! /squares/128.png');
     await tapLabel(tester, ':party time!:');
     await tapLabel(tester, 'Rename');
@@ -402,6 +406,44 @@ void main() {
     expect(squares.last.$3, 320);
     expect(repository.admin.last, 'sticker+ Wave /squares/320.png');
     semantics.dispose();
+  });
+
+  testWidgets('the cropper starts centered, as the desktop\'s: a square, a banner', (tester) async {
+    final path = await picture(tester);
+    final crops = <double, CropRect?>{};
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: Duvet.material(Brightness.light),
+        home: FTheme(
+          data: Duvet.theme(Brightness.light),
+          child: Builder(
+            builder: (context) => Scaffold(
+              body: Column(
+                children: [
+                  for (final aspect in [1.0, 3.0])
+                    TextButton(
+                      onPressed: () async => crops[aspect] = await Navigator.of(context).push<CropRect>(
+                        MaterialPageRoute(
+                          builder: (_) => CropPage(path: path, aspect: aspect),
+                        ),
+                      ),
+                      child: Text('Crop $aspect'),
+                    ),
+                ],
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+    for (final aspect in [1.0, 3.0]) {
+      await tester.tap(find.text('Crop $aspect'));
+      await useCrop(tester);
+    }
+    List<int> rounded(CropRect? c) => [c!.x, c.y, c.w, c.h].map((v) => v.round()).toList();
+    // 400 × 200: the middle square, and the middle third of its height.
+    expect(rounded(crops[1.0]), [100, 0, 200, 200]);
+    expect(rounded(crops[3.0]), [0, 33, 400, 133]);
   });
 
   testWidgets('a square is what the frame shows, drawn at its size', (tester) async {

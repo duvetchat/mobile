@@ -891,6 +891,7 @@ class CropPage extends StatefulWidget {
 class _CropPageState extends State<CropPage> {
   final _transform = TransformationController();
   Size? _image;
+  bool _centered = false;
 
   @override
   void initState() {
@@ -944,6 +945,16 @@ class _CropPageState extends State<CropPage> {
           final frame = Size(width, width / widget.aspect);
           // The picture covers the frame at scale 1.
           final scale = image == null ? 1.0 : math.max(frame.width / image.width, frame.height / image.height);
+          if (image != null && !_centered) {
+            // From its middle, as the desktop's editor starts: set before the
+            // viewer that reads it is first built.
+            _centered = true;
+            _transform.value = Matrix4.translationValues(
+              -(image.width * scale - frame.width) / 2,
+              -(image.height * scale - frame.height) / 2,
+              0,
+            );
+          }
           return Stack(
             children: [
               Center(
