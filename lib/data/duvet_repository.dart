@@ -1205,8 +1205,11 @@ class DuvetRepository implements ChatRepository {
 
   @override
   Future<String> createSpace(String name, {String? description, String? iconPath}) async {
-    // Unanswered, it may have been made: the page says so.
-    final created = await _explained((api) => api.createSpace(name, description: description), keepTimeout: true);
+    // Unanswered, it may have been made, and trying again would make another.
+    final created = await _explained(
+      (api) => api.createSpace(name, description: description),
+      unanswered: 'Duvet didn’t answer. Check Spaces before trying again: it may have been made.',
+    );
     final id = created.id;
     // Shown at once: the gateway's SPACE_CREATE, with the rest, may come later.
     if (!_spaces.containsKey(id)) {
@@ -1291,10 +1294,11 @@ class DuvetRepository implements ChatRepository {
 
   /// Runs a request whose refusal the user should read: the API's reason, as
   /// the desktop's `getApiError` shows it, or that Duvet couldn't be reached.
-  /// A 401 is the session's, which [_call] renews or ends. With
-  /// [keepTimeout], an unanswered request stays a [TimeoutException], for a
-  /// caller to say it may have gone through.
-  Future<T> _explained<T>(Future<T> Function(duvet.RestClient api) request, {bool keepTimeout = false}) async {
+  /// A 401 is the session's, which [_call] renews or ends. With [unanswered],
+  /// a request whose answer never came says that instead: it timed out, or
+  /// its connection failed, before or after it reached the server, which the
+  /// HTTP client doesn't tell apart. It may have gone through.
+  Future<T> _explained<T>(Future<T> Function(duvet.RestClient api) request, {String? unanswered}) async {
     try {
       return await _call(request);
     } on duvet.DuvetApiException catch (e) {
@@ -1303,22 +1307,22 @@ class DuvetRepository implements ChatRepository {
       if (_serverReason(e) case final reason?) throw ActionFailed(reason);
       rethrow;
     } on TimeoutException {
-      if (keepTimeout) rethrow;
-      throw const ActionFailed('Duvet didn’t answer. Check your connection and try again.');
+      throw ActionFailed(unanswered ?? 'Duvet didn’t answer. Check your connection and try again.');
     } on http.RequestAbortedException {
       rethrow;
     } on SocketException catch (e) {
-      throw _offline(e);
+      throw _offline(e, unanswered);
     } on http.ClientException catch (e) {
-      throw _offline(e);
+      throw _offline(e, unanswered);
     }
   }
 
   // The server out of reach: the socket's errors, and the HTTP client's for
-  // them. Not other I/O, a file that can't be read, say.
-  static ActionFailed _offline(Object e) {
+  // them. Not other I/O, a file that can't be read, say. A request that may
+  // have gone through says [unanswered] instead.
+  static ActionFailed _offline(Object e, String? unanswered) {
     debugPrint('offline: $e');
-    return const ActionFailed('No connection. Check it and try again.');
+    return ActionFailed(unanswered ?? 'No connection. Check it and try again.');
   }
 
   // The `error` of an API error's JSON body, if it has one.

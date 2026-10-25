@@ -986,7 +986,7 @@ void main() {
       );
     });
 
-    test('making a Space says why it was refused; an unanswered one is left to say it may have been made', () async {
+    test('making a Space says why it was refused, and that it may have been made when no answer came', () async {
       await signIn();
       await refuses(
         'POST',
@@ -995,8 +995,27 @@ void main() {
         status: 400,
         reason: 'you cannot be in more than 100 spaces',
       );
-      routes[('POST', '/api/spaces')] = (_) => throw TimeoutException('no answer');
-      await expectLater(repository.createSpace('Testing lair'), throwsA(isA<TimeoutException>()));
+      // Unanswered, or its connection lost after the request left (as the
+      // HTTP client reports a reset, or a connection closed before the
+      // answer): it may have been made, so trying again could make another.
+      for (final unanswered in [
+        TimeoutException('no answer'),
+        const SocketException('Connection reset by peer'),
+        http.ClientException('Connection closed before full header was received'),
+      ]) {
+        routes[('POST', '/api/spaces')] = (_) => throw unanswered;
+        await expectLater(
+          repository.createSpace('Testing lair'),
+          throwsA(
+            isA<ActionFailed>().having(
+              (e) => e.message,
+              'message',
+              'Duvet didn’t answer. Check Spaces before trying again: it may have been made.',
+            ),
+          ),
+          reason: '$unanswered',
+        );
+      }
     });
   });
 

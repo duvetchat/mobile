@@ -377,8 +377,8 @@ class _CreateSpacePageState extends State<CreateSpacePage> {
       if (mounted) {
         setState(
           () => _error = switch (e) {
-            TimeoutException() => 'Duvet didn’t answer. Check Spaces before trying again: it may have been made.',
-            // The API's reason: the 100-Space limit, say.
+            // The API's reason (the 100-Space limit, say), or that no answer
+            // came and the Space may have been made.
             ActionFailed(:final message) => message,
             _ => 'Couldn’t create the Space',
           },
