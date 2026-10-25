@@ -229,7 +229,8 @@ class ChatCache {
       debugPrint('cache: $e');
       return;
     }
-    for (final key in keys) {
+    // A page whose first write is under way isn't listed yet: it takes its turn after that write too.
+    for (final key in {...keys, ..._writes.keys}) {
       if (clears != _clears) return;
       if (!key.startsWith(_page)) continue;
       final chatId = key.substring(_page.length);

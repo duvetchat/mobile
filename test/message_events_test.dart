@@ -555,6 +555,37 @@ void main() {
         [('5', 'Maya O.'), ('6', 'Maya O.')],
       );
     });
+
+    test('a page being written for the first time as the pages change is changed once written', () async {
+      final store = _HeldWrites();
+      final kept = ChatCache(store);
+      // Its first write is under way when her new name comes, so the store doesn't list it yet.
+      final writing = store.hold = Completer<void>();
+      kept.savePage('c-1', [_keptMessage('5', _maya, 'Maya')]);
+      await Future<void>.delayed(const Duration(milliseconds: 700));
+      expect(store.data, isEmpty);
+      final changing = kept.changeMessages(_maya, (_, m) => m.changedBy(const AuthorChanged(_maya, name: 'Maya O.')));
+      await pumpEventQueue();
+      writing.complete();
+      await changing;
+      await pumpEventQueue();
+      expect([for (final m in (await kept.loadPage('c-1'))!) m.authorName], ['Maya O.']);
+    });
+
+    test('a new session forgets the names given: the same change applies again after READY', () async {
+      final events = await listen(_dm);
+      repository.handleEvent(renamed());
+      repository.handleEvent(renamed());
+      await pumpEventQueue();
+      expect(events.whereType<AuthorChanged>().length, 1);
+      expect(cache.listed, 1);
+      // A change missed while the socket was down may repeat one given before it.
+      repository.handleEvent(_event('READY', {'user': _user(_me, 'gaby'), 'sessionToken': 'ws'}));
+      repository.handleEvent(renamed());
+      await pumpEventQueue();
+      expect(events.whereType<AuthorChanged>().length, 2);
+      expect(cache.listed, 2);
+    });
   });
 
   group('bots\' answers', () {
