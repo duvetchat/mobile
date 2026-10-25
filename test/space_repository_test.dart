@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
@@ -769,6 +770,19 @@ void main() {
       await expectLater(repository.createRole('s-1', 'Hosts'), throwsA(isA<duvet.DuvetAuthException>()));
       expect(signedOut, 1);
       expect(repository.profile.value, isNull);
+    });
+
+    test('making a Space says why it was refused; an unanswered one is left to say it may have been made', () async {
+      await signIn();
+      await refuses(
+        'POST',
+        '/api/spaces',
+        () => repository.createSpace('Testing lair'),
+        status: 400,
+        reason: 'you cannot be in more than 100 spaces',
+      );
+      routes[('POST', '/api/spaces')] = (_) => throw TimeoutException('no answer');
+      await expectLater(repository.createSpace('Testing lair'), throwsA(isA<TimeoutException>()));
     });
   });
 

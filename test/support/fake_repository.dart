@@ -160,6 +160,7 @@ class FakeRepository implements ChatRepository {
   @override
   Future<String> createSpace(String name, {String? description, String? iconPath}) async {
     created.add((name, description, iconPath));
+    _refuse('createSpace');
     return 's-new';
   }
 

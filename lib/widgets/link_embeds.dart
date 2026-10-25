@@ -180,9 +180,14 @@ class _InviteCardState extends State<InviteCard> {
       if (!mounted) return;
       setState(() => _joined = spaceId);
       showFToast(context: context, title: Text('You joined ${invite.spaceName}'), duration: const Duration(seconds: 3));
-    } catch (_) {
+    } catch (e) {
+      // The API's reason, as the desktop shows it.
       if (mounted) {
-        showFToast(context: context, title: const Text('Couldn’t join'), duration: const Duration(seconds: 3));
+        showFToast(
+          context: context,
+          title: Text(e is ActionFailed ? e.message : 'Couldn’t join'),
+          duration: const Duration(seconds: 3),
+        );
       }
     } finally {
       if (mounted) setState(() => _joining = false);

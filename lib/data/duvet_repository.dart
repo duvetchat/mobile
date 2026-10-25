@@ -1206,7 +1206,8 @@ class DuvetRepository implements ChatRepository {
 
   @override
   Future<String> createSpace(String name, {String? description, String? iconPath}) async {
-    final created = await _call((api) => api.createSpace(name, description: description));
+    // Unanswered, it may have been made: the page says so.
+    final created = await _explained((api) => api.createSpace(name, description: description), keepTimeout: true);
     final id = created.id;
     // Shown at once: the gateway's SPACE_CREATE, with the rest, may come later.
     if (!_spaces.containsKey(id)) {
@@ -1291,8 +1292,10 @@ class DuvetRepository implements ChatRepository {
 
   /// Runs a request whose refusal the user should read: the API's reason, as
   /// the desktop's `getApiError` shows it, or that Duvet couldn't be reached.
-  /// A 401 is the session's, which [_call] renews or ends.
-  Future<T> _explained<T>(Future<T> Function(duvet.RestClient api) request) async {
+  /// A 401 is the session's, which [_call] renews or ends. With
+  /// [keepTimeout], an unanswered request stays a [TimeoutException], for a
+  /// caller to say it may have gone through.
+  Future<T> _explained<T>(Future<T> Function(duvet.RestClient api) request, {bool keepTimeout = false}) async {
     try {
       return await _call(request);
     } on duvet.DuvetApiException catch (e) {
@@ -1301,6 +1304,7 @@ class DuvetRepository implements ChatRepository {
       if (_serverReason(e) case final reason?) throw ActionFailed(reason);
       rethrow;
     } on TimeoutException {
+      if (keepTimeout) rethrow;
       throw const ActionFailed('Duvet didn’t answer. Check your connection and try again.');
     } on http.RequestAbortedException {
       rethrow;

@@ -140,6 +140,50 @@ void main() {
       await tester.pump(const Duration(seconds: 4));
       semantics.dispose();
     });
+
+    testWidgets('joining from an invite card in a chat', (tester) async {
+      final repository = await pumpApp(
+        tester,
+        setUp: (r) {
+          r.invites['k7Qe2m'] = const InvitePreview(code: 'k7Qe2m', spaceId: 's-x', spaceName: 'Fieldwork');
+          r.refusals['joinInvite'] = 'You cannot be in more than 100 spaces';
+          r.history['r-general'] = [
+            FakeRepository.message(
+              'inv',
+              author: FakeRepository.maya,
+              name: 'Maya',
+              text: 'https://duvet.chat/invite?code=k7Qe2m',
+            ),
+          ];
+        },
+      );
+      await openSpaces(tester);
+      await tester.tap(find.text('Design Guild'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('# general'));
+      await tester.pumpAndSettle();
+      await tapLabel(tester, 'Join Fieldwork');
+      expect(repository.joined, ['k7Qe2m']);
+      expect(find.text('You cannot be in more than 100 spaces'), findsOneWidget);
+      await tester.pump(const Duration(seconds: 4));
+      semantics.dispose();
+    });
+
+    testWidgets('making a Space', (tester) async {
+      final repository = await pumpApp(
+        tester,
+        setUp: (r) => r.refusals['createSpace'] = 'You cannot be in more than 100 spaces',
+      );
+      await openSpaces(tester);
+      await tapLabel(tester, 'Join or create a Space');
+      await tapLabel(tester, 'Create a Space');
+      await tester.enterText(find.byType(EditableText).first, 'Cumbia Collective');
+      await tester.pump();
+      await tapLabel(tester, 'Create Space');
+      expect(repository.created.single.$1, 'Cumbia Collective');
+      expect(find.text('You cannot be in more than 100 spaces'), findsOneWidget);
+      semantics.dispose();
+    });
   });
 
   testWidgets('a new Space takes the API\'s limits: a name of 64 characters, a description of 256', (tester) async {
