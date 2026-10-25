@@ -439,13 +439,12 @@ class DuvetRepository implements ChatRepository {
   }
 
   // From the timer, or the app coming to the front: a refusal has ended the
-  // session already.
-  void _renewQuietly(Duration after) =>
-      unawaited(_renewIfDue(after).catchError((Object e) => debugPrint('session: $e')));
+  // session already. Settles once the renewal, if one was due, is done.
+  Future<void> _renewQuietly(Duration after) => _renewIfDue(after).catchError((Object e) => debugPrint('session: $e'));
 
   @override
   void cameToFront() {
-    _renewQuietly(renewInFrontAfter);
+    final renewing = _renewQuietly(renewInFrontAfter);
     if (status.value == LiveStatus.online) return;
     // Cut off while away. Connecting goes again now, not at the end of its
     // wait, and asks the API about the session, which may have ended
@@ -455,7 +454,10 @@ class DuvetRepository implements ChatRepository {
       unawaited(_comeBack());
     } else {
       _checkSession();
-      _gateway?.retryNow();
+      // Once the renewal is done, as [_start] orders them: it revokes the
+      // access token an attempt meanwhile would connect with, which the
+      // gateway would refuse, and the wait after it grow.
+      unawaited(renewing.whenComplete(() => _gateway?.retryNow()));
     }
   }
 

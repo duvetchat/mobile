@@ -5,6 +5,7 @@
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:clock/clock.dart';
 import 'package:duvet/data/cache.dart';
 import 'package:duvet/data/call_history.dart';
 import 'package:duvet/data/duvet_repository.dart';
@@ -64,6 +65,13 @@ class _Gateway {
   int? refuseWith;
   int refused = 0;
 
+  /// The access tokens it no longer knows, which it refuses at the upgrade
+  /// with a 401: the API revoked them as it renewed the session.
+  final revoked = <String>{};
+
+  /// The access token each upgrade carried, refused or not.
+  final upgrades = <String?>[];
+
   /// The identifies, in order, and every message by the socket it came on
   /// (counted from 1) and its type.
   final identified = <Map<String, dynamic>>[];
@@ -85,7 +93,9 @@ class _Gateway {
       await request.response.close();
       return;
     }
-    if (refuseWith case final status?) {
+    final token = request.uri.queryParameters['token'];
+    upgrades.add(token);
+    if (revoked.contains(token) ? HttpStatus.unauthorized : refuseWith case final status?) {
       refused++;
       request.response.statusCode = status;
       await request.response.close();
@@ -163,6 +173,16 @@ void main() {
     final api = MockClient((request) async {
       requests.add('${request.method} ${request.url.path}');
       if (sessionDead && request.url.path != '/api/auth/login') return http.Response('', 401);
+      if (request.url.path == '/api/auth/refresh') {
+        // The session's renewed at once, which revokes the old access token;
+        // the answer takes a moment.
+        gateway.revoked.add('access-1');
+        await Future<void>.delayed(const Duration(milliseconds: 300));
+        return http.Response(jsonEncode({'token': 'access-2', 'session_token': 'refresh-2'}), 200);
+      }
+      if (gateway.revoked.contains(request.headers['Authorization']?.replaceFirst('Bearer ', ''))) {
+        return http.Response('', 401);
+      }
       final json = switch (request.url.path) {
         '/api/auth/login' => {'token': 'access-1', 'session_token': 'refresh-1'},
         '/api/users/@me' => {'id': _me, 'username': 'gaby', 'custom': '', 'created_at': _at, 'updated_at': _at},
@@ -265,6 +285,21 @@ void main() {
     repository.cameToFront();
     // Not after the 2 seconds and more the next wait takes.
     await _until(() => gateway.refused == 2, within: const Duration(milliseconds: 600));
+  });
+
+  test('back in front while reconnecting with tokens an hour old, the attempt waits for their renewal', () async {
+    await signIn();
+    gateway.refuseWith = 503;
+    await gateway.drop();
+    await _until(() => gateway.refused == 1);
+    gateway.refuseWith = null;
+    final attempts = gateway.upgrades.length;
+
+    withClock(Clock.fixed(DateTime.now().add(const Duration(hours: 2))), repository.cameToFront);
+    await _until(() => repository.status.value == LiveStatus.online);
+    // With the new token: the old one, which the renewal revokes as it goes,
+    // would be refused, and the next wait take longer.
+    expect(gateway.upgrades.skip(attempts), ['access-2']);
   });
 
   test(
