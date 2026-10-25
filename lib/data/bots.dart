@@ -65,6 +65,10 @@ class UiComponent {
   final int? maxValues;
   final List<ComponentOption> options;
   final List<String> defaultValues;
+
+  /// A room select's room types (1 text, 2 voice, 3 category); empty takes
+  /// any.
+  final List<int> roomTypes;
   final List<UiComponent> children;
   final UiComponent? accessory;
 
@@ -97,6 +101,7 @@ class UiComponent {
     this.maxValues,
     this.options = const [],
     this.defaultValues = const [],
+    this.roomTypes = const [],
     this.children = const [],
     this.accessory,
     this.input,
@@ -135,6 +140,10 @@ class UiComponent {
       defaultValues: [
         for (final d in j['default_values'] as List? ?? const [])
           if (d is Map) '${d['id']}',
+      ],
+      roomTypes: [
+        for (final t in j['room_types'] as List? ?? const [])
+          if (t is int) t,
       ],
       children: [
         for (final c in j['components'] as List? ?? const [])
@@ -205,6 +214,9 @@ class BotCommandOption {
   final num? maxValue;
   final int? minLength;
   final int? maxLength;
+
+  /// A room option's room types, as a select's; empty takes any.
+  final List<int> roomTypes;
   const BotCommandOption({
     required this.type,
     required this.name,
@@ -215,6 +227,7 @@ class BotCommandOption {
     this.maxValue,
     this.minLength,
     this.maxLength,
+    this.roomTypes = const [],
   });
 }
 

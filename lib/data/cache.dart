@@ -249,6 +249,9 @@ Map<String, Object?> messageToJson(ChatMessage m) => {
   'pinned': m.pinned,
   'fromBot': m.fromBot,
   'fromWebhook': m.fromWebhook,
+  'webhookId': ?m.webhookId,
+  if (m.isLoading) 'isLoading': true,
+  if (m.isComponentsV2) 'isComponentsV2': true,
   if (m.rawComponents.isNotEmpty) 'components': m.rawComponents,
   'stickerUrl': m.stickerUrl,
   'attachments': [
@@ -268,7 +271,13 @@ Map<String, Object?> messageToJson(ChatMessage m) => {
       {'title': e.title, 'description': e.description, 'url': e.url, 'imageUrl': e.imageUrl, 'provider': e.provider},
   ],
   if (m.reply case final r?)
-    'reply': {'messageId': r.messageId, 'authorId': r.authorId, 'authorName': r.authorName, 'content': r.content},
+    'reply': {
+      'messageId': r.messageId,
+      'authorId': r.authorId,
+      'authorName': r.authorName,
+      'content': r.content,
+      if (r.mentionAuthor) 'mentionAuthor': true,
+    },
   'reactions': [
     for (final r in m.reactions)
       {
@@ -292,6 +301,9 @@ ChatMessage messageFromJson(Map<String, Object?> j) => ChatMessage(
   pinned: j['pinned'] as bool? ?? false,
   fromBot: j['fromBot'] as bool? ?? false,
   fromWebhook: j['fromWebhook'] as bool? ?? false,
+  webhookId: j['webhookId'] as String?,
+  isLoading: j['isLoading'] as bool? ?? false,
+  isComponentsV2: j['isComponentsV2'] as bool? ?? false,
   components: componentsFromJson([
     for (final c in j['components'] as List? ?? const [])
       if (c is Map<String, dynamic>) c,
@@ -329,6 +341,7 @@ ChatMessage messageFromJson(Map<String, Object?> j) => ChatMessage(
       authorId: r['authorId'] as String?,
       authorName: r['authorName'] as String,
       content: r['content'] as String,
+      mentionAuthor: r['mentionAuthor'] as bool? ?? false,
     ),
     _ => null,
   },
