@@ -737,11 +737,38 @@ void main() {
 
     test('without a connection, it says so', () async {
       await signIn();
+      const offline = 'No connection. Check it and try again.';
       routes[('POST', '/api/invites/k7Qe2m/join')] = (_) => throw const SocketException('no network');
       await expectLater(
         repository.joinInvite('k7Qe2m'),
-        throwsA(isA<ActionFailed>().having((e) => e.message, 'message', 'No connection. Check it and try again.')),
+        throwsA(isA<ActionFailed>().having((e) => e.message, 'message', offline)),
       );
+      // As the HTTP client reports a dropped connection.
+      routes[('POST', '/api/invites/k7Qe2m/join')] = (_) => throw http.ClientException('Connection closed');
+      await expectLater(
+        repository.joinInvite('k7Qe2m'),
+        throwsA(isA<ActionFailed>().having((e) => e.message, 'message', offline)),
+      );
+    });
+
+    test('a file the phone can\'t read isn\'t taken for a lost connection', () async {
+      await signIn();
+      await expectLater(
+        repository.addAsset('s-1', AssetKind.emoji, 'party', '$upload.gone'),
+        throwsA(isA<FileSystemException>()),
+      );
+    });
+
+    test('a 401 is the session\'s: refused again, it signs out', () async {
+      await signIn();
+      var signedOut = 0;
+      final sub = repository.signedOut.listen((_) => signedOut++);
+      addTearDown(sub.cancel);
+      routes[('POST', '/api/spaces/s-1/roles')] = (_) => http.Response('{"error":"unauthorized"}', 401);
+      routes[('POST', '/api/auth/refresh')] = (_) => http.Response('{"error":"session expired or invalid"}', 401);
+      await expectLater(repository.createRole('s-1', 'Hosts'), throwsA(isA<duvet.DuvetAuthException>()));
+      expect(signedOut, 1);
+      expect(repository.profile.value, isNull);
     });
   });
 

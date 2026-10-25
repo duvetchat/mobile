@@ -1302,10 +1302,20 @@ class DuvetRepository implements ChatRepository {
       rethrow;
     } on TimeoutException {
       throw const ActionFailed('Duvet didn’t answer. Check your connection and try again.');
-    } on IOException catch (e) {
-      debugPrint('offline: $e');
-      throw const ActionFailed('No connection. Check it and try again.');
+    } on http.RequestAbortedException {
+      rethrow;
+    } on SocketException catch (e) {
+      throw _offline(e);
+    } on http.ClientException catch (e) {
+      throw _offline(e);
     }
+  }
+
+  // The server out of reach: the socket's errors, and the HTTP client's for
+  // them. Not other I/O, a file that can't be read, say.
+  static ActionFailed _offline(Object e) {
+    debugPrint('offline: $e');
+    return const ActionFailed('No connection. Check it and try again.');
   }
 
   // The `error` of an API error's JSON body, if it has one.
