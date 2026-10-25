@@ -569,6 +569,24 @@ void main() {
     semantics.dispose();
   });
 
+  testWidgets('a GIF that can\'t be read says so, instead of a cropper that closes without a word', (tester) async {
+    final dir = Directory.systemTemp.createTempSync('duvet_gif');
+    addTearDown(() => dir.deleteSync(recursive: true));
+    final broken = '${dir.path}/broken.gif';
+    // A GIF's header and screen, then nothing a decoder can read.
+    File(broken).writeAsBytesSync([...'GIF89a'.codeUnits, 64, 0, 64, 0, 1, 2, 3]);
+    pickAssetImage = () async => broken;
+    final repository = await pumpSettings(tester);
+    await tapLabel(tester, RegExp(r'^Emojis and stickers'));
+    await tester.tap(find.bySemanticsLabel('Add emoji').last);
+    await waitFor(tester, find.text('Couldn’t read this GIF'));
+    expect(find.text('Couldn’t read this GIF'), findsOneWidget);
+    expect(find.byType(InteractiveViewer), findsNothing);
+    expect(repository.admin.where((a) => a.startsWith('emoji+')), isEmpty);
+    await tester.pump(const Duration(seconds: 4));
+    semantics.dispose();
+  });
+
   testWidgets('emojis and stickers: each kind by its own permission', (tester) async {
     pickAssetImage = () async => '/tmp/party.png';
     final repository = await pumpSettings(

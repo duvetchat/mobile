@@ -39,9 +39,9 @@ const emojiCap = (bytes: 256 * 1024, side: 512);
 const stickerCap = (bytes: 512 * 1024, side: 1024);
 
 /// A GIF's size as the API reads it (its header's screen, and its bytes),
-/// and whether it moves; null for any other picture, of which only the
-/// header is read.
-Future<({int width, int height, int bytes, bool animated})?> gifAt(String path) async {
+/// whether it moves, and whether it can be read at all; null for any other
+/// picture, of which only the header is read.
+Future<({int width, int height, int bytes, bool animated, bool readable})?> gifAt(String path) async {
   final file = File(path);
   final opened = await file.open();
   final Uint8List header;
@@ -54,19 +54,22 @@ Future<({int width, int height, int bytes, bool animated})?> gifAt(String path) 
   // Its frames tell whether it moves.
   final data = await file.readAsBytes();
   var animated = false;
+  var readable = true;
   try {
     final codec = await ui.instantiateImageCodec(data);
     animated = codec.frameCount > 1;
     codec.dispose();
   } catch (e) {
-    // Taken for a still picture, which goes to the cropper as any other.
+    // The cropper couldn't show it either: the caller says so.
     debugPrint('gif: $e');
+    readable = false;
   }
   return (
     width: header[6] | header[7] << 8,
     height: header[8] | header[9] << 8,
     bytes: data.length,
     animated: animated,
+    readable: readable,
   );
 }
 
@@ -1396,6 +1399,11 @@ class _AssetsPageState extends State<AssetsPage> {
     // picture is.
     final gif = await gifAt(path);
     if (!mounted) return;
+    // The cropper would close on it without a word.
+    if (gif != null && !gif.readable) {
+      _toast(context, 'Couldn’t read this GIF');
+      return;
+    }
     final CropRect? crop;
     if (gif != null && gif.animated && gif.bytes <= cap.bytes && gif.width <= cap.side && gif.height <= cap.side) {
       crop = null;
