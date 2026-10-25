@@ -3,6 +3,7 @@ import 'package:forui/forui.dart';
 
 import '../data/links.dart';
 import '../data/models.dart';
+import '../data/repository.dart';
 import '../data/scope.dart';
 import '../theme.dart';
 import 'avatar.dart';
@@ -27,6 +28,18 @@ List<String> duvetLinksIn(String content) {
 ChatTarget targetOf(MessageLink link) => link.conversationId != null
     ? ConversationTarget(link.conversationId!)
     : RoomTarget(spaceId: link.spaceId!, roomId: link.roomId!);
+
+/// What's said of a link to a room the user can't see, which opens nothing.
+const roomUnavailable = 'That room isn’t available';
+
+/// Whether [link] points into a room its Space doesn't list to the user, one
+/// they can't see (or that's gone): opening it would only fail. A Space not
+/// known yet can't tell.
+bool linksHiddenRoom(ChatRepository repository, MessageLink link) {
+  if (link.conversationId != null) return false;
+  final space = repository.spaces.value.where((s) => s.id == link.spaceId).firstOrNull;
+  return space != null && space.rooms.every((r) => r.id != link.roomId);
+}
 
 /// A link to a message, quoted: where it is, who wrote it, and its text, in
 /// a recess; tapping it jumps there.

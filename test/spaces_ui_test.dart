@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:duvet/data/emoji_catalog.dart';
 import 'package:duvet/data/models.dart';
 import 'package:duvet/deep_links.dart';
@@ -14,6 +16,31 @@ class _NoLinks implements DeepLinkSource {
   @override
   Stream<Uri> get links => const Stream.empty();
 }
+
+class _Links implements DeepLinkSource {
+  final controller = StreamController<Uri>.broadcast();
+  @override
+  Stream<Uri> get links => controller.stream;
+}
+
+// A Space whose IDs links can name: they take UUIDs.
+const _club = '5b5b5b5b-0000-4000-8000-000000000001';
+const _general = '5b5b5b5b-0000-4000-8000-000000000002';
+const _secret = '5b5b5b5b-0000-4000-8000-000000000003';
+const _linked = '5b5b5b5b-0000-4000-8000-000000000004';
+
+void _club1(FakeRepository r) => r.spaces.value = const [
+  Space(
+    id: _club,
+    name: 'Paper Club',
+    sections: [
+      RoomSection(
+        name: null,
+        rooms: [Room(id: _general, spaceId: _club, name: 'general', kind: RoomKind.text, position: 0)],
+      ),
+    ],
+  ),
+];
 
 /// Spaces as the desktop has them: what the user may see and do in each.
 void main() {
@@ -37,6 +64,57 @@ void main() {
     await tester.pumpAndSettle();
     return repository;
   }
+
+  group('a link to a room the user can\'t see says it isn\'t available, and opens nothing', () {
+    testWidgets('from the system', (tester) async {
+      final links = _Links();
+      DeepLinkSource.instance = links;
+      addTearDown(() => DeepLinkSource.instance = _NoLinks());
+      await pumpApp(tester, setUp: _club1);
+      links.controller.add(Uri.parse('https://duvet.chat/channels/$_club/$_secret/$_linked'));
+      await tester.pumpAndSettle();
+      expect(find.text('That room isn’t available'), findsOneWidget);
+      expect(find.text('# general'), findsNothing);
+      await tester.pump(const Duration(seconds: 4));
+
+      // One the user sees opens.
+      links.controller.add(Uri.parse('https://duvet.chat/channels/$_club/$_general/$_linked'));
+      await tester.pumpAndSettle();
+      expect(find.text('# general'), findsOneWidget);
+      semantics.dispose();
+    });
+
+    testWidgets('from a chat', (tester) async {
+      await pumpApp(
+        tester,
+        setUp: (r) {
+          _club1(r);
+          r.history[_general] = [
+            FakeRepository.message(
+              'm-link',
+              author: FakeRepository.maya,
+              name: 'Maya',
+              text: 'look https://duvet.chat/channels/$_club/$_secret/$_linked',
+            ),
+          ];
+          // Loaded before the user lost the room.
+          r.history[_secret] = [FakeRepository.message(_linked, author: FakeRepository.leo, name: 'Leo', text: 'psst')];
+        },
+      );
+      await tester.tap(find.descendant(of: find.byType(DuvetTabBar), matching: find.text('Spaces')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Paper Club'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('# general'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.bySemanticsLabel(RegExp('^Linked message from Leo')).last);
+      await tester.pumpAndSettle();
+      expect(find.text('That room isn’t available'), findsOneWidget);
+      expect(find.text('psst'), findsOneWidget, reason: 'still the card, in #general');
+      await tester.pump(const Duration(seconds: 4));
+      semantics.dispose();
+    });
+  });
 
   testWidgets('Chats leaves out a room its Space no longer lists to the user', (tester) async {
     await pumpApp(

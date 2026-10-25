@@ -995,6 +995,7 @@ class _ChatViewState extends State<ChatView> {
       _jumpTo(link.messageId);
       return;
     }
+    if (linksHiddenRoom(_repository, link)) return _toast(roomUnavailable);
     final String title;
     if (target case ConversationTarget(:final conversationId)) {
       title =
