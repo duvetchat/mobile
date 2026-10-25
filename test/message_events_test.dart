@@ -725,8 +725,9 @@ void main() {
     expect((quoting.authorName, quoting.authorAvatarUrl), ('Maya', 'https://x/old'));
     expect((quoting.reply?.authorName, quoting.reply?.content, quoting.reply?.mentionAuthor), ('Maya O.', 'go', true));
     // A webhook's message keeps the name and avatar it was sent with,
-    // whatever it says of its author; and one with nothing of hers stays.
-    for (final m in [message(webhook: true), message(author: _me)]) {
+    // whatever it says of its author; one with nothing of hers stays as it
+    // is, and so does one that shows her as she is now.
+    for (final m in [message(webhook: true), message(author: _me), hers, quoting]) {
       expect(m.changedBy(change), same(m));
     }
   });

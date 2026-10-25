@@ -260,11 +260,12 @@ class ChatMessage {
   /// This message once [change] took place: the name and avatar of its
   /// author, if they're the one who changed (a webhook's message keeps the
   /// name and avatar it was sent with), and the name on its reply's quote,
-  /// if it quotes them. Itself when neither is theirs.
+  /// if it quotes them. Itself when that leaves it as it was.
   ChatMessage changedBy(AuthorChanged change) {
-    final wrote = authorId == change.userId && !fromWebhook;
+    final wrote =
+        authorId == change.userId && !fromWebhook && (authorName != change.name || authorAvatarUrl != change.avatarUrl);
     final quote = switch (reply) {
-      final r? when r.authorId == change.userId => r.withAuthorName(change.name),
+      final r? when r.authorId == change.userId && r.authorName != change.name => r.withAuthorName(change.name),
       _ => null,
     };
     if (!wrote && quote == null) return this;
