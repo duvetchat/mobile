@@ -271,7 +271,9 @@ class DuvetRepository implements ChatRepository {
 
   Future<void> _start() async {
     // Before the gateway connects: a renewal during its identify would revoke
-    // the token it identifies with.
+    // the token it identifies with. One that timed out, the server
+    // unreachable, throws: the session opens offline then, not once `me()`
+    // has timed out too.
     await _renewIfDue(renewInFrontAfter);
     final me = await _call((api) => api.me());
     _setProfile(me);
@@ -410,8 +412,9 @@ class DuvetRepository implements ChatRepository {
   // of how long they have left. Tokens the client got since they were saved
   // (a login, a renewal on a 401) aren't due: the API issued them just now. A
   // refusal ends the session ([_call]) and is thrown; a renewal that got no
-  // answer goes once more [renewalRetry] later, and any other failure waits
-  // for the next check.
+  // answer goes once more [renewalRetry] later, and is thrown if it timed
+  // out: the server can't be reached. Any other failure waits for the next
+  // check.
   Future<void> _renewIfDue(Duration after, {bool retry = true}) async {
     final api = _api;
     final saved = _saved;
@@ -424,13 +427,14 @@ class DuvetRepository implements ChatRepository {
       if (e is duvet.DuvetAuthException) rethrow;
       debugPrint('session: $e');
     } catch (e) {
-      debugPrint('session: $e');
       if (retry) {
         _renewalRetry ??= Timer(renewalRetry, () {
           _renewalRetry = null;
           unawaited(_renewIfDue(after, retry: false).catchError((Object e) => debugPrint('session: $e')));
         });
       }
+      if (e is TimeoutException) rethrow;
+      debugPrint('session: $e');
     }
   }
 

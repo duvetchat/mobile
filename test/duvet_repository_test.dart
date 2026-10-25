@@ -114,6 +114,10 @@ void main() {
   /// `GET /api/users/@me` gets no answer: the network failed on the way.
   late bool meUnreachable;
 
+  /// Nothing comes back from the server, not even an error: each request
+  /// times out.
+  late bool blackHoled;
+
   setUp(() {
     requests = [];
     store = MemorySessionStore();
@@ -134,8 +138,10 @@ void main() {
     holdAsking = null;
     pictureRefusal = null;
     meUnreachable = false;
+    blackHoled = false;
     client = MockClient((request) async {
       requests.add(request);
+      if (blackHoled) await Completer<void>().future;
       Map<String, dynamic> body() => jsonDecode(request.body) as Map<String, dynamic>;
       if (request.url.path == '/api/auth/refresh') {
         if (sessionDead) return http.Response('{"error":"invalid or expired session"}', 401);
@@ -741,6 +747,28 @@ void main() {
       offline.cameToFront();
       await pumpEventQueue();
       expect(asked, contains('/api/users/@me'));
+    });
+
+    test('a renewal at launch that times out opens offline at once, rather than after me() times out too', () {
+      fakeAsync((async) {
+        // A session that loaded once, which the cache opens offline.
+        final first = newRepository();
+        first.logIn('gaby@duvet.chat', 'secret');
+        async.elapse(const Duration(seconds: 1));
+        first.dispose();
+        store.write((token: 'access-1', sessionToken: 'refresh-1', refreshedAt: null));
+        blackHoled = true;
+        requests.clear();
+        final restored = newRepository();
+        bool? opened;
+        restored.restore().then((r) => opened = r);
+        async.elapse(duvet.defaultRequestTimeout);
+        expect(opened, isTrue);
+        expect(restored.status.value, LiveStatus.offline);
+        expect([for (final r in requests) r.url.path], ['/api/auth/refresh']);
+        restored.dispose();
+        async.flushMicrotasks();
+      }, initialTime: DateTime(2026, 10, 24, 9));
     });
 
     test('a 401 whose renewal got no answer opens offline, signed in still, at launch as at each try after', () {
