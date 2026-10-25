@@ -163,6 +163,7 @@ class VoiceController extends ChangeNotifier {
        _inFront = inFront ?? _appInFront,
        history = CallHistory(historyStore) {
     _events = _signaling.events.listen(_onEvent);
+    _resumes = _signaling.resumes.listen((_) => _onResume());
     _signedOut = _repository.signedOut.listen((_) => _onSignedOut());
     _repository.profile.addListener(_onProfile);
     _repository.spaces.addListener(_checkSpeak);
@@ -174,6 +175,7 @@ class VoiceController extends ChangeNotifier {
   final VoiceEngine _engine;
   final DateTime Function() _now;
   late final StreamSubscription<duvet.GatewayEventPayload> _events;
+  late final StreamSubscription<void> _resumes;
   late final StreamSubscription<void> _signedOut;
 
   // Duvet on screen: not behind another app, nor under a locked screen.
@@ -262,8 +264,10 @@ class VoiceController extends ChangeNotifier {
   /// phone's call audio are voice's.
   bool get inVoice => _target != null || _call?.phase == CallPhase.calling;
 
-  // The gateway socket this phone placed or answered [_call] on.
+  // The gateway socket this phone placed or answered [_call] on, and whether
+  // the gateway heard its answer: its CALL_ACCEPTED came back.
   int? _callOn;
+  bool _answerHeard = false;
 
   // The gateway ends a call nobody answered this long after it rang.
   static const _ringTimeout = Duration(seconds: 30);
@@ -747,18 +751,8 @@ class VoiceController extends ChangeNotifier {
       }
     }
 
-    // A call answered here on an older socket, which may have lost the
-    // answer, in the 30 s after it rang, when the gateway ends a call nobody
-    // answered: the answer again. Only then: each CALL_ACCEPTED makes the
-    // desktop app of a member who isn't in the call join it.
-    if (_call case final c?
-        when c.phase == CallPhase.connected &&
-            !c.outgoing &&
-            _callOn != _signaling.connection &&
-            _now().difference(c.startedAt) < _ringTimeout) {
-      _signaling.acceptCall(c.conversationId);
-      _callOn = _signaling.connection;
-    }
+    // An answer the gateway may have lost with the socket it went on.
+    _answerAgain();
 
     final target = _target;
     // A join sent on this session's own socket went out after its identify:
@@ -778,6 +772,35 @@ class VoiceController extends ChangeNotifier {
       }
     }
     notifyListeners();
+  }
+
+  // A call answered here on an older socket, whose answer the gateway hasn't
+  // confirmed, in the 30 s after it rang, when the gateway ends a call nobody
+  // answered: the answer again. Only then: each CALL_ACCEPTED makes the
+  // desktop app of a member who isn't in the call join it.
+  void _answerAgain() {
+    if (_call case final c?
+        when c.phase == CallPhase.connected &&
+            !c.outgoing &&
+            !_answerHeard &&
+            _callOn != _signaling.connection &&
+            _now().difference(c.startedAt) < _ringTimeout) {
+      _signaling.acceptCall(c.conversationId);
+      _callOn = _signaling.connection;
+    }
+  }
+
+  // The gateway took the session up again on a new socket, with no READY:
+  // voice and the call go on as they were. But a join or an answer that went
+  // out on the socket that dropped, still unanswered, may have been lost with
+  // it: it goes again on this one, as READY sends them again on a new
+  // session. A join answered meanwhile came replayed before this.
+  void _onResume() {
+    _answerAgain();
+    final connection = _signaling.connection;
+    if (_joining && _target != null && _joinedOn != null && _joinedOn != connection && !_answered) {
+      unawaited(_connect());
+    }
   }
 
   void _onJoined(duvet.VoiceJoinedEvent data) {
@@ -905,6 +928,7 @@ class VoiceController extends ChangeNotifier {
     if (current == null) {
       _call = call;
       _callOn = null;
+      _answerHeard = false;
     } else if (current.conversationId != data.conversationId) {
       // One call at a time: another one doesn't ring here, but it's missed.
       _record(call);
@@ -924,6 +948,8 @@ class VoiceController extends ChangeNotifier {
       // Answered on another device.
       _call = null;
     } else {
+      // The gateway heard this phone's answer.
+      if (call.phase == CallPhase.connected && data.userId == _me) _answerHeard = true;
       return;
     }
     notifyListeners();
@@ -1042,6 +1068,7 @@ class VoiceController extends ChangeNotifier {
       return;
     }
     _callOn = _signaling.connection;
+    _answerHeard = false;
     _call = ActiveCall(
       conversationId: conversationId,
       initiatorId: me.id,
@@ -1063,6 +1090,7 @@ class VoiceController extends ChangeNotifier {
       return;
     }
     _callOn = _signaling.connection;
+    _answerHeard = false;
     _call = call.answered();
     notifyListeners();
     await _joinCallVoice(call.conversationId);
@@ -1264,6 +1292,7 @@ class VoiceController extends ChangeNotifier {
   void dispose() {
     _teardown(sendLeave: true);
     unawaited(_events.cancel());
+    unawaited(_resumes.cancel());
     unawaited(_signedOut.cancel());
     _repository.profile.removeListener(_onProfile);
     _repository.spaces.removeListener(_checkSpeak);

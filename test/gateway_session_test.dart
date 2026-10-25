@@ -6,17 +6,39 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:duvet/data/cache.dart';
+import 'package:duvet/data/call_history.dart';
 import 'package:duvet/data/duvet_repository.dart';
 import 'package:duvet/data/models.dart';
 import 'package:duvet/data/recent_chats.dart';
 import 'package:duvet/data/session_store.dart';
+import 'package:duvet/data/voice.dart';
 import 'package:duvet_client/http/router.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
 
+import 'support/fake_voice.dart';
+
 const _me = '00000000-0000-4000-8000-000000000001';
 const _at = '2026-10-23T09:00:00Z';
+
+/// A Space the user owns, with a voice room.
+const _space = {
+  'space': {'id': 's-1', 'name': 'Design Guild', 'owner_id': _me, 'created_at': _at, 'updated_at': _at},
+  'rooms': {
+    'r-voice': {
+      'id': 'r-voice',
+      'space_id': 's-1',
+      'type': 2,
+      'name': 'lounge',
+      'position': 0,
+      'created_at': _at,
+      'updated_at': _at,
+    },
+  },
+  'roles_permissions': <String, dynamic>{},
+  'owner_id': _me,
+};
 
 /// A gateway with one socket at a time. An identify naming its session with
 /// a sequence number resumes it, while [resumes]: nothing is sent but the
@@ -42,8 +64,14 @@ class _Gateway {
   int? refuseWith;
   int refused = 0;
 
-  /// The identifies, in order.
+  /// The identifies, in order, and every message by the socket it came on
+  /// (counted from 1) and its type.
   final identified = <Map<String, dynamic>>[];
+  final received = <(int, String)>[];
+  int _sockets = 0;
+
+  /// A Space the user owns, with a voice room, that each READY is followed by.
+  bool sendsSpace = false;
 
   ApiRouter get router => ApiRouter(api: '127.0.0.1:${_server.port}', ws: '127.0.0.1:${_server.port}', secure: false);
 
@@ -60,8 +88,10 @@ class _Gateway {
       return;
     }
     final socket = _socket = await WebSocketTransformer.upgrade(request);
+    final number = ++_sockets;
     socket.listen((raw) {
       final message = jsonDecode(raw as String) as Map<String, dynamic>;
+      received.add((number, message['type'] as String));
       switch (message['type']) {
         case 'identify':
           final data = message['data'] as Map<String, dynamic>;
@@ -73,6 +103,7 @@ class _Gateway {
               'user': {'id': _me, 'username': 'gaby', 'created_at': _at, 'updated_at': _at},
               'sessionToken': 'gw-${++_sessions}',
             });
+            if (sendsSpace) _send('SPACE_CREATE', _space);
           }
         case 'heartbeat':
           socket.add(jsonEncode({'event': 'heartbeat_ack'}));
@@ -228,4 +259,29 @@ void main() {
     // Not after the 2 seconds and more the next wait takes.
     await _until(() => gateway.refused == 2, within: const Duration(milliseconds: 600));
   });
+
+  test(
+    'a voice join the gateway hadn\'t answered when the socket dropped goes again once the session resumes',
+    () async {
+      gateway.sendsSpace = true;
+      await signIn();
+      final voice = VoiceController(
+        repository: repository,
+        engine: FakeVoiceEngine(),
+        historyStore: MemoryCallHistoryStore(),
+        inFront: () => true,
+      );
+      addTearDown(voice.dispose);
+      await voice.joinRoom(
+        const Room(id: 'r-voice', spaceId: 's-1', name: 'lounge', kind: RoomKind.voice, position: 0),
+      );
+      await _until(() => gateway.received.contains((1, 'VOICE_JOIN')));
+
+      // Dropped before its answer.
+      await gateway.drop();
+      await _until(() => gateway.received.contains((2, 'VOICE_JOIN')));
+      expect(gateway.identified.last, containsPair('session_token', 'gw-1'));
+      expect(gateway.received.where((r) => r.$2 == 'VOICE_JOIN'), hasLength(2));
+    },
+  );
 }

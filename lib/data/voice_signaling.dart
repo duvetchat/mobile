@@ -28,6 +28,11 @@ abstract interface class VoiceSignaling {
   /// resumed session doesn't send.
   void wantFreshSession();
 
+  /// Fires when the gateway took the session up again on a new socket, with
+  /// no READY: what went out on the socket that dropped, still unanswered,
+  /// may have been lost with it.
+  Stream<void> get resumes;
+
   bool joinVoice(String roomId, duvet.SessionDescription offer, {required bool videoOff});
   bool leaveVoice(String roomId);
 
@@ -56,18 +61,25 @@ abstract interface class VoiceSignaling {
 /// events through [deliver].
 class GatewayVoiceSignaling implements VoiceSignaling {
   final _events = StreamController<duvet.GatewayEventPayload>.broadcast();
+  final _resumes = StreamController<void>.broadcast();
   duvet.GatewayManager? _manager;
   duvet.WebRTCController? _rtc;
+  StreamSubscription<duvet.GatewayResume>? _resumed;
 
   /// The gateway of a new session.
   void attach(duvet.GatewayManager manager) {
     detach();
     _manager = manager;
     _rtc = duvet.WebRTCController(manager);
+    _resumed = manager.onResume.listen((_) {
+      if (!_resumes.isClosed) _resumes.add(null);
+    });
   }
 
   /// The session ended: nothing goes out until the next one.
   void detach() {
+    _resumed?.cancel();
+    _resumed = null;
     _rtc?.dispose();
     _rtc = null;
     _manager = null;
@@ -108,6 +120,9 @@ class GatewayVoiceSignaling implements VoiceSignaling {
 
   @override
   void wantFreshSession() => _manager?.wantFreshSession();
+
+  @override
+  Stream<void> get resumes => _resumes.stream;
 
   @override
   bool joinVoice(String roomId, duvet.SessionDescription offer, {required bool videoOff}) =>
@@ -161,5 +176,6 @@ class GatewayVoiceSignaling implements VoiceSignaling {
   void dispose() {
     detach();
     _events.close();
+    _resumes.close();
   }
 }

@@ -9,6 +9,7 @@ import 'package:flutter/foundation.dart';
 /// would send.
 class FakeVoiceSignaling implements VoiceSignaling {
   final _events = StreamController<duvet.GatewayEventPayload>.broadcast(sync: true);
+  final _resumes = StreamController<void>.broadcast(sync: true);
 
   /// The open socket's number; null while the gateway is out of reach.
   int? socket = 1;
@@ -32,9 +33,15 @@ class FakeVoiceSignaling implements VoiceSignaling {
   @override
   void wantFreshSession() => freshSessionsWanted++;
 
+  @override
+  Stream<void> get resumes => _resumes.stream;
+
   /// The gateway resumed the session on socket [number]: it goes on, with no
   /// READY.
-  void resumed({int number = 2}) => socket = number;
+  void resumed({int number = 2}) {
+    socket = number;
+    _resumes.add(null);
+  }
 
   /// A new session: READY, on socket [number].
   void ready({
@@ -122,7 +129,10 @@ class FakeVoiceSignaling implements VoiceSignaling {
   @override
   bool leaveCall(String conversationId) => _send('CALL_LEAVE', {'conversation_id': conversationId});
 
-  void dispose() => _events.close();
+  void dispose() {
+    _events.close();
+    _resumes.close();
+  }
 }
 
 /// A microphone that is only a name.
