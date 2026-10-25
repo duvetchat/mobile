@@ -822,9 +822,9 @@ class DuvetRepository implements ChatRepository {
       recent.previewOf(message, (content) => readableContent(content, nameOf: nameOf, emojiNameOf: emojiNameOf));
 
   /// The rooms the user may see, as the desktop lists them: those they have
-  /// ViewChannels in, and of the categories they may see, those with no
-  /// rooms or with one of those. A room they may see in a category they can't
-  /// is listed outside any.
+  /// ViewChannels in, and the categories with one of those, whether or not
+  /// they may see the category itself (its header shows, with only those
+  /// rooms). An empty category shows when they may see it.
   List<duvet.GatewayRoom> _visibleRooms(String spaceId, Iterable<duvet.GatewayRoom> all) {
     final rooms = [
       for (final r in all)
@@ -834,11 +834,10 @@ class DuvetRepository implements ChatRepository {
       for (final r in rooms)
         if (canInRoom(spaceId, r.id, Perm.viewChannels)) r.id,
     };
-    bool shown(duvet.GatewayRoom r) =>
-        seen.contains(r.id) &&
-        (r.type != duvet.RoomType.category ||
-            !rooms.any((c) => c.parentId == r.id) ||
-            rooms.any((c) => c.parentId == r.id && seen.contains(c.id)));
+    bool shown(duvet.GatewayRoom r) => r.type != duvet.RoomType.category
+        ? seen.contains(r.id)
+        : rooms.any((c) => c.parentId == r.id && seen.contains(c.id)) ||
+              (seen.contains(r.id) && !rooms.any((c) => c.parentId == r.id));
     return rooms.where(shown).toList();
   }
 

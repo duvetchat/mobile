@@ -416,10 +416,10 @@ void main() {
       expect(repository.adminRooms('s-1').map((r) => r.id), ['c-talk', 'r-general', 'c-empty']);
     });
 
-    test('a room the user may see stays listed when its category can\'t be', () async {
+    test('a room the user may see brings its category\'s header, though they can\'t see the category', () async {
       await signIn();
-      // @everyone sees nothing: categories take no overwrites, so none shows,
-      // but the mods' room lets them in.
+      // @everyone sees nothing: categories take no overwrites, so none is
+      // seen, but the mods' room lets them in.
       repository.handleEvent(
         _event(
           'SPACE_CREATE',
@@ -428,7 +428,9 @@ void main() {
             rooms: {
               'c-staff': _room('c-staff', type: 3),
               'r-mods': _room('r-mods', parent: 'c-staff'),
-              'r-general': _room('r-general', position: 1),
+              'r-audit': _room('r-audit', position: 1, parent: 'c-staff'),
+              'c-empty': _room('c-empty', type: 3, position: 1),
+              'r-general': _room('r-general', position: 2),
             },
             roles: {'role-mod': Perm.pinMessages},
             mine: ['role-mod'],
@@ -438,8 +440,11 @@ void main() {
           ),
         ),
       );
-      expect(sections(), [null]);
+      // Only the rooms they see in it, and no category they can't see that
+      // shows none.
+      expect(sections(), ['c-staff']);
       expect(listed(), ['r-mods']);
+      expect(repository.adminRooms('s-1').map((r) => r.id), ['c-staff', 'r-mods']);
     });
   });
 
