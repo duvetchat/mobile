@@ -1027,27 +1027,33 @@ class _GroupInfoPageState extends State<GroupInfoPage> {
   Future<void> _addPeople() async {
     final repository = context.repository;
     final here = {for (final m in _members) m.userId};
-    // Friends alone, as the desktop offers: the API adds only the owner's.
-    final candidates = [
-      for (final m in repository.friends.value.friends)
-        if (!here.contains(m.userId)) m,
-    ];
     final picked = await showGlassSheet<Member>(
       context,
       label: 'Add people',
-      builder: (context, scroll) => ListView(
-        controller: scroll,
-        children: [
-          const SheetTitle(title: 'Add people'),
-          for (final m in candidates)
-            ListRow(
-              leading: UserAvatar(name: m.displayName, url: m.avatarUrl, size: 48),
-              title: m.displayName,
-              snippet: '@${m.username}',
-              onTap: () => Navigator.of(context).pop(m),
-            ),
-          if (candidates.isEmpty) const ListNote('No friends available to add'),
-        ],
+      // The friends as they come: the page's load may not have answered yet.
+      builder: (context, scroll) => ValueListenableBuilder(
+        valueListenable: repository.friends,
+        builder: (context, friends, _) {
+          // Friends alone, as the desktop offers: the API adds only the owner's.
+          final candidates = [
+            for (final m in friends.friends)
+              if (!here.contains(m.userId)) m,
+          ];
+          return ListView(
+            controller: scroll,
+            children: [
+              const SheetTitle(title: 'Add people'),
+              for (final m in candidates)
+                ListRow(
+                  leading: UserAvatar(name: m.displayName, url: m.avatarUrl, size: 48),
+                  title: m.displayName,
+                  snippet: '@${m.username}',
+                  onTap: () => Navigator.of(context).pop(m),
+                ),
+              if (candidates.isEmpty) const ListNote('No friends available to add'),
+            ],
+          );
+        },
       ),
     );
     if (picked == null || !mounted) return;

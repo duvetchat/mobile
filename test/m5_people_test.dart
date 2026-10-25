@@ -354,6 +354,24 @@ void main() {
     semantics.dispose();
   });
 
+  testWidgets('Add people shows the friends that come while it\'s open', (tester) async {
+    final repository = await openGroupInfo(tester, owner: FakeRepository.me.id);
+    // As if the page's load hadn't answered yet.
+    repository.friends.value = Friends.none;
+    await tester.pumpAndSettle();
+    await tapLabel(tester, 'Add people');
+    expect(find.text('No friends available to add'), findsOneWidget);
+
+    // The page's load answers, or a FRIEND_* event loads them again.
+    repository.friends.value = const Friends(
+      friends: [Member(userId: _leo, username: 'leo')],
+    );
+    await tester.pumpAndSettle();
+    expect(find.widgetWithText(ListRow, 'leo'), findsOneWidget);
+    expect(find.text('No friends available to add'), findsNothing);
+    semantics.dispose();
+  });
+
   testWidgets('group info: only its owner renames it and adds or removes people', (tester) async {
     final repository = await openGroupInfo(tester, owner: _maya);
     expect(find.bySemanticsLabel(RegExp('^Rename group')), findsNothing);
