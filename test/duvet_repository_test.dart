@@ -834,20 +834,24 @@ void main() {
       }, initialTime: DateTime(2026, 10, 24, 9));
     });
 
-    test('tokens dated ahead of the clock, as it was then, count from now rather than never', () {
+    test('tokens dated ahead of the clock, as it was then, are of unknown age: renewed at once, until it works', () {
       fakeAsync((async) {
         final ahead = clock.now().add(const Duration(days: 2));
         store.write((token: 'access-1', sessionToken: 'refresh-1', refreshedAt: ahead));
         final repository = newRepository();
+        renewalsBroken = true;
         repository.restore();
         async.flushMicrotasks();
         expect(repository.profile.value, isNotNull);
-        expect(refreshes, 0);
-        expect(saved(async)!.refreshedAt, clock.now());
+        expect(requests.take(2).map((r) => r.url.path), ['/api/auth/refresh', '/api/users/@me']);
+        expect(saved(async)!.refreshedAt, ahead);
 
-        async.elapse(const Duration(minutes: 61));
-        repository.cameToFront();
-        async.flushMicrotasks();
+        // Not 23 hours on, maybe past their end: at the next check.
+        renewalsBroken = false;
+        async.elapse(const Duration(minutes: 10));
+        expect(refreshes, 1);
+        expect(saved(async), (token: 'access-2', sessionToken: 'refresh-2', refreshedAt: clock.now()));
+        async.elapse(const Duration(minutes: 10));
         expect(refreshes, 1);
         repository.dispose();
         async.flushMicrotasks();

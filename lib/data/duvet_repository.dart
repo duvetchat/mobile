@@ -381,25 +381,19 @@ class DuvetRepository implements ChatRepository {
 
   Timer? _renewals;
 
-  // Renews the session once its tokens are [after] old, or of unknown age.
-  // Tokens the client got since they were saved (a login, a renewal on a 401)
-  // aren't due: the API issued them just now. A date ahead of the clock (it
-  // was ahead then) counts from now. A refusal ends the session ([_call]) and
-  // is thrown; a renewal that got no answer goes once more [renewalRetry]
-  // later, and any other failure waits for the next check.
+  // Renews the session once its tokens are [after] old, or of unknown age: no
+  // date, or one ahead of the clock (it was ahead then), which says nothing
+  // of how long they have left. Tokens the client got since they were saved
+  // (a login, a renewal on a 401) aren't due: the API issued them just now. A
+  // refusal ends the session ([_call]) and is thrown; a renewal that got no
+  // answer goes once more [renewalRetry] later, and any other failure waits
+  // for the next check.
   Future<void> _renewIfDue(Duration after, {bool retry = true}) async {
     final api = _api;
     final saved = _saved;
     if (api == null || saved == null || saved.token != api.token || api.sessionToken.isEmpty) return;
     final now = clock.now();
-    var at = saved.refreshedAt;
-    if (at != null && at.isAfter(now)) {
-      at = now;
-      final clamped = (token: saved.token, sessionToken: saved.sessionToken, refreshedAt: now);
-      _saved = clamped;
-      unawaited(_store.write(clamped).catchError((Object e) => debugPrint('session: $e')));
-    }
-    if (at != null && now.difference(at) < after) return;
+    if (saved.refreshedAt case final at? when !at.isAfter(now) && now.difference(at) < after) return;
     try {
       await _call((api) => api.refreshSession());
     } on duvet.DuvetApiException catch (e) {
