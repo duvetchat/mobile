@@ -39,20 +39,35 @@ const emojiCap = (bytes: 256 * 1024, side: 512);
 const stickerCap = (bytes: 512 * 1024, side: 1024);
 
 /// A GIF's size as the API reads it (its header's screen, and its bytes),
-/// and whether it moves; null for any other picture.
+/// and whether it moves; null for any other picture, of which only the
+/// header is read.
 Future<({int width, int height, int bytes, bool animated})?> gifAt(String path) async {
-  final data = await File(path).readAsBytes();
-  if (data.length < 10 || !const ['GIF87a', 'GIF89a'].contains(String.fromCharCodes(data, 0, 6))) return null;
+  final file = File(path);
+  final opened = await file.open();
+  final Uint8List header;
+  try {
+    header = await opened.read(10);
+  } finally {
+    await opened.close();
+  }
+  if (header.length < 10 || !const ['GIF87a', 'GIF89a'].contains(String.fromCharCodes(header, 0, 6))) return null;
+  // Its frames tell whether it moves.
+  final data = await file.readAsBytes();
   var animated = false;
   try {
     final codec = await ui.instantiateImageCodec(data);
     animated = codec.frameCount > 1;
     codec.dispose();
   } catch (e) {
-    // The API says what it makes of it.
+    // Taken for a still picture, which goes to the cropper as any other.
     debugPrint('gif: $e');
   }
-  return (width: data[6] | data[7] << 8, height: data[8] | data[9] << 8, bytes: data.length, animated: animated);
+  return (
+    width: header[6] | header[7] << 8,
+    height: header[8] | header[9] << 8,
+    bytes: data.length,
+    animated: animated,
+  );
 }
 
 /// The part of the picture at [path] that [crop] frames, drawn [side] pixels
