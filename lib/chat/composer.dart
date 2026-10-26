@@ -178,9 +178,11 @@ class _ComposerField extends StatelessWidget {
                     focusNode: focusNode,
                     minLines: 1,
                     maxLines: 5,
-                    textInputAction: TextInputAction.send,
+                    // Return starts a new line, for lists, quotes and code;
+                    // only Send sends.
+                    keyboardType: TextInputType.multiline,
+                    textInputAction: TextInputAction.newline,
                     textCapitalization: TextCapitalization.sentences,
-                    onSubmitted: (_) => onSend(),
                     cursorColor: tokens.accentText,
                     style: DuvetType.body.copyWith(color: colors.foreground),
                     decoration: InputDecoration.collapsed(

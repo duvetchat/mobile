@@ -211,6 +211,22 @@ void main() {
     semantics.dispose();
   });
 
+  testWidgets('return starts a new line; only Send sends, every line in one message', (tester) async {
+    final repository = await openMaya(tester);
+    final field = tester.widget<TextField>(find.byType(TextField));
+    expect(field.textInputAction, TextInputAction.newline);
+    expect(field.keyboardType, TextInputType.multiline);
+
+    await tester.enterText(find.byType(EditableText), 'the list:\n- one\n- two');
+    await tester.testTextInput.receiveAction(TextInputAction.newline);
+    await tester.pump();
+    expect(repository.sent, isEmpty);
+
+    await tapLabel(tester, 'Send');
+    expect(repository.sent.single.content, 'the list:\n- one\n- two');
+    semantics.dispose();
+  });
+
   testWidgets('deleting your own message asks first', (tester) async {
     final repository = await openMaya(tester);
     // Typing first: the keyboard goes, and stays gone through the delete.
