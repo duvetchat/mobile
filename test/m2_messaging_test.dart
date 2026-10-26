@@ -173,6 +173,14 @@ void main() {
     await tester.pumpAndSettle();
     expect(find.text('Replying to Maya — Hey! Did you see the new tab bar?'), findsOneWidget);
     expect(tester.getTopLeft(message).dx, x, reason: 'it slides back on release');
+
+    // From the row's empty space too, beside the bubble (#50).
+    await tester.tap(find.bySemanticsLabel('Cancel reply'));
+    await tester.pumpAndSettle();
+    final beside = Offset(tester.getSize(find.byType(MaterialApp)).width - 24, tester.getCenter(message).dy);
+    await tester.dragFrom(beside, const Offset(-120, 0));
+    await tester.pumpAndSettle();
+    expect(find.text('Replying to Maya — Hey! Did you see the new tab bar?'), findsOneWidget);
     semantics.dispose();
   });
 
