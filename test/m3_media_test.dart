@@ -6,6 +6,7 @@ import 'package:duvet/data/gifs.dart';
 import 'package:duvet/data/links.dart';
 import 'package:duvet/data/models.dart';
 import 'package:duvet/main.dart';
+import 'package:duvet/theme.dart';
 import 'package:duvet/widgets/media.dart';
 import 'package:duvet/widgets/media_actions.dart';
 import 'package:duvet/widgets/message_content.dart';
@@ -14,6 +15,7 @@ import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:forui/forui.dart';
 import 'package:image_picker/image_picker.dart';
 
 import 'support/fake_repository.dart';
@@ -241,6 +243,12 @@ void main() {
     expect(_Recorder.started, 1);
     expect(find.bySemanticsLabel(RegExp(r'^Recording voice note, \d+ seconds$')), findsOneWidget);
     expect(repository.recordings, isNotEmpty);
+    // Cancel is the mic's opposite, in the destructive red.
+    final cancel = tester.widget<Icon>(
+      find.descendant(of: find.bySemanticsLabel('Cancel recording'), matching: find.byType(Icon)),
+    );
+    expect(cancel.icon, FLucideIcons.micOff);
+    expect(cancel.color, Duvet.theme(Brightness.light).colors.destructive);
 
     await tester.pump(const Duration(seconds: 2));
     await tapLabel(tester, 'Send voice note');
@@ -250,9 +258,9 @@ void main() {
     semantics.dispose();
   });
 
-  testWidgets('holding Send records; sliding left cancels', (tester) async {
+  testWidgets('holding the mic records; sliding left cancels', (tester) async {
     final repository = await openMaya(tester);
-    final send = find.bySemanticsLabel('Send');
+    final send = find.bySemanticsLabel(RegExp('^Voice note, touch and hold'));
     final hold = await tester.startGesture(tester.getCenter(send));
     await tester.pump(kLongPressTimeout + const Duration(milliseconds: 100));
     await tester.pump();

@@ -109,8 +109,8 @@ class _ComposerStrip extends StatelessWidget {
 }
 
 /// The composer: one `radius-card` field holding exactly four controls,
-/// Attach, the text, Emoji and Send. Send is an inert glyph while there's
-/// nothing to send, then a 32pt accent square; editing, it saves.
+/// Attach, the text, Emoji and Send. While there's nothing to send, Send is a
+/// mic to hold for a voice note; then a 32pt accent square; editing, it saves.
 class _ComposerField extends StatelessWidget {
   final TextEditingController controller;
   final FocusNode focusNode;
@@ -121,8 +121,8 @@ class _ComposerField extends StatelessWidget {
   final VoidCallback onEmoji;
   final VoidCallback onSend;
 
-  /// Holding Send while there's nothing to send records a voice note: no
-  /// fifth control.
+  /// Holding Send while there's nothing to send, its mic, records a voice
+  /// note: no fifth control.
   final VoidCallback onHoldStart;
   final ValueChanged<Offset> onHoldMove;
   final VoidCallback onHoldEnd;
@@ -221,11 +221,17 @@ class _SendButton extends StatelessWidget {
     final colors = context.theme.colors;
     final tokens = context.duvet;
     const radius = BorderRadius.all(Radius.circular(DuvetTokens.radiusField));
+    // Nothing to send: a voice note, held to record (or from Add).
+    final voice = !enabled && !editing;
     return Semantics(
       container: true,
       button: true,
-      enabled: enabled,
-      label: editing ? 'Save edit' : 'Send',
+      enabled: enabled || voice,
+      label: editing
+          ? 'Save edit'
+          : voice
+          ? 'Voice note, touch and hold to record'
+          : 'Send',
       excludeSemantics: true,
       onTap: enabled ? onPressed : null,
       child: Pressable(
@@ -246,7 +252,11 @@ class _SendButton extends StatelessWidget {
                 shadows: enabled && pressed ? tokens.shadowPressed : const [],
                 borderRadius: radius,
                 child: Icon(
-                  editing ? FLucideIcons.check : FLucideIcons.arrowUp,
+                  editing
+                      ? FLucideIcons.check
+                      : voice
+                      ? FLucideIcons.mic
+                      : FLucideIcons.arrowUp,
                   size: 24,
                   color: enabled ? colors.primaryForeground : colors.mutedForeground,
                 ),
@@ -334,10 +344,11 @@ class _RecordingField extends StatelessWidget {
                   ),
                 ),
                 if (locked) ...[
+                  // The mic's opposite, in red: this one throws the recording away.
                   IconAction(
-                    icon: FLucideIcons.trash2,
+                    icon: FLucideIcons.micOff,
                     label: 'Cancel recording',
-                    color: colors.mutedForeground,
+                    color: colors.destructive,
                     onPressed: onCancel,
                   ),
                   Semantics(
