@@ -1068,7 +1068,6 @@ class _RoomsAdminPageState extends State<RoomsAdminPage> {
       index: index,
       child: ExcludeSemantics(
         child: Container(
-          key: const ValueKey('grip'),
           width: 32,
           decoration: BoxDecoration(
             color: colors.secondary,

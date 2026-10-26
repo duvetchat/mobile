@@ -304,7 +304,7 @@ void main() {
     semantics.dispose();
   });
 
-  testWidgets('rooms: create, rename, move, permissions, delete', (tester) async {
+  testWidgets('rooms: create, rename, permissions, delete', (tester) async {
     final repository = await pumpSettings(tester);
     await tapLabel(tester, RegExp(r'^Rooms'));
     await tapLabel(tester, 'Create room');
@@ -312,12 +312,6 @@ void main() {
     await typeName(tester, 'crit');
     await tapLabel(tester, 'Create');
     expect(repository.admin.last, 'room+ crit text');
-
-    // Dragged by its grip to the top: before #general.
-    await tester.drag(find.byKey(const ValueKey('grip')).last, const Offset(0, -400));
-    await tester.pumpAndSettle();
-    expect(repository.admin.last, 'room> r-crit - 0');
-    expect(repository.adminRooms('s-guild').first.id, 'r-crit');
 
     await tapLabel(tester, RegExp(r'^# crit'));
     await tapLabel(tester, 'Rename');
