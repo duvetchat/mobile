@@ -63,7 +63,7 @@ Desktop: `ChannelsSidebar`, `MessageSearch`, `PinnedMessages`.
 - [x] **Pinned messages:** a sheet from the chat menu, using `getRoomPins` / `getConversationPins` and pin/unpin.
 - [x] **Threads:** open a thread from a message (`getMessageThread`).
 - [x] **Deep links:** `duvet://` and `https://duvet.chat/invite/...` open the right chat or the join flow.
-  _`duvet://` works as is. For `https://duvet.chat` links to open the app without asking, duvet.chat must serve `/.well-known/assetlinks.json` (Android) and an `apple-app-site-association` with the app's Associated Domains entitlement (iOS); neither exists yet._
+  _`duvet://` works as is. For `https://duvet.chat` links to open the app without asking, duvet.chat must serve `/.well-known/assetlinks.json` (Android) and an `apple-app-site-association` (iOS); neither exists yet. The app's side is in: Android's verified intent filter, and iOS's Associated Domains entitlement (`ios/Runner/Runner.entitlements`, `applinks:duvet.chat`)._
 
 ## M5 · People & conversations
 
@@ -191,7 +191,7 @@ Things this machine or this repository can't finish: each needs a decision, a cr
 
 - **Deploy the server for status, bios and deleting Spaces:** the app's side is done, and no longer blocked on the server. Status needs the API's and the gateway's `dnd-status` branches (`PUT /api/users/@me/status`, the status in READY, `status_id` 2). Bios and Delete Space need the API's `space-delete-bio` branch (`custom` on `PATCH /api/users/@me`, `DELETE /api/spaces/{id}`). Until they're deployed, each says the server needs the latest API.
 - **Publish `duvet_client`:** the app uses `../duvet-client` through `dependency_overrides` in `pubspec.yaml`. Publish 1.0.1 (see its CHANGELOG: `createSpace` now answers a `CreatedSpace`, the Space and its rooms, which breaks callers typed `Future<void>`). The app also uses the CHANGELOG's **Unreleased** section (bios, `setStatus`), so publish that as the next version once those server branches are merged, and drop the override after it.
-- **App links for `https://duvet.chat`:** serve `/.well-known/assetlinks.json` (with the release key's SHA-256) and an `apple-app-site-association`, and add the Associated Domains entitlement on iOS. `duvet://` links already work.
+- **App links for `https://duvet.chat`:** serve `/.well-known/assetlinks.json` (with the release key's SHA-256) and an `apple-app-site-association` (duvetchat/desktop-electrobun#75); the app's side is done. On iOS, the Apple team's App ID needs Associated Domains turned on for its provisioning profile. `duvet://` links already work.
 - **Release keystore:** make one (`keytool -genkey -v -keystore ~/duvet-release.jks -keyalg RSA -keysize 2048 -validity 10000 -alias duvet`), fill `android/key.properties` from the example, and add the CI secrets. Keep the keystore backed up: Play needs the same key for every update.
 - **iOS:** build and run on a Mac (`flutter build ios`), check the session survives a restart (Keychain), and set the signing team.
 - **A release build on a device:** this session didn't build (free memory stayed under 2 GB). Before shipping: `flutter build apk --release --target-platform android-arm64` and a pass on the phone, especially voice notes, video, the image viewer's Save and Share, and the deep links.
