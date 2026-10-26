@@ -53,6 +53,9 @@ class _Bubble extends StatelessWidget {
   /// A mention in the text tapped: the user it names.
   final ValueChanged<String> onOpenMention;
 
+  /// A room mention in the text tapped: the room.
+  final ValueChanged<Room> onOpenRoom;
+
   /// A bot's button or select used.
   final Future<void> Function(UiComponent component, List<String>? values) onUseComponent;
   final SelectChoices selectChoices;
@@ -87,6 +90,7 @@ class _Bubble extends StatelessWidget {
     required this.onOpenSpace,
     required this.onOpenAuthor,
     required this.onOpenMention,
+    required this.onOpenRoom,
     required this.onUseComponent,
     required this.selectChoices,
     this.onDismiss,
@@ -163,6 +167,7 @@ class _Bubble extends StatelessWidget {
                   onAccent: mine,
                   style: DuvetType.body.copyWith(color: mine ? colors.primaryForeground : colors.foreground),
                   onMention: onOpenMention,
+                  onRoom: onOpenRoom,
                   messageActions: anchor == null ? const {} : actionsAt(anchor),
                 ),
               ),
@@ -749,7 +754,9 @@ class _ReplyRef extends StatelessWidget {
       reply.content,
       nameOf: directory.nameOf,
       emojiNameOf: (id) => directory.emojiOf(id)?.name,
-    ).replaceAll(RegExp(r'[*_~|`>#]+'), '').replaceAll('\n', ' ').trim();
+      roomNameOf: (id) => directory.roomOf(id)?.name,
+      // A heading's #s go, a room's #name stays.
+    ).replaceAll(RegExp(r'[*_~|`>]+|#+(?!\S)'), '').replaceAll('\n', ' ').trim();
     final shown = text.isEmpty ? 'a message' : text;
     return Semantics(
       container: true,

@@ -13,6 +13,9 @@ import 'support/fake_repository.dart';
 
 const _maya = FakeRepository.maya;
 final _me = FakeRepository.me.id;
+const _design = 'dddddddd-0000-4000-8000-000000000001';
+const _gone = 'eeeeeeee-0000-4000-8000-000000000002';
+const _designRoom = Room(id: _design, spaceId: 's-guild', name: 'design', kind: RoomKind.text, position: 2);
 
 void main() {
   group('message tokens', () {
@@ -25,6 +28,11 @@ void main() {
       );
       expect(readableContent('<@0a0a0a0a-ffff>'), '@someone');
       expect(mentionedIn(content), {_maya});
+      expect(
+        readableContent('see <#$_design> and <#$_gone>', roomNameOf: (id) => id == _design ? 'design' : null),
+        'see #design and #unknown',
+      );
+      expect(tokenize('<#$_design>').single, isA<RoomToken>());
     });
 
     test('emoji-only messages of up to five show large', () {
@@ -58,6 +66,25 @@ void main() {
       expect(c.encoded, 'hi <@$_maya> so <:${FakeRepository.party.id}:> ');
       // Typed by hand, a name stays text.
       expect((composer('@Maya')).encoded, '@Maya');
+    });
+
+    test('a picked room goes out as <#id>, and comes back as #name to edit', () {
+      final c = composer('see #de');
+      expect(c.query, (trigger: '#', query: 'de', start: 4));
+      c.insertRoom(_designRoom);
+      expect(c.text, 'see #design ');
+      expect(c.encoded, 'see <#$_design> ');
+      // Typed by hand, a name stays text.
+      expect(composer('#design').encoded, '#design');
+
+      c.setEncoded(
+        'in <#$_design>',
+        nameOf: (_) => null,
+        emojiNameOf: (_) => null,
+        roomNameOf: (id) => id == _design ? 'design' : null,
+      );
+      expect(c.text, 'in #design');
+      expect(c.encoded, 'in <#$_design>');
     });
 
     test('a time is not an emoji query, a lone colon neither', () {
@@ -150,6 +177,59 @@ void main() {
       await tester.tap(last);
       await tester.pumpAndSettle();
       expect(find.text('@Mod 9 '), findsOneWidget);
+      semantics.dispose();
+    });
+
+    void addDesign(FakeRepository r) => r.spaces.value = [
+      for (final s in r.spaces.value)
+        Space(
+          id: s.id,
+          name: s.name,
+          onlineCount: s.onlineCount,
+          sections: [
+            ...s.sections,
+            const RoomSection(name: 'More', rooms: [_designRoom]),
+          ],
+        ),
+    ];
+
+    testWidgets('a room mention shows its name and opens it; one hidden or gone shows #unknown (#83)', (tester) async {
+      final repository = await openGeneral(tester);
+      // After sign-in, which seeds the Spaces.
+      addDesign(repository);
+      repository.push(
+        'r-general',
+        MessageCreated(
+          FakeRepository.message('m9', author: FakeRepository.leo, name: 'leo', text: 'see <#$_design> or <#$_gone>'),
+        ),
+      );
+      await tester.pumpAndSettle();
+      expect(find.bySemanticsLabel(RegExp(r'^see #design or #unknown\n09:00$')), findsOneWidget);
+      await tester.tapOnText(find.textRange.ofSubstring('#unknown'));
+      await tester.pump(kDoubleTapTimeout);
+      await tester.pumpAndSettle();
+      expect(find.text('# design'), findsNothing);
+
+      await tester.tapOnText(find.textRange.ofSubstring('#design'));
+      // The bubble waits to see if it's a double tap (a reply) first.
+      await tester.pump(kDoubleTapTimeout);
+      await tester.pumpAndSettle();
+      expect(find.text('# design'), findsOneWidget);
+      semantics.dispose();
+    });
+
+    testWidgets('typing # suggests the Space\'s rooms; the pick goes out as <#id> (#83)', (tester) async {
+      final repository = await openGeneral(tester);
+      // After sign-in, which seeds the Spaces.
+      addDesign(repository);
+      await tester.enterText(find.byType(EditableText), 'over in #de');
+      await tester.pumpAndSettle();
+      expect(find.bySemanticsLabel('Room suggestions, 1'), findsOneWidget);
+      await tester.tap(find.bySemanticsLabel(RegExp('^#design')));
+      await tester.pumpAndSettle();
+      expect(find.text('over in #design '), findsOneWidget);
+      await send(tester);
+      expect(repository.sent.last.content, 'over in <#$_design>');
       semantics.dispose();
     });
 
