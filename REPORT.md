@@ -44,7 +44,7 @@ The app calls about **100 of 138 methods (~72%)**. What's left is outside a phon
 
 ### Gateway (`GatewayManager`)
 
-The app handles **all 59 event types** the client parses. M8 added the nine voice and call events (`VOICE_STATE_UPDATE`, `VOICE_JOINED`, `CALL_INCOMING`/`ACCEPTED`/`DECLINED`/`ENDED`, the three `WEBRTC_*`) and `VOICE_SESSION_REPLACED`. It sends `VOICE_JOIN`, `VOICE_LEAVE`, `VOICE_SYNC`, `WEBRTC_ICE_CANDIDATE`, `WEBRTC_ANSWER` and the five `CALL_*` messages; never `WEBRTC_RENEGOTIATE_OFFER` (the phone adds no tracks mid-call). `VOICE_VIDEO_REFUSED` stays unparsed: the phone sends no video.
+The app handles **66 of the 70 event types** the client parses. M8 added the nine voice and call events (`VOICE_STATE_UPDATE`, `VOICE_JOINED`, `CALL_INCOMING`/`ACCEPTED`/`DECLINED`/`ENDED`, the three `WEBRTC_*`) and `VOICE_SESSION_REPLACED`; calls across a user's devices (mobile#16) added `CALL_OUTGOING` and `CALL_ONGOING`, and READY's `ringing`, `answered`, `initiator_name` and `initiator_avatar`. It sends `VOICE_JOIN`, `VOICE_LEAVE`, `VOICE_SYNC`, `WEBRTC_ICE_CANDIDATE`, `WEBRTC_ANSWER` and the five `CALL_*` messages; never `WEBRTC_RENEGOTIATE_OFFER` (the phone adds no tracks mid-call). The four it leaves alone are for what the phone doesn't have: `VOICE_VIDEO_REFUSED` (it sends no video), `USER_ACTIVITY_UPDATE` (it shows no activities), `TEAM_INVITE_CREATE` (no teams) and `STORAGE_TRANSFER_UPDATE` (storage is view-only).
 
 ### Changes to `duvet_client` (1.0.1, in its CHANGELOG)
 
