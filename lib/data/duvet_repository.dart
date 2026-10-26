@@ -41,7 +41,7 @@ class DuvetRepository implements ChatRepository {
   final RecentChatsStore _recentsStore;
   late final RecentChats _recents = RecentChats(
     _recentsStore,
-    readable: (content) => readableContent(content, nameOf: nameOf, emojiNameOf: emojiNameOf),
+    readable: (content) => readableContent(content, nameOf: nameOf, emojiNameOf: emojiNameOf, roomNameOf: _roomNameOf),
   );
 
   // The saved list's read, which previews catch up after.
@@ -56,6 +56,10 @@ class DuvetRepository implements ChatRepository {
 
   @override
   String? emojiNameOf(String emojiId) => _emojiNames[emojiId];
+
+  // A room the user may see, by name; null for one hidden or gone.
+  String? _roomNameOf(String roomId) =>
+      spaces.value.expand((s) => s.rooms).where((r) => r.id == roomId).firstOrNull?.name;
   final ApiRouter _router;
   final http.Client Function() _httpClient;
 
@@ -1161,8 +1165,10 @@ class DuvetRepository implements ChatRepository {
   }
 
   @override
-  String previewOf(ChatMessage message) =>
-      recent.previewOf(message, (content) => readableContent(content, nameOf: nameOf, emojiNameOf: emojiNameOf));
+  String previewOf(ChatMessage message) => recent.previewOf(
+    message,
+    (content) => readableContent(content, nameOf: nameOf, emojiNameOf: emojiNameOf, roomNameOf: _roomNameOf),
+  );
 
   /// The rooms the user may see, as the desktop lists them: those they have
   /// ViewChannels in, and the categories with one of those, whether or not

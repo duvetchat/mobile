@@ -25,17 +25,21 @@ class MessageDirectory {
   final String? me;
   final String? Function(String userId) nameOf;
   final CustomEmoji? Function(String emojiId) emojiOf;
-  const MessageDirectory({required this.me, required this.nameOf, required this.emojiOf});
+
+  /// A room the user may see; null for one hidden or gone.
+  final Room? Function(String roomId) roomOf;
+  const MessageDirectory({required this.me, required this.nameOf, required this.emojiOf, this.roomOf = _noRoom});
 
   static String? _noName(String _) => null;
   static CustomEmoji? _noEmoji(String _) => null;
+  static Room? _noRoom(String _) => null;
   static const empty = MessageDirectory(me: null, nameOf: _noName, emojiOf: _noEmoji);
 }
 
 /// A message's text: its markdown, mentions as `@Name` in the accent, custom
 /// emoji as images, and emoji-only messages large. Links open in the browser;
 /// spoilers stay hidden until tapped; a mention, with [onMention], opens that
-/// person. Screen readers get the whole text as one label, with actions for
+/// person, and a room's, with [onRoom], that room. Screen readers get the whole text as one label, with actions for
 /// its links, its spoilers, the mentions it shows, and [messageActions].
 class MessageText extends StatefulWidget {
   final String content;
@@ -51,6 +55,9 @@ class MessageText extends StatefulWidget {
   /// A mention tapped: the user it names. Without it, mentions are text.
   final ValueChanged<String>? onMention;
 
+  /// A room mention tapped: the room, when the user may see it.
+  final ValueChanged<Room>? onRoom;
+
   /// The message's own actions (Reply, its options), offered with the
   /// text's: a screen reader's stop has one set, and two don't merge.
   final Map<CustomSemanticsAction, VoidCallback> messageActions;
@@ -62,6 +69,7 @@ class MessageText extends StatefulWidget {
     this.onAccent = false,
     this.singleLine = false,
     this.onMention,
+    this.onRoom,
     this.messageActions = const {},
     super.key,
   });
@@ -159,6 +167,8 @@ class _MessageTextState extends State<MessageText> {
     // The people mentioned where a mention shows (not in code, a link's text
     // or a hidden spoiler), in order, each once: their IDs and names.
     final mentions = <String, String>{};
+    // The rooms mentioned where they show, each once.
+    final rooms = <String, Room>{};
     var spoilers = false;
 
     // Mentions and custom emoji within a text leaf.
@@ -179,6 +189,21 @@ class _MessageTextState extends State<MessageText> {
               fontWeight: FontWeight.w700,
             ),
           ),
+          RoomToken(:final roomId) => switch (widget.directory.roomOf(roomId)) {
+            // Hidden or gone: no name, nothing to open.
+            null => TextSpan(text: '#unknown', style: style),
+            final room => TextSpan(
+              text: '#${(rooms[roomId] = room).name}',
+              recognizer: switch (widget.onRoom) {
+                final onRoom? => _tap(() => onRoom(room)),
+                null => null,
+              },
+              style: (style ?? const TextStyle()).copyWith(
+                color: widget.onAccent ? null : tokens.accentText,
+                fontWeight: FontWeight.w700,
+              ),
+            ),
+          },
           EmojiToken(:final emojiId) => switch (widget.directory.emojiOf(emojiId)) {
             null => TextSpan(text: ':emoji:', style: style),
             final emoji => WidgetSpan(
@@ -379,6 +404,7 @@ class _MessageTextState extends State<MessageText> {
       spoken,
       nameOf: widget.directory.nameOf,
       emojiNameOf: (id) => widget.directory.emojiOf(id)?.name,
+      roomNameOf: (id) => widget.directory.roomOf(id)?.name,
     );
 
     // Two people shown by the same name get an action each, told apart.
@@ -400,6 +426,8 @@ class _MessageTextState extends State<MessageText> {
                 : 'Open $name’s profile',
           ): () =>
               onMention(id),
+      if (widget.onRoom case final onRoom?)
+        for (final room in rooms.values) CustomSemanticsAction(label: 'Open #${room.name}'): () => onRoom(room),
     };
 
     return Semantics(

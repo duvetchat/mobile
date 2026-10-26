@@ -28,6 +28,7 @@ import 'space_admin.dart' show askDescription, askName, confirmDestructive, Room
 import 'spaces.dart' show showInviteSheet;
 import 'tabs.dart' show SpaceDirectory;
 import 'theme.dart';
+import 'voice_room.dart' show openVoiceRoom;
 import 'widgets/avatar.dart';
 import 'widgets/bot_ui.dart';
 import 'widgets/chrome.dart';
@@ -239,7 +240,7 @@ class _ChatViewState extends State<ChatView> {
   void _restoreDraft() {
     final draft = _repository.drafts[_draftKey];
     if (draft == null) return;
-    _composer.restore(draft.text, mentions: draft.mentions, emojis: draft.emojis);
+    _composer.restore(draft.text, mentions: draft.mentions, emojis: draft.emojis, rooms: draft.rooms);
     _files.addAll(draft.files);
     _replyTo = draft.replyTo;
   }
@@ -252,6 +253,7 @@ class _ChatViewState extends State<ChatView> {
       text: text,
       mentions: picked.mentions,
       emojis: picked.emojis,
+      rooms: picked.rooms,
       files: [..._files],
       replyTo: _replyTo,
     );
@@ -289,7 +291,13 @@ class _ChatViewState extends State<ChatView> {
   MessageDirectory get _directory {
     final names = {for (final m in _members) m.userId: m.displayName};
     final emojis = {for (final e in _customEmojis) e.id: e};
-    return MessageDirectory(me: _me, nameOf: (id) => names[id] ?? _repository.nameOf(id), emojiOf: (id) => emojis[id]);
+    final rooms = {for (final r in _repository.spaces.value.expand((s) => s.rooms)) r.id: r};
+    return MessageDirectory(
+      me: _me,
+      nameOf: (id) => names[id] ?? _repository.nameOf(id),
+      emojiOf: (id) => emojis[id],
+      roomOf: (id) => rooms[id],
+    );
   }
 
   Future<void> _load() async {
@@ -934,7 +942,12 @@ class _ChatViewState extends State<ChatView> {
       _replyTo = null;
       _editing = m;
     });
-    _composer.setEncoded(m.content, nameOf: directory.nameOf, emojiNameOf: (id) => directory.emojiOf(id)?.name);
+    _composer.setEncoded(
+      m.content,
+      nameOf: directory.nameOf,
+      emojiNameOf: (id) => directory.emojiOf(id)?.name,
+      roomNameOf: (id) => directory.roomOf(id)?.name,
+    );
     _focus.requestFocus();
   }
 
@@ -1558,6 +1571,17 @@ class _ChatViewState extends State<ChatView> {
         Member(userId: userId, username: '', alias: _repository.nameOf(userId) ?? 'Someone'),
   );
 
+  /// A room mention tapped: that room, unless it's this one.
+  void _openRoom(Room room) {
+    if (room.id == widget.target.id) return;
+    switch (room.kind) {
+      case RoomKind.text:
+        openChat(context, room.target, '# ${room.name}');
+      case RoomKind.voice:
+        openVoiceRoom(context, room);
+    }
+  }
+
   /// Who reacted to [m], with [picked] first; who's tapped, their profile.
   Future<void> _openReactors(ChatMessage m, [Reaction? picked]) async {
     final target = widget.target;
@@ -1589,6 +1613,7 @@ class _ChatViewState extends State<ChatView> {
       m.content,
       nameOf: directory.nameOf,
       emojiNameOf: (id) => directory.emojiOf(id)?.name,
+      roomNameOf: (id) => directory.roomOf(id)?.name,
     );
     final mine = m.authorId != null && m.authorId == _me;
     // Nothing of the room's applies to a bot's answer to the user alone: no
@@ -1916,6 +1941,27 @@ class _ChatViewState extends State<ChatView> {
           ),
       ];
     }
+    if (q.trigger == '#') {
+      // The Space's rooms the user may see; a conversation has none.
+      final target = widget.target;
+      final rooms = target is RoomTarget
+          ? _repository.spaces.value.where((s) => s.id == target.spaceId).expand((s) => s.rooms)
+          : const <Room>[];
+      return [
+        for (final r in rooms.where((r) => r.name.toLowerCase().contains(needle)).take(10))
+          GlassRow(
+            label: '#${r.name}',
+            detail: r.kind == RoomKind.voice ? 'Voice room' : null,
+            hint: 'Double tap to mention',
+            leading: Icon(
+              r.kind == RoomKind.voice ? FLucideIcons.volume2 : FLucideIcons.hash,
+              size: 24,
+              color: context.theme.colors.mutedForeground,
+            ),
+            onPressed: () => _composer.insertRoom(r),
+          ),
+      ];
+    }
     final custom = _customEmojis.where((e) => e.name.toLowerCase().contains(needle)).take(3).toList();
     final unicode = _catalog?.search(q.query, limit: 5 - custom.length) ?? const <EmojiEntry>[];
     return [
@@ -1998,9 +2044,11 @@ class _ChatViewState extends State<ChatView> {
             child: _SuggestionsPanel(
               label: _slash != null
                   ? 'Commands'
-                  : _query?.trigger == '@'
-                  ? 'Mention suggestions'
-                  : 'Emoji suggestions',
+                  : switch (_query?.trigger) {
+                      '@' => 'Mention suggestions',
+                      '#' => 'Room suggestions',
+                      _ => 'Emoji suggestions',
+                    },
               children: suggestions,
             ),
           ),
@@ -2261,6 +2309,7 @@ class _ChatViewState extends State<ChatView> {
       onOpenSpace: _openSpace,
       onOpenAuthor: () => _openAuthor(m),
       onOpenMention: _openMention,
+      onOpenRoom: _openRoom,
       onUseComponent: (component, values) => _useComponent(m, component, values),
       selectChoices: _selectChoices,
       onDismiss: m.isEphemeral ? () => _dismiss(m) : null,

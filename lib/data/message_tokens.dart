@@ -1,8 +1,8 @@
 /// How Duvet writes mentions and custom emoji inside a message's text, as the
-/// desktop app does: `<@userId>` and `<:emojiId:>`.
+/// desktop app does: `<@userId>`, `<#roomId>` and `<:emojiId:>`.
 library;
 
-final _token = RegExp(r'<@([0-9a-fA-F-]{8,})>|<:([0-9a-fA-F-]{8,}):>');
+final _token = RegExp(r'<@([0-9a-fA-F-]{8,})>|<:([0-9a-fA-F-]{8,}):>|<#([0-9a-fA-F-]{8,})>');
 
 sealed class MessageToken {
   const MessageToken();
@@ -18,35 +18,50 @@ final class MentionToken extends MessageToken {
   const MentionToken(this.userId);
 }
 
+final class RoomToken extends MessageToken {
+  final String roomId;
+  const RoomToken(this.roomId);
+}
+
 final class EmojiToken extends MessageToken {
   final String emojiId;
   const EmojiToken(this.emojiId);
 }
 
-/// Splits [content] into text, mentions and custom emoji, in order.
+/// Splits [content] into text, mentions, room mentions and custom emoji, in
+/// order.
 List<MessageToken> tokenize(String content) {
   final tokens = <MessageToken>[];
   var at = 0;
   for (final m in _token.allMatches(content)) {
     if (m.start > at) tokens.add(TextToken(content.substring(at, m.start)));
-    tokens.add(m.group(1) != null ? MentionToken(m.group(1)!) : EmojiToken(m.group(2)!));
+    tokens.add(switch (m.groups([1, 2, 3])) {
+      [final user?, _, _] => MentionToken(user),
+      [_, final emoji?, _] => EmojiToken(emoji),
+      [_, _, final room] => RoomToken(room!),
+      _ => throw StateError('unreachable'),
+    });
     at = m.end;
   }
   if (at < content.length) tokens.add(TextToken(content.substring(at)));
   return tokens;
 }
 
-/// [content] as people read it: `@Maya` and `:party:`, or `@someone` and
-/// `:emoji:` for names not known here.
+/// [content] as people read it: `@Maya`, `#general` and `:party:`, or
+/// `@someone`, `#unknown` and `:emoji:` for names not known here.
 String readableContent(
   String content, {
   String? Function(String userId)? nameOf,
   String? Function(String emojiId)? emojiNameOf,
+  String? Function(String roomId)? roomNameOf,
 }) => content.replaceAllMapped(
   _token,
-  (m) => m.group(1) != null
-      ? '@${nameOf?.call(m.group(1)!) ?? 'someone'}'
-      : ':${emojiNameOf?.call(m.group(2)!) ?? 'emoji'}:',
+  (m) => switch (m.groups([1, 2, 3])) {
+    [final user?, _, _] => '@${nameOf?.call(user) ?? 'someone'}',
+    [_, final emoji?, _] => ':${emojiNameOf?.call(emoji) ?? 'emoji'}:',
+    [_, _, final room] => '#${roomNameOf?.call(room!) ?? 'unknown'}',
+    _ => throw StateError('unreachable'),
+  },
 );
 
 /// The user IDs [content] mentions.

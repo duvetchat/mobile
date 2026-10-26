@@ -867,12 +867,14 @@ class ChatDraft {
   final String text;
   final Map<String, String> mentions;
   final Map<String, String> emojis;
+  final Map<String, String> rooms;
   final List<OutgoingFile> files;
   final MessageReply? replyTo;
   const ChatDraft({
     this.text = '',
     this.mentions = const {},
     this.emojis = const {},
+    this.rooms = const {},
     this.files = const [],
     this.replyTo,
   });
