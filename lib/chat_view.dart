@@ -44,6 +44,7 @@ import 'widgets/sheets.dart';
 part 'chat/actions.dart';
 part 'chat/bubble.dart';
 part 'chat/composer.dart';
+part 'chat/reactors.dart';
 
 /// Pushes the Chat View over everything, the tab bar included.
 void openChat(BuildContext context, ChatTarget target, String title) => Navigator.of(context, rootNavigator: true).push(
@@ -372,7 +373,13 @@ class _ChatViewState extends State<ChatView> {
     }
   }
 
-  Future<void> _loadOlder() async {
+  /// The older page on its way. Asked again meanwhile (a jump paging back
+  /// while scrolling near the top already asked), it waits for that one.
+  Future<void>? _olderPage;
+
+  Future<void> _loadOlder() => _olderPage ??= _fetchOlder().whenComplete(() => _olderPage = null);
+
+  Future<void> _fetchOlder() async {
     final oldest = _history.firstOrNull;
     if (_loadingOlder || !_hasOlder || oldest == null) return;
     setState(() => _loadingOlder = true);
@@ -1540,6 +1547,23 @@ class _ChatViewState extends State<ChatView> {
         Member(userId: userId, username: '', alias: _repository.nameOf(userId) ?? 'Someone'),
   );
 
+  /// Who reacted to [m], with [picked] first; who's tapped, their profile.
+  Future<void> _openReactors(ChatMessage m, [Reaction? picked]) async {
+    final target = widget.target;
+    final member = await _showReactors(
+      context,
+      reactions: m.reactions,
+      initial: picked,
+      directory: _directory,
+      known: (id) =>
+          _members.where((x) => x.userId == id).firstOrNull ??
+          _repository.people.where((p) => p.userId == id).firstOrNull,
+      presenceOf: (id) =>
+          presenceIn(_repository.presence.value, id, spaceId: target is RoomTarget ? target.spaceId : null),
+    );
+    if (member != null && mounted) await _openProfile(member);
+  }
+
   void _mention(Member member) {
     _composer.startMention();
     _composer.insertMention(member);
@@ -1565,13 +1589,15 @@ class _ChatViewState extends State<ChatView> {
       if (sent) const GlassMenuItem(icon: FLucideIcons.reply, label: 'Reply', value: _Action.reply),
       if (sent && widget.threadOf == null)
         const GlassMenuItem(icon: FLucideIcons.messagesSquare, label: 'View thread', value: _Action.thread),
+      if (sent && m.reactions.isNotEmpty)
+        const GlassMenuItem(icon: FLucideIcons.smile, label: 'Reactions', value: _Action.reactions),
       if (readable.isNotEmpty) const GlassMenuItem(icon: FLucideIcons.copy, label: 'Copy text', value: _Action.copy),
+      if (mine && sent && m.content.isNotEmpty && m.stickerUrl == null)
+        const GlassMenuItem(icon: FLucideIcons.pencil, label: 'Edit', value: _Action.edit),
       if (sent && !m.isNotice && canPin)
         m.pinned
             ? const GlassMenuItem(icon: FLucideIcons.pinOff, label: 'Unpin', value: _Action.unpin)
             : const GlassMenuItem(icon: FLucideIcons.pin, label: 'Pin', value: _Action.pin),
-      if (mine && sent && m.content.isNotEmpty && m.stickerUrl == null)
-        const GlassMenuItem(icon: FLucideIcons.pencil, label: 'Edit', value: _Action.edit),
       if (!mine && m.authorId != null && !m.isEphemeral)
         GlassMenuItem(icon: FLucideIcons.atSign, label: 'Mention ${m.authorName}', value: _Action.mention),
       if (entry.delivery == _Delivery.failed)
@@ -1603,6 +1629,8 @@ class _ChatViewState extends State<ChatView> {
         await _toggleReaction(m, emoji);
       case (_Action.moreReactions, _):
         await _pickReaction(m);
+      case (_Action.reactions, _):
+        await _openReactors(m);
       case (_Action.thread, _):
         _openThread(m);
       case (_Action.pin, _):
@@ -2074,13 +2102,9 @@ class _ChatViewState extends State<ChatView> {
                     mainAxisSize: MainAxisSize.min,
                     children: [
                       _TypingLine(
-                        typing: [
-                          for (final t in _typing.values)
-                            if (!t.recording) t.name,
-                        ],
-                        recording: [
-                          for (final t in _typing.values)
-                            if (t.recording) t.name,
+                        users: [
+                          for (final MapEntry(key: id, value: t) in _typing.entries)
+                            TypingUser(userId: id, name: t.name, recording: t.recording),
                         ],
                       ),
                       if (_files.isNotEmpty && _editing == null)
@@ -2171,6 +2195,7 @@ class _ChatViewState extends State<ChatView> {
       onJump: _jumpTo,
       onReact: (emoji, emojiId) => _toggleReaction(m, emoji, emojiId: emojiId),
       onMoreReactions: () => _pickReaction(m),
+      onOpenReactors: (r) => _openReactors(m, r),
       onLongPress: (anchor) => _messageActions(anchor, entry),
       progress: m.nonce == null ? null : _progress[m.nonce],
       onCancelUpload: entry.delivery == _Delivery.sending ? () => _cancelUpload(entry) : null,

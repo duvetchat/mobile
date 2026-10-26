@@ -184,7 +184,6 @@ What the review found and the PR left as it was. Its four bugs are fixed: a dele
 - [ ] **Screen readers on the rooms page:** a category's header has Move up and Move down of its own, and the panel around it gets the same from the reorderable list: they may be offered twice. A room's actions sit on the list's node above the row, so TalkBack may focus a node with no name, or not offer them on the row. Check with TalkBack, then put each one's actions on its row alone. The rows' hint ("Double tap for options") doesn't say they can be moved.
 - [ ] **The dust's cost and place:** a message's specks grow with its size (a big picture makes over 10,000 squares a frame for 1.6 s, worked out on the UI thread first), so cap them. The dust stays where the message was when it went: it drifts off the gap if the list scrolls meanwhile, and stays over the next screen if the chat is left. A failed delete brings the message back where it was 2 s before, and one deleted elsewhere while its sheet was open comes back with "Couldn't delete the message".
 - [ ] **Layers:** every message now has a `RepaintBoundary` of its own, on top of the list's, for the dust's picture; and every row of the rooms page uses `IntrinsicHeight`. Both fine at today's sizes: measure before a long chat or a big Space.
-- [ ] **Test hook:** each drag edge carries `ValueKey('grip')` for the tests.
 
 ## Needs you
 

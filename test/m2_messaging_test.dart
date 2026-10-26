@@ -173,6 +173,14 @@ void main() {
     await tester.pumpAndSettle();
     expect(find.text('Replying to Maya — Hey! Did you see the new tab bar?'), findsOneWidget);
     expect(tester.getTopLeft(message).dx, x, reason: 'it slides back on release');
+
+    // From the row's empty space too, beside the bubble (#50).
+    await tester.tap(find.bySemanticsLabel('Cancel reply'));
+    await tester.pumpAndSettle();
+    final beside = Offset(tester.getSize(find.byType(MaterialApp)).width - 24, tester.getCenter(message).dy);
+    await tester.dragFrom(beside, const Offset(-120, 0));
+    await tester.pumpAndSettle();
+    expect(find.text('Replying to Maya — Hey! Did you see the new tab bar?'), findsOneWidget);
     semantics.dispose();
   });
 
@@ -216,6 +224,37 @@ void main() {
     await tapLabel(tester, button);
     expect(find.text('Message 59'), findsOneWidget);
     expect(find.bySemanticsLabel(button), findsNothing);
+    semantics.dispose();
+  });
+
+  testWidgets('a reply to a message a page back scrolls to it, however long the page takes', (tester) async {
+    await openMaya(
+      tester,
+      setUp: (r) {
+        ChatMessage said(String id, String text, {MessageReply? reply}) =>
+            FakeRepository.message(id, author: _maya, name: 'Maya', text: text, reply: reply);
+        r
+          ..pageDelay = const Duration(seconds: 10)
+          ..olderPages['c-maya'] = [
+            [said('m-old', 'Way back'), for (var i = 0; i < 20; i++) said('o$i', 'Older $i')],
+          ]
+          ..history['c-maya'] = [
+            for (var i = 0; i < 100; i++) said('h$i', 'Message $i'),
+            said(
+              'm-new',
+              'About that',
+              reply: const MessageReply(messageId: 'm-old', authorId: _maya, authorName: 'Maya', content: 'Way back'),
+            ),
+          ];
+      },
+    );
+    await tapLabel(tester, RegExp('^Replying to Maya: Way back'));
+    // The page on its way, then the scroll to the message.
+    await tester.pump(const Duration(seconds: 10));
+    await tester.pumpAndSettle();
+    expect(find.bySemanticsLabel('Original message'), findsNothing);
+    expect(find.text('Way back'), findsOneWidget);
+    expect(tester.getCenter(find.text('Way back')).dy, inInclusiveRange(0, tester.view.physicalSize.height));
     semantics.dispose();
   });
 
@@ -331,6 +370,50 @@ void main() {
     repository.push('*', const ReactionChanged(messageId: 'm1', userId: FakeRepository.leo, emoji: '❤️', added: true));
     await tester.pumpAndSettle();
     expect(find.bySemanticsLabel('❤️ 2, you reacted'), findsOneWidget);
+    semantics.dispose();
+  });
+
+  testWidgets('who reacted: held chip or options, each emoji, oldest first, the API for anyone else (#94)', (
+    tester,
+  ) async {
+    const gone = '0a0a0a0a-0000-4000-8000-000000000099';
+    await openMaya(
+      tester,
+      setUp: (r) {
+        r.users[gone] = const Member(userId: gone, username: 'nell', alias: 'Nell');
+        r.history['c-maya']![0] = FakeRepository.message(
+          'm1',
+          author: _maya,
+          name: 'Maya',
+          text: 'Hey! Did you see the new tab bar?',
+          reactions: [
+            Reaction(emoji: '👍', users: {_maya, _me}),
+            Reaction(emoji: '❤️', users: {gone, FakeRepository.leo}),
+          ],
+        );
+      },
+    );
+    List<String> people() => [
+      for (final label in ['Maya, @maya', 'Gaby, @gaby', 'Nell, @nell', 'leo, @leo'])
+        if (find.bySemanticsLabel(label).evaluate().isNotEmpty) label,
+    ];
+
+    await tester.longPress(find.bySemanticsLabel('❤️ 2'));
+    await tester.pumpAndSettle();
+    expect(people(), ['Nell, @nell', 'leo, @leo']);
+
+    await tapLabel(tester, '👍 2');
+    expect(people(), ['Maya, @maya', 'Gaby, @gaby']);
+    expect(
+      tester.getSemantics(find.bySemanticsLabel('👍 2').last).flagsCollection.isChecked.toString(),
+      contains('isTrue'),
+    );
+
+    await tester.tapAt(const Offset(20, 20));
+    await tester.pumpAndSettle();
+    await longPress(tester, 'Hey! Did you see the new tab bar?');
+    await tapLabel(tester, 'Reactions');
+    expect(people(), ['Maya, @maya', 'Gaby, @gaby']);
     semantics.dispose();
   });
 

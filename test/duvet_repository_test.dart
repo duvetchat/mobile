@@ -550,6 +550,49 @@ void main() {
     expect(repository.unread.value, isNot(contains('c-1')));
   });
 
+  test('who\'s typing, outside the open chat: 6 seconds after each says so, or until their message (#92)', () {
+    fakeAsync((async) {
+      // Made in the fake clock's zone, so its timers run on that clock.
+      final repository = DuvetRepository(
+        store: store,
+        recentsStore: recentsStore,
+        httpClient: () => client,
+        connectGateway: false,
+        cacheStore: cache,
+      );
+      Map<String, List<String>> typing() => {
+        for (final MapEntry(:key, :value) in repository.typingNow.value.entries)
+          key: [for (final u in value) '${u.name}${u.recording ? ' (recording)' : ''}'],
+      };
+      void typed(String type, String userId, String username) {
+        repository.handleEvent(
+          _event(type, {'conversation_id': 'c-1', 'user_id': userId, 'username': username}),
+        );
+        async.flushMicrotasks();
+      }
+
+      typed('DM_TYPING', _maya, 'maya');
+      typed('DM_RECORDING', 'u-leo', 'leo');
+      expect(typing(), {
+        'c-1': ['maya', 'leo (recording)'],
+      });
+
+      // Typing again starts the 6 seconds over.
+      async.elapse(const Duration(seconds: 4));
+      typed('DM_TYPING', _maya, 'maya');
+      async.elapse(const Duration(seconds: 2));
+      expect(typing(), {
+        'c-1': ['maya'],
+      });
+
+      repository.handleEvent(_event('DM_MESSAGE_CREATE', _dm('9', _maya, 'done')));
+      async.flushMicrotasks();
+      expect(typing(), isEmpty);
+      repository.dispose();
+      async.flushMicrotasks();
+    });
+  });
+
   test('voice gets the gateway\'s voice and call events, and READY, and nothing else', () async {
     await repository.logIn('gaby@duvet.chat', 'secret');
     final voice = <duvet.GatewayEventPayload>[];

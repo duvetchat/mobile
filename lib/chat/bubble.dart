@@ -31,6 +31,9 @@ class _Bubble extends StatelessWidget {
   final ValueChanged<String> onJump;
   final void Function(String emoji, String? emojiId) onReact;
   final VoidCallback onMoreReactions;
+
+  /// A reaction chip held: who reacted with it.
+  final ValueChanged<Reaction> onOpenReactors;
   final ValueChanged<BuildContext> onLongPress;
 
   /// How far its files have uploaded, 0 to 1, while sending.
@@ -66,6 +69,7 @@ class _Bubble extends StatelessWidget {
     required this.onJump,
     required this.onReact,
     required this.onMoreReactions,
+    required this.onOpenReactors,
     required this.onLongPress,
     this.lifted = false,
     this.stickerName,
@@ -270,7 +274,14 @@ class _Bubble extends StatelessWidget {
           ),
         ),
         if (m.reactions.isNotEmpty)
-          _Reactions(reactions: m.reactions, me: me, directory: directory, onReact: onReact, onMore: onMoreReactions),
+          _Reactions(
+            reactions: m.reactions,
+            me: me,
+            directory: directory,
+            onReact: onReact,
+            onReactors: onOpenReactors,
+            onMore: onMoreReactions,
+          ),
         if (m.isEphemeral) _EphemeralNote(onDismiss: onDismiss),
         ?status,
       ],
@@ -418,6 +429,8 @@ class _SwipeToReplyState extends State<_SwipeToReply> with SingleTickerProviderS
     // sent isn't mounted again once it is.
     final enabled = widget.onReply != null;
     return GestureDetector(
+      // All of the row takes the swipe, not only the bubble.
+      behavior: HitTestBehavior.opaque,
       onHorizontalDragUpdate: enabled ? _drag : null,
       onHorizontalDragEnd: enabled ? (_) => _release() : null,
       onHorizontalDragCancel: enabled ? _release : null,
@@ -775,18 +788,20 @@ class _ReplyRef extends StatelessWidget {
 }
 
 /// The reaction chips under a bubble: the emoji and its count; the user's
-/// own in the selected state. A last chip adds one.
+/// own in the selected state; held, who reacted. A last chip adds one.
 class _Reactions extends StatelessWidget {
   final List<Reaction> reactions;
   final String? me;
   final MessageDirectory directory;
   final void Function(String emoji, String? emojiId) onReact;
+  final ValueChanged<Reaction> onReactors;
   final VoidCallback onMore;
   const _Reactions({
     required this.reactions,
     required this.me,
     required this.directory,
     required this.onReact,
+    required this.onReactors,
     required this.onMore,
   });
 
@@ -798,6 +813,7 @@ class _Reactions extends StatelessWidget {
       required String label,
       required Widget child,
       required VoidCallback onTap,
+      VoidCallback? onLongPress,
       bool mine = false,
       bool? toggled,
     }) => Semantics(
@@ -807,8 +823,10 @@ class _Reactions extends StatelessWidget {
       label: label,
       excludeSemantics: true,
       onTap: onTap,
+      customSemanticsActions: {const CustomSemanticsAction(label: 'See who reacted'): ?onLongPress},
       child: Pressable(
         onTap: onTap,
+        onLongPress: onLongPress,
         builder: (context, pressed) => Container(
           height: 28,
           constraints: const BoxConstraints(minWidth: 40),
@@ -841,12 +859,16 @@ class _Reactions extends StatelessWidget {
             () {
               final mine = me != null && r.users.contains(me);
               final custom = r.emojiId == null ? null : directory.emojiOf(r.emojiId!);
-              final name = r.emojiId == null ? r.emoji : ':${custom?.name ?? r.emoji}:';
+              final name = _reactionName(r, directory);
               return chip(
                 label: '$name ${r.count}${mine ? ', you reacted' : ''}',
                 mine: mine,
                 toggled: mine,
                 onTap: () => onReact(r.emoji, r.emojiId),
+                onLongPress: () {
+                  HapticFeedback.mediumImpact();
+                  onReactors(r);
+                },
                 child: Row(
                   mainAxisSize: MainAxisSize.min,
                   children: [
@@ -948,27 +970,13 @@ class _Notice extends StatelessWidget {
 /// Above the composer: who's typing, and who's recording a voice message,
 /// as the desktop's typing indicator says it.
 class _TypingLine extends StatelessWidget {
-  final List<String> typing;
-  final List<String> recording;
-  const _TypingLine({required this.typing, required this.recording});
+  final List<TypingUser> users;
+  const _TypingLine({required this.users});
 
   @override
   Widget build(BuildContext context) {
-    if (typing.isEmpty && recording.isEmpty) return const SizedBox.shrink();
-    final who = [
-      if (typing.isNotEmpty)
-        switch (typing) {
-          [final one] => '$one is typing…',
-          [final a, final b] => '$a and $b are typing…',
-          _ => 'Several people are typing…',
-        },
-      if (recording.isNotEmpty)
-        switch (recording) {
-          [final one] => '$one is recording a voice message',
-          [final a, final b] => '$a and $b are recording voice messages',
-          _ => 'Several people are recording voice messages',
-        },
-    ].join(' · ');
+    final who = typingSentence(users);
+    if (who == null) return const SizedBox.shrink();
     return Align(
       alignment: Alignment.centerLeft,
       child: Padding(

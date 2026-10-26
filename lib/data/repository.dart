@@ -75,6 +75,10 @@ abstract interface class ChatRepository {
   /// Who starts typing in the chat.
   Stream<TypingUser> typing(ChatTarget target);
 
+  /// Who's typing now, by chat ID, as the open chat shows them: what the
+  /// Chats list and a Space's rooms show outside it.
+  ValueListenable<Map<String, List<TypingUser>>> get typingNow;
+
   /// A room's ephemeral messages: its bots' answers to the user alone, which
   /// no history has. They last the session, until dismissed.
   List<ChatMessage> ephemeralIn(ChatTarget target);
@@ -330,6 +334,10 @@ abstract interface class ChatRepository {
   /// Who's in the chat: the room's space, or the conversation. Cached; [refresh]
   /// fetches again.
   Future<List<Member>> members(ChatTarget target, {bool refresh = false});
+
+  /// Anyone, by user ID, from the API: for those no list has, such as
+  /// someone who left.
+  Future<Member> user(String userId);
 
   /// A user's name, if any list or message seen this session gave it.
   String? nameOf(String userId);

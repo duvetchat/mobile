@@ -74,7 +74,37 @@ class DuvetRepository implements ChatRepository {
        _recentsStore = recentsStore ?? const SecureRecentChatsStore(),
        _router = router,
        _httpClient = httpClient ?? http.Client.new,
-       _connectsGateway = connectGateway;
+       _connectsGateway = connectGateway {
+    _typing.stream.listen((e) => _setTyping(e.$1, e.$2.userId, e.$2));
+    _messageEvents.stream.listen((e) {
+      if (e.$2 case MessageCreated(message: ChatMessage(:final authorId?))) _setTyping(e.$1, authorId);
+    });
+  }
+
+  @override
+  final ValueNotifier<Map<String, List<TypingUser>>> typingNow = ValueNotifier(const {});
+
+  /// When each one typing stops showing, by chat ID and user ID.
+  final _typingEnds = <(String, String), Timer>{};
+
+  /// [user] typing in [chatId], for as long as the open chat shows it, or,
+  /// without, [userId] no longer: their message came, or the time ran out.
+  void _setTyping(String chatId, String userId, [TypingUser? user]) {
+    _typingEnds.remove((chatId, userId))?.cancel();
+    final was = typingNow.value[chatId] ?? const <TypingUser>[];
+    if (user == null && was.every((u) => u.userId != userId)) return;
+    if (user != null) {
+      _typingEnds[(chatId, userId)] = Timer(const Duration(seconds: 6), () => _setTyping(chatId, userId));
+    }
+    typingNow.value = {
+      ...typingNow.value,
+      chatId: [
+        for (final u in was)
+          if (u.userId != userId) u,
+        ?user,
+      ],
+    }..removeWhere((_, users) => users.isEmpty);
+  }
 
   final ChatCache _cache;
 
@@ -1154,12 +1184,18 @@ class DuvetRepository implements ChatRepository {
     return rooms.where(shown).toList();
   }
 
+  /// Rooms by position, then by ID: two that share a position (from before
+  /// the API kept them apart, or two changes at once) keep one order, where
+  /// Dart's sort, which isn't stable, could swap them between rebuilds.
+  static int _byPosition(duvet.GatewayRoom a, duvet.GatewayRoom b) =>
+      a.position != b.position ? a.position.compareTo(b.position) : a.id.compareTo(b.id);
+
   /// The rooms outside any category, then each category's, by position.
   static List<RoomSection> _sections(String spaceId, Iterable<duvet.GatewayRoom> all) {
-    int byPosition(duvet.GatewayRoom a, duvet.GatewayRoom b) => a.position.compareTo(b.position);
-    final categories = all.where((r) => r.type == duvet.RoomType.category).toList()..sort(byPosition);
+    final categories = all.where((r) => r.type == duvet.RoomType.category).toList()..sort(_byPosition);
     final categoryIds = {for (final c in categories) c.id};
-    final rooms = all.where((r) => r.type != duvet.RoomType.category && r.deletedAt == null).toList()..sort(byPosition);
+    final rooms = all.where((r) => r.type != duvet.RoomType.category && r.deletedAt == null).toList()
+      ..sort(_byPosition);
 
     Room toRoom(duvet.GatewayRoom r) => Room(
       id: r.id,
@@ -2280,10 +2316,7 @@ class DuvetRepository implements ChatRepository {
 
   @override
   List<AdminRoom> adminRooms(String spaceId) => [
-    for (final r in _visibleRooms(
-      spaceId,
-      _spaces[spaceId]?.rooms.values ?? const [],
-    )..sort((a, b) => a.position.compareTo(b.position)))
+    for (final r in _visibleRooms(spaceId, _spaces[spaceId]?.rooms.values ?? const [])..sort(_byPosition))
       AdminRoom(
         id: r.id,
         name: r.name,
@@ -2341,16 +2374,19 @@ class DuvetRepository implements ChatRepository {
 
   /// A room was deleted. The API numbers its level 0, 1, 2… again, and moves a
   /// category's rooms out of it, after the last place of the top level, in the
-  /// order they had: here they stay, outside any category. The rooms that moved
-  /// keep their places until ROOM_REORDER, which follows ROOM_DELETE whenever
-  /// the deletion moved others, gives them their new ones. They aren't
-  /// numbered here: the desktop waits for it too.
+  /// order they had: here they go there too, outside any category, until
+  /// ROOM_REORDER, which follows ROOM_DELETE whenever the deletion moved
+  /// others, gives every room its place. Left at their old places, they'd
+  /// share them with the top level's rooms, and go among them by ID.
   void _roomGone(String spaceId, String roomId) {
     final rooms = _spaces[spaceId]?.rooms;
     if (rooms == null) return;
     rooms.remove(roomId);
-    for (final r in [...rooms.values]) {
-      if (r.parentId == roomId) rooms[r.id] = _placed(r, parentId: null, position: r.position);
+    final moved = rooms.values.where((r) => r.parentId == roomId).toList()..sort(_byPosition);
+    var next =
+        rooms.values.where((r) => r.parentId == null).fold(-1, (last, r) => r.position > last ? r.position : last) + 1;
+    for (final r in moved) {
+      rooms[r.id] = _placed(r, parentId: null, position: next++);
     }
     _publishSpaces();
   }
@@ -2751,6 +2787,19 @@ class DuvetRepository implements ChatRepository {
   }
 
   @override
+  Future<Member> user(String userId) async {
+    final u = await _call((api) => api.getBotUser(userId));
+    return Member(
+      userId: u.id,
+      username: u.username,
+      alias: u.alias,
+      avatarUrl: avatarUrl(u.avatar),
+      isBot: u.isBot,
+      bannerUrl: avatarUrl(u.banner),
+    );
+  }
+
+  @override
   Future<void> addBot(String spaceId, String botId) => _explained((api) => api.addBotToSpace(spaceId, botId));
 
   @override
@@ -3100,6 +3149,10 @@ class DuvetRepository implements ChatRepository {
     mentions.dispose();
     _messageEvents.close();
     _typing.close();
+    for (final t in _typingEnds.values) {
+      t.cancel();
+    }
+    typingNow.dispose();
     _recents.dispose();
     presence.dispose();
     collapsedCategories.dispose();

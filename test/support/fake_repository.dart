@@ -66,6 +66,8 @@ class FakeRepository implements ChatRepository {
   @override
   final ValueNotifier<Map<String, ChatMessage>> latest = ValueNotifier(const {});
   @override
+  final ValueNotifier<Map<String, List<TypingUser>>> typingNow = ValueNotifier(const {});
+  @override
   final ValueNotifier<Map<String, int>> mentions = ValueNotifier(const {});
   @override
   final drafts = <String, ChatDraft>{};
@@ -777,6 +779,12 @@ class FakeRepository implements ChatRepository {
   @override
   Future<BotInfo> bot(String userId) async => BotInfo(id: userId, name: 'Ballot');
 
+  /// Who [user] answers for, by ID; anyone else isn't found.
+  Map<String, Member> users = {};
+
+  @override
+  Future<Member> user(String userId) async => users[userId] ?? (throw const ActionFailed('Couldn’t find that user'));
+
   @override
   Future<void> addBot(String spaceId, String botId) async {
     _refuse('addBot');
@@ -1003,8 +1011,17 @@ class FakeRepository implements ChatRepository {
   String previewOf(ChatMessage message) => recent.previewOf(message, (c) => c);
 
   @override
-  Future<List<ChatMessage>> messages(ChatTarget target, {String? before}) async =>
-      before == null ? [...?history[target.id]] : const [];
+  Future<List<ChatMessage>> messages(ChatTarget target, {String? before}) async {
+    if (before == null) return [...?history[target.id]];
+    await Future<void>.delayed(pageDelay);
+    final pages = olderPages[target.id];
+    return pages == null || pages.isEmpty ? const [] : pages.removeAt(0);
+  }
+
+  /// The pages before the history, newest first, one per ask, each after
+  /// [pageDelay].
+  final olderPages = <String, List<List<ChatMessage>>>{};
+  Duration pageDelay = Duration.zero;
 
   @override
   Stream<MessageEvent> messageEvents(ChatTarget target) =>

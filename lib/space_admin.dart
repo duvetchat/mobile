@@ -996,6 +996,17 @@ class _RoomsAdminPageState extends State<RoomsAdminPage> {
               1,
   );
 
+  // A screen reader's move of what the user may not move: the list offers
+  // moves on every item, so this says why nothing moved.
+  void _cantMove(AdminRoom r) {
+    if (!mounted) return;
+    SemanticsService.sendAnnouncement(
+      View.of(context),
+      'You can’t move ${r.kind == AdminRoomKind.category ? r.name : '#${r.name}'}',
+      Directionality.of(context),
+    );
+  }
+
   /// Sends [moved] to [position] in [parent], as the API takes it.
   Future<void> _place(AdminRoom moved, String? parent, int position) async {
     final label = moved.kind == AdminRoomKind.category ? moved.name : '#${moved.name}';
@@ -1057,7 +1068,6 @@ class _RoomsAdminPageState extends State<RoomsAdminPage> {
       index: index,
       child: ExcludeSemantics(
         child: Container(
-          key: const ValueKey('grip'),
           width: 32,
           decoration: BoxDecoration(
             color: colors.secondary,
@@ -1133,7 +1143,8 @@ class _RoomsAdminPageState extends State<RoomsAdminPage> {
       buildDefaultDragHandles: false,
       itemCount: list.length,
       onReorderItem: (from, to) {
-        if (from != to && manages(list[from])) _move(list[from], [...list]..removeAt(from), to, parent: parent);
+        if (!manages(list[from])) return _cantMove(list[from]);
+        if (from != to) _move(list[from], [...list]..removeAt(from), to, parent: parent);
       },
       proxyDecorator: liftRow,
       itemBuilder: (context, i) {
@@ -1141,16 +1152,20 @@ class _RoomsAdminPageState extends State<RoomsAdminPage> {
         final mine = manages(r);
         final body = row(
           ListRow(
+            // One stop with the moves the list offers on it.
+            ownNode: false,
             title: r.name,
             hash: r.kind == AdminRoomKind.text,
             leading: r.kind == AdminRoomKind.voice
                 ? ExcludeSemantics(child: Icon(FLucideIcons.volume2, size: 20, color: colors.mutedForeground))
                 : null,
-            detail: switch ((r.kind == AdminRoomKind.voice, mine)) {
-              (true, true) => 'Voice room. Double tap for options',
-              (true, false) => 'Voice room',
-              (false, true) => 'Double tap for options',
-              (false, false) => null,
+            detail: switch ([
+              if (r.kind == AdminRoomKind.voice) 'Voice room',
+              if (mine)
+                list.length > 1 ? 'Double tap for options, or use actions to move it' : 'Double tap for options',
+            ]) {
+              [] => null,
+              final parts => parts.join('. '),
             },
             onTap: mine ? () => _options(r) : null,
           ),
@@ -1169,18 +1184,18 @@ class _RoomsAdminPageState extends State<RoomsAdminPage> {
       final c = categories[i];
       final inside = _roomsIn(all, c.id);
       final mine = manages(c);
-      void moveBy(int step) => _move(c, [...categories]..removeAt(i), i + step);
+      // Not a node of its own: the panel's, with the moves the list offers
+      // on it, so a category and its moves are one stop.
       final header = Semantics(
-        container: true,
         button: mine,
         label: 'Category ${c.name}',
-        hint: mine ? 'Double tap for options' : null,
+        hint: !mine
+            ? null
+            : categories.length > 1
+            ? 'Double tap for options, or use actions to move it with its rooms'
+            : 'Double tap for options',
         excludeSemantics: true,
         onTap: mine ? () => _options(c) : null,
-        customSemanticsActions: {
-          if (mine && i > 0) const CustomSemanticsAction(label: 'Move up'): () => moveBy(-1),
-          if (mine && i < categories.length - 1) const CustomSemanticsAction(label: 'Move down'): () => moveBy(1),
-        },
         // All of the row takes the tap, not only the name.
         child: GestureDetector(
           behavior: HitTestBehavior.opaque,
@@ -1217,9 +1232,13 @@ class _RoomsAdminPageState extends State<RoomsAdminPage> {
               row(
                 Padding(
                   padding: const EdgeInsets.fromLTRB(28, 4, 16, 16),
-                  child: Text(
-                    'No rooms. Move one here from its options.',
-                    style: DuvetType.caption.copyWith(color: colors.mutedForeground),
+                  // Its own node, or it would name the panel.
+                  child: Semantics(
+                    container: true,
+                    child: Text(
+                      'No rooms. Move one here from its options.',
+                      style: DuvetType.caption.copyWith(color: colors.mutedForeground),
+                    ),
                   ),
                 ),
                 i,
@@ -1251,9 +1270,8 @@ class _RoomsAdminPageState extends State<RoomsAdminPage> {
               itemCount: categories.length,
               itemBuilder: (context, i) => block(i),
               onReorderItem: (from, to) {
-                if (from != to && manages(categories[from])) {
-                  _move(categories[from], [...categories]..removeAt(from), to);
-                }
+                if (!manages(categories[from])) return _cantMove(categories[from]);
+                if (from != to) _move(categories[from], [...categories]..removeAt(from), to);
               },
               proxyDecorator: liftPanel,
             ),
