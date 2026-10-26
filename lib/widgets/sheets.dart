@@ -6,7 +6,6 @@ import 'package:forui/forui.dart';
 import '../data/models.dart';
 import '../data/scope.dart';
 import '../theme.dart';
-import 'avatar.dart';
 import 'glass.dart';
 import 'message_content.dart';
 import 'rows.dart';
@@ -58,8 +57,9 @@ Future<Room?> showChannelSwitcher(BuildContext context, {required Space space, r
       },
     );
 
-/// The chat's pinned messages, each with Jump to message, and Unpin for those
-/// who may ([onUnpin], which answers whether it did; null for the others).
+/// The chat's pinned messages, each whole, as [message] shows it in the chat,
+/// with Jump to message, and Unpin for those who may ([onUnpin], which
+/// answers whether it did; null for the others).
 /// [pins] loads them again whenever [changes] says a pin changed, as the
 /// desktop's list does. Answers the one to jump to.
 Future<ChatMessage?> showPinsSheet(
@@ -68,12 +68,20 @@ Future<ChatMessage?> showPinsSheet(
   Stream<void>? changes,
   required String where,
   required MessageDirectory directory,
+  required Widget Function(ChatMessage m) message,
   required Future<bool> Function(ChatMessage m)? onUnpin,
 }) => showGlassSheet<ChatMessage>(
   context,
   label: 'Pinned',
-  builder: (context, scroll) =>
-      _Pins(pins: pins, changes: changes, where: where, directory: directory, onUnpin: onUnpin, scroll: scroll),
+  builder: (context, scroll) => _Pins(
+    pins: pins,
+    changes: changes,
+    where: where,
+    directory: directory,
+    message: message,
+    onUnpin: onUnpin,
+    scroll: scroll,
+  ),
 );
 
 class _Pins extends StatefulWidget {
@@ -81,6 +89,7 @@ class _Pins extends StatefulWidget {
   final Stream<void>? changes;
   final String where;
   final MessageDirectory directory;
+  final Widget Function(ChatMessage m) message;
   final Future<bool> Function(ChatMessage m)? onUnpin;
   final ScrollController scroll;
   const _Pins({
@@ -88,6 +97,7 @@ class _Pins extends StatefulWidget {
     required this.changes,
     required this.where,
     required this.directory,
+    required this.message,
     required this.onUnpin,
     required this.scroll,
   });
@@ -177,76 +187,51 @@ class _PinsState extends State<_Pins> {
             Padding(
               padding: const EdgeInsets.only(bottom: 12),
               child: Container(
-                // Unpin's 40pt button keeps its own margin on the right.
-                padding: EdgeInsets.fromLTRB(12, 12, widget.onUnpin == null ? 12 : 4, 12),
+                padding: const EdgeInsets.fromLTRB(4, 4, 4, 8),
                 decoration: BoxDecoration(
                   color: colors.card,
                   borderRadius: BorderRadius.circular(DuvetTokens.radiusButton),
                   boxShadow: tokens.shadowRest,
                 ),
-                child: Row(
-                  crossAxisAlignment: CrossAxisAlignment.start,
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
                   children: [
-                    Expanded(
-                      child: Semantics(
-                        button: true,
-                        label:
-                            'Pinned message from ${m.authorName}: ${context.repository.previewOf(m)}. Jump to message',
-                        excludeSemantics: true,
-                        onTap: () => Navigator.of(context).pop(m),
-                        child: GestureDetector(
-                          behavior: HitTestBehavior.opaque,
-                          onTap: () => Navigator.of(context).pop(m),
-                          child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              Row(
-                                children: [
-                                  UserAvatar(name: m.authorName, url: m.authorAvatarUrl, size: 24),
-                                  const SizedBox(width: 8),
-                                  Flexible(
-                                    child: Text(
-                                      m.authorName,
-                                      maxLines: 1,
-                                      overflow: TextOverflow.ellipsis,
-                                      style: DuvetType.rowTitle.copyWith(fontSize: 15, color: colors.foreground),
-                                    ),
+                    widget.message(m),
+                    Row(
+                      children: [
+                        Expanded(
+                          child: Semantics(
+                            container: true,
+                            button: true,
+                            label: 'Jump to ${m.authorName}’s message',
+                            excludeSemantics: true,
+                            onTap: () => Navigator.of(context).pop(m),
+                            child: GestureDetector(
+                              behavior: HitTestBehavior.opaque,
+                              onTap: () => Navigator.of(context).pop(m),
+                              child: Padding(
+                                padding: const EdgeInsets.fromLTRB(12, 10, 12, 10),
+                                child: Text(
+                                  'Jump to message',
+                                  style: DuvetType.caption.copyWith(
+                                    color: tokens.accentText,
+                                    fontWeight: FontWeight.w500,
                                   ),
-                                  const SizedBox(width: 8),
-                                  Text(
-                                    shortTime(m.createdAt),
-                                    style: DuvetType.caption.copyWith(color: colors.mutedForeground),
-                                  ),
-                                ],
-                              ),
-                              const SizedBox(height: 4),
-                              Text(
-                                context.repository.previewOf(m),
-                                maxLines: 2,
-                                overflow: TextOverflow.ellipsis,
-                                style: DuvetType.body.copyWith(color: colors.foreground),
-                              ),
-                              const SizedBox(height: 4),
-                              Text(
-                                'Jump to message',
-                                style: DuvetType.caption.copyWith(
-                                  color: tokens.accentText,
-                                  fontWeight: FontWeight.w500,
                                 ),
                               ),
-                            ],
+                            ),
                           ),
                         ),
-                      ),
+                        if (widget.onUnpin case final onUnpin?)
+                          _UnpinButton(
+                            name: m.authorName,
+                            // A pin the server kept stays listed.
+                            onPressed: () async {
+                              if (await onUnpin(m) && mounted) setState(() => _pins = [...?_pins]..remove(m));
+                            },
+                          ),
+                      ],
                     ),
-                    if (widget.onUnpin case final onUnpin?)
-                      _UnpinButton(
-                        name: m.authorName,
-                        // A pin the server kept stays listed.
-                        onPressed: () async {
-                          if (await onUnpin(m) && mounted) setState(() => _pins = [...?_pins]..remove(m));
-                        },
-                      ),
                   ],
                 ),
               ),

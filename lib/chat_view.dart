@@ -1447,6 +1447,7 @@ class _ChatViewState extends State<ChatView> {
       changes: _repository.messageEvents(widget.target).where((e) => e is MessagePinned),
       where: _where,
       directory: _directory,
+      message: (m) => _bubbleFor((message: m, delivery: _Delivery.sent), pinned: true),
       onUnpin: _canPin ? (m) => _setPinned(m, false) : null,
     );
     if (picked != null && mounted) await _jumpTo(picked.id);
@@ -1707,11 +1708,12 @@ class _ChatViewState extends State<ChatView> {
   /// room; in a conversation, either of a DM's two, or a group's owner.
   bool get _canDeleteNotices => switch (widget.target) {
     RoomTarget() => _canDeleteOthers,
-    ConversationTarget(:final conversationId) =>
-      switch (_repository.conversations.value.where((c) => c.id == conversationId).firstOrNull) {
-        null => false,
-        final c => !c.isGroup || c.ownerId == _me,
-      },
+    ConversationTarget(:final conversationId) => switch (_repository.conversations.value
+        .where((c) => c.id == conversationId)
+        .firstOrNull) {
+      null => false,
+      final c => !c.isGroup || c.ownerId == _me,
+    },
   };
 
   /// A pin notice held: Delete, the one thing to do with it.
@@ -2209,8 +2211,15 @@ class _ChatViewState extends State<ChatView> {
 
   bool get _canSend => _composer.text.trim().isNotEmpty || (_files.isNotEmpty && _editing == null);
 
-  Widget _bubbleFor(_Entry entry, {bool lifted = false, bool first = true, bool last = true}) {
+  /// [pinned]: in the pins, where a reply or a quote tapped closes them
+  /// first, and holding it does nothing.
+  Widget _bubbleFor(_Entry entry, {bool lifted = false, bool first = true, bool last = true, bool pinned = false}) {
     final m = entry.message;
+    void closingPins(VoidCallback then) {
+      if (pinned) Navigator.of(context).pop();
+      then();
+    }
+
     return _Bubble(
       key: lifted ? null : ValueKey(m.nonce ?? m.id),
       entry: entry,
@@ -2226,12 +2235,12 @@ class _ChatViewState extends State<ChatView> {
       waiting: entry.delivery == _Delivery.sending && _repository.status.value == LiveStatus.reconnecting,
       onRetry: entry.delivery == _Delivery.failed ? () => _retry(entry) : null,
       onDiscard: entry.delivery == _Delivery.failed ? () => _discard(entry) : null,
-      onReply: () => _startReply(m),
-      onJump: _jumpTo,
+      onReply: () => closingPins(() => _startReply(m)),
+      onJump: (id) => closingPins(() => _jumpTo(id)),
       onReact: (emoji, emojiId) => _toggleReaction(m, emoji, emojiId: emojiId),
       onMoreReactions: () => _pickReaction(m),
       onOpenReactors: (r) => _openReactors(m, r),
-      onLongPress: (anchor) => _messageActions(anchor, entry),
+      onLongPress: pinned ? null : (anchor) => _messageActions(anchor, entry),
       progress: m.nonce == null ? null : _progress[m.nonce],
       onCancelUpload: entry.delivery == _Delivery.sending ? () => _cancelUpload(entry) : null,
       tooLarge: m.nonce != null && _tooLarge.contains(m.nonce),

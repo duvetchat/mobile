@@ -152,6 +152,37 @@ void main() {
     semantics.dispose();
   });
 
+  testWidgets('pins show whole, as the chat: markdown, the quote, reactions; no options held (#91)', (tester) async {
+    final repository = await pumpApp(tester);
+    repository.pinned['r-general'] = [
+      FakeRepository.message(
+        'p1',
+        author: FakeRepository.leo,
+        name: 'Leo',
+        text: '**Ramp** is _final_',
+        reply: const MessageReply(messageId: 'm3', authorId: FakeRepository.leo, authorName: 'Leo', content: 'Pushed'),
+        reactions: [
+          Reaction(emoji: '👍', users: {FakeRepository.maya}),
+        ],
+      ),
+    ];
+    await openGeneral(tester);
+    await tapLabel(tester, 'More');
+    await tapLabel(tester, 'Pinned messages');
+    expect(find.bySemanticsLabel(RegExp(r'Ramp is final')), findsOneWidget);
+    expect(find.bySemanticsLabel(RegExp(r'^Replying to Leo: Pushed')), findsOneWidget);
+    expect(find.bySemanticsLabel('👍 1'), findsOneWidget);
+    final node = tester.getSemantics(find.bySemanticsLabel(RegExp(r'Ramp is final')));
+    expect(
+      node.getSemanticsData().customSemanticsActionIds?.map(CustomSemanticsAction.getAction).map((a) => a?.label),
+      isNot(contains('Message options')),
+    );
+
+    await tapLabel(tester, 'Jump to Leo’s message');
+    expect(find.text('1 message in #general'), findsNothing);
+    semantics.dispose();
+  });
+
   testWidgets('a thread shows the chain and replies into it', (tester) async {
     final repository = await pumpApp(tester);
     final root = repository.history['r-general']!.single;

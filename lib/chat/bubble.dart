@@ -34,7 +34,9 @@ class _Bubble extends StatelessWidget {
 
   /// A reaction chip held: who reacted with it.
   final ValueChanged<Reaction> onOpenReactors;
-  final ValueChanged<BuildContext> onLongPress;
+
+  /// Held: its options. Null where it has none, as in the pins.
+  final ValueChanged<BuildContext>? onLongPress;
 
   /// How far its files have uploaded, 0 to 1, while sending.
   final double? progress;
@@ -120,7 +122,7 @@ class _Bubble extends StatelessWidget {
     // press does.
     Map<CustomSemanticsAction, VoidCallback> actionsAt(BuildContext anchor) => {
       if (repliable) const CustomSemanticsAction(label: 'Reply'): onReply,
-      const CustomSemanticsAction(label: 'Message options'): () => onLongPress(anchor),
+      if (onLongPress case final hold?) const CustomSemanticsAction(label: 'Message options'): () => hold(anchor),
     };
 
     Widget bodyAt(BuildContext? anchor) {
@@ -266,9 +268,12 @@ class _Bubble extends StatelessWidget {
           _ReplyRef(reply: reply, directory: directory, onTap: () => onJump(reply.messageId)),
         Builder(
           builder: (anchor) => GestureDetector(
-            onLongPress: () {
-              HapticFeedback.mediumImpact();
-              onLongPress(anchor);
+            onLongPress: switch (onLongPress) {
+              final hold? => () {
+                HapticFeedback.mediumImpact();
+                hold(anchor);
+              },
+              null => null,
             },
             child: bodyAt(anchor),
           ),
