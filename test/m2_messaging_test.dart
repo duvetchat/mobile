@@ -252,6 +252,37 @@ void main() {
     semantics.dispose();
   });
 
+  testWidgets('a reply\'s quote shows @ before the author when it mentioned them (#85)', (tester) async {
+    await openMaya(
+      tester,
+      setUp: (r) => r.history['c-maya']!.addAll([
+        FakeRepository.message(
+          'm5',
+          author: _maya,
+          name: 'Maya',
+          text: 'Quiet',
+          reply: const MessageReply(messageId: 'm1', authorId: _maya, authorName: 'Maya', content: 'Was it'),
+        ),
+        FakeRepository.message(
+          'm6',
+          author: _maya,
+          name: 'Maya',
+          text: 'Loud',
+          reply: const MessageReply(
+            messageId: 'm1',
+            authorId: _maya,
+            authorName: 'Maya',
+            content: 'Was it',
+            mentionAuthor: true,
+          ),
+        ),
+      ]),
+    );
+    expect(find.text('Maya Was it', findRichText: true), findsOneWidget);
+    expect(find.text('@Maya Was it', findRichText: true), findsOneWidget);
+    semantics.dispose();
+  });
+
   testWidgets('scrolled up, a button jumps back to the newest messages', (tester) async {
     await openMaya(
       tester,
