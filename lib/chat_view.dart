@@ -1835,13 +1835,13 @@ class _ChatViewState extends State<ChatView> {
       final others = _members.where((m) => m.userId != _me);
       final starts = others
           .where((m) => m.displayName.toLowerCase().startsWith(needle) || m.username.toLowerCase().startsWith(needle))
-          .take(5)
+          .take(10)
           .toList();
       final contains = needle.isEmpty
           ? const <Member>[]
           : others
                 .where((m) => !starts.contains(m) && m.displayName.toLowerCase().contains(needle))
-                .take(5 - starts.length);
+                .take(10 - starts.length);
       return [
         for (final m in [...starts, ...contains])
           GlassRow(
