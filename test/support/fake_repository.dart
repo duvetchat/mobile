@@ -1003,8 +1003,17 @@ class FakeRepository implements ChatRepository {
   String previewOf(ChatMessage message) => recent.previewOf(message, (c) => c);
 
   @override
-  Future<List<ChatMessage>> messages(ChatTarget target, {String? before}) async =>
-      before == null ? [...?history[target.id]] : const [];
+  Future<List<ChatMessage>> messages(ChatTarget target, {String? before}) async {
+    if (before == null) return [...?history[target.id]];
+    await Future<void>.delayed(pageDelay);
+    final pages = olderPages[target.id];
+    return pages == null || pages.isEmpty ? const [] : pages.removeAt(0);
+  }
+
+  /// The pages before the history, newest first, one per ask, each after
+  /// [pageDelay].
+  final olderPages = <String, List<List<ChatMessage>>>{};
+  Duration pageDelay = Duration.zero;
 
   @override
   Stream<MessageEvent> messageEvents(ChatTarget target) =>

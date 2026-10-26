@@ -199,6 +199,37 @@ void main() {
     semantics.dispose();
   });
 
+  testWidgets('a reply to a message a page back scrolls to it, however long the page takes', (tester) async {
+    await openMaya(
+      tester,
+      setUp: (r) {
+        ChatMessage said(String id, String text, {MessageReply? reply}) =>
+            FakeRepository.message(id, author: _maya, name: 'Maya', text: text, reply: reply);
+        r
+          ..pageDelay = const Duration(seconds: 10)
+          ..olderPages['c-maya'] = [
+            [said('m-old', 'Way back'), for (var i = 0; i < 20; i++) said('o$i', 'Older $i')],
+          ]
+          ..history['c-maya'] = [
+            for (var i = 0; i < 100; i++) said('h$i', 'Message $i'),
+            said(
+              'm-new',
+              'About that',
+              reply: const MessageReply(messageId: 'm-old', authorId: _maya, authorName: 'Maya', content: 'Way back'),
+            ),
+          ];
+      },
+    );
+    await tapLabel(tester, RegExp('^Replying to Maya: Way back'));
+    // The page on its way, then the scroll to the message.
+    await tester.pump(const Duration(seconds: 10));
+    await tester.pumpAndSettle();
+    expect(find.bySemanticsLabel('Original message'), findsNothing);
+    expect(find.text('Way back'), findsOneWidget);
+    expect(tester.getCenter(find.text('Way back')).dy, inInclusiveRange(0, tester.view.physicalSize.height));
+    semantics.dispose();
+  });
+
   testWidgets('editing your own message: the strip, Save, and "edited"', (tester) async {
     final repository = await openMaya(tester);
     await longPress(tester, 'Yes, way better than the side panels.');
