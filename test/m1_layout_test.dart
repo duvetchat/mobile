@@ -8,7 +8,6 @@ import 'package:duvet/widgets/rows.dart';
 import 'package:flutter/material.dart';
 import 'dart:ui' show Tristate;
 
-import 'package:flutter/rendering.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:forui/forui.dart';
 
@@ -179,25 +178,34 @@ void main() {
       return repository;
     }
 
-    testWidgets('the composer holds its four controls in one radius-20 field; Send wakes with text', (tester) async {
+    testWidgets('the composer holds its four controls in one radius-20 field; empty, Send is a voice note', (
+      tester,
+    ) async {
       final semantics = tester.ensureSemantics();
       await openMaya(tester);
       final field = find.ancestor(of: find.byType(EditableText), matching: find.byType(Container)).first;
       final decoration = tester.widget<Container>(field).decoration! as BoxDecoration;
       expect(decoration.borderRadius, BorderRadius.circular(20));
-      for (final label in ['Add photos, a sticker or a mention', 'Emoji and stickers', 'Send']) {
+      const voice = 'Voice note, touch and hold to record';
+      for (final label in ['Add photos, a sticker or a mention', 'Emoji and stickers', voice]) {
         expect(
           find.descendant(of: field, matching: find.bySemanticsLabel(label)),
           findsOneWidget,
           reason: label,
         );
       }
+      // Nothing to send: the Send slot is the mic, and no fifth control.
+      expect(find.descendant(of: field, matching: find.byIcon(FLucideIcons.mic)), findsOneWidget);
+      expect(find.descendant(of: field, matching: find.byIcon(FLucideIcons.arrowUp)), findsNothing);
 
-      SemanticsNode send() => tester.getSemantics(find.bySemanticsLabel('Send'));
-      expect(send().getSemanticsData().flagsCollection.isEnabled, Tristate.isFalse);
       await tester.enterText(find.byType(EditableText), 'hi');
       await tester.pump();
-      expect(send().getSemanticsData().flagsCollection.isEnabled, Tristate.isTrue);
+      expect(find.bySemanticsLabel(voice), findsNothing);
+      expect(
+        tester.getSemantics(find.bySemanticsLabel('Send')).getSemanticsData().flagsCollection.isEnabled,
+        Tristate.isTrue,
+      );
+      expect(find.descendant(of: field, matching: find.byIcon(FLucideIcons.arrowUp)), findsOneWidget);
       semantics.dispose();
     });
 
