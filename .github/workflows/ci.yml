@@ -60,11 +60,12 @@ jobs:
         working-directory: mobile/android
         run: |
           echo "$KEYSTORE" | base64 --decode > "$RUNNER_TEMP/release.jks"
+          # A properties file reads \ as an escape: each one doubled stays itself.
           {
             echo "storeFile=$RUNNER_TEMP/release.jks"
-            echo "storePassword=$STORE_PASSWORD"
+            echo "storePassword=${STORE_PASSWORD//\\/\\\\}"
             echo "keyAlias=duvet"
-            echo "keyPassword=$KEY_PASSWORD"
+            echo "keyPassword=${KEY_PASSWORD//\\/\\\\}"
           } > key.properties
       - name: Build
         working-directory: mobile
