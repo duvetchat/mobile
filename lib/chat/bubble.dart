@@ -739,8 +739,8 @@ class _UploadStatus extends StatelessWidget {
   }
 }
 
-/// Above a reply: the message it answers, one line, "**Jon** text…". Tapping
-/// it jumps there.
+/// Above a reply: the message it answers, one line, "**Jon** text…", or
+/// "**@Jon** text…" when the reply mentioned them. Tapping it jumps there.
 class _ReplyRef extends StatelessWidget {
   final MessageReply reply;
   final MessageDirectory directory;
@@ -750,6 +750,31 @@ class _ReplyRef extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final colors = context.theme.colors;
+    if (reply.deleted) {
+      return Semantics(
+        container: true,
+        label: 'Original message was deleted',
+        excludeSemantics: true,
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(4, 0, 4, 4),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(FLucideIcons.cornerUpLeft, size: 14, color: colors.mutedForeground),
+              const SizedBox(width: 6),
+              Flexible(
+                child: Text(
+                  'Original message was deleted',
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: DuvetType.caption.copyWith(color: colors.mutedForeground, fontStyle: FontStyle.italic),
+                ),
+              ),
+            ],
+          ),
+        ),
+      );
+    }
     final text = readableContent(
       reply.content,
       nameOf: directory.nameOf,
@@ -780,7 +805,7 @@ class _ReplyRef extends StatelessWidget {
                   TextSpan(
                     children: [
                       TextSpan(
-                        text: reply.authorName,
+                        text: reply.mentionAuthor ? '@${reply.authorName}' : reply.authorName,
                         style: TextStyle(color: colors.foreground, fontWeight: FontWeight.w500),
                       ),
                       TextSpan(text: ' $shown'),

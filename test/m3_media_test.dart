@@ -167,6 +167,10 @@ void main() {
       final dm = parseMessageLink('duvet://conversations/$_room/$_linked')!;
       expect((dm.conversationId, dm.messageId), (_room, _linked));
       expect(parseMessageLink('https://duvet.chat/channels/a/b/c'), isNull);
+      // A copied link reads back to its message.
+      final copied = parseMessageLink(messageLink(const RoomTarget(spaceId: _space, roomId: _room), _linked))!;
+      expect((copied.spaceId, copied.roomId, copied.messageId), (_space, _room, _linked));
+      expect(parseMessageLink(messageLink(const ConversationTarget(_room), _linked))!.conversationId, _room);
       expect(parseMessageLink('https://evil.example/channels/$_space/$_room/$_linked'), isNull);
 
       expect(parseInviteCode('https://duvet.chat/invite?code=paper-club'), 'paper-club');
