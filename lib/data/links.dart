@@ -2,6 +2,8 @@
 /// link, an invite's, and the app's `duvet://` deep links.
 library;
 
+import 'models.dart' show ChatTarget, ConversationTarget, RoomTarget;
+
 const duvetDomain = 'https://duvet.chat';
 
 final _uuid = RegExp(r'^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$', caseSensitive: false);
@@ -40,6 +42,12 @@ MessageLink? parseMessageLink(String url) {
     _ => null,
   };
 }
+
+/// The link [parseMessageLink] reads back: message [messageId] in [target].
+String messageLink(ChatTarget target, String messageId) => switch (target) {
+  RoomTarget(:final spaceId, :final roomId) => '$duvetDomain/channels/$spaceId/$roomId/$messageId',
+  ConversationTarget(:final id) => '$duvetDomain/conversations/$id/$messageId',
+};
 
 /// An invite's code: `https://duvet.chat/invite?code=X`, as desktop writes
 /// them, `…/invite/X`, or `duvet://invite/X`; null otherwise.

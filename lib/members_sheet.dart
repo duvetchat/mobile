@@ -3,16 +3,17 @@ import 'package:forui/forui.dart';
 
 import 'data/models.dart';
 import 'data/repository.dart';
+import 'people.dart' show showProfileSheet;
 import 'theme.dart';
 import 'widgets/avatar.dart';
 import 'widgets/glass.dart';
 import 'widgets/rows.dart';
 
 /// What a member's row can do.
-enum MemberAction { mention, message, profile }
+enum MemberAction { mention, message }
 
 /// The chat's members in a glass sheet, by presence, with search. Answers the
-/// member and what to do with them, or null.
+/// member and what to do with them, picked from their profile, or null.
 Future<(Member, MemberAction)?> showMembersSheet(
   BuildContext context, {
   required ChatRepository repository,
@@ -183,6 +184,7 @@ class _MembersSheetState extends State<_MembersSheet> {
                           member: members[i],
                           presence: of(members[i]),
                           me: widget.repository.profile.value?.id == members[i].userId,
+                          spaceId: spaceId,
                           roleColor: switch (widget.target) {
                             RoomTarget(:final spaceId) =>
                               widget.repository
@@ -212,10 +214,11 @@ class _MemberRow extends StatelessWidget {
   final Member member;
   final Presence? presence;
   final bool me;
+  final String? spaceId;
 
   /// Their highest colored role's color (ARGB): it tints the name, never fills.
   final int? roleColor;
-  const _MemberRow({required this.member, required this.presence, required this.me, this.roleColor});
+  const _MemberRow({required this.member, required this.presence, required this.me, this.spaceId, this.roleColor});
 
   @override
   Widget build(BuildContext context) {
@@ -236,8 +239,11 @@ class _MemberRow extends StatelessWidget {
         leading: PresenceAvatar(member: member, presence: presence, size: 48),
         banner: member.bannerUrl,
         bannerOffline: isOffline(presence),
-        // Their profile opens once this sheet closes: never glass on glass.
-        onPressed: () => Navigator.of(context).pop((member, MemberAction.profile)),
+        // Their profile over this sheet; it closes only for what's picked there.
+        onPressed: () async {
+          final action = await showProfileSheet(context, member: member, spaceId: spaceId, canMention: true);
+          if (action != null && context.mounted) Navigator.of(context).pop((member, action));
+        },
       ),
     );
   }

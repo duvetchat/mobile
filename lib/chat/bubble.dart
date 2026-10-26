@@ -734,8 +734,8 @@ class _UploadStatus extends StatelessWidget {
   }
 }
 
-/// Above a reply: the message it answers, one line, "**Jon** text…". Tapping
-/// it jumps there.
+/// Above a reply: the message it answers, one line, "**Jon** text…", or
+/// "**@Jon** text…" when the reply mentioned them. Tapping it jumps there.
 class _ReplyRef extends StatelessWidget {
   final MessageReply reply;
   final MessageDirectory directory;
@@ -798,7 +798,7 @@ class _ReplyRef extends StatelessWidget {
                   TextSpan(
                     children: [
                       TextSpan(
-                        text: reply.authorName,
+                        text: reply.mentionAuthor ? '@${reply.authorName}' : reply.authorName,
                         style: TextStyle(color: colors.foreground, fontWeight: FontWeight.w500),
                       ),
                       TextSpan(text: ' $shown'),

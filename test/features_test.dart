@@ -286,12 +286,38 @@ void main() {
 
       await tester.tap(find.bySemanticsLabel('Maya, Online · @maya'));
       await tester.pumpAndSettle();
-      // Her profile, once the members sheet is gone.
-      expect(find.text('Members'), findsNothing);
+      // Her profile over the members sheet: back returns to it.
       expect(find.bySemanticsLabel('Maya’s profile'), findsWidgets);
+      expect(find.text('ONLINE — 1'), findsOneWidget);
+      await tester.binding.handlePopRoute();
+      await tester.pumpAndSettle();
+      expect(find.bySemanticsLabel('Maya’s profile'), findsNothing);
+      expect(find.text('ONLINE — 1'), findsOneWidget);
+
+      // Mention closes both.
+      await tester.tap(find.bySemanticsLabel('Maya, Online · @maya'));
+      await tester.pumpAndSettle();
       await tester.tap(find.bySemanticsLabel('Mention Maya'));
       await tester.pumpAndSettle();
+      expect(find.text('ONLINE — 1'), findsNothing);
       expect(find.text('@Maya '), findsOneWidget);
+      semantics.dispose();
+    });
+
+    testWidgets('back from members or pinned messages leaves the composer unfocused', (tester) async {
+      await openGeneral(tester);
+      bool composing() => tester.widget<EditableText>(find.byType(EditableText)).focusNode.hasFocus;
+      for (final sheet in ['Members', 'Pinned messages']) {
+        await tester.showKeyboard(find.byType(EditableText));
+        expect(composing(), isTrue);
+        await tester.tap(find.bySemanticsLabel('More'));
+        await tester.pumpAndSettle();
+        await tester.tap(find.bySemanticsLabel(sheet));
+        await tester.pumpAndSettle();
+        await tester.binding.handlePopRoute();
+        await tester.pumpAndSettle();
+        expect(composing(), isFalse, reason: sheet);
+      }
       semantics.dispose();
     });
 
@@ -310,6 +336,12 @@ void main() {
       await tester.tap(find.bySemanticsLabel('Copy text'));
       await tester.pumpAndSettle();
       expect(clipboard, 'Pushed the new type ramp');
+
+      await tester.longPress(find.text('Pushed the new type ramp'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.bySemanticsLabel('Copy link'));
+      await tester.pumpAndSettle();
+      expect(clipboard, startsWith('https://duvet.chat/channels/'));
       semantics.dispose();
     });
   });

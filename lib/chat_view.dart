@@ -1336,6 +1336,9 @@ class _ChatViewState extends State<ChatView> {
   }
 
   Future<void> _openMore(BuildContext anchor) async {
+    // Out of the composer: or the menu and the sheet after it hand the
+    // keyboard back as they close.
+    _focus.unfocus();
     final picked = await showGlassMenu(
       anchor,
       label: 'Chat options',
@@ -1522,8 +1525,6 @@ class _ChatViewState extends State<ChatView> {
         } catch (e) {
           _toast(e is ActionFailed ? e.message : 'Couldn’t open a conversation with ${member.displayName}');
         }
-      case MemberAction.profile:
-        await _openProfile(member);
     }
   }
 
@@ -1602,6 +1603,7 @@ class _ChatViewState extends State<ChatView> {
       if (sent && m.reactions.isNotEmpty)
         const GlassMenuItem(icon: FLucideIcons.smile, label: 'Reactions', value: _Action.reactions),
       if (readable.isNotEmpty) const GlassMenuItem(icon: FLucideIcons.copy, label: 'Copy text', value: _Action.copy),
+      if (sent) const GlassMenuItem(icon: FLucideIcons.link, label: 'Copy link', value: _Action.copyLink),
       if (mine && sent && m.content.isNotEmpty && m.stickerUrl == null)
         const GlassMenuItem(icon: FLucideIcons.pencil, label: 'Edit', value: _Action.edit),
       if (sent && !m.isNotice && canPin)
@@ -1652,6 +1654,9 @@ class _ChatViewState extends State<ChatView> {
       case (_Action.copy, _):
         await Clipboard.setData(ClipboardData(text: readable));
         _toast('Copied');
+      case (_Action.copyLink, _):
+        await Clipboard.setData(ClipboardData(text: messageLink(widget.target, m.id)));
+        _toast('Link copied');
       case (_Action.edit, _):
         _startEditing(m);
       case (_Action.mention, _):
