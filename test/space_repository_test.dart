@@ -681,6 +681,39 @@ void main() {
       for (final s in repository.spaces.value.single.sections) s.name: [for (final r in s.rooms) r.id],
     };
 
+    test('rooms that share a position go by ID, in the list and on the Rooms page alike (#59)', () async {
+      await signIn();
+      // Given in the order the gateway might send them: neither by ID.
+      repository.handleEvent(
+        _event(
+          'SPACE_CREATE',
+          _space(
+            rooms: {
+              'c-zeta': _room('c-zeta', type: 3),
+              'c-alpha': _room('c-alpha', type: 3),
+              'r-zeta': _room('r-zeta', parent: 'c-alpha'),
+              'r-alpha': _room('r-alpha', parent: 'c-alpha'),
+              'r-loose-b': _room('r-loose-b'),
+              'r-loose-a': _room('r-loose-a'),
+            },
+          ),
+        ),
+      );
+      expect(sections(), {
+        null: ['r-loose-a', 'r-loose-b'],
+        'c-alpha': ['r-alpha', 'r-zeta'],
+        'c-zeta': <String>[],
+      });
+      expect(repository.adminRooms('s-1').map((r) => r.id), [
+        'c-alpha',
+        'c-zeta',
+        'r-alpha',
+        'r-loose-a',
+        'r-loose-b',
+        'r-zeta',
+      ]);
+    });
+
     test('a deleted category leaves its rooms outside any, as the API does', () async {
       await signIn();
       repository.handleEvent(_event('SPACE_CREATE', guild()));
@@ -758,10 +791,10 @@ void main() {
 
         await repository.deleteRoom('s-1', 'c-talk');
         if (before == 0) {
-          // Out of the category with the places they had, until ROOM_REORDER:
-          // they aren't numbered here.
-          expect(places()['r-crit'], (null, 0));
-          expect(places()['r-lounge'], (null, 1));
+          // Out of the category before ROOM_REORDER, after the top level's
+          // last place, in their order: where it will put them.
+          expect(places()['r-crit'], (null, 3));
+          expect(places()['r-lounge'], (null, 4));
         }
         events.skip(before).forEach(repository.handleEvent);
 

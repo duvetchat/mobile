@@ -43,6 +43,11 @@ class ListRow extends StatelessWidget {
   final String? banner;
   final bool bannerOffline;
 
+  /// Whether screen readers meet the row as a node of its own. False gives
+  /// its name and tap to the node around it instead: a reorderable list's
+  /// item, which offers the moves, so the row and its moves are one stop.
+  final bool ownNode;
+
   const ListRow({
     required this.title,
     this.leading,
@@ -58,6 +63,7 @@ class ListRow extends StatelessWidget {
     this.onLongPress,
     this.banner,
     this.bannerOffline = false,
+    this.ownNode = true,
     super.key,
   });
 
@@ -76,7 +82,7 @@ class ListRow extends StatelessWidget {
       ?trailing,
     ].join(', ');
     return Semantics(
-      container: true,
+      container: ownNode,
       button: onTap != null,
       selected: selected,
       label: label,
