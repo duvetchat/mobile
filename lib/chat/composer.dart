@@ -434,9 +434,19 @@ class _SuggestionsPanel extends StatelessWidget {
                 label: '$label, ${children.length}',
                 explicitChildNodes: true,
                 child: GlassSurface(
-                  child: Padding(
-                    padding: const EdgeInsets.all(8),
-                    child: Column(mainAxisSize: MainAxisSize.min, children: children),
+                  // Up to 300 points, as the desktop's, and scrolled past
+                  // that; less on a short screen, the keyboard up.
+                  child: ConstrainedBox(
+                    constraints: BoxConstraints(
+                      maxHeight: min(
+                        300,
+                        (MediaQuery.sizeOf(context).height - MediaQuery.viewInsetsOf(context).bottom) * 0.4,
+                      ),
+                    ),
+                    child: SingleChildScrollView(
+                      padding: const EdgeInsets.all(8),
+                      child: Column(mainAxisSize: MainAxisSize.min, children: children),
+                    ),
                   ),
                 ),
               ),

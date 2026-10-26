@@ -90,9 +90,10 @@ void main() {
       );
     });
 
-    Future<FakeRepository> openGeneral(WidgetTester tester) async {
+    Future<FakeRepository> openGeneral(WidgetTester tester, {void Function(FakeRepository r)? setUp}) async {
       semantics = tester.ensureSemantics();
       final repository = FakeRepository();
+      setUp?.call(repository);
       await tester.pumpWidget(DuvetApp(repository: repository));
       // The bundled emoji load off the fake clock, then go in synchronously.
       EmojiCatalog.debugUse((await tester.runAsync(EmojiCatalog.load))!);
@@ -130,6 +131,25 @@ void main() {
         ),
         findsOneWidget,
       );
+      semantics.dispose();
+    });
+
+    testWidgets('@ suggests up to 10, as the desktop, in a panel that scrolls (#78)', (tester) async {
+      await openGeneral(
+        tester,
+        setUp: (r) => r.extraRoomMembers.addAll([
+          for (var i = 0; i < 12; i++) Member(userId: 'u-m$i', username: 'mod$i', alias: 'Mod $i'),
+        ]),
+      );
+      await tester.enterText(find.byType(EditableText), '@mod');
+      await tester.pumpAndSettle();
+      expect(find.bySemanticsLabel('Mention suggestions, 10'), findsOneWidget);
+      expect(tester.getSize(find.bySemanticsLabel('Mention suggestions, 10')).height, lessThanOrEqualTo(300));
+      final last = find.bySemanticsLabel('Mod 9, @mod9');
+      await tester.dragUntilVisible(last, find.bySemanticsLabel('Mod 0, @mod0'), const Offset(0, -60));
+      await tester.tap(last);
+      await tester.pumpAndSettle();
+      expect(find.text('@Mod 9 '), findsOneWidget);
       semantics.dispose();
     });
 
