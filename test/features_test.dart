@@ -336,6 +336,12 @@ void main() {
       await tester.tap(find.bySemanticsLabel('Copy text'));
       await tester.pumpAndSettle();
       expect(clipboard, 'Pushed the new type ramp');
+
+      await tester.longPress(find.text('Pushed the new type ramp'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.bySemanticsLabel('Copy link'));
+      await tester.pumpAndSettle();
+      expect(clipboard, startsWith('https://duvet.chat/channels/'));
       semantics.dispose();
     });
   });
