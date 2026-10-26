@@ -532,7 +532,7 @@ void main() {
 
     testWidgets('a new message is read at the bottom, not while the reader is further up', (tester) async {
       final repository = await openMaya(tester, setUp: longChat);
-      // Opening the chat reads it.
+      // With no divider it opens at its bottom, which reads it.
       expect(repository.reads.last.$2, 'h39');
       repository.push('c-maya', MessageCreated(later('n1', 'At the bottom')));
       await tester.pumpAndSettle();
@@ -548,6 +548,36 @@ void main() {
       await tester.drag(list, const Offset(0, -3000));
       await tester.pumpAndSettle();
       expect(repository.reads.last.$2, 'n2');
+      expect(repository.unread.value, isNot(contains('c-maya')));
+      semantics.dispose();
+    });
+
+    testWidgets('a chat opened at its divider is read at the bottom, not on opening', (tester) async {
+      final repository = await openMaya(
+        tester,
+        setUp: (r) {
+          longChat(r);
+          r.lastRead['c-maya'] = 'h9';
+          r.unread.value = {'c-maya'};
+        },
+      );
+      // It opens at its divider, above its newest messages: nothing is read.
+      expect(find.text('New messages'), findsOneWidget);
+      expect(repository.reads, isEmpty);
+      expect(repository.unread.value, contains('c-maya'));
+
+      // Left and opened again, it's still unread, at its divider.
+      await tapLabel(tester, 'Back');
+      expect(repository.unread.value, contains('c-maya'));
+      await tester.tap(find.text('Maya'));
+      await tester.pumpAndSettle();
+      expect(find.text('New messages'), findsOneWidget);
+      expect(repository.reads, isEmpty);
+
+      // Scrolled down to the bottom, it's read.
+      await tester.drag(list, const Offset(0, -6000));
+      await tester.pumpAndSettle();
+      expect(repository.reads.last.$2, 'h39');
       expect(repository.unread.value, isNot(contains('c-maya')));
       semantics.dispose();
     });

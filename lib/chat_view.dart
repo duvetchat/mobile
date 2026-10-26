@@ -160,13 +160,13 @@ class _ChatViewState extends State<ChatView> {
   final _deleting = <String>{};
   String? _flash;
 
-  // The chat is read where the reader sees it, as the desktop acks it: with
-  // the app in front and this chat on top, on opening wherever the list opens
-  // (once it's seen, if it opened unseen), then at the bottom of the list. The
-  // newest message read from here is acked once.
+  // The chat is read where the reader sees its newest messages, as the desktop
+  // acks it: with the app in front and this chat on top, at the bottom of the
+  // list. Opening it isn't reading it: one opened at its "New messages"
+  // divider is read once the reader scrolls down. The newest message read
+  // from here is acked once.
   bool _atBottom = true;
   bool _onTop = true;
-  bool _opening = false;
   String? _acked;
   late final AppLifecycleListener _lifecycle;
 
@@ -331,15 +331,16 @@ class _ChatViewState extends State<ChatView> {
         // Nothing after the last read: no divider.
         if (_unreadAfter != null && page.lastOrNull?.id == _unreadAfter) _unreadAfter = null;
       });
-      if (thread == null) {
-        _repository.opened(widget.target, widget.title, latest: page.lastOrNull);
-        _opening = true;
-        _readIfSeen();
-      }
+      if (thread == null) _repository.opened(widget.target, widget.title, latest: page.lastOrNull);
+      // Opening reads the chat only if the list is still at its bottom once
+      // it's placed (at a jump's message, or at the divider); otherwise
+      // scrolling down reads it.
       if (widget.jumpTo case final id?) {
-        WidgetsBinding.instance.addPostFrameCallback((_) => _jumpTo(id));
+        WidgetsBinding.instance.addPostFrameCallback((_) => _jumpTo(id).whenComplete(_readIfSeen));
       } else if (_unreadAfter != null) {
-        WidgetsBinding.instance.addPostFrameCallback((_) => _showDivider());
+        WidgetsBinding.instance.addPostFrameCallback((_) => _showDivider().whenComplete(_readIfSeen));
+      } else {
+        _readIfSeen();
       }
     } catch (e) {
       // Listed even when its history fails to load.
@@ -458,12 +459,10 @@ class _ChatViewState extends State<ChatView> {
     _repository.markRead(widget.target, newest.id);
   }
 
-  /// Reads the chat if the reader sees it: the app in front and nothing
-  /// opened over the chat (not a thread), and, past its opening, the bottom
-  /// of the list.
+  /// Reads the chat if the reader sees its newest messages: the app in front,
+  /// nothing opened over the chat (not a thread), and the bottom of the list.
   void _readIfSeen() {
-    if (!mounted || widget.threadOf != null || !_onTop || !_inFront || !(_atBottom || _opening)) return;
-    _opening = false;
+    if (!mounted || widget.threadOf != null || !_onTop || !_inFront || !_atBottom) return;
     _markRead();
   }
 
