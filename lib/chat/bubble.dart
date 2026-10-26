@@ -34,7 +34,9 @@ class _Bubble extends StatelessWidget {
 
   /// A reaction chip held: who reacted with it.
   final ValueChanged<Reaction> onOpenReactors;
-  final ValueChanged<BuildContext> onLongPress;
+
+  /// Held: its options. Null where it has none, as in the pins.
+  final ValueChanged<BuildContext>? onLongPress;
 
   /// How far its files have uploaded, 0 to 1, while sending.
   final double? progress;
@@ -120,7 +122,7 @@ class _Bubble extends StatelessWidget {
     // press does.
     Map<CustomSemanticsAction, VoidCallback> actionsAt(BuildContext anchor) => {
       if (repliable) const CustomSemanticsAction(label: 'Reply'): onReply,
-      const CustomSemanticsAction(label: 'Message options'): () => onLongPress(anchor),
+      if (onLongPress case final hold?) const CustomSemanticsAction(label: 'Message options'): () => hold(anchor),
     };
 
     Widget bodyAt(BuildContext? anchor) {
@@ -266,9 +268,12 @@ class _Bubble extends StatelessWidget {
           _ReplyRef(reply: reply, directory: directory, onTap: () => onJump(reply.messageId)),
         Builder(
           builder: (anchor) => GestureDetector(
-            onLongPress: () {
-              HapticFeedback.mediumImpact();
-              onLongPress(anchor);
+            onLongPress: switch (onLongPress) {
+              final hold? => () {
+                HapticFeedback.mediumImpact();
+                hold(anchor);
+              },
+              null => null,
             },
             child: bodyAt(anchor),
           ),
@@ -954,17 +959,79 @@ class _NewMessagesDivider extends StatelessWidget {
   }
 }
 
-class _Notice extends StatelessWidget {
-  final String text;
-  const _Notice({required this.text});
+/// A pin notice, as the desktop's: who pinned "a message", which shows it
+/// ([onJump]; null when the notice names none), and "pinned messages", which
+/// lists them all. Held, its options ([onHold]; null for those who may not
+/// delete it). Screen readers have it as one stop, its links as actions.
+class _Notice extends StatefulWidget {
+  final String who;
+  final String where;
+  final VoidCallback? onJump;
+  final VoidCallback onPins;
+  final ValueChanged<BuildContext>? onHold;
+  const _Notice({required this.who, required this.where, required this.onJump, required this.onPins, this.onHold});
 
   @override
-  Widget build(BuildContext context) => Padding(
-    padding: const EdgeInsets.only(top: 12),
-    child: Center(
-      child: Text(text, style: DuvetType.caption.copyWith(color: context.theme.colors.mutedForeground)),
-    ),
-  );
+  State<_Notice> createState() => _NoticeState();
+}
+
+class _NoticeState extends State<_Notice> {
+  late final _jump = TapGestureRecognizer()..onTap = () => widget.onJump?.call();
+  late final _pins = TapGestureRecognizer()..onTap = () => widget.onPins();
+
+  @override
+  void dispose() {
+    _jump.dispose();
+    _pins.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = context.theme.colors;
+    final link = TextStyle(color: colors.foreground, fontWeight: FontWeight.w500);
+    return Builder(
+      builder: (anchor) => Semantics(
+        container: true,
+        label: '${widget.who} pinned a message to this ${widget.where}',
+        excludeSemantics: true,
+        customSemanticsActions: {
+          const CustomSemanticsAction(label: 'Show the message'): ?widget.onJump,
+          const CustomSemanticsAction(label: 'See all pinned messages'): widget.onPins,
+          if (widget.onHold case final onHold?) const CustomSemanticsAction(label: 'Options'): () => onHold(anchor),
+        },
+        child: GestureDetector(
+          onLongPress: widget.onHold == null ? null : () => widget.onHold!(anchor),
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(16, 12, 16, 0),
+            child: Row(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                Icon(FLucideIcons.pin, size: 14, color: colors.mutedForeground),
+                const SizedBox(width: 6),
+                Flexible(
+                  child: Text.rich(
+                    TextSpan(
+                      children: [
+                        TextSpan(text: widget.who, style: link),
+                        const TextSpan(text: ' pinned '),
+                        TextSpan(text: 'a message', style: link, recognizer: widget.onJump == null ? null : _jump),
+                        TextSpan(text: ' to this ${widget.where}. See all '),
+                        TextSpan(text: 'pinned messages', style: link, recognizer: _pins),
+                        const TextSpan(text: '.'),
+                      ],
+                    ),
+                    textAlign: TextAlign.center,
+                    style: DuvetType.caption.copyWith(color: colors.mutedForeground),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
 }
 
 /// Above the composer: who's typing, and who's recording a voice message,

@@ -14,6 +14,7 @@ import '../data/markdown.dart';
 import '../data/message_tokens.dart';
 import '../data/models.dart';
 import '../theme.dart';
+import 'code_highlight.dart';
 import 'depth.dart';
 import 'glass.dart';
 import 'media.dart';
@@ -81,6 +82,9 @@ class _MessageTextState extends State<MessageText> {
   bool _revealed = false;
   late List<MdBlock> _blocks = _parse();
 
+  // Its code blocks' colors, worked out once a block and a theme, not each build.
+  final _colored = <(String, String, bool), TextSpan?>{};
+
   List<MdBlock> _parse() {
     if (!widget.singleLine) return parseMarkdown(widget.content);
     // Code blocks as inline code; headings, quotes and lists as plain text.
@@ -98,7 +102,10 @@ class _MessageTextState extends State<MessageText> {
   @override
   void didUpdateWidget(MessageText old) {
     super.didUpdateWidget(old);
-    if (old.content != widget.content || old.singleLine != widget.singleLine) _blocks = _parse();
+    if (old.content != widget.content || old.singleLine != widget.singleLine) {
+      _blocks = _parse();
+      _colored.clear();
+    }
   }
 
   @override
@@ -252,10 +259,11 @@ class _MessageTextState extends State<MessageText> {
     ];
 
     final secondary = widget.onAccent ? base.color?.withValues(alpha: 0.78) : colors.mutedForeground;
-    Widget rich(List<MdInline> inlines, TextStyle style, {int? maxLines}) => Text.rich(
+    Widget rich(List<MdInline> inlines, TextStyle style, {int? maxLines, TextAlign? textAlign}) => Text.rich(
       TextSpan(style: style, children: spans(inlines)),
       maxLines: maxLines,
       overflow: maxLines == null ? null : TextOverflow.ellipsis,
+      textAlign: textAlign,
     );
 
     final children = <Widget>[
@@ -291,13 +299,55 @@ class _MessageTextState extends State<MessageText> {
                 ),
             ],
           ),
-          MdCodeBlock(:final code) => Container(
+          // Its columns as wide as they need, the table scrolled sideways
+          // past the bubble's width.
+          MdTable(:final header, :final aligns, :final rows) => SingleChildScrollView(
+            scrollDirection: Axis.horizontal,
+            child: Table(
+              defaultColumnWidth: const IntrinsicColumnWidth(),
+              border: TableBorder.all(color: colors.border),
+              children: [
+                for (final (r, row) in [header, ...rows].indexed)
+                  TableRow(
+                    decoration: r == 0 ? BoxDecoration(color: codeFill) : null,
+                    children: [
+                      for (var c = 0; c < header.length; c++)
+                        Padding(
+                          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                          child: rich(
+                            c < row.length ? row[c] : const [],
+                            r == 0 ? base.copyWith(fontWeight: FontWeight.w600) : base,
+                            textAlign: switch (c < aligns.length ? aligns[c] : null) {
+                              MdAlign.center => TextAlign.center,
+                              MdAlign.end => TextAlign.end,
+                              MdAlign.start || null => TextAlign.start,
+                            },
+                          ),
+                        ),
+                    ],
+                  ),
+              ],
+            ),
+          ),
+          MdCodeBlock(:final code, :final language) => Container(
             width: double.infinity,
             padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
             decoration: BoxDecoration(color: codeFill, borderRadius: BorderRadius.circular(DuvetTokens.radiusField)),
             child: SingleChildScrollView(
               scrollDirection: Axis.horizontal,
-              child: Text(code, style: DuvetType.code.copyWith(fontSize: 13, height: 1.5, color: base.color)),
+              child: () {
+                final style = DuvetType.code.copyWith(fontSize: 13, height: 1.5, color: base.color);
+                // Its language's colors, as the desktop's; on the accent, the dark ones.
+                final onDark = dark || widget.onAccent;
+                final colored = language == null
+                    ? null
+                    : _colored.putIfAbsent((
+                        code,
+                        language,
+                        onDark,
+                      ), () => highlightCode(code, language, base: style, dark: onDark));
+                return colored == null ? Text(code, style: style) : Text.rich(colored);
+              }(),
             ),
           ),
         },
@@ -311,6 +361,16 @@ class _MessageTextState extends State<MessageText> {
             MdSubtext(:final inlines) ||
             MdQuote(:final inlines) => plainInline(inlines, revealSpoilers: _revealed),
             MdList(:final items) => items.map((i) => plainInline(i, revealSpoilers: _revealed)).join('\n'),
+            // A row a line, each cell after its column's name.
+            MdTable(:final header, :final rows) => [
+              for (final row in rows)
+                [
+                  for (final (c, cell) in row.indexed)
+                    c < header.length && header[c].isNotEmpty
+                        ? '${plainInline(header[c], revealSpoilers: _revealed)}: ${plainInline(cell, revealSpoilers: _revealed)}'
+                        : plainInline(cell, revealSpoilers: _revealed),
+                ].join(', '),
+            ].join('\n'),
             MdCodeBlock(:final code) => code,
           },
         )

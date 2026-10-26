@@ -3,6 +3,7 @@ import 'dart:ui' show Tristate;
 import 'package:duvet/data/markdown.dart';
 import 'package:duvet/data/models.dart';
 import 'package:duvet/main.dart';
+import 'package:duvet/widgets/code_highlight.dart';
 import 'package:duvet/widgets/message_content.dart';
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
@@ -77,6 +78,50 @@ void main() {
       expect((blocks[2] as MdList).ordered, isFalse);
       expect((blocks[3] as MdList).ordered, isTrue);
       expect(((blocks[4] as MdCodeBlock).language, (blocks[4] as MdCodeBlock).code), ('dart', 'final x = 1;'));
+    });
+
+    test('tables, as the desktop reads them: a header, a |---| line and its alignments, rows with a | (#26)', () {
+      final blocks = parseMarkdown(
+        'Roles:\n| Name | Role | Since |\n|:--|:-:|--:|\n| **Maya** | mod | 2024\n|Leo|\n\nbye',
+      );
+      expect(blocks.map((b) => b.runtimeType), [MdParagraph, MdTable, MdParagraph]);
+      final table = blocks[1] as MdTable;
+      expect(table.header.map(plainInline), ['Name', 'Role', 'Since']);
+      expect(table.aligns, [MdAlign.start, MdAlign.center, MdAlign.end]);
+      expect(table.rows.map((r) => r.map(plainInline).toList()), [
+        ['Maya', 'mod', '2024'],
+        ['Leo'],
+      ]);
+      // A | without the line under it is text.
+      expect(parseMarkdown('a | b\nc').map((b) => b.runtimeType), [MdParagraph]);
+    });
+
+    test('code blocks in the desktop\'s languages are colored, by name or alias; others stay plain (#26)', () {
+      const base = TextStyle(color: Color(0xFF000000));
+      List<(String, Color?)> runs(TextSpan span) => [
+        if (span.text case final t? when t.isNotEmpty) (t, span.style?.color),
+        for (final c in span.children ?? const <InlineSpan>[]) ...runs(c as TextSpan),
+      ];
+      final dart = runs(highlightCode('final x = 1;', 'dart', base: base, dark: true)!);
+      expect(dart.map((r) => r.$1).join(), 'final x = 1;');
+      final keyword = dart.firstWhere((r) => r.$1 == 'final').$2;
+      expect(keyword, isNot(base.color), reason: 'a keyword has its own color');
+      expect(highlightCode('const a = 1', 'JS', base: base, dark: false), isNotNull);
+      expect(highlightCode('fn main() {}', 'zig', base: base, dark: true), isNull);
+    });
+
+    testWidgets('a table reads a row a line, each cell after its column', (tester) async {
+      final repository = await openMaya(tester);
+      repository.push(
+        'c-maya',
+        MessageCreated(
+          FakeRepository.message('t', author: _maya, name: 'Maya', text: '| Name | Role |\n|---|---|\n| Maya | mod |'),
+        ),
+      );
+      await tester.pumpAndSettle();
+      expect(find.byType(Table), findsOneWidget);
+      expect(find.bySemanticsLabel(RegExp(r'Name: Maya, Role: mod')), findsOneWidget);
+      semantics.dispose();
     });
 
     testWidgets('renders: links open, spoilers reveal on tap, code is mono', (tester) async {
@@ -255,6 +300,49 @@ void main() {
     expect(find.bySemanticsLabel('Original message'), findsNothing);
     expect(find.text('Way back'), findsOneWidget);
     expect(tester.getCenter(find.text('Way back')).dy, inInclusiveRange(0, tester.view.physicalSize.height));
+    semantics.dispose();
+  });
+
+  testWidgets('a pin notice links its message and the pins, and those who may delete it (#26)', (tester) async {
+    final repository = await openMaya(
+      tester,
+      setUp: (r) => r.history['c-maya']!.add(
+        ChatMessage(
+          id: 'n1',
+          authorId: _maya,
+          authorName: 'Maya',
+          content: '',
+          createdAt: DateTime(2026, 10, 23, 9, 5),
+          isNotice: true,
+          reply: const MessageReply(messageId: 'm1', authorId: _maya, authorName: 'Maya', content: ''),
+        ),
+      ),
+    );
+    final notice = find.bySemanticsLabel('Maya pinned a message to this conversation');
+    expect(notice, findsOneWidget);
+    expect(find.text('Maya pinned a message to this conversation. See all pinned messages.'), findsOneWidget);
+    void act(String label) {
+      final node = tester.getSemantics(notice);
+      node.owner!.performAction(
+        node.id,
+        SemanticsAction.customAction,
+        CustomSemanticsAction.getIdentifier(CustomSemanticsAction(label: label)),
+      );
+    }
+
+    act('See all pinned messages');
+    await tester.pumpAndSettle();
+    expect(find.bySemanticsLabel('Pinned'), findsWidgets);
+    await tester.tapAt(const Offset(20, 20));
+    await tester.pumpAndSettle();
+
+    // Either of a DM's two may delete it.
+    await tester.longPress(find.textContaining('See all pinned messages'));
+    await tester.pumpAndSettle();
+    await tapLabel(tester, 'Delete');
+    await tapLabel(tester, 'Delete');
+    expect(repository.deletes, ['n1']);
+    expect(notice, findsNothing);
     semantics.dispose();
   });
 

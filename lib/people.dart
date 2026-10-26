@@ -11,6 +11,7 @@ import 'widgets/avatar.dart';
 import 'widgets/chrome.dart';
 import 'widgets/depth.dart';
 import 'widgets/glass.dart';
+import 'widgets/message_content.dart';
 import 'widgets/rows.dart';
 
 /// What a presence reads as; nothing when it isn't known.
@@ -283,12 +284,19 @@ class _ProfileState extends State<_Profile> {
                         children: [
                           _Label('About'),
                           const SizedBox(height: 4),
-                          Text(
-                            m.bio ?? 'Nothing here yet.',
-                            style: DuvetType.body.copyWith(
-                              color: m.bio == null ? colors.mutedForeground : colors.foreground,
-                            ),
-                          ),
+                          if (m.bio case final bio?)
+                            // With the messages' markdown, as the desktop's About me.
+                            MessageText(
+                              content: bio,
+                              directory: MessageDirectory(
+                                me: context.repository.profile.value?.id,
+                                nameOf: context.repository.nameOf,
+                                emojiOf: (_) => null,
+                              ),
+                              style: DuvetType.body.copyWith(color: colors.foreground),
+                            )
+                          else
+                            Text('Nothing here yet.', style: DuvetType.body.copyWith(color: colors.mutedForeground)),
                           if (roles.isNotEmpty) ...[
                             const SizedBox(height: 16),
                             _Label('Roles in ${spaceName ?? 'this Space'}'),
