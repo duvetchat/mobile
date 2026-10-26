@@ -429,8 +429,16 @@ class _ChatViewState extends State<ChatView> {
     if (position.extentAfter < 400) _loadOlder();
     final atBottom = position.pixels <= 50;
     if (atBottom == _atBottom) return;
-    _atBottom = atBottom;
+    setState(() => _atBottom = atBottom);
     if (atBottom) _readIfSeen();
+  }
+
+  /// Back to the newest messages, from however far up.
+  void _toLatest() {
+    if (!_scroll.hasClients) return;
+    MediaQuery.disableAnimationsOf(context)
+        ? _scroll.jumpTo(0)
+        : _scroll.animateTo(0, duration: const Duration(milliseconds: 300), curve: DuvetTokens.decelerate);
   }
 
   /// Reads the chat up to its newest message.
@@ -1946,6 +1954,32 @@ class _ChatViewState extends State<ChatView> {
               children: suggestions,
             ),
           ),
+          // Scrolled up: a way back down to the newest.
+          if (!_atBottom && suggestions.isEmpty)
+            Positioned(
+              right: 16,
+              bottom: _composerHeight + 12,
+              child: Semantics(
+                container: true,
+                button: true,
+                label: 'Jump to the newest messages',
+                excludeSemantics: true,
+                onTap: _toLatest,
+                child: Pressable(
+                  onTap: _toLatest,
+                  builder: (context, pressed) => Container(
+                    width: 40,
+                    height: 40,
+                    decoration: BoxDecoration(
+                      color: colors.card,
+                      shape: BoxShape.circle,
+                      boxShadow: pressed ? null : context.duvet.shadowRaised,
+                    ),
+                    child: Icon(FLucideIcons.arrowDown, size: 20, color: colors.foreground),
+                  ),
+                ),
+              ),
+            ),
           Positioned(
             top: 0,
             left: 0,

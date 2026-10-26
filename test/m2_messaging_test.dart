@@ -207,6 +207,26 @@ void main() {
     semantics.dispose();
   });
 
+  testWidgets('scrolled up, a button jumps back to the newest messages', (tester) async {
+    await openMaya(
+      tester,
+      setUp: (r) => r.history['c-maya'] = [
+        for (var i = 0; i < 60; i++) FakeRepository.message('h$i', author: _maya, name: 'Maya', text: 'Message $i'),
+      ],
+    );
+    const button = 'Jump to the newest messages';
+    expect(find.bySemanticsLabel(button), findsNothing);
+
+    await tester.fling(find.text('Message 59'), const Offset(0, 2000), 3000);
+    await tester.pumpAndSettle();
+    expect(find.text('Message 59'), findsNothing);
+
+    await tapLabel(tester, button);
+    expect(find.text('Message 59'), findsOneWidget);
+    expect(find.bySemanticsLabel(button), findsNothing);
+    semantics.dispose();
+  });
+
   testWidgets('a reply to a message a page back scrolls to it, however long the page takes', (tester) async {
     await openMaya(
       tester,
