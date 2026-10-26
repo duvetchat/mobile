@@ -403,7 +403,8 @@ void main() {
     expect(find.text('Join'), findsNothing);
     expect(button(tester, 'Call').onPressed, isNull);
 
-    // Maya answered, and the desktop joined: Join moves the user's voice here.
+    // Maya answered, and the desktop joined: Join, and Call as it does, move
+    // the user's voice here.
     app.gateway.push(
       const duvet.CallAcceptedEvent(duvet.CallResponseEvent(conversationId: 'c-maya', userId: FakeRepository.maya)),
     );
@@ -411,7 +412,9 @@ void main() {
     app.gateway.push(inCall('c-maya', FakeRepository.maya, 2));
     await settle(tester);
     expect(find.text('Call in progress · You, Maya'), findsOneWidget);
-    await tester.tap(find.text('Join'));
+    expect(find.text('Join'), findsOneWidget);
+    expect(button(tester, 'Call').onPressed, isNotNull);
+    await tester.tap(find.bySemanticsLabel('Call'));
     await settle(tester);
     expect(app.gateway.types, ['CALL_INITIATE', 'CALL_ACCEPT', 'VOICE_JOIN', 'VOICE_SYNC']);
     expect(find.bySemanticsLabel(RegExp('^Call with Maya')), findsOneWidget);

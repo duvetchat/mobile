@@ -2174,9 +2174,11 @@ class _ChatViewState extends State<ChatView> {
                       IconAction(
                         icon: FLucideIcons.phone,
                         label: 'Call',
-                        // One call at a time; this conversation's own is in the banner.
-                        onPressed:
-                            context.voice.call == null && !context.voice.callsInProgress.contains(widget.target.id)
+                        // One call at a time. Into this conversation's call
+                        // going on it joins, as its banner's Join does, but
+                        // not the user's own while it rings from another
+                        // device.
+                        onPressed: context.voice.call == null && !callingElsewhere(context.voice, widget.target.id)
                             ? () => callConversation(context, widget.target.id)
                             : null,
                       ),
