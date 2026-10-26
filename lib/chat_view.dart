@@ -1328,6 +1328,9 @@ class _ChatViewState extends State<ChatView> {
   }
 
   Future<void> _openMore(BuildContext anchor) async {
+    // Out of the composer: or the menu and the sheet after it hand the
+    // keyboard back as they close.
+    _focus.unfocus();
     final picked = await showGlassMenu(
       anchor,
       label: 'Chat options',
@@ -1514,8 +1517,6 @@ class _ChatViewState extends State<ChatView> {
         } catch (e) {
           _toast(e is ActionFailed ? e.message : 'Couldn’t open a conversation with ${member.displayName}');
         }
-      case MemberAction.profile:
-        await _openProfile(member);
     }
   }
 
