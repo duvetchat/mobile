@@ -199,6 +199,26 @@ void main() {
     semantics.dispose();
   });
 
+  testWidgets('scrolled up, a button jumps back to the newest messages', (tester) async {
+    await openMaya(
+      tester,
+      setUp: (r) => r.history['c-maya'] = [
+        for (var i = 0; i < 60; i++) FakeRepository.message('h$i', author: _maya, name: 'Maya', text: 'Message $i'),
+      ],
+    );
+    const button = 'Jump to the newest messages';
+    expect(find.bySemanticsLabel(button), findsNothing);
+
+    await tester.fling(find.text('Message 59'), const Offset(0, 2000), 3000);
+    await tester.pumpAndSettle();
+    expect(find.text('Message 59'), findsNothing);
+
+    await tapLabel(tester, button);
+    expect(find.text('Message 59'), findsOneWidget);
+    expect(find.bySemanticsLabel(button), findsNothing);
+    semantics.dispose();
+  });
+
   testWidgets('editing your own message: the strip, Save, and "edited"', (tester) async {
     final repository = await openMaya(tester);
     await longPress(tester, 'Yes, way better than the side panels.');
