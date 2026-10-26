@@ -998,11 +998,14 @@ class _RoomsAdminPageState extends State<RoomsAdminPage> {
 
   // A screen reader's move of what the user may not move: the list offers
   // moves on every item, so this says why nothing moved.
-  void _cantMove(AdminRoom r) => SemanticsService.sendAnnouncement(
-    View.of(context),
-    'You can’t move ${r.kind == AdminRoomKind.category ? r.name : '#${r.name}'}',
-    Directionality.of(context),
-  );
+  void _cantMove(AdminRoom r) {
+    if (!mounted) return;
+    SemanticsService.sendAnnouncement(
+      View.of(context),
+      'You can’t move ${r.kind == AdminRoomKind.category ? r.name : '#${r.name}'}',
+      Directionality.of(context),
+    );
+  }
 
   /// Sends [moved] to [position] in [parent], as the API takes it.
   Future<void> _place(AdminRoom moved, String? parent, int position) async {
