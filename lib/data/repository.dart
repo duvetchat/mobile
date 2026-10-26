@@ -75,6 +75,10 @@ abstract interface class ChatRepository {
   /// Who starts typing in the chat.
   Stream<TypingUser> typing(ChatTarget target);
 
+  /// Who's typing now, by chat ID, as the open chat shows them: what the
+  /// Chats list and a Space's rooms show outside it.
+  ValueListenable<Map<String, List<TypingUser>>> get typingNow;
+
   /// A room's ephemeral messages: its bots' answers to the user alone, which
   /// no history has. They last the session, until dismissed.
   List<ChatMessage> ephemeralIn(ChatTarget target);

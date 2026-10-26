@@ -948,27 +948,13 @@ class _Notice extends StatelessWidget {
 /// Above the composer: who's typing, and who's recording a voice message,
 /// as the desktop's typing indicator says it.
 class _TypingLine extends StatelessWidget {
-  final List<String> typing;
-  final List<String> recording;
-  const _TypingLine({required this.typing, required this.recording});
+  final List<TypingUser> users;
+  const _TypingLine({required this.users});
 
   @override
   Widget build(BuildContext context) {
-    if (typing.isEmpty && recording.isEmpty) return const SizedBox.shrink();
-    final who = [
-      if (typing.isNotEmpty)
-        switch (typing) {
-          [final one] => '$one is typing…',
-          [final a, final b] => '$a and $b are typing…',
-          _ => 'Several people are typing…',
-        },
-      if (recording.isNotEmpty)
-        switch (recording) {
-          [final one] => '$one is recording a voice message',
-          [final a, final b] => '$a and $b are recording voice messages',
-          _ => 'Several people are recording voice messages',
-        },
-    ].join(' · ');
+    final who = typingSentence(users);
+    if (who == null) return const SizedBox.shrink();
     return Align(
       alignment: Alignment.centerLeft,
       child: Padding(

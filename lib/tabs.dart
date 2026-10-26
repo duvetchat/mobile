@@ -37,6 +37,7 @@ class ChatsTab extends StatelessWidget {
         repository.profile,
         repository.presence,
         repository.friends,
+        repository.typingNow,
       ]),
       builder: (context, _) {
         final mentions = repository.mentions.value;
@@ -114,7 +115,7 @@ class ChatsTab extends StatelessWidget {
                       title: row.title,
                       hash: row.target is RoomTarget,
                       titleSuffix: row.space == null ? null : '· ${row.space}',
-                      snippet: row.snippet,
+                      snippet: typingSentence(repository.typingNow.value[row.target.id] ?? const []) ?? row.snippet,
                       trailing: row.at == null ? null : shortTime(row.at!),
                       unread: unread.contains(row.target.id),
                       mentions: mentions[row.target.id] ?? 0,
@@ -399,6 +400,7 @@ class _SpaceDirectoryState extends State<SpaceDirectory> {
         repository.latest,
         repository.profile,
         repository.collapsedCategories,
+        repository.typingNow,
         voice,
       ]),
       builder: (context, _) {
@@ -454,11 +456,13 @@ class _SpaceDirectoryState extends State<SpaceDirectory> {
                                     key: ValueKey(room.id),
                                     title: room.name,
                                     hash: true,
-                                    snippet: switch (latest[room.id]) {
-                                      final m? =>
-                                        '${m.authorId == me ? 'You' : m.authorName}: ${repository.previewOf(m)}',
-                                      null => null,
-                                    },
+                                    snippet:
+                                        typingSentence(repository.typingNow.value[room.id] ?? const []) ??
+                                        switch (latest[room.id]) {
+                                          final m? =>
+                                            '${m.authorId == me ? 'You' : m.authorName}: ${repository.previewOf(m)}',
+                                          null => null,
+                                        },
                                     unread: unread.contains(room.id),
                                     onTap: () => openChat(context, room.target, '# ${room.name}'),
                                   ),
