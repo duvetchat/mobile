@@ -148,6 +148,11 @@ class _ChatViewState extends State<ChatView> {
   // The last message read when the chat opened: the "New messages" divider
   // goes after it.
   String? _unreadAfter;
+  // When that one wasn't loaded on opening (further back than the first page,
+  // or deleted), the first message loaded after it, as the desktop does: the
+  // divider goes above it, and stays there for the visit, older pages coming
+  // or not.
+  String? _unreadFrom;
   final _dividerKey = GlobalKey();
   final _keys = <String, GlobalKey>{};
 
@@ -330,6 +335,13 @@ class _ChatViewState extends State<ChatView> {
         _loading = false;
         // Nothing after the last read: no divider.
         if (_unreadAfter != null && page.lastOrNull?.id == _unreadAfter) _unreadAfter = null;
+        // The last read not loaded: the first message after it is, as message
+        // IDs (UUIDv7s) order by time.
+        final after = _unreadAfter;
+        if (after != null && !_entries.any((e) => e.message.id == after)) {
+          _unreadFrom = _entries.map((e) => e.message.id).where((id) => id.compareTo(after) > 0).firstOrNull;
+          if (_unreadFrom == null) _unreadAfter = null;
+        }
       });
       if (thread == null) _repository.opened(widget.target, widget.title, latest: page.lastOrNull);
       // Opening reads the chat only if the list is still at its bottom once
@@ -376,7 +388,7 @@ class _ChatViewState extends State<ChatView> {
 
   /// Brings the "New messages" divider into view, near the top.
   Future<void> _showDivider() async {
-    if (!mounted || !_entries.any((e) => e.message.id == _unreadAfter)) return;
+    if (!mounted || !_entries.any((e) => e.message.id == (_unreadFrom ?? _unreadAfter))) return;
     if (await _scrollUntilBuilt(() => _dividerKey.currentContext)) {
       final ctx = _dividerKey.currentContext;
       if (ctx != null && ctx.mounted) await Scrollable.ensureVisible(ctx, alignment: 0.15);
@@ -2378,11 +2390,11 @@ class _ChatViewState extends State<ChatView> {
   }
 
   /// The entries, oldest first, with a separator where the day changes, the
-  /// "New messages" divider after the last one read, and each message marked
-  /// first and last of its run: one author, minutes apart. A webhook has no
-  /// author ID: its own ID and the name it posts under stand in, as on the
-  /// desktop. A person's name isn't compared: the history names them by
-  /// their Space nickname, which live messages may not know.
+  /// "New messages" divider after the last one read (or above [_unreadFrom]),
+  /// and each message marked first and last of its run: one author, minutes
+  /// apart. A webhook has no author ID: its own ID and the name it posts under
+  /// stand in, as on the desktop. A person's name isn't compared: the history
+  /// names them by their Space nickname, which live messages may not know.
   List<_Item> _items() {
     final items = <_Item>[];
     for (var i = 0; i < _entries.length; i++) {
@@ -2392,10 +2404,10 @@ class _ChatViewState extends State<ChatView> {
       final day = DateTime(m.createdAt.year, m.createdAt.month, m.createdAt.day);
       final newDay = previous == null || !_sameDay(previous.createdAt, m.createdAt);
       if (newDay) items.add(_Day(day));
-      final unreadStart = previous != null && previous.id == _unreadAfter;
+      final unreadStart = _unreadFrom != null ? m.id == _unreadFrom : previous != null && previous.id == _unreadAfter;
       if (unreadStart) items.add(const _NewMessages());
       if (widget.threadOf != null && i == 1) items.add(_Replies(_entries.length - 1));
-      final nextBreaks = next == null || m.id == _unreadAfter;
+      final nextBreaks = next == null || (_unreadFrom != null ? next.id == _unreadFrom : m.id == _unreadAfter);
       items.add(
         _Message(
           _entries[i],

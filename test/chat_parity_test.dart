@@ -582,6 +582,42 @@ void main() {
       semantics.dispose();
     });
 
+    testWidgets('one read further back than its first page opens above that page, and is read at the bottom', (
+      tester,
+    ) async {
+      // The newest 100 messages, and 50 older ones: the last read is among those.
+      ChatMessage line(int i) => FakeRepository.message(
+        'u${i.toString().padLeft(3, '0')}',
+        author: _maya,
+        name: 'Maya',
+        text: 'Line $i',
+        at: DateTime(2026, 10, 23, 8, i),
+      );
+      final repository = await openMaya(
+        tester,
+        setUp: (r) {
+          r.history['c-maya'] = [for (var i = 100; i < 200; i++) line(i)];
+          r.olderPages['c-maya'] = [
+            [for (var i = 50; i < 100; i++) line(i)],
+          ];
+          r.lastRead['c-maya'] = 'u060';
+          r.unread.value = {'c-maya'};
+        },
+      );
+      // Above the oldest message of the first page, where it opens, and where it stays when the older page comes:
+      // nothing is read.
+      expect(find.text('New messages'), findsOneWidget);
+      expect(find.text('Line 100'), findsOneWidget);
+      expect(tester.getTopLeft(find.text('New messages')).dy, lessThan(tester.getTopLeft(find.text('Line 100')).dy));
+      expect(repository.reads, isEmpty);
+      expect(repository.unread.value, contains('c-maya'));
+
+      await tester.drag(list, const Offset(0, -20000));
+      await tester.pumpAndSettle();
+      expect(repository.reads.last.$2, 'u199');
+      semantics.dispose();
+    });
+
     testWidgets('nor while the app is in the background: when it comes back', (tester) async {
       final repository = await openMaya(tester, setUp: longChat);
       for (final state in [AppLifecycleState.inactive, AppLifecycleState.hidden, AppLifecycleState.paused]) {
