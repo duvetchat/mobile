@@ -474,7 +474,9 @@ Future<T?> showGlassDialogSheet<T>(BuildContext context, {required String label,
                 crossAxisAlignment: CrossAxisAlignment.stretch,
                 children: [
                   const _Grabber(),
-                  Flexible(child: SingleChildScrollView(child: Builder(builder: builder))),
+                  Flexible(
+                    child: SingleChildScrollView(child: Builder(builder: builder)),
+                  ),
                 ],
               ),
             ),

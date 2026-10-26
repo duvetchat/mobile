@@ -342,6 +342,10 @@ abstract interface class ChatRepository {
   /// A user's name, if any list or message seen this session gave it.
   String? nameOf(String userId);
 
+  /// An avatar's URL, from the attachment ID the API and the gateway name it
+  /// by (a caller's, say); null for none.
+  String? avatarUrl(String? avatar);
+
   /// A custom emoji's name, if its space's emoji were loaded.
   String? emojiNameOf(String emojiId);
 

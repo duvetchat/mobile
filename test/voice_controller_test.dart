@@ -738,7 +738,7 @@ void main() {
         expect(h.voice.call?.phase, CallPhase.calling);
 
         // The gateway\'s word that it has the call: not again.
-        h.gateway.push(const duvet.UnknownEvent('CALL_OUTGOING', {'conversation_id': 'c-maya'}));
+        h.gateway.push(const duvet.CallOutgoingPayloadEvent(duvet.CallOutgoingEvent(conversationId: 'c-maya')));
         h.gateway.resumed(number: 3);
         async.flushMicrotasks();
         expect(placed(h.gateway), 2);
@@ -1128,6 +1128,525 @@ void main() {
       async.flushMicrotasks();
       expect(h.gateway.types, containsAllInOrder(['CALL_INITIATE', 'CALL_ACCEPT', 'VOICE_JOIN']));
       expect(h.voice.call?.phase, CallPhase.connected);
+    });
+  });
+
+  // A call follows the user across their devices (duvetchat/gateway#25): what
+  // the gateway tells each of their sessions, and what this phone does then.
+  group('calls across devices', () {
+    final me = FakeRepository.me.id;
+    const maya = FakeRepository.maya;
+    const leo = FakeRepository.leo;
+
+    duvet.CallIncomingPayloadEvent incoming(String conversation, String caller, String name, {String? avatar}) =>
+        duvet.CallIncomingPayloadEvent(
+          duvet.CallIncomingEvent(
+            conversationId: conversation,
+            initiatorId: caller,
+            initiatorName: name,
+            initiatorAvatar: avatar,
+          ),
+        );
+    duvet.CallOutgoingPayloadEvent outgoing(String conversation) =>
+        duvet.CallOutgoingPayloadEvent(duvet.CallOutgoingEvent(conversationId: conversation));
+    duvet.CallOngoingPayloadEvent ongoing(String conversation, String caller, List<String> inVoice) =>
+        duvet.CallOngoingPayloadEvent(
+          duvet.CallOngoingEvent(
+            conversationId: conversation,
+            initiatorId: caller,
+            voiceStates: inVoice.isEmpty
+                ? null
+                : [for (final u in inVoice) duvet.CallVoiceState(userId: u, version: 1)],
+          ),
+        );
+    duvet.CallAcceptedEvent accepted(String conversation, String user) =>
+        duvet.CallAcceptedEvent(duvet.CallResponseEvent(conversationId: conversation, userId: user));
+    duvet.CallDeclinedEvent declined(String conversation, String user) =>
+        duvet.CallDeclinedEvent(duvet.CallResponseEvent(conversationId: conversation, userId: user));
+    duvet.CallEndedPayloadEvent ended(String conversation) =>
+        duvet.CallEndedPayloadEvent(duvet.CallEndedEvent(conversationId: conversation));
+
+    /// One of READY's calls; [ringing], [answered] and [name] are null from a
+    /// gateway before calls across devices.
+    duvet.GatewayReadyActiveCall listed(
+      String conversation,
+      String caller, {
+      String? name,
+      String? avatar,
+      bool? ringing,
+      bool? answered,
+    }) => duvet.GatewayReadyActiveCall(
+      conversationId: conversation,
+      initiatorId: caller,
+      initiatorName: name,
+      initiatorAvatar: avatar,
+      ringing: ringing,
+      answered: answered,
+    );
+
+    _voice('the user\'s own call from another device rings nothing here, and can be joined once someone answers it', (
+      async,
+      h,
+    ) {
+      h.gateway.push(outgoing('c-team'));
+      expect(h.voice.call, isNull);
+      expect(h.voice.callsInProgress, {'c-team'});
+      expect(h.voice.ownCallRinging('c-team'), isTrue);
+
+      // It still rings the others: the user's voice would be in it alone.
+      h.voice.joinCall('c-team');
+      async.flushMicrotasks();
+      expect(h.gateway.sent, isEmpty);
+      expect(h.voice.call, isNull);
+
+      // A decline isn't an answer, and the device that placed the call says it.
+      h.gateway.push(declined('c-team', maya));
+      expect(h.voice.ownCallRinging('c-team'), isTrue);
+      expect(h.notices, isEmpty);
+
+      // Leo answered: nothing joins by itself, and Join moves the voice here.
+      h.gateway.push(accepted('c-team', leo));
+      async.flushMicrotasks();
+      expect(h.voice.ownCallRinging('c-team'), isFalse);
+      expect(h.gateway.sent, isEmpty);
+      h.voice.joinCall('c-team');
+      async.flushMicrotasks();
+      expect(h.gateway.types, ['CALL_INITIATE', 'CALL_ACCEPT', 'VOICE_JOIN', 'VOICE_SYNC']);
+      expect(h.voice.target, const CallVoice('c-team'));
+    });
+
+    _voice('the call placed here rings the others until the first answer, then its voice joins', (async, h) {
+      h.voice.startCall('c-maya');
+      async.flushMicrotasks();
+      h.gateway.push(outgoing('c-maya'));
+      expect(h.voice.call?.phase, CallPhase.calling);
+      expect(h.voice.ownCallRinging('c-maya'), isTrue);
+
+      h.gateway.push(accepted('c-maya', maya));
+      async.flushMicrotasks();
+      expect(h.voice.ownCallRinging('c-maya'), isFalse);
+      expect(h.voice.target, const CallVoice('c-maya'));
+    });
+
+    _voice('a call ringing here stops when the user answers or declines it on another device', (async, h) {
+      h.gateway.push(incoming('c-maya', maya, 'Maya'));
+      h.gateway.push(accepted('c-maya', me));
+      expect(h.voice.call, isNull);
+      // It goes on there.
+      expect(h.voice.callsInProgress, {'c-maya'});
+      h.gateway.push(ended('c-maya'));
+
+      // A group's goes on after the user declined it there, and can be joined
+      // from here still.
+      h.gateway.push(incoming('c-team', leo, 'Leo'));
+      h.gateway.push(declined('c-team', me));
+      expect(h.voice.call, isNull);
+      expect(h.voice.callsInProgress, {'c-team'});
+      // The gateway has the decline: nothing goes from here, nor is told.
+      expect(h.gateway.sent, isEmpty);
+      expect(h.notices, isEmpty);
+      // Neither call was this phone's to keep: the other device answered it.
+      expect(h.voice.history.calls.value, isEmpty);
+
+      h.voice.joinCall('c-team');
+      async.flushMicrotasks();
+      expect(h.gateway.types, ['CALL_INITIATE', 'CALL_ACCEPT', 'VOICE_JOIN', 'VOICE_SYNC']);
+    });
+
+    _voice('READY rings for a call that still rings the user, naming its caller as READY does', (async, h) {
+      h.gateway.ready(
+        number: 2,
+        calls: [listed('c-team', leo, name: 'Leo', avatar: 'av-leo', ringing: true, answered: false)],
+      );
+      expect(h.voice.call?.phase, CallPhase.ringing);
+      expect(h.voice.call?.conversationId, 'c-team');
+      expect(h.voice.call?.initiatorName, 'Leo');
+      expect(h.voice.call?.initiatorAvatar, 'av-leo');
+      expect(h.voice.call?.outgoing, isFalse);
+
+      h.voice.acceptCall();
+      async.flushMicrotasks();
+      expect(h.gateway.types, ['CALL_ACCEPT', 'VOICE_JOIN', 'VOICE_SYNC']);
+      expect(h.voice.target, const CallVoice('c-team'));
+    });
+
+    _voice('READY rings for no call answered or declined elsewhere, and one ringing here stops', (async, h) {
+      h.gateway.push(incoming('c-maya', maya, 'Maya'));
+      // A new session: the user answered on another device meanwhile.
+      h.gateway.ready(number: 2, calls: [listed('c-maya', maya, name: 'Maya', ringing: false, answered: true)]);
+      expect(h.voice.call, isNull);
+      expect(h.voice.callsInProgress, {'c-maya'});
+      expect(h.voice.history.calls.value, isEmpty);
+
+      h.gateway.ready(number: 3, calls: [listed('c-team', leo, name: 'Leo', ringing: false, answered: true)]);
+      expect(h.voice.call, isNull);
+      expect(h.voice.callsInProgress, {'c-team'});
+    });
+
+    _voice('someone else\'s call READY lists unanswered can be joined once declined here: it isn\'t the user\'s own', (
+      async,
+      h,
+    ) {
+      h.gateway.ready(number: 2, calls: [listed('c-team', leo, name: 'Leo', ringing: true, answered: false)]);
+      expect(h.voice.call?.phase, CallPhase.ringing);
+      h.voice.declineCall();
+      expect(h.voice.callsInProgress, {'c-team'});
+      expect(h.voice.ownCallRinging('c-team'), isFalse);
+
+      h.voice.joinCall('c-team');
+      async.flushMicrotasks();
+      expect(h.gateway.types, ['CALL_DECLINE', 'CALL_INITIATE', 'CALL_ACCEPT', 'VOICE_JOIN', 'VOICE_SYNC']);
+    });
+
+    _voice('a call that stopped ringing while the phone was away is kept nowhere; one that stops here is missed', (
+      async,
+      h,
+    ) {
+      // Leo's call rang here, then the phone was cut off. Maya answered it,
+      // and its ring window ended meanwhile: READY can't tell that from a
+      // call the user answered or declined on another device.
+      h.gateway.push(incoming('c-team', leo, 'Leo'));
+      h.gateway.ready(number: 2, calls: [listed('c-team', leo, name: 'Leo', ringing: false, answered: true)]);
+      expect(h.voice.call, isNull);
+      expect(h.voice.history.calls.value, isEmpty);
+      h.gateway.push(ended('c-team'));
+
+      // Its ring window ending while the phone is here (CALL_ONGOING): missed.
+      h.gateway.push(incoming('c-team', leo, 'Leo'));
+      h.gateway.push(ongoing('c-team', leo, [leo, maya]));
+      expect(h.voice.call, isNull);
+      expect(h.voice.history.calls.value.single.outcome, CallOutcome.missed);
+    });
+
+    _voice('READY says whether the user\'s own call was answered: until it is, it can\'t be joined from here', (
+      async,
+      h,
+    ) {
+      h.gateway.ready(number: 2, calls: [listed('c-team', me, name: 'Gaby', ringing: false, answered: false)]);
+      // Their own call rings none of their devices.
+      expect(h.voice.call, isNull);
+      expect(h.voice.callsInProgress, {'c-team'});
+      expect(h.voice.ownCallRinging('c-team'), isTrue);
+      h.voice.joinCall('c-team');
+      async.flushMicrotasks();
+      expect(h.gateway.sent, isEmpty);
+
+      h.gateway.ready(number: 3, calls: [listed('c-team', me, name: 'Gaby', ringing: false, answered: true)]);
+      expect(h.voice.ownCallRinging('c-team'), isFalse);
+    });
+
+    _voice('the call placed here that READY says was answered joins, as the answer it missed would have done', (
+      async,
+      h,
+    ) {
+      h.gateway.ready(number: 1);
+      h.voice.startCall('c-maya');
+      async.flushMicrotasks();
+      h.gateway.push(outgoing('c-maya'));
+      // Unanswered still: it goes on calling.
+      h.gateway.ready(
+        number: 2,
+        silence: const Duration(seconds: 20),
+        calls: [listed('c-maya', me, name: 'Gaby', ringing: false, answered: false)],
+      );
+      async.flushMicrotasks();
+      expect(h.voice.call?.phase, CallPhase.calling);
+
+      // Maya answered while the socket was down: her CALL_ACCEPTED went to
+      // the session that dropped.
+      h.now = h.now.add(const Duration(seconds: 40));
+      h.gateway.ready(
+        number: 3,
+        silence: const Duration(seconds: 30),
+        calls: [listed('c-maya', me, name: 'Gaby', ringing: false, answered: true)],
+      );
+      async.flushMicrotasks();
+      expect(h.voice.call?.phase, CallPhase.connected);
+      expect(h.voice.target, const CallVoice('c-maya'));
+      expect(h.gateway.last('VOICE_JOIN')!['room_id'], 'c-maya');
+      // The microphone opened as it was placed.
+      expect(h.engine.mics, hasLength(1));
+      expect(h.engine.peer.log.first, 'audio mic');
+    });
+
+    _voice(
+      'after more than 3 minutes without a word from the gateway, it stops calling instead: the call shows, to join',
+      (async, h) {
+        h.gateway.ready(number: 1);
+        h.voice.startCall('c-maya');
+        async.flushMicrotasks();
+        h.gateway.push(outgoing('c-maya'));
+        // The phone slept.
+        h.now = h.now.add(const Duration(minutes: 3, seconds: 1));
+        h.gateway.ready(
+          number: 2,
+          silence: const Duration(minutes: 3, seconds: 1),
+          calls: [listed('c-maya', me, name: 'Gaby', ringing: false, answered: true)],
+        );
+        async.flushMicrotasks();
+        expect(h.voice.call, isNull);
+        expect(h.voice.target, isNull);
+        expect(h.gateway.types, isNot(contains('VOICE_JOIN')));
+        // What it opened goes with it.
+        expect(h.engine.mics.single.stopped, isTrue);
+        expect(h.engine.sleeps, 1);
+        expect(h.voice.callsInProgress, {'c-maya'});
+        expect(h.voice.ownCallRinging('c-maya'), isFalse);
+        // It goes on, to join: the history keeps nothing of it.
+        expect(h.voice.history.calls.value, isEmpty);
+
+        h.voice.joinCall('c-maya');
+        async.flushMicrotasks();
+        expect(h.gateway.types.skip(1), ['CALL_INITIATE', 'CALL_ACCEPT', 'VOICE_JOIN', 'VOICE_SYNC']);
+      },
+    );
+
+    // How long the phone was cut off counts from the gateway's last word, or
+    // from the call if it was placed later, as voice's own rule does.
+    _voice('a call placed just now joins however long the gateway had been silent before', (async, h) {
+      h.gateway.ready(number: 1);
+      h.voice.startCall('c-maya');
+      async.flushMicrotasks();
+      h.now = h.now.add(const Duration(seconds: 20));
+      h.gateway.ready(
+        number: 2,
+        silence: const Duration(minutes: 10),
+        calls: [listed('c-maya', me, name: 'Gaby', ringing: false, answered: true)],
+      );
+      async.flushMicrotasks();
+      expect(h.voice.call?.phase, CallPhase.connected);
+      expect(h.voice.target, const CallVoice('c-maya'));
+    });
+
+    _voice('a call placed long ago joins when the gateway was heard just before', (async, h) {
+      h.gateway.ready(number: 1);
+      h.voice.startCall('c-maya');
+      async.flushMicrotasks();
+      h.now = h.now.add(const Duration(minutes: 10));
+      h.gateway.ready(
+        number: 2,
+        silence: const Duration(seconds: 5),
+        calls: [listed('c-maya', me, name: 'Gaby', ringing: false, answered: true)],
+      );
+      async.flushMicrotasks();
+      expect(h.voice.call?.phase, CallPhase.connected);
+      expect(h.voice.target, const CallVoice('c-maya'));
+    });
+
+    _voice('a gateway from before calls across devices: READY rings nothing, keeps what rings, and any call joins', (
+      async,
+      h,
+    ) {
+      h.gateway.ready(number: 1, calls: [listed('c-team', leo)]);
+      expect(h.voice.call, isNull);
+      expect(h.voice.ownCallRinging('c-team'), isFalse);
+      // The user's own call too, as before.
+      h.gateway.ready(number: 2, calls: [listed('c-team', me)]);
+      expect(h.voice.ownCallRinging('c-team'), isFalse);
+
+      h.gateway.push(incoming('c-maya', maya, 'Maya'));
+      h.gateway.ready(number: 3, calls: [listed('c-maya', maya)]);
+      expect(h.voice.call?.phase, CallPhase.ringing);
+      expect(h.voice.call?.initiatorName, 'Maya');
+    });
+
+    _voice('a call whose ring window ended goes on: missed here, who is in it shows, and it can be joined', (async, h) {
+      h.gateway.push(incoming('c-team', leo, 'Leo', avatar: 'av-leo'));
+      expect(h.voice.call?.initiatorAvatar, 'av-leo');
+      // Someone else's answer leaves it ringing here, until its ring window ends.
+      h.gateway.push(accepted('c-team', maya));
+      expect(h.voice.call?.phase, CallPhase.ringing);
+
+      h.gateway.push(ongoing('c-team', leo, [leo, maya]));
+      expect(h.voice.call, isNull);
+      expect(h.voice.callsInProgress, {'c-team'});
+      expect(h.voice.participants('c-team').map((p) => p.userId), [leo, maya]);
+      final missed = h.voice.history.calls.value.single;
+      expect((missed.title, missed.outcome, missed.outgoing), ('Design crew', CallOutcome.missed, false));
+
+      h.voice.joinCall('c-team');
+      async.flushMicrotasks();
+      expect(h.gateway.types, ['CALL_INITIATE', 'CALL_ACCEPT', 'VOICE_JOIN', 'VOICE_SYNC']);
+      expect(h.voice.call?.phase, CallPhase.connected);
+    });
+
+    _voice('added to a group while its call goes on: it shows, with who is in it, and rings nothing', (async, h) {
+      h.gateway.push(ongoing('c-team', leo, [leo]));
+      expect(h.voice.call, isNull);
+      expect(h.voice.callsInProgress, {'c-team'});
+      expect(h.voice.participants('c-team').single.userId, leo);
+      expect(h.voice.history.calls.value, isEmpty);
+
+      // Nobody in it: none shows.
+      h.gateway.push(ongoing('c-team', leo, const []));
+      expect(h.voice.participants('c-team'), isEmpty);
+    });
+
+    _voice('calls that crossed in a DM connect: the call placed here joins the one that rang', (async, h) {
+      h.voice.startCall('c-maya');
+      async.flushMicrotasks();
+      // Maya's call reached the gateway first. It rings here, but this phone
+      // is calling: it waits for the gateway, which takes its call for an
+      // answer.
+      h.gateway.push(incoming('c-maya', maya, 'Maya'));
+      expect(h.voice.call?.phase, CallPhase.calling);
+      h.gateway.push(accepted('c-maya', me));
+      async.flushMicrotasks();
+      expect(h.voice.call?.phase, CallPhase.connected);
+      expect(h.voice.target, const CallVoice('c-maya'));
+      expect(h.gateway.types, ['CALL_INITIATE', 'VOICE_JOIN', 'VOICE_SYNC']);
+    });
+
+    _voice('calls that crossed in a group connect too, also when the gateway lets the caller in first', (async, h) {
+      h.voice.startCall('c-team');
+      async.flushMicrotasks();
+      h.gateway.push(incoming('c-team', leo, 'Leo'));
+      h.gateway.push(accepted('c-team', me));
+      async.flushMicrotasks();
+      expect(h.voice.call?.phase, CallPhase.connected);
+      expect(h.gateway.last('VOICE_JOIN')!['room_id'], 'c-team');
+      h.voice.hangUp();
+      async.flushMicrotasks();
+
+      // Leo's call began without the user among its members (added just as
+      // it began): the gateway lets them in, then takes their call for an
+      // answer.
+      h.voice.startCall('c-team');
+      async.flushMicrotasks();
+      h.gateway.push(ongoing('c-team', leo, [leo]));
+      expect(h.voice.call?.phase, CallPhase.calling);
+      h.gateway.push(accepted('c-team', me));
+      async.flushMicrotasks();
+      expect(h.voice.call?.phase, CallPhase.connected);
+      expect(h.voice.target, const CallVoice('c-team'));
+    });
+
+    _voice('leaving a group during its call hangs up here, or stops its ringing: CALL_ENDED comes to the user alone', (
+      async,
+      h,
+    ) {
+      h.gateway.push(incoming('c-team', leo, 'Leo'));
+      h.voice.acceptCall();
+      async.flushMicrotasks();
+      h.engine.peer.stateHandler!(PeerState.connected);
+
+      // The user left the group, here or on another device: the gateway
+      // takes their voice out of the call, which goes on for the others.
+      h.gateway.push(ended('c-team'));
+      expect(h.voice.call, isNull);
+      expect(h.voice.target, isNull);
+      expect(h.voice.callsInProgress, isEmpty);
+      expect(h.engine.peer.closed, isTrue);
+      expect(h.gateway.types, isNot(contains('CALL_LEAVE')));
+      expect(h.gateway.types, isNot(contains('VOICE_LEAVE')));
+      expect(h.voice.history.calls.value.single.outcome, CallOutcome.answered);
+
+      h.gateway.push(incoming('c-team', leo, 'Leo'));
+      h.gateway.push(ended('c-team'));
+      expect(h.voice.call, isNull);
+      expect(h.voice.callsInProgress, isEmpty);
+    });
+
+    _voice('a cancel after calling back into a call going on takes only the user out: the call shows, to join', (
+      async,
+      h,
+    ) {
+      // The user calls into their own call, which Maya answered and they had
+      // left: the gateway takes it for their coming back, and its
+      // CALL_ACCEPTED of the user is on its way when they cancel.
+      h.voice.startCall('c-maya');
+      async.flushMicrotasks();
+      h.voice.hangUp();
+      expect(h.gateway.types, ['CALL_INITIATE', 'CALL_CANCEL']);
+      expect(h.voice.callsInProgress, isEmpty);
+
+      // That cancel only took the user's voice out: the call goes on.
+      h.gateway.push(accepted('c-maya', me));
+      async.flushMicrotasks();
+      expect(h.voice.callsInProgress, {'c-maya'});
+      expect(h.voice.call, isNull);
+      expect(h.gateway.types, ['CALL_INITIATE', 'CALL_CANCEL']);
+      expect(h.voice.history.calls.value.single.outcome, CallOutcome.cancelled);
+
+      h.voice.joinCall('c-maya');
+      async.flushMicrotasks();
+      expect(h.gateway.types.skip(2), ['CALL_INITIATE', 'CALL_ACCEPT', 'VOICE_JOIN', 'VOICE_SYNC']);
+      h.gateway.push(ended('c-maya'));
+      expect(h.voice.callsInProgress, isEmpty);
+    });
+
+    _voice('any other cancel of the caller ends the call: it doesn\'t show again before its CALL_ENDED', (async, h) {
+      h.voice.startCall('c-maya');
+      async.flushMicrotasks();
+      h.voice.hangUp();
+      // What the gateway said of the call before the cancel reached it: it
+      // had it, and Maya answered it just then.
+      h.gateway.push(outgoing('c-maya'));
+      h.gateway.push(accepted('c-maya', maya));
+      async.flushMicrotasks();
+      expect(h.voice.callsInProgress, isEmpty);
+      expect(h.voice.ownCallRinging('c-maya'), isFalse);
+      expect(h.voice.call, isNull);
+
+      h.gateway.push(ended('c-maya'));
+      expect(h.voice.callsInProgress, isEmpty);
+      expect(h.gateway.types, ['CALL_INITIATE', 'CALL_CANCEL']);
+    });
+
+    _voice('a call placed again where one was just cancelled takes what the gateway says of it', (async, h) {
+      h.voice.startCall('c-maya');
+      async.flushMicrotasks();
+      h.voice.hangUp();
+      h.voice.startCall('c-maya');
+      async.flushMicrotasks();
+      h.gateway.push(outgoing('c-maya'));
+      expect(h.voice.ownCallRinging('c-maya'), isTrue);
+      expect(h.voice.callsInProgress, {'c-maya'});
+      // The gateway has it: a resumed session doesn't place it again.
+      h.gateway.resumed(number: 2);
+      async.flushMicrotasks();
+      expect(h.gateway.types, ['CALL_INITIATE', 'CALL_CANCEL', 'CALL_INITIATE']);
+    });
+
+    _voice('the user\'s own call and their cancel are forgotten once the call ends, at READY, and with the account', (
+      async,
+      h,
+    ) {
+      h.gateway.push(outgoing('c-team'));
+      h.gateway.push(ended('c-team'));
+      expect(h.voice.ownCallRinging('c-team'), isFalse);
+      // A call placed there from another device after the one cancelled here
+      // ended shows.
+      h.voice.startCall('c-maya');
+      async.flushMicrotasks();
+      h.voice.hangUp();
+      h.gateway.push(ended('c-maya'));
+      h.gateway.push(outgoing('c-maya'));
+      expect(h.voice.callsInProgress, {'c-maya'});
+      expect(h.voice.ownCallRinging('c-maya'), isTrue);
+      h.gateway.push(ended('c-maya'));
+
+      // A new session: its READY lists the calls going on.
+      h.voice.startCall('c-maya');
+      async.flushMicrotasks();
+      h.voice.hangUp();
+      h.gateway.ready(number: 2);
+      h.gateway.push(outgoing('c-maya'));
+      expect(h.voice.callsInProgress, {'c-maya'});
+      h.gateway.push(ended('c-maya'));
+
+      // Another account, or the same again: nothing of the last session's.
+      h.gateway.push(outgoing('c-team'));
+      h.voice.startCall('c-maya');
+      async.flushMicrotasks();
+      h.voice.hangUp();
+      h.repository.logOut();
+      async.flushMicrotasks();
+      h.repository.logIn('gaby@duvet.chat', 'secret');
+      async.flushMicrotasks();
+      expect(h.voice.ownCallRinging('c-team'), isFalse);
+      h.gateway.push(outgoing('c-maya'));
+      expect(h.voice.callsInProgress, {'c-maya'});
     });
   });
 
