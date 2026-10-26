@@ -35,23 +35,25 @@ Map<String, dynamic> _user(String id, String username, {bool bot = false}) => {
   'updated_at': _at,
 };
 
-Map<String, dynamic> _room(String id, {int type = 1, int position = 0, String? parent}) => {
+Map<String, dynamic> _room(String id, {int type = 1, int position = 0, String? parent, String? description}) => {
   'id': id,
   'space_id': 's-1',
   'parent_id': parent,
   'type': type,
   'name': id,
+  'description': ?description,
   'position': position,
   'created_at': _at,
   'updated_at': _at,
 };
 
-Map<String, dynamic> _role(String id, String name, int perms, {int position = 1}) => {
+Map<String, dynamic> _role(String id, String name, int perms, {int position = 1, bool hoisted = false}) => {
   'id': id,
   'space_id': 's-1',
   'name': name,
   'permissions': perms,
   'position': position,
+  'hoisted': hoisted,
   'created_at': _at,
   'updated_at': _at,
 };
@@ -101,10 +103,34 @@ Map<String, dynamic> _space({
   'owner_id': _maya,
 };
 
+/// Another of the user's Spaces, with no rooms: [id] and [name] are all that
+/// tells it apart.
+Map<String, dynamic> _spaceOf(String id, String name, {String? banner}) => {
+  'space': {'id': id, 'name': name, 'owner_id': _maya, 'banner': ?banner, 'created_at': _at, 'updated_at': _at},
+  'rooms': <String, dynamic>{},
+  'roles_permissions': {id: _role(id, 'everyone', Perm.viewChannels, position: 0)},
+  'member_roles': {
+    _me: [id],
+  },
+  'owner_id': _maya,
+};
+
+/// A cache store whose read of the folded categories waits for [release].
+class _SlowCollapsed extends MemoryChatCacheStore {
+  final release = Completer<void>();
+  @override
+  Future<String?> read(String key) async {
+    if (key == 'collapsed') await release.future;
+    return super.read(key);
+  }
+}
+
 void main() {
   late List<http.Request> requests;
   late Map<(String, String), Object? Function(http.Request request)> routes;
   late DuvetRepository repository;
+  late http.Client client;
+  late MemoryChatCacheStore cache;
 
   setUp(() {
     requests = [];
@@ -113,7 +139,7 @@ void main() {
       ('GET', '/api/users/@me'): (_) => {..._user(_me, 'gaby'), 'email_verified': true},
       ('GET', '/api/users/@me/conversations'): (_) => <Object>[],
     };
-    final client = MockClient((request) async {
+    client = MockClient((request) async {
       requests.add(request);
       var json = routes[(request.method, request.url.path)]?.call(request);
       // A route may answer later, as a request still on its way.
@@ -127,7 +153,7 @@ void main() {
       recentsStore: MemoryRecentChatsStore(),
       httpClient: () => client,
       connectGateway: false,
-      cacheStore: MemoryChatCacheStore(),
+      cacheStore: cache = MemoryChatCacheStore(),
     );
   });
 
@@ -496,6 +522,47 @@ void main() {
       held.complete();
       await pumpEventQueue();
       expect(repository.rolesOf('s-1', _leo).map((r) => r.name), ['role-mod']);
+    });
+
+    test('a member\'s roles come highest first, with their IDs, places and whether they show apart', () async {
+      await signIn();
+      repository.handleEvent(
+        _event('SPACE_CREATE', {
+          ..._space(mine: ['role-low', 'role-high', 'role-mid']),
+          'roles_permissions': {
+            's-1': _role('s-1', 'everyone', Perm.viewChannels, position: 0),
+            'role-low': _role('role-low', 'Low', 0),
+            'role-high': _role('role-high', 'High', 0, position: 3, hoisted: true),
+            'role-mid': _role('role-mid', 'Mid', 0, position: 2),
+          },
+        }),
+      );
+      expect(repository.rolesOf('s-1', _me).map((r) => (r.id, r.position, r.hoisted)), [
+        ('role-high', 3, true),
+        ('role-mid', 2, false),
+        ('role-low', 1, false),
+      ]);
+      expect(
+        {for (final r in repository.roles('s-1')) r.id: r.hoisted},
+        {'s-1': false, 'role-low': false, 'role-high': true, 'role-mid': false},
+      );
+    });
+
+    test('showing a role apart sends hoisted; a change that doesn\'t touch it leaves it out', () async {
+      await signIn();
+      repository.handleEvent(_event('SPACE_CREATE', _space(roles: {'role-mod': Perm.pinMessages})));
+      routes[('PATCH', '/api/spaces/s-1/roles/role-mod')] = (request) {
+        final body = jsonDecode(request.body) as Map<String, dynamic>;
+        return _role('role-mod', 'role-mod', Perm.pinMessages, hoisted: body['hoisted'] as bool? ?? false);
+      };
+      Map<String, dynamic> sent() => jsonDecode(requests.last.body) as Map<String, dynamic>;
+
+      await repository.updateRole('s-1', 'role-mod', hoisted: true);
+      expect(sent()['hoisted'], isTrue);
+      expect(repository.roles('s-1').singleWhere((r) => r.id == 'role-mod').hoisted, isTrue);
+
+      await repository.updateRole('s-1', 'role-mod', name: 'Mods');
+      expect(sent().containsKey('hoisted'), isFalse);
     });
   });
 
@@ -1172,6 +1239,19 @@ void main() {
       );
     });
 
+    test('a room\'s description', () async {
+      await signIn();
+      repository.handleEvent(_event('SPACE_CREATE', _space()));
+      await refuses(
+        'PATCH',
+        '/api/spaces/s-1/rooms/r-general',
+        () => repository.setRoomDescription('s-1', 'r-general', 'Say hi'),
+        status: 400,
+        reason: 'description must be at most 1024 characters',
+      );
+      expect(repository.spaces.value.single.rooms.single.description, isNull);
+    });
+
     test('without a connection, it says so', () async {
       await signIn();
       const offline = 'No connection. Check it and try again.';
@@ -1333,5 +1413,361 @@ void main() {
       repository.bot('u-maya'),
       throwsA(isA<ActionFailed>().having((e) => e.message, 'message', 'This user is not a bot.')),
     );
+  });
+
+  group('the gateway\'s order', () {
+    // READY asks for the mention counts: they land before the next event.
+    Future<void> ready({List<String>? guilds}) async {
+      repository.handleEvent(_event('READY', {'user': _user(_me, 'gaby'), 'sessionToken': 'ws', 'guild_ids': ?guilds}));
+      await pumpEventQueue();
+    }
+
+    List<String> order() => [for (final s in repository.spaces.value) s.id];
+
+    test('Spaces come as READY lists them, not by name', () async {
+      await signIn();
+      await ready(guilds: ['s-zeta', 's-alpha', 's-mid']);
+      // The SPACE_CREATEs needn't come in that order either.
+      repository.handleEvent(_event('SPACE_CREATE', _spaceOf('s-alpha', 'Alpha')));
+      repository.handleEvent(_event('SPACE_CREATE', _spaceOf('s-mid', 'Mid')));
+      repository.handleEvent(_event('SPACE_CREATE', _spaceOf('s-zeta', 'Zeta')));
+      expect(order(), ['s-zeta', 's-alpha', 's-mid']);
+    });
+
+    test('a Space READY didn\'t list goes last, in the order they came', () async {
+      await signIn();
+      await ready(guilds: ['s-zeta', 's-alpha']);
+      repository.handleEvent(_event('SPACE_CREATE', _spaceOf('s-alpha', 'Alpha')));
+      repository.handleEvent(_event('SPACE_CREATE', _spaceOf('s-zeta', 'Zeta')));
+      // Made or joined since: after the others, though their names come first.
+      repository.handleEvent(_event('SPACE_CREATE', _spaceOf('s-new', 'Bees')));
+      repository.handleEvent(_event('SPACE_CREATE', _spaceOf('s-newer', 'Aardvarks')));
+      expect(order(), ['s-zeta', 's-alpha', 's-new', 's-newer']);
+    });
+
+    test('a Space renamed keeps its place', () async {
+      await signIn();
+      await ready(guilds: ['s-alpha', 's-zeta']);
+      repository.handleEvent(_event('SPACE_CREATE', _spaceOf('s-alpha', 'Alpha')));
+      repository.handleEvent(_event('SPACE_CREATE', _spaceOf('s-zeta', 'Zeta')));
+      // A name that sorts first, which doesn't move it.
+      repository.handleEvent(
+        _event('SPACE_UPDATE', {
+          'id': 's-zeta',
+          'name': 'Aardvarks',
+          'owner_id': _maya,
+          'created_at': _at,
+          'updated_at': _at,
+        }),
+      );
+      expect(order(), ['s-alpha', 's-zeta']);
+      expect(repository.spaces.value.last.name, 'Aardvarks');
+    });
+
+    test('a READY that lists none keeps the order they came in', () async {
+      await signIn();
+      await ready();
+      repository.handleEvent(_event('SPACE_CREATE', _spaceOf('s-zeta', 'Zeta')));
+      repository.handleEvent(_event('SPACE_CREATE', _spaceOf('s-alpha', 'Alpha')));
+      expect(order(), ['s-zeta', 's-alpha']);
+    });
+  });
+
+  group('banners', () {
+    const banner = '00000000-0000-4000-8000-0000000000b1';
+    const other = '00000000-0000-4000-8000-0000000000b2';
+    Map<String, dynamic> updated(String? banner) => {
+      'id': 's-1',
+      'name': 'Duvet Official',
+      'owner_id': _maya,
+      'banner': banner,
+      'created_at': _at,
+      'updated_at': _at,
+    };
+
+    test(
+      'a Space\'s banner is its attachment\'s URL, as its icon is; SPACE_UPDATE changes it or takes it away',
+      () async {
+        await signIn();
+        repository.handleEvent(_event('SPACE_CREATE', _spaceOf('s-1', 'Duvet Official', banner: banner)));
+        expect(repository.spaces.value.single.bannerUrl, 'https://api.duvet.chat/attachments/$banner');
+
+        repository.handleEvent(_event('SPACE_UPDATE', updated(other)));
+        expect(repository.spaces.value.single.bannerUrl, 'https://api.duvet.chat/attachments/$other');
+
+        repository.handleEvent(_event('SPACE_UPDATE', updated(null)));
+        expect(repository.spaces.value.single.bannerUrl, isNull);
+      },
+    );
+
+    test('a description cleared as the banner goes is cleared first, alone: the form would drop it', () async {
+      await signIn();
+      repository.handleEvent(_event('SPACE_CREATE', _spaceOf('s-1', 'Duvet Official', banner: banner)));
+      routes[('PATCH', '/api/spaces/s-1')] = (_) => updated(null);
+      final before = requests.length;
+      await repository.updateSpace('s-1', description: '', removeBanner: true);
+      final patches = requests.skip(before).where((r) => r.method == 'PATCH').toList();
+      expect(patches, hasLength(2));
+      expect(jsonDecode(patches.first.body), {'description': ''});
+      expect(patches.last.body, contains('name="remove_banner"'));
+      expect(patches.last.body, isNot(contains('name="description"')));
+    });
+
+    test('removing the banner asks the API to remove it; a new one, given too, wins', () async {
+      await signIn();
+      repository.handleEvent(_event('SPACE_CREATE', _spaceOf('s-1', 'Duvet Official', banner: banner)));
+      routes[('PATCH', '/api/spaces/s-1')] = (_) => updated(null);
+      final dir = Directory.systemTemp.createTempSync('duvet_banners');
+      addTearDown(() => dir.deleteSync(recursive: true));
+      final upload = '${dir.path}/banner.png';
+      File(upload).writeAsBytesSync(const [1, 2, 3]);
+
+      await repository.updateSpace('s-1', removeBanner: true);
+      expect(requests.last.body, contains('name="remove_banner"'));
+
+      await repository.updateSpace('s-1', removeBanner: true, bannerPath: upload);
+      expect(requests.last.body, isNot(contains('remove_banner')));
+      expect(requests.last.body, contains('name="banner"'));
+    });
+  });
+
+  group('room descriptions', () {
+    Map<String, dynamic> guild() => _space(
+      rooms: {
+        'r-general': _room('r-general', description: '  Say hi  '),
+        'r-blank': _room('r-blank', position: 1, description: '   '),
+        'r-quiet': _room('r-quiet', position: 2),
+        'c-talk': _room('c-talk', type: 3, position: 3, description: 'Not shown'),
+      },
+    );
+    Map<String, String?> shown() => {for (final r in repository.spaces.value.single.rooms) r.id: r.description};
+    Map<String, String?> admin() => {for (final r in repository.adminRooms('s-1')) r.id: r.description};
+
+    test('come from the rooms\', trimmed; a blank one is none, and a category has none', () async {
+      await signIn();
+      repository.handleEvent(_event('SPACE_CREATE', guild()));
+      expect(shown(), {'r-general': 'Say hi', 'r-blank': null, 'r-quiet': null});
+      expect(admin(), {'r-general': 'Say hi', 'r-blank': null, 'r-quiet': null, 'c-talk': null});
+    });
+
+    // The rooms' PATCH, answering the room as the API would.
+    void patches() => routes[('PATCH', '/api/spaces/s-1/rooms/r-general')] = (request) {
+      final body = jsonDecode(request.body) as Map<String, dynamic>;
+      return _room('r-general', description: body['description'] as String?);
+    };
+    Map<String, dynamic> sent() => jsonDecode(requests.last.body) as Map<String, dynamic>;
+
+    test('setting one sends it trimmed, and shows it', () async {
+      await signIn();
+      repository.handleEvent(_event('SPACE_CREATE', guild()));
+      patches();
+      await repository.setRoomDescription('s-1', 'r-general', '  Where it starts  ');
+      expect(sent(), {'description': 'Where it starts'});
+      expect(shown()['r-general'], 'Where it starts');
+      expect(admin()['r-general'], 'Where it starts');
+    });
+
+    test('a blank one or none clears it: null, as the API takes it', () async {
+      await signIn();
+      repository.handleEvent(_event('SPACE_CREATE', guild()));
+      patches();
+      for (final blank in ['', '   ', null]) {
+        await repository.setRoomDescription('s-1', 'r-general', blank);
+        expect(sent(), {'description': null}, reason: '"$blank"');
+        expect(shown()['r-general'], isNull);
+      }
+    });
+
+    test('ROOM_UPDATE brings someone else\'s', () async {
+      await signIn();
+      repository.handleEvent(_event('SPACE_CREATE', guild()));
+      repository.handleEvent(_event('ROOM_UPDATE', _room('r-quiet', position: 2, description: 'Shh')));
+      expect(shown()['r-quiet'], 'Shh');
+      expect(admin()['r-quiet'], 'Shh');
+    });
+  });
+
+  group('categories', () {
+    Map<String, dynamic> guild() => _space(
+      rooms: {
+        'r-general': _room('r-general'),
+        'c-talk': _room('c-talk', type: 3, position: 1),
+        'r-crit': _room('r-crit', parent: 'c-talk'),
+        'c-empty': _room('c-empty', type: 3, position: 2),
+      },
+    );
+
+    test(
+      'a section is its category\'s, by ID; the rooms outside any have none, and an empty one still shows',
+      () async {
+        await signIn();
+        repository.handleEvent(_event('SPACE_CREATE', guild()));
+        expect(repository.spaces.value.single.sections.map((s) => (s.id, s.rooms.length)), [
+          (null, 1),
+          ('c-talk', 1),
+          ('c-empty', 0),
+        ]);
+      },
+    );
+
+    test('collapsing one folds it, and only it; expanding it opens it again', () async {
+      await signIn();
+      expect(repository.collapsedCategories.value, isEmpty);
+      repository.setCategoryCollapsed('c-talk', true);
+      expect(repository.collapsedCategories.value, {'c-talk'});
+      // Twice is once.
+      repository.setCategoryCollapsed('c-talk', true);
+      expect(repository.collapsedCategories.value, {'c-talk'});
+      repository.setCategoryCollapsed('c-empty', true);
+      expect(repository.collapsedCategories.value, {'c-talk', 'c-empty'});
+      repository.setCategoryCollapsed('c-talk', false);
+      expect(repository.collapsedCategories.value, {'c-empty'});
+      // Expanding one that's open changes nothing.
+      repository.setCategoryCollapsed('c-talk', false);
+      expect(repository.collapsedCategories.value, {'c-empty'});
+    });
+
+    test('collapsing, expanding, then collapsing another leaves just the other', () async {
+      await signIn();
+      repository.setCategoryCollapsed('c-talk', true);
+      repository.setCategoryCollapsed('c-talk', false);
+      repository.setCategoryCollapsed('c-empty', true);
+      expect(repository.collapsedCategories.value, {'c-empty'});
+    });
+
+    DuvetRepository again() => DuvetRepository(
+      store: MemorySessionStore(),
+      recentsStore: MemoryRecentChatsStore(),
+      httpClient: () => client,
+      connectGateway: false,
+      cacheStore: cache,
+    );
+
+    test('the folded ones are kept on the device, for the next session', () async {
+      await signIn();
+      repository.setCategoryCollapsed('c-talk', true);
+      repository.setCategoryCollapsed('c-empty', true);
+      repository.setCategoryCollapsed('c-empty', false);
+      // The cache writes a moment after the changes.
+      await Future<void>.delayed(const Duration(milliseconds: 700));
+
+      final next = again();
+      addTearDown(next.dispose);
+      await next.logIn('gaby@duvet.chat', 'secret');
+      await pumpEventQueue();
+      expect(next.collapsedCategories.value, {'c-talk'});
+    });
+
+    test('opened offline, the folded ones come from the device too', () async {
+      final sessions = MemorySessionStore();
+      DuvetRepository over(MemorySessionStore store) => DuvetRepository(
+        store: store,
+        recentsStore: MemoryRecentChatsStore(),
+        httpClient: () => client,
+        connectGateway: false,
+        cacheStore: cache,
+      );
+      final first = over(sessions);
+      addTearDown(first.dispose);
+      await first.logIn('gaby@duvet.chat', 'secret');
+      first.handleEvent(_event('SPACE_CREATE', guild()));
+      first.setCategoryCollapsed('c-talk', true);
+      // The home and the folds write a moment after.
+      await Future<void>.delayed(const Duration(milliseconds: 700));
+
+      // The server out of reach: the session opens from what's saved.
+      routes[('GET', '/api/users/@me')] = (_) => throw const SocketException('no network');
+      final next = over(sessions);
+      addTearDown(next.dispose);
+      expect(await next.restore(), isTrue);
+      await pumpEventQueue();
+      expect(next.status.value, LiveStatus.offline);
+      expect(next.collapsedCategories.value, {'c-talk'});
+    });
+
+    test('one folded before the saved ones are read stays folded', () async {
+      final slow = _SlowCollapsed()..data['collapsed'] = jsonEncode({'ids': <String>[]});
+      final next = DuvetRepository(
+        store: MemorySessionStore(),
+        recentsStore: MemoryRecentChatsStore(),
+        httpClient: () => client,
+        connectGateway: false,
+        cacheStore: slow,
+      );
+      addTearDown(next.dispose);
+      await next.logIn('gaby@duvet.chat', 'secret');
+      next.setCategoryCollapsed('c-talk', true);
+      // What's saved arrives after: it must not open it again.
+      slow.release.complete();
+      await pumpEventQueue();
+      expect(next.collapsedCategories.value, {'c-talk'});
+    });
+
+    test('signing out forgets them', () async {
+      await signIn();
+      repository.setCategoryCollapsed('c-talk', true);
+      await Future<void>.delayed(const Duration(milliseconds: 700));
+      await repository.logOut();
+      expect(repository.collapsedCategories.value, isEmpty);
+
+      final next = again();
+      addTearDown(next.dispose);
+      await next.logIn('gaby@duvet.chat', 'secret');
+      await pumpEventQueue();
+      expect(next.collapsedCategories.value, isEmpty);
+    });
+  });
+
+  group('the cache', () {
+    test('keeps a Space\'s banner, its sections\' IDs and its rooms\' descriptions', () {
+      const space = Space(
+        id: 's-1',
+        name: 'Duvet Official',
+        bannerUrl: 'https://api.duvet.chat/attachments/b-1',
+        sections: [
+          RoomSection(
+            name: null,
+            rooms: [Room(id: 'r-general', spaceId: 's-1', name: 'general', kind: RoomKind.text, position: 0)],
+          ),
+          RoomSection(
+            id: 'c-talk',
+            name: 'Talk',
+            rooms: [
+              Room(
+                id: 'r-crit',
+                spaceId: 's-1',
+                name: 'crit',
+                kind: RoomKind.text,
+                position: 0,
+                description: 'Feedback, kindly',
+              ),
+            ],
+          ),
+        ],
+      );
+      final back = spaceFromJson(jsonDecode(jsonEncode(spaceToJson(space))) as Map<String, Object?>);
+      expect(back.bannerUrl, space.bannerUrl);
+      expect(back.sections.map((s) => s.id), [null, 'c-talk']);
+      expect(back.rooms.map((r) => r.description), [null, 'Feedback, kindly']);
+    });
+
+    test('a Space cached before them reads as none', () {
+      final back = spaceFromJson({
+        'id': 's-1',
+        'name': 'Duvet Official',
+        'iconUrl': null,
+        'sections': [
+          {
+            'name': 'Talk',
+            'rooms': [
+              {'id': 'r-crit', 'name': 'crit', 'voice': false, 'position': 0},
+            ],
+          },
+        ],
+      });
+      expect(back.bannerUrl, isNull);
+      expect(back.sections.single.id, isNull);
+      expect(back.rooms.single.description, isNull);
+    });
   });
 }

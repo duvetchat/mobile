@@ -22,6 +22,11 @@ abstract interface class ChatRepository {
   /// The IDs of the rooms and conversations with unread messages.
   ValueListenable<Set<String>> get unread;
 
+  /// The categories the user folded away in Space directories, by ID: kept on
+  /// this device, for this account. A category not here is open.
+  ValueListenable<Set<String>> get collapsedCategories;
+  void setCategoryCollapsed(String categoryId, bool collapsed);
+
   ValueListenable<LiveStatus> get status;
 
   /// The gateway's voice and call signalling, which voice rooms and calls
@@ -198,12 +203,25 @@ abstract interface class ChatRepository {
 
   /// Whether the user may do [bit] in a room, with its overwrites applied.
   bool canInRoom(String spaceId, String roomId, int bit);
-  Future<void> updateSpace(String spaceId, {String? name, String? description, String? iconPath, String? bannerPath});
+
+  /// Changes the Space; [removeBanner] takes its banner away, as no
+  /// [bannerPath] can.
+  Future<void> updateSpace(
+    String spaceId, {
+    String? name,
+    String? description,
+    String? iconPath,
+    String? bannerPath,
+    bool removeBanner = false,
+  });
 
   /// Rooms and categories, by position.
   List<AdminRoom> adminRooms(String spaceId);
   Future<void> createRoom(String spaceId, String name, AdminRoomKind kind, {String? parentId});
   Future<void> renameRoom(String spaceId, String roomId, String name);
+
+  /// Sets what a room is for; null or blank clears it. Not for categories.
+  Future<void> setRoomDescription(String spaceId, String roomId, String? description);
   Future<void> deleteRoom(String spaceId, String roomId);
 
   /// Moves a room into [parentId]'s rooms (null: out of any category; a
@@ -226,6 +244,7 @@ abstract interface class ChatRepository {
     int? color,
     bool clearColor = false,
     int? perms,
+    bool? hoisted,
   });
   Future<void> deleteRole(String spaceId, String roleId);
   List<String> roleMembers(String spaceId, String roleId);

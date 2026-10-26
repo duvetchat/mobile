@@ -45,6 +45,15 @@ class FakeRepository implements ChatRepository {
   final ValueNotifier<List<ConversationSummary>> conversations = ValueNotifier(const []);
   @override
   final ValueNotifier<Set<String>> unread = ValueNotifier(const {});
+  @override
+  final ValueNotifier<Set<String>> collapsedCategories = ValueNotifier(const {});
+
+  @override
+  void setCategoryCollapsed(String categoryId, bool collapsed) => collapsedCategories.value = {
+    for (final id in collapsedCategories.value)
+      if (id != categoryId) id,
+    if (collapsed) categoryId,
+  };
   final recentChats = RecentChats(MemoryRecentChatsStore());
   @override
   ValueListenable<List<RecentChat>> get recents => recentChats.chats;
@@ -181,9 +190,13 @@ class FakeRepository implements ChatRepository {
   /// How many invites fail before one works.
   int inviteFailures = 0;
 
+  /// While set, new invites wait for it: a link on its way.
+  Completer<void>? holdInvites;
+
   @override
   Future<String> createInvite(String spaceId, String roomId, {Duration? maxAge}) async {
     invitesMade.add((roomId, maxAge));
+    await holdInvites?.future;
     if (inviteFailures > 0) {
       inviteFailures--;
       throw const ActionFailed('You can’t invite people to #general');
@@ -406,6 +419,7 @@ class FakeRepository implements ChatRepository {
     return SpaceProfile(
       id: space.id,
       name: space.name,
+      bannerUrl: space.bannerUrl,
       memberCount: everyone.length,
       owner: spaceOwner,
       perms: spacePerms,
@@ -420,15 +434,28 @@ class FakeRepository implements ChatRepository {
     String? description,
     String? iconPath,
     String? bannerPath,
+    bool removeBanner = false,
   }) async {
     admin.add(
-      'space ${[if (name != null) 'name=$name', if (description != null) 'about=$description', if (iconPath != null) 'icon=$iconPath', if (bannerPath != null) 'banner=$bannerPath'].join(' ')}',
+      'space ${[if (name != null) 'name=$name', if (description != null) 'about=$description', if (iconPath != null) 'icon=$iconPath', if (bannerPath != null) 'banner=$bannerPath', if (removeBanner && bannerPath == null) 'banner=none'].join(' ')}',
     );
-    if (name != null) {
+    if (name != null || bannerPath != null || removeBanner) {
       spaces.value = [
         for (final s in spaces.value)
           s.id == spaceId
-              ? Space(id: s.id, name: name, iconUrl: s.iconUrl, sections: s.sections, onlineCount: s.onlineCount)
+              ? Space(
+                  id: s.id,
+                  name: name ?? s.name,
+                  iconUrl: s.iconUrl,
+                  sections: s.sections,
+                  onlineCount: s.onlineCount,
+                  // As SPACE_UPDATE brings it: an uploaded banner, or none.
+                  bannerUrl: bannerPath != null
+                      ? 'https://example.invalid/banner.png'
+                      : removeBanner
+                      ? null
+                      : s.bannerUrl,
+                )
               : s,
       ];
     }
@@ -443,7 +470,34 @@ class FakeRepository implements ChatRepository {
           name: r.name,
           kind: r.kind == RoomKind.voice ? AdminRoomKind.voice : AdminRoomKind.text,
           position: r.position,
+          description: r.description,
         ),
+  ];
+
+  /// [roomId] in the Spaces as [change] leaves it (null: gone), as the
+  /// gateway's ROOM_UPDATE or ROOM_DELETE would: the chat reads its room there.
+  void _editRoom(String spaceId, String roomId, Room? Function(Room room) change) => spaces.value = [
+    for (final s in spaces.value)
+      s.id != spaceId
+          ? s
+          : Space(
+              id: s.id,
+              name: s.name,
+              iconUrl: s.iconUrl,
+              onlineCount: s.onlineCount,
+              bannerUrl: s.bannerUrl,
+              sections: [
+                for (final section in s.sections)
+                  RoomSection(
+                    id: section.id,
+                    name: section.name,
+                    rooms: [
+                      for (final r in section.rooms)
+                        if (r.id != roomId) r else ?change(r),
+                    ],
+                  ),
+              ],
+            ),
   ];
 
   @override
@@ -464,6 +518,40 @@ class FakeRepository implements ChatRepository {
       kind: rooms[i].kind,
       parentId: rooms[i].parentId,
       position: rooms[i].position,
+      description: rooms[i].description,
+    );
+    _editRoom(
+      spaceId,
+      roomId,
+      (r) => Room(
+        id: r.id,
+        spaceId: r.spaceId,
+        name: name,
+        kind: r.kind,
+        position: r.position,
+        description: r.description,
+      ),
+    );
+  }
+
+  @override
+  Future<void> setRoomDescription(String spaceId, String roomId, String? description) async {
+    final text = description == null || description.trim().isEmpty ? null : description.trim();
+    admin.add('room¶ $roomId ${text ?? '-'}');
+    final rooms = adminRooms(spaceId);
+    final i = rooms.indexWhere((r) => r.id == roomId);
+    rooms[i] = AdminRoom(
+      id: roomId,
+      name: rooms[i].name,
+      kind: rooms[i].kind,
+      parentId: rooms[i].parentId,
+      position: rooms[i].position,
+      description: text,
+    );
+    _editRoom(
+      spaceId,
+      roomId,
+      (r) => Room(id: r.id, spaceId: r.spaceId, name: r.name, kind: r.kind, position: r.position, description: text),
     );
   }
 
@@ -471,6 +559,7 @@ class FakeRepository implements ChatRepository {
   Future<void> deleteRoom(String spaceId, String roomId) async {
     admin.add('room- $roomId');
     adminRooms(spaceId).removeWhere((r) => r.id == roomId);
+    _editRoom(spaceId, roomId, (_) => null);
   }
 
   @override
@@ -496,6 +585,7 @@ class FakeRepository implements ChatRepository {
         kind: r.kind,
         parentId: r.id == roomId ? to : r.parentId,
         position: p,
+        description: r.description,
       );
     }
     rooms.sort((a, b) => a.position.compareTo(b.position));
@@ -553,9 +643,10 @@ class FakeRepository implements ChatRepository {
     int? color,
     bool clearColor = false,
     int? perms,
+    bool? hoisted,
   }) async {
     admin.add(
-      'role~ $roleId ${[if (name != null) 'name=$name', if (color != null) 'color=${color.toRadixString(16)}', if (clearColor) 'nocolor', if (perms != null) 'perms=$perms'].join(' ')}',
+      'role~ $roleId ${[if (name != null) 'name=$name', if (color != null) 'color=${color.toRadixString(16)}', if (clearColor) 'nocolor', if (perms != null) 'perms=$perms', if (hoisted != null) 'hoisted=$hoisted'].join(' ')}',
     );
     roles(spaceId);
     final list = roleList[spaceId]!;
@@ -568,6 +659,7 @@ class FakeRepository implements ChatRepository {
       perms: perms ?? r.perms,
       position: r.position,
       everyone: r.everyone,
+      hoisted: hoisted ?? r.hoisted,
     );
   }
 

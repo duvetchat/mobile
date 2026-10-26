@@ -1,5 +1,6 @@
 import 'package:clock/clock.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:forui/forui.dart';
 
 import '../data/models.dart';
@@ -203,6 +204,120 @@ class Overline extends StatelessWidget {
   );
 }
 
+/// Keeps text to [max] code points, the unit a database's length counts:
+/// an edit that would pass it is turned away whole, never cut mid-emoji.
+class CodePointLimit extends TextInputFormatter {
+  final int max;
+  CodePointLimit(this.max);
+
+  @override
+  TextEditingValue formatEditUpdate(TextEditingValue oldValue, TextEditingValue newValue) =>
+      newValue.text.runes.length <= max || newValue.text.runes.length <= oldValue.text.runes.length
+      ? newValue
+      : oldValue;
+}
+
+/// A category's header in a Space's rooms: as [Overline], and a tap folds
+/// its rooms away or opens them. Folded with unread rooms, its name takes the
+/// unread weight and ink, as a row's does.
+class CategoryHeader extends StatelessWidget {
+  final String name;
+  final bool collapsed;
+  final bool unread;
+  final VoidCallback onToggle;
+  const CategoryHeader({
+    required this.name,
+    required this.collapsed,
+    required this.onToggle,
+    this.unread = false,
+    super.key,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = context.theme.colors;
+    final news = collapsed && unread;
+    return Semantics(
+      container: true,
+      header: true,
+      button: true,
+      expanded: !collapsed,
+      label: news ? '$name, unread rooms' : name,
+      onTapHint: collapsed ? 'Expand' : 'Collapse',
+      onTap: onToggle,
+      excludeSemantics: true,
+      child: GestureDetector(
+        behavior: HitTestBehavior.opaque,
+        onTap: onToggle,
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(16, 24, 16, 8),
+          child: Row(
+            children: [
+              Flexible(
+                child: Text(
+                  name.toUpperCase(),
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: DuvetType.overline.copyWith(
+                    color: news ? colors.foreground : colors.mutedForeground,
+                    fontWeight: news ? FontWeight.w700 : null,
+                  ),
+                ),
+              ),
+              const SizedBox(width: 4),
+              AnimatedRotation(
+                turns: collapsed ? -0.25 : 0,
+                duration: MediaQuery.disableAnimationsOf(context) ? Duration.zero : DuvetTokens.pressOut,
+                curve: DuvetTokens.decelerate,
+                child: Icon(
+                  FLucideIcons.chevronDown,
+                  size: 14,
+                  color: news ? colors.foreground : colors.mutedForeground,
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// A Space's banner, 5:2 as the desktop crops it, its corners `radius-card`.
+/// Nothing at all when it can't be had; base-sunken while it comes.
+class SpaceBanner extends StatelessWidget {
+  final String url;
+  const SpaceBanner({required this.url, super.key});
+
+  @override
+  Widget build(BuildContext context) => LayoutBuilder(
+    builder: (context, constraints) {
+      final width = constraints.maxWidth;
+      final height = width / 2.5;
+      return ExcludeSemantics(
+        child: ClipRRect(
+          borderRadius: BorderRadius.circular(DuvetTokens.radiusCard),
+          child: Image.network(
+            url,
+            width: width,
+            height: height,
+            cacheWidth: (width * MediaQuery.devicePixelRatioOf(context)).round(),
+            fit: BoxFit.cover,
+            frameBuilder: (context, child, frame, sync) => frame == null && !sync
+                ? SizedBox(
+                    width: width,
+                    height: height,
+                    child: ColoredBox(color: context.theme.colors.secondary),
+                  )
+                : child,
+            errorBuilder: (context, error, stackTrace) => const SizedBox.shrink(),
+          ),
+        ),
+      );
+    },
+  );
+}
+
 /// A Space's icon: always a rounded square (circles are for people), its
 /// image or a monogram on `base-sunken`.
 class SpaceIcon extends StatelessWidget {
@@ -301,6 +416,79 @@ class SpaceCard extends StatelessWidget {
                 const SizedBox(height: 4),
                 Text(online, maxLines: 1, style: DuvetType.caption.copyWith(color: colors.mutedForeground)),
               ],
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// A Space full width, the Spaces tab's Cards view: its banner over its icon,
+/// name and who's online. Without a banner, the rest alone.
+class SpaceWideCard extends StatelessWidget {
+  final Space space;
+  final bool unread;
+  final VoidCallback onTap;
+  const SpaceWideCard({required this.space, required this.onTap, this.unread = false, super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = context.theme.colors;
+    final tokens = context.duvet;
+    final online = space.onlineCount == null ? null : '${space.onlineCount} online';
+    return Semantics(
+      button: true,
+      label: [space.name, if (unread) 'unread', ?online].join(', '),
+      excludeSemantics: true,
+      onTap: onTap,
+      child: Pressable(
+        onTap: onTap,
+        scale: 0.98,
+        builder: (context, pressed) => AnimatedContainer(
+          duration: pressed ? DuvetTokens.pressIn : DuvetTokens.pressOut,
+          clipBehavior: Clip.antiAlias,
+          decoration: BoxDecoration(
+            color: colors.card,
+            borderRadius: BorderRadius.circular(DuvetTokens.radiusCard),
+            boxShadow: pressed ? tokens.shadowRest : tokens.shadowRaised,
+          ),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              if (space.bannerUrl case final banner?)
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(8, 8, 8, 0),
+                  child: SpaceBanner(key: ValueKey(banner), url: banner),
+                ),
+              Padding(
+                padding: const EdgeInsets.all(16),
+                child: Row(
+                  children: [
+                    SpaceIcon(space: space),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            space.name,
+                            maxLines: 2,
+                            overflow: TextOverflow.ellipsis,
+                            style: (unread ? DuvetType.rowTitleUnread : DuvetType.rowTitle).copyWith(
+                              color: colors.foreground,
+                            ),
+                          ),
+                          if (online != null) ...[
+                            const SizedBox(height: 4),
+                            Text(online, maxLines: 1, style: DuvetType.caption.copyWith(color: colors.mutedForeground)),
+                          ],
+                        ],
+                      ),
+                    ),
+                  ],
+                ),
+              ),
             ],
           ),
         ),
@@ -524,6 +712,11 @@ class DuvetTextField extends StatelessWidget {
   /// Inside the field, at its end: e.g. Paste.
   final Widget? trailing;
 
+  /// The most characters it takes, counted as code points (as Postgres's
+  /// varchar counts them, which an emoji's parts each are); more aren't
+  /// typed.
+  final int? maxLength;
+
   const DuvetTextField({
     required this.label,
     this.controller,
@@ -540,6 +733,7 @@ class DuvetTextField extends StatelessWidget {
     this.onChanged,
     this.onSubmitted,
     this.trailing,
+    this.maxLength,
     super.key,
   });
 
@@ -591,6 +785,7 @@ class DuvetTextField extends StatelessWidget {
                           autofillHints: autofillHints,
                           onChanged: onChanged,
                           onSubmitted: onSubmitted,
+                          inputFormatters: [if (maxLength case final max?) CodePointLimit(max)],
                           cursorColor: tokens.accentText,
                           style: DuvetType.body.copyWith(color: colors.foreground),
                           decoration: InputDecoration.collapsed(

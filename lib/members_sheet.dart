@@ -72,9 +72,12 @@ class _MembersSheetState extends State<_MembersSheet> {
         }
         final all = snapshot.data;
         if (all == null) return const Center(child: FCircularProgress());
-        return ValueListenableBuilder(
-          valueListenable: widget.repository.presence,
-          builder: (context, presence, _) {
+        return ListenableBuilder(
+          // Presence, and roles: a role hoisted or taken while it's open
+          // regroups it.
+          listenable: Listenable.merge([widget.repository.presence, widget.repository.spaces]),
+          builder: (context, _) {
+            final presence = widget.repository.presence.value;
             final q = _search.text.trim().toLowerCase();
             final shown = q.isEmpty
                 ? all
@@ -94,17 +97,43 @@ class _MembersSheetState extends State<_MembersSheet> {
               for (final m in shown)
                 if (away(m)) m,
             ]..sort(_byName);
-            final groups = [
-              for (final (p, label) in const [(Presence.online, 'Online'), (Presence.doNotDisturb, 'Do not disturb')])
-                (
-                  label,
-                  [
-                    for (final m in shown)
-                      if (of(m) == p) m,
-                  ]..sort(_byName),
-                ),
-              (rest.every((m) => of(m) == Presence.offline) ? 'Offline' : 'Members', rest),
-            ];
+            final offline = (rest.every((m) => of(m) == Presence.offline) ? 'Offline' : 'Members', rest);
+            final List<(String, List<Member>)> groups;
+            if (spaceId == null) {
+              groups = [
+                for (final (p, label) in const [(Presence.online, 'Online'), (Presence.doNotDisturb, 'Do not disturb')])
+                  (
+                    label,
+                    [
+                      for (final m in shown)
+                        if (of(m) == p) m,
+                    ]..sort(_byName),
+                  ),
+                offline,
+              ];
+            } else {
+              // In a Space, as the desktop and Discord have it: those connected
+              // (busy too) under their highest role shown apart, by rank; the
+              // others connected under Online; then those away.
+              final hoisted = <String, (RoleTag, List<Member>)>{};
+              final connected = <Member>[];
+              for (final m in shown) {
+                if (away(m)) continue;
+                final role = widget.repository.rolesOf(spaceId, m.userId).where((r) => r.hoisted).firstOrNull;
+                if (role == null) {
+                  connected.add(m);
+                } else {
+                  (hoisted[role.id] ??= (role, <Member>[])).$2.add(m);
+                }
+              }
+              groups = [
+                for (final (role, members)
+                    in hoisted.values.toList()..sort((a, b) => b.$1.position.compareTo(a.$1.position)))
+                  (role.name, members..sort(_byName)),
+                ('Online', connected..sort(_byName)),
+                offline,
+              ];
+            }
             final online = all.where((m) => !away(m)).length;
             return CustomScrollView(
               controller: widget.scroll,

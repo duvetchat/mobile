@@ -530,7 +530,14 @@ class RoleTag {
 
   /// Its color, if it has one (ARGB).
   final int? color;
-  const RoleTag(this.name, {this.color});
+  final String id;
+
+  /// Its rank: higher is above.
+  final int position;
+
+  /// Its members show apart in the member list, under its name.
+  final bool hoisted;
+  const RoleTag(this.name, {this.color, this.id = '', this.position = 0, this.hoisted = false});
 }
 
 /// One of the user's uploaded files.
@@ -752,16 +759,30 @@ class Room {
   final RoomKind kind;
   final int position;
 
-  const Room({required this.id, required this.spaceId, required this.name, required this.kind, required this.position});
+  /// What the room is for, as its managers wrote it, or null.
+  final String? description;
+
+  const Room({
+    required this.id,
+    required this.spaceId,
+    required this.name,
+    required this.kind,
+    required this.position,
+    this.description,
+  });
 
   RoomTarget get target => RoomTarget(spaceId: spaceId, roomId: id);
 }
 
 /// A category's rooms, or the rooms outside any category (a null [name]).
+/// A category shows when it has no rooms too.
 class RoomSection {
+  /// The category's ID, to collapse it by; null outside any category, or
+  /// from a cache that predates it.
+  final String? id;
   final String? name;
   final List<Room> rooms;
-  const RoomSection({required this.name, required this.rooms});
+  const RoomSection({this.id, required this.name, required this.rooms});
 }
 
 class Space {
@@ -773,7 +794,17 @@ class Space {
   /// Members online or busy, or null while unknown.
   final int? onlineCount;
 
-  const Space({required this.id, required this.name, this.iconUrl, this.sections = const [], this.onlineCount});
+  /// Its banner, or null: atop its directory, as the desktop's sidebar has it.
+  final String? bannerUrl;
+
+  const Space({
+    required this.id,
+    required this.name,
+    this.iconUrl,
+    this.sections = const [],
+    this.onlineCount,
+    this.bannerUrl,
+  });
 
   Iterable<Room> get rooms => sections.expand((s) => s.rooms);
 }

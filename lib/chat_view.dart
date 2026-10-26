@@ -23,6 +23,8 @@ import 'data/voice.dart' show VoiceController;
 import 'members_sheet.dart';
 import 'people.dart';
 import 'search.dart';
+import 'space_admin.dart' show askDescription, askName, confirmDestructive, RoomPermissionsPage;
+import 'spaces.dart' show showInviteSheet;
 import 'tabs.dart' show SpaceDirectory;
 import 'theme.dart';
 import 'widgets/avatar.dart';
@@ -1315,12 +1317,28 @@ class _ChatViewState extends State<ChatView> {
       label: 'Chat options',
       items: [
         if (_isGroup) const GlassMenuItem(icon: FLucideIcons.info, label: 'Group info', value: 'group'),
+        if (_inRoomMay(Perm.createInvites))
+          const GlassMenuItem(
+            icon: FLucideIcons.userPlus,
+            label: 'Invite people',
+            value: 'invite',
+            hint: 'A link to this room',
+          ),
         const GlassMenuItem(icon: FLucideIcons.users, label: 'Members', value: 'members'),
         const GlassMenuItem(icon: FLucideIcons.pin, label: 'Pinned messages', value: 'pins'),
+        // Running the room, for those who may: ManageChannels in it.
+        if (_inRoomMay(Perm.manageChannels) && _room != null) ...[
+          const GlassMenuItem(icon: FLucideIcons.pencil, label: 'Rename room', value: 'rename'),
+          const GlassMenuItem(icon: FLucideIcons.text, label: 'Edit description', value: 'describe'),
+          const GlassMenuItem(icon: FLucideIcons.shield, label: 'Permissions', value: 'perms'),
+          const GlassMenuItem(icon: FLucideIcons.trash2, label: 'Delete room', value: 'delete', destructive: true),
+        ],
       ],
     );
     if (!mounted) return;
     switch (picked) {
+      case 'invite' || 'rename' || 'describe' || 'perms' || 'delete':
+        await _roomAction(picked!);
       case 'group':
         await Navigator.of(
           context,
@@ -1330,6 +1348,62 @@ class _ChatViewState extends State<ChatView> {
         await _openMembers();
       case 'pins':
         await _openPins();
+    }
+  }
+
+  /// Inviting to, or running, the room the user is in.
+  Future<void> _roomAction(String action) async {
+    final target = widget.target;
+    final room = _room;
+    if (target is! RoomTarget || room == null) return;
+    final repository = _repository;
+    final label = '#${room.name}';
+    Future<void> attempt(String failure, Future<void> Function() change) async {
+      try {
+        await change();
+      } catch (e) {
+        _toast(e is ActionFailed ? e.message : failure);
+      }
+    }
+
+    switch (action) {
+      case 'invite':
+        final space = repository.spaces.value.where((s) => s.id == target.spaceId).firstOrNull;
+        if (space != null) await showInviteSheet(context, space: space, room: room);
+      case 'rename':
+        final got = await askName<void>(context, title: 'Rename $label', initial: room.name);
+        if (got == null || !mounted) return;
+        await attempt('Couldn’t rename $label', () => repository.renameRoom(target.spaceId, room.id, got.$1));
+      case 'describe':
+        final got = await askDescription(context, title: 'What $label is for', initial: room.description ?? '');
+        if (got == null || !mounted) return;
+        await attempt(
+          'Couldn’t change what $label is for',
+          () => repository.setRoomDescription(target.spaceId, room.id, got),
+        );
+      case 'perms':
+        final admin = repository.adminRooms(target.spaceId).where((r) => r.id == room.id).firstOrNull;
+        if (admin == null) return;
+        await Navigator.of(context, rootNavigator: true).push(
+          MaterialPageRoute<void>(
+            builder: (_) => RoomPermissionsPage(spaceId: target.spaceId, room: admin),
+          ),
+        );
+      case 'delete':
+        final sure = await confirmDestructive(
+          context,
+          title: 'Delete $label?',
+          body: 'Its messages go with it, for everyone. This can’t be undone.',
+          action: 'Delete',
+        );
+        if (!sure || !mounted) return;
+        try {
+          await repository.deleteRoom(target.spaceId, room.id);
+          // Out of the room that's gone.
+          if (mounted) await Navigator.of(context).maybePop();
+        } catch (e) {
+          _toast(e is ActionFailed ? e.message : 'Couldn’t delete $label');
+        }
     }
   }
 
@@ -1551,6 +1625,28 @@ class _ChatViewState extends State<ChatView> {
 
   /// Pins take PinMessages in a room, as the API has it; every member of a
   /// conversation pins.
+  /// This room as the Space has it now (a rename shows at once), or null:
+  /// not a room, or not known yet.
+  Room? get _room => switch (widget.target) {
+    RoomTarget(:final spaceId, :final roomId) =>
+      _repository.spaces.value
+          .where((s) => s.id == spaceId)
+          .firstOrNull
+          ?.rooms
+          .where((r) => r.id == roomId)
+          .firstOrNull,
+    ConversationTarget() => null,
+  };
+
+  /// The room's name, live; the one it was opened with until it's known.
+  String get _roomName => _room?.name ?? widget.title.replaceFirst('# ', '');
+
+  /// In a room (not a thread of it), with [bit] there, overwrites included.
+  bool _inRoomMay(int bit) => switch (widget.target) {
+    RoomTarget(:final spaceId, :final roomId) => widget.threadOf == null && _repository.canInRoom(spaceId, roomId, bit),
+    ConversationTarget() => false,
+  };
+
   bool get _canPin => switch (widget.target) {
     RoomTarget(:final spaceId, :final roomId) => _repository.canInRoom(spaceId, roomId, Perm.pinMessages),
     ConversationTarget() => true,
@@ -1825,6 +1921,8 @@ class _ChatViewState extends State<ChatView> {
                   context.voice,
                   _repository.conversations,
                   _repository.presence,
+                  // The room's name and description, as they change.
+                  _repository.spaces,
                 ]),
                 builder: (context, _) => GlassTopBar(
                   hairline: _underTop,
@@ -1853,24 +1951,41 @@ class _ChatViewState extends State<ChatView> {
                               ),
                             ],
                           ),
-                          null => Text.rich(
-                            TextSpan(
+                          null => () {
+                            final name = Text.rich(
+                              TextSpan(
+                                children: [
+                                  if (isRoom)
+                                    TextSpan(
+                                      text: '# ',
+                                      style: TextStyle(color: colors.mutedForeground),
+                                    ),
+                                  TextSpan(text: isRoom ? _roomName : widget.title),
+                                ],
+                              ),
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                            );
+                            // What the room is for, under its name: one line.
+                            final description = isRoom ? _room?.description : null;
+                            if (description == null) return name;
+                            return Column(
+                              mainAxisSize: MainAxisSize.min,
                               children: [
-                                if (isRoom)
-                                  TextSpan(
-                                    text: '# ',
-                                    style: TextStyle(color: colors.mutedForeground),
-                                  ),
-                                TextSpan(text: isRoom ? widget.title.replaceFirst('# ', '') : widget.title),
+                                name,
+                                Text(
+                                  description,
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                  style: DuvetType.caption.copyWith(color: colors.mutedForeground),
+                                ),
                               ],
-                            ),
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis,
-                          ),
+                            );
+                          }(),
                         },
                   onTitle: isRoom && widget.threadOf == null ? _openSwitcher : null,
                   titleLabel: isRoom && widget.threadOf == null
-                      ? 'Channel ${widget.title.replaceFirst('# ', '')}, switch channel'
+                      ? ['Channel $_roomName', ?_room?.description, 'switch channel'].join(', ')
                       : null,
                   actions: [
                     if (_callable)
