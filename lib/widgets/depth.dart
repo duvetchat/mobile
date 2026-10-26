@@ -87,6 +87,10 @@ class _PressableState extends State<Pressable> {
     final enabled = widget.onTap != null || widget.onLongPress != null || widget.onDoubleTap != null;
     return GestureDetector(
       behavior: HitTestBehavior.opaque,
+      // With only a double tap (a text bubble's reply), its tap-down for the
+      // press would read as a tap that does nothing, and keep a message's text
+      // from joining the rest of it for screen readers.
+      excludeFromSemantics: widget.onTap == null && widget.onLongPress == null,
       onTapDown: enabled ? (_) => _press(true) : null,
       onTapUp: enabled ? (_) => _press(false) : null,
       onTapCancel: enabled ? () => _press(false) : null,

@@ -974,9 +974,12 @@ class FakeRepository implements ChatRepository {
     );
   }
 
+  /// More members of the rooms, after [everyone].
+  final extraRoomMembers = <Member>[];
+
   @override
   Future<List<Member>> members(ChatTarget target, {bool refresh = false}) async =>
-      target is RoomTarget ? everyone : everyone.where((m) => m.userId != leo).toList();
+      target is RoomTarget ? [...everyone, ...extraRoomMembers] : everyone.where((m) => m.userId != leo).toList();
 
   @override
   String? nameOf(String userId) => everyone.where((m) => m.userId == userId).firstOrNull?.displayName;

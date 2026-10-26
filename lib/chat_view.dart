@@ -1450,11 +1450,12 @@ class _ChatViewState extends State<ChatView> {
   }
 
   /// A mention tapped: who it names, as the room knows them, else as the
-  /// app does, else by the name it shows.
+  /// app does. Else only their name is known, not their username: the
+  /// profile shows no handle rather than a made-up one.
   void _openMention(String userId) => _openProfile(
     _members.where((x) => x.userId == userId).firstOrNull ??
         _repository.people.where((p) => p.userId == userId).firstOrNull ??
-        Member(userId: userId, username: _directory.nameOf(userId) ?? 'someone'),
+        Member(userId: userId, username: '', alias: _repository.nameOf(userId) ?? 'Someone'),
   );
 
   void _mention(Member member) {

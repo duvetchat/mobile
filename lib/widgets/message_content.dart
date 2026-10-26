@@ -31,19 +31,11 @@ class MessageDirectory {
   static const empty = MessageDirectory(me: null, nameOf: _noName, emojiOf: _noEmoji);
 }
 
-/// The people [content] mentions, once each and in order: their IDs, with
-/// the names their mentions show.
-Map<String, String> mentionNames(String content, MessageDirectory directory) => {
-  for (final t in tokenize(content))
-    if (t case MentionToken(:final userId)) userId: directory.nameOf(userId) ?? 'someone',
-};
-
 /// A message's text: its markdown, mentions as `@Name` in the accent, custom
 /// emoji as images, and emoji-only messages large. Links open in the browser;
 /// spoilers stay hidden until tapped; a mention, with [onMention], opens that
 /// person. Screen readers get the whole text as one label, with actions for
-/// its links and spoilers; a mention's is the caller's to offer, so a
-/// message can stay one stop (see [mentionNames]).
+/// its links, its spoilers, the mentions it shows, and [messageActions].
 class MessageText extends StatefulWidget {
   final String content;
   final MessageDirectory directory;
@@ -58,6 +50,10 @@ class MessageText extends StatefulWidget {
   /// A mention tapped: the user it names. Without it, mentions are text.
   final ValueChanged<String>? onMention;
 
+  /// The message's own actions (Reply, its options), offered with the
+  /// text's: a screen reader's stop has one set, and two don't merge.
+  final Map<CustomSemanticsAction, VoidCallback> messageActions;
+
   const MessageText({
     required this.content,
     required this.directory,
@@ -65,6 +61,7 @@ class MessageText extends StatefulWidget {
     this.onAccent = false,
     this.singleLine = false,
     this.onMention,
+    this.messageActions = const {},
     super.key,
   });
 
@@ -152,6 +149,9 @@ class _MessageTextState extends State<MessageText> {
         ? const Color(0x14FFFFFF)
         : const Color(0x0F141416);
     final links = <String>[];
+    // The people mentioned where a mention shows (not in code, a link's text
+    // or a hidden spoiler), in order, each once: their IDs and names.
+    final mentions = <String, String>{};
     var spoilers = false;
 
     // Mentions and custom emoji within a text leaf.
@@ -160,7 +160,7 @@ class _MessageTextState extends State<MessageText> {
         switch (token) {
           TextToken(:final text) => TextSpan(text: text, style: style),
           MentionToken(:final userId) => TextSpan(
-            text: '@${widget.directory.nameOf(userId) ?? 'someone'}',
+            text: '@${mentions[userId] = widget.directory.nameOf(userId) ?? 'someone'}',
             recognizer: switch (widget.onMention) {
               final onMention? => _tap(() => onMention(userId)),
               null => null,
@@ -321,16 +321,32 @@ class _MessageTextState extends State<MessageText> {
       emojiNameOf: (id) => widget.directory.emojiOf(id)?.name,
     );
 
+    // Two people shown by the same name get an action each, told apart.
+    final named = <String, int>{};
+    for (final name in mentions.values) {
+      named[name] = (named[name] ?? 0) + 1;
+    }
+    // Counted by name: the second Sam is Sam's mention 2.
+    final seen = <String, int>{};
+    final actions = {
+      ...widget.messageActions,
+      if (spoilers && !_revealed) const CustomSemanticsAction(label: 'Reveal spoiler'): _reveal,
+      for (final url in links) CustomSemanticsAction(label: 'Open $url'): () => _open(url),
+      if (widget.onMention case final onMention?)
+        for (final MapEntry(key: id, value: name) in mentions.entries)
+          CustomSemanticsAction(
+            label: named[name]! > 1
+                ? 'Open $name’s profile, mention ${seen[name] = (seen[name] ?? 0) + 1}'
+                : 'Open $name’s profile',
+          ): () =>
+              onMention(id),
+    };
+
     return Semantics(
       label: label,
       excludeSemantics: true,
       // None at all for plain text, so it reads as part of its message.
-      customSemanticsActions: spoilers && !_revealed || links.isNotEmpty
-          ? {
-              if (spoilers && !_revealed) const CustomSemanticsAction(label: 'Reveal spoiler'): _reveal,
-              for (final url in links) CustomSemanticsAction(label: 'Open $url'): () => _open(url),
-            }
-          : null,
+      customSemanticsActions: actions.isEmpty ? null : actions,
       child: children.length == 1
           ? children.single
           : Column(

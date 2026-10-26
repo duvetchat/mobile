@@ -91,3 +91,7 @@ All screens and components in the wireframes and the 37 feature layouts are buil
 - **Sending from the device:** messages, files, voice notes, bot commands and admin changes are tested against the fake repository only.
 - **Status, bio and Delete Space against a server:** they need the API's and the gateway's unmerged branches (`dnd-status`, `space-delete-bio`). They're tested against fakes and mocks of those contracts, which `duvet_client`'s fixtures take from the branches.
 - **CI:** the workflow is written but has never run, since there's no remote here.
+
+## 7. Left out on purpose
+
+- **Sending from a hardware keyboard:** the composer's return key starts a new line (#36), so lists, quotes and code can be typed; only Send sends. That holds for Bluetooth keyboards, tablets and ChromeOS too: Enter adds a line there as well, and saving an edit needs Save. A Ctrl/Cmd+Enter shortcut to send would cover them, but it was judged too much for how rarely the phone app meets one. Enter alone can't send: some Android keyboards deliver their return key as a key event, and it would send again.

@@ -110,96 +110,112 @@ class _Bubble extends StatelessWidget {
     // alone takes no reply.
     final repliable = entry.delivery == _Delivery.sent && !m.isEphemeral;
     final onDoubleTap = repliable && !lifted ? onReply : null;
-    final parts = <Widget>[
-      if (m.isLoading) _Thinking(name: m.authorName, since: m.createdAt),
-      if (m.stickerUrl != null)
-        GestureDetector(
-          onDoubleTap: onDoubleTap,
-          child: StickerView(url: m.stickerUrl!, name: stickerName),
-        ),
-      if (m.content.isNotEmpty)
-        if (isJumboEmoji(m.content))
+    // The message's own actions for screen readers. A text bubble offers them
+    // with its text's (its mentions, links, spoilers), so all of it is one
+    // stop: two nodes with actions don't merge. They anchor where a long
+    // press does.
+    Map<CustomSemanticsAction, VoidCallback> actionsAt(BuildContext anchor) => {
+      if (repliable) const CustomSemanticsAction(label: 'Reply'): onReply,
+      const CustomSemanticsAction(label: 'Message options'): () => onLongPress(anchor),
+    };
+
+    Widget bodyAt(BuildContext? anchor) {
+      final parts = <Widget>[
+        if (m.isLoading) _Thinking(name: m.authorName, since: m.createdAt),
+        if (m.stickerUrl != null)
           GestureDetector(
             onDoubleTap: onDoubleTap,
-            child: MessageText(
-              content: m.content,
-              directory: directory,
-              style: DuvetType.body.copyWith(color: colors.foreground),
-              onMention: onOpenMention,
-            ),
-          )
-        else
-          Pressable(
-            scale: 0.98,
-            onDoubleTap: onDoubleTap,
-            builder: (context, _) => Container(
-              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-              constraints: BoxConstraints(maxWidth: maxWidth),
-              decoration: BoxDecoration(
-                color: mine ? Duvet.accent : colors.card,
-                borderRadius: BorderRadius.circular(DuvetTokens.radiusButton),
-                boxShadow: editing ? null : (lifted ? tokens.shadowFloat : tokens.shadowRest),
-                // Mentioning the user: the accent as an outline, never a fill.
-                border: mentionsMe ? Border.all(color: tokens.accentText, width: 1.5) : null,
-              ),
+            child: StickerView(url: m.stickerUrl!, name: stickerName),
+          ),
+        if (m.content.isNotEmpty)
+          if (isJumboEmoji(m.content))
+            GestureDetector(
+              onDoubleTap: onDoubleTap,
               child: MessageText(
                 content: m.content,
                 directory: directory,
-                onAccent: mine,
-                style: DuvetType.body.copyWith(color: mine ? colors.primaryForeground : colors.foreground),
-                onMention: onOpenMention,
+                style: DuvetType.body.copyWith(color: colors.foreground),
+              ),
+            )
+          else
+            Pressable(
+              scale: 0.98,
+              onDoubleTap: onDoubleTap,
+              builder: (context, _) => Container(
+                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                constraints: BoxConstraints(maxWidth: maxWidth),
+                decoration: BoxDecoration(
+                  color: mine ? Duvet.accent : colors.card,
+                  borderRadius: BorderRadius.circular(DuvetTokens.radiusButton),
+                  boxShadow: editing ? null : (lifted ? tokens.shadowFloat : tokens.shadowRest),
+                  // Mentioning the user: the accent as an outline, never a fill.
+                  border: mentionsMe ? Border.all(color: tokens.accentText, width: 1.5) : null,
+                ),
+                child: MessageText(
+                  content: m.content,
+                  directory: directory,
+                  onAccent: mine,
+                  style: DuvetType.body.copyWith(color: mine ? colors.primaryForeground : colors.foreground),
+                  onMention: onOpenMention,
+                  messageActions: anchor == null ? const {} : actionsAt(anchor),
+                ),
               ),
             ),
+        if (m.isVoice && m.attachments.isNotEmpty)
+          VoiceNotePlayer(attachment: m.attachments.first, mine: mine, authorName: m.authorName)
+        else if (m.attachments.isNotEmpty)
+          MessageAttachments(attachments: m.attachments, uploadProgress: progress, onDoubleTap: onDoubleTap),
+        // Duvet's own links, as cards: a quoted message, an invite.
+        if (!lifted)
+          for (final url in duvetLinksIn(m.content))
+            if (parseMessageLink(url) case final link?)
+              MessageLinkCard(link: link, directory: directory, onOpen: onOpenLink)
+            else if (parseBotInvite(url) case final bot?)
+              BotInviteCard(botId: bot)
+            else if (parseInviteCode(url) case final code?)
+              InviteCard(code: code, onOpenSpace: onOpenSpace),
+        for (final e in m.embeds) EmbedCard(embed: e),
+        if (m.components.isNotEmpty && !lifted)
+          BotComponents(
+            components: m.components,
+            directory: directory,
+            choices: selectChoices,
+            onUse: entry.delivery == _Delivery.sent ? onUseComponent : (_, _) async {},
           ),
-      if (m.isVoice && m.attachments.isNotEmpty)
-        VoiceNotePlayer(attachment: m.attachments.first, mine: mine, authorName: m.authorName)
-      else if (m.attachments.isNotEmpty)
-        MessageAttachments(attachments: m.attachments, uploadProgress: progress, onDoubleTap: onDoubleTap),
-      // Duvet's own links, as cards: a quoted message, an invite.
-      if (!lifted)
-        for (final url in duvetLinksIn(m.content))
-          if (parseMessageLink(url) case final link?)
-            MessageLinkCard(link: link, directory: directory, onOpen: onOpenLink)
-          else if (parseBotInvite(url) case final bot?)
-            BotInviteCard(botId: bot)
-          else if (parseInviteCode(url) case final code?)
-            InviteCard(code: code, onOpenSpace: onOpenSpace),
-      for (final e in m.embeds) EmbedCard(embed: e),
-      if (m.components.isNotEmpty && !lifted)
-        BotComponents(
-          components: m.components,
-          directory: directory,
-          choices: selectChoices,
-          onUse: entry.delivery == _Delivery.sent ? onUseComponent : (_, _) async {},
-        ),
-    ];
+      ];
 
-    Widget content = Column(
-      crossAxisAlignment: mine ? CrossAxisAlignment.end : CrossAxisAlignment.start,
-      mainAxisSize: MainAxisSize.min,
-      children: [
-        for (final (i, part) in parts.indexed)
-          Padding(
-            padding: EdgeInsets.only(top: i == 0 ? 0 : 4),
-            child: part,
-          ),
-      ],
-    );
-    // A mention with no text bubble to outline (a bot's components, a
-    // sticker): the outline goes round the whole message.
-    if (mentionsMe && !textBubble) {
-      content = Container(
-        padding: const EdgeInsets.all(4),
-        decoration: BoxDecoration(
-          border: Border.all(color: tokens.accentText, width: 1.5),
-          borderRadius: BorderRadius.circular(DuvetTokens.radiusButton),
-        ),
-        child: content,
+      Widget content = Column(
+        crossAxisAlignment: mine ? CrossAxisAlignment.end : CrossAxisAlignment.start,
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          for (final (i, part) in parts.indexed)
+            Padding(
+              padding: EdgeInsets.only(top: i == 0 ? 0 : 4),
+              child: part,
+            ),
+        ],
       );
+      // A mention with no text bubble to outline (a bot's components, a
+      // sticker): the outline goes round the whole message.
+      if (mentionsMe && !textBubble) {
+        content = Container(
+          padding: const EdgeInsets.all(4),
+          decoration: BoxDecoration(
+            border: Border.all(color: tokens.accentText, width: 1.5),
+            borderRadius: BorderRadius.circular(DuvetTokens.radiusButton),
+          ),
+          child: content,
+        );
+      }
+      return Opacity(opacity: editing ? 0.55 : (faded ? 0.7 : 1), child: content);
     }
-    final body = Opacity(opacity: editing ? 0.55 : (faded ? 0.7 : 1), child: content);
+
     if (lifted) {
-      return Transform.scale(scale: 1.02, alignment: mine ? Alignment.centerRight : Alignment.centerLeft, child: body);
+      return Transform.scale(
+        scale: 1.02,
+        alignment: mine ? Alignment.centerRight : Alignment.centerLeft,
+        child: bodyAt(null),
+      );
     }
 
     // The time under the run's last bubble; "edited" under the edited one.
@@ -250,7 +266,7 @@ class _Bubble extends StatelessWidget {
               HapticFeedback.mediumImpact();
               onLongPress(anchor);
             },
-            child: body,
+            child: bodyAt(anchor),
           ),
         ),
         if (m.reactions.isNotEmpty)
@@ -267,14 +283,8 @@ class _Bubble extends StatelessWidget {
     final highlighted = Builder(
       builder: (whole) => Semantics(
         container: true,
-        customSemanticsActions: {
-          if (repliable) const CustomSemanticsAction(label: 'Reply'): onReply,
-          const CustomSemanticsAction(label: 'Message options'): () => onLongPress(whole),
-          // Its mentions, as a tap on one does: here, so the message stays one
-          // stop.
-          for (final MapEntry(key: id, value: name) in mentionNames(m.content, directory).entries)
-            CustomSemanticsAction(label: 'Open $name’s profile'): () => onOpenMention(id),
-        },
+        // A text bubble's text carries them, with its own.
+        customSemanticsActions: textBubble ? null : actionsAt(whole),
         child: AnimatedContainer(
           duration: const Duration(milliseconds: 300),
           curve: DuvetTokens.decelerate,

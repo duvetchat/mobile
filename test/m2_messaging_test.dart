@@ -98,8 +98,8 @@ void main() {
         ),
       );
       await tester.pumpAndSettle();
-      // Screen readers hear the text, the spoiler hidden.
-      expect(find.bySemanticsLabel(RegExp(r'^Plan is ready: notes spoiler')), findsOneWidget);
+      // Screen readers hear the message in one stop, the spoiler hidden.
+      expect(find.bySemanticsLabel('Maya\nPlan is ready: notes spoiler\n09:00'), findsOneWidget);
       final rich = tester.widget<RichText>(
         find.byWidgetPredicate((w) => w is RichText && w.text.toPlainText().contains('Plan is')),
       );
@@ -111,22 +111,28 @@ void main() {
       expect(spans.firstWhere((s) => s.text!.contains('ready')).style?.fontFamily, 'Fira Mono');
       expect(spans.firstWhere((s) => s.text == 'Plan').style?.fontWeight, FontWeight.w700);
 
-      final node = tester.getSemantics(find.bySemanticsLabel(RegExp(r'^Plan is ready')));
-      final actions = node.getSemanticsData().customSemanticsActionIds!;
-      expect(actions, hasLength(2));
-      // The spoiler, then the link, as screen readers would.
+      int id(String label) => CustomSemanticsAction.getIdentifier(CustomSemanticsAction(label: label));
+      final node = tester.getSemantics(find.bySemanticsLabel(RegExp(r'^Maya\nPlan is ready')));
+      // One stop: the message's actions, then the spoiler's and the link's.
+      expect(node.getSemanticsData().customSemanticsActionIds, [
+        id('Reply'),
+        id('Message options'),
+        id('Reveal spoiler'),
+        id('Open https://duvet.chat/notes'),
+      ]);
       tester.binding.renderViews.first.owner!.semanticsOwner!.performAction(
         node.id,
         SemanticsAction.customAction,
-        actions.first,
+        id('Reveal spoiler'),
       );
       await tester.pumpAndSettle();
       expect(find.bySemanticsLabel(RegExp(r'notes friday')), findsOneWidget);
-      final node2 = tester.getSemantics(find.bySemanticsLabel(RegExp(r'^Plan is ready')));
+      final node2 = tester.getSemantics(find.bySemanticsLabel(RegExp(r'^Maya\nPlan is ready')));
+      expect(node2.getSemanticsData().customSemanticsActionIds, isNot(contains(id('Reveal spoiler'))));
       tester.binding.renderViews.first.owner!.semanticsOwner!.performAction(
         node2.id,
         SemanticsAction.customAction,
-        node2.getSemanticsData().customSemanticsActionIds!.single,
+        id('Open https://duvet.chat/notes'),
       );
       await tester.pumpAndSettle();
       expect(opened, [Uri.parse('https://duvet.chat/notes')]);
