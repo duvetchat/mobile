@@ -314,6 +314,50 @@ void main() {
     semantics.dispose();
   });
 
+  testWidgets('who reacted: held chip or options, each emoji, oldest first, the API for anyone else (#94)', (
+    tester,
+  ) async {
+    const gone = '0a0a0a0a-0000-4000-8000-000000000099';
+    await openMaya(
+      tester,
+      setUp: (r) {
+        r.users[gone] = const Member(userId: gone, username: 'nell', alias: 'Nell');
+        r.history['c-maya']![0] = FakeRepository.message(
+          'm1',
+          author: _maya,
+          name: 'Maya',
+          text: 'Hey! Did you see the new tab bar?',
+          reactions: [
+            Reaction(emoji: '👍', users: {_maya, _me}),
+            Reaction(emoji: '❤️', users: {gone, FakeRepository.leo}),
+          ],
+        );
+      },
+    );
+    List<String> people() => [
+      for (final label in ['Maya, @maya', 'Gaby, @gaby', 'Nell, @nell', 'leo, @leo'])
+        if (find.bySemanticsLabel(label).evaluate().isNotEmpty) label,
+    ];
+
+    await tester.longPress(find.bySemanticsLabel('❤️ 2'));
+    await tester.pumpAndSettle();
+    expect(people(), ['Nell, @nell', 'leo, @leo']);
+
+    await tapLabel(tester, '👍 2');
+    expect(people(), ['Maya, @maya', 'Gaby, @gaby']);
+    expect(
+      tester.getSemantics(find.bySemanticsLabel('👍 2').last).flagsCollection.isChecked.toString(),
+      contains('isTrue'),
+    );
+
+    await tester.tapAt(const Offset(20, 20));
+    await tester.pumpAndSettle();
+    await longPress(tester, 'Hey! Did you see the new tab bar?');
+    await tapLabel(tester, 'Reactions');
+    expect(people(), ['Maya, @maya', 'Gaby, @gaby']);
+    semantics.dispose();
+  });
+
   testWidgets('a spoiler picture stays covered until tapped', (tester) async {
     final repository = await openMaya(tester);
     repository.push(
