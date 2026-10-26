@@ -373,7 +373,13 @@ class _ChatViewState extends State<ChatView> {
     }
   }
 
-  Future<void> _loadOlder() async {
+  /// The older page on its way. Asked again meanwhile (a jump paging back
+  /// while scrolling near the top already asked), it waits for that one.
+  Future<void>? _olderPage;
+
+  Future<void> _loadOlder() => _olderPage ??= _fetchOlder().whenComplete(() => _olderPage = null);
+
+  Future<void> _fetchOlder() async {
     final oldest = _history.firstOrNull;
     if (_loadingOlder || !_hasOlder || oldest == null) return;
     setState(() => _loadingOlder = true);
