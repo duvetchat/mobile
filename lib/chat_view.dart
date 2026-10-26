@@ -1578,12 +1578,12 @@ class _ChatViewState extends State<ChatView> {
       if (sent && m.reactions.isNotEmpty)
         const GlassMenuItem(icon: FLucideIcons.smile, label: 'Reactions', value: _Action.reactions),
       if (readable.isNotEmpty) const GlassMenuItem(icon: FLucideIcons.copy, label: 'Copy text', value: _Action.copy),
+      if (mine && sent && m.content.isNotEmpty && m.stickerUrl == null)
+        const GlassMenuItem(icon: FLucideIcons.pencil, label: 'Edit', value: _Action.edit),
       if (sent && !m.isNotice && canPin)
         m.pinned
             ? const GlassMenuItem(icon: FLucideIcons.pinOff, label: 'Unpin', value: _Action.unpin)
             : const GlassMenuItem(icon: FLucideIcons.pin, label: 'Pin', value: _Action.pin),
-      if (mine && sent && m.content.isNotEmpty && m.stickerUrl == null)
-        const GlassMenuItem(icon: FLucideIcons.pencil, label: 'Edit', value: _Action.edit),
       if (!mine && m.authorId != null && !m.isEphemeral)
         GlassMenuItem(icon: FLucideIcons.atSign, label: 'Mention ${m.authorName}', value: _Action.mention),
       if (entry.delivery == _Delivery.failed)
