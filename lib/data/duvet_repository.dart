@@ -74,7 +74,37 @@ class DuvetRepository implements ChatRepository {
        _recentsStore = recentsStore ?? const SecureRecentChatsStore(),
        _router = router,
        _httpClient = httpClient ?? http.Client.new,
-       _connectsGateway = connectGateway;
+       _connectsGateway = connectGateway {
+    _typing.stream.listen((e) => _setTyping(e.$1, e.$2.userId, e.$2));
+    _messageEvents.stream.listen((e) {
+      if (e.$2 case MessageCreated(message: ChatMessage(:final authorId?))) _setTyping(e.$1, authorId);
+    });
+  }
+
+  @override
+  final ValueNotifier<Map<String, List<TypingUser>>> typingNow = ValueNotifier(const {});
+
+  /// When each one typing stops showing, by chat ID and user ID.
+  final _typingEnds = <(String, String), Timer>{};
+
+  /// [user] typing in [chatId], for as long as the open chat shows it, or,
+  /// without, [userId] no longer: their message came, or the time ran out.
+  void _setTyping(String chatId, String userId, [TypingUser? user]) {
+    _typingEnds.remove((chatId, userId))?.cancel();
+    final was = typingNow.value[chatId] ?? const <TypingUser>[];
+    if (user == null && was.every((u) => u.userId != userId)) return;
+    if (user != null) {
+      _typingEnds[(chatId, userId)] = Timer(const Duration(seconds: 6), () => _setTyping(chatId, userId));
+    }
+    typingNow.value = {
+      ...typingNow.value,
+      chatId: [
+        for (final u in was)
+          if (u.userId != userId) u,
+        ?user,
+      ],
+    }..removeWhere((_, users) => users.isEmpty);
+  }
 
   final ChatCache _cache;
 
@@ -3119,6 +3149,10 @@ class DuvetRepository implements ChatRepository {
     mentions.dispose();
     _messageEvents.close();
     _typing.close();
+    for (final t in _typingEnds.values) {
+      t.cancel();
+    }
+    typingNow.dispose();
     _recents.dispose();
     presence.dispose();
     collapsedCategories.dispose();

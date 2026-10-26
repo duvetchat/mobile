@@ -66,6 +66,8 @@ class FakeRepository implements ChatRepository {
   @override
   final ValueNotifier<Map<String, ChatMessage>> latest = ValueNotifier(const {});
   @override
+  final ValueNotifier<Map<String, List<TypingUser>>> typingNow = ValueNotifier(const {});
+  @override
   final ValueNotifier<Map<String, int>> mentions = ValueNotifier(const {});
   @override
   final drafts = <String, ChatDraft>{};

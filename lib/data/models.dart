@@ -717,6 +717,34 @@ class TypingUser {
   const TypingUser({required this.userId, required this.name, this.recording = false});
 }
 
+/// Who's typing, and who's recording a voice message, as the desktop's
+/// typing indicator says it; null when no one is.
+String? typingSentence(Iterable<TypingUser> users) {
+  final typing = [
+    for (final u in users)
+      if (!u.recording) u.name,
+  ];
+  final recording = [
+    for (final u in users)
+      if (u.recording) u.name,
+  ];
+  if (typing.isEmpty && recording.isEmpty) return null;
+  return [
+    if (typing.isNotEmpty)
+      switch (typing) {
+        [final one] => '$one is typing…',
+        [final a, final b] => '$a and $b are typing…',
+        _ => 'Several people are typing…',
+      },
+    if (recording.isNotEmpty)
+      switch (recording) {
+        [final one] => '$one is recording a voice message',
+        [final a, final b] => '$a and $b are recording voice messages',
+        _ => 'Several people are recording voice messages',
+      },
+  ].join(' · ');
+}
+
 /// A row of the Chats tab.
 class ConversationSummary {
   final String id;

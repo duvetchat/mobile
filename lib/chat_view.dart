@@ -2062,13 +2062,9 @@ class _ChatViewState extends State<ChatView> {
                     mainAxisSize: MainAxisSize.min,
                     children: [
                       _TypingLine(
-                        typing: [
-                          for (final t in _typing.values)
-                            if (!t.recording) t.name,
-                        ],
-                        recording: [
-                          for (final t in _typing.values)
-                            if (t.recording) t.name,
+                        users: [
+                          for (final MapEntry(key: id, value: t) in _typing.entries)
+                            TypingUser(userId: id, name: t.name, recording: t.recording),
                         ],
                       ),
                       if (_files.isNotEmpty && _editing == null)
