@@ -418,6 +418,8 @@ class _SwipeToReplyState extends State<_SwipeToReply> with SingleTickerProviderS
     // sent isn't mounted again once it is.
     final enabled = widget.onReply != null;
     return GestureDetector(
+      // All of the row takes the swipe, not only the bubble.
+      behavior: HitTestBehavior.opaque,
       onHorizontalDragUpdate: enabled ? _drag : null,
       onHorizontalDragEnd: enabled ? (_) => _release() : null,
       onHorizontalDragCancel: enabled ? _release : null,
