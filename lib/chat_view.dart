@@ -5,6 +5,7 @@ import 'dart:math' as math;
 import 'dart:ui' show ImageFilter;
 
 import 'package:clock/clock.dart' as time show clock;
+import 'package:flutter/gestures.dart' show TapGestureRecognizer;
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
@@ -1702,6 +1703,40 @@ class _ChatViewState extends State<ChatView> {
     ConversationTarget() => false,
   };
 
+  /// Who may delete a pin notice, as the desktop has it: ManageMessages in a
+  /// room; in a conversation, either of a DM's two, or a group's owner.
+  bool get _canDeleteNotices => switch (widget.target) {
+    RoomTarget() => _canDeleteOthers,
+    ConversationTarget(:final conversationId) =>
+      switch (_repository.conversations.value.where((c) => c.id == conversationId).firstOrNull) {
+        null => false,
+        final c => !c.isGroup || c.ownerId == _me,
+      },
+  };
+
+  /// A pin notice held: Delete, the one thing to do with it.
+  Future<void> _noticeActions(BuildContext anchor, ChatMessage m) async {
+    final picked = await showGlassMenu(
+      anchor,
+      label: 'Notice options',
+      items: const [GlassMenuItem(icon: FLucideIcons.trash2, label: 'Delete', value: true, destructive: true)],
+    );
+    if (picked != true || !mounted) return;
+    final sure = await confirmDestructive(
+      context,
+      title: 'Delete this notice?',
+      body: 'The message stays pinned.',
+      action: 'Delete',
+    );
+    if (!sure || !mounted) return;
+    try {
+      await _repository.delete(widget.target, m.id);
+      if (mounted) setState(() => _entries = [..._entries]..removeWhere((e) => e.message.id == m.id));
+    } catch (e) {
+      _toast(e is ActionFailed ? e.message : 'Couldn’t delete the notice');
+    }
+  }
+
   // ---------------------------------------------------------------------------
   // Bots
   // ---------------------------------------------------------------------------
@@ -2246,7 +2281,16 @@ class _ChatViewState extends State<ChatView> {
           _Replies(:final count) => _NewMessagesDivider(text: count == 1 ? '1 reply' : '$count replies', quiet: true),
           _Message(:final entry, :final first, :final last) =>
             entry.message.isNotice
-                ? _Notice(text: '${entry.message.authorName} pinned a message')
+                ? _Notice(
+                    who: entry.message.authorName,
+                    where: widget.target is RoomTarget ? 'room' : 'conversation',
+                    onJump: switch (entry.message.reply?.messageId) {
+                      final id? => () => _jumpTo(id),
+                      null => null,
+                    },
+                    onPins: _openPins,
+                    onHold: _canDeleteNotices ? (anchor) => _noticeActions(anchor, entry.message) : null,
+                  )
                 : KeyedSubtree(
                     key: _keyFor(entry.message.id),
                     // Its own layer, for the picture a delete breaks up.

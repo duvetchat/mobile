@@ -258,6 +258,49 @@ void main() {
     semantics.dispose();
   });
 
+  testWidgets('a pin notice links its message and the pins, and those who may delete it (#26)', (tester) async {
+    final repository = await openMaya(
+      tester,
+      setUp: (r) => r.history['c-maya']!.add(
+        ChatMessage(
+          id: 'n1',
+          authorId: _maya,
+          authorName: 'Maya',
+          content: '',
+          createdAt: DateTime(2026, 10, 23, 9, 5),
+          isNotice: true,
+          reply: const MessageReply(messageId: 'm1', authorId: _maya, authorName: 'Maya', content: ''),
+        ),
+      ),
+    );
+    final notice = find.bySemanticsLabel('Maya pinned a message to this conversation');
+    expect(notice, findsOneWidget);
+    expect(find.text('Maya pinned a message to this conversation. See all pinned messages.'), findsOneWidget);
+    void act(String label) {
+      final node = tester.getSemantics(notice);
+      node.owner!.performAction(
+        node.id,
+        SemanticsAction.customAction,
+        CustomSemanticsAction.getIdentifier(CustomSemanticsAction(label: label)),
+      );
+    }
+
+    act('See all pinned messages');
+    await tester.pumpAndSettle();
+    expect(find.bySemanticsLabel('Pinned'), findsWidgets);
+    await tester.tapAt(const Offset(20, 20));
+    await tester.pumpAndSettle();
+
+    // Either of a DM's two may delete it.
+    await tester.longPress(find.textContaining('See all pinned messages'));
+    await tester.pumpAndSettle();
+    await tapLabel(tester, 'Delete');
+    await tapLabel(tester, 'Delete');
+    expect(repository.deletes, ['n1']);
+    expect(notice, findsNothing);
+    semantics.dispose();
+  });
+
   testWidgets('editing your own message: the strip, Save, and "edited"', (tester) async {
     final repository = await openMaya(tester);
     await longPress(tester, 'Yes, way better than the side panels.');
