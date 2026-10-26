@@ -44,6 +44,7 @@ import 'widgets/sheets.dart';
 part 'chat/actions.dart';
 part 'chat/bubble.dart';
 part 'chat/composer.dart';
+part 'chat/reactors.dart';
 
 /// Pushes the Chat View over everything, the tab bar included.
 void openChat(BuildContext context, ChatTarget target, String title) => Navigator.of(context, rootNavigator: true).push(
@@ -1532,6 +1533,23 @@ class _ChatViewState extends State<ChatView> {
         Member(userId: userId, username: '', alias: _repository.nameOf(userId) ?? 'Someone'),
   );
 
+  /// Who reacted to [m], with [picked] first; who's tapped, their profile.
+  Future<void> _openReactors(ChatMessage m, [Reaction? picked]) async {
+    final target = widget.target;
+    final member = await _showReactors(
+      context,
+      reactions: m.reactions,
+      initial: picked,
+      directory: _directory,
+      known: (id) =>
+          _members.where((x) => x.userId == id).firstOrNull ??
+          _repository.people.where((p) => p.userId == id).firstOrNull,
+      presenceOf: (id) =>
+          presenceIn(_repository.presence.value, id, spaceId: target is RoomTarget ? target.spaceId : null),
+    );
+    if (member != null && mounted) await _openProfile(member);
+  }
+
   void _mention(Member member) {
     _composer.startMention();
     _composer.insertMention(member);
@@ -1557,6 +1575,8 @@ class _ChatViewState extends State<ChatView> {
       if (sent) const GlassMenuItem(icon: FLucideIcons.reply, label: 'Reply', value: _Action.reply),
       if (sent && widget.threadOf == null)
         const GlassMenuItem(icon: FLucideIcons.messagesSquare, label: 'View thread', value: _Action.thread),
+      if (sent && m.reactions.isNotEmpty)
+        const GlassMenuItem(icon: FLucideIcons.smile, label: 'Reactions', value: _Action.reactions),
       if (readable.isNotEmpty) const GlassMenuItem(icon: FLucideIcons.copy, label: 'Copy text', value: _Action.copy),
       if (sent && !m.isNotice && canPin)
         m.pinned
@@ -1595,6 +1615,8 @@ class _ChatViewState extends State<ChatView> {
         await _toggleReaction(m, emoji);
       case (_Action.moreReactions, _):
         await _pickReaction(m);
+      case (_Action.reactions, _):
+        await _openReactors(m);
       case (_Action.thread, _):
         _openThread(m);
       case (_Action.pin, _):
@@ -2137,6 +2159,7 @@ class _ChatViewState extends State<ChatView> {
       onJump: _jumpTo,
       onReact: (emoji, emojiId) => _toggleReaction(m, emoji, emojiId: emojiId),
       onMoreReactions: () => _pickReaction(m),
+      onOpenReactors: (r) => _openReactors(m, r),
       onLongPress: (anchor) => _messageActions(anchor, entry),
       progress: m.nonce == null ? null : _progress[m.nonce],
       onCancelUpload: entry.delivery == _Delivery.sending ? () => _cancelUpload(entry) : null,

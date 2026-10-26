@@ -331,6 +331,10 @@ abstract interface class ChatRepository {
   /// fetches again.
   Future<List<Member>> members(ChatTarget target, {bool refresh = false});
 
+  /// Anyone, by user ID, from the API: for those no list has, such as
+  /// someone who left.
+  Future<Member> user(String userId);
+
   /// A user's name, if any list or message seen this session gave it.
   String? nameOf(String userId);
 

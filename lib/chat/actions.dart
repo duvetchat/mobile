@@ -1,6 +1,6 @@
 part of '../chat_view.dart';
 
-enum _Action { react, moreReactions, reply, thread, copy, pin, unpin, edit, mention, retry, delete, discard }
+enum _Action { react, moreReactions, reactions, reply, thread, copy, pin, unpin, edit, mention, retry, delete, discard }
 
 /// The quick reactions: Unicode emoji, as reactions name them.
 const _quickReactions = ['👍', '❤️', '😂', '😮', '👏'];

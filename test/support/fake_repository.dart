@@ -777,6 +777,12 @@ class FakeRepository implements ChatRepository {
   @override
   Future<BotInfo> bot(String userId) async => BotInfo(id: userId, name: 'Ballot');
 
+  /// Who [user] answers for, by ID; anyone else isn't found.
+  Map<String, Member> users = {};
+
+  @override
+  Future<Member> user(String userId) async => users[userId] ?? (throw const ActionFailed('Couldn’t find that user'));
+
   @override
   Future<void> addBot(String spaceId, String botId) async {
     _refuse('addBot');

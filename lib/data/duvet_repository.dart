@@ -2751,6 +2751,19 @@ class DuvetRepository implements ChatRepository {
   }
 
   @override
+  Future<Member> user(String userId) async {
+    final u = await _call((api) => api.getBotUser(userId));
+    return Member(
+      userId: u.id,
+      username: u.username,
+      alias: u.alias,
+      avatarUrl: avatarUrl(u.avatar),
+      isBot: u.isBot,
+      bannerUrl: avatarUrl(u.banner),
+    );
+  }
+
+  @override
   Future<void> addBot(String spaceId, String botId) => _explained((api) => api.addBotToSpace(spaceId, botId));
 
   @override
