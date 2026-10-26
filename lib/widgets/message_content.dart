@@ -14,6 +14,7 @@ import '../data/markdown.dart';
 import '../data/message_tokens.dart';
 import '../data/models.dart';
 import '../theme.dart';
+import 'code_highlight.dart';
 import 'depth.dart';
 import 'glass.dart';
 import 'media.dart';
@@ -322,13 +323,20 @@ class _MessageTextState extends State<MessageText> {
               ],
             ),
           ),
-          MdCodeBlock(:final code) => Container(
+          MdCodeBlock(:final code, :final language) => Container(
             width: double.infinity,
             padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
             decoration: BoxDecoration(color: codeFill, borderRadius: BorderRadius.circular(DuvetTokens.radiusField)),
             child: SingleChildScrollView(
               scrollDirection: Axis.horizontal,
-              child: Text(code, style: DuvetType.code.copyWith(fontSize: 13, height: 1.5, color: base.color)),
+              child: () {
+                final style = DuvetType.code.copyWith(fontSize: 13, height: 1.5, color: base.color);
+                // Its language's colors, as the desktop's; on the accent, the dark ones.
+                final colored = language == null
+                    ? null
+                    : highlightCode(code, language, base: style, dark: dark || widget.onAccent);
+                return colored == null ? Text(code, style: style) : Text.rich(colored);
+              }(),
             ),
           ),
         },

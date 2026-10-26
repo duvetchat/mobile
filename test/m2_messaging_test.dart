@@ -3,6 +3,7 @@ import 'dart:ui' show Tristate;
 import 'package:duvet/data/markdown.dart';
 import 'package:duvet/data/models.dart';
 import 'package:duvet/main.dart';
+import 'package:duvet/widgets/code_highlight.dart';
 import 'package:duvet/widgets/message_content.dart';
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
@@ -91,6 +92,20 @@ void main() {
       ]);
       // A | without the line under it is text.
       expect(parseMarkdown('a | b\nc').map((b) => b.runtimeType), [MdParagraph]);
+    });
+
+    test('code blocks in the desktop\'s languages are colored, by name or alias; others stay plain (#26)', () {
+      const base = TextStyle(color: Color(0xFF000000));
+      List<(String, Color?)> runs(TextSpan span) => [
+        if (span.text case final t? when t.isNotEmpty) (t, span.style?.color),
+        for (final c in span.children ?? const <InlineSpan>[]) ...runs(c as TextSpan),
+      ];
+      final dart = runs(highlightCode('final x = 1;', 'dart', base: base, dark: true)!);
+      expect(dart.map((r) => r.$1).join(), 'final x = 1;');
+      final keyword = dart.firstWhere((r) => r.$1 == 'final').$2;
+      expect(keyword, isNot(base.color), reason: 'a keyword has its own color');
+      expect(highlightCode('const a = 1', 'JS', base: base, dark: false), isNotNull);
+      expect(highlightCode('fn main() {}', 'zig', base: base, dark: true), isNull);
     });
 
     testWidgets('a table reads a row a line, each cell after its column', (tester) async {
