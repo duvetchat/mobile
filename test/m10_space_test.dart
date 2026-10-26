@@ -9,6 +9,7 @@ import 'package:duvet/main.dart';
 import 'package:duvet/space_admin.dart';
 import 'package:duvet/theme.dart';
 import 'package:duvet/widgets/chrome.dart';
+import 'package:duvet/widgets/rows.dart' show SpaceBanner;
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
@@ -222,6 +223,87 @@ void main() {
     semantics.dispose();
   });
 
+  testWidgets('overview: a banner, cropped 5:2 as the desktop does, shown; then removed', (tester) async {
+    final path = await picture(tester);
+    pickSpaceImage = () async => path;
+    final crops = <CropRect>[];
+    saveBannerImage = (path, crop) async {
+      crops.add(crop);
+      return '/banners/new.png';
+    };
+    final repository = await pumpSettings(tester);
+    await tapLabel(tester, RegExp(r'^Overview'));
+    // The cropper's spinner never settles: tapped, then waited for.
+    await tester.tap(find.bySemanticsLabel(RegExp(r'^Banner')).last);
+    await useCrop(tester);
+    // The 400x200 picture's full width, 5:2: 160 high, from its middle.
+    final crop = crops.single;
+    for (final (got, want) in [(crop.x, 0.0), (crop.y, 20.0), (crop.w, 400.0), (crop.h, 160.0)]) {
+      expect(got, closeTo(want, 0.01));
+    }
+    expect(find.bySemanticsLabel(RegExp(r'^Banner, New one chosen')), findsOneWidget);
+    await tapLabel(tester, 'Save');
+    expect(repository.admin.last, 'space banner=/banners/new.png');
+    expect(repository.spaces.value.single.bannerUrl, isNotNull);
+
+    await tapLabel(tester, RegExp(r'^Overview'));
+    expect(find.byType(SpaceBanner), findsOneWidget);
+    await tapLabel(tester, 'Remove banner');
+    expect(find.byType(SpaceBanner), findsNothing);
+    expect(find.bySemanticsLabel('Remove banner'), findsNothing);
+    await tapLabel(tester, 'Save');
+    expect(repository.admin.last, 'space banner=none');
+    expect(repository.spaces.value.single.bannerUrl, isNull);
+    semantics.dispose();
+  });
+
+  testWidgets('rooms: what a room is for, set and cleared; categories have none', (tester) async {
+    final repository = await pumpSettings(
+      tester,
+      setUp: (r) => r.adminRoomList['s-guild'] = [
+        const AdminRoom(id: 'r-general', name: 'general', kind: AdminRoomKind.text),
+        const AdminRoom(id: 'c-talk', name: 'Talk', kind: AdminRoomKind.category, position: 1),
+      ],
+    );
+    await tapLabel(tester, RegExp(r'^Rooms'));
+    await tapLabel(tester, RegExp(r'^# general'));
+    expect(find.bySemanticsLabel(RegExp(r'^Edit description, None')), findsOneWidget);
+    await tapLabel(tester, RegExp(r'^Edit description'));
+    await tester.enterText(find.byType(EditableText).last, '  crits on fridays ');
+    await tester.pump();
+    expect(find.text('237 characters left'), findsOneWidget);
+    await tapLabel(tester, 'Save');
+    expect(repository.admin.last, 'room¶ r-general crits on fridays');
+
+    await tapLabel(tester, RegExp(r'^# general'));
+    expect(find.bySemanticsLabel(RegExp(r'^Edit description, crits on fridays')), findsOneWidget);
+    await tapLabel(tester, RegExp(r'^Edit description'));
+    await tester.enterText(find.byType(EditableText).last, '');
+    await tester.pump();
+    expect(find.text('Leave it empty to clear it.'), findsOneWidget);
+    await tapLabel(tester, 'Save');
+    expect(repository.admin.last, 'room¶ r-general -');
+
+    await tapLabel(tester, 'Category Talk');
+    expect(find.bySemanticsLabel(RegExp(r'^Edit description')), findsNothing);
+    semantics.dispose();
+  });
+
+  testWidgets('rooms: invite people to any room the user may, a voice room too, as the desktop does', (tester) async {
+    final repository = await pumpSettings(tester, setUp: (r) => r.noInvites.add('r-general'));
+    await tapLabel(tester, RegExp(r'^Rooms'));
+    await tapLabel(tester, RegExp(r'^lounge'));
+    await tapLabel(tester, RegExp(r'^Invite people'));
+    expect(find.text('They’ll land in #lounge.'), findsOneWidget);
+    expect(repository.invitesMade.single, ('r-lounge', const Duration(days: 7)));
+    Navigator.of(tester.element(find.text('They’ll land in #lounge.'))).pop();
+    await tester.pumpAndSettle();
+    // Not where the room forbids it.
+    await tapLabel(tester, RegExp(r'^# general'));
+    expect(find.bySemanticsLabel(RegExp(r'^Invite people')), findsNothing);
+    semantics.dispose();
+  });
+
   testWidgets('rooms: create, rename, move, permissions, delete', (tester) async {
     final repository = await pumpSettings(tester);
     await tapLabel(tester, RegExp(r'^Rooms'));
@@ -352,6 +434,23 @@ void main() {
     expect(find.bySemanticsLabel('Create room'), findsNothing);
     await tapLabel(tester, RegExp(r'^# general'));
     expect(find.bySemanticsLabel('Rename'), findsOneWidget);
+    semantics.dispose();
+  });
+
+  testWidgets('roles: shown apart in the member list, as the desktop\'s "Display separately"', (tester) async {
+    final repository = await pumpSettings(tester);
+    await tapLabel(tester, RegExp(r'^Roles'));
+    await tapLabel(tester, RegExp(r'^Moderator'));
+    final shown = find.bySemanticsLabel('Show members separately').last;
+    expect(tester.getSemantics(shown).flagsCollection.isToggled.toString(), contains('isFalse'));
+    await tester.tap(shown);
+    await tester.pumpAndSettle();
+    await tapLabel(tester, 'Save');
+    expect(repository.admin.last, 'role~ role-mod hoisted=true');
+
+    // Everyone has @everyone: there's no showing its members apart.
+    await tapLabel(tester, RegExp(r'^@everyone'));
+    expect(find.bySemanticsLabel('Show members separately'), findsNothing);
     semantics.dispose();
   });
 

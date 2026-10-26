@@ -92,6 +92,32 @@ class DuvetRepository implements ChatRepository {
   @override
   final ValueNotifier<Set<String>> unread = ValueNotifier(const {});
   @override
+  final ValueNotifier<Set<String>> collapsedCategories = ValueNotifier(const {});
+
+  /// The user folded or opened one since the session began: what's saved,
+  /// read later, mustn't undo it.
+  bool _collapsedTouched = false;
+
+  @override
+  void setCategoryCollapsed(String categoryId, bool collapsed) {
+    final now = collapsedCategories.value;
+    if (now.contains(categoryId) == collapsed) return;
+    _collapsedTouched = true;
+    collapsedCategories.value = {
+      for (final id in now)
+        if (id != categoryId) id,
+      if (collapsed) categoryId,
+    };
+    _cache.saveCollapsed(collapsedCategories.value);
+  }
+
+  // The folded categories saved on this device, as a session opens.
+  Future<void> _loadCollapsed() async {
+    final ids = await _cache.loadCollapsed();
+    if (ids != null && !_collapsedTouched) collapsedCategories.value = ids;
+  }
+
+  @override
   final ValueNotifier<LiveStatus> status = ValueNotifier(LiveStatus.offline);
 
   // Outlives the sessions: each one's gateway is attached to it.
@@ -146,6 +172,9 @@ class DuvetRepository implements ChatRepository {
 
   // Spaces by ID, with their rooms as the gateway sends them.
   final _spaces = <String, ({duvet.GatewaySpace space, Map<String, duvet.GatewayRoom> rooms})>{};
+
+  /// The Spaces' order, as READY lists them.
+  List<String> _spaceOrder = const [];
 
   // Who's in each space, as far as known: SPACE_CREATE's members (each has
   // @everyone's role), those SPACE_MEMBER_ADD and _REMOVE tell of, and the
@@ -203,6 +232,7 @@ class DuvetRepository implements ChatRepository {
       profile.value = home.profile;
       conversations.value = home.conversations;
       spaces.value = home.spaces;
+      unawaited(_loadCollapsed());
       status.value = LiveStatus.offline;
       _recentsLoaded = _recents.load(home.profile.id);
       _retry = Timer.periodic(const Duration(seconds: 20), (_) => _comeBack());
@@ -279,6 +309,7 @@ class DuvetRepository implements ChatRepository {
     _setProfile(me);
     _names[me.id] = profile.value!.displayName;
     _recentsLoaded = _recents.load(me.id);
+    unawaited(_loadCollapsed());
     unawaited(refreshConversations().catchError((Object e) => debugPrint('conversations: $e')));
     _renewals?.cancel();
     _renewals = Timer.periodic(renewalCheck, (_) => _renewQuietly(renewAfter));
@@ -292,6 +323,8 @@ class DuvetRepository implements ChatRepository {
     // Previews are message text: signing out leaves none on the device.
     unawaited(_recents.close(forget: true));
     unawaited(_cache.clear());
+    collapsedCategories.value = const {};
+    _collapsedTouched = false;
     _renewalRetry?.cancel();
     _renewalRetry = null;
     _closeSession();
@@ -329,6 +362,7 @@ class DuvetRepository implements ChatRepository {
     _gateway = null;
     _api = null;
     _spaces.clear();
+    _spaceOrder = const [];
     _nicknames.clear();
     _spaceMemberIds.clear();
     _memberUsers.clear();
@@ -545,6 +579,8 @@ class DuvetRepository implements ChatRepository {
     switch (event) {
       case duvet.ReadyEvent(:final data):
         status.value = LiveStatus.online;
+        // The Spaces' order, as the desktop lists them: the gateway's.
+        _spaceOrder = data.guildIds;
         // A new session: the others' presence comes again with the
         // SPACE_CREATEs that follow, and the friends list, without whoever
         // went offline meanwhile, as the desktop does. A session the gateway
@@ -961,12 +997,13 @@ class DuvetRepository implements ChatRepository {
 
   void _publishSpaces() {
     final now = presence.value;
-    spaces.value = [
+    final published = [
       for (final (:space, :rooms) in _spaces.values)
         Space(
           id: space.id,
           name: space.name,
           iconUrl: avatarUrl(space.icon),
+          bannerUrl: avatarUrl(space.banner),
           sections: _sections(space.id, _visibleRooms(space.id, rooms.values)),
           onlineCount: switch (_spaceMemberIds[space.id]) {
             final ids? when ids.isNotEmpty =>
@@ -976,7 +1013,14 @@ class DuvetRepository implements ChatRepository {
             _ => null,
           },
         ),
-    ]..sort((a, b) => a.name.toLowerCase().compareTo(b.name.toLowerCase()));
+    ];
+    // In the gateway's order (READY's guild_ids); one made or joined since
+    // goes after, as it came. Sorting them is the Launchpad's, by the user's
+    // choice.
+    final index = {for (final (i, id) in _spaceOrder.indexed) id: i};
+    final arrival = {for (final (i, s) in published.indexed) s.id: i};
+    int place(Space s) => index[s.id] ?? _spaceOrder.length + arrival[s.id]!;
+    spaces.value = published..sort((a, b) => place(a).compareTo(place(b)));
     _saveHome();
   }
 
@@ -1123,6 +1167,7 @@ class DuvetRepository implements ChatRepository {
       name: r.name,
       kind: r.type == duvet.RoomType.voice ? RoomKind.voice : RoomKind.text,
       position: r.position,
+      description: _described(r.description),
     );
 
     final loose = [
@@ -1133,6 +1178,7 @@ class DuvetRepository implements ChatRepository {
       if (loose.isNotEmpty) RoomSection(name: null, rooms: loose),
       for (final c in categories)
         RoomSection(
+          id: c.id,
           name: c.name,
           rooms: [
             for (final r in rooms)
@@ -1772,7 +1818,16 @@ class DuvetRepository implements ChatRepository {
       for (final id in _memberRoles[spaceId]?[userId] ?? const <String>[])
         if (roles[id] case final r? when r.id != spaceId) r,
     ]..sort((a, b) => b.position.compareTo(a.position));
-    return [for (final r in mine) RoleTag(r.name, color: r.colorFrom == null ? null : 0xFF000000 | r.colorFrom!)];
+    return [
+      for (final r in mine)
+        RoleTag(
+          r.name,
+          color: r.colorFrom == null ? null : 0xFF000000 | r.colorFrom!,
+          id: r.id,
+          position: r.position,
+          hoisted: r.hoisted,
+        ),
+    ];
   }
 
   @override
@@ -2155,15 +2210,23 @@ class DuvetRepository implements ChatRepository {
     String? description,
     String? iconPath,
     String? bannerPath,
+    bool removeBanner = false,
   }) async {
+    final removesBanner = removeBanner && bannerPath == null;
+    // Pictures, or taking the banner away, go as a form, where the API skips
+    // an empty description: one cleared goes first, on its own.
+    final multipart = iconPath != null || bannerPath != null || removesBanner;
+    final clearsDescription = description != null && description.isEmpty && multipart;
     try {
+      if (clearsDescription) await _call((api) => api.updateSpace(spaceId, description: ''));
       await _call(
         (api) => api.updateSpace(
           spaceId,
           name: name,
-          description: description,
+          description: clearsDescription ? null : description,
           icon: iconPath == null ? null : File(iconPath),
           banner: bannerPath == null ? null : File(bannerPath),
+          removeBanner: removesBanner,
         ),
       );
     } on duvet.DuvetApiException catch (e) {
@@ -2192,8 +2255,12 @@ class DuvetRepository implements ChatRepository {
         },
         parentId: r.parentId,
         position: r.position,
+        description: r.type == duvet.RoomType.category ? null : _described(r.description),
       ),
   ];
+
+  /// A room's description as shown: none when blank.
+  static String? _described(String? text) => text == null || text.trim().isEmpty ? null : text.trim();
 
   @override
   Future<void> createRoom(String spaceId, String name, AdminRoomKind kind, {String? parentId}) async {
@@ -2211,6 +2278,18 @@ class DuvetRepository implements ChatRepository {
   @override
   Future<void> renameRoom(String spaceId, String roomId, String name) async {
     final room = await _explained((api) => api.updateRoom(spaceId, roomId, name: name));
+    _spaces[spaceId]?.rooms[room.id] = room;
+    _publishSpaces();
+  }
+
+  @override
+  Future<void> setRoomDescription(String spaceId, String roomId, String? description) async {
+    // Blank clears it: null as the API takes it, which `clear_description`
+    // isn't (the desktop's, which the API ignores).
+    final text = _described(description);
+    final room = await _explained(
+      (api) => api.updateRoom(spaceId, roomId, description: text, clearDescription: text == null),
+    );
     _spaces[spaceId]?.rooms[room.id] = room;
     _publishSpaces();
   }
@@ -2341,6 +2420,7 @@ class DuvetRepository implements ChatRepository {
     perms: r.permissions,
     position: r.position,
     everyone: r.id == spaceId,
+    hoisted: r.hoisted,
     memberCount: r.id == spaceId
         ? _spaceMemberIds[spaceId]?.length ?? 0
         : (_memberRoles[spaceId]?.values.where((ids) => ids.contains(r.id)).length ?? 0),
@@ -2370,10 +2450,18 @@ class DuvetRepository implements ChatRepository {
     int? color,
     bool clearColor = false,
     int? perms,
+    bool? hoisted,
   }) async {
     final r = await _explained(
-      (api) =>
-          api.updateRole(spaceId, roleId, name: name, colorFrom: color, permissions: perms, clearColors: clearColor),
+      (api) => api.updateRole(
+        spaceId,
+        roleId,
+        name: name,
+        colorFrom: color,
+        permissions: perms,
+        clearColors: clearColor,
+        hoisted: hoisted,
+      ),
     );
     (_roles[spaceId] ??= {})[r.id] = r;
     _publishSpaces();
@@ -2974,5 +3062,6 @@ class DuvetRepository implements ChatRepository {
     _typing.close();
     _recents.dispose();
     presence.dispose();
+    collapsedCategories.dispose();
   }
 }

@@ -3,6 +3,7 @@ import 'package:flutter_localizations/flutter_localizations.dart';
 import 'package:forui/forui.dart';
 
 import 'data/appearance.dart';
+import 'data/launchpad.dart';
 import 'data/call_history.dart';
 import 'data/duvet_repository.dart';
 import 'data/models.dart';
@@ -26,10 +27,13 @@ class DuvetApp extends StatefulWidget {
   /// System, light or dark; tests pass one kept in memory.
   final Appearance? appearance;
 
+  /// The Spaces tab's view and order; tests pass one kept in memory.
+  final LaunchpadPrefs? launchpad;
+
   /// Voice rooms and calls; tests pass one over fakes. By default, WebRTC
   /// and the call history in the keystore.
   final VoiceController? voice;
-  const DuvetApp({required this.repository, this.appearance, this.voice, super.key});
+  const DuvetApp({required this.repository, this.appearance, this.launchpad, this.voice, super.key});
 
   @override
   State<DuvetApp> createState() => _DuvetAppState();
@@ -37,6 +41,7 @@ class DuvetApp extends StatefulWidget {
 
 class _DuvetAppState extends State<DuvetApp> {
   late final _appearance = widget.appearance ?? (Appearance()..load());
+  late final _launchpad = widget.launchpad ?? (LaunchpadPrefs()..load());
   late final _voice =
       widget.voice ??
       VoiceController(
@@ -61,13 +66,17 @@ class _DuvetAppState extends State<DuvetApp> {
     if (widget.voice == null) _voice.dispose();
     widget.repository.dispose();
     if (widget.appearance == null) _appearance.dispose();
+    if (widget.launchpad == null) _launchpad.dispose();
     super.dispose();
   }
 
   @override
   Widget build(BuildContext context) => AppearanceScope(
     appearance: _appearance,
-    child: ValueListenableBuilder(valueListenable: _appearance, builder: (context, _, _) => _app(context)),
+    child: LaunchpadScope(
+      prefs: _launchpad,
+      child: ValueListenableBuilder(valueListenable: _appearance, builder: (context, _, _) => _app(context)),
+    ),
   );
 
   Widget _app(BuildContext context) {

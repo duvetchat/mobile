@@ -76,7 +76,11 @@ Future<({int width, int height, int bytes, bool animated, bool readable})?> gifA
 
 /// The part of the picture at [path] that [crop] frames, drawn [side] pixels
 /// square, as a PNG.
-Future<Uint8List> squarePng(String path, CropRect crop, int side) async {
+Future<Uint8List> squarePng(String path, CropRect crop, int side) => framedPng(path, crop, side, side);
+
+/// The part of the picture at [path] that [crop] frames, drawn [width] by
+/// [height] pixels, as a PNG.
+Future<Uint8List> framedPng(String path, CropRect crop, int width, int height) async {
   final codec = await ui.instantiateImageCodec(await File(path).readAsBytes());
   final ui.Image picture;
   try {
@@ -88,11 +92,11 @@ Future<Uint8List> squarePng(String path, CropRect crop, int side) async {
   Canvas(recorder).drawImageRect(
     picture,
     Rect.fromLTWH(crop.x, crop.y, crop.w, crop.h),
-    Rect.fromLTWH(0, 0, side.toDouble(), side.toDouble()),
+    Rect.fromLTWH(0, 0, width.toDouble(), height.toDouble()),
     Paint()..filterQuality = FilterQuality.high,
   );
   final drawing = recorder.endRecording();
-  final square = await drawing.toImage(side, side);
+  final square = await drawing.toImage(width, height);
   try {
     return (await square.toByteData(format: ui.ImageByteFormat.png))!.buffer.asUint8List();
   } finally {
@@ -111,6 +115,21 @@ Future<String> Function(String path, CropRect crop, int side) saveSquareImage = 
   final dir = Directory('${(await getTemporaryDirectory()).path}/square');
   await dir.create(recursive: true);
   final file = File('${dir.path}/${dot > 0 ? name.substring(0, dot) : 'image'}.png');
+  await file.writeAsBytes(png, flush: true);
+  return file.path;
+};
+
+/// A Space banner's frame, as the desktop crops one: 5:2, 600 by 240.
+const spaceBannerAspect = 5 / 2;
+const spaceBannerSize = (width: 600, height: 240);
+
+/// The banner [crop] frames in the picture at [path], in a file to upload;
+/// answers its path. Tests swap in their own.
+Future<String> Function(String path, CropRect crop) saveBannerImage = (path, crop) async {
+  final png = await framedPng(path, crop, spaceBannerSize.width, spaceBannerSize.height);
+  final dir = Directory('${(await getTemporaryDirectory()).path}/banner');
+  await dir.create(recursive: true);
+  final file = File('${dir.path}/banner-${DateTime.now().microsecondsSinceEpoch}.png');
   await file.writeAsBytes(png, flush: true);
   return file.path;
 };
@@ -465,6 +484,88 @@ Future<(String, T?)?> askName<T>(
       _NameSheet<T>(title: title, initial: initial, label: label, action: action, choices: choices, choice: choice),
 );
 
+/// The most a room's description takes, as the API stores it.
+const roomDescriptionLimit = 256;
+
+/// Asks what a room is for; empty clears it. Null when cancelled.
+Future<String?> askDescription(BuildContext context, {required String title, String initial = ''}) =>
+    showGlassDialogSheet<String>(
+      context,
+      label: title,
+      builder: (context) => _DescriptionSheet(title: title, initial: initial),
+    );
+
+class _DescriptionSheet extends StatefulWidget {
+  final String title;
+  final String initial;
+  const _DescriptionSheet({required this.title, required this.initial});
+
+  @override
+  State<_DescriptionSheet> createState() => _DescriptionSheetState();
+}
+
+class _DescriptionSheetState extends State<_DescriptionSheet> {
+  late final _text = TextEditingController(text: widget.initial);
+
+  @override
+  void initState() {
+    super.initState();
+    _text.addListener(() => setState(() {}));
+  }
+
+  @override
+  void dispose() {
+    _text.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = context.theme.colors;
+    // As the field and the API's column count them: code points.
+    final left = roomDescriptionLimit - _text.text.runes.length;
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 8, 16, 24),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Text(widget.title, style: DuvetType.title.copyWith(color: colors.foreground)),
+          const SizedBox(height: 16),
+          DuvetTextField(
+            label: 'Description',
+            hint: 'What this room is for',
+            controller: _text,
+            autofocus: true,
+            maxLines: 4,
+            keyboardType: TextInputType.multiline,
+            maxLength: roomDescriptionLimit,
+          ),
+          const SizedBox(height: 8),
+          Text(
+            _text.text.trim().isEmpty
+                ? 'Leave it empty to clear it.'
+                : left == 1
+                ? '1 character left'
+                : '$left characters left',
+            style: DuvetType.caption.copyWith(color: colors.mutedForeground),
+          ),
+          const SizedBox(height: 16),
+          DuvetButton(
+            label: 'Save',
+            variant: ButtonVariant.primary,
+            expand: true,
+            // Unchanged, there's nothing to save.
+            onPressed: _text.text.trim() == widget.initial.trim()
+                ? null
+                : () => Navigator.of(context).pop(_text.text.trim()),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
 class _NameSheet<T> extends StatefulWidget {
   final String title;
   final String initial;
@@ -569,8 +670,37 @@ class _SpaceOverviewPageState extends State<SpaceOverviewPage> {
   late final _name = TextEditingController(text: _profile?.name);
   late final _about = TextEditingController(text: _profile?.description);
   String? _icon;
+
+  /// The new banner, cropped; or [_removeBanner] to take the one there away.
   String? _banner;
+  bool _removeBanner = false;
   bool _saving = false;
+
+  Future<void> _pickBanner() async {
+    final path = await pickSpaceImage();
+    if (path == null || !mounted) return;
+    final crop = await Navigator.of(context).push<CropRect>(
+      MaterialPageRoute(
+        fullscreenDialog: true,
+        builder: (_) => CropPage(path: path, aspect: spaceBannerAspect, round: false),
+      ),
+    );
+    if (crop == null || !mounted) return;
+    final String cropped;
+    try {
+      cropped = await saveBannerImage(path, crop);
+    } catch (e) {
+      debugPrint('banner: $e');
+      if (mounted) _toast(context, 'Couldn’t read this picture');
+      return;
+    }
+    if (mounted) {
+      setState(() {
+        _banner = cropped;
+        _removeBanner = false;
+      });
+    }
+  }
 
   @override
   void dispose() {
@@ -595,6 +725,7 @@ class _SpaceOverviewPageState extends State<SpaceOverviewPage> {
         description: about == (p.description ?? '') ? null : about,
         iconPath: _icon,
         bannerPath: _banner,
+        removeBanner: _removeBanner,
       ),
     );
     if (!mounted) return;
@@ -606,12 +737,19 @@ class _SpaceOverviewPageState extends State<SpaceOverviewPage> {
   Widget build(BuildContext context) {
     final colors = context.theme.colors;
     final p = _profile;
-    Widget picked(String label, String? path, VoidCallback onTap) => GlassRow(
+    Widget picked(String label, String? path, VoidCallback onTap, {bool has = false}) => GlassRow(
       icon: FLucideIcons.image,
       label: label,
-      detail: path == null ? 'Choose' : 'New one chosen',
+      detail: path != null
+          ? 'New one chosen'
+          : has
+          ? 'Change'
+          : 'Choose',
       onPressed: onTap,
     );
+    // What the banner will be once saved: the new one, none, or as it is.
+    final bannerNow = _removeBanner ? null : p?.bannerUrl;
+    final hasBanner = _banner != null || bannerNow != null;
     return AdminPage(
       title: 'Overview',
       actions: [TextAction(label: 'Save', onPressed: _saving || p == null ? null : _save)],
@@ -624,16 +762,41 @@ class _SpaceOverviewPageState extends State<SpaceOverviewPage> {
           const SizedBox(height: 16),
           DuvetTextField(label: 'What it’s about', controller: _about, maxLines: 3),
           const Overline('Pictures'),
+          // The banner as it will look, 5:2.
+          if (_banner case final path?)
+            ExcludeSemantics(
+              child: ClipRRect(
+                borderRadius: BorderRadius.circular(DuvetTokens.radiusCard),
+                child: AspectRatio(
+                  aspectRatio: spaceBannerAspect,
+                  child: Image.file(
+                    File(path),
+                    fit: BoxFit.cover,
+                    errorBuilder: (context, error, stackTrace) => const SizedBox.shrink(),
+                  ),
+                ),
+              ),
+            )
+          else if (bannerNow case final url?)
+            SpaceBanner(url: url),
+          if (hasBanner) const SizedBox(height: 12),
           AdminPanel(
             children: [
               picked('Icon', _icon, () async {
                 final path = await pickSpaceIcon();
                 if (path != null && mounted) setState(() => _icon = path);
               }),
-              picked('Banner', _banner, () async {
-                final path = await pickSpaceImage();
-                if (path != null && mounted) setState(() => _banner = path);
-              }),
+              picked('Banner', _banner, _pickBanner, has: hasBanner),
+              if (hasBanner)
+                GlassRow(
+                  icon: FLucideIcons.trash2,
+                  label: 'Remove banner',
+                  destructive: true,
+                  onPressed: () => setState(() {
+                    _banner = null;
+                    _removeBanner = p.bannerUrl != null;
+                  }),
+                ),
             ],
           ),
           const SizedBox(height: 8),
@@ -724,6 +887,22 @@ class _RoomsAdminPageState extends State<RoomsAdminPage> {
         children: [
           SheetTitle(title: label),
           GlassRow(icon: FLucideIcons.pencil, label: 'Rename', onPressed: () => Navigator.of(context).pop('rename')),
+          // Categories have none: the API ignores theirs.
+          if (room.kind != AdminRoomKind.category)
+            GlassRow(
+              icon: FLucideIcons.text,
+              label: 'Edit description',
+              detail: room.description ?? 'None',
+              onPressed: () => Navigator.of(context).pop('describe'),
+            ),
+          if (room.kind != AdminRoomKind.category &&
+              context.repository.canInRoom(widget.spaceId, room.id, Perm.createInvites))
+            GlassRow(
+              icon: FLucideIcons.userPlus,
+              label: 'Invite people',
+              detail: 'A link to $label',
+              onPressed: () => Navigator.of(context).pop('invite'),
+            ),
           if (room.kind != AdminRoomKind.category &&
               (room.parentId != null || _all.any((c) => c.kind == AdminRoomKind.category)))
             GlassRow(
@@ -754,6 +933,19 @@ class _RoomsAdminPageState extends State<RoomsAdminPage> {
         final got = await askName<void>(context, title: 'Rename $label', initial: room.name);
         if (got == null || !mounted) return;
         await _try(context, 'Couldn’t rename $label', () => repository.renameRoom(id, room.id, got.$1));
+      case 'describe':
+        final got = await askDescription(context, title: 'What $label is for', initial: room.description ?? '');
+        if (got == null || !mounted) return;
+        await _try(
+          context,
+          'Couldn’t change what $label is for',
+          () => repository.setRoomDescription(id, room.id, got),
+        );
+      case 'invite':
+        final space = repository.spaces.value.where((s) => s.id == id).firstOrNull;
+        final inviteTo = space?.rooms.where((r) => r.id == room.id).firstOrNull;
+        if (space == null || inviteTo == null) return;
+        await showInviteSheet(context, space: space, room: inviteTo);
       case 'move':
         await _moveTo(room);
       case 'perms':
@@ -1243,6 +1435,7 @@ class _RoleEditorPageState extends State<RoleEditorPage> {
   late final _name = TextEditingController(text: widget.role.name);
   late int? _color = widget.role.color;
   late int _perms = widget.role.perms;
+  late bool _hoisted = widget.role.hoisted;
   bool _saving = false;
 
   @override
@@ -1266,6 +1459,7 @@ class _RoleEditorPageState extends State<RoleEditorPage> {
         color: _color != r.color ? _color : null,
         clearColor: _color == null && r.color != null,
         perms: _perms != r.perms ? _perms : null,
+        hoisted: _hoisted != r.hoisted ? _hoisted : null,
       ),
     );
     if (!mounted) return;
@@ -1462,6 +1656,43 @@ class _RoleEditorPageState extends State<RoleEditorPage> {
                 label: '${holders.length} ${holders.length == 1 ? 'member' : 'members'}',
                 detail: 'Manage',
                 onPressed: _members,
+              ),
+            ],
+          ),
+          const SizedBox(height: 12),
+          AdminPanel(
+            children: [
+              // As the desktop's "Display role members separately".
+              Semantics(
+                container: true,
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                  child: Row(
+                    children: [
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              'Show members separately',
+                              style: DuvetType.rowTitle.copyWith(color: colors.foreground),
+                            ),
+                            Text(
+                              'In the member list, those online show under this role’s name',
+                              style: DuvetType.caption.copyWith(color: colors.mutedForeground),
+                            ),
+                          ],
+                        ),
+                      ),
+                      const SizedBox(width: 12),
+                      DuvetSwitch(
+                        label: 'Show members separately',
+                        value: _hoisted,
+                        onChanged: (on) => setState(() => _hoisted = on),
+                      ),
+                    ],
+                  ),
+                ),
               ),
             ],
           ),

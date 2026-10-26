@@ -117,6 +117,25 @@ class ChatCache {
     }
   }
 
+  /// The categories folded away, by ID.
+  void saveCollapsed(Set<String> categoryIds) => _later(
+    'collapsed',
+    () => {
+      'ids': [...categoryIds],
+    },
+  );
+
+  Future<Set<String>?> loadCollapsed() async {
+    final j = await _read('collapsed');
+    if (j == null) return null;
+    try {
+      return {...(j['ids']! as List).cast<String>()};
+    } catch (e) {
+      debugPrint('cache: $e');
+      return null;
+    }
+  }
+
   void saveHome({
     required Profile profile,
     required List<ConversationSummary> conversations,
@@ -326,13 +345,21 @@ Map<String, Object?> spaceToJson(Space s) => {
   'id': s.id,
   'name': s.name,
   'iconUrl': s.iconUrl,
+  'bannerUrl': s.bannerUrl,
   'sections': [
     for (final section in s.sections)
       {
+        'id': section.id,
         'name': section.name,
         'rooms': [
           for (final r in section.rooms)
-            {'id': r.id, 'name': r.name, 'voice': r.kind == RoomKind.voice, 'position': r.position},
+            {
+              'id': r.id,
+              'name': r.name,
+              'voice': r.kind == RoomKind.voice,
+              'position': r.position,
+              'description': r.description,
+            },
         ],
       },
   ],
@@ -342,10 +369,12 @@ Space spaceFromJson(Map<String, Object?> j) => Space(
   id: j['id']! as String,
   name: j['name']! as String,
   iconUrl: j['iconUrl'] as String?,
+  bannerUrl: j['bannerUrl'] as String?,
   sections: [
     for (final section in j['sections']! as List)
       RoomSection(
-        name: (section as Map)['name'] as String?,
+        id: (section as Map)['id'] as String?,
+        name: section['name'] as String?,
         rooms: [
           for (final r in section['rooms'] as List)
             Room(
@@ -354,6 +383,7 @@ Space spaceFromJson(Map<String, Object?> j) => Space(
               name: r['name'] as String,
               kind: r['voice'] == true ? RoomKind.voice : RoomKind.text,
               position: r['position'] as int? ?? 0,
+              description: r['description'] as String?,
             ),
         ],
       ),
