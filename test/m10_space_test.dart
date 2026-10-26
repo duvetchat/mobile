@@ -402,6 +402,106 @@ void main() {
     semantics.dispose();
   });
 
+  group('rooms, for screen readers: each room and category one stop, with its moves (#60)', () {
+    void twoAndTwo(FakeRepository r) => r.adminRoomList['s-guild'] = [
+      const AdminRoom(id: 'r-general', name: 'general', kind: AdminRoomKind.text),
+      const AdminRoom(id: 'r-lobby', name: 'lobby', kind: AdminRoomKind.text, position: 1),
+      const AdminRoom(id: 'r-crit', name: 'crit', kind: AdminRoomKind.text, parentId: 'c-work'),
+      const AdminRoom(id: 'c-work', name: 'Work', kind: AdminRoomKind.category, position: 1),
+      const AdminRoom(id: 'c-fun', name: 'Fun', kind: AdminRoomKind.category, position: 2),
+    ];
+
+    List<String> moves(SemanticsNode node) => [
+      for (final id in node.getSemanticsData().customSemanticsActionIds ?? const <int>[])
+        ?CustomSemanticsAction.getAction(id)?.label,
+    ];
+
+    SemanticsNode nodeOf(WidgetTester tester, Pattern label) => tester.getSemantics(find.bySemanticsLabel(label).last);
+
+    // The moves on [label]'s node, and none on the node around it, where the
+    // list offered them before. (Further up, a room's category has its own.)
+    List<String> movesOn(WidgetTester tester, Pattern label) {
+      final node = nodeOf(tester, label);
+      expect(moves(node.parent!), isEmpty, reason: 'offered again around $label');
+      return moves(node);
+    }
+
+    testWidgets('named, tapped and moved on the one node, never twice', (tester) async {
+      await pumpSettings(tester, setUp: twoAndTwo);
+      await tapLabel(tester, RegExp(r'^Rooms'));
+      expect(movesOn(tester, 'Category Work'), ['Move down', 'Move to the end']);
+      expect(movesOn(tester, 'Category Fun'), ['Move to the start', 'Move up']);
+      expect(movesOn(tester, RegExp(r'^# general')), ['Move down', 'Move to the end']);
+      expect(movesOn(tester, RegExp(r'^# lobby')), ['Move to the start', 'Move up']);
+      for (final label in ['Category Work', RegExp(r'^# general')]) {
+        expect(nodeOf(tester, label).getSemanticsData().hasAction(SemanticsAction.tap), isTrue);
+      }
+      semantics.dispose();
+    });
+
+    testWidgets('the hint says it moves; a room alone in its category has nowhere to go', (tester) async {
+      await pumpSettings(tester, setUp: twoAndTwo);
+      await tapLabel(tester, RegExp(r'^Rooms'));
+      expect(
+        nodeOf(tester, 'Category Work').getSemanticsData().hint,
+        'Double tap for options, or use actions to move it with its rooms',
+      );
+      expect(find.bySemanticsLabel('# general, Double tap for options, or use actions to move it'), findsOneWidget);
+      expect(find.bySemanticsLabel('# crit, Double tap for options'), findsOneWidget);
+      expect(movesOn(tester, RegExp(r'^# crit')), isEmpty);
+      semantics.dispose();
+    });
+
+    testWidgets('an empty category\'s note is its own, not the category\'s name', (tester) async {
+      await pumpSettings(tester, setUp: twoAndTwo);
+      await tapLabel(tester, RegExp(r'^Rooms'));
+      final note = nodeOf(tester, 'No rooms. Move one here from its options.');
+      expect(moves(note), isEmpty);
+      expect(note.parent!.getSemanticsData().label, 'Category Fun');
+      semantics.dispose();
+    });
+
+    testWidgets('a move by its actions goes as a drag would', (tester) async {
+      final repository = await pumpSettings(tester, setUp: twoAndTwo);
+      await tapLabel(tester, RegExp(r'^Rooms'));
+      final node = nodeOf(tester, RegExp(r'^# lobby'));
+      node.owner!.performAction(
+        node.id,
+        SemanticsAction.customAction,
+        CustomSemanticsAction.getIdentifier(const CustomSemanticsAction(label: 'Move up')),
+      );
+      await tester.pumpAndSettle();
+      expect(repository.admin.last, 'room> r-lobby - 0');
+      semantics.dispose();
+    });
+
+    testWidgets('a move the user may not make says why, and asks the API nothing', (tester) async {
+      final repository = await pumpSettings(
+        tester,
+        setUp: (r) {
+          twoAndTwo(r);
+          r
+            ..spaceOwner = false
+            ..spacePerms = Perm.manageChannels
+            ..deniedInRoom['r-general'] = Perm.manageChannels;
+        },
+      );
+      await tapLabel(tester, RegExp(r'^Rooms'));
+      final asked = repository.admin.length;
+      tester.takeAnnouncements();
+      final node = nodeOf(tester, RegExp(r'^# general'));
+      node.owner!.performAction(
+        node.id,
+        SemanticsAction.customAction,
+        CustomSemanticsAction.getIdentifier(const CustomSemanticsAction(label: 'Move down')),
+      );
+      await tester.pumpAndSettle();
+      expect(tester.takeAnnouncements().map((a) => a.message), ['You can’t move #general']);
+      expect(repository.admin.length, asked);
+      semantics.dispose();
+    });
+  });
+
   testWidgets('rooms: ManageChannels counts in each room; making one takes it in the Space', (tester) async {
     await pumpSettings(
       tester,
