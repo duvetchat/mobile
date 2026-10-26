@@ -9,6 +9,7 @@ import 'package:duvet/data/models.dart';
 import 'package:duvet/data/voice.dart';
 import 'package:duvet/data/voice_engine.dart' show PeerState;
 import 'package:duvet/main.dart';
+import 'package:duvet/widgets/avatar.dart';
 import 'package:duvet/widgets/chrome.dart';
 import 'package:duvet/widgets/facehash.dart';
 import 'package:duvet/widgets/media.dart';
@@ -499,6 +500,34 @@ void main() {
     expect(find.text('Incoming call'), findsNothing);
     expect(app.gateway.sent, isEmpty);
     semantics.dispose();
+    await finish(tester, app);
+  });
+
+  testWidgets('a group\'s call rung from READY shows its caller, avatar included', (tester) async {
+    final app = await pumpApp(tester);
+    app.gateway.ready(
+      calls: const [
+        duvet.GatewayReadyActiveCall(
+          conversationId: 'c-team',
+          initiatorId: FakeRepository.leo,
+          initiatorName: 'leo',
+          initiatorAvatar: '0a0a0a0a-0000-4000-8000-0000000000a1',
+          ringing: true,
+          answered: false,
+        ),
+      ],
+    );
+    await settle(tester);
+    expect(find.text('Calling Design crew'), findsOneWidget);
+    expect(
+      find.byWidgetPredicate(
+        (w) =>
+            w is UserAvatar &&
+            w.name == 'leo' &&
+            w.url == 'https://example.invalid/attachments/0a0a0a0a-0000-4000-8000-0000000000a1',
+      ),
+      findsOneWidget,
+    );
     await finish(tester, app);
   });
 

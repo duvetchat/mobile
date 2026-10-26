@@ -3139,6 +3139,7 @@ class DuvetRepository implements ChatRepository {
 
   /// An avatar's or icon's URL: the API names an attachment by its ID, served
   /// outside `/api`, as the desktop app's `getAvatarURL` does.
+  @override
   String? avatarUrl(String? avatar) {
     if (avatar == null || avatar.isEmpty) return null;
     if (avatar.startsWith('https://') || avatar.startsWith('http://')) return avatar;

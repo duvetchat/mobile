@@ -88,6 +88,10 @@ class ActiveCall {
   final String conversationId;
   final String initiatorId;
   final String initiatorName;
+
+  /// The caller's avatar, an attachment ID, as CALL_INCOMING and READY give
+  /// it: the incoming call screen shows it.
+  final String? initiatorAvatar;
   final bool outgoing;
   final CallPhase phase;
 
@@ -101,6 +105,7 @@ class ActiveCall {
     required this.conversationId,
     required this.initiatorId,
     required this.initiatorName,
+    this.initiatorAvatar,
     required this.outgoing,
     required this.phase,
     required this.startedAt,
@@ -111,6 +116,7 @@ class ActiveCall {
     conversationId: conversationId,
     initiatorId: initiatorId,
     initiatorName: initiatorName,
+    initiatorAvatar: initiatorAvatar,
     outgoing: outgoing,
     phase: phase ?? this.phase,
     startedAt: startedAt,
@@ -814,6 +820,7 @@ class VoiceController extends ChangeNotifier {
           conversationId: c.conversationId,
           initiatorId: c.initiatorId,
           initiatorName: c.initiatorName ?? _repository.nameOf(c.initiatorId) ?? 'Someone',
+          initiatorAvatar: c.initiatorAvatar,
           outgoing: false,
           phase: CallPhase.ringing,
           startedAt: _now(),
@@ -1000,6 +1007,7 @@ class VoiceController extends ChangeNotifier {
       conversationId: data.conversationId,
       initiatorId: data.initiatorId,
       initiatorName: data.initiatorName,
+      initiatorAvatar: data.initiatorAvatar,
       outgoing: false,
       phase: CallPhase.ringing,
       startedAt: _now(),

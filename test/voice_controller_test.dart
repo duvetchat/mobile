@@ -1138,9 +1138,14 @@ void main() {
     const maya = FakeRepository.maya;
     const leo = FakeRepository.leo;
 
-    duvet.CallIncomingPayloadEvent incoming(String conversation, String caller, String name) =>
+    duvet.CallIncomingPayloadEvent incoming(String conversation, String caller, String name, {String? avatar}) =>
         duvet.CallIncomingPayloadEvent(
-          duvet.CallIncomingEvent(conversationId: conversation, initiatorId: caller, initiatorName: name),
+          duvet.CallIncomingEvent(
+            conversationId: conversation,
+            initiatorId: caller,
+            initiatorName: name,
+            initiatorAvatar: avatar,
+          ),
         );
     duvet.CallOutgoingPayloadEvent outgoing(String conversation) =>
         duvet.CallOutgoingPayloadEvent(duvet.CallOutgoingEvent(conversationId: conversation));
@@ -1167,12 +1172,14 @@ void main() {
       String conversation,
       String caller, {
       String? name,
+      String? avatar,
       bool? ringing,
       bool? answered,
     }) => duvet.GatewayReadyActiveCall(
       conversationId: conversation,
       initiatorId: caller,
       initiatorName: name,
+      initiatorAvatar: avatar,
       ringing: ringing,
       answered: answered,
     );
@@ -1247,10 +1254,14 @@ void main() {
     });
 
     _voice('READY rings for a call that still rings the user, naming its caller as READY does', (async, h) {
-      h.gateway.ready(number: 2, calls: [listed('c-team', leo, name: 'Leo', ringing: true, answered: false)]);
+      h.gateway.ready(
+        number: 2,
+        calls: [listed('c-team', leo, name: 'Leo', avatar: 'av-leo', ringing: true, answered: false)],
+      );
       expect(h.voice.call?.phase, CallPhase.ringing);
       expect(h.voice.call?.conversationId, 'c-team');
       expect(h.voice.call?.initiatorName, 'Leo');
+      expect(h.voice.call?.initiatorAvatar, 'av-leo');
       expect(h.voice.call?.outgoing, isFalse);
 
       h.voice.acceptCall();
@@ -1371,7 +1382,8 @@ void main() {
     });
 
     _voice('a call whose ring window ended goes on: missed here, who is in it shows, and it can be joined', (async, h) {
-      h.gateway.push(incoming('c-team', leo, 'Leo'));
+      h.gateway.push(incoming('c-team', leo, 'Leo', avatar: 'av-leo'));
+      expect(h.voice.call?.initiatorAvatar, 'av-leo');
       // Someone else's answer leaves it ringing here, until its ring window ends.
       h.gateway.push(accepted('c-team', maya));
       expect(h.voice.call?.phase, CallPhase.ringing);

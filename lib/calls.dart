@@ -304,7 +304,12 @@ class _IncomingCallScreenState extends State<IncomingCallScreen> {
                 children: [
                   const Spacer(),
                   ExcludeSemantics(
-                    child: UserAvatar(name: call.initiatorName, url: group ? null : summary?.avatarUrl, size: 120),
+                    // A DM's avatar is the caller's; a group's call shows its caller's.
+                    child: UserAvatar(
+                      name: call.initiatorName,
+                      url: group ? repository.avatarUrl(call.initiatorAvatar) : summary?.avatarUrl,
+                      size: 120,
+                    ),
                   ),
                   const SizedBox(height: 24),
                   Semantics(
