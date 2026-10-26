@@ -27,6 +27,9 @@ class VoicePerson {
   final String id;
   final String name;
   final String? avatarUrl;
+
+  /// Their banner, faintly behind their tile: see [memberBanner].
+  final String? bannerUrl;
   final bool muted;
   final bool deafened;
   final bool isMe;
@@ -34,6 +37,7 @@ class VoicePerson {
     required this.id,
     required this.name,
     this.avatarUrl,
+    this.bannerUrl,
     this.muted = false,
     this.deafened = false,
     this.isMe = false,
@@ -51,6 +55,7 @@ List<VoicePerson> voicePeople(ChatRepository repository, VoiceController voice, 
     id: me!.id,
     name: me.displayName,
     avatarUrl: me.avatarUrl,
+    bannerUrl: me.bannerUrl,
     muted: voice.muted,
     deafened: voice.deafened,
     isMe: true,
@@ -64,6 +69,7 @@ List<VoicePerson> voicePeople(ChatRepository repository, VoiceController voice, 
           id: p.userId,
           name: known[p.userId]?.displayName ?? repository.nameOf(p.userId) ?? 'Someone',
           avatarUrl: known[p.userId]?.avatarUrl,
+          bannerUrl: known[p.userId]?.bannerUrl,
           muted: p.muted,
           deafened: p.deafened,
           isMe: p.userId == me?.id,
@@ -126,6 +132,7 @@ class VoiceTile extends StatelessWidget {
         duration: reduce ? Duration.zero : const Duration(milliseconds: 150),
         decoration: BoxDecoration(
           color: colors.card,
+          image: memberBanner(context, person.bannerUrl),
           borderRadius: BorderRadius.circular(DuvetTokens.radiusCard),
           boxShadow: tokens.shadowRest,
           border: Border.all(color: speaking ? tokens.accentText : Colors.transparent, width: 2),

@@ -5,6 +5,7 @@ import 'package:forui/forui.dart';
 
 import '../data/models.dart';
 import '../theme.dart';
+import 'avatar.dart';
 import 'depth.dart';
 
 /// A two-line list row (ChatRow, ChannelRow): 72pt, no divider, a 48pt
@@ -38,6 +39,10 @@ class ListRow extends StatelessWidget {
   final VoidCallback? onTap;
   final VoidCallback? onLongPress;
 
+  /// A member's banner, faintly behind the row: see [memberBanner].
+  final String? banner;
+  final bool bannerOffline;
+
   const ListRow({
     required this.title,
     this.leading,
@@ -51,6 +56,8 @@ class ListRow extends StatelessWidget {
     this.mentions = 0,
     this.onTap,
     this.onLongPress,
+    this.banner,
+    this.bannerOffline = false,
     super.key,
   });
 
@@ -92,6 +99,7 @@ class ListRow extends StatelessWidget {
                   : selected
                   ? tokens.accentTint
                   : Colors.transparent,
+              image: memberBanner(context, banner, offline: bannerOffline),
               borderRadius: BorderRadius.circular(DuvetTokens.radiusField),
             ),
             child: Row(

@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import 'package:forui/forui.dart';
 
 import '../theme.dart';
+import 'avatar.dart';
 
 /// Duvet's Liquid Glass: a 78% glass fill over a backdrop blur, a 1px edge that
 /// catches the light, and a large, weak float shadow. Only for overlays and
@@ -267,6 +268,10 @@ class GlassRow extends StatefulWidget {
   /// The label's color in place of `ink`: a member's role color.
   final Color? labelColor;
 
+  /// A member's banner, faintly behind the row: see [memberBanner].
+  final String? banner;
+  final bool bannerOffline;
+
   const GlassRow({
     required this.label,
     required this.onPressed,
@@ -277,6 +282,8 @@ class GlassRow extends StatefulWidget {
     this.destructive = false,
     this.selected = false,
     this.labelColor,
+    this.banner,
+    this.bannerOffline = false,
     super.key,
   });
 
@@ -328,6 +335,7 @@ class _GlassRowState extends State<GlassRow> {
                   : widget.selected
                   ? tokens.accentTint
                   : Colors.transparent,
+              image: memberBanner(context, widget.banner, offline: widget.bannerOffline),
               borderRadius: BorderRadius.circular(DuvetTokens.radiusField),
             ),
             child: Row(

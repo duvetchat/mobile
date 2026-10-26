@@ -105,6 +105,9 @@ void main() {
   /// The friend requests to the user, as `GET …/friends/requests` answers.
   late List<Map<String, dynamic>> asking;
 
+  /// Members of `s-1` besides Maya.
+  late List<Map<String, dynamic>> moreSpaceMembers;
+
   /// While set, holds that answer, as it was when asked.
   Completer<void>? holdAsking;
 
@@ -138,6 +141,7 @@ void main() {
     sessionDead = false;
     expiredToken = null;
     asking = [];
+    moreSpaceMembers = [];
     holdAsking = null;
     pictureRefusal = null;
     meUnreachable = false;
@@ -251,6 +255,7 @@ void main() {
             'updated_at': _at,
             'user': _user(_maya, 'maya', alias: 'Maya'),
           },
+          ...moreSpaceMembers,
         ],
         ('POST', '/api/spaces') => {
           'space': {'id': 's-new', 'name': 'Testing lair', 'owner_id': _me, 'created_at': _at, 'updated_at': _at},
@@ -311,6 +316,39 @@ void main() {
     expect(maya.bannerUrl, 'https://api.duvet.chat/attachments/$_banner');
     final gaby = members.firstWhere((m) => m.userId == _me);
     expect((gaby.bio, gaby.bannerUrl), (null, null));
+  });
+
+  test('friends take the banner a Space\'s or a conversation\'s members have for them (#15)', () async {
+    const banner = 'https://api.duvet.chat/attachments/$_banner';
+    Map<String, String?> banners() => {for (final f in repository.friends.value.friends) f.username: f.bannerUrl};
+    await repository.logIn('gaby@duvet.chat', 'secret');
+    await repository.loadFriends();
+    // Maya's, from the DM loaded first; their list has neither.
+    expect(banners(), {'leo': null, 'maya': banner});
+
+    // Leo's comes with a Space's members, loaded after: the list shown takes
+    // it, and says so.
+    moreSpaceMembers = [
+      {
+        'id': 'm-leo',
+        'space_id': 's-1',
+        'user_id': _leo,
+        'created_at': _at,
+        'updated_at': _at,
+        'user': {..._user(_leo, 'leo'), 'banner': _banner},
+      },
+    ];
+    var told = 0;
+    void tell() => told++;
+    repository.friends.addListener(tell);
+    addTearDown(() => repository.friends.removeListener(tell));
+    await repository.members(const RoomTarget(spaceId: 's-1', roomId: 'r-general'));
+    expect(banners(), {'leo': banner, 'maya': banner});
+    expect(told, 1);
+
+    // Members loaded again with nothing new: nothing to say.
+    await repository.refreshConversations();
+    expect(told, 1);
   });
 
   test('someone else\'s profile change shows wherever they do', () async {

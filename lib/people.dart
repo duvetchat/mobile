@@ -417,6 +417,79 @@ class SquareCheck extends StatelessWidget {
   }
 }
 
+/// Someone in a full-width list, to open or pick: their avatar, name and
+/// handle, their banner faintly behind ([memberBanner]). With [checked], a
+/// pick, with its box.
+class PersonRow extends StatelessWidget {
+  final Member member;
+  final Presence? presence;
+  final VoidCallback onTap;
+  final bool? checked;
+
+  /// Their handle under the name; read after it too.
+  final bool username;
+  final double avatarSize;
+  final double verticalPadding;
+
+  /// Their name as shown, e.g. with the search's match picked out.
+  final List<InlineSpan>? name;
+
+  const PersonRow({
+    required this.member,
+    required this.presence,
+    required this.onTap,
+    this.checked,
+    this.username = true,
+    this.avatarSize = 40,
+    this.verticalPadding = 8,
+    this.name,
+    super.key,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = context.theme.colors;
+    return Semantics(
+      container: true,
+      button: checked == null,
+      checked: checked,
+      label: username ? '${member.displayName}, @${member.username}' : member.displayName,
+      excludeSemantics: true,
+      onTap: onTap,
+      child: GestureDetector(
+        behavior: HitTestBehavior.opaque,
+        onTap: onTap,
+        child: DecoratedBox(
+          decoration: BoxDecoration(image: memberBanner(context, member.bannerUrl, offline: isOffline(presence))),
+          child: Padding(
+            padding: EdgeInsets.symmetric(horizontal: 16, vertical: verticalPadding),
+            child: Row(
+              children: [
+                UserAvatar(name: member.displayName, url: member.avatarUrl, size: avatarSize),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text.rich(
+                        TextSpan(children: name ?? [TextSpan(text: member.displayName)]),
+                        style: DuvetType.rowTitle.copyWith(color: colors.foreground),
+                      ),
+                      if (username)
+                        Text('@${member.username}', style: DuvetType.caption.copyWith(color: colors.mutedForeground)),
+                    ],
+                  ),
+                ),
+                if (checked case final checked?) SquareCheck(checked: checked),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
 // -----------------------------------------------------------------------------
 // Friends
 // -----------------------------------------------------------------------------
@@ -499,13 +572,15 @@ class _FriendsPageState extends State<FriendsPage> {
         builder: (context, _) {
           final f = repository.friends.value;
           final presence = repository.presence.value;
-          bool away(Member m) => (presence[m.userId] ?? Presence.offline) == Presence.offline;
+          bool away(Member m) => isOffline(presence[m.userId]);
           final online = f.friends.where((m) => !away(m)).toList();
           final offline = f.friends.where(away).toList();
           Widget friendRow(Member m) => ListRow(
             leading: PresenceAvatar(member: m, presence: presence[m.userId], size: 48),
             title: m.displayName,
             snippet: '@${m.username}',
+            banner: m.bannerUrl,
+            bannerOffline: away(m),
             onTap: () => showProfileSheet(context, member: m),
             onLongPress: () => _confirmUnfriend(m),
           );
@@ -897,38 +972,13 @@ class _NewConversationPageState extends State<NewConversationPage> {
                   ),
                 Overline(q.isEmpty ? 'Friends' : 'Matching “${_query.text.trim()}”'),
                 for (final m in people)
-                  Semantics(
-                    container: true,
+                  PersonRow(
+                    member: m,
+                    presence: repository.presence.value[m.userId],
                     checked: _picked.any((p) => p.userId == m.userId),
-                    label: '${m.displayName}, @${m.username}',
-                    excludeSemantics: true,
+                    avatarSize: 48,
+                    verticalPadding: 12,
                     onTap: () => _toggle(m),
-                    child: GestureDetector(
-                      behavior: HitTestBehavior.opaque,
-                      onTap: () => _toggle(m),
-                      child: Padding(
-                        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-                        child: Row(
-                          children: [
-                            UserAvatar(name: m.displayName, url: m.avatarUrl, size: 48),
-                            const SizedBox(width: 12),
-                            Expanded(
-                              child: Column(
-                                crossAxisAlignment: CrossAxisAlignment.start,
-                                children: [
-                                  Text(m.displayName, style: DuvetType.rowTitle.copyWith(color: colors.foreground)),
-                                  Text(
-                                    '@${m.username}',
-                                    style: DuvetType.caption.copyWith(color: colors.mutedForeground),
-                                  ),
-                                ],
-                              ),
-                            ),
-                            SquareCheck(checked: _picked.any((p) => p.userId == m.userId)),
-                          ],
-                        ),
-                      ),
-                    ),
                   ),
                 if (people.isEmpty) ListNote(q.isEmpty ? 'No friends added yet' : 'No one found'),
               ],
@@ -1052,6 +1102,8 @@ class _GroupInfoPageState extends State<GroupInfoPage> {
                   leading: UserAvatar(name: m.displayName, url: m.avatarUrl, size: 48),
                   title: m.displayName,
                   snippet: '@${m.username}',
+                  banner: m.bannerUrl,
+                  bannerOffline: isOffline(context.repository.presence.value[m.userId]),
                   onTap: () => Navigator.of(context).pop(m),
                 ),
               if (candidates.isEmpty) const ListNote('No friends available to add'),
@@ -1217,6 +1269,8 @@ class _GroupInfoPageState extends State<GroupInfoPage> {
                                       if (m.userId == group?.ownerId) 'owner',
                                     ].join(' · '),
                                     leading: UserAvatar(name: m.displayName, url: m.avatarUrl, size: 40),
+                                    banner: m.bannerUrl,
+                                    bannerOffline: isOffline(repository.presence.value[m.userId]),
                                     onPressed: () => showProfileSheet(context, member: m),
                                   ),
                                 ),

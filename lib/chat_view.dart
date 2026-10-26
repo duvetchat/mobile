@@ -1815,6 +1815,17 @@ class _ChatViewState extends State<ChatView> {
             leading: ExcludeSemantics(
               child: UserAvatar(name: m.displayName, url: m.avatarUrl, size: 32),
             ),
+            banner: m.bannerUrl,
+            bannerOffline: isOffline(
+              presenceIn(
+                _repository.presence.value,
+                m.userId,
+                spaceId: switch (widget.target) {
+                  RoomTarget(:final spaceId) => spaceId,
+                  _ => null,
+                },
+              ),
+            ),
             onPressed: () => _composer.insertMention(m),
           ),
       ];

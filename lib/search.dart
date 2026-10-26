@@ -7,6 +7,7 @@ import 'chat_view.dart';
 import 'data/models.dart';
 import 'data/repository.dart';
 import 'data/scope.dart';
+import 'people.dart' show PersonRow;
 import 'tabs.dart' show SpaceDirectory;
 import 'theme.dart';
 import 'widgets/avatar.dart';
@@ -692,42 +693,12 @@ class _PersonResult extends StatelessWidget {
   const _PersonResult({required this.member, required this.query, required this.onTap});
 
   @override
-  Widget build(BuildContext context) {
-    final colors = context.theme.colors;
-    final tokens = context.duvet;
-    return Semantics(
-      container: true,
-      button: true,
-      label: '${member.displayName}, @${member.username}',
-      excludeSemantics: true,
-      onTap: onTap,
-      child: GestureDetector(
-        behavior: HitTestBehavior.opaque,
-        onTap: onTap,
-        child: Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-          child: Row(
-            children: [
-              UserAvatar(name: member.displayName, url: member.avatarUrl, size: 40),
-              const SizedBox(width: 12),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text.rich(
-                      TextSpan(children: highlighted(member.displayName, query, tokens.accentText)),
-                      style: DuvetType.rowTitle.copyWith(color: colors.foreground),
-                    ),
-                    Text('@${member.username}', style: DuvetType.caption.copyWith(color: colors.mutedForeground)),
-                  ],
-                ),
-              ),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
+  Widget build(BuildContext context) => PersonRow(
+    member: member,
+    presence: context.repository.presence.value[member.userId],
+    name: highlighted(member.displayName, query, context.duvet.accentText),
+    onTap: onTap,
+  );
 }
 
 /// The dropdown's entrance: it drops 8pt and fades in on the panel spring.
