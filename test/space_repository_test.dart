@@ -7,7 +7,6 @@ import 'package:duvet/data/duvet_repository.dart';
 import 'package:duvet/data/models.dart';
 import 'package:duvet/data/recent_chats.dart';
 import 'package:duvet/data/session_store.dart';
-import 'package:duvet/space_admin.dart' show movedPosition;
 import 'package:duvet_client/duvet.dart' as duvet;
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
@@ -797,11 +796,11 @@ void main() {
     };
     Map<String, dynamic> sent() => jsonDecode(requests.last.body) as Map<String, dynamic>;
 
-    test('a room moves into a category first, as the desktop drops one in', () async {
+    test('a room moves into a category with its place there', () async {
       await signIn();
       repository.handleEvent(_event('SPACE_CREATE', guild()));
       patches();
-      await repository.setRoomCategory('s-1', 'r-general', 'c-talk');
+      await repository.moveRoom('s-1', 'r-general', parentId: 'c-talk', position: 0);
       expect(requests.last.method, 'PATCH');
       expect(sent(), {'parent_id': 'c-talk', 'position': 0});
     });
@@ -822,7 +821,8 @@ void main() {
         ),
       );
       patches();
-      await repository.setRoomCategory('s-1', 'r-general', null);
+      // As Move to… → No category places it: past the last room outside any.
+      await repository.moveRoom('s-1', 'r-general', position: 5);
       expect(sent(), {'parent_id': null, 'position': 5});
     });
 
@@ -830,8 +830,8 @@ void main() {
       await signIn();
       repository.handleEvent(_event('SPACE_CREATE', guild()));
       patches();
-      await repository.moveRoom('s-1', 'r-general', 2);
-      expect(sent(), {'position': 2});
+      await repository.moveRoom('s-1', 'r-general', position: 2);
+      expect(sent(), {'parent_id': null, 'position': 2});
     });
 
     test('moves land where the user meant them, as the API places them', () async {
@@ -902,9 +902,48 @@ void main() {
         ];
       }
 
+      // As the rooms page sends a move one place up or down: before the
+      // room now at the new index among the others there, or past the last.
+      String? parentOf(String id) {
+        final all = repository.adminRooms('s-1');
+        final room = all.singleWhere((r) => r.id == id);
+        final categories = {for (final c in all.where((r) => r.kind == AdminRoomKind.category)) c.id};
+        return room.kind != AdminRoomKind.category && categories.contains(room.parentId) ? room.parentId : null;
+      }
+
+      int end(String id, String? parent) =>
+          repository
+              .adminRooms('s-1')
+              .where((r) => r.id != id && r.parentId == parent)
+              .fold(-1, (p, r) => r.position > p ? r.position : p) +
+          1;
+
       Future<void> move(String id, {required bool up}) {
         final siblings = siblingsOf(id);
-        return repository.moveRoom('s-1', id, movedPosition(siblings, siblings.indexWhere((r) => r.id == id), up: up));
+        final i = siblings.indexWhere((r) => r.id == id);
+        final others = [...siblings]..removeAt(i);
+        final to = up ? i - 1 : i + 1;
+        final parent = parentOf(id);
+        return repository.moveRoom(
+          's-1',
+          id,
+          parentId: parent,
+          position: to < others.length ? others[to].position : end(id, parent),
+        );
+      }
+
+      // As Move to… sends it: first in a category, as the desktop drops one
+      // in; or past the last room outside any.
+      Future<void> moveTo(String id, String? category) {
+        final loose = repository
+            .adminRooms('s-1')
+            .where((r) => r.id != id && r.kind != AdminRoomKind.category && r.parentId == null);
+        return repository.moveRoom(
+          's-1',
+          id,
+          parentId: category,
+          position: category != null ? 0 : loose.fold(-1, (p, r) => r.position > p ? r.position : p) + 1,
+        );
       }
 
       Map<String?, List<String>> shown() => {
@@ -924,13 +963,13 @@ void main() {
       expect(shown()[null], ['c', 'a', 'b']);
       await move('x', up: false);
       expect(shown()['k'], ['y', 'x']);
-      await repository.setRoomCategory('s-1', 'a', 'k');
+      await moveTo('a', 'k');
       expect(shown(), {
         null: ['c', 'b'],
         'k': ['a', 'y', 'x'],
         'l': <String>[],
       });
-      await repository.setRoomCategory('s-1', 'y', null);
+      await moveTo('y', null);
       expect(shown(), {
         null: ['c', 'b', 'y'],
         'k': ['a', 'x'],
@@ -1039,11 +1078,15 @@ void main() {
 
       await refuses('POST', '/api/spaces/s-1/rooms', () => repository.createRoom('s-1', 'crit', AdminRoomKind.text));
       await refuses('PATCH', '/api/spaces/s-1/rooms/r-general', () => repository.renameRoom('s-1', 'r-general', 'x'));
-      await refuses('PATCH', '/api/spaces/s-1/rooms/r-general', () => repository.moveRoom('s-1', 'r-general', 1));
       await refuses(
         'PATCH',
         '/api/spaces/s-1/rooms/r-general',
-        () => repository.setRoomCategory('s-1', 'r-general', null),
+        () => repository.moveRoom('s-1', 'r-general', position: 1),
+      );
+      await refuses(
+        'PATCH',
+        '/api/spaces/s-1/rooms/r-general',
+        () => repository.moveRoom('s-1', 'r-general', parentId: 'r-lounge', position: 0),
         status: 400,
         reason: 'parent_id must be a category of this space',
       );

@@ -2254,28 +2254,49 @@ class DuvetRepository implements ChatRepository {
       );
 
   @override
-  Future<void> moveRoom(String spaceId, String roomId, int position) async {
-    final room = await _explained((api) => api.updateRoom(spaceId, roomId, position: position));
-    // The rooms it moved past follow in ROOM_REORDER.
-    _spaces[spaceId]?.rooms[room.id] = room;
-    _publishSpaces();
-  }
-
-  @override
-  Future<void> setRoomCategory(String spaceId, String roomId, String? categoryId) async {
-    // Out of a category: after the rooms outside any (the categories, which
-    // share their positions, are listed apart).
-    final loose = [
-      for (final r in _spaces[spaceId]?.rooms.values ?? const <duvet.GatewayRoom>[])
-        if (r.parentId == null && r.type != duvet.RoomType.category && r.id != roomId) r.position,
-    ];
-    final position = categoryId != null ? 0 : loose.fold(-1, (a, b) => a > b ? a : b) + 1;
-    final room = await _explained(
-      (api) =>
-          api.updateRoom(spaceId, roomId, parentId: categoryId, clearParent: categoryId == null, position: position),
-    );
-    _spaces[spaceId]?.rooms[room.id] = room;
-    _publishSpaces();
+  Future<void> moveRoom(String spaceId, String roomId, {String? parentId, required int position}) async {
+    final rooms = _spaces[spaceId]?.rooms;
+    // Each room this moved: where it was, and where it went.
+    final shifted = <String, ({int from, String? fromParent, int to, String? toParent})>{};
+    // Moved here as the API moves it, so the list doesn't jump back while
+    // the change is on its way; ROOM_REORDER confirms it.
+    final moved = rooms?[roomId];
+    if (rooms != null && moved != null) {
+      final to = moved.type == duvet.RoomType.category ? null : parentId;
+      var at = position;
+      if (moved.parentId == to && at > moved.position) at--;
+      for (final r in rooms.values.toList()) {
+        if (r.id == roomId) continue;
+        var p = r.position;
+        if (r.parentId == moved.parentId && p > moved.position) p--;
+        if (r.parentId == to && p >= at) p++;
+        if (p != r.position) {
+          rooms[r.id] = _placed(r, parentId: r.parentId, position: p);
+          shifted[r.id] = (from: r.position, fromParent: r.parentId, to: p, toParent: r.parentId);
+        }
+      }
+      rooms[roomId] = _placed(moved, parentId: to, position: at);
+      shifted[roomId] = (from: moved.position, fromParent: moved.parentId, to: at, toParent: to);
+      _publishSpaces();
+    }
+    try {
+      final room = await _explained(
+        (api) => api.updateRoom(spaceId, roomId, parentId: parentId, clearParent: parentId == null, position: position),
+      );
+      _spaces[spaceId]?.rooms[room.id] = room;
+    } catch (_) {
+      // Back where they were: only the rooms this moved, and only where
+      // nothing else has moved them since.
+      for (final MapEntry(key: id, value: m) in shifted.entries) {
+        final r = rooms?[id];
+        if (r != null && r.position == m.to && r.parentId == m.toParent) {
+          rooms![id] = _placed(r, parentId: m.fromParent, position: m.from);
+        }
+      }
+      rethrow;
+    } finally {
+      _publishSpaces();
+    }
   }
 
   @override

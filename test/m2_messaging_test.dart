@@ -213,14 +213,37 @@ void main() {
 
   testWidgets('deleting your own message asks first', (tester) async {
     final repository = await openMaya(tester);
+    // Typing first: the keyboard goes, and stays gone through the delete.
+    await tester.showKeyboard(find.byType(EditableText).last);
+    await tester.pumpAndSettle();
     await longPress(tester, 'Yes, way better than the side panels.');
+    expect(tester.testTextInput.isVisible, isFalse);
     await tapLabel(tester, 'Delete');
+    expect(tester.testTextInput.isVisible, isFalse);
     expect(find.text('Delete this message?'), findsOneWidget);
     expect(find.text('It will be removed for everyone in this conversation. This can’t be undone.'), findsOneWidget);
 
-    await tapLabel(tester, 'Delete for everyone');
+    await tester.tap(find.bySemanticsLabel('Delete for everyone').last);
+    // Asked for at once, before the sheet has gone: leaving now can't lose it.
+    await tester.pump();
     expect(repository.deletes, ['m2']);
-    expect(find.text('Yes, way better than the side panels.'), findsNothing);
+    // Once the sheet has gone, the message goes to dust in its place, hidden,
+    // before the list closes up.
+    await tester.pump(const Duration(milliseconds: 400));
+    final bubble = find.text('Yes, way better than the side panels.');
+    final hidden = find.ancestor(
+      of: bubble,
+      matching: find.byWidgetPredicate((w) => w.runtimeType.toString() == '_Vanish'),
+    );
+    expect((tester.widget(hidden) as dynamic).hidden, isTrue);
+    final dust = find.byWidgetPredicate((w) => w.runtimeType.toString() == '_Dust');
+    expect(dust, findsOneWidget);
+    // Here its pixels are never read: the dust goes anyway, picture and all.
+    await tester.pump(const Duration(seconds: 3));
+    await tester.pumpAndSettle();
+    expect(dust, findsNothing);
+    expect(bubble, findsNothing);
+    expect(tester.testTextInput.isVisible, isFalse);
     semantics.dispose();
   });
 
