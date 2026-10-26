@@ -31,10 +31,19 @@ class MessageDirectory {
   static const empty = MessageDirectory(me: null, nameOf: _noName, emojiOf: _noEmoji);
 }
 
+/// The people [content] mentions, once each and in order: their IDs, with
+/// the names their mentions show.
+Map<String, String> mentionNames(String content, MessageDirectory directory) => {
+  for (final t in tokenize(content))
+    if (t case MentionToken(:final userId)) userId: directory.nameOf(userId) ?? 'someone',
+};
+
 /// A message's text: its markdown, mentions as `@Name` in the accent, custom
 /// emoji as images, and emoji-only messages large. Links open in the browser;
-/// spoilers stay hidden until tapped. Screen readers get the whole text as one
-/// label, with actions for its links and spoilers.
+/// spoilers stay hidden until tapped; a mention, with [onMention], opens that
+/// person. Screen readers get the whole text as one label, with actions for
+/// its links and spoilers; a mention's is the caller's to offer, so a
+/// message can stay one stop (see [mentionNames]).
 class MessageText extends StatefulWidget {
   final String content;
   final MessageDirectory directory;
@@ -46,12 +55,16 @@ class MessageText extends StatefulWidget {
   /// One line, its block markup dropped: a reply's quote.
   final bool singleLine;
 
+  /// A mention tapped: the user it names. Without it, mentions are text.
+  final ValueChanged<String>? onMention;
+
   const MessageText({
     required this.content,
     required this.directory,
     required this.style,
     this.onAccent = false,
     this.singleLine = false,
+    this.onMention,
     super.key,
   });
 
@@ -148,6 +161,10 @@ class _MessageTextState extends State<MessageText> {
           TextToken(:final text) => TextSpan(text: text, style: style),
           MentionToken(:final userId) => TextSpan(
             text: '@${widget.directory.nameOf(userId) ?? 'someone'}',
+            recognizer: switch (widget.onMention) {
+              final onMention? => _tap(() => onMention(userId)),
+              null => null,
+            },
             // Accent as text; on the accent bubble, bold ink-on-accent
             // instead, which keeps its contrast.
             style: (style ?? const TextStyle()).copyWith(

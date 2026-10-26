@@ -45,6 +45,9 @@ class _Bubble extends StatelessWidget {
   /// Their avatar or name was tapped: their profile.
   final VoidCallback onOpenAuthor;
 
+  /// A mention in the text tapped: the user it names.
+  final ValueChanged<String> onOpenMention;
+
   /// A bot's button or select used.
   final Future<void> Function(UiComponent component, List<String>? values) onUseComponent;
   final SelectChoices selectChoices;
@@ -77,6 +80,7 @@ class _Bubble extends StatelessWidget {
     required this.onOpenLink,
     required this.onOpenSpace,
     required this.onOpenAuthor,
+    required this.onOpenMention,
     required this.onUseComponent,
     required this.selectChoices,
     this.onDismiss,
@@ -121,6 +125,7 @@ class _Bubble extends StatelessWidget {
               content: m.content,
               directory: directory,
               style: DuvetType.body.copyWith(color: colors.foreground),
+              onMention: onOpenMention,
             ),
           )
         else
@@ -142,6 +147,7 @@ class _Bubble extends StatelessWidget {
                 directory: directory,
                 onAccent: mine,
                 style: DuvetType.body.copyWith(color: mine ? colors.primaryForeground : colors.foreground),
+                onMention: onOpenMention,
               ),
             ),
           ),
@@ -264,6 +270,10 @@ class _Bubble extends StatelessWidget {
         customSemanticsActions: {
           if (repliable) const CustomSemanticsAction(label: 'Reply'): onReply,
           const CustomSemanticsAction(label: 'Message options'): () => onLongPress(whole),
+          // Its mentions, as a tap on one does: here, so the message stays one
+          // stop.
+          for (final MapEntry(key: id, value: name) in mentionNames(m.content, directory).entries)
+            CustomSemanticsAction(label: 'Open $name’s profile'): () => onOpenMention(id),
         },
         child: AnimatedContainer(
           duration: const Duration(milliseconds: 300),

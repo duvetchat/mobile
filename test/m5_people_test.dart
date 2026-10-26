@@ -3,6 +3,7 @@ import 'package:duvet/data/models.dart';
 import 'package:duvet/main.dart';
 import 'package:duvet/widgets/chrome.dart';
 import 'package:duvet/widgets/rows.dart';
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -61,6 +62,51 @@ void main() {
 
     await tapLabel(tester, 'Mention leo');
     expect(find.text('@leo '), findsOneWidget);
+    semantics.dispose();
+  });
+
+  testWidgets('a mention in a message opens who it names: tapped, or from a screen reader', (tester) async {
+    await pumpApp(
+      tester,
+      setUp: (r) {
+        r.roleTags[_maya] = const [RoleTag('Designer', color: 0xFF2F9E62)];
+        r.history['r-general'] = [
+          FakeRepository.message('mm', author: _leo, name: 'Leo', text: 'ask <@$_maya> about the tab bar'),
+        ];
+      },
+    );
+    await tester.tap(find.descendant(of: find.byType(DuvetTabBar), matching: find.text('Spaces')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Design Guild'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('# general'));
+    await tester.pumpAndSettle();
+
+    await tester.tapOnText(find.textRange.ofSubstring('@Maya'));
+    // The bubble waits to see if it's a double tap (a reply) first.
+    await tester.pump(kDoubleTapTimeout);
+    await tester.pumpAndSettle();
+    expect(find.text('ROLES IN DESIGN GUILD'), findsOneWidget);
+    expect(find.text('Designer'), findsOneWidget);
+    await tester.tapAt(const Offset(195, 40));
+    await tester.pumpAndSettle();
+    expect(find.text('ROLES IN DESIGN GUILD'), findsNothing);
+
+    // What a screen reader offers on the message, one stop with its text,
+    // in place of the tap.
+    final open = CustomSemanticsAction.getIdentifier(const CustomSemanticsAction(label: 'Open Maya’s profile'));
+    var message = tester.getSemantics(find.bySemanticsLabel(RegExp('ask @Maya about the tab bar')).last);
+    while (!(message.getSemanticsData().customSemanticsActionIds?.contains(open) ?? false)) {
+      message = message.parent!;
+    }
+    // The message's own stop: Reply and its options are there too.
+    expect(
+      message.getSemanticsData().customSemanticsActionIds,
+      contains(CustomSemanticsAction.getIdentifier(const CustomSemanticsAction(label: 'Message options'))),
+    );
+    message.owner!.performAction(message.id, SemanticsAction.customAction, open);
+    await tester.pumpAndSettle();
+    expect(find.text('ROLES IN DESIGN GUILD'), findsOneWidget);
     semantics.dispose();
   });
 
