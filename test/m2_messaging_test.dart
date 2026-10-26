@@ -79,6 +79,34 @@ void main() {
       expect(((blocks[4] as MdCodeBlock).language, (blocks[4] as MdCodeBlock).code), ('dart', 'final x = 1;'));
     });
 
+    test('tables, as the desktop reads them: a header, a |---| line and its alignments, rows with a | (#26)', () {
+      final blocks = parseMarkdown('Roles:\n| Name | Role | Since |\n|:--|:-:|--:|\n| **Maya** | mod | 2024\n|Leo|\n\nbye');
+      expect(blocks.map((b) => b.runtimeType), [MdParagraph, MdTable, MdParagraph]);
+      final table = blocks[1] as MdTable;
+      expect(table.header.map(plainInline), ['Name', 'Role', 'Since']);
+      expect(table.aligns, [MdAlign.start, MdAlign.center, MdAlign.end]);
+      expect(table.rows.map((r) => r.map(plainInline).toList()), [
+        ['Maya', 'mod', '2024'],
+        ['Leo'],
+      ]);
+      // A | without the line under it is text.
+      expect(parseMarkdown('a | b\nc').map((b) => b.runtimeType), [MdParagraph]);
+    });
+
+    testWidgets('a table reads a row a line, each cell after its column', (tester) async {
+      final repository = await openMaya(tester);
+      repository.push(
+        'c-maya',
+        MessageCreated(
+          FakeRepository.message('t', author: _maya, name: 'Maya', text: '| Name | Role |\n|---|---|\n| Maya | mod |'),
+        ),
+      );
+      await tester.pumpAndSettle();
+      expect(find.byType(Table), findsOneWidget);
+      expect(find.bySemanticsLabel(RegExp(r'Name: Maya, Role: mod')), findsOneWidget);
+      semantics.dispose();
+    });
+
     testWidgets('renders: links open, spoilers reveal on tap, code is mono', (tester) async {
       final opened = <Uri>[];
       MessageText.openLink = (uri) async {

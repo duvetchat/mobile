@@ -252,10 +252,11 @@ class _MessageTextState extends State<MessageText> {
     ];
 
     final secondary = widget.onAccent ? base.color?.withValues(alpha: 0.78) : colors.mutedForeground;
-    Widget rich(List<MdInline> inlines, TextStyle style, {int? maxLines}) => Text.rich(
+    Widget rich(List<MdInline> inlines, TextStyle style, {int? maxLines, TextAlign? textAlign}) => Text.rich(
       TextSpan(style: style, children: spans(inlines)),
       maxLines: maxLines,
       overflow: maxLines == null ? null : TextOverflow.ellipsis,
+      textAlign: textAlign,
     );
 
     final children = <Widget>[
@@ -291,6 +292,36 @@ class _MessageTextState extends State<MessageText> {
                 ),
             ],
           ),
+          // Its columns as wide as they need, the table scrolled sideways
+          // past the bubble's width.
+          MdTable(:final header, :final aligns, :final rows) => SingleChildScrollView(
+            scrollDirection: Axis.horizontal,
+            child: Table(
+              defaultColumnWidth: const IntrinsicColumnWidth(),
+              border: TableBorder.all(color: colors.border),
+              children: [
+                for (final (r, row) in [header, ...rows].indexed)
+                  TableRow(
+                    decoration: r == 0 ? BoxDecoration(color: codeFill) : null,
+                    children: [
+                      for (var c = 0; c < header.length; c++)
+                        Padding(
+                          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                          child: rich(
+                            c < row.length ? row[c] : const [],
+                            r == 0 ? base.copyWith(fontWeight: FontWeight.w600) : base,
+                            textAlign: switch (c < aligns.length ? aligns[c] : null) {
+                              MdAlign.center => TextAlign.center,
+                              MdAlign.end => TextAlign.end,
+                              MdAlign.start || null => TextAlign.start,
+                            },
+                          ),
+                        ),
+                    ],
+                  ),
+              ],
+            ),
+          ),
           MdCodeBlock(:final code) => Container(
             width: double.infinity,
             padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
@@ -311,6 +342,16 @@ class _MessageTextState extends State<MessageText> {
             MdSubtext(:final inlines) ||
             MdQuote(:final inlines) => plainInline(inlines, revealSpoilers: _revealed),
             MdList(:final items) => items.map((i) => plainInline(i, revealSpoilers: _revealed)).join('\n'),
+            // A row a line, each cell after its column's name.
+            MdTable(:final header, :final rows) => [
+              for (final row in rows)
+                [
+                  for (final (c, cell) in row.indexed)
+                    c < header.length && header[c].isNotEmpty
+                        ? '${plainInline(header[c], revealSpoilers: _revealed)}: ${plainInline(cell, revealSpoilers: _revealed)}'
+                        : plainInline(cell, revealSpoilers: _revealed),
+                ].join(', '),
+            ].join('\n'),
             MdCodeBlock(:final code) => code,
           },
         )
