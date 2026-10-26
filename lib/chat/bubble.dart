@@ -31,7 +31,12 @@ class _Bubble extends StatelessWidget {
   final ValueChanged<String> onJump;
   final void Function(String emoji, String? emojiId) onReact;
   final VoidCallback onMoreReactions;
-  final ValueChanged<BuildContext> onLongPress;
+
+  /// A reaction chip held: who reacted with it.
+  final ValueChanged<Reaction> onOpenReactors;
+
+  /// Held: its options. Null where it has none, as in the pins.
+  final ValueChanged<BuildContext>? onLongPress;
 
   /// How far its files have uploaded, 0 to 1, while sending.
   final double? progress;
@@ -44,6 +49,12 @@ class _Bubble extends StatelessWidget {
 
   /// Their avatar or name was tapped: their profile.
   final VoidCallback onOpenAuthor;
+
+  /// A mention in the text tapped: the user it names.
+  final ValueChanged<String> onOpenMention;
+
+  /// A room mention in the text tapped: the room.
+  final ValueChanged<Room> onOpenRoom;
 
   /// A bot's button or select used.
   final Future<void> Function(UiComponent component, List<String>? values) onUseComponent;
@@ -63,6 +74,7 @@ class _Bubble extends StatelessWidget {
     required this.onJump,
     required this.onReact,
     required this.onMoreReactions,
+    required this.onOpenReactors,
     required this.onLongPress,
     this.lifted = false,
     this.stickerName,
@@ -77,6 +89,8 @@ class _Bubble extends StatelessWidget {
     required this.onOpenLink,
     required this.onOpenSpace,
     required this.onOpenAuthor,
+    required this.onOpenMention,
+    required this.onOpenRoom,
     required this.onUseComponent,
     required this.selectChoices,
     this.onDismiss,
@@ -106,94 +120,113 @@ class _Bubble extends StatelessWidget {
     // alone takes no reply.
     final repliable = entry.delivery == _Delivery.sent && !m.isEphemeral;
     final onDoubleTap = repliable && !lifted ? onReply : null;
-    final parts = <Widget>[
-      if (m.isLoading) _Thinking(name: m.authorName, since: m.createdAt),
-      if (m.stickerUrl != null)
-        GestureDetector(
-          onDoubleTap: onDoubleTap,
-          child: StickerView(url: m.stickerUrl!, name: stickerName),
-        ),
-      if (m.content.isNotEmpty)
-        if (isJumboEmoji(m.content))
+    // The message's own actions for screen readers. A text bubble offers them
+    // with its text's (its mentions, links, spoilers), so all of it is one
+    // stop: two nodes with actions don't merge. They anchor where a long
+    // press does.
+    Map<CustomSemanticsAction, VoidCallback> actionsAt(BuildContext anchor) => {
+      if (repliable) const CustomSemanticsAction(label: 'Reply'): onReply,
+      if (onLongPress case final hold?) const CustomSemanticsAction(label: 'Message options'): () => hold(anchor),
+    };
+
+    Widget bodyAt(BuildContext? anchor) {
+      final parts = <Widget>[
+        if (m.isLoading) _Thinking(name: m.authorName, since: m.createdAt),
+        if (m.stickerUrl != null)
           GestureDetector(
             onDoubleTap: onDoubleTap,
-            child: MessageText(
-              content: m.content,
-              directory: directory,
-              style: DuvetType.body.copyWith(color: colors.foreground),
-            ),
-          )
-        else
-          Pressable(
-            scale: 0.98,
-            onDoubleTap: onDoubleTap,
-            builder: (context, _) => Container(
-              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-              constraints: BoxConstraints(maxWidth: maxWidth),
-              decoration: BoxDecoration(
-                color: mine ? Duvet.accent : colors.card,
-                borderRadius: BorderRadius.circular(DuvetTokens.radiusButton),
-                boxShadow: editing ? null : (lifted ? tokens.shadowFloat : tokens.shadowRest),
-                // Mentioning the user: the accent as an outline, never a fill.
-                border: mentionsMe ? Border.all(color: tokens.accentText, width: 1.5) : null,
-              ),
+            child: StickerView(url: m.stickerUrl!, name: stickerName),
+          ),
+        if (m.content.isNotEmpty)
+          if (isJumboEmoji(m.content))
+            GestureDetector(
+              onDoubleTap: onDoubleTap,
               child: MessageText(
                 content: m.content,
                 directory: directory,
-                onAccent: mine,
-                style: DuvetType.body.copyWith(color: mine ? colors.primaryForeground : colors.foreground),
+                style: DuvetType.body.copyWith(color: colors.foreground),
+              ),
+            )
+          else
+            Pressable(
+              scale: 0.98,
+              onDoubleTap: onDoubleTap,
+              builder: (context, _) => Container(
+                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                constraints: BoxConstraints(maxWidth: maxWidth),
+                decoration: BoxDecoration(
+                  color: mine ? Duvet.accent : colors.card,
+                  borderRadius: BorderRadius.circular(DuvetTokens.radiusButton),
+                  boxShadow: editing ? null : (lifted ? tokens.shadowFloat : tokens.shadowRest),
+                  // Mentioning the user: the accent as an outline, never a fill.
+                  border: mentionsMe ? Border.all(color: tokens.accentText, width: 1.5) : null,
+                ),
+                child: MessageText(
+                  content: m.content,
+                  directory: directory,
+                  onAccent: mine,
+                  style: DuvetType.body.copyWith(color: mine ? colors.primaryForeground : colors.foreground),
+                  onMention: onOpenMention,
+                  onRoom: onOpenRoom,
+                  messageActions: anchor == null ? const {} : actionsAt(anchor),
+                ),
               ),
             ),
+        if (m.isVoice && m.attachments.isNotEmpty)
+          VoiceNotePlayer(attachment: m.attachments.first, mine: mine, authorName: m.authorName)
+        else if (m.attachments.isNotEmpty)
+          MessageAttachments(attachments: m.attachments, uploadProgress: progress, onDoubleTap: onDoubleTap),
+        // Duvet's own links, as cards: a quoted message, an invite.
+        if (!lifted)
+          for (final url in duvetLinksIn(m.content))
+            if (parseMessageLink(url) case final link?)
+              MessageLinkCard(link: link, directory: directory, onOpen: onOpenLink)
+            else if (parseBotInvite(url) case final bot?)
+              BotInviteCard(botId: bot)
+            else if (parseInviteCode(url) case final code?)
+              InviteCard(code: code, onOpenSpace: onOpenSpace),
+        for (final e in m.embeds) EmbedCard(embed: e),
+        if (m.components.isNotEmpty && !lifted)
+          BotComponents(
+            components: m.components,
+            directory: directory,
+            choices: selectChoices,
+            onUse: entry.delivery == _Delivery.sent ? onUseComponent : (_, _) async {},
           ),
-      if (m.isVoice && m.attachments.isNotEmpty)
-        VoiceNotePlayer(attachment: m.attachments.first, mine: mine, authorName: m.authorName)
-      else if (m.attachments.isNotEmpty)
-        MessageAttachments(attachments: m.attachments, uploadProgress: progress, onDoubleTap: onDoubleTap),
-      // Duvet's own links, as cards: a quoted message, an invite.
-      if (!lifted)
-        for (final url in duvetLinksIn(m.content))
-          if (parseMessageLink(url) case final link?)
-            MessageLinkCard(link: link, directory: directory, onOpen: onOpenLink)
-          else if (parseBotInvite(url) case final bot?)
-            BotInviteCard(botId: bot)
-          else if (parseInviteCode(url) case final code?)
-            InviteCard(code: code, onOpenSpace: onOpenSpace),
-      for (final e in m.embeds) EmbedCard(embed: e),
-      if (m.components.isNotEmpty && !lifted)
-        BotComponents(
-          components: m.components,
-          directory: directory,
-          choices: selectChoices,
-          onUse: entry.delivery == _Delivery.sent ? onUseComponent : (_, _) async {},
-        ),
-    ];
+      ];
 
-    Widget content = Column(
-      crossAxisAlignment: mine ? CrossAxisAlignment.end : CrossAxisAlignment.start,
-      mainAxisSize: MainAxisSize.min,
-      children: [
-        for (final (i, part) in parts.indexed)
-          Padding(
-            padding: EdgeInsets.only(top: i == 0 ? 0 : 4),
-            child: part,
-          ),
-      ],
-    );
-    // A mention with no text bubble to outline (a bot's components, a
-    // sticker): the outline goes round the whole message.
-    if (mentionsMe && !textBubble) {
-      content = Container(
-        padding: const EdgeInsets.all(4),
-        decoration: BoxDecoration(
-          border: Border.all(color: tokens.accentText, width: 1.5),
-          borderRadius: BorderRadius.circular(DuvetTokens.radiusButton),
-        ),
-        child: content,
+      Widget content = Column(
+        crossAxisAlignment: mine ? CrossAxisAlignment.end : CrossAxisAlignment.start,
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          for (final (i, part) in parts.indexed)
+            Padding(
+              padding: EdgeInsets.only(top: i == 0 ? 0 : 4),
+              child: part,
+            ),
+        ],
       );
+      // A mention with no text bubble to outline (a bot's components, a
+      // sticker): the outline goes round the whole message.
+      if (mentionsMe && !textBubble) {
+        content = Container(
+          padding: const EdgeInsets.all(4),
+          decoration: BoxDecoration(
+            border: Border.all(color: tokens.accentText, width: 1.5),
+            borderRadius: BorderRadius.circular(DuvetTokens.radiusButton),
+          ),
+          child: content,
+        );
+      }
+      return Opacity(opacity: editing ? 0.55 : (faded ? 0.7 : 1), child: content);
     }
-    final body = Opacity(opacity: editing ? 0.55 : (faded ? 0.7 : 1), child: content);
+
     if (lifted) {
-      return Transform.scale(scale: 1.02, alignment: mine ? Alignment.centerRight : Alignment.centerLeft, child: body);
+      return Transform.scale(
+        scale: 1.02,
+        alignment: mine ? Alignment.centerRight : Alignment.centerLeft,
+        child: bodyAt(null),
+      );
     }
 
     // The time under the run's last bubble; "edited" under the edited one.
@@ -240,15 +273,25 @@ class _Bubble extends StatelessWidget {
           _ReplyRef(reply: reply, directory: directory, onTap: () => onJump(reply.messageId)),
         Builder(
           builder: (anchor) => GestureDetector(
-            onLongPress: () {
-              HapticFeedback.mediumImpact();
-              onLongPress(anchor);
+            onLongPress: switch (onLongPress) {
+              final hold? => () {
+                HapticFeedback.mediumImpact();
+                hold(anchor);
+              },
+              null => null,
             },
-            child: body,
+            child: bodyAt(anchor),
           ),
         ),
         if (m.reactions.isNotEmpty)
-          _Reactions(reactions: m.reactions, me: me, directory: directory, onReact: onReact, onMore: onMoreReactions),
+          _Reactions(
+            reactions: m.reactions,
+            me: me,
+            directory: directory,
+            onReact: onReact,
+            onReactors: onOpenReactors,
+            onMore: onMoreReactions,
+          ),
         if (m.isEphemeral) _EphemeralNote(onDismiss: onDismiss),
         ?status,
       ],
@@ -261,10 +304,8 @@ class _Bubble extends StatelessWidget {
     final highlighted = Builder(
       builder: (whole) => Semantics(
         container: true,
-        customSemanticsActions: {
-          if (repliable) const CustomSemanticsAction(label: 'Reply'): onReply,
-          const CustomSemanticsAction(label: 'Message options'): () => onLongPress(whole),
-        },
+        // A text bubble's text carries them, with its own.
+        customSemanticsActions: textBubble ? null : actionsAt(whole),
         child: AnimatedContainer(
           duration: const Duration(milliseconds: 300),
           curve: DuvetTokens.decelerate,
@@ -398,6 +439,8 @@ class _SwipeToReplyState extends State<_SwipeToReply> with SingleTickerProviderS
     // sent isn't mounted again once it is.
     final enabled = widget.onReply != null;
     return GestureDetector(
+      // All of the row takes the swipe, not only the bubble.
+      behavior: HitTestBehavior.opaque,
       onHorizontalDragUpdate: enabled ? _drag : null,
       onHorizontalDragEnd: enabled ? (_) => _release() : null,
       onHorizontalDragCancel: enabled ? _release : null,
@@ -696,8 +739,8 @@ class _UploadStatus extends StatelessWidget {
   }
 }
 
-/// Above a reply: the message it answers, one line, "**Jon** text…". Tapping
-/// it jumps there.
+/// Above a reply: the message it answers, one line, "**Jon** text…", or
+/// "**@Jon** text…" when the reply mentioned them. Tapping it jumps there.
 class _ReplyRef extends StatelessWidget {
   final MessageReply reply;
   final MessageDirectory directory;
@@ -707,11 +750,38 @@ class _ReplyRef extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final colors = context.theme.colors;
+    if (reply.deleted) {
+      return Semantics(
+        container: true,
+        label: 'Original message was deleted',
+        excludeSemantics: true,
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(4, 0, 4, 4),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(FLucideIcons.cornerUpLeft, size: 14, color: colors.mutedForeground),
+              const SizedBox(width: 6),
+              Flexible(
+                child: Text(
+                  'Original message was deleted',
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: DuvetType.caption.copyWith(color: colors.mutedForeground, fontStyle: FontStyle.italic),
+                ),
+              ),
+            ],
+          ),
+        ),
+      );
+    }
     final text = readableContent(
       reply.content,
       nameOf: directory.nameOf,
       emojiNameOf: (id) => directory.emojiOf(id)?.name,
-    ).replaceAll(RegExp(r'[*_~|`>#]+'), '').replaceAll('\n', ' ').trim();
+      roomNameOf: (id) => directory.roomOf(id)?.name,
+      // A heading's #s go, a room's #name stays.
+    ).replaceAll(RegExp(r'[*_~|`>]+|#+(?!\S)'), '').replaceAll('\n', ' ').trim();
     final shown = text.isEmpty ? 'a message' : text;
     return Semantics(
       container: true,
@@ -735,7 +805,7 @@ class _ReplyRef extends StatelessWidget {
                   TextSpan(
                     children: [
                       TextSpan(
-                        text: reply.authorName,
+                        text: reply.mentionAuthor ? '@${reply.authorName}' : reply.authorName,
                         style: TextStyle(color: colors.foreground, fontWeight: FontWeight.w500),
                       ),
                       TextSpan(text: ' $shown'),
@@ -755,18 +825,20 @@ class _ReplyRef extends StatelessWidget {
 }
 
 /// The reaction chips under a bubble: the emoji and its count; the user's
-/// own in the selected state. A last chip adds one.
+/// own in the selected state; held, who reacted. A last chip adds one.
 class _Reactions extends StatelessWidget {
   final List<Reaction> reactions;
   final String? me;
   final MessageDirectory directory;
   final void Function(String emoji, String? emojiId) onReact;
+  final ValueChanged<Reaction> onReactors;
   final VoidCallback onMore;
   const _Reactions({
     required this.reactions,
     required this.me,
     required this.directory,
     required this.onReact,
+    required this.onReactors,
     required this.onMore,
   });
 
@@ -778,6 +850,7 @@ class _Reactions extends StatelessWidget {
       required String label,
       required Widget child,
       required VoidCallback onTap,
+      VoidCallback? onLongPress,
       bool mine = false,
       bool? toggled,
     }) => Semantics(
@@ -787,8 +860,10 @@ class _Reactions extends StatelessWidget {
       label: label,
       excludeSemantics: true,
       onTap: onTap,
+      customSemanticsActions: {const CustomSemanticsAction(label: 'See who reacted'): ?onLongPress},
       child: Pressable(
         onTap: onTap,
+        onLongPress: onLongPress,
         builder: (context, pressed) => Container(
           height: 28,
           constraints: const BoxConstraints(minWidth: 40),
@@ -821,12 +896,16 @@ class _Reactions extends StatelessWidget {
             () {
               final mine = me != null && r.users.contains(me);
               final custom = r.emojiId == null ? null : directory.emojiOf(r.emojiId!);
-              final name = r.emojiId == null ? r.emoji : ':${custom?.name ?? r.emoji}:';
+              final name = _reactionName(r, directory);
               return chip(
                 label: '$name ${r.count}${mine ? ', you reacted' : ''}',
                 mine: mine,
                 toggled: mine,
                 onTap: () => onReact(r.emoji, r.emojiId),
+                onLongPress: () {
+                  HapticFeedback.mediumImpact();
+                  onReactors(r);
+                },
                 child: Row(
                   mainAxisSize: MainAxisSize.min,
                   children: [
@@ -912,43 +991,91 @@ class _NewMessagesDivider extends StatelessWidget {
   }
 }
 
-class _Notice extends StatelessWidget {
-  final String text;
-  const _Notice({required this.text});
+/// A pin notice, as the desktop's: who pinned "a message", which shows it
+/// ([onJump]; null when the notice names none), and "pinned messages", which
+/// lists them all. Held, its options ([onHold]; null for those who may not
+/// delete it). Screen readers have it as one stop, its links as actions.
+class _Notice extends StatefulWidget {
+  final String who;
+  final String where;
+  final VoidCallback? onJump;
+  final VoidCallback onPins;
+  final ValueChanged<BuildContext>? onHold;
+  const _Notice({required this.who, required this.where, required this.onJump, required this.onPins, this.onHold});
 
   @override
-  Widget build(BuildContext context) => Padding(
-    padding: const EdgeInsets.only(top: 12),
-    child: Center(
-      child: Text(text, style: DuvetType.caption.copyWith(color: context.theme.colors.mutedForeground)),
-    ),
-  );
+  State<_Notice> createState() => _NoticeState();
+}
+
+class _NoticeState extends State<_Notice> {
+  late final _jump = TapGestureRecognizer()..onTap = () => widget.onJump?.call();
+  late final _pins = TapGestureRecognizer()..onTap = () => widget.onPins();
+
+  @override
+  void dispose() {
+    _jump.dispose();
+    _pins.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = context.theme.colors;
+    final link = TextStyle(color: colors.foreground, fontWeight: FontWeight.w500);
+    return Builder(
+      builder: (anchor) => Semantics(
+        container: true,
+        label: '${widget.who} pinned a message to this ${widget.where}',
+        excludeSemantics: true,
+        customSemanticsActions: {
+          const CustomSemanticsAction(label: 'Show the message'): ?widget.onJump,
+          const CustomSemanticsAction(label: 'See all pinned messages'): widget.onPins,
+          if (widget.onHold case final onHold?) const CustomSemanticsAction(label: 'Options'): () => onHold(anchor),
+        },
+        child: GestureDetector(
+          onLongPress: widget.onHold == null ? null : () => widget.onHold!(anchor),
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(16, 12, 16, 0),
+            child: Row(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                Icon(FLucideIcons.pin, size: 14, color: colors.mutedForeground),
+                const SizedBox(width: 6),
+                Flexible(
+                  child: Text.rich(
+                    TextSpan(
+                      children: [
+                        TextSpan(text: widget.who, style: link),
+                        const TextSpan(text: ' pinned '),
+                        TextSpan(text: 'a message', style: link, recognizer: widget.onJump == null ? null : _jump),
+                        TextSpan(text: ' to this ${widget.where}. See all '),
+                        TextSpan(text: 'pinned messages', style: link, recognizer: _pins),
+                        const TextSpan(text: '.'),
+                      ],
+                    ),
+                    textAlign: TextAlign.center,
+                    style: DuvetType.caption.copyWith(color: colors.mutedForeground),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
 }
 
 /// Above the composer: who's typing, and who's recording a voice message,
 /// as the desktop's typing indicator says it.
 class _TypingLine extends StatelessWidget {
-  final List<String> typing;
-  final List<String> recording;
-  const _TypingLine({required this.typing, required this.recording});
+  final List<TypingUser> users;
+  const _TypingLine({required this.users});
 
   @override
   Widget build(BuildContext context) {
-    if (typing.isEmpty && recording.isEmpty) return const SizedBox.shrink();
-    final who = [
-      if (typing.isNotEmpty)
-        switch (typing) {
-          [final one] => '$one is typing…',
-          [final a, final b] => '$a and $b are typing…',
-          _ => 'Several people are typing…',
-        },
-      if (recording.isNotEmpty)
-        switch (recording) {
-          [final one] => '$one is recording a voice message',
-          [final a, final b] => '$a and $b are recording voice messages',
-          _ => 'Several people are recording voice messages',
-        },
-    ].join(' · ');
+    final who = typingSentence(users);
+    if (who == null) return const SizedBox.shrink();
     return Align(
       alignment: Alignment.centerLeft,
       child: Padding(

@@ -73,6 +73,17 @@ final class MdList extends MdBlock {
   const MdList({required this.ordered, required this.items});
 }
 
+enum MdAlign { start, center, end }
+
+/// A `| a | b |` table: its header, then its rows, each cell aligned as the
+/// `|:--|:-:|--:|` line under the header says (null: as the text goes).
+final class MdTable extends MdBlock {
+  final List<List<MdInline>> header;
+  final List<MdAlign?> aligns;
+  final List<List<List<MdInline>>> rows;
+  const MdTable({required this.header, required this.aligns, required this.rows});
+}
+
 final class MdCodeBlock extends MdBlock {
   final String? language;
   final String code;
@@ -82,6 +93,12 @@ final class MdCodeBlock extends MdBlock {
 final _fence = RegExp(r'```([\w+#-]*)\n?([\s\S]*?)```');
 final _ul = RegExp(r'^\s*[-*]\s+(.*)$');
 final _ol = RegExp(r'^\s*\d+[.)]\s+(.*)$');
+final _tableRule = RegExp(r'^(?=.*\|)(?=.*-)[\s|:-]+$');
+
+/// A table line's cells, its outer `|`s dropped.
+List<String> _cells(String line) => [
+  for (final c in line.trim().replaceFirst(RegExp(r'^\|'), '').replaceFirst(RegExp(r'\|$'), '').split('|')) c.trim(),
+];
 
 /// The blocks of a message.
 List<MdBlock> parseMarkdown(String input) {
@@ -118,6 +135,27 @@ void _parseLines(String text, List<MdBlock> blocks) {
   var i = 0;
   while (i < lines.length) {
     final line = lines[i];
+    // A table, as the desktop reads one: a line with a `|`, then one of only
+    // `|`, `:`, `-` and spaces; its rows are the lines with a `|` after.
+    if (line.contains('|') && i + 1 < lines.length && _tableRule.hasMatch(lines[i + 1])) {
+      flush();
+      final aligns = [
+        for (final c in _cells(lines[i + 1]))
+          switch ((c.startsWith(':'), c.endsWith(':'))) {
+            (true, true) => MdAlign.center,
+            (false, true) => MdAlign.end,
+            (true, false) => MdAlign.start,
+            (false, false) => null,
+          },
+      ];
+      final header = [for (final c in _cells(line)) parseInline(c)];
+      final rows = <List<List<MdInline>>>[];
+      for (i += 2; i < lines.length && lines[i].contains('|'); i++) {
+        rows.add([for (final c in _cells(lines[i])) parseInline(c)]);
+      }
+      blocks.add(MdTable(header: header, aligns: aligns, rows: rows));
+      continue;
+    }
     final list = _ul.hasMatch(line) ? _ul : (_ol.hasMatch(line) ? _ol : null);
     if (list != null) {
       flush();

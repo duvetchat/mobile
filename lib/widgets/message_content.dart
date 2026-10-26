@@ -14,6 +14,7 @@ import '../data/markdown.dart';
 import '../data/message_tokens.dart';
 import '../data/models.dart';
 import '../theme.dart';
+import 'code_highlight.dart';
 import 'depth.dart';
 import 'glass.dart';
 import 'media.dart';
@@ -24,17 +25,22 @@ class MessageDirectory {
   final String? me;
   final String? Function(String userId) nameOf;
   final CustomEmoji? Function(String emojiId) emojiOf;
-  const MessageDirectory({required this.me, required this.nameOf, required this.emojiOf});
+
+  /// A room the user may see; null for one hidden or gone.
+  final Room? Function(String roomId) roomOf;
+  const MessageDirectory({required this.me, required this.nameOf, required this.emojiOf, this.roomOf = _noRoom});
 
   static String? _noName(String _) => null;
   static CustomEmoji? _noEmoji(String _) => null;
+  static Room? _noRoom(String _) => null;
   static const empty = MessageDirectory(me: null, nameOf: _noName, emojiOf: _noEmoji);
 }
 
 /// A message's text: its markdown, mentions as `@Name` in the accent, custom
 /// emoji as images, and emoji-only messages large. Links open in the browser;
-/// spoilers stay hidden until tapped. Screen readers get the whole text as one
-/// label, with actions for its links and spoilers.
+/// spoilers stay hidden until tapped; a mention, with [onMention], opens that
+/// person, and a room's, with [onRoom], that room. Screen readers get the whole text as one label, with actions for
+/// its links, its spoilers, the mentions it shows, and [messageActions].
 class MessageText extends StatefulWidget {
   final String content;
   final MessageDirectory directory;
@@ -46,12 +52,25 @@ class MessageText extends StatefulWidget {
   /// One line, its block markup dropped: a reply's quote.
   final bool singleLine;
 
+  /// A mention tapped: the user it names. Without it, mentions are text.
+  final ValueChanged<String>? onMention;
+
+  /// A room mention tapped: the room, when the user may see it.
+  final ValueChanged<Room>? onRoom;
+
+  /// The message's own actions (Reply, its options), offered with the
+  /// text's: a screen reader's stop has one set, and two don't merge.
+  final Map<CustomSemanticsAction, VoidCallback> messageActions;
+
   const MessageText({
     required this.content,
     required this.directory,
     required this.style,
     this.onAccent = false,
     this.singleLine = false,
+    this.onMention,
+    this.onRoom,
+    this.messageActions = const {},
     super.key,
   });
 
@@ -71,6 +90,9 @@ class _MessageTextState extends State<MessageText> {
   bool _revealed = false;
   late List<MdBlock> _blocks = _parse();
 
+  // Its code blocks' colors, worked out once a block and a theme, not each build.
+  final _colored = <(String, String, bool), TextSpan?>{};
+
   List<MdBlock> _parse() {
     if (!widget.singleLine) return parseMarkdown(widget.content);
     // Code blocks as inline code; headings, quotes and lists as plain text.
@@ -88,7 +110,10 @@ class _MessageTextState extends State<MessageText> {
   @override
   void didUpdateWidget(MessageText old) {
     super.didUpdateWidget(old);
-    if (old.content != widget.content || old.singleLine != widget.singleLine) _blocks = _parse();
+    if (old.content != widget.content || old.singleLine != widget.singleLine) {
+      _blocks = _parse();
+      _colored.clear();
+    }
   }
 
   @override
@@ -139,6 +164,11 @@ class _MessageTextState extends State<MessageText> {
         ? const Color(0x14FFFFFF)
         : const Color(0x0F141416);
     final links = <String>[];
+    // The people mentioned where a mention shows (not in code, a link's text
+    // or a hidden spoiler), in order, each once: their IDs and names.
+    final mentions = <String, String>{};
+    // The rooms mentioned where they show, each once.
+    final rooms = <String, Room>{};
     var spoilers = false;
 
     // Mentions and custom emoji within a text leaf.
@@ -147,7 +177,11 @@ class _MessageTextState extends State<MessageText> {
         switch (token) {
           TextToken(:final text) => TextSpan(text: text, style: style),
           MentionToken(:final userId) => TextSpan(
-            text: '@${widget.directory.nameOf(userId) ?? 'someone'}',
+            text: '@${mentions[userId] = widget.directory.nameOf(userId) ?? 'someone'}',
+            recognizer: switch (widget.onMention) {
+              final onMention? => _tap(() => onMention(userId)),
+              null => null,
+            },
             // Accent as text; on the accent bubble, bold ink-on-accent
             // instead, which keeps its contrast.
             style: (style ?? const TextStyle()).copyWith(
@@ -155,6 +189,21 @@ class _MessageTextState extends State<MessageText> {
               fontWeight: FontWeight.w700,
             ),
           ),
+          RoomToken(:final roomId) => switch (widget.directory.roomOf(roomId)) {
+            // Hidden or gone: no name, nothing to open.
+            null => TextSpan(text: '#unknown', style: style),
+            final room => TextSpan(
+              text: '#${(rooms[roomId] = room).name}',
+              recognizer: switch (widget.onRoom) {
+                final onRoom? => _tap(() => onRoom(room)),
+                null => null,
+              },
+              style: (style ?? const TextStyle()).copyWith(
+                color: widget.onAccent ? null : tokens.accentText,
+                fontWeight: FontWeight.w700,
+              ),
+            ),
+          },
           EmojiToken(:final emojiId) => switch (widget.directory.emojiOf(emojiId)) {
             null => TextSpan(text: ':emoji:', style: style),
             final emoji => WidgetSpan(
@@ -235,10 +284,11 @@ class _MessageTextState extends State<MessageText> {
     ];
 
     final secondary = widget.onAccent ? base.color?.withValues(alpha: 0.78) : colors.mutedForeground;
-    Widget rich(List<MdInline> inlines, TextStyle style, {int? maxLines}) => Text.rich(
+    Widget rich(List<MdInline> inlines, TextStyle style, {int? maxLines, TextAlign? textAlign}) => Text.rich(
       TextSpan(style: style, children: spans(inlines)),
       maxLines: maxLines,
       overflow: maxLines == null ? null : TextOverflow.ellipsis,
+      textAlign: textAlign,
     );
 
     final children = <Widget>[
@@ -274,13 +324,55 @@ class _MessageTextState extends State<MessageText> {
                 ),
             ],
           ),
-          MdCodeBlock(:final code) => Container(
+          // Its columns as wide as they need, the table scrolled sideways
+          // past the bubble's width.
+          MdTable(:final header, :final aligns, :final rows) => SingleChildScrollView(
+            scrollDirection: Axis.horizontal,
+            child: Table(
+              defaultColumnWidth: const IntrinsicColumnWidth(),
+              border: TableBorder.all(color: colors.border),
+              children: [
+                for (final (r, row) in [header, ...rows].indexed)
+                  TableRow(
+                    decoration: r == 0 ? BoxDecoration(color: codeFill) : null,
+                    children: [
+                      for (var c = 0; c < header.length; c++)
+                        Padding(
+                          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                          child: rich(
+                            c < row.length ? row[c] : const [],
+                            r == 0 ? base.copyWith(fontWeight: FontWeight.w600) : base,
+                            textAlign: switch (c < aligns.length ? aligns[c] : null) {
+                              MdAlign.center => TextAlign.center,
+                              MdAlign.end => TextAlign.end,
+                              MdAlign.start || null => TextAlign.start,
+                            },
+                          ),
+                        ),
+                    ],
+                  ),
+              ],
+            ),
+          ),
+          MdCodeBlock(:final code, :final language) => Container(
             width: double.infinity,
             padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
             decoration: BoxDecoration(color: codeFill, borderRadius: BorderRadius.circular(DuvetTokens.radiusField)),
             child: SingleChildScrollView(
               scrollDirection: Axis.horizontal,
-              child: Text(code, style: DuvetType.code.copyWith(fontSize: 13, height: 1.5, color: base.color)),
+              child: () {
+                final style = DuvetType.code.copyWith(fontSize: 13, height: 1.5, color: base.color);
+                // Its language's colors, as the desktop's; on the accent, the dark ones.
+                final onDark = dark || widget.onAccent;
+                final colored = language == null
+                    ? null
+                    : _colored.putIfAbsent((
+                        code,
+                        language,
+                        onDark,
+                      ), () => highlightCode(code, language, base: style, dark: onDark));
+                return colored == null ? Text(code, style: style) : Text.rich(colored);
+              }(),
             ),
           ),
         },
@@ -294,6 +386,16 @@ class _MessageTextState extends State<MessageText> {
             MdSubtext(:final inlines) ||
             MdQuote(:final inlines) => plainInline(inlines, revealSpoilers: _revealed),
             MdList(:final items) => items.map((i) => plainInline(i, revealSpoilers: _revealed)).join('\n'),
+            // A row a line, each cell after its column's name.
+            MdTable(:final header, :final rows) => [
+              for (final row in rows)
+                [
+                  for (final (c, cell) in row.indexed)
+                    c < header.length && header[c].isNotEmpty
+                        ? '${plainInline(header[c], revealSpoilers: _revealed)}: ${plainInline(cell, revealSpoilers: _revealed)}'
+                        : plainInline(cell, revealSpoilers: _revealed),
+                ].join(', '),
+            ].join('\n'),
             MdCodeBlock(:final code) => code,
           },
         )
@@ -302,18 +404,37 @@ class _MessageTextState extends State<MessageText> {
       spoken,
       nameOf: widget.directory.nameOf,
       emojiNameOf: (id) => widget.directory.emojiOf(id)?.name,
+      roomNameOf: (id) => widget.directory.roomOf(id)?.name,
     );
+
+    // Two people shown by the same name get an action each, told apart.
+    final named = <String, int>{};
+    for (final name in mentions.values) {
+      named[name] = (named[name] ?? 0) + 1;
+    }
+    // Counted by name: the second Sam is Sam's mention 2.
+    final seen = <String, int>{};
+    final actions = {
+      ...widget.messageActions,
+      if (spoilers && !_revealed) const CustomSemanticsAction(label: 'Reveal spoiler'): _reveal,
+      for (final url in links) CustomSemanticsAction(label: 'Open $url'): () => _open(url),
+      if (widget.onMention case final onMention?)
+        for (final MapEntry(key: id, value: name) in mentions.entries)
+          CustomSemanticsAction(
+            label: named[name]! > 1
+                ? 'Open $name’s profile, mention ${seen[name] = (seen[name] ?? 0) + 1}'
+                : 'Open $name’s profile',
+          ): () =>
+              onMention(id),
+      if (widget.onRoom case final onRoom?)
+        for (final room in rooms.values) CustomSemanticsAction(label: 'Open #${room.name}'): () => onRoom(room),
+    };
 
     return Semantics(
       label: label,
       excludeSemantics: true,
       // None at all for plain text, so it reads as part of its message.
-      customSemanticsActions: spoilers && !_revealed || links.isNotEmpty
-          ? {
-              if (spoilers && !_revealed) const CustomSemanticsAction(label: 'Reveal spoiler'): _reveal,
-              for (final url in links) CustomSemanticsAction(label: 'Open $url'): () => _open(url),
-            }
-          : null,
+      customSemanticsActions: actions.isEmpty ? null : actions,
       child: children.length == 1
           ? children.single
           : Column(

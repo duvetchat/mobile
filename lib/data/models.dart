@@ -257,6 +257,46 @@ class ChatMessage {
     isComponentsV2: update.isComponentsV2,
   );
 
+  /// This message once [change] took place: the name and avatar of its
+  /// author, if they're the one who changed (a webhook's message keeps the
+  /// name and avatar it was sent with), and the name on its reply's quote,
+  /// if it quotes them. Itself when that leaves it as it was.
+  ChatMessage changedBy(AuthorChanged change) {
+    final wrote =
+        authorId == change.userId && !fromWebhook && (authorName != change.name || authorAvatarUrl != change.avatarUrl);
+    final quote = switch (reply) {
+      final r? when r.authorId == change.userId && r.authorName != change.name => r.withAuthorName(change.name),
+      _ => null,
+    };
+    if (!wrote && quote == null) return this;
+    return ChatMessage(
+      id: id,
+      authorId: authorId,
+      authorName: wrote ? change.name : authorName,
+      authorAvatarUrl: wrote ? change.avatarUrl : authorAvatarUrl,
+      content: content,
+      createdAt: createdAt,
+      edited: edited,
+      nonce: nonce,
+      isNotice: isNotice,
+      attachments: attachments,
+      stickerUrl: stickerUrl,
+      embeds: embeds,
+      reply: quote ?? reply,
+      reactions: reactions,
+      isVoice: isVoice,
+      pinned: pinned,
+      components: components,
+      rawComponents: rawComponents,
+      fromBot: fromBot,
+      fromWebhook: fromWebhook,
+      webhookId: webhookId,
+      isEphemeral: isEphemeral,
+      isLoading: isLoading,
+      isComponentsV2: isComponentsV2,
+    );
+  }
+
   /// With [userId]'s reaction [emoji] added or taken away.
   ChatMessage reacted(String emoji, String userId, {required bool add, String? emojiId}) {
     final list = [...reactions];
@@ -289,12 +329,17 @@ class MessageReply {
   /// The reply mentions the author of the message it answers (the API's
   /// `mention_author`): it's highlighted for them.
   final bool mentionAuthor;
+
+  /// The message it answers was deleted while shown: nothing to quote or
+  /// jump to.
+  final bool deleted;
   const MessageReply({
     required this.messageId,
     required this.authorName,
     required this.content,
     this.authorId,
     this.mentionAuthor = false,
+    this.deleted = false,
   });
 
   /// The same quote, of the message as edited to [content].
@@ -304,6 +349,27 @@ class MessageReply {
     authorName: authorName,
     content: content,
     mentionAuthor: mentionAuthor,
+    deleted: deleted,
+  );
+
+  /// The same quote, of a message since deleted.
+  MessageReply get asDeleted => MessageReply(
+    messageId: messageId,
+    authorId: authorId,
+    authorName: authorName,
+    content: '',
+    mentionAuthor: mentionAuthor,
+    deleted: true,
+  );
+
+  /// The same quote, its author named [authorName].
+  MessageReply withAuthorName(String authorName) => MessageReply(
+    messageId: messageId,
+    authorId: authorId,
+    authorName: authorName,
+    content: content,
+    mentionAuthor: mentionAuthor,
+    deleted: deleted,
   );
 }
 
@@ -406,6 +472,21 @@ class Member {
 
 enum Presence { online, doNotDisturb, offline }
 
+/// The key [ChatRepository.presence] keeps a bot's presence in the Space
+/// [spaceId] under, as the desktop keys it: `userId:spaceId`.
+String spacePresenceKey(String userId, String spaceId) => '$userId:$spaceId';
+
+/// [userId]'s presence in [presence] (as [ChatRepository.presence] keeps it),
+/// in the Space [spaceId] when given: a bot's there, kept under
+/// [spacePresenceKey], comes first, as the desktop reads it, then theirs
+/// everywhere.
+Presence? presenceIn(Map<String, Presence> presence, String userId, {String? spaceId}) =>
+    (spaceId == null ? null : presence[spacePresenceKey(userId, spaceId)]) ?? presence[userId];
+
+/// Whether [presence] shows someone offline, as a member list fades them:
+/// offline, or not reported.
+bool isOffline(Presence? presence) => (presence ?? Presence.offline) == Presence.offline;
+
 /// A space's own emoji, written `<:id:>` in a message.
 class CustomEmoji {
   final String id;
@@ -470,7 +551,14 @@ class RoleTag {
 
   /// Its color, if it has one (ARGB).
   final int? color;
-  const RoleTag(this.name, {this.color});
+  final String id;
+
+  /// Its rank: higher is above.
+  final int position;
+
+  /// Its members show apart in the member list, under its name.
+  final bool hoisted;
+  const RoleTag(this.name, {this.color, this.id = '', this.position = 0, this.hoisted = false});
 }
 
 /// One of the user's uploaded files.
@@ -609,6 +697,17 @@ final class MessagePinned extends MessageEvent {
   const MessagePinned(this.messageId, {required this.pinned});
 }
 
+/// Someone changed their name or avatar: the messages they wrote show the new
+/// ones, and so do the replies' quotes of theirs (see
+/// [ChatMessage.changedBy]). [name] is the one the chat shows them by: in a
+/// Space's room, their nickname there, if they have one.
+final class AuthorChanged extends MessageEvent {
+  final String userId;
+  final String name;
+  final String? avatarUrl;
+  const AuthorChanged(this.userId, {required this.name, this.avatarUrl});
+}
+
 /// Someone reacted to a message, or took a reaction back. The gateway doesn't
 /// say in which chat: a chat applies it if it has the message.
 final class ReactionChanged extends MessageEvent {
@@ -633,6 +732,34 @@ class TypingUser {
   final String name;
   final bool recording;
   const TypingUser({required this.userId, required this.name, this.recording = false});
+}
+
+/// Who's typing, and who's recording a voice message, as the desktop's
+/// typing indicator says it; null when no one is.
+String? typingSentence(Iterable<TypingUser> users) {
+  final typing = [
+    for (final u in users)
+      if (!u.recording) u.name,
+  ];
+  final recording = [
+    for (final u in users)
+      if (u.recording) u.name,
+  ];
+  if (typing.isEmpty && recording.isEmpty) return null;
+  return [
+    if (typing.isNotEmpty)
+      switch (typing) {
+        [final one] => '$one is typing…',
+        [final a, final b] => '$a and $b are typing…',
+        _ => 'Several people are typing…',
+      },
+    if (recording.isNotEmpty)
+      switch (recording) {
+        [final one] => '$one is recording a voice message',
+        [final a, final b] => '$a and $b are recording voice messages',
+        _ => 'Several people are recording voice messages',
+      },
+  ].join(' · ');
 }
 
 /// A row of the Chats tab.
@@ -681,16 +808,30 @@ class Room {
   final RoomKind kind;
   final int position;
 
-  const Room({required this.id, required this.spaceId, required this.name, required this.kind, required this.position});
+  /// What the room is for, as its managers wrote it, or null.
+  final String? description;
+
+  const Room({
+    required this.id,
+    required this.spaceId,
+    required this.name,
+    required this.kind,
+    required this.position,
+    this.description,
+  });
 
   RoomTarget get target => RoomTarget(spaceId: spaceId, roomId: id);
 }
 
 /// A category's rooms, or the rooms outside any category (a null [name]).
+/// A category shows when it has no rooms too.
 class RoomSection {
+  /// The category's ID, to collapse it by; null outside any category, or
+  /// from a cache that predates it.
+  final String? id;
   final String? name;
   final List<Room> rooms;
-  const RoomSection({required this.name, required this.rooms});
+  const RoomSection({this.id, required this.name, required this.rooms});
 }
 
 class Space {
@@ -702,7 +843,17 @@ class Space {
   /// Members online or busy, or null while unknown.
   final int? onlineCount;
 
-  const Space({required this.id, required this.name, this.iconUrl, this.sections = const [], this.onlineCount});
+  /// Its banner, or null: atop its directory, as the desktop's sidebar has it.
+  final String? bannerUrl;
+
+  const Space({
+    required this.id,
+    required this.name,
+    this.iconUrl,
+    this.sections = const [],
+    this.onlineCount,
+    this.bannerUrl,
+  });
 
   Iterable<Room> get rooms => sections.expand((s) => s.rooms);
 }
@@ -716,12 +867,14 @@ class ChatDraft {
   final String text;
   final Map<String, String> mentions;
   final Map<String, String> emojis;
+  final Map<String, String> rooms;
   final List<OutgoingFile> files;
   final MessageReply? replyTo;
   const ChatDraft({
     this.text = '',
     this.mentions = const {},
     this.emojis = const {},
+    this.rooms = const {},
     this.files = const [],
     this.replyTo,
   });

@@ -102,6 +102,11 @@ class SpaceProfile {
 
   /// The user's permissions in the Space (every bit for its owner).
   final int perms;
+
+  /// May manage some room the user sees: ManageChannels there, which the API
+  /// checks room by room, overwrites included. Making a room takes it in the
+  /// Space ([can]).
+  final bool managesRooms;
   const SpaceProfile({
     required this.id,
     required this.name,
@@ -111,12 +116,13 @@ class SpaceProfile {
     this.memberCount = 0,
     this.owner = false,
     this.perms = 0,
+    this.managesRooms = false,
   });
 
   bool can(int bit) => owner || Perm.has(perms, bit);
 
   /// May change anything in Space settings.
-  bool get helpsRun => owner || perms & Perm.anyAdmin != 0;
+  bool get helpsRun => owner || perms & Perm.anyAdmin != 0 || managesRooms;
 
   /// What the header says about the user.
   String get standing => owner
@@ -139,6 +145,9 @@ class SpaceRole {
 
   /// The role everyone has: it shares the Space's ID.
   final bool everyone;
+
+  /// Its members show apart in the member list, under its name.
+  final bool hoisted;
   const SpaceRole({
     required this.id,
     required this.name,
@@ -147,6 +156,7 @@ class SpaceRole {
     this.position = 0,
     this.memberCount = 0,
     this.everyone = false,
+    this.hoisted = false,
   });
 }
 
@@ -159,7 +169,17 @@ class AdminRoom {
   final AdminRoomKind kind;
   final String? parentId;
   final int position;
-  const AdminRoom({required this.id, required this.name, required this.kind, this.parentId, this.position = 0});
+
+  /// What the room is for, or null; a category has none.
+  final String? description;
+  const AdminRoom({
+    required this.id,
+    required this.name,
+    required this.kind,
+    this.parentId,
+    this.position = 0,
+    this.description,
+  });
 }
 
 /// A role's or member's allows and denies in one room.

@@ -77,6 +77,8 @@ class _DeepLinkHandlerState extends State<DeepLinkHandler> {
         );
       case OpenInvite(:final code):
         showJoinSheet(context, code: code);
+      case OpenMessage(:final link) when linksHiddenRoom(context.repository, link):
+        showFToast(context: context, title: const Text(roomUnavailable), duration: const Duration(seconds: 3));
       case OpenMessage(:final link):
         final repository = context.repository;
         final target = targetOf(link);

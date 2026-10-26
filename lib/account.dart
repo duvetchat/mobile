@@ -645,17 +645,27 @@ class EditProfilePage extends StatefulWidget {
   State<EditProfilePage> createState() => _EditProfilePageState();
 }
 
+/// The longest display name the API takes, in characters.
+const maxDisplayNameLength = 32;
+
 class _EditProfilePageState extends State<EditProfilePage> {
   late final TextEditingController _alias;
   late final TextEditingController _bio;
   bool _fieldsMade = false;
   bool _saving = false;
-  String? _avatar;
-  String? _banner;
+
+  // The pictures picked and cropped: they go up on Save, and Cancel drops
+  // them.
+  ({String path, CropRect crop})? _avatar;
+  ({String path, CropRect crop})? _banner;
 
   /// The bio's length as the API counts it: code points, so an emoji is one.
   int get _bioLength => _bio.text.trim().runes.length;
   bool get _bioTooLong => _bioLength > maxBioLength;
+
+  /// The display name's, counted the same way.
+  int get _aliasLength => _alias.text.trim().runes.length;
+  bool get _aliasTooLong => _aliasLength > maxDisplayNameLength;
 
   @override
   void didChangeDependencies() {
@@ -665,7 +675,7 @@ class _EditProfilePageState extends State<EditProfilePage> {
     if (_fieldsMade) return;
     _fieldsMade = true;
     final profile = context.repository.profile.value;
-    _alias = TextEditingController(text: profile?.alias ?? '');
+    _alias = TextEditingController(text: profile?.alias ?? '')..addListener(() => setState(() {}));
     _bio = TextEditingController(text: profile?.bio ?? '')..addListener(() => setState(() {}));
   }
 
@@ -686,14 +696,8 @@ class _EditProfilePageState extends State<EditProfilePage> {
       ),
     );
     if (crop == null || !mounted) return;
-    try {
-      await context.repository.uploadProfileImage(kind, path, crop);
-      if (mounted) setState(() => kind == ProfileImage.avatar ? _avatar = path : _banner = path);
-    } catch (_) {
-      if (mounted) {
-        _toast(context, kind == ProfileImage.avatar ? 'Couldn’t change the photo' : 'Couldn’t change the banner');
-      }
-    }
+    final picture = (path: path, crop: crop);
+    setState(() => kind == ProfileImage.avatar ? _avatar = picture : _banner = picture);
   }
 
   Future<void> _save() async {
@@ -703,12 +707,26 @@ class _EditProfilePageState extends State<EditProfilePage> {
     final bio = _bio.text.trim();
     final changed = bio != (repository.profile.value?.bio ?? '').trim();
     setState(() => _saving = true);
+    var failure = 'Couldn’t save your profile';
     try {
+      // The pictures first. Each one up is done with, should what follows
+      // fail and Save be pressed again.
+      if (_avatar case final picture?) {
+        failure = 'Couldn’t change the photo';
+        await repository.uploadProfileImage(ProfileImage.avatar, picture.path, picture.crop);
+        _avatar = null;
+      }
+      if (_banner case final picture?) {
+        failure = 'Couldn’t change the banner';
+        await repository.uploadProfileImage(ProfileImage.banner, picture.path, picture.crop);
+        _banner = null;
+      }
+      failure = 'Couldn’t save your profile';
       await repository.updateProfile(alias: _alias.text, bio: changed ? bio : null);
       // Cancelled meanwhile: the page is gone, and the route under it stays.
       if (mounted) navigator.pop();
     } catch (e) {
-      if (mounted) _toast(context, e is ActionFailed ? e.message : 'Couldn’t save your profile');
+      if (mounted) _toast(context, e is ActionFailed ? e.message : failure);
     } finally {
       if (mounted) setState(() => _saving = false);
     }
@@ -739,7 +757,7 @@ class _EditProfilePageState extends State<EditProfilePage> {
                         decoration: BoxDecoration(
                           color: colors.secondary,
                           borderRadius: BorderRadius.circular(DuvetTokens.radiusCard),
-                          image: switch (_banner ?? profile.bannerUrl) {
+                          image: switch (_banner?.path ?? profile.bannerUrl) {
                             final b? => DecorationImage(
                               image: b.startsWith('http') ? NetworkImage(b) : FileImage(File(b)) as ImageProvider,
                               fit: BoxFit.cover,
@@ -798,7 +816,12 @@ class _EditProfilePageState extends State<EditProfilePage> {
                                   ),
                                   child: _avatar != null
                                       ? ClipOval(
-                                          child: Image.file(File(_avatar!), width: 88, height: 88, fit: BoxFit.cover),
+                                          child: Image.file(
+                                            File(_avatar!.path),
+                                            width: 88,
+                                            height: 88,
+                                            fit: BoxFit.cover,
+                                          ),
                                         )
                                       : UserAvatar(name: profile.displayName, url: profile.avatarUrl, size: 88),
                                 ),
@@ -825,7 +848,13 @@ class _EditProfilePageState extends State<EditProfilePage> {
                   ),
                 ),
                 const SizedBox(height: 8),
-                DuvetTextField(label: 'Display name', controller: _alias, hint: profile.username),
+                // At most 32 characters, as the API takes; empty, the username shows.
+                DuvetTextField(
+                  label: 'Display name',
+                  controller: _alias,
+                  hint: profile.username,
+                  error: _aliasTooLong ? 'Too long: $_aliasLength of $maxDisplayNameLength characters' : null,
+                ),
                 const SizedBox(height: 16),
                 // As the desktop's About Me: up to 190 characters, an emoji
                 // counting as one; empty clears it.
@@ -863,7 +892,7 @@ class _EditProfilePageState extends State<EditProfilePage> {
             child: GlassTopBar(
               title: const Text('Edit profile'),
               leading: TextAction(label: 'Cancel', onPressed: () => Navigator.of(context).maybePop()),
-              actions: [TextAction(label: 'Save', onPressed: _saving || _bioTooLong ? null : _save)],
+              actions: [TextAction(label: 'Save', onPressed: _saving || _bioTooLong || _aliasTooLong ? null : _save)],
             ),
           ),
         ],
@@ -879,7 +908,13 @@ class CropPage extends StatefulWidget {
 
   /// Width over height: 1 for an avatar, 3 for a banner.
   final double aspect;
-  const CropPage({required this.path, required this.aspect, super.key});
+
+  /// A square frame drawn round, as an avatar shows; an emoji's isn't.
+  final bool round;
+
+  /// Said under the frame while the picture is cropped.
+  final String? note;
+  const CropPage({required this.path, required this.aspect, this.round = true, this.note, super.key});
 
   @override
   State<CropPage> createState() => _CropPageState();
@@ -888,6 +923,7 @@ class CropPage extends StatefulWidget {
 class _CropPageState extends State<CropPage> {
   final _transform = TransformationController();
   Size? _image;
+  bool _centered = false;
 
   @override
   void initState() {
@@ -941,6 +977,16 @@ class _CropPageState extends State<CropPage> {
           final frame = Size(width, width / widget.aspect);
           // The picture covers the frame at scale 1.
           final scale = image == null ? 1.0 : math.max(frame.width / image.width, frame.height / image.height);
+          if (image != null && !_centered) {
+            // From its middle, as the desktop's editor starts: set before the
+            // viewer that reads it is first built.
+            _centered = true;
+            _transform.value = Matrix4.translationValues(
+              -(image.width * scale - frame.width) / 2,
+              -(image.height * scale - frame.height) / 2,
+              0,
+            );
+          }
           return Stack(
             children: [
               Center(
@@ -953,7 +999,7 @@ class _CropPageState extends State<CropPage> {
                           label: 'Picture to crop. Pinch to zoom, drag to move',
                           child: ClipRRect(
                             borderRadius: BorderRadius.circular(
-                              widget.aspect == 1 ? frame.width / 2 : DuvetTokens.radiusCard,
+                              widget.aspect == 1 && widget.round ? frame.width / 2 : DuvetTokens.radiusCard,
                             ),
                             child: InteractiveViewer(
                               transformationController: _transform,
@@ -987,6 +1033,17 @@ class _CropPageState extends State<CropPage> {
                   ],
                 ),
               ),
+              if (widget.note case final note?)
+                Positioned(
+                  left: 24,
+                  right: 24,
+                  bottom: padding.bottom + 32,
+                  child: Text(
+                    note,
+                    textAlign: TextAlign.center,
+                    style: DuvetType.snippet.copyWith(color: ink),
+                  ),
+                ),
             ],
           );
         },

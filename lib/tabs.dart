@@ -3,6 +3,7 @@ import 'package:forui/forui.dart';
 
 import 'calls.dart';
 import 'chat_view.dart';
+import 'data/launchpad.dart';
 import 'data/models.dart';
 import 'data/recent_chats.dart';
 import 'data/repository.dart';
@@ -35,6 +36,8 @@ class ChatsTab extends StatelessWidget {
         repository.mentions,
         repository.profile,
         repository.presence,
+        repository.friends,
+        repository.typingNow,
       ]),
       builder: (context, _) {
         final mentions = repository.mentions.value;
@@ -46,6 +49,8 @@ class ChatsTab extends StatelessWidget {
           repository.presence.value,
         );
         final unread = repository.unread.value;
+        // The requests to the user, counted on Friends as on the desktop's.
+        final asking = repository.friends.value.incoming.length;
         return LargeTitlePage(
           title: 'Chats',
           titleTrailing: Row(
@@ -54,7 +59,12 @@ class ChatsTab extends StatelessWidget {
               const LiveIndicator(),
               IconAction(
                 icon: FLucideIcons.users,
-                label: 'Friends',
+                label: switch (asking) {
+                  0 => 'Friends',
+                  1 => 'Friends, 1 friend request',
+                  _ => 'Friends, $asking friend requests',
+                },
+                badge: asking,
                 onPressed: () => Navigator.of(
                   context,
                   rootNavigator: true,
@@ -105,7 +115,7 @@ class ChatsTab extends StatelessWidget {
                       title: row.title,
                       hash: row.target is RoomTarget,
                       titleSuffix: row.space == null ? null : '· ${row.space}',
-                      snippet: row.snippet,
+                      snippet: typingSentence(repository.typingNow.value[row.target.id] ?? const []) ?? row.snippet,
                       trailing: row.at == null ? null : shortTime(row.at!),
                       unread: unread.contains(row.target.id),
                       mentions: mentions[row.target.id] ?? 0,
@@ -148,9 +158,16 @@ class ChatsTab extends StatelessWidget {
       return named && chat.previewAuthor != null ? '${chat.previewAuthor}: $text' : text;
     }
 
+    // A room the user can't see (any more) goes, once its Space lists its
+    // rooms without it.
+    bool hidden(ChatTarget t) => switch (t) {
+      RoomTarget(:final spaceId, :final roomId) => spacesById[spaceId]?.rooms.every((r) => r.id != roomId) ?? false,
+      ConversationTarget() => false,
+    };
+
     final listed = {for (final r in recents) r.target.id};
     final rows = [
-      for (final chat in recents)
+      for (final chat in recents.where((c) => !hidden(c.target)))
         switch (chat.target) {
           RoomTarget(:final spaceId, :final roomId) => () {
             final space = spacesById[spaceId];
@@ -227,14 +244,22 @@ class SpacesTab extends StatelessWidget {
     return ListenableBuilder(
       listenable: Listenable.merge([repository.spaces, repository.unread, repository.status]),
       builder: (context, _) {
-        final spaces = repository.spaces.value;
+        final prefs = LaunchpadScope.of(context).value;
+        final spaces = sortedSpaces(repository.spaces.value, prefs.sort);
         final unread = repository.unread.value;
+        bool news(Space space) => space.rooms.any((r) => unread.contains(r.id));
+        void open(Space space) => Navigator.of(context).push(
+          MaterialPageRoute<void>(
+            builder: (_) => SpaceDirectory(spaceId: space.id, name: space.name),
+          ),
+        );
         return LargeTitlePage(
           title: 'Spaces',
           titleTrailing: Row(
             mainAxisSize: MainAxisSize.min,
             children: [
               const LiveIndicator(),
+              const LaunchpadOptionsButton(),
               SpacesMenuButton(onCreate: () => showCreateSpaceSheet(context)),
             ],
           ),
@@ -247,31 +272,56 @@ class SpacesTab extends StatelessWidget {
                     : const EmptyState(icon: FLucideIcons.layoutGrid, text: 'You’re not in any spaces'),
               )
             else
-              SliverPadding(
-                padding: const EdgeInsets.fromLTRB(16, 16, 16, 0),
-                sliver: SliverGrid.builder(
-                  gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-                    crossAxisCount: 2,
-                    mainAxisSpacing: 12,
-                    crossAxisSpacing: 12,
-                    mainAxisExtent: 160,
+              switch (prefs.view) {
+                SpaceView.grid => SliverPadding(
+                  padding: const EdgeInsets.fromLTRB(16, 16, 16, 0),
+                  sliver: SliverGrid.builder(
+                    gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+                      crossAxisCount: 2,
+                      mainAxisSpacing: 12,
+                      crossAxisSpacing: 12,
+                      mainAxisExtent: 160,
+                    ),
+                    itemCount: spaces.length,
+                    itemBuilder: (context, i) => SpaceCard(
+                      key: ValueKey(spaces[i].id),
+                      space: spaces[i],
+                      unread: news(spaces[i]),
+                      onTap: () => open(spaces[i]),
+                    ),
                   ),
-                  itemCount: spaces.length,
-                  itemBuilder: (context, i) {
-                    final space = spaces[i];
-                    return SpaceCard(
-                      key: ValueKey(space.id),
-                      space: space,
-                      unread: space.rooms.any((r) => unread.contains(r.id)),
-                      onTap: () => Navigator.of(context).push(
-                        MaterialPageRoute<void>(
-                          builder: (_) => SpaceDirectory(spaceId: space.id, name: space.name),
-                        ),
-                      ),
-                    );
-                  },
                 ),
-              ),
+                SpaceView.list => SliverPadding(
+                  padding: const EdgeInsets.only(top: 8),
+                  sliver: SliverList.builder(
+                    itemCount: spaces.length,
+                    itemBuilder: (context, i) => ListRow(
+                      key: ValueKey(spaces[i].id),
+                      leading: SpaceIcon(space: spaces[i]),
+                      title: spaces[i].name,
+                      snippet: switch (spaces[i].onlineCount) {
+                        final n? => '$n online',
+                        null => null,
+                      },
+                      unread: news(spaces[i]),
+                      onTap: () => open(spaces[i]),
+                    ),
+                  ),
+                ),
+                SpaceView.cards => SliverPadding(
+                  padding: const EdgeInsets.fromLTRB(16, 16, 16, 0),
+                  sliver: SliverList.separated(
+                    itemCount: spaces.length,
+                    separatorBuilder: (_, _) => const SizedBox(height: 12),
+                    itemBuilder: (context, i) => SpaceWideCard(
+                      key: ValueKey(spaces[i].id),
+                      space: spaces[i],
+                      unread: news(spaces[i]),
+                      onTap: () => open(spaces[i]),
+                    ),
+                  ),
+                ),
+              },
           ],
         );
       },
@@ -349,10 +399,13 @@ class _SpaceDirectoryState extends State<SpaceDirectory> {
         repository.unread,
         repository.latest,
         repository.profile,
+        repository.collapsedCategories,
+        repository.typingNow,
         voice,
       ]),
       builder: (context, _) {
         final space = repository.spaces.value.where((s) => s.id == widget.spaceId).firstOrNull;
+        final collapsed = repository.collapsedCategories.value;
         final unread = repository.unread.value;
         final latest = repository.latest.value;
         final me = repository.profile.value?.id;
@@ -367,26 +420,49 @@ class _SpaceDirectoryState extends State<SpaceDirectory> {
               Positioned.fill(
                 child: space == null
                     ? const EmptyState(icon: FLucideIcons.layoutGrid, text: 'This space is gone')
-                    : space.rooms.isEmpty
+                    : space.sections.isEmpty && space.bannerUrl == null
                     ? const EmptyState(icon: FLucideIcons.hash, text: 'No rooms here yet')
                     : ListView(
                         controller: _scroll,
                         padding: EdgeInsets.only(top: barHeight, bottom: MediaQuery.paddingOf(context).bottom + 16),
                         children: [
-                          for (final section in space.sections)
-                            if (section.rooms.isNotEmpty) ...[
+                          if (space.bannerUrl case final banner?)
+                            Padding(
+                              padding: const EdgeInsets.fromLTRB(16, 8, 16, 0),
+                              child: SpaceBanner(key: ValueKey(banner), url: banner),
+                            ),
+                          if (space.sections.isEmpty)
+                            const SizedBox(
+                              height: 240,
+                              child: EmptyState(icon: FLucideIcons.hash, text: 'No rooms here yet'),
+                            ),
+                          for (final section in space.sections) ...[
+                            // Outside any category: a plain header. A category
+                            // folds away, empty ones too.
+                            if (section.id case final id?)
+                              CategoryHeader(
+                                key: ValueKey('category-$id'),
+                                name: section.name ?? '',
+                                collapsed: collapsed.contains(id),
+                                unread: section.rooms.any((r) => unread.contains(r.id)),
+                                onToggle: () => repository.setCategoryCollapsed(id, !collapsed.contains(id)),
+                              )
+                            else if (section.rooms.isNotEmpty)
                               Overline(section.name ?? 'Rooms'),
+                            if (!collapsed.contains(section.id))
                               for (final room in section.rooms)
                                 switch (room.kind) {
                                   RoomKind.text => ListRow(
                                     key: ValueKey(room.id),
                                     title: room.name,
                                     hash: true,
-                                    snippet: switch (latest[room.id]) {
-                                      final m? =>
-                                        '${m.authorId == me ? 'You' : m.authorName}: ${repository.previewOf(m)}',
-                                      null => null,
-                                    },
+                                    snippet:
+                                        typingSentence(repository.typingNow.value[room.id] ?? const []) ??
+                                        switch (latest[room.id]) {
+                                          final m? =>
+                                            '${m.authorId == me ? 'You' : m.authorName}: ${repository.previewOf(m)}',
+                                          null => null,
+                                        },
                                     unread: unread.contains(room.id),
                                     onTap: () => openChat(context, room.target, '# ${room.name}'),
                                   ),
@@ -401,7 +477,7 @@ class _SpaceDirectoryState extends State<SpaceDirectory> {
                                     onTap: () => openVoiceRoom(context, room),
                                   ),
                                 },
-                            ],
+                          ],
                         ],
                       ),
               ),

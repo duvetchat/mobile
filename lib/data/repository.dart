@@ -22,6 +22,11 @@ abstract interface class ChatRepository {
   /// The IDs of the rooms and conversations with unread messages.
   ValueListenable<Set<String>> get unread;
 
+  /// The categories the user folded away in Space directories, by ID: kept on
+  /// this device, for this account. A category not here is open.
+  ValueListenable<Set<String>> get collapsedCategories;
+  void setCategoryCollapsed(String categoryId, bool collapsed);
+
   ValueListenable<LiveStatus> get status;
 
   /// The gateway's voice and call signalling, which voice rooms and calls
@@ -36,6 +41,13 @@ abstract interface class ChatRepository {
 
   /// Resumes a saved session; answers whether there was one that still works.
   Future<bool> restore();
+
+  /// The app is in front again, after the background or a locked screen,
+  /// where its timers may not have run: the session is renewed if its tokens
+  /// are an hour old, and a connection cut off while away goes again at once,
+  /// once that renewal is done, asking the API whether the session still
+  /// stands.
+  void cameToFront();
 
   Future<void> logIn(String email, String password);
 
@@ -62,6 +74,10 @@ abstract interface class ChatRepository {
 
   /// Who starts typing in the chat.
   Stream<TypingUser> typing(ChatTarget target);
+
+  /// Who's typing now, by chat ID, as the open chat shows them: what the
+  /// Chats list and a Space's rooms show outside it.
+  ValueListenable<Map<String, List<TypingUser>>> get typingNow;
 
   /// A room's ephemeral messages: its bots' answers to the user alone, which
   /// no history has. They last the session, until dismissed.
@@ -145,6 +161,10 @@ abstract interface class ChatRepository {
   /// [userId]'s roles in a Space, highest first.
   List<RoleTag> rolesOf(String spaceId, String userId);
 
+  /// Whether [userId] is in the Space, as far as the gateway and the member
+  /// lists loaded have told.
+  bool isMember(String spaceId, String userId);
+
   /// Makes an account, then signs in to it; the API emails a link to verify
   /// the address.
   Future<void> signUp({required String username, required String email, required String password, String? alias});
@@ -187,21 +207,35 @@ abstract interface class ChatRepository {
 
   /// Whether the user may do [bit] in a room, with its overwrites applied.
   bool canInRoom(String spaceId, String roomId, int bit);
-  Future<void> updateSpace(String spaceId, {String? name, String? description, String? iconPath, String? bannerPath});
+
+  /// Changes the Space; [removeBanner] takes its banner away, as no
+  /// [bannerPath] can.
+  Future<void> updateSpace(
+    String spaceId, {
+    String? name,
+    String? description,
+    String? iconPath,
+    String? bannerPath,
+    bool removeBanner = false,
+  });
 
   /// Rooms and categories, by position.
   List<AdminRoom> adminRooms(String spaceId);
   Future<void> createRoom(String spaceId, String name, AdminRoomKind kind, {String? parentId});
   Future<void> renameRoom(String spaceId, String roomId, String name);
+
+  /// Sets what a room is for; null or blank clears it. Not for categories.
+  Future<void> setRoomDescription(String spaceId, String roomId, String? description);
   Future<void> deleteRoom(String spaceId, String roomId);
 
   /// Moves a room into [parentId]'s rooms (null: out of any category; a
-  /// category stays out), before the one now at [position] there, as the API
-  /// does. Past the last one's position puts it last.
+  /// category stays out), to [position] as the API takes it: the place it's
+  /// inserted at, before the room now there, counted before it leaves its
+  /// own. Past the last one's position puts it last.
   Future<void> moveRoom(String spaceId, String roomId, {String? parentId, required int position});
   List<RoomOverwrite> overwrites(String spaceId, String roomId);
 
-  /// Saves an overwrite; an empty one is removed.
+  /// Saves an overwrite; an empty one is removed, where there is one.
   Future<void> setOverwrite(String spaceId, String roomId, RoomOverwrite overwrite);
 
   /// Roles, highest first, @everyone last.
@@ -214,6 +248,7 @@ abstract interface class ChatRepository {
     int? color,
     bool clearColor = false,
     int? perms,
+    bool? hoisted,
   });
   Future<void> deleteRole(String spaceId, String roleId);
   List<String> roleMembers(String spaceId, String roleId);
@@ -254,7 +289,8 @@ abstract interface class ChatRepository {
   Future<BotInfo> bot(String userId);
   Future<void> addBot(String spaceId, String botId);
 
-  /// The Space's roles, highest first: for role selects and options.
+  /// The Space's roles, highest first, but the one everyone has: for role
+  /// selects and options.
   List<({String id, String name})> spaceRoles(String spaceId);
 
   /// What an invite code leads to.
@@ -287,7 +323,9 @@ abstract interface class ChatRepository {
   /// when it doesn't (and in conversations).
   String? lastReadOf(ChatTarget target);
 
-  /// Fires when the gateway is back after a drop: chats fetch what they missed.
+  /// Fires when the gateway is back after a drop with a new session (READY):
+  /// chats fetch what they missed. When it resumes the session instead, it
+  /// replays what was missed, and this doesn't fire.
   Stream<void> get resumed;
 
   /// What's unsent per chat, by chat ID; kept for the session.
@@ -297,6 +335,10 @@ abstract interface class ChatRepository {
   /// fetches again.
   Future<List<Member>> members(ChatTarget target, {bool refresh = false});
 
+  /// Anyone, by user ID, from the API: for those no list has, such as
+  /// someone who left.
+  Future<Member> user(String userId);
+
   /// A user's name, if any list or message seen this session gave it.
   String? nameOf(String userId);
 
@@ -304,7 +346,8 @@ abstract interface class ChatRepository {
   String? emojiNameOf(String emojiId);
 
   /// Who's online, by user ID, as the gateway reports it; someone missing
-  /// hasn't been reported this session.
+  /// hasn't been reported this session. A bot's status in one Space, which
+  /// comes first there ([presenceIn]), is kept under [spacePresenceKey] too.
   ValueListenable<Map<String, Presence>> get presence;
 
   /// The emoji the chat can use beyond Unicode's: its space's. None in DMs.

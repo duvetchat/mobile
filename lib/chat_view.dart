@@ -5,6 +5,7 @@ import 'dart:math' as math;
 import 'dart:ui' show ImageFilter;
 
 import 'package:clock/clock.dart' as time show clock;
+import 'package:flutter/gestures.dart' show TapGestureRecognizer;
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
@@ -23,8 +24,11 @@ import 'data/voice.dart' show VoiceController;
 import 'members_sheet.dart';
 import 'people.dart';
 import 'search.dart';
+import 'space_admin.dart' show askDescription, askName, confirmDestructive, RoomPermissionsPage;
+import 'spaces.dart' show showInviteSheet;
 import 'tabs.dart' show SpaceDirectory;
 import 'theme.dart';
+import 'voice_room.dart' show openVoiceRoom;
 import 'widgets/avatar.dart';
 import 'widgets/bot_ui.dart';
 import 'widgets/chrome.dart';
@@ -42,6 +46,7 @@ import 'widgets/sheets.dart';
 part 'chat/actions.dart';
 part 'chat/bubble.dart';
 part 'chat/composer.dart';
+part 'chat/reactors.dart';
 
 /// Pushes the Chat View over everything, the tab bar included.
 void openChat(BuildContext context, ChatTarget target, String title) => Navigator.of(context, rootNavigator: true).push(
@@ -143,6 +148,11 @@ class _ChatViewState extends State<ChatView> {
   // The last message read when the chat opened: the "New messages" divider
   // goes after it.
   String? _unreadAfter;
+  // When that one wasn't loaded on opening (further back than the first page,
+  // or deleted), the first message loaded after it, as the desktop does: the
+  // divider goes above it, and stays there for the visit, older pages coming
+  // or not.
+  String? _unreadFrom;
   final _dividerKey = GlobalKey();
   final _keys = <String, GlobalKey>{};
 
@@ -155,13 +165,13 @@ class _ChatViewState extends State<ChatView> {
   final _deleting = <String>{};
   String? _flash;
 
-  // The chat is read where the reader sees it, as the desktop acks it: with
-  // the app in front and this chat on top, on opening wherever the list opens
-  // (once it's seen, if it opened unseen), then at the bottom of the list. The
-  // newest message read from here is acked once.
+  // The chat is read where the reader sees its newest messages, as the desktop
+  // acks it: with the app in front and this chat on top, at the bottom of the
+  // list. Opening it isn't reading it: one opened at its "New messages"
+  // divider is read once the reader scrolls down. The newest message read
+  // from here is acked once.
   bool _atBottom = true;
   bool _onTop = true;
-  bool _opening = false;
   String? _acked;
   late final AppLifecycleListener _lifecycle;
 
@@ -235,7 +245,7 @@ class _ChatViewState extends State<ChatView> {
   void _restoreDraft() {
     final draft = _repository.drafts[_draftKey];
     if (draft == null) return;
-    _composer.restore(draft.text, mentions: draft.mentions, emojis: draft.emojis);
+    _composer.restore(draft.text, mentions: draft.mentions, emojis: draft.emojis, rooms: draft.rooms);
     _files.addAll(draft.files);
     _replyTo = draft.replyTo;
   }
@@ -248,6 +258,7 @@ class _ChatViewState extends State<ChatView> {
       text: text,
       mentions: picked.mentions,
       emojis: picked.emojis,
+      rooms: picked.rooms,
       files: [..._files],
       replyTo: _replyTo,
     );
@@ -285,7 +296,13 @@ class _ChatViewState extends State<ChatView> {
   MessageDirectory get _directory {
     final names = {for (final m in _members) m.userId: m.displayName};
     final emojis = {for (final e in _customEmojis) e.id: e};
-    return MessageDirectory(me: _me, nameOf: (id) => names[id] ?? _repository.nameOf(id), emojiOf: (id) => emojis[id]);
+    final rooms = {for (final r in _repository.spaces.value.expand((s) => s.rooms)) r.id: r};
+    return MessageDirectory(
+      me: _me,
+      nameOf: (id) => names[id] ?? _repository.nameOf(id),
+      emojiOf: (id) => emojis[id],
+      roomOf: (id) => rooms[id],
+    );
   }
 
   Future<void> _load() async {
@@ -318,16 +335,24 @@ class _ChatViewState extends State<ChatView> {
         _loading = false;
         // Nothing after the last read: no divider.
         if (_unreadAfter != null && page.lastOrNull?.id == _unreadAfter) _unreadAfter = null;
+        // The last read not loaded: the first message after it is, as message
+        // IDs (UUIDv7s) order by time.
+        final after = _unreadAfter;
+        if (after != null && !_entries.any((e) => e.message.id == after)) {
+          _unreadFrom = _entries.map((e) => e.message.id).where((id) => id.compareTo(after) > 0).firstOrNull;
+          if (_unreadFrom == null) _unreadAfter = null;
+        }
       });
-      if (thread == null) {
-        _repository.opened(widget.target, widget.title, latest: page.lastOrNull);
-        _opening = true;
-        _readIfSeen();
-      }
+      if (thread == null) _repository.opened(widget.target, widget.title, latest: page.lastOrNull);
+      // Opening reads the chat only if the list is still at its bottom once
+      // it's placed (at a jump's message, or at the divider); otherwise
+      // scrolling down reads it.
       if (widget.jumpTo case final id?) {
-        WidgetsBinding.instance.addPostFrameCallback((_) => _jumpTo(id));
+        WidgetsBinding.instance.addPostFrameCallback((_) => _jumpTo(id).whenComplete(_readIfSeen));
       } else if (_unreadAfter != null) {
-        WidgetsBinding.instance.addPostFrameCallback((_) => _showDivider());
+        WidgetsBinding.instance.addPostFrameCallback((_) => _showDivider().whenComplete(_readIfSeen));
+      } else {
+        _readIfSeen();
       }
     } catch (e) {
       // Listed even when its history fails to load.
@@ -363,14 +388,20 @@ class _ChatViewState extends State<ChatView> {
 
   /// Brings the "New messages" divider into view, near the top.
   Future<void> _showDivider() async {
-    if (!mounted || !_entries.any((e) => e.message.id == _unreadAfter)) return;
+    if (!mounted || !_entries.any((e) => e.message.id == (_unreadFrom ?? _unreadAfter))) return;
     if (await _scrollUntilBuilt(() => _dividerKey.currentContext)) {
       final ctx = _dividerKey.currentContext;
       if (ctx != null && ctx.mounted) await Scrollable.ensureVisible(ctx, alignment: 0.15);
     }
   }
 
-  Future<void> _loadOlder() async {
+  /// The older page on its way. Asked again meanwhile (a jump paging back
+  /// while scrolling near the top already asked), it waits for that one.
+  Future<void>? _olderPage;
+
+  Future<void> _loadOlder() => _olderPage ??= _fetchOlder().whenComplete(() => _olderPage = null);
+
+  Future<void> _fetchOlder() async {
     final oldest = _history.firstOrNull;
     if (_loadingOlder || !_hasOlder || oldest == null) return;
     setState(() => _loadingOlder = true);
@@ -420,8 +451,16 @@ class _ChatViewState extends State<ChatView> {
     if (position.extentAfter < 400) _loadOlder();
     final atBottom = position.pixels <= 50;
     if (atBottom == _atBottom) return;
-    _atBottom = atBottom;
+    setState(() => _atBottom = atBottom);
     if (atBottom) _readIfSeen();
+  }
+
+  /// Back to the newest messages, from however far up.
+  void _toLatest() {
+    if (!_scroll.hasClients) return;
+    MediaQuery.disableAnimationsOf(context)
+        ? _scroll.jumpTo(0)
+        : _scroll.animateTo(0, duration: const Duration(milliseconds: 300), curve: DuvetTokens.decelerate);
   }
 
   /// Reads the chat up to its newest message.
@@ -432,12 +471,10 @@ class _ChatViewState extends State<ChatView> {
     _repository.markRead(widget.target, newest.id);
   }
 
-  /// Reads the chat if the reader sees it: the app in front and nothing
-  /// opened over the chat (not a thread), and, past its opening, the bottom
-  /// of the list.
+  /// Reads the chat if the reader sees its newest messages: the app in front,
+  /// nothing opened over the chat (not a thread), and the bottom of the list.
   void _readIfSeen() {
-    if (!mounted || widget.threadOf != null || !_onTop || !_inFront || !(_atBottom || _opening)) return;
-    _opening = false;
+    if (!mounted || widget.threadOf != null || !_onTop || !_inFront || !_atBottom) return;
     _markRead();
   }
 
@@ -448,6 +485,8 @@ class _ChatViewState extends State<ChatView> {
 
   void _onEvent(MessageEvent event) {
     if (event case ReactionChanged(:final messageId) when !_entries.any((e) => e.message.id == messageId)) return;
+    // A profile change that shows nothing new on the messages here.
+    if (event is AuthorChanged && _entries.every((e) => identical(e.message.changedBy(event), e.message))) return;
     // A thread takes the replies to its messages, and its own sends.
     if (widget.threadOf != null) {
       if (event case MessageCreated(
@@ -467,6 +506,14 @@ class _ChatViewState extends State<ChatView> {
           // One the user deleted is going to dust: that takes it away after.
           if (!_deleting.contains(messageId)) _closeUp(messageId);
           if (_editing?.id == messageId) _stopEditing();
+          // The replies quoting it say it's gone, as on the desktop.
+          for (var i = 0; i < _entries.length; i++) {
+            final m = _entries[i].message;
+            if (m.reply case final reply? when reply.messageId == messageId && !reply.deleted) {
+              _entries[i] = (message: m.copyWith(reply: reply.asDeleted), delivery: _entries[i].delivery);
+            }
+          }
+          if (_replyTo?.messageId == messageId) _replyTo = null;
         case MessagePinned(:final messageId, :final pinned):
           final i = _entries.indexWhere((e) => e.message.id == messageId);
           if (i >= 0) {
@@ -482,6 +529,14 @@ class _ChatViewState extends State<ChatView> {
               message: m.reacted(emoji, userId, add: added, emojiId: emojiId),
               delivery: _entries[i].delivery,
             );
+          }
+        // Someone's new name and avatar: on their messages, as the desktop
+        // renames those it has, and on the replies' quotes of them.
+        case AuthorChanged():
+          for (var i = 0; i < _entries.length; i++) {
+            final m = _entries[i].message;
+            final changed = m.changedBy(event);
+            if (!identical(changed, m)) _entries[i] = (message: changed, delivery: _entries[i].delivery);
           }
       }
     });
@@ -898,7 +953,12 @@ class _ChatViewState extends State<ChatView> {
       _replyTo = null;
       _editing = m;
     });
-    _composer.setEncoded(m.content, nameOf: directory.nameOf, emojiNameOf: (id) => directory.emojiOf(id)?.name);
+    _composer.setEncoded(
+      m.content,
+      nameOf: directory.nameOf,
+      emojiNameOf: (id) => directory.emojiOf(id)?.name,
+      roomNameOf: (id) => directory.roomOf(id)?.name,
+    );
     _focus.requestFocus();
   }
 
@@ -1047,6 +1107,7 @@ class _ChatViewState extends State<ChatView> {
       _jumpTo(link.messageId);
       return;
     }
+    if (linksHiddenRoom(_repository, link)) return _toast(roomUnavailable);
     final String title;
     if (target case ConversationTarget(:final conversationId)) {
       title =
@@ -1299,17 +1360,36 @@ class _ChatViewState extends State<ChatView> {
   }
 
   Future<void> _openMore(BuildContext anchor) async {
+    // Out of the composer: or the menu and the sheet after it hand the
+    // keyboard back as they close.
+    _focus.unfocus();
     final picked = await showGlassMenu(
       anchor,
       label: 'Chat options',
       items: [
         if (_isGroup) const GlassMenuItem(icon: FLucideIcons.info, label: 'Group info', value: 'group'),
+        if (_inRoomMay(Perm.createInvites))
+          const GlassMenuItem(
+            icon: FLucideIcons.userPlus,
+            label: 'Invite people',
+            value: 'invite',
+            hint: 'A link to this room',
+          ),
         const GlassMenuItem(icon: FLucideIcons.users, label: 'Members', value: 'members'),
         const GlassMenuItem(icon: FLucideIcons.pin, label: 'Pinned messages', value: 'pins'),
+        // Running the room, for those who may: ManageChannels in it.
+        if (_inRoomMay(Perm.manageChannels) && _room != null) ...[
+          const GlassMenuItem(icon: FLucideIcons.pencil, label: 'Rename room', value: 'rename'),
+          const GlassMenuItem(icon: FLucideIcons.text, label: 'Edit description', value: 'describe'),
+          const GlassMenuItem(icon: FLucideIcons.shield, label: 'Permissions', value: 'perms'),
+          const GlassMenuItem(icon: FLucideIcons.trash2, label: 'Delete room', value: 'delete', destructive: true),
+        ],
       ],
     );
     if (!mounted) return;
     switch (picked) {
+      case 'invite' || 'rename' || 'describe' || 'perms' || 'delete':
+        await _roomAction(picked!);
       case 'group':
         await Navigator.of(
           context,
@@ -1319,6 +1399,62 @@ class _ChatViewState extends State<ChatView> {
         await _openMembers();
       case 'pins':
         await _openPins();
+    }
+  }
+
+  /// Inviting to, or running, the room the user is in.
+  Future<void> _roomAction(String action) async {
+    final target = widget.target;
+    final room = _room;
+    if (target is! RoomTarget || room == null) return;
+    final repository = _repository;
+    final label = '#${room.name}';
+    Future<void> attempt(String failure, Future<void> Function() change) async {
+      try {
+        await change();
+      } catch (e) {
+        _toast(e is ActionFailed ? e.message : failure);
+      }
+    }
+
+    switch (action) {
+      case 'invite':
+        final space = repository.spaces.value.where((s) => s.id == target.spaceId).firstOrNull;
+        if (space != null) await showInviteSheet(context, space: space, room: room);
+      case 'rename':
+        final got = await askName<void>(context, title: 'Rename $label', initial: room.name);
+        if (got == null || !mounted) return;
+        await attempt('Couldn’t rename $label', () => repository.renameRoom(target.spaceId, room.id, got.$1));
+      case 'describe':
+        final got = await askDescription(context, title: 'What $label is for', initial: room.description ?? '');
+        if (got == null || !mounted) return;
+        await attempt(
+          'Couldn’t change what $label is for',
+          () => repository.setRoomDescription(target.spaceId, room.id, got),
+        );
+      case 'perms':
+        final admin = repository.adminRooms(target.spaceId).where((r) => r.id == room.id).firstOrNull;
+        if (admin == null) return;
+        await Navigator.of(context, rootNavigator: true).push(
+          MaterialPageRoute<void>(
+            builder: (_) => RoomPermissionsPage(spaceId: target.spaceId, room: admin),
+          ),
+        );
+      case 'delete':
+        final sure = await confirmDestructive(
+          context,
+          title: 'Delete $label?',
+          body: 'Its messages go with it, for everyone. This can’t be undone.',
+          action: 'Delete',
+        );
+        if (!sure || !mounted) return;
+        try {
+          await repository.deleteRoom(target.spaceId, room.id);
+          // Out of the room that's gone.
+          if (mounted) await Navigator.of(context).maybePop();
+        } catch (e) {
+          _toast(e is ActionFailed ? e.message : 'Couldn’t delete $label');
+        }
     }
   }
 
@@ -1346,6 +1482,7 @@ class _ChatViewState extends State<ChatView> {
       changes: _repository.messageEvents(widget.target).where((e) => e is MessagePinned),
       where: _where,
       directory: _directory,
+      message: (m) => _bubbleFor((message: m, delivery: _Delivery.sent), pinned: true),
       onUnpin: _canPin ? (m) => _setPinned(m, false) : null,
     );
     if (picked != null && mounted) await _jumpTo(picked.id);
@@ -1412,8 +1549,6 @@ class _ChatViewState extends State<ChatView> {
         } catch (e) {
           _toast(e is ActionFailed ? e.message : 'Couldn’t open a conversation with ${member.displayName}');
         }
-      case MemberAction.profile:
-        await _openProfile(member);
     }
   }
 
@@ -1438,6 +1573,43 @@ class _ChatViewState extends State<ChatView> {
     );
   }
 
+  /// A mention tapped: who it names, as the room knows them, else as the
+  /// app does. Else only their name is known, not their username: the
+  /// profile shows no handle rather than a made-up one.
+  void _openMention(String userId) => _openProfile(
+    _members.where((x) => x.userId == userId).firstOrNull ??
+        _repository.people.where((p) => p.userId == userId).firstOrNull ??
+        Member(userId: userId, username: '', alias: _repository.nameOf(userId) ?? 'Someone'),
+  );
+
+  /// A room mention tapped: that room, unless it's this one.
+  void _openRoom(Room room) {
+    if (room.id == widget.target.id) return;
+    switch (room.kind) {
+      case RoomKind.text:
+        openChat(context, room.target, '# ${room.name}');
+      case RoomKind.voice:
+        openVoiceRoom(context, room);
+    }
+  }
+
+  /// Who reacted to [m], with [picked] first; who's tapped, their profile.
+  Future<void> _openReactors(ChatMessage m, [Reaction? picked]) async {
+    final target = widget.target;
+    final member = await _showReactors(
+      context,
+      reactions: m.reactions,
+      initial: picked,
+      directory: _directory,
+      known: (id) =>
+          _members.where((x) => x.userId == id).firstOrNull ??
+          _repository.people.where((p) => p.userId == id).firstOrNull,
+      presenceOf: (id) =>
+          presenceIn(_repository.presence.value, id, spaceId: target is RoomTarget ? target.spaceId : null),
+    );
+    if (member != null && mounted) await _openProfile(member);
+  }
+
   void _mention(Member member) {
     _composer.startMention();
     _composer.insertMention(member);
@@ -1452,6 +1624,7 @@ class _ChatViewState extends State<ChatView> {
       m.content,
       nameOf: directory.nameOf,
       emojiNameOf: (id) => directory.emojiOf(id)?.name,
+      roomNameOf: (id) => directory.roomOf(id)?.name,
     );
     final mine = m.authorId != null && m.authorId == _me;
     // Nothing of the room's applies to a bot's answer to the user alone: no
@@ -1463,13 +1636,16 @@ class _ChatViewState extends State<ChatView> {
       if (sent) const GlassMenuItem(icon: FLucideIcons.reply, label: 'Reply', value: _Action.reply),
       if (sent && widget.threadOf == null)
         const GlassMenuItem(icon: FLucideIcons.messagesSquare, label: 'View thread', value: _Action.thread),
+      if (sent && m.reactions.isNotEmpty)
+        const GlassMenuItem(icon: FLucideIcons.smile, label: 'Reactions', value: _Action.reactions),
       if (readable.isNotEmpty) const GlassMenuItem(icon: FLucideIcons.copy, label: 'Copy text', value: _Action.copy),
+      if (sent) const GlassMenuItem(icon: FLucideIcons.link, label: 'Copy link', value: _Action.copyLink),
+      if (mine && sent && m.content.isNotEmpty && m.stickerUrl == null)
+        const GlassMenuItem(icon: FLucideIcons.pencil, label: 'Edit', value: _Action.edit),
       if (sent && !m.isNotice && canPin)
         m.pinned
             ? const GlassMenuItem(icon: FLucideIcons.pinOff, label: 'Unpin', value: _Action.unpin)
             : const GlassMenuItem(icon: FLucideIcons.pin, label: 'Pin', value: _Action.pin),
-      if (mine && sent && m.content.isNotEmpty && m.stickerUrl == null)
-        const GlassMenuItem(icon: FLucideIcons.pencil, label: 'Edit', value: _Action.edit),
       if (!mine && m.authorId != null && !m.isEphemeral)
         GlassMenuItem(icon: FLucideIcons.atSign, label: 'Mention ${m.authorName}', value: _Action.mention),
       if (entry.delivery == _Delivery.failed)
@@ -1501,6 +1677,8 @@ class _ChatViewState extends State<ChatView> {
         await _toggleReaction(m, emoji);
       case (_Action.moreReactions, _):
         await _pickReaction(m);
+      case (_Action.reactions, _):
+        await _openReactors(m);
       case (_Action.thread, _):
         _openThread(m);
       case (_Action.pin, _):
@@ -1512,6 +1690,9 @@ class _ChatViewState extends State<ChatView> {
       case (_Action.copy, _):
         await Clipboard.setData(ClipboardData(text: readable));
         _toast('Copied');
+      case (_Action.copyLink, _):
+        await Clipboard.setData(ClipboardData(text: messageLink(widget.target, m.id)));
+        _toast('Link copied');
       case (_Action.edit, _):
         _startEditing(m);
       case (_Action.mention, _):
@@ -1531,6 +1712,28 @@ class _ChatViewState extends State<ChatView> {
 
   /// Pins take PinMessages in a room, as the API has it; every member of a
   /// conversation pins.
+  /// This room as the Space has it now (a rename shows at once), or null:
+  /// not a room, or not known yet.
+  Room? get _room => switch (widget.target) {
+    RoomTarget(:final spaceId, :final roomId) =>
+      _repository.spaces.value
+          .where((s) => s.id == spaceId)
+          .firstOrNull
+          ?.rooms
+          .where((r) => r.id == roomId)
+          .firstOrNull,
+    ConversationTarget() => null,
+  };
+
+  /// The room's name, live; the one it was opened with until it's known.
+  String get _roomName => _room?.name ?? widget.title.replaceFirst('# ', '');
+
+  /// In a room (not a thread of it), with [bit] there, overwrites included.
+  bool _inRoomMay(int bit) => switch (widget.target) {
+    RoomTarget(:final spaceId, :final roomId) => widget.threadOf == null && _repository.canInRoom(spaceId, roomId, bit),
+    ConversationTarget() => false,
+  };
+
   bool get _canPin => switch (widget.target) {
     RoomTarget(:final spaceId, :final roomId) => _repository.canInRoom(spaceId, roomId, Perm.pinMessages),
     ConversationTarget() => true,
@@ -1549,6 +1752,41 @@ class _ChatViewState extends State<ChatView> {
     RoomTarget(:final spaceId, :final roomId) => _repository.canInRoom(spaceId, roomId, Perm.manageMessages),
     ConversationTarget() => false,
   };
+
+  /// Who may delete a pin notice, as the desktop has it: ManageMessages in a
+  /// room; in a conversation, either of a DM's two, or a group's owner.
+  bool get _canDeleteNotices => switch (widget.target) {
+    RoomTarget() => _canDeleteOthers,
+    ConversationTarget(:final conversationId) => switch (_repository.conversations.value
+        .where((c) => c.id == conversationId)
+        .firstOrNull) {
+      null => false,
+      final c => !c.isGroup || c.ownerId == _me,
+    },
+  };
+
+  /// A pin notice held: Delete, the one thing to do with it.
+  Future<void> _noticeActions(BuildContext anchor, ChatMessage m) async {
+    final picked = await showGlassMenu(
+      anchor,
+      label: 'Notice options',
+      items: const [GlassMenuItem(icon: FLucideIcons.trash2, label: 'Delete', value: true, destructive: true)],
+    );
+    if (picked != true || !mounted) return;
+    final sure = await confirmDestructive(
+      context,
+      title: 'Delete this notice?',
+      body: 'The message stays pinned.',
+      action: 'Delete',
+    );
+    if (!sure || !mounted) return;
+    try {
+      await _repository.delete(widget.target, m.id);
+      if (mounted) setState(() => _entries = [..._entries]..removeWhere((e) => e.message.id == m.id));
+    } catch (e) {
+      _toast(e is ActionFailed ? e.message : 'Couldn’t delete the notice');
+    }
+  }
 
   // ---------------------------------------------------------------------------
   // Bots
@@ -1683,13 +1921,13 @@ class _ChatViewState extends State<ChatView> {
       final others = _members.where((m) => m.userId != _me);
       final starts = others
           .where((m) => m.displayName.toLowerCase().startsWith(needle) || m.username.toLowerCase().startsWith(needle))
-          .take(5)
+          .take(10)
           .toList();
       final contains = needle.isEmpty
           ? const <Member>[]
           : others
                 .where((m) => !starts.contains(m) && m.displayName.toLowerCase().contains(needle))
-                .take(5 - starts.length);
+                .take(10 - starts.length);
       return [
         for (final m in [...starts, ...contains])
           GlassRow(
@@ -1699,7 +1937,39 @@ class _ChatViewState extends State<ChatView> {
             leading: ExcludeSemantics(
               child: UserAvatar(name: m.displayName, url: m.avatarUrl, size: 32),
             ),
+            banner: m.bannerUrl,
+            bannerOffline: isOffline(
+              presenceIn(
+                _repository.presence.value,
+                m.userId,
+                spaceId: switch (widget.target) {
+                  RoomTarget(:final spaceId) => spaceId,
+                  _ => null,
+                },
+              ),
+            ),
             onPressed: () => _composer.insertMention(m),
+          ),
+      ];
+    }
+    if (q.trigger == '#') {
+      // The Space's rooms the user may see; a conversation has none.
+      final target = widget.target;
+      final rooms = target is RoomTarget
+          ? _repository.spaces.value.where((s) => s.id == target.spaceId).expand((s) => s.rooms)
+          : const <Room>[];
+      return [
+        for (final r in rooms.where((r) => r.name.toLowerCase().contains(needle)).take(10))
+          GlassRow(
+            label: '#${r.name}',
+            detail: r.kind == RoomKind.voice ? 'Voice room' : null,
+            hint: 'Double tap to mention',
+            leading: Icon(
+              r.kind == RoomKind.voice ? FLucideIcons.volume2 : FLucideIcons.hash,
+              size: 24,
+              color: context.theme.colors.mutedForeground,
+            ),
+            onPressed: () => _composer.insertRoom(r),
           ),
       ];
     }
@@ -1785,12 +2055,40 @@ class _ChatViewState extends State<ChatView> {
             child: _SuggestionsPanel(
               label: _slash != null
                   ? 'Commands'
-                  : _query?.trigger == '@'
-                  ? 'Mention suggestions'
-                  : 'Emoji suggestions',
+                  : switch (_query?.trigger) {
+                      '@' => 'Mention suggestions',
+                      '#' => 'Room suggestions',
+                      _ => 'Emoji suggestions',
+                    },
               children: suggestions,
             ),
           ),
+          // Scrolled up: a way back down to the newest.
+          if (!_atBottom && suggestions.isEmpty)
+            Positioned(
+              right: 16,
+              bottom: _composerHeight + 12,
+              child: Semantics(
+                container: true,
+                button: true,
+                label: 'Jump to the newest messages',
+                excludeSemantics: true,
+                onTap: _toLatest,
+                child: Pressable(
+                  onTap: _toLatest,
+                  builder: (context, pressed) => Container(
+                    width: 40,
+                    height: 40,
+                    decoration: BoxDecoration(
+                      color: colors.card,
+                      shape: BoxShape.circle,
+                      boxShadow: pressed ? null : context.duvet.shadowRaised,
+                    ),
+                    child: Icon(FLucideIcons.arrowDown, size: 20, color: colors.foreground),
+                  ),
+                ),
+              ),
+            ),
           Positioned(
             top: 0,
             left: 0,
@@ -1805,6 +2103,8 @@ class _ChatViewState extends State<ChatView> {
                   context.voice,
                   _repository.conversations,
                   _repository.presence,
+                  // The room's name and description, as they change.
+                  _repository.spaces,
                 ]),
                 builder: (context, _) => GlassTopBar(
                   hairline: _underTop,
@@ -1833,24 +2133,41 @@ class _ChatViewState extends State<ChatView> {
                               ),
                             ],
                           ),
-                          null => Text.rich(
-                            TextSpan(
+                          null => () {
+                            final name = Text.rich(
+                              TextSpan(
+                                children: [
+                                  if (isRoom)
+                                    TextSpan(
+                                      text: '# ',
+                                      style: TextStyle(color: colors.mutedForeground),
+                                    ),
+                                  TextSpan(text: isRoom ? _roomName : widget.title),
+                                ],
+                              ),
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                            );
+                            // What the room is for, under its name: one line.
+                            final description = isRoom ? _room?.description : null;
+                            if (description == null) return name;
+                            return Column(
+                              mainAxisSize: MainAxisSize.min,
                               children: [
-                                if (isRoom)
-                                  TextSpan(
-                                    text: '# ',
-                                    style: TextStyle(color: colors.mutedForeground),
-                                  ),
-                                TextSpan(text: isRoom ? widget.title.replaceFirst('# ', '') : widget.title),
+                                name,
+                                Text(
+                                  description,
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                  style: DuvetType.caption.copyWith(color: colors.mutedForeground),
+                                ),
                               ],
-                            ),
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis,
-                          ),
+                            );
+                          }(),
                         },
                   onTitle: isRoom && widget.threadOf == null ? _openSwitcher : null,
                   titleLabel: isRoom && widget.threadOf == null
-                      ? 'Channel ${widget.title.replaceFirst('# ', '')}, switch channel'
+                      ? ['Channel $_roomName', ?_room?.description, 'switch channel'].join(', ')
                       : null,
                   actions: [
                     if (_callable)
@@ -1894,13 +2211,9 @@ class _ChatViewState extends State<ChatView> {
                     mainAxisSize: MainAxisSize.min,
                     children: [
                       _TypingLine(
-                        typing: [
-                          for (final t in _typing.values)
-                            if (!t.recording) t.name,
-                        ],
-                        recording: [
-                          for (final t in _typing.values)
-                            if (t.recording) t.name,
+                        users: [
+                          for (final MapEntry(key: id, value: t) in _typing.entries)
+                            TypingUser(userId: id, name: t.name, recording: t.recording),
                         ],
                       ),
                       if (_files.isNotEmpty && _editing == null)
@@ -1970,8 +2283,15 @@ class _ChatViewState extends State<ChatView> {
 
   bool get _canSend => _composer.text.trim().isNotEmpty || (_files.isNotEmpty && _editing == null);
 
-  Widget _bubbleFor(_Entry entry, {bool lifted = false, bool first = true, bool last = true}) {
+  /// [pinned]: in the pins, where a reply or a quote tapped closes them
+  /// first, and holding it does nothing.
+  Widget _bubbleFor(_Entry entry, {bool lifted = false, bool first = true, bool last = true, bool pinned = false}) {
     final m = entry.message;
+    void closingPins(VoidCallback then) {
+      if (pinned) Navigator.of(context).pop();
+      then();
+    }
+
     return _Bubble(
       key: lifted ? null : ValueKey(m.nonce ?? m.id),
       entry: entry,
@@ -1987,17 +2307,20 @@ class _ChatViewState extends State<ChatView> {
       waiting: entry.delivery == _Delivery.sending && _repository.status.value == LiveStatus.reconnecting,
       onRetry: entry.delivery == _Delivery.failed ? () => _retry(entry) : null,
       onDiscard: entry.delivery == _Delivery.failed ? () => _discard(entry) : null,
-      onReply: () => _startReply(m),
-      onJump: _jumpTo,
+      onReply: () => closingPins(() => _startReply(m)),
+      onJump: (id) => closingPins(() => _jumpTo(id)),
       onReact: (emoji, emojiId) => _toggleReaction(m, emoji, emojiId: emojiId),
       onMoreReactions: () => _pickReaction(m),
-      onLongPress: (anchor) => _messageActions(anchor, entry),
+      onOpenReactors: (r) => _openReactors(m, r),
+      onLongPress: pinned ? null : (anchor) => _messageActions(anchor, entry),
       progress: m.nonce == null ? null : _progress[m.nonce],
       onCancelUpload: entry.delivery == _Delivery.sending ? () => _cancelUpload(entry) : null,
       tooLarge: m.nonce != null && _tooLarge.contains(m.nonce),
       onOpenLink: _openLink,
       onOpenSpace: _openSpace,
       onOpenAuthor: () => _openAuthor(m),
+      onOpenMention: _openMention,
+      onOpenRoom: _openRoom,
       onUseComponent: (component, values) => _useComponent(m, component, values),
       selectChoices: _selectChoices,
       onDismiss: m.isEphemeral ? () => _dismiss(m) : null,
@@ -2040,7 +2363,16 @@ class _ChatViewState extends State<ChatView> {
           _Replies(:final count) => _NewMessagesDivider(text: count == 1 ? '1 reply' : '$count replies', quiet: true),
           _Message(:final entry, :final first, :final last) =>
             entry.message.isNotice
-                ? _Notice(text: '${entry.message.authorName} pinned a message')
+                ? _Notice(
+                    who: entry.message.authorName,
+                    where: widget.target is RoomTarget ? 'room' : 'conversation',
+                    onJump: switch (entry.message.reply?.messageId) {
+                      final id? => () => _jumpTo(id),
+                      null => null,
+                    },
+                    onPins: _openPins,
+                    onHold: _canDeleteNotices ? (anchor) => _noticeActions(anchor, entry.message) : null,
+                  )
                 : KeyedSubtree(
                     key: _keyFor(entry.message.id),
                     // Its own layer, for the picture a delete breaks up.
@@ -2058,11 +2390,11 @@ class _ChatViewState extends State<ChatView> {
   }
 
   /// The entries, oldest first, with a separator where the day changes, the
-  /// "New messages" divider after the last one read, and each message marked
-  /// first and last of its run: one author, minutes apart. A webhook has no
-  /// author ID: its own ID and the name it posts under stand in, as on the
-  /// desktop. A person's name isn't compared: the history names them by
-  /// their Space nickname, which live messages may not know.
+  /// "New messages" divider after the last one read (or above [_unreadFrom]),
+  /// and each message marked first and last of its run: one author, minutes
+  /// apart. A webhook has no author ID: its own ID and the name it posts under
+  /// stand in, as on the desktop. A person's name isn't compared: the history
+  /// names them by their Space nickname, which live messages may not know.
   List<_Item> _items() {
     final items = <_Item>[];
     for (var i = 0; i < _entries.length; i++) {
@@ -2072,10 +2404,10 @@ class _ChatViewState extends State<ChatView> {
       final day = DateTime(m.createdAt.year, m.createdAt.month, m.createdAt.day);
       final newDay = previous == null || !_sameDay(previous.createdAt, m.createdAt);
       if (newDay) items.add(_Day(day));
-      final unreadStart = previous != null && previous.id == _unreadAfter;
+      final unreadStart = _unreadFrom != null ? m.id == _unreadFrom : previous != null && previous.id == _unreadAfter;
       if (unreadStart) items.add(const _NewMessages());
       if (widget.threadOf != null && i == 1) items.add(_Replies(_entries.length - 1));
-      final nextBreaks = next == null || m.id == _unreadAfter;
+      final nextBreaks = next == null || (_unreadFrom != null ? next.id == _unreadFrom : m.id == _unreadAfter);
       items.add(
         _Message(
           _entries[i],

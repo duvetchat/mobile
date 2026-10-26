@@ -255,6 +255,90 @@ void main() {
     expect(h.voice.link, VoiceLink.connecting);
   });
 
+  _voice('a join that waits for the gateway asks for a new session, whose READY joins', (async, h) {
+    // Out of reach as it joins.
+    h.gateway.socket = null;
+    h.voice.joinRoom(_lounge);
+    async.flushMicrotasks();
+    expect(h.gateway.freshSessionsWanted, 1);
+
+    // Gone while the connection was made.
+    h.engine.holdPeer = Completer<void>();
+    h.gateway.ready(number: 2);
+    async.flushMicrotasks();
+    h.gateway.socket = null;
+    h.engine.holdPeer!.complete();
+    h.engine.holdPeer = null;
+    async.flushMicrotasks();
+    expect(h.gateway.freshSessionsWanted, 2);
+    expect(h.voice.link, VoiceLink.waiting);
+
+    // Gone when the join's answer was due.
+    h.gateway.ready(number: 3);
+    async.flushMicrotasks();
+    h.gateway.socket = null;
+    async.elapse(const Duration(seconds: 15));
+    expect(h.gateway.freshSessionsWanted, 3);
+
+    // Gone as the connection failed.
+    h.gateway.ready(number: 4);
+    async.flushMicrotasks();
+    h.gateway.socket = null;
+    h.engine.peer.stateHandler!(PeerState.failed);
+    expect(h.gateway.freshSessionsWanted, 4);
+    expect(h.voice.link, VoiceLink.waiting);
+
+    h.gateway.ready(number: 5);
+    async.flushMicrotasks();
+    expect(h.gateway.last('VOICE_JOIN')!['offer'], 'offer-4');
+    expect(h.voice.link, VoiceLink.connecting);
+  });
+
+  _voice('a session the gateway resumes on a new socket keeps its voice: nothing joins again', (async, h) {
+    h.gateway.ready(number: 1);
+    h.voice.joinRoom(_lounge);
+    async.flushMicrotasks();
+    h.gateway.push(_joined('r-lounge', 'a1'));
+    async.flushMicrotasks();
+    h.engine.peer.stateHandler!(PeerState.connected);
+
+    h.gateway.socket = null;
+    h.gateway.resumed(number: 2);
+    async.elapse(const Duration(minutes: 1));
+    expect(h.gateway.types.where((t) => t == 'VOICE_JOIN'), hasLength(1));
+    expect(h.engine.peers, hasLength(1));
+    expect(h.voice.link, VoiceLink.connected);
+    expect(h.gateway.freshSessionsWanted, 0);
+  });
+
+  _voice('a join the gateway hadn\'t answered when its socket dropped goes again on the session it resumes', (
+    async,
+    h,
+  ) {
+    h.gateway.ready(number: 1);
+    h.voice.joinRoom(_lounge);
+    async.flushMicrotasks();
+    h.gateway.socket = null;
+    async.elapse(const Duration(seconds: 10));
+    h.gateway.resumed(number: 2);
+    async.flushMicrotasks();
+    expect(h.gateway.types, ['VOICE_JOIN', 'VOICE_SYNC', 'VOICE_JOIN', 'VOICE_SYNC']);
+    expect(h.gateway.last('VOICE_JOIN')!['offer'], 'offer-2');
+    // Its wait for an answer starts over.
+    async.elapse(const Duration(seconds: 14));
+    expect(h.voice.target, isNotNull);
+
+    // Answered: the next resume sends nothing again, nor does it time out.
+    h.gateway.push(_joined('r-lounge', 'a2'));
+    async.flushMicrotasks();
+    h.gateway.resumed(number: 3);
+    async.flushMicrotasks();
+    expect(h.gateway.types.where((t) => t == 'VOICE_JOIN'), hasLength(2));
+    async.elapse(const Duration(seconds: 20));
+    expect(h.voice.target, isNotNull);
+    expect(h.notices, isEmpty);
+  });
+
   _voice('an offline join waits 3 minutes at most, then leaves with the microphone and the service', (async, h) {
     h.gateway.socket = null;
     h.voice.joinRoom(_lounge);
@@ -635,6 +719,136 @@ void main() {
     duvet.CallIncomingPayloadEvent incoming() => const duvet.CallIncomingPayloadEvent(
       duvet.CallIncomingEvent(conversationId: 'c-maya', initiatorId: FakeRepository.maya, initiatorName: 'Maya'),
     );
+
+    int answers(FakeVoiceSignaling gateway) => gateway.types.where((t) => t == 'CALL_ACCEPT').length;
+    int placed(FakeVoiceSignaling gateway) => gateway.types.where((t) => t == 'CALL_INITIATE').length;
+
+    _voice(
+      'a call placed on a socket that dropped before the gateway had it is placed again on the session it resumes',
+      (async, h) {
+        h.gateway.ready(number: 1);
+        h.voice.startCall('c-maya');
+        async.flushMicrotasks();
+        final first = h.gateway.last('CALL_INITIATE');
+        h.gateway.socket = null;
+        h.gateway.resumed(number: 2);
+        async.flushMicrotasks();
+        expect(placed(h.gateway), 2);
+        expect(h.gateway.last('CALL_INITIATE'), first);
+        expect(h.voice.call?.phase, CallPhase.calling);
+
+        // The gateway\'s word that it has the call: not again.
+        h.gateway.push(const duvet.UnknownEvent('CALL_OUTGOING', {'conversation_id': 'c-maya'}));
+        h.gateway.resumed(number: 3);
+        async.flushMicrotasks();
+        expect(placed(h.gateway), 2);
+      },
+    );
+
+    _voice('a placed call the gateway has isn\'t placed again: someone declined, or READY lists it', (async, h) {
+      h.gateway.ready(number: 1);
+      h.voice.startCall('c-maya');
+      async.flushMicrotasks();
+      h.gateway.push(
+        const duvet.CallDeclinedEvent(duvet.CallResponseEvent(conversationId: 'c-maya', userId: FakeRepository.maya)),
+      );
+      h.gateway.resumed(number: 2);
+      async.flushMicrotasks();
+      expect(placed(h.gateway), 1);
+      h.voice.hangUp();
+
+      h.voice.startCall('c-maya');
+      async.flushMicrotasks();
+      h.gateway.ready(
+        number: 3,
+        calls: [
+          duvet.GatewayReadyActiveCall.fromJson({'conversation_id': 'c-maya', 'initiator_id': FakeRepository.me.id}),
+        ],
+      );
+      async.flushMicrotasks();
+      h.gateway.resumed(number: 4);
+      async.flushMicrotasks();
+      expect(placed(h.gateway), 2);
+      expect(h.voice.call?.phase, CallPhase.calling);
+    });
+
+    _voice('a call cancelled, or answered, isn\'t placed again', (async, h) {
+      h.gateway.ready(number: 1);
+      h.voice.startCall('c-maya');
+      async.flushMicrotasks();
+      h.voice.hangUp();
+      h.gateway.resumed(number: 2);
+      async.flushMicrotasks();
+      expect(placed(h.gateway), 1);
+
+      h.voice.startCall('c-maya');
+      async.flushMicrotasks();
+      h.gateway.push(
+        const duvet.CallAcceptedEvent(duvet.CallResponseEvent(conversationId: 'c-maya', userId: FakeRepository.maya)),
+      );
+      async.flushMicrotasks();
+      h.gateway.resumed(number: 3);
+      async.flushMicrotasks();
+      expect(placed(h.gateway), 2);
+    });
+
+    _voice('an answer the gateway hadn\'t heard when its socket dropped goes again on the session it resumes', (
+      async,
+      h,
+    ) {
+      h.gateway.ready(number: 1);
+      h.gateway.push(incoming());
+      h.voice.acceptCall();
+      async.flushMicrotasks();
+      h.gateway.socket = null;
+      h.gateway.resumed(number: 2);
+      async.flushMicrotasks();
+      expect(answers(h.gateway), 2);
+      expect(h.voice.call?.phase, CallPhase.connected);
+
+      // Heard now: no more.
+      h.gateway.push(
+        duvet.CallAcceptedEvent(duvet.CallResponseEvent(conversationId: 'c-maya', userId: FakeRepository.me.id)),
+      );
+      h.gateway.resumed(number: 3);
+      async.flushMicrotasks();
+      expect(answers(h.gateway), 2);
+    });
+
+    _voice('an answer the gateway heard isn\'t sent again, on a resumed session or a new one', (async, h) {
+      h.gateway.ready(number: 1);
+      h.gateway.push(incoming());
+      h.voice.acceptCall();
+      async.flushMicrotasks();
+      h.gateway.push(
+        duvet.CallAcceptedEvent(duvet.CallResponseEvent(conversationId: 'c-maya', userId: FakeRepository.me.id)),
+      );
+      h.gateway.resumed(number: 2);
+      async.flushMicrotasks();
+      expect(answers(h.gateway), 1);
+
+      h.gateway.ready(
+        number: 3,
+        calls: [
+          duvet.GatewayReadyActiveCall.fromJson({'conversation_id': 'c-maya', 'initiator_id': FakeRepository.maya}),
+        ],
+      );
+      async.flushMicrotasks();
+      expect(answers(h.gateway), 1);
+      expect(h.voice.call?.phase, CallPhase.connected);
+    });
+
+    _voice('nor past the 30 s a call rings, after which the gateway would have ended it unanswered', (async, h) {
+      h.gateway.ready(number: 1);
+      h.gateway.push(incoming());
+      h.voice.acceptCall();
+      async.flushMicrotasks();
+      h.gateway.socket = null;
+      h.now = h.now.add(const Duration(seconds: 31));
+      h.gateway.resumed(number: 2);
+      async.flushMicrotasks();
+      expect(answers(h.gateway), 1);
+    });
 
     _voice('an incoming call answered: CALL_ACCEPT, then the call\'s voice on the earpiece', (async, h) {
       h.gateway.push(incoming());

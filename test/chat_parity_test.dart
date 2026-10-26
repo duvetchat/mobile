@@ -6,6 +6,7 @@ import 'package:duvet/data/gifs.dart';
 import 'package:duvet/data/models.dart';
 import 'package:duvet/deep_links.dart';
 import 'package:duvet/main.dart';
+import 'package:duvet/widgets/avatar.dart';
 import 'package:duvet/widgets/chrome.dart';
 import 'package:duvet/widgets/rows.dart';
 import 'package:flutter/material.dart';
@@ -531,7 +532,7 @@ void main() {
 
     testWidgets('a new message is read at the bottom, not while the reader is further up', (tester) async {
       final repository = await openMaya(tester, setUp: longChat);
-      // Opening the chat reads it.
+      // With no divider it opens at its bottom, which reads it.
       expect(repository.reads.last.$2, 'h39');
       repository.push('c-maya', MessageCreated(later('n1', 'At the bottom')));
       await tester.pumpAndSettle();
@@ -548,6 +549,72 @@ void main() {
       await tester.pumpAndSettle();
       expect(repository.reads.last.$2, 'n2');
       expect(repository.unread.value, isNot(contains('c-maya')));
+      semantics.dispose();
+    });
+
+    testWidgets('a chat opened at its divider is read at the bottom, not on opening', (tester) async {
+      final repository = await openMaya(
+        tester,
+        setUp: (r) {
+          longChat(r);
+          r.lastRead['c-maya'] = 'h9';
+          r.unread.value = {'c-maya'};
+        },
+      );
+      // It opens at its divider, above its newest messages: nothing is read.
+      expect(find.text('New messages'), findsOneWidget);
+      expect(repository.reads, isEmpty);
+      expect(repository.unread.value, contains('c-maya'));
+
+      // Left and opened again, it's still unread, at its divider.
+      await tapLabel(tester, 'Back');
+      expect(repository.unread.value, contains('c-maya'));
+      await tester.tap(find.text('Maya'));
+      await tester.pumpAndSettle();
+      expect(find.text('New messages'), findsOneWidget);
+      expect(repository.reads, isEmpty);
+
+      // Scrolled down to the bottom, it's read.
+      await tester.drag(list, const Offset(0, -6000));
+      await tester.pumpAndSettle();
+      expect(repository.reads.last.$2, 'h39');
+      expect(repository.unread.value, isNot(contains('c-maya')));
+      semantics.dispose();
+    });
+
+    testWidgets('one read further back than its first page opens above that page, and is read at the bottom', (
+      tester,
+    ) async {
+      // The newest 100 messages, and 50 older ones: the last read is among those.
+      ChatMessage line(int i) => FakeRepository.message(
+        'u${i.toString().padLeft(3, '0')}',
+        author: _maya,
+        name: 'Maya',
+        text: 'Line $i',
+        at: DateTime(2026, 10, 23, 8, i),
+      );
+      final repository = await openMaya(
+        tester,
+        setUp: (r) {
+          r.history['c-maya'] = [for (var i = 100; i < 200; i++) line(i)];
+          r.olderPages['c-maya'] = [
+            [for (var i = 50; i < 100; i++) line(i)],
+          ];
+          r.lastRead['c-maya'] = 'u060';
+          r.unread.value = {'c-maya'};
+        },
+      );
+      // Above the oldest message of the first page, where it opens, and where it stays when the older page comes:
+      // nothing is read.
+      expect(find.text('New messages'), findsOneWidget);
+      expect(find.text('Line 100'), findsOneWidget);
+      expect(tester.getTopLeft(find.text('New messages')).dy, lessThan(tester.getTopLeft(find.text('Line 100')).dy));
+      expect(repository.reads, isEmpty);
+      expect(repository.unread.value, contains('c-maya'));
+
+      await tester.drag(list, const Offset(0, -20000));
+      await tester.pumpAndSettle();
+      expect(repository.reads.last.$2, 'u199');
       semantics.dispose();
     });
 
@@ -676,6 +743,60 @@ void main() {
     expect(find.text('Nick'), findsOneWidget);
     expect(find.text('Leo'), findsNothing);
     semantics.dispose();
+  });
+
+  group('profile changes', () {
+    const avatar = 'https://api.duvet.chat/attachments/00000000-0000-4000-8000-0000000000cc';
+    Finder avatarAt(String url) => find.byWidgetPredicate((w) => w is UserAvatar && w.url == url);
+
+    testWidgets('someone\'s new name and avatar show on their messages and the quotes of them, not a webhook\'s', (
+      tester,
+    ) async {
+      final repository = await openGeneral(
+        tester,
+        setUp: (r) => r.history['r-general'] = [
+          FakeRepository.message('h1', author: _maya, name: 'Maya', text: 'Ship the ramp?'),
+          // A webhook posting under her name.
+          ChatMessage(
+            id: 'h2',
+            authorId: null,
+            authorName: 'Maya',
+            fromBot: true,
+            fromWebhook: true,
+            webhookId: 'w-1',
+            content: 'Deployed',
+            createdAt: DateTime(2026, 10, 23, 9, 1),
+          ),
+          FakeRepository.message(
+            'h3',
+            author: FakeRepository.leo,
+            name: 'Leo',
+            text: 'Shipped',
+            at: DateTime(2026, 10, 23, 9, 2),
+            reply: const MessageReply(messageId: 'h1', authorId: _maya, authorName: 'Maya', content: 'Ship the ramp?'),
+          ),
+        ],
+      );
+      expect(find.text('Maya'), findsNWidgets(2));
+
+      repository.push('r-general', const AuthorChanged(_maya, name: 'Maya O.', avatarUrl: avatar));
+      await tester.pumpAndSettle();
+      expect(find.text('Maya O.'), findsOneWidget);
+      expect(avatarAt(avatar), findsOneWidget);
+      expect(find.bySemanticsLabel(RegExp(r'^Replying to Maya O\.: Ship the ramp\?')), findsOneWidget);
+      // The webhook's.
+      expect(find.text('Maya'), findsOneWidget);
+      semantics.dispose();
+    });
+
+    testWidgets('and on theirs in a DM', (tester) async {
+      final repository = await openMaya(tester);
+      repository.push('c-maya', const AuthorChanged(_maya, name: 'Maya O.', avatarUrl: avatar));
+      await tester.pumpAndSettle();
+      expect(find.text('Maya O.'), findsOneWidget);
+      expect(avatarAt(avatar), findsOneWidget);
+      semantics.dispose();
+    });
   });
 
   testWidgets('a sticker or a GIF sent while replying answers that message, and the strip closes', (tester) async {

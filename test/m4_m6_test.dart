@@ -152,6 +152,46 @@ void main() {
     semantics.dispose();
   });
 
+  testWidgets('pins show whole, as the chat: markdown, the quote, reactions; no options held (#91)', (tester) async {
+    final repository = await pumpApp(tester);
+    repository.pinned['r-general'] = [
+      FakeRepository.message(
+        'p1',
+        author: FakeRepository.leo,
+        name: 'Leo',
+        text: '**Ramp** is _final_',
+        reply: const MessageReply(messageId: 'm3', authorId: FakeRepository.leo, authorName: 'Leo', content: 'Pushed'),
+        reactions: [
+          Reaction(emoji: '👍', users: {FakeRepository.maya}),
+        ],
+      ),
+    ];
+    await openGeneral(tester);
+    await tapLabel(tester, 'More');
+    await tapLabel(tester, 'Pinned messages');
+    expect(find.bySemanticsLabel(RegExp(r'Ramp is final')), findsOneWidget);
+    expect(find.bySemanticsLabel(RegExp(r'^Replying to Leo: Pushed')), findsOneWidget);
+    expect(find.bySemanticsLabel('👍 1'), findsOneWidget);
+    final node = tester.getSemantics(find.bySemanticsLabel(RegExp(r'Ramp is final')));
+    expect(
+      node.getSemanticsData().customSemanticsActionIds?.map(CustomSemanticsAction.getAction).map((a) => a?.label),
+      isNot(contains('Message options')),
+    );
+
+    expect(find.bySemanticsLabel('Jump to Leo’s message'), findsOneWidget);
+
+    // A reply from a pin closes the pins, then replies in the chat.
+    node.owner!.performAction(
+      node.id,
+      SemanticsAction.customAction,
+      CustomSemanticsAction.getIdentifier(const CustomSemanticsAction(label: 'Reply')),
+    );
+    await tester.pumpAndSettle();
+    expect(find.text('1 message in #general'), findsNothing);
+    expect(find.textContaining('Replying to Leo —'), findsOneWidget);
+    semantics.dispose();
+  });
+
   testWidgets('a thread shows the chain and replies into it', (tester) async {
     final repository = await pumpApp(tester);
     final root = repository.history['r-general']!.single;
@@ -278,7 +318,7 @@ void main() {
     await tester.enterText(find.byType(EditableText).first, 'Cumbia Collective');
     await tester.pump();
     expect(find.text('Cumbia Collective'), findsWidgets);
-    expect(find.text('17 of 50 characters'), findsOneWidget);
+    expect(find.text('17 of 64 characters'), findsOneWidget);
     await tapLabel(tester, 'Create Space');
     expect(repository.created.single.$1, 'Cumbia Collective');
     semantics.dispose();

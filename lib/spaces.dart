@@ -8,6 +8,7 @@ import 'package:image_picker/image_picker.dart';
 import 'package:share_plus/share_plus.dart';
 
 import 'data/links.dart';
+import 'data/launchpad.dart';
 import 'data/models.dart';
 import 'data/repository.dart';
 import 'data/scope.dart';
@@ -108,8 +109,9 @@ class _JoinState extends State<_Join> {
     try {
       final spaceId = invite.joined ? invite.spaceId : await context.repository.joinInvite(invite.code);
       if (mounted) Navigator.of(context).pop(spaceId);
-    } catch (_) {
-      if (mounted) setState(() => _error = 'Couldn’t join. The invite may have run out.');
+    } catch (e) {
+      // The API's reason, as the desktop shows it.
+      if (mounted) setState(() => _error = e is ActionFailed ? e.message : 'Couldn’t join the Space');
     } finally {
       if (mounted) setState(() => _joining = false);
     }
@@ -147,7 +149,13 @@ class _JoinState extends State<_Join> {
               builder: (context, snapshot) {
                 final invite = snapshot.data;
                 if (snapshot.hasError) {
-                  return const Padding(padding: EdgeInsets.only(top: 16), child: ListNote('This invite has expired'));
+                  return Padding(
+                    padding: const EdgeInsets.only(top: 16),
+                    child: ListNote(switch (snapshot.error) {
+                      final ActionFailed f => f.message,
+                      _ => 'This invite has expired',
+                    }),
+                  );
                 }
                 if (invite == null) {
                   return const Padding(
@@ -238,7 +246,9 @@ class SpacesMenuButton extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) => Builder(
-    builder: (anchor) => _PlusButton(
+    builder: (anchor) => _TitleButton(
+      icon: FLucideIcons.plus,
+      label: 'Join or create a Space',
       onPressed: () async {
         final picked = await showGlassMenu(
           anchor,
@@ -270,9 +280,80 @@ class SpacesMenuButton extends StatelessWidget {
   );
 }
 
-class _PlusButton extends StatelessWidget {
+/// The Launchpad's way to lay Spaces out and order them: Grid, List or
+/// Cards; the gateway's order or by name. Kept on the device.
+class LaunchpadOptionsButton extends StatelessWidget {
+  const LaunchpadOptionsButton({super.key});
+
+  @override
+  Widget build(BuildContext context) => _TitleButton(
+    icon: FLucideIcons.slidersHorizontal,
+    label: 'View and sort Spaces',
+    onPressed: () =>
+        showGlassDialogSheet<void>(context, label: 'View and sort Spaces', builder: (_) => const _LaunchpadOptions()),
+  );
+}
+
+class _LaunchpadOptions extends StatelessWidget {
+  const _LaunchpadOptions();
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = context.theme.colors;
+    final prefs = LaunchpadScope.of(context);
+    final choice = prefs.value;
+    Widget group(String title, List<Widget> chips) => Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Semantics(
+          header: true,
+          child: Text(
+            title,
+            style: DuvetType.caption.copyWith(color: colors.foreground, fontWeight: FontWeight.w500),
+          ),
+        ),
+        const SizedBox(height: 8),
+        Wrap(spacing: 8, runSpacing: 8, children: chips),
+      ],
+    );
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 8, 16, 24),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Text('View and sort', style: DuvetType.title.copyWith(color: colors.foreground)),
+          const SizedBox(height: 16),
+          group('View', [
+            for (final (view, label) in const [
+              (SpaceView.grid, 'Grid'),
+              (SpaceView.list, 'List'),
+              (SpaceView.cards, 'Cards'),
+            ])
+              DuvetChip(label: label, selected: choice.view == view, onTap: () => prefs.setView(view)),
+          ]),
+          const SizedBox(height: 16),
+          group('Order', [
+            for (final (sort, label) in const [
+              (SpaceSort.gateway, 'As Duvet lists them'),
+              (SpaceSort.alphabetical, 'By name'),
+            ])
+              DuvetChip(label: label, selected: choice.sort == sort, onTap: () => prefs.setSort(sort)),
+          ]),
+          const SizedBox(height: 8),
+          Text('Kept on this device.', style: DuvetType.caption.copyWith(color: colors.mutedForeground)),
+        ],
+      ),
+    );
+  }
+}
+
+/// A 40pt control in the Launchpad's title: an icon on nothing, pressed in.
+class _TitleButton extends StatelessWidget {
+  final IconData icon;
+  final String label;
   final VoidCallback onPressed;
-  const _PlusButton({required this.onPressed});
+  const _TitleButton({required this.icon, required this.label, required this.onPressed});
 
   @override
   Widget build(BuildContext context) {
@@ -281,7 +362,7 @@ class _PlusButton extends StatelessWidget {
     return Semantics(
       container: true,
       button: true,
-      label: 'Join or create a Space',
+      label: label,
       excludeSemantics: true,
       onTap: onPressed,
       child: Pressable(
@@ -293,7 +374,7 @@ class _PlusButton extends StatelessWidget {
           child: InsetShadow(
             shadows: pressed ? context.duvet.shadowPressed : const [],
             borderRadius: radius,
-            child: Icon(FLucideIcons.plus, size: 24, color: colors.foreground),
+            child: Icon(icon, size: 24, color: colors.foreground),
           ),
         ),
       ),
@@ -305,8 +386,8 @@ class _PlusButton extends StatelessWidget {
 Future<String?> Function() pickSpaceIcon = () async =>
     (await ImagePicker().pickImage(source: ImageSource.gallery, maxWidth: 512, imageQuality: 90))?.path;
 
-/// New Space: a live preview of its card, a name (up to 50), what it's about,
-/// and Create.
+/// New Space: a live preview of its card, a name (up to 64 characters), what
+/// it's about (up to 256), and Create.
 Future<void> showCreateSpaceSheet(BuildContext context) async {
   final spaceId = await Navigator.of(
     context,
@@ -328,7 +409,9 @@ class CreateSpacePage extends StatefulWidget {
 }
 
 class _CreateSpacePageState extends State<CreateSpacePage> {
-  static const _max = 50;
+  // The API's columns, which count characters (an emoji is one).
+  static const _maxName = 64;
+  static const _maxAbout = 256;
   final _name = TextEditingController();
   final _about = TextEditingController();
   String? _icon;
@@ -339,6 +422,7 @@ class _CreateSpacePageState extends State<CreateSpacePage> {
   void initState() {
     super.initState();
     _name.addListener(() => setState(() {}));
+    _about.addListener(() => setState(() {}));
   }
 
   @override
@@ -350,7 +434,7 @@ class _CreateSpacePageState extends State<CreateSpacePage> {
 
   Future<void> _create() async {
     final name = _name.text.trim();
-    if (name.isEmpty || name.length > _max) return;
+    if (name.isEmpty || name.runes.length > _maxName || _about.text.trim().runes.length > _maxAbout) return;
     setState(() {
       _creating = true;
       _error = null;
@@ -366,9 +450,12 @@ class _CreateSpacePageState extends State<CreateSpacePage> {
       debugPrint('create space: $e');
       if (mounted) {
         setState(
-          () => _error = e is TimeoutException
-              ? 'Duvet didn’t answer. Check Spaces before trying again: it may have been made.'
-              : 'Couldn’t create the Space',
+          () => _error = switch (e) {
+            // The API's reason (the 100-Space limit, say), or that no answer
+            // came and the Space may have been made.
+            ActionFailed(:final message) => message,
+            _ => 'Couldn’t create the Space',
+          },
         );
       }
     } finally {
@@ -382,7 +469,8 @@ class _CreateSpacePageState extends State<CreateSpacePage> {
     final tokens = context.duvet;
     final padding = MediaQuery.paddingOf(context);
     final name = _name.text.trim();
-    final tooLong = name.length > _max;
+    final about = _about.text.trim();
+    final tooLong = name.runes.length > _maxName || about.runes.length > _maxAbout;
     return Scaffold(
       backgroundColor: colors.background,
       body: Stack(
@@ -456,8 +544,8 @@ class _CreateSpacePageState extends State<CreateSpacePage> {
                   controller: _name,
                   autofocus: true,
                   textInputAction: TextInputAction.next,
-                  error: tooLong ? 'Up to $_max characters' : null,
-                  helper: '${name.length} of $_max characters',
+                  error: name.runes.length > _maxName ? 'Up to $_maxName characters' : null,
+                  helper: '${name.runes.length} of $_maxName characters',
                 ),
                 const SizedBox(height: 24),
                 DuvetTextField(
@@ -465,6 +553,8 @@ class _CreateSpacePageState extends State<CreateSpacePage> {
                   controller: _about,
                   hint: 'Shown on invites',
                   maxLines: 4,
+                  error: about.runes.length > _maxAbout ? 'Up to $_maxAbout characters' : null,
+                  helper: '${about.runes.length} of $_maxAbout characters',
                 ),
                 const SizedBox(height: 16),
                 Text(
@@ -612,6 +702,20 @@ Future<void> showInviteSheet(BuildContext context, {required Space space, requir
       builder: (context) => _Invite(space: space, room: room),
     );
 
+/// How long an invite link works, as the desktop offers it; null never ends.
+const inviteExpiries = <(String, Duration?)>[
+  ('30 minutes', Duration(minutes: 30)),
+  ('1 hour', Duration(hours: 1)),
+  ('6 hours', Duration(hours: 6)),
+  ('12 hours', Duration(hours: 12)),
+  ('1 day', Duration(days: 1)),
+  ('7 days', Duration(days: 7)),
+  ('Never', null),
+];
+
+/// Seven days unless the user picks otherwise, as on the desktop.
+final _defaultExpiry = inviteExpiries.indexWhere((e) => e.$2 == const Duration(days: 7));
+
 class _Invite extends StatefulWidget {
   final Space space;
   final Room room;
@@ -622,14 +726,11 @@ class _Invite extends StatefulWidget {
 }
 
 class _InviteState extends State<_Invite> {
-  static const _ages = <(String, Duration?)>[
-    ('1 hour', Duration(hours: 1)),
-    ('1 day', Duration(days: 1)),
-    ('7 days', Duration(days: 7)),
-    ('Never', null),
-  ];
-  int _age = 2;
-  Future<String>? _link;
+  int _age = _defaultExpiry;
+
+  /// The link, with the expiry it was made with: what it says is its own,
+  /// not the chip picked while the next one is on its way.
+  Future<(String, int)>? _link;
 
   @override
   void didChangeDependencies() {
@@ -637,7 +738,12 @@ class _InviteState extends State<_Invite> {
     _link ??= _make();
   }
 
-  Future<String> _make() => context.repository.createInvite(widget.space.id, widget.room.id, maxAge: _ages[_age].$2);
+  Future<(String, int)> _make() {
+    final age = _age;
+    return context.repository
+        .createInvite(widget.space.id, widget.room.id, maxAge: inviteExpiries[age].$2)
+        .then((link) => (link, age));
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -648,7 +754,10 @@ class _InviteState extends State<_Invite> {
       child: FutureBuilder(
         future: _link,
         builder: (context, snapshot) {
-          final link = snapshot.data;
+          // Only once it's made: while the next comes, no link to copy or
+          // share, and nothing said of one.
+          final made = snapshot.connectionState == ConnectionState.done ? snapshot.data : null;
+          final link = made?.$1;
           return Column(
             mainAxisSize: MainAxisSize.min,
             crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -722,6 +831,16 @@ class _InviteState extends State<_Invite> {
                   ],
                 ),
               ),
+              if (link != null) ...[
+                const SizedBox(height: 8),
+                Semantics(
+                  liveRegion: true,
+                  child: Text(switch (inviteExpiries[made!.$2]) {
+                    (_, null) => 'This link never expires.',
+                    (final label, _) => 'This link expires in $label.',
+                  }, style: DuvetType.caption.copyWith(color: colors.mutedForeground)),
+                ),
+              ],
               const SizedBox(height: 16),
               Text(
                 'Expires after',
@@ -732,7 +851,7 @@ class _InviteState extends State<_Invite> {
                 spacing: 8,
                 runSpacing: 8,
                 children: [
-                  for (final (i, (label, _)) in _ages.indexed)
+                  for (final (i, (label, _)) in inviteExpiries.indexed)
                     DuvetChip(
                       label: label,
                       selected: i == _age,

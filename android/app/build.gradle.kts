@@ -42,7 +42,10 @@ android {
     signingConfigs {
         if (keyProperties.isNotEmpty()) {
             create("release") {
-                storeFile = file(keyProperties.getProperty("storeFile"))
+                // A leading ~/ is the user's home, as in a shell.
+                storeFile = file(
+                    keyProperties.getProperty("storeFile").replaceFirst(Regex("^~/"), System.getProperty("user.home") + "/"),
+                )
                 storePassword = keyProperties.getProperty("storePassword")
                 keyAlias = keyProperties.getProperty("keyAlias")
                 keyPassword = keyProperties.getProperty("keyPassword")

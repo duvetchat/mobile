@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 
 import 'package:duvet/data/cache.dart';
@@ -115,6 +116,33 @@ Map<String, dynamic> _space() => {
   'owner_id': _me,
 };
 
+/// A cache store whose writes wait for [hold] while it's set, then write as a
+/// file is written: emptied, then filled a moment later, so two at once leave
+/// both in it. [listed] counts the times it's listed: once a pass over the
+/// pages kept.
+class _HeldWrites extends MemoryChatCacheStore {
+  Completer<void>? hold;
+  var listed = 0;
+
+  @override
+  Future<void> write(String key, String json) async {
+    await hold?.future;
+    data[key] = '';
+    await Future<void>.value();
+    data[key] = '${data[key] ?? ''}$json';
+  }
+
+  @override
+  Future<List<String>> keys() {
+    listed++;
+    return super.keys();
+  }
+}
+
+/// A message of [authorId]'s as a page kept has it.
+ChatMessage _keptMessage(String id, String authorId, String name) =>
+    ChatMessage(id: id, authorId: authorId, authorName: name, content: id, createdAt: DateTime(2026, 10, 23));
+
 /// The gateway's envelope for [type], parsed as the client parses it.
 duvet.GatewayEventPayload _event(String type, Map<String, dynamic> data) => duvet.GatewayEnvelope.fromJson({
   'op': 0,
@@ -128,15 +156,28 @@ duvet.GatewayEventPayload _event(String type, Map<String, dynamic> data) => duve
 void main() {
   late List<http.Request> requests;
   late DuvetRepository repository;
+  late _HeldWrites cache;
 
   setUp(() {
     requests = [];
+    cache = _HeldWrites();
     final client = MockClient((request) async {
       requests.add(request);
       final json = switch ((request.method, request.url.path)) {
         ('POST', '/api/auth/login') => {'token': 'access-1', 'session_token': 'refresh-1'},
         ('GET', '/api/users/@me') => {..._user(_me, 'gaby', alias: 'Gaby'), 'email_verified': true},
         ('GET', '/api/users/@me/conversations') => <Object>[],
+        // The DM's history, the newest first: Maya's message, and the user's
+        // reply to it.
+        ('GET', '/api/users/@me/conversations/c-1/messages') => [
+          {
+            ..._dmMessage('6', 'shipping it'),
+            'author_id': _me,
+            'user': {'id': _me, 'username': 'gaby', 'alias': 'Gaby'},
+            'referenced_message': {'message_id': '5', 'author_id': _maya, 'author_name': 'Maya', 'content': 'ready?'},
+          },
+          _dmMessage('5', 'ready?'),
+        ],
         // Maya's Space nickname, which the history and the member list give.
         ('GET', '/api/rooms/r-1/messages') => [
           {..._roomMessage('7', 'first'), 'member_alias': 'Nick'},
@@ -199,7 +240,7 @@ void main() {
       recentsStore: MemoryRecentChatsStore(),
       httpClient: () => client,
       connectGateway: false,
-      cacheStore: MemoryChatCacheStore(),
+      cacheStore: cache,
     );
   });
 
@@ -296,6 +337,254 @@ void main() {
       repository.handleEvent(_event('MESSAGE_CREATE', _roomMessage('8', 'second')));
       await pumpEventQueue();
       expect((events.single as MessageCreated).message.authorName, 'Nick');
+    });
+  });
+
+  group('profile changes', () {
+    const avatar = '00000000-0000-4000-8000-0000000000cc';
+    const avatarUrl = 'https://api.duvet.chat/attachments/$avatar';
+
+    // Maya's new name and avatar.
+    duvet.GatewayEventPayload renamed() =>
+        _event('USER_UPDATE', {'id': _maya, 'username': 'maya', 'alias': 'Maya O.', 'avatar': avatar});
+
+    // Who the Chats tab says wrote each chat's newest message.
+    Map<String, String?> previewAuthors() => {for (final c in repository.recents.value) c.target.id: c.previewAuthor};
+
+    // The DM's events, as its open chat gets them.
+    List<MessageEvent> listenToDm() {
+      final events = <MessageEvent>[];
+      final sub = repository.messageEvents(_dm).listen(events.add);
+      addTearDown(sub.cancel);
+      return events;
+    }
+
+    test('someone\'s new name and avatar reach their messages: in open chats, the newest, the Chats tab', () async {
+      final roomEvents = await listen(_room);
+      final dmEvents = listenToDm();
+      repository.opened(_room, '# general');
+      repository.handleEvent(_event('MESSAGE_CREATE', _roomMessage('8', 'second')));
+      repository.handleEvent(_event('DM_MESSAGE_CREATE', _dmMessage('9', 'third')));
+
+      repository.handleEvent(renamed());
+      await pumpEventQueue();
+
+      for (final events in [roomEvents, dmEvents]) {
+        final change = events.whereType<AuthorChanged>().single;
+        expect((change.userId, change.name, change.avatarUrl), (_maya, 'Maya O.', avatarUrl));
+      }
+      for (final chatId in ['r-1', 'c-1']) {
+        final newest = repository.latest.value[chatId]!;
+        expect((newest.authorName, newest.authorAvatarUrl), ('Maya O.', avatarUrl));
+      }
+      expect(previewAuthors(), {'r-1': 'Maya O.', 'c-1': 'Maya O.'});
+    });
+
+    test('in a Space\'s rooms, their nickname there still names them, beside their new avatar', () async {
+      final roomEvents = await listen(_room);
+      final dmEvents = listenToDm();
+      repository.handleEvent(_event('SPACE_CREATE', _space()));
+      repository.opened(_room, '# general');
+      // The history names her Nick.
+      expect((await repository.messages(_room)).single.authorName, 'Nick');
+      repository.handleEvent(_event('MESSAGE_CREATE', _roomMessage('8', 'second')));
+      repository.handleEvent(_event('DM_MESSAGE_CREATE', _dmMessage('9', 'third')));
+
+      repository.handleEvent(renamed());
+      await pumpEventQueue();
+
+      final inRoom = roomEvents.whereType<AuthorChanged>().single;
+      expect((inRoom.name, inRoom.avatarUrl), ('Nick', avatarUrl));
+      expect(dmEvents.whereType<AuthorChanged>().single.name, 'Maya O.');
+      final newest = repository.latest.value['r-1']!;
+      expect((newest.authorName, newest.authorAvatarUrl), ('Nick', avatarUrl));
+      expect(repository.latest.value['c-1']!.authorName, 'Maya O.');
+      expect(previewAuthors(), {'r-1': 'Nick', 'c-1': 'Maya O.'});
+    });
+
+    test('a webhook\'s messages keep the name and avatar they were sent with', () async {
+      const hookAvatar = '00000000-0000-4000-8000-0000000000dd';
+      await listen(_room);
+      repository.opened(_room, '# general');
+      // A webhook posting under her name, with an avatar of its own.
+      repository.handleEvent(
+        _event('MESSAGE_CREATE', {
+          'id': '13',
+          'room_id': 'r-1',
+          'author_id': null,
+          'webhook_id': 'w-1',
+          'content': 'Deployed',
+          'type': 0,
+          'created_at': _at,
+          'updated_at': _at,
+          'user': {..._user('w-1', 'Maya'), 'avatar': hookAvatar, 'is_bot': true},
+        }),
+      );
+      repository.handleEvent(_event('DM_MESSAGE_CREATE', _dmMessage('9', 'third')));
+
+      repository.handleEvent(renamed());
+      await pumpEventQueue();
+
+      final hook = repository.latest.value['r-1']!;
+      expect((hook.authorName, hook.authorAvatarUrl), ('Maya', 'https://api.duvet.chat/attachments/$hookAvatar'));
+      expect(previewAuthors(), {'r-1': 'Maya', 'c-1': 'Maya O.'});
+    });
+
+    test('a bot\'s answers to the user alone, kept apart from the room\'s, take its new name too', () async {
+      await listen(_room);
+      repository.handleEvent(_event('MESSAGE_CREATE', _answer('8', 'Only for you')));
+      repository.handleEvent(
+        _event('USER_UPDATE', {'id': _ballot, 'username': 'ballot', 'alias': 'Ballot 2', 'avatar': avatar}),
+      );
+      final answer = repository.ephemeralIn(_room).single;
+      expect((answer.authorName, answer.authorAvatarUrl), ('Ballot 2', avatarUrl));
+    });
+
+    test('the pages kept for offline show it too, written or not yet; a room\'s by their nickname there', () async {
+      await listen(_room);
+      repository.handleEvent(_event('SPACE_CREATE', _space()));
+      // The DM's history, written: her message, and the user's reply to it.
+      await repository.messages(_dm);
+      await Future<void>.delayed(const Duration(milliseconds: 700));
+      expect(cache.data.keys, contains('chat_c-1'));
+      // The room's, where the history names her Nick: not written yet.
+      await repository.messages(_room);
+
+      repository.handleEvent(renamed());
+      await pumpEventQueue();
+      await Future<void>.delayed(const Duration(milliseconds: 700));
+
+      final dm = (await ChatCache(cache).loadPage('c-1'))!;
+      expect(
+        [for (final m in dm) (m.authorName, m.authorAvatarUrl, m.reply?.authorName)],
+        [('Maya O.', avatarUrl, null), ('Gaby', null, 'Maya O.')],
+      );
+      final room = (await ChatCache(cache).loadPage('r-1'))!.single;
+      expect((room.authorName, room.authorAvatarUrl), ('Nick', avatarUrl));
+    });
+
+    test('signing out while the pages kept change leaves none behind', () async {
+      final store = _HeldWrites();
+      final kept = ChatCache(store);
+      kept.savePage('c-1', [
+        ChatMessage(id: '5', authorId: _maya, authorName: 'Maya', content: 'ready?', createdAt: DateTime(2026, 10, 23)),
+      ]);
+      await Future<void>.delayed(const Duration(milliseconds: 700));
+      // Her new name, being written when the user signs out.
+      final writing = store.hold = Completer<void>();
+      unawaited(kept.changeMessages(_maya, (_, m) => m.changedBy(const AuthorChanged(_maya, name: 'Maya O.'))));
+      await pumpEventQueue();
+      final clearing = kept.clear();
+      writing.complete();
+      await clearing;
+      // Once the write under way is done too.
+      await pumpEventQueue();
+      expect(store.data, isEmpty);
+    });
+
+    test('signing out while a page is being written leaves none behind either', () async {
+      final store = _HeldWrites();
+      final kept = ChatCache(store);
+      final writing = store.hold = Completer<void>();
+      kept.savePage('c-1', [_keptMessage('5', _maya, 'Maya')]);
+      // Its write under way when the user signs out.
+      await Future<void>.delayed(const Duration(milliseconds: 700));
+      final clearing = kept.clear();
+      writing.complete();
+      await clearing;
+      await pumpEventQueue();
+      expect(store.data, isEmpty);
+    });
+
+    test('the same name and avatar again, from another Space or with a new bio, read no page again', () async {
+      await listen(_dm);
+      // A page kept that names her.
+      await repository.messages(_dm);
+      await Future<void>.delayed(const Duration(milliseconds: 700));
+      for (final update in [
+        renamed(),
+        // The API sends it once per Space she shares with the user.
+        renamed(),
+        // Her new bio.
+        _event('USER_UPDATE', {'id': _maya, 'username': 'maya', 'alias': 'Maya O.', 'avatar': avatar, 'custom': 'Hi'}),
+      ]) {
+        repository.handleEvent(update);
+        // The pass over the pages it makes, if any, done.
+        await pumpEventQueue();
+      }
+      expect(cache.listed, 1);
+      expect((await ChatCache(cache).loadPage('c-1'))!.first.authorName, 'Maya O.');
+    });
+
+    test('changes queued while the pages change wait for one pass, which makes the latest of each', () async {
+      final store = _HeldWrites();
+      final kept = ChatCache(store);
+      kept.savePage('c-1', [_keptMessage('5', _maya, 'Maya'), _keptMessage('6', _me, 'Gaby')]);
+      await Future<void>.delayed(const Duration(milliseconds: 700));
+      Future<void> rename(String id, String name) =>
+          kept.changeMessages(id, (_, m) => m.changedBy(AuthorChanged(id, name: name)));
+      // Her first change, being written while more come.
+      final writing = store.hold = Completer<void>();
+      unawaited(rename(_maya, 'Maya O.'));
+      await pumpEventQueue();
+      final queued = [rename(_maya, 'Maya 1'), rename(_me, 'Gaby 2'), rename(_maya, 'Maya 3')];
+      writing.complete();
+      await Future.wait(queued);
+      // The first pass, then one for the three.
+      expect(store.listed, 2);
+      expect([for (final m in (await kept.loadPage('c-1'))!) m.authorName], ['Maya 3', 'Gaby 2']);
+    });
+
+    test('a page being written as the pages change is changed once written: the newest, in valid JSON', () async {
+      final store = _HeldWrites();
+      final kept = ChatCache(store);
+      kept.savePage('c-1', [_keptMessage('5', _maya, 'Maya')]);
+      await Future<void>.delayed(const Duration(milliseconds: 700));
+      // A newer page, being written when her new name comes.
+      final writing = store.hold = Completer<void>();
+      kept.savePage('c-1', [_keptMessage('5', _maya, 'Maya'), _keptMessage('6', _maya, 'Maya')]);
+      await Future<void>.delayed(const Duration(milliseconds: 700));
+      final changing = kept.changeMessages(_maya, (_, m) => m.changedBy(const AuthorChanged(_maya, name: 'Maya O.')));
+      await pumpEventQueue();
+      writing.complete();
+      await changing;
+      await pumpEventQueue();
+      expect(() => jsonDecode(store.data['chat_c-1']!), returnsNormally);
+      expect(
+        [for (final m in (await kept.loadPage('c-1'))!) (m.id, m.authorName)],
+        [('5', 'Maya O.'), ('6', 'Maya O.')],
+      );
+    });
+
+    test('a page being written for the first time as the pages change is changed once written', () async {
+      final store = _HeldWrites();
+      final kept = ChatCache(store);
+      // Its first write is under way when her new name comes, so the store doesn't list it yet.
+      final writing = store.hold = Completer<void>();
+      kept.savePage('c-1', [_keptMessage('5', _maya, 'Maya')]);
+      await Future<void>.delayed(const Duration(milliseconds: 700));
+      expect(store.data, isEmpty);
+      final changing = kept.changeMessages(_maya, (_, m) => m.changedBy(const AuthorChanged(_maya, name: 'Maya O.')));
+      await pumpEventQueue();
+      writing.complete();
+      await changing;
+      await pumpEventQueue();
+      expect([for (final m in (await kept.loadPage('c-1'))!) m.authorName], ['Maya O.']);
+    });
+
+    test('a new session forgets the names given: the same change applies again after READY', () async {
+      final events = await listen(_dm);
+      repository.handleEvent(renamed());
+      repository.handleEvent(renamed());
+      await pumpEventQueue();
+      expect(events.whereType<AuthorChanged>().length, 1);
+      expect(cache.listed, 1);
+      // A change missed while the socket was down may repeat one given before it.
+      repository.handleEvent(_event('READY', {'user': _user(_me, 'gaby'), 'sessionToken': 'ws'}));
+      repository.handleEvent(renamed());
+      await pumpEventQueue();
+      expect(events.whereType<AuthorChanged>().length, 2);
+      expect(cache.listed, 2);
     });
   });
 
@@ -523,5 +812,44 @@ void main() {
     expect(merged.reply?.content, 'ship it?');
     expect(merged.reactions.single.emoji, '👍');
     expect(merged.attachments.single.filename, 'notes.pdf');
+  });
+
+  test('ChatMessage.changedBy names its author anew, and its reply\'s quote of them, never a webhook', () {
+    const change = AuthorChanged(_maya, name: 'Maya O.', avatarUrl: 'https://x/new');
+    ChatMessage message({String? author = _maya, bool webhook = false, MessageReply? reply}) => ChatMessage(
+      id: '7',
+      authorId: author,
+      authorName: 'Maya',
+      authorAvatarUrl: 'https://x/old',
+      content: 'ready?',
+      createdAt: DateTime(2026, 10, 23),
+      pinned: true,
+      fromWebhook: webhook,
+      webhookId: webhook ? 'w-1' : null,
+      reply: reply,
+    );
+    final hers = message().changedBy(change);
+    expect(
+      (hers.authorName, hers.authorAvatarUrl, hers.content, hers.pinned),
+      ('Maya O.', 'https://x/new', 'ready?', true),
+    );
+    final quoting = message(
+      author: _me,
+      reply: const MessageReply(
+        messageId: '1',
+        authorId: _maya,
+        authorName: 'Maya',
+        content: 'go',
+        mentionAuthor: true,
+      ),
+    ).changedBy(change);
+    expect((quoting.authorName, quoting.authorAvatarUrl), ('Maya', 'https://x/old'));
+    expect((quoting.reply?.authorName, quoting.reply?.content, quoting.reply?.mentionAuthor), ('Maya O.', 'go', true));
+    // A webhook's message keeps the name and avatar it was sent with,
+    // whatever it says of its author; one with nothing of hers stays as it
+    // is, and so does one that shows her as she is now.
+    for (final m in [message(webhook: true), message(author: _me), hers, quoting]) {
+      expect(m.changedBy(change), same(m));
+    }
   });
 }

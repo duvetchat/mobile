@@ -58,3 +58,23 @@ class UserAvatar extends StatelessWidget {
     );
   }
 }
+
+/// A member's banner, faintly behind their row as the desktop's member list
+/// has it: covering the row from its right edge, at 15%, 9% while they're
+/// offline. A decoration's image, so screen readers never meet it and a
+/// row's press and selection tints stay under it; nothing while it comes or
+/// when it can't be had. None without a [url].
+DecorationImage? memberBanner(BuildContext context, String? url, {bool offline = false}) {
+  if (url == null) return null;
+  // One size whatever the row, so each banner is fetched and decoded once:
+  // half the screen's pixels across, more than a 15% wash shows.
+  final width = (MediaQuery.sizeOf(context).width * MediaQuery.devicePixelRatioOf(context) / 2).round();
+  if (width <= 0) return null;
+  return DecorationImage(
+    image: ResizeImage(NetworkImage(url), width: width, policy: ResizeImagePolicy.fit),
+    fit: BoxFit.cover,
+    alignment: Alignment.centerRight,
+    opacity: offline ? 0.09 : 0.15,
+    onError: (error, stackTrace) {},
+  );
+}

@@ -178,9 +178,11 @@ class _ComposerField extends StatelessWidget {
                     focusNode: focusNode,
                     minLines: 1,
                     maxLines: 5,
-                    textInputAction: TextInputAction.send,
+                    // Return starts a new line, for lists, quotes and code;
+                    // only Send sends.
+                    keyboardType: TextInputType.multiline,
+                    textInputAction: TextInputAction.newline,
                     textCapitalization: TextCapitalization.sentences,
-                    onSubmitted: (_) => onSend(),
                     cursorColor: tokens.accentText,
                     style: DuvetType.body.copyWith(color: colors.foreground),
                     decoration: InputDecoration.collapsed(
@@ -432,9 +434,19 @@ class _SuggestionsPanel extends StatelessWidget {
                 label: '$label, ${children.length}',
                 explicitChildNodes: true,
                 child: GlassSurface(
-                  child: Padding(
-                    padding: const EdgeInsets.all(8),
-                    child: Column(mainAxisSize: MainAxisSize.min, children: children),
+                  // Up to 300 points, as the desktop's, and scrolled past
+                  // that; less on a short screen, the keyboard up.
+                  child: ConstrainedBox(
+                    constraints: BoxConstraints(
+                      maxHeight: min(
+                        300,
+                        (MediaQuery.sizeOf(context).height - MediaQuery.viewInsetsOf(context).bottom) * 0.4,
+                      ),
+                    ),
+                    child: SingleChildScrollView(
+                      padding: const EdgeInsets.all(8),
+                      child: Column(mainAxisSize: MainAxisSize.min, children: children),
+                    ),
                   ),
                 ),
               ),

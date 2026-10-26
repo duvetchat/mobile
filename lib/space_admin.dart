@@ -1,13 +1,18 @@
+import 'dart:async';
+import 'dart:io';
+import 'dart:ui' as ui;
+
 import 'package:flutter/material.dart';
 import 'package:flutter/semantics.dart';
 import 'package:flutter/services.dart';
 import 'package:forui/forui.dart';
 import 'package:image_picker/image_picker.dart';
+import 'package:path_provider/path_provider.dart';
 
-import 'account.dart' show formatBytes;
+import 'account.dart' show CropPage, formatBytes;
 import 'data/models.dart';
 import 'data/scope.dart';
-import 'people.dart' show SquareCheck;
+import 'people.dart' show PersonRow;
 import 'spaces.dart' show deleteSpace, inviteRoomOf, pickSpaceIcon, showInviteSheet;
 import 'theme.dart';
 import 'widgets/avatar.dart';
@@ -15,9 +20,119 @@ import 'widgets/chrome.dart';
 import 'widgets/glass.dart';
 import 'widgets/rows.dart';
 
-/// Picks a Space's banner, an emoji or a sticker; tests swap in their own.
+/// Picks a Space's banner; tests swap in their own.
 Future<String?> Function() pickSpaceImage = () async =>
     (await ImagePicker().pickImage(source: ImageSource.gallery, maxWidth: 1024, imageQuality: 90))?.path;
+
+/// Picks an emoji's or a sticker's picture as it is: resized, Android's picker
+/// would make a GIF a still image. Tests swap in their own.
+Future<String?> Function() pickAssetImage = () async =>
+    (await ImagePicker().pickImage(source: ImageSource.gallery))?.path;
+
+/// The sides of what the desktop's image editor makes of an emoji and a
+/// sticker: a PNG this size is always under the API's caps.
+const emojiSide = 128;
+const stickerSide = 320;
+
+/// The API's caps on an emoji's and a sticker's file: its bytes, and the
+/// pixels of each side.
+const emojiCap = (bytes: 256 * 1024, side: 512);
+const stickerCap = (bytes: 512 * 1024, side: 1024);
+
+/// A GIF's size as the API reads it (its header's screen, and its bytes),
+/// whether it moves, and whether it can be read at all; null for any other
+/// picture, of which only the header is read.
+Future<({int width, int height, int bytes, bool animated, bool readable})?> gifAt(String path) async {
+  final file = File(path);
+  final opened = await file.open();
+  final Uint8List header;
+  try {
+    header = await opened.read(10);
+  } finally {
+    await opened.close();
+  }
+  if (header.length < 10 || !const ['GIF87a', 'GIF89a'].contains(String.fromCharCodes(header, 0, 6))) return null;
+  // Its frames tell whether it moves.
+  final data = await file.readAsBytes();
+  var animated = false;
+  var readable = true;
+  try {
+    final codec = await ui.instantiateImageCodec(data);
+    animated = codec.frameCount > 1;
+    codec.dispose();
+  } catch (e) {
+    // The cropper couldn't show it either: the caller says so.
+    debugPrint('gif: $e');
+    readable = false;
+  }
+  return (
+    width: header[6] | header[7] << 8,
+    height: header[8] | header[9] << 8,
+    bytes: data.length,
+    animated: animated,
+    readable: readable,
+  );
+}
+
+/// The part of the picture at [path] that [crop] frames, drawn [side] pixels
+/// square, as a PNG.
+Future<Uint8List> squarePng(String path, CropRect crop, int side) => framedPng(path, crop, side, side);
+
+/// The part of the picture at [path] that [crop] frames, drawn [width] by
+/// [height] pixels, as a PNG.
+Future<Uint8List> framedPng(String path, CropRect crop, int width, int height) async {
+  final codec = await ui.instantiateImageCodec(await File(path).readAsBytes());
+  final ui.Image picture;
+  try {
+    picture = (await codec.getNextFrame()).image;
+  } finally {
+    codec.dispose();
+  }
+  final recorder = ui.PictureRecorder();
+  Canvas(recorder).drawImageRect(
+    picture,
+    Rect.fromLTWH(crop.x, crop.y, crop.w, crop.h),
+    Rect.fromLTWH(0, 0, width.toDouble(), height.toDouble()),
+    Paint()..filterQuality = FilterQuality.high,
+  );
+  final drawing = recorder.endRecording();
+  final square = await drawing.toImage(width, height);
+  try {
+    return (await square.toByteData(format: ui.ImageByteFormat.png))!.buffer.asUint8List();
+  } finally {
+    picture.dispose();
+    drawing.dispose();
+    square.dispose();
+  }
+}
+
+/// [squarePng] in a file to upload, named after the picture, as the desktop
+/// names it; answers its path. Tests swap in their own.
+Future<String> Function(String path, CropRect crop, int side) saveSquareImage = (path, crop, side) async {
+  final png = await squarePng(path, crop, side);
+  final name = path.split(Platform.pathSeparator).last;
+  final dot = name.lastIndexOf('.');
+  final dir = Directory('${(await getTemporaryDirectory()).path}/square');
+  await dir.create(recursive: true);
+  final file = File('${dir.path}/${dot > 0 ? name.substring(0, dot) : 'image'}.png');
+  await file.writeAsBytes(png, flush: true);
+  return file.path;
+};
+
+/// A Space banner's frame, as the desktop crops one: 5:2, 600 by 240.
+const spaceBannerAspect = 5 / 2;
+const spaceBannerSize = (width: 600, height: 240);
+
+/// The banner [crop] frames in the picture at [path], in a file to upload;
+/// answers its path. Tests swap in their own.
+Future<String> Function(String path, CropRect crop) saveBannerImage = (path, crop) async {
+  final png = await framedPng(path, crop, spaceBannerSize.width, spaceBannerSize.height);
+  final dir = Directory('${(await getTemporaryDirectory()).path}/banner');
+  await dir.create(recursive: true);
+  final file = File('${dir.path}/banner-${DateTime.now().microsecondsSinceEpoch}.png');
+  await file.writeAsBytes(png, flush: true);
+  return file.path;
+};
 
 /// Space settings: the Space, then its rooms, emojis and stickers; its
 /// roles and invites; its webhooks and storage. Each row shows only to those
@@ -98,7 +213,8 @@ class _SpaceSettingsPageState extends State<SpaceSettingsPage> {
                   detail: 'Name, icon, banner',
                   onPressed: () => _open(SpaceOverviewPage(spaceId: id)),
                 ),
-              if (profile.can(Perm.manageChannels))
+              // ManageChannels in the Space makes rooms; in a room, runs it.
+              if (profile.can(Perm.manageChannels) || profile.managesRooms)
                 GlassRow(
                   icon: FLucideIcons.hash,
                   label: 'Rooms',
@@ -368,6 +484,88 @@ Future<(String, T?)?> askName<T>(
       _NameSheet<T>(title: title, initial: initial, label: label, action: action, choices: choices, choice: choice),
 );
 
+/// The most a room's description takes, as the API stores it.
+const roomDescriptionLimit = 256;
+
+/// Asks what a room is for; empty clears it. Null when cancelled.
+Future<String?> askDescription(BuildContext context, {required String title, String initial = ''}) =>
+    showGlassDialogSheet<String>(
+      context,
+      label: title,
+      builder: (context) => _DescriptionSheet(title: title, initial: initial),
+    );
+
+class _DescriptionSheet extends StatefulWidget {
+  final String title;
+  final String initial;
+  const _DescriptionSheet({required this.title, required this.initial});
+
+  @override
+  State<_DescriptionSheet> createState() => _DescriptionSheetState();
+}
+
+class _DescriptionSheetState extends State<_DescriptionSheet> {
+  late final _text = TextEditingController(text: widget.initial);
+
+  @override
+  void initState() {
+    super.initState();
+    _text.addListener(() => setState(() {}));
+  }
+
+  @override
+  void dispose() {
+    _text.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = context.theme.colors;
+    // As the field and the API's column count them: code points.
+    final left = roomDescriptionLimit - _text.text.runes.length;
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 8, 16, 24),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Text(widget.title, style: DuvetType.title.copyWith(color: colors.foreground)),
+          const SizedBox(height: 16),
+          DuvetTextField(
+            label: 'Description',
+            hint: 'What this room is for',
+            controller: _text,
+            autofocus: true,
+            maxLines: 4,
+            keyboardType: TextInputType.multiline,
+            maxLength: roomDescriptionLimit,
+          ),
+          const SizedBox(height: 8),
+          Text(
+            _text.text.trim().isEmpty
+                ? 'Leave it empty to clear it.'
+                : left == 1
+                ? '1 character left'
+                : '$left characters left',
+            style: DuvetType.caption.copyWith(color: colors.mutedForeground),
+          ),
+          const SizedBox(height: 16),
+          DuvetButton(
+            label: 'Save',
+            variant: ButtonVariant.primary,
+            expand: true,
+            // Unchanged, there's nothing to save.
+            onPressed: _text.text.trim() == widget.initial.trim()
+                ? null
+                : () => Navigator.of(context).pop(_text.text.trim()),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
 class _NameSheet<T> extends StatefulWidget {
   final String title;
   final String initial;
@@ -472,8 +670,37 @@ class _SpaceOverviewPageState extends State<SpaceOverviewPage> {
   late final _name = TextEditingController(text: _profile?.name);
   late final _about = TextEditingController(text: _profile?.description);
   String? _icon;
+
+  /// The new banner, cropped; or [_removeBanner] to take the one there away.
   String? _banner;
+  bool _removeBanner = false;
   bool _saving = false;
+
+  Future<void> _pickBanner() async {
+    final path = await pickSpaceImage();
+    if (path == null || !mounted) return;
+    final crop = await Navigator.of(context).push<CropRect>(
+      MaterialPageRoute(
+        fullscreenDialog: true,
+        builder: (_) => CropPage(path: path, aspect: spaceBannerAspect, round: false),
+      ),
+    );
+    if (crop == null || !mounted) return;
+    final String cropped;
+    try {
+      cropped = await saveBannerImage(path, crop);
+    } catch (e) {
+      debugPrint('banner: $e');
+      if (mounted) _toast(context, 'Couldn’t read this picture');
+      return;
+    }
+    if (mounted) {
+      setState(() {
+        _banner = cropped;
+        _removeBanner = false;
+      });
+    }
+  }
 
   @override
   void dispose() {
@@ -498,6 +725,7 @@ class _SpaceOverviewPageState extends State<SpaceOverviewPage> {
         description: about == (p.description ?? '') ? null : about,
         iconPath: _icon,
         bannerPath: _banner,
+        removeBanner: _removeBanner,
       ),
     );
     if (!mounted) return;
@@ -509,12 +737,19 @@ class _SpaceOverviewPageState extends State<SpaceOverviewPage> {
   Widget build(BuildContext context) {
     final colors = context.theme.colors;
     final p = _profile;
-    Widget picked(String label, String? path, VoidCallback onTap) => GlassRow(
+    Widget picked(String label, String? path, VoidCallback onTap, {bool has = false}) => GlassRow(
       icon: FLucideIcons.image,
       label: label,
-      detail: path == null ? 'Choose' : 'New one chosen',
+      detail: path != null
+          ? 'New one chosen'
+          : has
+          ? 'Change'
+          : 'Choose',
       onPressed: onTap,
     );
+    // What the banner will be once saved: the new one, none, or as it is.
+    final bannerNow = _removeBanner ? null : p?.bannerUrl;
+    final hasBanner = _banner != null || bannerNow != null;
     return AdminPage(
       title: 'Overview',
       actions: [TextAction(label: 'Save', onPressed: _saving || p == null ? null : _save)],
@@ -527,16 +762,41 @@ class _SpaceOverviewPageState extends State<SpaceOverviewPage> {
           const SizedBox(height: 16),
           DuvetTextField(label: 'What it’s about', controller: _about, maxLines: 3),
           const Overline('Pictures'),
+          // The banner as it will look, 5:2.
+          if (_banner case final path?)
+            ExcludeSemantics(
+              child: ClipRRect(
+                borderRadius: BorderRadius.circular(DuvetTokens.radiusCard),
+                child: AspectRatio(
+                  aspectRatio: spaceBannerAspect,
+                  child: Image.file(
+                    File(path),
+                    fit: BoxFit.cover,
+                    errorBuilder: (context, error, stackTrace) => const SizedBox.shrink(),
+                  ),
+                ),
+              ),
+            )
+          else if (bannerNow case final url?)
+            SpaceBanner(url: url),
+          if (hasBanner) const SizedBox(height: 12),
           AdminPanel(
             children: [
               picked('Icon', _icon, () async {
                 final path = await pickSpaceIcon();
                 if (path != null && mounted) setState(() => _icon = path);
               }),
-              picked('Banner', _banner, () async {
-                final path = await pickSpaceImage();
-                if (path != null && mounted) setState(() => _banner = path);
-              }),
+              picked('Banner', _banner, _pickBanner, has: hasBanner),
+              if (hasBanner)
+                GlassRow(
+                  icon: FLucideIcons.trash2,
+                  label: 'Remove banner',
+                  destructive: true,
+                  onPressed: () => setState(() {
+                    _banner = null;
+                    _removeBanner = p.bannerUrl != null;
+                  }),
+                ),
             ],
           ),
           const SizedBox(height: 8),
@@ -627,6 +887,22 @@ class _RoomsAdminPageState extends State<RoomsAdminPage> {
         children: [
           SheetTitle(title: label),
           GlassRow(icon: FLucideIcons.pencil, label: 'Rename', onPressed: () => Navigator.of(context).pop('rename')),
+          // Categories have none: the API ignores theirs.
+          if (room.kind != AdminRoomKind.category)
+            GlassRow(
+              icon: FLucideIcons.text,
+              label: 'Edit description',
+              detail: room.description ?? 'None',
+              onPressed: () => Navigator.of(context).pop('describe'),
+            ),
+          if (room.kind != AdminRoomKind.category &&
+              context.repository.canInRoom(widget.spaceId, room.id, Perm.createInvites))
+            GlassRow(
+              icon: FLucideIcons.userPlus,
+              label: 'Invite people',
+              detail: 'A link to $label',
+              onPressed: () => Navigator.of(context).pop('invite'),
+            ),
           if (room.kind != AdminRoomKind.category &&
               (room.parentId != null || _all.any((c) => c.kind == AdminRoomKind.category)))
             GlassRow(
@@ -657,6 +933,19 @@ class _RoomsAdminPageState extends State<RoomsAdminPage> {
         final got = await askName<void>(context, title: 'Rename $label', initial: room.name);
         if (got == null || !mounted) return;
         await _try(context, 'Couldn’t rename $label', () => repository.renameRoom(id, room.id, got.$1));
+      case 'describe':
+        final got = await askDescription(context, title: 'What $label is for', initial: room.description ?? '');
+        if (got == null || !mounted) return;
+        await _try(
+          context,
+          'Couldn’t change what $label is for',
+          () => repository.setRoomDescription(id, room.id, got),
+        );
+      case 'invite':
+        final space = repository.spaces.value.where((s) => s.id == id).firstOrNull;
+        final inviteTo = space?.rooms.where((r) => r.id == room.id).firstOrNull;
+        if (space == null || inviteTo == null) return;
+        await showInviteSheet(context, space: space, room: inviteTo);
       case 'move':
         await _moveTo(room);
       case 'perms':
@@ -696,13 +985,30 @@ class _RoomsAdminPageState extends State<RoomsAdminPage> {
 
   /// Moves [moved] into [parent] (a category stays out of any), to [to]
   /// among [others] there: before the one now at [to], or last.
-  Future<void> _move(AdminRoom moved, List<AdminRoom> others, int to, {String? parent}) async {
-    final position = to < others.length
+  Future<void> _move(AdminRoom moved, List<AdminRoom> others, int to, {String? parent}) => _place(
+    moved,
+    parent,
+    to < others.length
         ? others[to].position
         : _all
                   .where((r) => r.id != moved.id && r.parentId == parent)
                   .fold(-1, (p, r) => r.position > p ? r.position : p) +
-              1;
+              1,
+  );
+
+  // A screen reader's move of what the user may not move: the list offers
+  // moves on every item, so this says why nothing moved.
+  void _cantMove(AdminRoom r) {
+    if (!mounted) return;
+    SemanticsService.sendAnnouncement(
+      View.of(context),
+      'You can’t move ${r.kind == AdminRoomKind.category ? r.name : '#${r.name}'}',
+      Directionality.of(context),
+    );
+  }
+
+  /// Sends [moved] to [position] in [parent], as the API takes it.
+  Future<void> _place(AdminRoom moved, String? parent, int position) async {
     final label = moved.kind == AdminRoomKind.category ? moved.name : '#${moved.name}';
     final change = context.repository.moveRoom(widget.spaceId, moved.id, parentId: parent, position: position);
     setState(() {});
@@ -710,7 +1016,9 @@ class _RoomsAdminPageState extends State<RoomsAdminPage> {
     if (mounted) setState(() {});
   }
 
-  /// Another category for a room, or none; last in it.
+  /// Another category for a room, or none: first in a category, as the
+  /// desktop drops one in, or after the rooms outside any (the categories,
+  /// which share their positions, are listed apart).
   Future<void> _moveTo(AdminRoom room) async {
     final options = [
       if (room.parentId != null) (id: '', name: 'No category'),
@@ -734,7 +1042,9 @@ class _RoomsAdminPageState extends State<RoomsAdminPage> {
       ),
     );
     if (picked == null || !mounted) return;
-    await _move(room, const [], 0, parent: picked.isEmpty ? null : picked);
+    if (picked.isNotEmpty) return _place(room, picked, 0);
+    final loose = _roomsIn(_all, null).where((r) => r.id != room.id);
+    await _place(room, null, loose.fold(-1, (p, r) => r.position > p ? r.position : p) + 1);
   }
 
   @override
@@ -747,13 +1057,17 @@ class _RoomsAdminPageState extends State<RoomsAdminPage> {
     final categories = all.where((r) => r.kind == AdminRoomKind.category).toList();
     final loose = _roomsIn(all, null);
     final tokens = context.duvet;
+    final repository = context.repository;
+    // The API checks ManageChannels in the room itself, overwrites included,
+    // to change, move or delete it, and in the Space to make one.
+    bool manages(AdminRoom r) => repository.canInRoom(widget.spaceId, r.id, Perm.manageChannels);
+    final makes = repository.spaceProfile(widget.spaceId)?.can(Perm.manageChannels) ?? false;
     // The trailing edge, ridged like a grip: drag it to move the row, in the
     // list it's nearest to. Down a panel the edges make one ridge.
     Widget grip(int index) => ReorderableDragStartListener(
       index: index,
       child: ExcludeSemantics(
         child: Container(
-          key: const ValueKey('grip'),
           width: 32,
           decoration: BoxDecoration(
             color: colors.secondary,
@@ -775,8 +1089,8 @@ class _RoomsAdminPageState extends State<RoomsAdminPage> {
         ),
       ),
     );
-    // A plain row on its panel, with its edge to drag by.
-    Widget row(Widget body, int index, {double indent = 0}) => IntrinsicHeight(
+    // A plain row on its panel, with its edge to drag by when it may move.
+    Widget row(Widget body, int index, {double indent = 0, bool moves = true}) => IntrinsicHeight(
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
@@ -786,7 +1100,7 @@ class _RoomsAdminPageState extends State<RoomsAdminPage> {
               child: body,
             ),
           ),
-          grip(index),
+          if (moves) grip(index),
         ],
       ),
     );
@@ -829,28 +1143,39 @@ class _RoomsAdminPageState extends State<RoomsAdminPage> {
       buildDefaultDragHandles: false,
       itemCount: list.length,
       onReorderItem: (from, to) {
+        if (!manages(list[from])) return _cantMove(list[from]);
         if (from != to) _move(list[from], [...list]..removeAt(from), to, parent: parent);
       },
       proxyDecorator: liftRow,
       itemBuilder: (context, i) {
         final r = list[i];
-        return ReorderableDelayedDragStartListener(
-          key: ValueKey(r.id),
-          index: i,
-          child: row(
-            ListRow(
-              title: r.name,
-              hash: r.kind == AdminRoomKind.text,
-              leading: r.kind == AdminRoomKind.voice
-                  ? ExcludeSemantics(child: Icon(FLucideIcons.volume2, size: 20, color: colors.mutedForeground))
-                  : null,
-              detail: r.kind == AdminRoomKind.voice ? 'Voice room. Double tap for options' : 'Double tap for options',
-              onTap: () => _options(r),
-            ),
-            i,
-            indent: parent == null ? 0 : 12,
+        final mine = manages(r);
+        final body = row(
+          ListRow(
+            // One stop with the moves the list offers on it.
+            ownNode: false,
+            title: r.name,
+            hash: r.kind == AdminRoomKind.text,
+            leading: r.kind == AdminRoomKind.voice
+                ? ExcludeSemantics(child: Icon(FLucideIcons.volume2, size: 20, color: colors.mutedForeground))
+                : null,
+            detail: switch ([
+              if (r.kind == AdminRoomKind.voice) 'Voice room',
+              if (mine)
+                list.length > 1 ? 'Double tap for options, or use actions to move it' : 'Double tap for options',
+            ]) {
+              [] => null,
+              final parts => parts.join('. '),
+            },
+            onTap: mine ? () => _options(r) : null,
           ),
+          i,
+          indent: parent == null ? 0 : 12,
+          moves: mine,
         );
+        return mine
+            ? ReorderableDelayedDragStartListener(key: ValueKey(r.id), index: i, child: body)
+            : KeyedSubtree(key: ValueKey(r.id), child: body);
       },
     );
 
@@ -858,22 +1183,23 @@ class _RoomsAdminPageState extends State<RoomsAdminPage> {
     Widget block(int i) {
       final c = categories[i];
       final inside = _roomsIn(all, c.id);
-      void moveBy(int step) => _move(c, [...categories]..removeAt(i), i + step);
+      final mine = manages(c);
+      // Not a node of its own: the panel's, with the moves the list offers
+      // on it, so a category and its moves are one stop.
       final header = Semantics(
-        container: true,
-        button: true,
+        button: mine,
         label: 'Category ${c.name}',
-        hint: 'Double tap for options',
+        hint: !mine
+            ? null
+            : categories.length > 1
+            ? 'Double tap for options, or use actions to move it with its rooms'
+            : 'Double tap for options',
         excludeSemantics: true,
-        onTap: () => _options(c),
-        customSemanticsActions: {
-          if (i > 0) const CustomSemanticsAction(label: 'Move up'): () => moveBy(-1),
-          if (i < categories.length - 1) const CustomSemanticsAction(label: 'Move down'): () => moveBy(1),
-        },
+        onTap: mine ? () => _options(c) : null,
         // All of the row takes the tap, not only the name.
         child: GestureDetector(
           behavior: HitTestBehavior.opaque,
-          onTap: () => _options(c),
+          onTap: mine ? () => _options(c) : null,
           child: Padding(
             padding: const EdgeInsets.fromLTRB(16, 16, 16, 12),
             child: Row(
@@ -898,17 +1224,25 @@ class _RoomsAdminPageState extends State<RoomsAdminPage> {
         Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            ReorderableDelayedDragStartListener(index: i, child: row(header, i)),
+            if (mine)
+              ReorderableDelayedDragStartListener(index: i, child: row(header, i))
+            else
+              row(header, i, moves: false),
             if (inside.isEmpty)
               row(
                 Padding(
                   padding: const EdgeInsets.fromLTRB(28, 4, 16, 16),
-                  child: Text(
-                    'No rooms. Move one here from its options.',
-                    style: DuvetType.caption.copyWith(color: colors.mutedForeground),
+                  // Its own node, or it would name the panel.
+                  child: Semantics(
+                    container: true,
+                    child: Text(
+                      'No rooms. Move one here from its options.',
+                      style: DuvetType.caption.copyWith(color: colors.mutedForeground),
+                    ),
                   ),
                 ),
                 i,
+                moves: mine,
               )
             else
               rooms(inside, c.id),
@@ -919,12 +1253,14 @@ class _RoomsAdminPageState extends State<RoomsAdminPage> {
 
     return AdminPage(
       title: 'Rooms',
-      bottom: DuvetButton(
-        label: 'Create room',
-        icon: FLucideIcons.plus,
-        variant: ButtonVariant.primary,
-        onPressed: _create,
-      ),
+      bottom: makes
+          ? DuvetButton(
+              label: 'Create room',
+              icon: FLucideIcons.plus,
+              variant: ButtonVariant.primary,
+              onPressed: _create,
+            )
+          : null,
       list: (padding) => all.isEmpty
           ? ListView(padding: padding, children: const [ListNote('No rooms yet')])
           : ReorderableListView.builder(
@@ -934,6 +1270,7 @@ class _RoomsAdminPageState extends State<RoomsAdminPage> {
               itemCount: categories.length,
               itemBuilder: (context, i) => block(i),
               onReorderItem: (from, to) {
+                if (!manages(categories[from])) return _cantMove(categories[from]);
                 if (from != to) _move(categories[from], [...categories]..removeAt(from), to);
               },
               proxyDecorator: liftPanel,
@@ -1060,8 +1397,8 @@ class _RolesPageState extends State<RolesPage> {
     try {
       final role = await repository.createRole(widget.spaceId, got.$1);
       if (mounted) await _edit(role);
-    } catch (_) {
-      if (mounted) _toast(context, 'Couldn’t create the role');
+    } catch (e) {
+      if (mounted) _toast(context, e is ActionFailed ? e.message : 'Couldn’t create the role');
     }
   }
 
@@ -1116,6 +1453,7 @@ class _RoleEditorPageState extends State<RoleEditorPage> {
   late final _name = TextEditingController(text: widget.role.name);
   late int? _color = widget.role.color;
   late int _perms = widget.role.perms;
+  late bool _hoisted = widget.role.hoisted;
   bool _saving = false;
 
   @override
@@ -1139,6 +1477,7 @@ class _RoleEditorPageState extends State<RoleEditorPage> {
         color: _color != r.color ? _color : null,
         clearColor: _color == null && r.color != null,
         perms: _perms != r.perms ? _perms : null,
+        hoisted: _hoisted != r.hoisted ? _hoisted : null,
       ),
     );
     if (!mounted) return;
@@ -1212,27 +1551,12 @@ class _RoleEditorPageState extends State<RoleEditorPage> {
             children: [
               SheetTitle(title: 'Who has ${widget.role.name}'),
               for (final m in members)
-                Semantics(
-                  container: true,
+                PersonRow(
+                  member: m,
+                  presence: presenceIn(repository.presence.value, m.userId, spaceId: widget.spaceId),
                   checked: holders.contains(m.userId),
-                  label: m.displayName,
-                  excludeSemantics: true,
+                  username: false,
                   onTap: () => _toggle(m, !holders.contains(m.userId), setSheet),
-                  child: GestureDetector(
-                    behavior: HitTestBehavior.opaque,
-                    onTap: () => _toggle(m, !holders.contains(m.userId), setSheet),
-                    child: Padding(
-                      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-                      child: Row(
-                        children: [
-                          UserAvatar(name: m.displayName, url: m.avatarUrl, size: 40),
-                          const SizedBox(width: 12),
-                          Expanded(child: Text(m.displayName, style: DuvetType.rowTitle)),
-                          SquareCheck(checked: holders.contains(m.userId)),
-                        ],
-                      ),
-                    ),
-                  ),
                 ),
             ],
           );
@@ -1335,6 +1659,43 @@ class _RoleEditorPageState extends State<RoleEditorPage> {
                 label: '${holders.length} ${holders.length == 1 ? 'member' : 'members'}',
                 detail: 'Manage',
                 onPressed: _members,
+              ),
+            ],
+          ),
+          const SizedBox(height: 12),
+          AdminPanel(
+            children: [
+              // As the desktop's "Display role members separately".
+              Semantics(
+                container: true,
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                  child: Row(
+                    children: [
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              'Show members separately',
+                              style: DuvetType.rowTitle.copyWith(color: colors.foreground),
+                            ),
+                            Text(
+                              'In the member list, those online show under this role’s name',
+                              style: DuvetType.caption.copyWith(color: colors.mutedForeground),
+                            ),
+                          ],
+                        ),
+                      ),
+                      const SizedBox(width: 12),
+                      DuvetSwitch(
+                        label: 'Show members separately',
+                        value: _hoisted,
+                        onChanged: (on) => setState(() => _hoisted = on),
+                      ),
+                    ],
+                  ),
+                ),
               ),
             ],
           ),
@@ -1483,7 +1844,8 @@ class AssetsPage extends StatefulWidget {
 }
 
 class _AssetsPageState extends State<AssetsPage> {
-  AssetKind _kind = AssetKind.emoji;
+  // The kind the user may change first.
+  late AssetKind _kind = _may(AssetKind.emoji) || !_may(AssetKind.sticker) ? AssetKind.emoji : AssetKind.sticker;
   late Future<List<SpaceAsset>> _list;
 
   @override
@@ -1492,26 +1854,70 @@ class _AssetsPageState extends State<AssetsPage> {
     _list = context.repository.assets(widget.spaceId, _kind);
   }
 
+  /// Each kind takes its own permission, as in the API and the desktop's
+  /// tabs: both lists show, the controls only where it's held.
+  bool _may(AssetKind kind) =>
+      context.repository
+          .spaceProfile(widget.spaceId)
+          ?.can(kind == AssetKind.emoji ? Perm.manageEmojis : Perm.manageStickers) ??
+      false;
+
   void _reload() => setState(() {
     _list = context.repository.assets(widget.spaceId, _kind);
   });
 
   String get _noun => _kind == AssetKind.emoji ? 'emoji' : 'sticker';
 
-  // Emoji names are `:like_this:`.
-  static String _clean(String name) => name.replaceAll(RegExp(r'[^A-Za-z0-9_]'), '_');
-
+  // Cropped square and sized as the desktop's image editor does (but a moving
+  // GIF the API takes as it is), then named as typed (trimmed), as the
+  // desktop sends it: the API takes any text.
   Future<void> _add() async {
-    final path = await pickSpaceImage();
+    final path = await pickAssetImage();
     if (path == null || !mounted) return;
+    final kind = _kind;
+    final cap = kind == AssetKind.emoji ? emojiCap : stickerCap;
+    // A moving GIF the API takes as it is goes up unchanged, still moving:
+    // cropping makes a still image of it. A still GIF is cropped as any
+    // picture is.
+    final gif = await gifAt(path);
+    if (!mounted) return;
+    // The cropper would close on it without a word.
+    if (gif != null && !gif.readable) {
+      _toast(context, 'Couldn’t read this GIF');
+      return;
+    }
+    final CropRect? crop;
+    if (gif != null && gif.animated && gif.bytes <= cap.bytes && gif.width <= cap.side && gif.height <= cap.side) {
+      crop = null;
+    } else {
+      crop = await Navigator.of(context).push<CropRect>(
+        MaterialPageRoute(
+          fullscreenDialog: true,
+          builder: (_) => CropPage(
+            path: path,
+            aspect: 1,
+            round: false,
+            note: gif?.animated ?? false
+                ? 'This GIF is over ${cap.bytes ~/ 1024} KiB or ${cap.side} px, so it goes up still: its animation is lost'
+                : null,
+          ),
+        ),
+      );
+      if (crop == null || !mounted) return;
+    }
     final got = await askName<void>(context, title: 'Name the $_noun', action: 'Add');
     if (got == null || !mounted) return;
-    final name = _kind == AssetKind.emoji ? _clean(got.$1) : got.$1;
-    await _try(
-      context,
-      'Couldn’t add the $_noun',
-      () => context.repository.addAsset(widget.spaceId, _kind, name, path),
-    );
+    final repository = context.repository;
+    await _try(context, 'Couldn’t add the $_noun', () async {
+      if (crop == null) return repository.addAsset(widget.spaceId, kind, got.$1, path);
+      final square = await saveSquareImage(path, crop, kind == AssetKind.emoji ? emojiSide : stickerSide);
+      try {
+        await repository.addAsset(widget.spaceId, kind, got.$1, square);
+      } finally {
+        // Best effort: the list needn't wait for it.
+        unawaited(File(square).delete().then((_) {}, onError: (Object e) => debugPrint('square image: $e')));
+      }
+    });
     if (mounted) _reload();
   }
 
@@ -1539,8 +1945,7 @@ class _AssetsPageState extends State<AssetsPage> {
       case 'rename':
         final got = await askName<void>(context, title: 'Rename ${a.name}', initial: a.name);
         if (got == null || !mounted) return;
-        final name = _kind == AssetKind.emoji ? _clean(got.$1) : got.$1;
-        await _try(context, 'Couldn’t rename it', () => repository.renameAsset(widget.spaceId, _kind, a.id, name));
+        await _try(context, 'Couldn’t rename it', () => repository.renameAsset(widget.spaceId, _kind, a.id, got.$1));
       case 'delete':
         final sure = await confirmDestructive(
           context,
@@ -1558,13 +1963,14 @@ class _AssetsPageState extends State<AssetsPage> {
   Widget build(BuildContext context) {
     final colors = context.theme.colors;
     final size = _kind == AssetKind.emoji ? 48.0 : 96.0;
+    final may = _may(_kind);
     return FutureBuilder(
       future: _list,
       builder: (context, snapshot) {
         final list = snapshot.data;
         return AdminPage(
           title: 'Emojis and stickers',
-          actions: [IconAction(icon: FLucideIcons.plus, label: 'Add $_noun', onPressed: _add)],
+          actions: [if (may) IconAction(icon: FLucideIcons.plus, label: 'Add $_noun', onPressed: _add)],
           children: [
             Wrap(
               spacing: 8,
@@ -1598,14 +2004,14 @@ class _AssetsPageState extends State<AssetsPage> {
                   for (final a in list)
                     Semantics(
                       container: true,
-                      button: true,
+                      button: may,
                       label: _kind == AssetKind.emoji ? ':${a.name}:' : a.name,
-                      hint: 'Double tap for options',
+                      hint: may ? 'Double tap for options' : null,
                       excludeSemantics: true,
-                      onTap: () => _options(a),
+                      onTap: may ? () => _options(a) : null,
                       child: GestureDetector(
                         behavior: HitTestBehavior.opaque,
-                        onTap: () => _options(a),
+                        onTap: may ? () => _options(a) : null,
                         child: SizedBox(
                           width: size + 24,
                           child: Column(
@@ -1719,8 +2125,8 @@ class _WebhooksPageState extends State<WebhooksPage> {
     try {
       final url = await repository.createWebhook(widget.spaceId, got.$2 ?? rooms.first.id, got.$1);
       if (mounted) await _showOnce(got.$1, url);
-    } catch (_) {
-      if (mounted) _toast(context, 'Couldn’t create the webhook');
+    } catch (e) {
+      if (mounted) _toast(context, e is ActionFailed ? e.message : 'Couldn’t create the webhook');
     }
     if (mounted) _reload();
   }
@@ -1755,8 +2161,8 @@ class _WebhooksPageState extends State<WebhooksPage> {
         try {
           final url = await repository.resetWebhook(widget.spaceId, w);
           if (mounted) await _showOnce(w.name, url);
-        } catch (_) {
-          if (mounted) _toast(context, 'Couldn’t make a new URL');
+        } catch (e) {
+          if (mounted) _toast(context, e is ActionFailed ? e.message : 'Couldn’t make a new URL');
         }
       case 'delete':
         final sure = await confirmDestructive(
