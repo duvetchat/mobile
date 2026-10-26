@@ -82,6 +82,9 @@ class _MessageTextState extends State<MessageText> {
   bool _revealed = false;
   late List<MdBlock> _blocks = _parse();
 
+  // Its code blocks' colors, worked out once a block and a theme, not each build.
+  final _colored = <(String, String, bool), TextSpan?>{};
+
   List<MdBlock> _parse() {
     if (!widget.singleLine) return parseMarkdown(widget.content);
     // Code blocks as inline code; headings, quotes and lists as plain text.
@@ -99,7 +102,10 @@ class _MessageTextState extends State<MessageText> {
   @override
   void didUpdateWidget(MessageText old) {
     super.didUpdateWidget(old);
-    if (old.content != widget.content || old.singleLine != widget.singleLine) _blocks = _parse();
+    if (old.content != widget.content || old.singleLine != widget.singleLine) {
+      _blocks = _parse();
+      _colored.clear();
+    }
   }
 
   @override
@@ -332,9 +338,14 @@ class _MessageTextState extends State<MessageText> {
               child: () {
                 final style = DuvetType.code.copyWith(fontSize: 13, height: 1.5, color: base.color);
                 // Its language's colors, as the desktop's; on the accent, the dark ones.
+                final onDark = dark || widget.onAccent;
                 final colored = language == null
                     ? null
-                    : highlightCode(code, language, base: style, dark: dark || widget.onAccent);
+                    : _colored.putIfAbsent((
+                        code,
+                        language,
+                        onDark,
+                      ), () => highlightCode(code, language, base: style, dark: onDark));
                 return colored == null ? Text(code, style: style) : Text.rich(colored);
               }(),
             ),

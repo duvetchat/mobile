@@ -81,7 +81,9 @@ void main() {
     });
 
     test('tables, as the desktop reads them: a header, a |---| line and its alignments, rows with a | (#26)', () {
-      final blocks = parseMarkdown('Roles:\n| Name | Role | Since |\n|:--|:-:|--:|\n| **Maya** | mod | 2024\n|Leo|\n\nbye');
+      final blocks = parseMarkdown(
+        'Roles:\n| Name | Role | Since |\n|:--|:-:|--:|\n| **Maya** | mod | 2024\n|Leo|\n\nbye',
+      );
       expect(blocks.map((b) => b.runtimeType), [MdParagraph, MdTable, MdParagraph]);
       final table = blocks[1] as MdTable;
       expect(table.header.map(plainInline), ['Name', 'Role', 'Since']);

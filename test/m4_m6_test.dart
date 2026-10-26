@@ -178,8 +178,17 @@ void main() {
       isNot(contains('Message options')),
     );
 
-    await tapLabel(tester, 'Jump to Leo’s message');
+    expect(find.bySemanticsLabel('Jump to Leo’s message'), findsOneWidget);
+
+    // A reply from a pin closes the pins, then replies in the chat.
+    node.owner!.performAction(
+      node.id,
+      SemanticsAction.customAction,
+      CustomSemanticsAction.getIdentifier(const CustomSemanticsAction(label: 'Reply')),
+    );
+    await tester.pumpAndSettle();
     expect(find.text('1 message in #general'), findsNothing);
+    expect(find.textContaining('Replying to Leo —'), findsOneWidget);
     semantics.dispose();
   });
 
