@@ -1201,6 +1201,7 @@ class DuvetRepository implements ChatRepository {
           in list.where((c) => c.deletedAt == null).toList()..sort((a, b) => b.updatedAt.compareTo(a.updatedAt)))
         _summary(c, me),
     ];
+    _fillFriendBanners();
     _saveHome();
     unawaited(_catchUpConversations());
   }
@@ -1863,7 +1864,7 @@ class DuvetRepository implements ChatRepository {
         if (f.statusId case final status?) (f.senderId == me ? f.recipientId : f.senderId): _presence(status),
     };
     if (listed.keys.any((id) => !presence.value.containsKey(id))) presence.value = {...listed, ...presence.value};
-    friends.value = Friends(
+    final loaded = Friends(
       friends: [
         for (final f in list)
           _person(f.senderId == me ? f.recipientId : f.senderId, f.userUsername, f.userAlias, f.userAvatar),
@@ -1885,12 +1886,50 @@ class DuvetRepository implements ChatRepository {
           ),
       ],
     );
+    friends.value = _withBanners(loaded);
     for (final m in [
       ...friends.value.friends,
       for (final r in [...friends.value.incoming, ...friends.value.outgoing]) r.person,
     ]) {
       _names[m.userId] = m.displayName;
     }
+  }
+
+  // The friends lists come without banners (#15); a Space's or a
+  // conversation's members have them. [f] with the banners known for its
+  // people, or [f] itself when none is new.
+  Friends _withBanners(Friends f) {
+    final banners = {for (final p in people) p.userId: ?p.bannerUrl};
+    Member filled(Member m) => switch (banners[m.userId]) {
+      final banner? when m.bannerUrl == null => Member(
+        userId: m.userId,
+        username: m.username,
+        alias: m.alias,
+        avatarUrl: m.avatarUrl,
+        isBot: m.isBot,
+        bio: m.bio,
+        bannerUrl: banner,
+      ),
+      _ => m,
+    };
+    FriendRequestItem request(FriendRequestItem r) => switch (filled(r.person)) {
+      final person when !identical(person, r.person) => FriendRequestItem(id: r.id, person: person, at: r.at),
+      _ => r,
+    };
+    final friends = [for (final m in f.friends) filled(m)];
+    final incoming = [for (final r in f.incoming) request(r)];
+    final outgoing = [for (final r in f.outgoing) request(r)];
+    bool same<T>(List<T> a, List<T> b) => Iterable.generate(a.length).every((i) => identical(a[i], b[i]));
+    return same(friends, f.friends) && same(incoming, f.incoming) && same(outgoing, f.outgoing)
+        ? f
+        : Friends(friends: friends, incoming: incoming, outgoing: outgoing);
+  }
+
+  // Members loaded: the friends among them take their banners.
+  void _fillFriendBanners() {
+    final f = friends.value;
+    final filled = _withBanners(f);
+    if (!identical(filled, f)) friends.value = filled;
   }
 
   Future<void> _reloadFriends() => loadFriends().catchError((Object e) => debugPrint('friends: $e'));
@@ -2809,6 +2848,7 @@ class DuvetRepository implements ChatRepository {
     }
     _applyWaitingRoles(spaceId);
     _loadedMembers[spaceId] = members;
+    _fillFriendBanners();
     _publishSpaces();
     return members;
   }

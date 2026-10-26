@@ -234,6 +234,8 @@ class _MemberRow extends StatelessWidget {
         detail: detail,
         hint: me ? null : 'Double tap for options',
         leading: PresenceAvatar(member: member, presence: presence, size: 48),
+        banner: member.bannerUrl,
+        bannerOffline: isOffline(presence),
         // Their profile opens once this sheet closes: never glass on glass.
         onPressed: () => Navigator.of(context).pop((member, MemberAction.profile)),
       ),

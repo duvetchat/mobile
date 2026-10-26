@@ -466,6 +466,10 @@ String spacePresenceKey(String userId, String spaceId) => '$userId:$spaceId';
 Presence? presenceIn(Map<String, Presence> presence, String userId, {String? spaceId}) =>
     (spaceId == null ? null : presence[spacePresenceKey(userId, spaceId)]) ?? presence[userId];
 
+/// Whether [presence] shows someone offline, as a member list fades them:
+/// offline, or not reported.
+bool isOffline(Presence? presence) => (presence ?? Presence.offline) == Presence.offline;
+
 /// A space's own emoji, written `<:id:>` in a message.
 class CustomEmoji {
   final String id;

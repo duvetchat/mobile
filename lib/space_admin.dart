@@ -12,7 +12,7 @@ import 'package:path_provider/path_provider.dart';
 import 'account.dart' show CropPage, formatBytes;
 import 'data/models.dart';
 import 'data/scope.dart';
-import 'people.dart' show SquareCheck;
+import 'people.dart' show PersonRow;
 import 'spaces.dart' show deleteSpace, inviteRoomOf, pickSpaceIcon, showInviteSheet;
 import 'theme.dart';
 import 'widgets/avatar.dart';
@@ -1533,27 +1533,12 @@ class _RoleEditorPageState extends State<RoleEditorPage> {
             children: [
               SheetTitle(title: 'Who has ${widget.role.name}'),
               for (final m in members)
-                Semantics(
-                  container: true,
+                PersonRow(
+                  member: m,
+                  presence: presenceIn(repository.presence.value, m.userId, spaceId: widget.spaceId),
                   checked: holders.contains(m.userId),
-                  label: m.displayName,
-                  excludeSemantics: true,
+                  username: false,
                   onTap: () => _toggle(m, !holders.contains(m.userId), setSheet),
-                  child: GestureDetector(
-                    behavior: HitTestBehavior.opaque,
-                    onTap: () => _toggle(m, !holders.contains(m.userId), setSheet),
-                    child: Padding(
-                      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-                      child: Row(
-                        children: [
-                          UserAvatar(name: m.displayName, url: m.avatarUrl, size: 40),
-                          const SizedBox(width: 12),
-                          Expanded(child: Text(m.displayName, style: DuvetType.rowTitle)),
-                          SquareCheck(checked: holders.contains(m.userId)),
-                        ],
-                      ),
-                    ),
-                  ),
                 ),
             ],
           );
