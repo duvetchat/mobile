@@ -431,6 +431,7 @@ Map<String, Object?> messageToJson(ChatMessage m) => {
       'authorName': r.authorName,
       'content': r.content,
       if (r.mentionAuthor) 'mentionAuthor': true,
+      if (r.deleted) 'deleted': true,
     },
   'reactions': [
     for (final r in m.reactions)
@@ -496,6 +497,7 @@ ChatMessage messageFromJson(Map<String, Object?> j) => ChatMessage(
       authorName: r['authorName'] as String,
       content: r['content'] as String,
       mentionAuthor: r['mentionAuthor'] as bool? ?? false,
+      deleted: r['deleted'] as bool? ?? false,
     ),
     _ => null,
   },

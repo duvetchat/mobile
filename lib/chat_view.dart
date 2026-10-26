@@ -487,6 +487,14 @@ class _ChatViewState extends State<ChatView> {
           // One the user deleted is going to dust: that takes it away after.
           if (!_deleting.contains(messageId)) _closeUp(messageId);
           if (_editing?.id == messageId) _stopEditing();
+          // The replies quoting it say it's gone, as on the desktop.
+          for (var i = 0; i < _entries.length; i++) {
+            final m = _entries[i].message;
+            if (m.reply case final reply? when reply.messageId == messageId && !reply.deleted) {
+              _entries[i] = (message: m.copyWith(reply: reply.asDeleted), delivery: _entries[i].delivery);
+            }
+          }
+          if (_replyTo?.messageId == messageId) _replyTo = null;
         case MessagePinned(:final messageId, :final pinned):
           final i = _entries.indexWhere((e) => e.message.id == messageId);
           if (i >= 0) {

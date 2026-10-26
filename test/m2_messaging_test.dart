@@ -283,6 +283,34 @@ void main() {
     semantics.dispose();
   });
 
+  testWidgets('a quote follows its original live: edited, then deleted', (tester) async {
+    final repository = await openMaya(
+      tester,
+      setUp: (r) => r.history['c-maya']!.add(
+        FakeRepository.message(
+          'm5',
+          author: _maya,
+          name: 'Maya',
+          text: 'About that',
+          reply: const MessageReply(messageId: 'm1', authorId: _maya, authorName: 'Maya', content: 'Hey!'),
+        ),
+      ),
+    );
+    repository.push(
+      'c-maya',
+      MessageUpdated(FakeRepository.message('m1', author: _maya, name: 'Maya', text: 'Hey, edited')),
+    );
+    await tester.pumpAndSettle();
+    expect(find.bySemanticsLabel(RegExp('^Replying to Maya: Hey, edited')), findsOneWidget);
+
+    repository.push('c-maya', const MessageDeleted('m1'));
+    await tester.pumpAndSettle();
+    expect(find.bySemanticsLabel(RegExp('^Replying to Maya')), findsNothing);
+    expect(find.text('Original message was deleted'), findsOneWidget);
+    expect(find.text('About that'), findsOneWidget);
+    semantics.dispose();
+  });
+
   testWidgets('scrolled up, a button jumps back to the newest messages', (tester) async {
     await openMaya(
       tester,

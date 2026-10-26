@@ -329,12 +329,17 @@ class MessageReply {
   /// The reply mentions the author of the message it answers (the API's
   /// `mention_author`): it's highlighted for them.
   final bool mentionAuthor;
+
+  /// The message it answers was deleted while shown: nothing to quote or
+  /// jump to.
+  final bool deleted;
   const MessageReply({
     required this.messageId,
     required this.authorName,
     required this.content,
     this.authorId,
     this.mentionAuthor = false,
+    this.deleted = false,
   });
 
   /// The same quote, of the message as edited to [content].
@@ -344,6 +349,17 @@ class MessageReply {
     authorName: authorName,
     content: content,
     mentionAuthor: mentionAuthor,
+    deleted: deleted,
+  );
+
+  /// The same quote, of a message since deleted.
+  MessageReply get asDeleted => MessageReply(
+    messageId: messageId,
+    authorId: authorId,
+    authorName: authorName,
+    content: '',
+    mentionAuthor: mentionAuthor,
+    deleted: true,
   );
 
   /// The same quote, its author named [authorName].
@@ -353,6 +369,7 @@ class MessageReply {
     authorName: authorName,
     content: content,
     mentionAuthor: mentionAuthor,
+    deleted: deleted,
   );
 }
 
