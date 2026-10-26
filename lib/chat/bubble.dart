@@ -745,6 +745,31 @@ class _ReplyRef extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final colors = context.theme.colors;
+    if (reply.deleted) {
+      return Semantics(
+        container: true,
+        label: 'Original message was deleted',
+        excludeSemantics: true,
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(4, 0, 4, 4),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(FLucideIcons.cornerUpLeft, size: 14, color: colors.mutedForeground),
+              const SizedBox(width: 6),
+              Flexible(
+                child: Text(
+                  'Original message was deleted',
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: DuvetType.caption.copyWith(color: colors.mutedForeground, fontStyle: FontStyle.italic),
+                ),
+              ),
+            ],
+          ),
+        ),
+      );
+    }
     final text = readableContent(
       reply.content,
       nameOf: directory.nameOf,
