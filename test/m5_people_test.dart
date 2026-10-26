@@ -3,6 +3,7 @@ import 'package:duvet/data/models.dart';
 import 'package:duvet/main.dart';
 import 'package:duvet/widgets/chrome.dart';
 import 'package:duvet/widgets/rows.dart';
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -61,6 +62,183 @@ void main() {
 
     await tapLabel(tester, 'Mention leo');
     expect(find.text('@leo '), findsOneWidget);
+    semantics.dispose();
+  });
+
+  // #general of Design Guild, with [text] from Leo as its newest message.
+  Future<FakeRepository> openWith(WidgetTester tester, String text, {void Function(FakeRepository r)? setUp}) async {
+    final repository = await pumpApp(
+      tester,
+      setUp: (r) {
+        r.history['r-general'] = [FakeRepository.message('mm', author: _leo, name: 'Leo', text: text)];
+        setUp?.call(r);
+      },
+    );
+    await tester.tap(find.descendant(of: find.byType(DuvetTabBar), matching: find.text('Spaces')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Design Guild'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('# general'));
+    await tester.pumpAndSettle();
+    return repository;
+  }
+
+  // A message's one stop for screen readers: its text, with Reply and
+  // Message options.
+  SemanticsNode messageNode(WidgetTester tester, Pattern text) {
+    final options = CustomSemanticsAction.getIdentifier(const CustomSemanticsAction(label: 'Message options'));
+    var node = tester.getSemantics(find.bySemanticsLabel(text).last);
+    while (!(node.getSemanticsData().customSemanticsActionIds?.contains(options) ?? false)) {
+      node = node.parent!;
+    }
+    return node;
+  }
+
+  List<String> actionsOf(SemanticsNode node) => [
+    for (final id in node.getSemanticsData().customSemanticsActionIds ?? const <int>[])
+      CustomSemanticsAction.getAction(id)!.label ?? '',
+  ];
+
+  Future<void> perform(WidgetTester tester, SemanticsNode node, String action) async {
+    node.owner!.performAction(
+      node.id,
+      SemanticsAction.customAction,
+      CustomSemanticsAction.getIdentifier(CustomSemanticsAction(label: action)),
+    );
+    await tester.pumpAndSettle();
+  }
+
+  // As a screen reader closes it: its grabber's Close.
+  Future<void> closeSheet(WidgetTester tester) async {
+    final close = tester.getSemantics(find.bySemanticsLabel('Close').last);
+    close.owner!.performAction(close.id, SemanticsAction.tap);
+    await tester.pumpAndSettle();
+  }
+
+  testWidgets('a mention in a message opens who it names: tapped, or from a screen reader', (tester) async {
+    await openWith(
+      tester,
+      'ask <@$_maya> about the tab bar',
+      setUp: (r) => r.roleTags[_maya] = const [RoleTag('Designer', color: 0xFF2F9E62)],
+    );
+
+    await tester.tapOnText(find.textRange.ofSubstring('@Maya'));
+    // The bubble waits to see if it's a double tap (a reply) first.
+    await tester.pump(kDoubleTapTimeout);
+    await tester.pumpAndSettle();
+    expect(find.text('ROLES IN DESIGN GUILD'), findsOneWidget);
+    expect(find.text('Designer'), findsOneWidget);
+    await closeSheet(tester);
+    expect(find.text('ROLES IN DESIGN GUILD'), findsNothing);
+
+    // One stop: the text with its time, and the message's actions with the
+    // mention's.
+    final message = messageNode(tester, RegExp('ask @Maya about the tab bar'));
+    expect(message.getSemanticsData().label, 'Leo\nask @Maya about the tab bar\n09:00');
+
+    expect(actionsOf(message), containsAll(['Reply', 'Message options', 'Open Maya’s profile']));
+    await perform(tester, message, 'Open Maya’s profile');
+    expect(find.text('ROLES IN DESIGN GUILD'), findsOneWidget);
+    semantics.dispose();
+  });
+
+  testWidgets('a text message\'s Reply and Message options work from its one stop', (tester) async {
+    await openWith(tester, 'ask <@$_maya> about the tab bar');
+    await perform(tester, messageNode(tester, RegExp('ask @Maya about the tab bar')), 'Reply');
+    expect(find.textContaining('Replying to', findRichText: true), findsOneWidget);
+    await perform(tester, messageNode(tester, RegExp('ask @Maya about the tab bar')), 'Message options');
+    expect(find.bySemanticsLabel('Copy text'), findsOneWidget);
+    semantics.dispose();
+  });
+
+  testWidgets('a message with no text bubble keeps Reply and Message options on itself', (tester) async {
+    await openWith(tester, '🎉');
+    final message = messageNode(tester, RegExp('🎉'));
+    expect(actionsOf(message), containsAll(['Reply', 'Message options']));
+    await perform(tester, message, 'Message options');
+    expect(find.bySemanticsLabel('Copy text'), findsOneWidget);
+    semantics.dispose();
+  });
+
+  testWidgets('a mention offers its profile only where it shows: not in code, a link or a hidden spoiler', (
+    tester,
+  ) async {
+    await openWith(tester, '`<@$_maya>` and [<@$_maya>](https://duvet.chat) and ||<@$_leo> did it||');
+    final message = messageNode(tester, RegExp('^Leo\\n@Maya and @Maya and spoiler'));
+    expect(actionsOf(message), isNot(contains('Open Maya’s profile')));
+    // The spoiler hides who: no action names them until it's revealed.
+    expect(actionsOf(message), isNot(contains('Open leo’s profile')));
+    await perform(tester, message, 'Reveal spoiler');
+    final revealed = messageNode(tester, RegExp('^Leo\\n@Maya and @Maya and @leo did it'));
+    expect(actionsOf(revealed), contains('Open leo’s profile'));
+    semantics.dispose();
+  });
+
+  testWidgets('two people shown by one name get an action each, for the right one', (tester) async {
+    const other = '0a0a0a0a-0000-4000-8000-0000000000f2';
+    const sam1 = '0a0a0a0a-0000-4000-8000-0000000000f3';
+    const sam2 = '0a0a0a0a-0000-4000-8000-0000000000f4';
+    await openWith(
+      tester,
+      '<@$_maya> meet <@$other>, and <@$sam1> <@$sam2>',
+      setUp: (r) => r.extraRoomMembers.addAll(const [
+        Member(userId: other, username: 'maya.r', alias: 'Maya'),
+        Member(userId: sam1, username: 'sam', alias: 'Sam'),
+        Member(userId: sam2, username: 'sam.k', alias: 'Sam'),
+      ]),
+    );
+    final message = messageNode(tester, RegExp('^Leo\\n@Maya meet @Maya'));
+    // Counted by name: each Sam is told from the other Sam, not from the Mayas.
+    expect(
+      actionsOf(message),
+      containsAll([
+        'Open Maya’s profile, mention 1',
+        'Open Maya’s profile, mention 2',
+        'Open Sam’s profile, mention 1',
+        'Open Sam’s profile, mention 2',
+      ]),
+    );
+    await perform(tester, message, 'Open Maya’s profile, mention 2');
+    expect(find.text('@maya.r'), findsOneWidget);
+    await closeSheet(tester);
+    await perform(tester, messageNode(tester, RegExp('^Leo\\n@Maya meet @Maya')), 'Open Maya’s profile, mention 1');
+    expect(find.text('@maya'), findsOneWidget);
+    semantics.dispose();
+  });
+
+  testWidgets('someone the app hasn\'t met opens by the name their mention shows, with no made-up handle', (
+    tester,
+  ) async {
+    await openWith(tester, 'cc <@0a0a0a0a-0000-4000-8000-0000000000ff>');
+    await tester.tapOnText(find.textRange.ofSubstring('@someone'));
+    await tester.pump(kDoubleTapTimeout);
+    await tester.pumpAndSettle();
+    expect(find.text('Someone'), findsOneWidget);
+    // No handle line: no "@…" of the profile's own.
+    expect(find.byWidgetPredicate((w) => w is Text && (w.data ?? '').startsWith('@')), findsNothing);
+    semantics.dispose();
+  });
+
+  testWidgets('someone named but not met here opens by their name, with no made-up handle', (tester) async {
+    // A DM with Maya, who mentions Leo: Leo isn't in it, nor among the people
+    // the app holds, but the app knows his name.
+    await pumpApp(
+      tester,
+      setUp: (r) {
+        r.people = [
+          for (final p in FakeRepository.everyone)
+            if (p.userId != _leo) p,
+        ];
+        r.history['c-maya'] = [FakeRepository.message('ml', author: _maya, name: 'Maya', text: 'ask <@$_leo> too')];
+      },
+    );
+    await tester.tap(find.text('Maya').first);
+    await tester.pumpAndSettle();
+    await tester.tapOnText(find.textRange.ofSubstring('@leo'));
+    await tester.pump(kDoubleTapTimeout);
+    await tester.pumpAndSettle();
+    expect(find.text('leo'), findsOneWidget);
+    expect(find.byWidgetPredicate((w) => w is Text && (w.data ?? '').startsWith('@')), findsNothing);
     semantics.dispose();
   });
 

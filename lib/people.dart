@@ -211,11 +211,15 @@ class _ProfileState extends State<_Profile> {
                       header: true,
                       child: Text(m.displayName, style: DuvetType.title.copyWith(color: colors.foreground)),
                     ),
-                    const SizedBox(height: 4),
-                    Text(
-                      ['@${m.username}', if (m.isBot) 'bot'].join(' · '),
-                      style: DuvetType.caption.copyWith(color: colors.mutedForeground),
-                    ),
+                    // No handle where only their name is known (a mention of
+                    // someone the app hasn't met).
+                    if (m.username.isNotEmpty || m.isBot) ...[
+                      const SizedBox(height: 4),
+                      Text(
+                        [if (m.username.isNotEmpty) '@${m.username}', if (m.isBot) 'bot'].join(' · '),
+                        style: DuvetType.caption.copyWith(color: colors.mutedForeground),
+                      ),
+                    ],
                     if (!me) ...[
                       const SizedBox(height: 16),
                       Row(
