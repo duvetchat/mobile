@@ -1283,6 +1283,41 @@ void main() {
       expect(h.voice.callsInProgress, {'c-team'});
     });
 
+    _voice('someone else\'s call READY lists unanswered can be joined once declined here: it isn\'t the user\'s own', (
+      async,
+      h,
+    ) {
+      h.gateway.ready(number: 2, calls: [listed('c-team', leo, name: 'Leo', ringing: true, answered: false)]);
+      expect(h.voice.call?.phase, CallPhase.ringing);
+      h.voice.declineCall();
+      expect(h.voice.callsInProgress, {'c-team'});
+      expect(h.voice.ownCallRinging('c-team'), isFalse);
+
+      h.voice.joinCall('c-team');
+      async.flushMicrotasks();
+      expect(h.gateway.types, ['CALL_DECLINE', 'CALL_INITIATE', 'CALL_ACCEPT', 'VOICE_JOIN', 'VOICE_SYNC']);
+    });
+
+    _voice('a call that stopped ringing while the phone was away is kept nowhere; one that stops here is missed', (
+      async,
+      h,
+    ) {
+      // Leo's call rang here, then the phone was cut off. Maya answered it,
+      // and its ring window ended meanwhile: READY can't tell that from a
+      // call the user answered or declined on another device.
+      h.gateway.push(incoming('c-team', leo, 'Leo'));
+      h.gateway.ready(number: 2, calls: [listed('c-team', leo, name: 'Leo', ringing: false, answered: true)]);
+      expect(h.voice.call, isNull);
+      expect(h.voice.history.calls.value, isEmpty);
+      h.gateway.push(ended('c-team'));
+
+      // Its ring window ending while the phone is here (CALL_ONGOING): missed.
+      h.gateway.push(incoming('c-team', leo, 'Leo'));
+      h.gateway.push(ongoing('c-team', leo, [leo, maya]));
+      expect(h.voice.call, isNull);
+      expect(h.voice.history.calls.value.single.outcome, CallOutcome.missed);
+    });
+
     _voice('READY says whether the user\'s own call was answered: until it is, it can\'t be joined from here', (
       async,
       h,
@@ -1357,12 +1392,46 @@ void main() {
         expect(h.engine.sleeps, 1);
         expect(h.voice.callsInProgress, {'c-maya'});
         expect(h.voice.ownCallRinging('c-maya'), isFalse);
+        // It goes on, to join: the history keeps nothing of it.
+        expect(h.voice.history.calls.value, isEmpty);
 
         h.voice.joinCall('c-maya');
         async.flushMicrotasks();
         expect(h.gateway.types.skip(1), ['CALL_INITIATE', 'CALL_ACCEPT', 'VOICE_JOIN', 'VOICE_SYNC']);
       },
     );
+
+    // How long the phone was cut off counts from the gateway's last word, or
+    // from the call if it was placed later, as voice's own rule does.
+    _voice('a call placed just now joins however long the gateway had been silent before', (async, h) {
+      h.gateway.ready(number: 1);
+      h.voice.startCall('c-maya');
+      async.flushMicrotasks();
+      h.now = h.now.add(const Duration(seconds: 20));
+      h.gateway.ready(
+        number: 2,
+        silence: const Duration(minutes: 10),
+        calls: [listed('c-maya', me, name: 'Gaby', ringing: false, answered: true)],
+      );
+      async.flushMicrotasks();
+      expect(h.voice.call?.phase, CallPhase.connected);
+      expect(h.voice.target, const CallVoice('c-maya'));
+    });
+
+    _voice('a call placed long ago joins when the gateway was heard just before', (async, h) {
+      h.gateway.ready(number: 1);
+      h.voice.startCall('c-maya');
+      async.flushMicrotasks();
+      h.now = h.now.add(const Duration(minutes: 10));
+      h.gateway.ready(
+        number: 2,
+        silence: const Duration(seconds: 5),
+        calls: [listed('c-maya', me, name: 'Gaby', ringing: false, answered: true)],
+      );
+      async.flushMicrotasks();
+      expect(h.voice.call?.phase, CallPhase.connected);
+      expect(h.voice.target, const CallVoice('c-maya'));
+    });
 
     _voice('a gateway from before calls across devices: READY rings nothing, keeps what rings, and any call joins', (
       async,
