@@ -474,27 +474,31 @@ class FakeRepository implements ChatRepository {
   }
 
   @override
-  Future<void> moveRoom(String spaceId, String roomId, int position) async {
-    admin.add('room> $roomId $position');
+  Future<void> moveRoom(String spaceId, String roomId, {String? parentId, required int position}) async {
+    admin.add('room> $roomId ${parentId ?? '-'} $position');
+    // As the API does: out of the old place, then in before [position].
     final rooms = adminRooms(spaceId);
-    final i = rooms.indexWhere((r) => r.id == roomId);
-    final r = rooms[i];
-    final j = rooms.indexWhere((o) => o.position == position);
-    if (j >= 0) {
-      final o = rooms[j];
-      rooms[j] = AdminRoom(id: o.id, name: o.name, kind: o.kind, parentId: o.parentId, position: r.position);
+    final moved = rooms.firstWhere((r) => r.id == roomId);
+    final to = moved.kind == AdminRoomKind.category ? null : parentId;
+    var at = position;
+    if (moved.parentId == to && at > moved.position) at--;
+    for (final (i, r) in rooms.indexed.toList()) {
+      var p = r.position;
+      if (r.id == roomId) {
+        p = at;
+      } else {
+        if (r.parentId == moved.parentId && p > moved.position) p--;
+        if (r.parentId == to && p >= at) p++;
+      }
+      rooms[i] = AdminRoom(
+        id: r.id,
+        name: r.name,
+        kind: r.kind,
+        parentId: r.id == roomId ? to : r.parentId,
+        position: p,
+      );
     }
-    rooms[i] = AdminRoom(id: r.id, name: r.name, kind: r.kind, parentId: r.parentId, position: position);
     rooms.sort((a, b) => a.position.compareTo(b.position));
-  }
-
-  @override
-  Future<void> setRoomCategory(String spaceId, String roomId, String? categoryId) async {
-    admin.add('room^ $roomId ${categoryId ?? 'none'}');
-    final rooms = adminRooms(spaceId);
-    final i = rooms.indexWhere((r) => r.id == roomId);
-    final r = rooms[i];
-    rooms[i] = AdminRoom(id: r.id, name: r.name, kind: r.kind, parentId: categoryId, position: r.position);
   }
 
   @override

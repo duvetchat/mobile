@@ -118,6 +118,9 @@ void main() {
   /// times out.
   late bool blackHoled;
 
+  /// Holds a room's move until the test answers it.
+  late Completer<http.Response> moveReply;
+
   setUp(() {
     requests = [];
     store = MemorySessionStore();
@@ -139,9 +142,11 @@ void main() {
     pictureRefusal = null;
     meUnreachable = false;
     blackHoled = false;
+    moveReply = Completer();
     client = MockClient((request) async {
       requests.add(request);
       if (blackHoled) await Completer<void>().future;
+      if (request.method == 'PATCH' && request.url.path.startsWith('/api/spaces/s-m/rooms/')) return moveReply.future;
       Map<String, dynamic> body() => jsonDecode(request.body) as Map<String, dynamic>;
       if (request.url.path == '/api/auth/refresh') {
         if (sessionDead) return http.Response('{"error":"invalid or expired session"}', 401);
@@ -1437,6 +1442,52 @@ void main() {
       repository.handleEvent(_event('READY', ready('later')));
       await pumpEventQueue();
       expect(repository.latest.value['r-general']?.content, 'even newer');
+    });
+  });
+
+  group('moving a room', () {
+    Map<String, dynamic> room(String id, int position, {String? name}) => {
+      'id': id,
+      'space_id': 's-m',
+      'type': 1,
+      'name': name ?? id,
+      'position': position,
+      'created_at': _at,
+      'updated_at': _at,
+    };
+
+    List<String> order() => [for (final r in repository.adminRooms('s-m')) '${r.name}:${r.position}'];
+
+    setUp(() async {
+      await repository.logIn('gaby@duvet.chat', 'secret');
+      repository.handleEvent(
+        _event('SPACE_CREATE', {
+          'space': {'id': 's-m', 'name': 'Moves', 'owner_id': _me, 'created_at': _at, 'updated_at': _at},
+          'rooms': {
+            for (final (i, id) in ['a', 'b', 'c'].indexed) id: room(id, i),
+          },
+          'roles_permissions': <String, dynamic>{},
+          'owner_id': _me,
+        }),
+      );
+    });
+
+    test('it shows at once, as the API will move it', () async {
+      final move = repository.moveRoom('s-m', 'c', position: 0);
+      expect(order(), ['c:0', 'a:1', 'b:2']);
+      moveReply.complete(http.Response(jsonEncode(room('c', 0)), 200, headers: {'content-type': 'application/json'}));
+      await move;
+      expect(order(), ['c:0', 'a:1', 'b:2']);
+    });
+
+    test('refused, only what it moved goes back: what came meanwhile stays', () async {
+      final move = repository.moveRoom('s-m', 'c', position: 0);
+      // While it's on its way: b renamed where the move put it, d created.
+      repository.handleEvent(_event('ROOM_UPDATE', room('b', 2, name: 'bee')));
+      repository.handleEvent(_event('ROOM_CREATE', room('d', 3)));
+      moveReply.complete(http.Response('{"error":"no"}', 500));
+      await expectLater(move, throwsA(anything));
+      expect(order(), ['a:0', 'bee:1', 'c:2', 'd:3']);
     });
   });
 

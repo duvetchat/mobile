@@ -456,10 +456,19 @@ Future<T?> showGlassDialogSheet<T>(BuildContext context, {required String label,
           borderRadius: const BorderRadius.vertical(top: Radius.circular(DuvetTokens.radiusSheet)),
           child: SafeArea(
             top: false,
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              crossAxisAlignment: CrossAxisAlignment.stretch,
-              children: [const _Grabber(), builder(context)],
+            // The padding above already lifts it over the keyboard; it
+            // scrolls when that leaves too little room.
+            child: MediaQuery.removeViewInsets(
+              context: context,
+              removeBottom: true,
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  const _Grabber(),
+                  Flexible(child: SingleChildScrollView(child: Builder(builder: builder))),
+                ],
+              ),
             ),
           ),
         ),
