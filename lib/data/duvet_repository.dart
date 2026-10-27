@@ -2311,7 +2311,9 @@ class DuvetRepository implements ChatRepository {
           icon: iconPath == null ? null : File(iconPath),
           banner: bannerPath == null ? null : File(bannerPath),
           removeBanner: removesBanner,
-          onProgress: _bytesSent(onProgress),
+          // Pictures' alone: taking the banner away goes as a form too, whose
+          // few bytes would say "Uploading · 100%" with nothing going up.
+          onProgress: iconPath != null || bannerPath != null ? _bytesSent(onProgress) : null,
         ),
       );
     } on duvet.DuvetApiException catch (e) {
