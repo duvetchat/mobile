@@ -12,6 +12,7 @@ import 'package:duvet/space_admin.dart' show bannerGif, saveBannerImage, saveSqu
 import 'package:duvet/widgets/chrome.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
+import 'package:flutter/services.dart' show MethodChannel;
 import 'package:flutter_test/flutter_test.dart';
 import 'package:image/image.dart' as img;
 
@@ -29,6 +30,8 @@ void main() {
   late _Links links;
   late Appearance appearance;
   late MemoryAppearanceStore store;
+  // The app's own, before the tests swap in theirs.
+  final cropSquare = saveSquareImage;
 
   setUpAll(() async {
     TestWidgetsFlutterBinding.ensureInitialized();
@@ -378,6 +381,77 @@ void main() {
     repository.holdUploads!.complete();
     await tester.pumpAndSettle();
     expect(find.text('Edit profile'), findsNothing);
+    semantics.dispose();
+  });
+
+  testWidgets('a photo cropped again shows its new crop, not the last one', (tester) async {
+    await pumpApp(tester);
+    final blue = await pickable(tester);
+    // The pictures' paths as the platform writes them: the app takes a
+    // picture's name from its path.
+    final sep = Platform.pathSeparator;
+    pickProfilePicture = () async => '${File(blue).parent.path}${sep}me.png';
+    // Cropped and saved by the app, in a temporary folder of the test's.
+    final temp = Directory.systemTemp.createTempSync('duvet_temp');
+    addTearDown(() => temp.deleteSync(recursive: true));
+    const pathProvider = MethodChannel('plugins.flutter.io/path_provider');
+    tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(pathProvider, (_) async => temp.path);
+    addTearDown(() => tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(pathProvider, null));
+    final saved = <String>[];
+    saveSquareImage = (path, crop, side) async {
+      final square = await cropSquare(path, crop, side);
+      saved.add(square);
+      return square;
+    };
+    // Another photo of the same name, as the picker names a copy of one
+    // photo picked twice: red where the first is blue.
+    final red = '${Directory.systemTemp.createTempSync('duvet_crop').path}${sep}me.png';
+    addTearDown(() => File(red).parent.deleteSync(recursive: true));
+    await tester.runAsync(() async {
+      final recorder = ui.PictureRecorder();
+      Canvas(recorder).drawRect(const Rect.fromLTWH(0, 0, 400, 200), Paint()..color = const Color(0xFFE02F2F));
+      final image = await recorder.endRecording().toImage(400, 200);
+      final png = await image.toByteData(format: ui.ImageByteFormat.png);
+      File(red).writeAsBytesSync(png!.buffer.asUint8List());
+    });
+
+    // The page's photo of the crop saved last: its picture, once read on the
+    // real clock, and its middle pixel's colour.
+    ui.Image? shown() {
+      final raw = find.descendant(
+        of: find.byWidgetPredicate(
+          (w) => w is Image && w.image is FileImage && (w.image as FileImage).file.path == saved.last,
+        ),
+        matching: find.byType(RawImage),
+      );
+      return raw.evaluate().isEmpty ? null : tester.widget<RawImage>(raw).image;
+    }
+
+    Future<void> realClockUntil(bool Function() done) async {
+      for (var i = 0; i < 60 && !done(); i++) {
+        await tester.runAsync(() => Future<void>.delayed(const Duration(milliseconds: 50)));
+        await tester.pump();
+      }
+    }
+
+    Future<(int, int, int)> middle() async {
+      await realClockUntil(() => shown() != null);
+      final image = shown()!;
+      final pixels = (await tester.runAsync(() => image.toByteData(format: ui.ImageByteFormat.rawRgba)))!;
+      final at = 4 * (image.width * (image.height ~/ 2) + image.width ~/ 2);
+      return (pixels.getUint8(at), pixels.getUint8(at + 1), pixels.getUint8(at + 2));
+    }
+
+    await openYou(tester);
+    await tapLabel(tester, 'Edit');
+    await cropPicture(tester, 'Change profile photo');
+    await realClockUntil(() => saved.length == 1);
+    expect(await middle(), (0x2F, 0x5F, 0xE0));
+
+    pickProfilePicture = () async => red;
+    await cropPicture(tester, 'Change profile photo');
+    await realClockUntil(() => saved.length == 2);
+    expect(await middle(), (0xE0, 0x2F, 0x2F));
     semantics.dispose();
   });
 
