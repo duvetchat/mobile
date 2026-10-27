@@ -1013,18 +1013,255 @@ class ImageViewer extends StatefulWidget {
   State<ImageViewer> createState() => _ImageViewerState();
 }
 
-class _ImageViewerState extends State<ImageViewer> {
+/// Where the photo, at [photo] in [view] before any zoom, goes once scaled by
+/// [scale] and moved by [pan]: moved back so it stops at its edges. It covers
+/// the view on an axis it's larger than, and is centred on one it's smaller
+/// than.
+Offset clampToPhoto(double scale, Offset pan, Size view, Rect photo) {
+  double axis(double t, double start, double extent, double view) => extent * scale <= view
+      ? (view - extent * scale) / 2 - start * scale
+      : t.clamp(view - (start + extent) * scale, -start * scale);
+  return Offset(axis(pan.dx, photo.left, photo.width, view.width), axis(pan.dy, photo.top, photo.height, view.height));
+}
+
+class _ImageViewerState extends State<ImageViewer> with TickerProviderStateMixin {
   late final _pages = PageController(initialPage: widget.initial);
   late int _index = widget.initial;
-  double _drag = 0;
+
+  // The zoom of the photo shown: paging stops while it's zoomed, so the others
+  // are always at their size.
+  double _scale = 1;
+  Offset _pan = Offset.zero;
+  // Zoomed in, a finger pans the photo: swiping to page or to close waits
+  // until it's back at its size.
+  bool get _zoomed => _scale > 1.01;
+  Size _view = Size.zero;
+  Offset _tapAt = Offset.zero;
+  // The pinch, or the pan while zoomed, as it began: since the fingers down
+  // last changed. Taken from the fingers themselves, not from a recognizer:
+  // the swipe or the page may have won the first finger before the second
+  // landed.
+  double _startScale = 1;
+  Offset _startPan = Offset.zero;
+  Offset _startFocal = Offset.zero;
+  double _startSpan = 0;
+  Offset _focal = Offset.zero;
+  bool _moved = false;
+  VelocityTracker? _speed;
+  late final _zoomMotion = AnimationController(vsync: this, duration: DuvetTokens.panelIn);
+  Animation<double>? _scaleTo;
+  Animation<Offset>? _panTo;
+  static const _maxScale = 5.0;
+
+  // The swipe to close: the photo follows the finger, and springs back when
+  // let go short of closing.
+  Offset _drag = Offset.zero;
+  bool _swiping = false;
+  // The fingers down, where they are, and the one the swipe follows: a drag
+  // reports whichever finger landed last, so a second one would throw the
+  // photo to it.
+  final _fingers = <int, Offset>{};
+  int? _finger;
+  static const _closeAt = 120.0;
+  late final _back = AnimationController(vsync: this, duration: DuvetTokens.panelOut);
+  Animation<Offset>? _dragBack;
+
+  // Two fingers down is a pinch: swiping to page or to close steps aside, as
+  // either would take a pinch with one finger still.
+  bool get _pinching => _fingers.length > 1;
 
   static const _ink = Color(0xFFF2F1EE);
   static const _ground = Color(0xFF0A0A0B);
 
   @override
+  void initState() {
+    super.initState();
+    _zoomMotion.addListener(
+      () => setState(() {
+        _scale = _scaleTo!.value;
+        _pan = _panTo!.value;
+      }),
+    );
+    _back.addListener(() => setState(() => _drag = _dragBack!.value));
+  }
+
+  @override
   void dispose() {
     _pages.dispose();
+    _zoomMotion.dispose();
+    _back.dispose();
     super.dispose();
+  }
+
+  /// Where the photo shown sits in the view at its size.
+  Rect get _photo {
+    final a = widget.gallery[_index];
+    final whole = Offset.zero & _view;
+    // shortcut: a photo of unknown size takes the whole view, so panning can reach past its edges.
+    if (a.width == null || a.height == null || a.width == 0 || a.height == 0) return whole;
+    final size = Size(a.width!.toDouble(), a.height!.toDouble());
+    final fitted = applyBoxFit(BoxFit.contain, size, _view).destination;
+    // A photo smaller than the screen shows at its own size: it isn't scaled up.
+    return Alignment.center.inscribe(fitted.width > size.width ? size : fitted, whole);
+  }
+
+  // Eases the zoom to [scale] and [pan], as Duvet's panels settle.
+  void _settle(double scale, Offset pan) {
+    _zoomMotion.stop();
+    if (MediaQuery.disableAnimationsOf(context)) {
+      setState(() {
+        _scale = scale;
+        _pan = pan;
+      });
+      return;
+    }
+    final curve = CurvedAnimation(parent: _zoomMotion, curve: DuvetTokens.decelerate);
+    _scaleTo = Tween(begin: _scale, end: scale).animate(curve);
+    _panTo = Tween(begin: _pan, end: pan).animate(curve);
+    _zoomMotion.forward(from: 0);
+  }
+
+  // Double-tap: zoom in where tapped, or back out.
+  void _toggleZoom() {
+    const scale = 2.5;
+    _settle(_zoomed ? 1 : scale, _zoomed ? Offset.zero : clampToPhoto(scale, _tapAt * (1 - scale), _view, _photo));
+  }
+
+  Offset get _fingersFocal => _fingers.values.reduce((a, b) => a + b) / _fingers.length.toDouble();
+
+  // The fingers' mean distance from their focal point: 0 for one finger.
+  double get _fingersSpan {
+    final focal = _fingersFocal;
+    return _fingers.values.map((p) => (p - focal).distance).reduce((a, b) => a + b) / _fingers.length;
+  }
+
+  // From here on, the photo moves from where it is under the fingers down now.
+  void _rebase() {
+    _startScale = _scale;
+    _startPan = _pan;
+    _startFocal = _focal = _fingersFocal;
+    _startSpan = _fingersSpan;
+    _speed = VelocityTracker.withKind(PointerDeviceKind.touch);
+  }
+
+  // The photo's point under the fingers stays under them. Past 1× or 5×, or
+  // past an edge, it gives a little, and settles back when let go.
+  void _pinchMove(Duration at) {
+    // Moved during a double-tap's zoom: it stops where it is. A tap doesn't stop it.
+    if (_zoomMotion.isAnimating) {
+      _zoomMotion.stop();
+      _rebase();
+    }
+    _moved = true;
+    final focal = _fingersFocal;
+    final span = _fingersSpan;
+    final raw = _startSpan > 0 && span > 0 ? _startScale * span / _startSpan : _startScale;
+    final scale = raw < 1
+        ? 1 - (1 - raw) / 3
+        : raw > _maxScale
+        ? _maxScale + (raw - _maxScale) / 3
+        : raw;
+    final pan = focal - (_startFocal - _startPan) * (scale / _startScale);
+    final kept = clampToPhoto(scale, pan, _view, _photo);
+    _speed?.addPosition(at, focal);
+    setState(() {
+      _focal = focal;
+      _scale = scale;
+      _pan = kept + (pan - kept) / 3;
+    });
+  }
+
+  // The last finger up: back within 1× to 5× about the fingers, and a flick
+  // carries on a little.
+  void _pinchEnd() {
+    if (!_moved) return;
+    _moved = false;
+    final scale = _scale.clamp(1.0, _maxScale);
+    // Barely zoomed is a brush, not a zoom: it'd leave swiping to close off.
+    if (scale < 1.1) return _settle(1, Offset.zero);
+    final flung = _speed?.getVelocity().pixelsPerSecond ?? Offset.zero;
+    final pan = _focal - (_focal - _pan) * (scale / _scale) + flung * 0.15;
+    _settle(scale, clampToPhoto(scale, pan, _view, _photo));
+  }
+
+  void _dragStart(DragStartDetails _) {
+    // Two fingers down is a pinch, not a swipe.
+    if (_fingers.length != 1) return;
+    _back.stop();
+    _swiping = true;
+    _finger = _fingers.keys.single;
+    // Picked up, as a long-pressed message is.
+    HapticFeedback.mediumImpact();
+  }
+
+  void _follow(Offset by) {
+    final closing = _drag.dy.abs() > _closeAt;
+    setState(() => _drag += by);
+    // Letting go now closes it, or no longer does: as swipe-to-reply arms.
+    if ((_drag.dy.abs() > _closeAt) != closing) HapticFeedback.selectionClick();
+  }
+
+  void _press(PointerDownEvent e) {
+    setState(() => _fingers[e.pointer] = e.position);
+    // A second finger mid-swipe: the photo goes back, and the two pinch.
+    if (_pinching && _swiping) {
+      _swiping = false;
+      _finger = null;
+      _springBack();
+    }
+    _rebase();
+  }
+
+  void _move(PointerMoveEvent e) {
+    if (!_fingers.containsKey(e.pointer)) return;
+    _fingers[e.pointer] = e.position;
+    if (e.pointer == _finger) return _follow(e.delta);
+    // At its size, one finger swipes to page or to close: it doesn't move the photo.
+    if (_pinching || (_zoomed && !_swiping)) _pinchMove(e.timeStamp);
+  }
+
+  void _lift(PointerEvent e) {
+    setState(() => _fingers.remove(e.pointer));
+    if (e.pointer == _finger) {
+      _finger = null;
+      // The system took the touch (the notification shade, a call): the drag
+      // reports it as a release, so it's caught here, and it goes back.
+      if (e is PointerCancelEvent && _swiping) {
+        _swiping = false;
+        _springBack();
+      }
+    }
+    if (_fingers.isEmpty) return _pinchEnd();
+    // The fingers left carry on from where the photo is.
+    _rebase();
+  }
+
+  // [d] is null when the drag was cancelled (a system cancel is caught in
+  // _lift, as the drag reports it as a release): then it always goes back.
+  void _dragEnd(DragEndDetails? d) {
+    if (!_swiping) return;
+    _swiping = false;
+    _finger = null;
+    final speed = d?.primaryVelocity ?? 0;
+    // A flick back toward where it started doesn't close it.
+    final flung = speed.abs() > 800 && speed.sign == _drag.dy.sign;
+    if (d != null && (_drag.dy.abs() > _closeAt || flung)) {
+      Navigator.of(context).pop();
+      return;
+    }
+    _springBack();
+  }
+
+  void _springBack() {
+    if (MediaQuery.disableAnimationsOf(context)) {
+      setState(() => _drag = Offset.zero);
+      return;
+    }
+    _dragBack = Tween(
+      begin: _drag,
+      end: Offset.zero,
+    ).animate(CurvedAnimation(parent: _back, curve: DuvetTokens.overshoot));
+    _back.forward(from: 0);
   }
 
   void _toast(String text) {
@@ -1052,7 +1289,21 @@ class _ImageViewerState extends State<ImageViewer> {
   Widget build(BuildContext context) {
     final current = widget.gallery[_index];
     final padding = MediaQuery.paddingOf(context);
-    final fade = (1 - _drag.abs() / 400).clamp(0.3, 1.0);
+    final view = MediaQuery.sizeOf(context);
+    if (view != _view) {
+      // Turned while zoomed: the photo comes back within its edges.
+      if (!_view.isEmpty && _zoomed) {
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (mounted) setState(() => _pan = clampToPhoto(_scale, _pan, _view, _photo));
+        });
+      }
+      _view = view;
+    }
+    final fade = (1 - _drag.dy.abs() / 400).clamp(0.3, 1.0);
+    // Shrinks as it goes, to three quarters at a screen's height away.
+    final shrink = _view.height == 0 ? 1.0 : 1 - (_drag.dy.abs() / _view.height).clamp(0.0, 1.0) * 0.25;
+    // The bars give the photo the screen while it's dragged.
+    final chrome = (fade - 0.3) / 0.7;
     Widget action(IconData icon, String label, VoidCallback onTap) => Expanded(
       child: Semantics(
         button: true,
@@ -1087,39 +1338,66 @@ class _ImageViewerState extends State<ImageViewer> {
           backgroundColor: _ground.withValues(alpha: fade),
           body: Stack(
             children: [
-              // Swipe down (or up) to close.
-              GestureDetector(
-                onVerticalDragUpdate: (d) => setState(() => _drag += d.delta.dy),
-                onVerticalDragEnd: (_) {
-                  if (_drag.abs() > 120) {
-                    Navigator.of(context).pop();
-                  } else {
-                    setState(() => _drag = 0);
-                  }
-                },
-                child: Transform.translate(
-                  offset: Offset(0, _drag),
-                  child: PageView.builder(
-                    controller: _pages,
-                    itemCount: widget.gallery.length,
-                    onPageChanged: (i) => setState(() => _index = i),
-                    itemBuilder: (context, i) {
-                      final a = widget.gallery[i];
-                      return Semantics(
-                        image: true,
-                        label: '${a.isGif ? 'GIF' : 'Photo'}, ${a.displayName}, ${i + 1} of ${widget.gallery.length}',
-                        excludeSemantics: true,
-                        child: InteractiveViewer(
-                          maxScale: 5,
-                          child: Center(
-                            child: Hero(
-                              tag: _heroTag(a),
-                              child: _image(a, MediaQuery.sizeOf(context).width, fit: BoxFit.contain),
+              // Swipe down (or up) to close: started up or down, the photo then
+              // follows its finger either way, on the screen as it moves.
+              Listener(
+                onPointerDown: _press,
+                onPointerMove: _move,
+                onPointerUp: _lift,
+                onPointerCancel: _lift,
+                child: GestureDetector(
+                  onDoubleTapDown: (d) => _tapAt = d.localPosition,
+                  onDoubleTap: _toggleZoom,
+                  child: Transform.translate(
+                    offset: _drag,
+                    child: Transform.scale(
+                      scale: shrink,
+                      child: PageView.builder(
+                        controller: _pages,
+                        physics: _zoomed || _pinching ? const NeverScrollableScrollPhysics() : null,
+                        itemCount: widget.gallery.length,
+                        onPageChanged: (i) => setState(() => _index = i),
+                        itemBuilder: (context, i) {
+                          final a = widget.gallery[i];
+                          return Semantics(
+                            image: true,
+                            label:
+                                '${a.isGif ? 'GIF' : 'Photo'}, ${a.displayName}, ${i + 1} of ${widget.gallery.length}',
+                            excludeSemantics: true,
+                            child: RawGestureDetector(
+                              gestures: {
+                                if (!_zoomed && !_pinching)
+                                  _OneFingerDrag: GestureRecognizerFactoryWithHandlers<_OneFingerDrag>(
+                                    _OneFingerDrag.new,
+                                    (r) => r
+                                      ..gestureSettings = MediaQuery.gestureSettingsOf(context)
+                                      ..onStart = _dragStart
+                                      ..onEnd = _dragEnd
+                                      ..onCancel = (() => _dragEnd(null)),
+                                  ),
+                              },
+                              // The whole screen takes a pinch, not only the photo: a
+                              // wide one leaves most of it empty.
+                              child: ColoredBox(
+                                color: Colors.transparent,
+                                child: Transform(
+                                  transform: i == _index
+                                      ? (Matrix4.diagonal3Values(_scale, _scale, 1)
+                                          ..setTranslationRaw(_pan.dx, _pan.dy, 0))
+                                      : Matrix4.identity(),
+                                  child: Center(
+                                    child: Hero(
+                                      tag: _heroTag(a),
+                                      child: _image(a, MediaQuery.sizeOf(context).width, fit: BoxFit.contain),
+                                    ),
+                                  ),
+                                ),
+                              ),
                             ),
-                          ),
-                        ),
-                      );
-                    },
+                          );
+                        },
+                      ),
+                    ),
                   ),
                 ),
               ),
@@ -1127,45 +1405,48 @@ class _ImageViewerState extends State<ImageViewer> {
                 top: 0,
                 left: 0,
                 right: 0,
-                child: _DarkGlass(
-                  edge: const Border(bottom: BorderSide(color: Color(0x1FFFFFFF))),
-                  child: Padding(
-                    padding: EdgeInsets.only(top: padding.top),
-                    child: SizedBox(
-                      height: DuvetTokens.sizeTopBar,
-                      child: Row(
-                        children: [
-                          const SizedBox(width: 8),
-                          Semantics(
-                            button: true,
-                            label: 'Close',
-                            excludeSemantics: true,
-                            onTap: () => Navigator.of(context).pop(),
-                            child: GestureDetector(
+                child: Opacity(
+                  opacity: chrome,
+                  child: _DarkGlass(
+                    edge: const Border(bottom: BorderSide(color: Color(0x1FFFFFFF))),
+                    child: Padding(
+                      padding: EdgeInsets.only(top: padding.top),
+                      child: SizedBox(
+                        height: DuvetTokens.sizeTopBar,
+                        child: Row(
+                          children: [
+                            const SizedBox(width: 8),
+                            Semantics(
+                              button: true,
+                              label: 'Close',
+                              excludeSemantics: true,
                               onTap: () => Navigator.of(context).pop(),
-                              child: const SizedBox.square(dimension: 40, child: Icon(FLucideIcons.x, color: _ink)),
+                              child: GestureDetector(
+                                onTap: () => Navigator.of(context).pop(),
+                                child: const SizedBox.square(dimension: 40, child: Icon(FLucideIcons.x, color: _ink)),
+                              ),
                             ),
-                          ),
-                          Expanded(
-                            child: Column(
-                              mainAxisAlignment: MainAxisAlignment.center,
-                              children: [
-                                Text(
-                                  current.displayName,
-                                  maxLines: 1,
-                                  overflow: TextOverflow.ellipsis,
-                                  style: DuvetType.rowTitle.copyWith(color: _ink),
-                                ),
-                                if (widget.gallery.length > 1)
+                            Expanded(
+                              child: Column(
+                                mainAxisAlignment: MainAxisAlignment.center,
+                                children: [
                                   Text(
-                                    '${_index + 1} of ${widget.gallery.length}',
-                                    style: DuvetType.caption.copyWith(color: const Color(0xFF949392)),
+                                    current.displayName,
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis,
+                                    style: DuvetType.rowTitle.copyWith(color: _ink),
                                   ),
-                              ],
+                                  if (widget.gallery.length > 1)
+                                    Text(
+                                      '${_index + 1} of ${widget.gallery.length}',
+                                      style: DuvetType.caption.copyWith(color: const Color(0xFF949392)),
+                                    ),
+                                ],
+                              ),
                             ),
-                          ),
-                          const SizedBox(width: 48),
-                        ],
+                            const SizedBox(width: 48),
+                          ],
+                        ),
                       ),
                     ),
                   ),
@@ -1176,32 +1457,24 @@ class _ImageViewerState extends State<ImageViewer> {
                   left: 0,
                   right: 0,
                   bottom: 0,
-                  child: Column(
-                    children: [
-                      Padding(
-                        padding: const EdgeInsets.only(bottom: 12),
-                        child: Text(
-                          'Swipe down to close · pinch to zoom',
-                          style: DuvetType.caption.copyWith(color: const Color(0xFF949392)),
+                  child: Opacity(
+                    opacity: chrome,
+                    child: _DarkGlass(
+                      edge: const Border(top: BorderSide(color: Color(0x1FFFFFFF))),
+                      child: Padding(
+                        padding: EdgeInsets.fromLTRB(16, 8, 16, 8 + padding.bottom),
+                        child: Row(
+                          children: [
+                            action(FLucideIcons.download, 'Save', () => _save(current)),
+                            action(FLucideIcons.share2, 'Share', () => _share(current)),
+                            action(FLucideIcons.link, 'Copy link', () async {
+                              await Clipboard.setData(ClipboardData(text: current.url));
+                              _toast('Link copied');
+                            }),
+                          ],
                         ),
                       ),
-                      _DarkGlass(
-                        edge: const Border(top: BorderSide(color: Color(0x1FFFFFFF))),
-                        child: Padding(
-                          padding: EdgeInsets.fromLTRB(16, 8, 16, 8 + padding.bottom),
-                          child: Row(
-                            children: [
-                              action(FLucideIcons.download, 'Save', () => _save(current)),
-                              action(FLucideIcons.share2, 'Share', () => _share(current)),
-                              action(FLucideIcons.link, 'Copy link', () async {
-                                await Clipboard.setData(ClipboardData(text: current.url));
-                                _toast('Link copied');
-                              }),
-                            ],
-                          ),
-                        ),
-                      ),
-                    ],
+                    ),
                   ),
                 ),
             ],
@@ -1209,6 +1482,28 @@ class _ImageViewerState extends State<ImageViewer> {
         ),
       ),
     );
+  }
+}
+
+/// A swipe that steps aside as soon as a second finger lands, before it has
+/// started: that's a pinch, though one finger held still makes it look like a
+/// drag. Once under way, it keeps the first finger, and the viewer springs the
+/// photo back and pinches with both.
+class _OneFingerDrag extends VerticalDragGestureRecognizer {
+  final _pointers = <int>{};
+
+  @override
+  void addAllowedPointer(PointerDownEvent event) {
+    super.addAllowedPointer(event);
+    _pointers.add(event.pointer);
+    // Only the open arenas reject: a started swipe's first finger is already won.
+    if (_pointers.length > 1) resolve(GestureDisposition.rejected);
+  }
+
+  @override
+  void didStopTrackingLastPointer(int pointer) {
+    _pointers.clear();
+    super.didStopTrackingLastPointer(pointer);
   }
 }
 
