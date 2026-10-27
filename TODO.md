@@ -76,7 +76,7 @@ Desktop: `FriendsView`, `MemberProfileCard`, `MemberProfilePopover`, `DMSidebar`
 - [x] **New conversation:** pick people, then `createDM` / `createGroup`.
 - [x] **Group DMs:** rename (`updateConversation`), add and remove members, leave.
 - [x] **Presence from the start:** parse `SPACE_CREATE.member_statuses` in `duvet-client`, publish 1.0.1, then seed `presence` from it. Space cards then show "N online".
-  _Done in `duvet-client` 1.0.1 (also a `count` on `getMessages`), used through a `dependency_overrides` path. Publishing 1.0.1 to pub.dev and dropping the override is left to you._
+  _Done in `duvet-client` 1.0.1 (also a `count` on `getMessages`), now from pub.dev (duvet_client 2.0.0)._
 
 ## M6 · Spaces & invites
 
@@ -154,7 +154,7 @@ Desktop: `ServerSettings`, `ChannelSettings`, `BucketFilesDialog`, `StorageTrans
 - [x] **Golden tests:** for the design-system components (rows, cards, glass, bubbles) in both themes.
   _`test/goldens_test.dart`, with Fira Sans, the Lucide icons and real soft shadows; update with `flutter test --update-goldens test/goldens_test.dart`._
 - [x] **CI:** `flutter analyze` + `flutter test` + a release APK on each PR (desktop and api already have `.github/`).
-  _`.github/workflows/ci.yml`: checks out `duvetchat/duvet-client` beside the app for the path override, and signs with the release key when the `ANDROID_KEYSTORE_BASE64` / `ANDROID_STORE_PASSWORD` / `ANDROID_KEY_PASSWORD` secrets are set. Not run yet: there's no remote here._
+  _`.github/workflows/ci.yml`: signs with the release key when the `ANDROID_KEYSTORE_BASE64` / `ANDROID_STORE_PASSWORD` / `ANDROID_KEY_PASSWORD` secrets are set. Not run yet: there's no remote here._
 - [x] **Release signing:** a real keystore instead of the debug key; application ID `chat.duvet` instead of `com.example.duvet`.
   _Application ID and bundle IDs are `chat.duvet` (a new install: the old debug app's session doesn't carry over). Release builds sign with `android/key.properties` (template: `key.properties.example`), else the debug key. Making the keystore is yours: see **Needs you**. A debug build installs and runs on the phone as `chat.duvet` (23 Oct 2026); a release build hasn't been made yet._
 - [x] **Build settings:** move this machine's Gradle tuning to `~/.gradle/gradle.properties` and restore the repository defaults.
