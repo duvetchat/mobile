@@ -31,16 +31,18 @@ jobs:
           path: duvet-client
       # Gradle's downloads (its distribution, the Android plugin, the dependencies) cached, keyed by the Gradle
       # files: building the APK fetched them all every run. A pull request restores what a run on dev saved.
+      # Only on GitHub's runners: the organisation's own keeps ~/.gradle and the Flutter SDK between jobs, and
+      # restoring their 2 GB from GitHub's cache there once took 24 minutes (mobile#118).
       - uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: 17
-          cache: gradle
+          cache: ${{ runner.environment == 'github-hosted' && 'gradle' || '' }}
       - uses: subosito/flutter-action@v2
         with:
           flutter-version: 3.47.7
           channel: stable
-          cache: true
+          cache: ${{ runner.environment == 'github-hosted' }}
       - name: Dependencies
         working-directory: mobile
         run: flutter pub get
