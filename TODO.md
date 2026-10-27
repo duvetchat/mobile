@@ -147,6 +147,7 @@ Desktop: `ServerSettings`, `ChannelSettings`, `BucketFilesDialog`, `StorageTrans
 - [x] **Token safety:** stop logging the gateway URL, which contains the token; drop the log hook in release.
 - [x] **iOS:** build, `NSPhotoLibraryUsageDescription` / `NSCameraUsageDescription` / microphone strings, Keychain checks.
   _The usage strings (photos, saving photos, camera, microphone) and the `duvet://` URL scheme are in `Info.plist`. Building and checking the Keychain need a Mac: see **Needs you**._
+- [ ] **App lock:** lock the app locally behind the phone's biometrics or a PIN of its own (e.g. `local_auth`), off by default and turned on from the You tab. Asks at launch and after the app has been in the background for a while (immediately, 1 minute, 5 minutes…). While locked, a glass lock screen hides every chat, notification previews included once push lands, and the app switcher shows a blank card (`FLAG_SECURE` on Android, a cover view on iOS). Too many wrong PINs: a cooldown, never a wipe. Forgetting the PIN means signing out and in again. Groundwork for end-to-end encryption: the lock's secret, kept in the keystore behind biometrics, is what will later protect the device's E2EE private keys, so design its storage with that in mind. Needs nothing from the API.
 - [ ] **Accessibility pass:** [#54](https://github.com/duvetchat/mobile/issues/54)
 - [ ] **Localization, Spanish first:** [#55](https://github.com/duvetchat/mobile/issues/55)
 - [x] **Golden tests:** for the design-system components (rows, cards, glass, bubbles) in both themes.
