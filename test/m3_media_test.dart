@@ -15,6 +15,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:forui/forui.dart';
 import 'package:image_picker/image_picker.dart';
@@ -382,11 +383,11 @@ void main() {
     );
     await tester.pumpAndSettle();
     final photo = find.bySemanticsLabel('Photo, room.jpg');
-    const viewer = 'Swipe down to close · pinch to zoom';
+    final viewer = find.byType(ImageViewer);
 
     await tester.longPress(photo);
     await tester.pumpAndSettle();
-    expect(find.text(viewer), findsNothing, reason: 'a long press is the message\'s');
+    expect(viewer, findsNothing, reason: 'a long press is the message\'s');
     await tapLabel(tester, 'Reply');
     expect(find.textContaining('Replying to Maya'), findsOneWidget);
     await tapLabel(tester, 'Cancel reply');
@@ -397,12 +398,12 @@ void main() {
     await tester.tap(photo);
     await tester.pumpAndSettle();
     expect(find.textContaining('Replying to Maya'), findsOneWidget);
-    expect(find.text(viewer), findsNothing);
+    expect(viewer, findsNothing);
 
     await tester.tap(photo);
     await tester.pump(kDoubleTapTimeout);
     await tester.pumpAndSettle();
-    expect(find.text(viewer), findsOneWidget);
+    expect(viewer, findsOneWidget);
     semantics.dispose();
   });
 
@@ -420,15 +421,237 @@ void main() {
     await tester.tap(find.bySemanticsLabel('Photo, room.jpg'));
     await tester.pump(kDoubleTapTimeout);
     await tester.pumpAndSettle();
-    expect(find.text('Swipe down to close · pinch to zoom'), findsOneWidget);
+    expect(find.byType(ImageViewer), findsOneWidget);
     await tapLabel(tester, 'Save');
     await tapLabel(tester, 'Share');
     expect(actions.calls, ['save room.jpg', 'share room.jpg']);
 
     await tester.drag(find.byType(PageView), const Offset(0, 300));
     await tester.pumpAndSettle();
-    expect(find.text('Swipe down to close · pinch to zoom'), findsNothing);
+    expect(find.byType(ImageViewer), findsNothing);
     semantics.dispose();
+  });
+
+  testWidgets('the image viewer zooms on a pinch anywhere; zoomed, a drag pans and doesn\'t close', (tester) async {
+    final repository = await openMaya(tester);
+    repository.push(
+      'c-maya',
+      MessageCreated(
+        withFiles('p', const [
+          MessageAttachment(id: 'ph', filename: 'room.jpg', contentType: 'image/jpeg', url: 'https://x/room.jpg'),
+        ]),
+      ),
+    );
+    await tester.pumpAndSettle();
+    await tester.tap(find.bySemanticsLabel('Photo, room.jpg'));
+    await tester.pump(kDoubleTapTimeout);
+    await tester.pumpAndSettle();
+
+    // Away from the photo, in the empty part of the screen.
+    final page = tester.getRect(find.byType(PageView));
+    final at = Offset(page.center.dx, page.top + page.height * 0.3);
+    // How far the photo is zoomed: its width on the screen against the page's.
+    double zoom() =>
+        tester.getRect(find.descendant(of: find.byType(ImageViewer), matching: find.byType(Hero))).width / page.width;
+    Future<void> doubleTap() async {
+      await tester.tapAt(at);
+      await tester.pump(const Duration(milliseconds: 50));
+      await tester.tapAt(at);
+      await tester.pumpAndSettle();
+    }
+
+    // One finger held still and the other moving, as a thumb pinches: up and
+    // down the swipe that closes the viewer mustn't take it, and sideways the
+    // swipe to the next photo mustn't.
+    for (final way in const [Offset(0, 5), Offset(5, 0)]) {
+      final a = await tester.startGesture(at);
+      await tester.pump(const Duration(milliseconds: 40));
+      final b = await tester.startGesture(at + way * 8);
+      for (var i = 0; i < 10; i++) {
+        await b.moveBy(way);
+        await tester.pump();
+      }
+      await a.up();
+      await b.up();
+      await tester.pumpAndSettle();
+      expect(find.byType(ImageViewer), findsOneWidget);
+      expect(zoom(), greaterThan(1.2), reason: 'pinched along $way');
+      await doubleTap();
+      expect(zoom(), 1);
+    }
+
+    // The first finger drifts far enough to start the swipe before the second
+    // lands, as a sloppy pinch does: it still zooms.
+    final first = await tester.startGesture(at);
+    for (var i = 0; i < 3; i++) {
+      await first.moveBy(const Offset(0, 10));
+      await tester.pump();
+    }
+    final second = await tester.startGesture(at + const Offset(0, 80));
+    await tester.pump();
+    for (var i = 0; i < 10; i++) {
+      await second.moveBy(const Offset(0, 8));
+      await tester.pump();
+    }
+    await first.up();
+    await second.up();
+    await tester.pumpAndSettle();
+    expect(find.byType(ImageViewer), findsOneWidget);
+    expect(zoom(), greaterThan(1.2), reason: 'a pinch after the swipe began');
+    await doubleTap();
+    expect(zoom(), 1);
+
+    // Both fingers moving, staggered, then zoomed: a drag pans and doesn't close.
+    final a = await tester.startGesture(at - const Offset(0, 20));
+    await a.moveBy(const Offset(0, 12));
+    await tester.pump(const Duration(milliseconds: 40));
+    final b = await tester.startGesture(at + const Offset(0, 20));
+    for (var i = 0; i < 10; i++) {
+      await a.moveBy(const Offset(0, -10));
+      await b.moveBy(const Offset(0, 10));
+      await tester.pump();
+    }
+    await a.up();
+    await b.up();
+    await tester.pumpAndSettle();
+    expect(zoom(), greaterThan(1));
+    await tester.drag(find.byType(PageView), const Offset(0, 300));
+    await tester.pumpAndSettle();
+    expect(find.byType(ImageViewer), findsOneWidget);
+
+    // Pinched past 5×, it settles back to 5×.
+    final c = await tester.startGesture(at - const Offset(0, 10));
+    final d = await tester.startGesture(at + const Offset(0, 10));
+    for (var i = 0; i < 20; i++) {
+      await c.moveBy(const Offset(0, -15));
+      await d.moveBy(const Offset(0, 15));
+      await tester.pump();
+    }
+    await c.up();
+    await d.up();
+    await tester.pumpAndSettle();
+    expect(zoom(), moreOrLessEquals(5));
+
+    // A double tap zooms back out, another in to 2.5×, and a third out again.
+    await doubleTap();
+    expect(zoom(), 1);
+    await doubleTap();
+    expect(zoom(), moreOrLessEquals(2.5));
+    await doubleTap();
+
+    // Let go short of closing, it springs back.
+    await tester.drag(find.byType(PageView), const Offset(30, 60));
+    await tester.pumpAndSettle();
+    expect(find.byType(ImageViewer), findsOneWidget);
+    expect(tester.getRect(find.byType(PageView)), page);
+    await tester.drag(find.byType(PageView), const Offset(0, 300));
+    await tester.pumpAndSettle();
+    expect(find.byType(ImageViewer), findsNothing);
+    semantics.dispose();
+  });
+
+  testWidgets('swiping the photo: a quick flick closes, a second finger doesn\'t throw it, and it buzzes', (
+    tester,
+  ) async {
+    final repository = await openMaya(tester);
+    repository.push(
+      'c-maya',
+      MessageCreated(
+        withFiles('p', const [
+          MessageAttachment(id: 'ph', filename: 'room.jpg', contentType: 'image/jpeg', url: 'https://x/room.jpg'),
+        ]),
+      ),
+    );
+    await tester.pumpAndSettle();
+    final buzzes = <String>[];
+    tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(SystemChannels.platform, (call) async {
+      if (call.method == 'HapticFeedback.vibrate') buzzes.add(call.arguments as String);
+      return null;
+    });
+    addTearDown(() => tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(SystemChannels.platform, null));
+    Future<void> open() async {
+      await tester.tap(find.bySemanticsLabel('Photo, room.jpg'));
+      await tester.pump(kDoubleTapTimeout);
+      await tester.pumpAndSettle();
+    }
+
+    // Picked up, then a second finger lands far away and moves: the photo
+    // isn't thrown to it, it goes back, as that's a pinch now.
+    await open();
+    final start = tester.getCenter(find.byType(PageView));
+    final a = await tester.startGesture(start);
+    for (var i = 0; i < 5; i++) {
+      await a.moveBy(const Offset(0, 10));
+      await tester.pump();
+    }
+    expect(buzzes, ['HapticFeedbackType.mediumImpact']);
+    final b = await tester.startGesture(start + const Offset(150, 250));
+    await tester.pump();
+    await b.moveBy(const Offset(0, 5));
+    await tester.pump();
+    await b.up();
+    await a.up();
+    await tester.pumpAndSettle();
+    expect(find.byType(ImageViewer), findsOneWidget);
+    expect(tester.getCenter(find.byType(PageView)), start);
+
+    // Past the point where letting go closes it: a click, and it closes.
+    final c = await tester.startGesture(start);
+    for (var i = 0; i < 18; i++) {
+      await c.moveBy(const Offset(0, 10));
+      await tester.pump();
+    }
+    expect(buzzes.last, 'HapticFeedbackType.selectionClick');
+    await c.up();
+    await tester.pumpAndSettle();
+    expect(find.byType(ImageViewer), findsNothing);
+
+    // Dragged down, then flicked back up: it goes back, it doesn't close.
+    await open();
+    final back = await tester.startGesture(start);
+    for (var i = 0; i < 10; i++) {
+      await back.moveBy(const Offset(0, 10), timeStamp: Duration(milliseconds: 100 * i));
+      await tester.pump();
+    }
+    await back.moveBy(const Offset(0, -40), timeStamp: const Duration(milliseconds: 1010));
+    await back.moveBy(const Offset(0, -40), timeStamp: const Duration(milliseconds: 1020));
+    await back.up(timeStamp: const Duration(milliseconds: 1025));
+    await tester.pumpAndSettle();
+    expect(find.byType(ImageViewer), findsOneWidget);
+
+    // Past where letting go closes it, then the system cancels the touch (the
+    // notification shade): it goes back.
+    final held = await tester.startGesture(start);
+    for (var i = 0; i < 18; i++) {
+      await held.moveBy(const Offset(0, 10));
+      await tester.pump();
+    }
+    await held.cancel();
+    await tester.pumpAndSettle();
+    expect(find.byType(ImageViewer), findsOneWidget);
+    expect(tester.getCenter(find.byType(PageView)), start);
+
+    // A quick flick, its first move already past the viewer's own pan slop.
+    await open();
+    final flick = await tester.startGesture(start);
+    await flick.moveBy(const Offset(0, 60), timeStamp: const Duration(milliseconds: 16));
+    await flick.moveBy(const Offset(0, 40), timeStamp: const Duration(milliseconds: 32));
+    await flick.up(timeStamp: const Duration(milliseconds: 40));
+    await tester.pumpAndSettle();
+    expect(find.byType(ImageViewer), findsNothing);
+    semantics.dispose();
+  });
+
+  test('a zoomed photo stops at its edges, and is centred where it\'s narrower than the screen', () {
+    const view = Size(400, 800);
+    // A wide photo, letterboxed: 400×200 in the middle of the screen.
+    const photo = Rect.fromLTWH(0, 300, 400, 200);
+    final kept = clampToPhoto(2, const Offset(500, -2000), view, photo);
+    // 800×400 at 2×: its left edge stays at the screen's, and it's centred up and down.
+    expect(kept.dx, 0);
+    expect(kept.dy, (800 - 400) / 2 - 300 * 2);
+    // 1000 high at 5×: its top stays at the screen's.
+    expect(clampToPhoto(5, Offset.zero, view, photo).dy, -300 * 5);
   });
 
   testWidgets('uploads show their progress and can be cancelled; large files are refused', (tester) async {
