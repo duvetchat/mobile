@@ -2232,7 +2232,8 @@ class DuvetRepository implements ChatRepository {
   }
 
   // A room's permissions as desktop's `computeRoomPermissions` has them: the
-  // roles', then @everyone's overwrite, the roles' together, the member's own.
+  // roles', then @everyone's overwrite, the roles' together, the member's own;
+  // and none at all without ViewChannels, the owner and Administrators aside.
   @override
   bool canInRoom(String spaceId, String roomId, int bit) {
     final me = profile.value?.id;
@@ -2271,6 +2272,7 @@ class DuvetRepository implements ChatRepository {
     if (overwrites.where((o) => o.targetType == 1 && o.targetId == me).firstOrNull case final o?) {
       apply(o.denyFlags, o.allowFlags);
     }
+    if (perms & Perm.viewChannels == 0) perms = 0;
     return perms & bit == bit;
   }
 
