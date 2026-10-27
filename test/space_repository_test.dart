@@ -604,6 +604,28 @@ void main() {
       expect(listed(), ['r-general', 'r-mods', 'r-voice']);
     });
 
+    test('a room that goes and comes back has only the overwrites it comes with', () async {
+      // The gateway takes a room the user can no longer view away with
+      // ROOM_DELETE, and brings it back with ROOM_CREATE and the overwrites it
+      // has then: one deleted meanwhile never comes as an event.
+      await signIn();
+      repository.handleEvent(
+        _event(
+          'SPACE_CREATE',
+          _space(
+            overwrites: {
+              'r-general': [_overwrite('r-general', 's-1', deny: Perm.sendMessages)],
+            },
+          ),
+        ),
+      );
+      expect(repository.canInRoom('s-1', 'r-general', Perm.sendMessages), isFalse);
+      repository.handleEvent(_event('ROOM_DELETE', {'id': 'r-general', 'space_id': 's-1'}));
+      repository.handleEvent(_event('ROOM_CREATE', _room('r-general')));
+      expect(repository.overwrites('s-1', 'r-general'), isEmpty);
+      expect(repository.canInRoom('s-1', 'r-general', Perm.sendMessages), isTrue);
+    });
+
     test('an overwrite that hides a room takes it away, and one that\'s gone brings it back', () async {
       await signIn();
       repository.handleEvent(_event('SPACE_CREATE', guild()));
