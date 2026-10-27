@@ -392,11 +392,17 @@ class VoiceController extends ChangeNotifier {
 
   bool _speakAllowed(RoomVoice t) => _repository.canInRoom(t.spaceId, t.roomId, Perm.speakInVoice);
 
+  bool _inSpaces(RoomVoice t) =>
+      _repository.spaces.value.any((s) => s.id == t.spaceId && s.rooms.any((r) => r.id == t.roomId));
+
   // A role or an overwrite changed: without SpeakInVoice the user is muted,
-  // as the gateway already shows them.
+  // as the gateway already shows them. Not in a room the user no longer has,
+  // deleted or no longer one they can view: its ROOM_DELETE took its
+  // overwrites, and the SpeakInVoice they gave, before the gateway ends its
+  // voice, and a mute set then would stay for the next room.
   void _checkSpeak() {
     final target = _target;
-    if (target is! RoomVoice) return;
+    if (target is! RoomVoice || !_inSpaces(target)) return;
     final can = _speakAllowed(target);
     if (can == _canSpeak) return;
     _canSpeak = can;
