@@ -10,6 +10,7 @@ import 'package:duvet/theme.dart';
 import 'package:duvet/widgets/media.dart';
 import 'package:duvet/widgets/media_actions.dart';
 import 'package:duvet/widgets/message_content.dart';
+import 'package:duvet/widgets/rows.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
@@ -342,6 +343,30 @@ void main() {
     expect(gifs.searched, ['Celebrate']);
     await tapLabel(tester, 'GIF, party');
     expect(repository.sent.last.content, _Gifs.party.url);
+    semantics.dispose();
+  });
+
+  testWidgets('GIFs: typing searches once it pauses, and a topic drops the search that waited', (tester) async {
+    final gifs = _Gifs();
+    GifSource.instance = gifs;
+    await openMaya(tester);
+    await tapLabel(tester, 'Emoji and stickers');
+    await tester.tap(find.text('GIFs'));
+    await tester.pumpAndSettle();
+    final field = find.descendant(of: find.byType(SearchField), matching: find.byType(EditableText));
+    for (final typed in ['c', 'ca', 'cat']) {
+      await tester.enterText(field, typed);
+      await tester.pump(const Duration(milliseconds: 200));
+    }
+    expect(gifs.searched, isEmpty, reason: 'nothing while the typing goes on');
+    await tester.pump(const Duration(milliseconds: 300));
+    expect(gifs.searched, ['cat']);
+
+    await tester.enterText(field, 'dog');
+    await tester.pump(const Duration(milliseconds: 100));
+    await tester.tap(find.text('Celebrate'));
+    await tester.pumpAndSettle();
+    expect(gifs.searched, ['cat', 'Celebrate']);
     semantics.dispose();
   });
 
