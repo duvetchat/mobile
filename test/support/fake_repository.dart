@@ -1094,6 +1094,9 @@ class FakeRepository implements ChatRepository {
   String? nameOf(String userId) => everyone.where((m) => m.userId == userId).firstOrNull?.displayName;
 
   @override
+  String? avatarUrl(String? avatar) => avatar == null ? null : 'https://example.invalid/attachments/$avatar';
+
+  @override
   String? emojiNameOf(String emojiId) => emojiId == party.id ? party.name : null;
 
   @override

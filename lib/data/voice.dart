@@ -88,6 +88,10 @@ class ActiveCall {
   final String conversationId;
   final String initiatorId;
   final String initiatorName;
+
+  /// The caller's avatar, an attachment ID, as CALL_INCOMING and READY give
+  /// it: the incoming call screen shows it.
+  final String? initiatorAvatar;
   final bool outgoing;
   final CallPhase phase;
 
@@ -101,6 +105,7 @@ class ActiveCall {
     required this.conversationId,
     required this.initiatorId,
     required this.initiatorName,
+    this.initiatorAvatar,
     required this.outgoing,
     required this.phase,
     required this.startedAt,
@@ -111,6 +116,7 @@ class ActiveCall {
     conversationId: conversationId,
     initiatorId: initiatorId,
     initiatorName: initiatorName,
+    initiatorAvatar: initiatorAvatar,
     outgoing: outgoing,
     phase: phase ?? this.phase,
     startedAt: startedAt,
@@ -225,6 +231,15 @@ class VoiceController extends ChangeNotifier {
   Set<String> get callsInProgress => _calls;
   Set<String> _calls = const {};
 
+  /// Whether [conversationId]'s call is the user's own, placed from this
+  /// phone or another of their devices, and still rings the others: nobody
+  /// has answered it yet. Until someone does, it can't be joined from here:
+  /// the user's voice would be in it alone, and the device that placed it
+  /// joins at the first answer. A gateway from before calls across devices
+  /// doesn't say, and its calls can be joined as before.
+  bool ownCallRinging(String conversationId) => _unanswered.contains(conversationId);
+  Set<String> _unanswered = const {};
+
   // ---------------------------------------------------------------------------
   // The user's own voice
   // ---------------------------------------------------------------------------
@@ -273,6 +288,13 @@ class VoiceController extends ChangeNotifier {
   // CALL_OUTGOING came, someone answered or declined, or READY listed it.
   List<String> _placedWith = const [];
   bool _placeHeard = false;
+
+  // The conversation whose call placed here was cancelled, until its
+  // CALL_ENDED, or until a call is placed there again: a call placed into
+  // one going on (calls that crossed, or its caller back by calling it)
+  // joins it, and its cancel may then take only the user out, the call
+  // going on for the others.
+  String? _cancelledIn;
 
   // The gateway ends a call nobody answered this long after it rang.
   static const _ringTimeout = Duration(seconds: 30);
@@ -731,9 +753,10 @@ class VoiceController extends ChangeNotifier {
         _onDeclined(data);
       case duvet.CallEndedPayloadEvent(:final data):
         _onEnded(data.conversationId);
-      case duvet.UnknownEvent(type: 'CALL_OUTGOING', :final rawData):
-        // The gateway has the call this phone placed.
-        if (_call case final c? when c.outgoing && rawData?['conversation_id'] == c.conversationId) _placeHeard = true;
+      case duvet.CallOutgoingPayloadEvent(:final data):
+        _onOutgoing(data.conversationId);
+      case duvet.CallOngoingPayloadEvent(:final data):
+        _onOngoing(data);
       default:
     }
   }
@@ -745,18 +768,65 @@ class VoiceController extends ChangeNotifier {
     final calls = data.activeCalls ?? const <duvet.GatewayReadyActiveCall>[];
     _states.reset(calls);
     _calls = {for (final c in calls) c.conversationId};
+    _unanswered = {
+      for (final c in calls)
+        if (c.initiatorId == _me && c.answered == false) c.conversationId,
+    };
+    _cancelledIn = null;
 
     // The gateway keeps calls in memory: one the new session doesn't list is
     // over (it restarted, or the call ended while the phone was away). But
     // one placed or answered on this session's own socket went out after its
     // identify, and READY was made before it.
     final call = _call;
-    if (call != null && call.outgoing && _calls.contains(call.conversationId)) _placeHeard = true;
-    if (call != null && !_calls.contains(call.conversationId)) {
+    final listed = call == null ? null : calls.where((c) => c.conversationId == call.conversationId).firstOrNull;
+    if (call != null && call.outgoing && listed != null) _placeHeard = true;
+    if (call != null && listed == null) {
       if (_callOn == _signaling.connection) {
         _calls = {..._calls, call.conversationId};
       } else {
         _callOver(call);
+      }
+    } else if (call != null && listed != null) {
+      if (call.phase == CallPhase.ringing && listed.ringing == false) {
+        // Answered or declined on another device while this one was away, or
+        // its ring window ended: it rings here no more.
+        _call = null;
+      } else if (call.phase == CallPhase.calling && listed.answered == true) {
+        // Answered while this phone was away: its CALL_ACCEPTED went to the
+        // session that dropped. The call's voice joins, as it would have
+        // then, unless the gateway had been out of reach for long (the phone
+        // slept, say), as voice doesn't join again either: the microphone
+        // mustn't go live by surprise. Then it shows going on, to join.
+        final silence = _signaling.silenceBeforeReady;
+        final waited = _now().difference(call.startedAt);
+        if ((waited < silence ? waited : silence) > rejoinWindow) {
+          _call = null;
+          // The microphone opened for it.
+          if (_target == null) _teardown(sendLeave: false);
+        } else {
+          _call = call.answered();
+          unawaited(_joinCallVoice(call.conversationId));
+        }
+      }
+    }
+    // A call that rings the user from before this session (it rang while the
+    // phone was away, or began as it came back), its caller as READY names
+    // them. A gateway from before calls across devices doesn't say whether a
+    // call rings, and none rings here then.
+    if (_call == null) {
+      if (calls.where((c) => c.ringing == true).firstOrNull case final c?) {
+        _call = ActiveCall(
+          conversationId: c.conversationId,
+          initiatorId: c.initiatorId,
+          initiatorName: c.initiatorName ?? _repository.nameOf(c.initiatorId) ?? 'Someone',
+          initiatorAvatar: c.initiatorAvatar,
+          outgoing: false,
+          phase: CallPhase.ringing,
+          startedAt: _now(),
+        );
+        _callOn = null;
+        _answerHeard = false;
       }
     }
 
@@ -937,6 +1007,7 @@ class VoiceController extends ChangeNotifier {
       conversationId: data.conversationId,
       initiatorId: data.initiatorId,
       initiatorName: data.initiatorName,
+      initiatorAvatar: data.initiatorAvatar,
       outgoing: false,
       phase: CallPhase.ringing,
       startedAt: _now(),
@@ -953,33 +1024,89 @@ class VoiceController extends ChangeNotifier {
     notifyListeners();
   }
 
+  // Every member's sessions get it, whoever answered: the user themselves on
+  // another device (or the caller back by calling), or anyone else.
   void _onAccepted(duvet.CallResponseEvent data) {
-    final call = _call;
-    if (call == null || call.conversationId != data.conversationId) return;
-    if (call.phase == CallPhase.calling) {
-      // Someone answered: the caller's voice joins.
-      _call = call.answered();
-      unawaited(_joinCallVoice(call.conversationId));
-    } else if (call.phase == CallPhase.ringing && data.userId == _me) {
-      // Answered on another device.
-      _call = null;
-    } else {
-      // The gateway heard this phone's answer.
-      if (call.phase == CallPhase.connected && data.userId == _me) _answerHeard = true;
-      return;
+    final id = data.conversationId;
+    var changed = false;
+    if (data.userId != _me && _unanswered.contains(id)) {
+      // Someone answered the user's own call: it can be joined from here.
+      _unanswered = {..._unanswered}..remove(id);
+      changed = true;
     }
-    notifyListeners();
+    if (data.userId == _me && id == _cancelledIn && !_calls.contains(id)) {
+      // The call cancelled here had joined one going on, which its cancel
+      // left going on for the others.
+      _calls = {..._calls, id};
+      changed = true;
+    }
+    final call = _call;
+    if (call != null && call.conversationId == id) {
+      if (call.phase == CallPhase.calling) {
+        // Someone answered, or the call placed here joined one going on:
+        // the caller's voice joins.
+        _call = call.answered();
+        unawaited(_joinCallVoice(id));
+        changed = true;
+      } else if (call.phase == CallPhase.ringing && data.userId == _me) {
+        // Answered on another device.
+        _call = null;
+        changed = true;
+      } else if (call.phase == CallPhase.connected && data.userId == _me) {
+        // The gateway heard this phone's answer.
+        _answerHeard = true;
+      }
+    }
+    if (changed) notifyListeners();
   }
 
   void _onDeclined(duvet.CallResponseEvent data) {
     final call = _call;
-    if (call == null || call.conversationId != data.conversationId || call.phase != CallPhase.calling) return;
+    if (call == null || call.conversationId != data.conversationId) return;
+    if (data.userId == _me) {
+      // Declined on another device: it rings here no more.
+      if (call.phase == CallPhase.ringing) {
+        _call = null;
+        notifyListeners();
+      }
+      return;
+    }
+    if (call.phase != CallPhase.calling) return;
     _placeHeard = true;
     _notice('${_repository.nameOf(data.userId) ?? 'They'} declined');
   }
 
+  // A call the user started, from this phone or another of their devices: it
+  // rings none of them, and goes on in that conversation, unanswered.
+  void _onOutgoing(String conversationId) {
+    // The one placed here and cancelled since: its cancel ends it.
+    if (conversationId == _cancelledIn) return;
+    _calls = {..._calls, conversationId};
+    _unanswered = {..._unanswered, conversationId};
+    // The gateway has the call this phone placed.
+    if (_call case final c? when c.outgoing && c.conversationId == conversationId) _placeHeard = true;
+    notifyListeners();
+  }
+
+  // A call goes on without ringing the user: its ring window ended before
+  // they answered it, someone else having answered, or they became one of
+  // its members while it went on (added to the group). It rings here no
+  // more, and who is in it shows, to join it with [joinCall].
+  void _onOngoing(duvet.CallOngoingEvent data) {
+    _calls = {..._calls, data.conversationId};
+    _states.ongoing(data);
+    if (_call case final c? when c.phase == CallPhase.ringing && c.conversationId == data.conversationId) {
+      // Answered on none of the user's devices: missed.
+      _record(c);
+      _call = null;
+    }
+    notifyListeners();
+  }
+
   void _onEnded(String conversationId) {
     _calls = {..._calls}..remove(conversationId);
+    _unanswered = {..._unanswered}..remove(conversationId);
+    if (conversationId == _cancelledIn) _cancelledIn = null;
     _states.forget(conversationId);
     final call = _call;
     if (call != null && call.conversationId == conversationId) _callOver(call);
@@ -1060,6 +1187,8 @@ class VoiceController extends ChangeNotifier {
     _callOn = _signaling.connection;
     _placedWith = ids;
     _placeHeard = false;
+    // What the gateway says of this conversation's call is this one's now.
+    if (_cancelledIn == conversationId) _cancelledIn = null;
     _calls = {..._calls, conversationId};
     _mic = mic;
     if (mic != null) _keepAlive(CallVoice(conversationId));
@@ -1067,8 +1196,10 @@ class VoiceController extends ChangeNotifier {
   }
 
   /// Joins the call going on in [conversationId]: one that rang out, or that
-  /// the user left.
+  /// the user left. Not the user's own while it still rings the others (see
+  /// [ownCallRinging]).
   Future<void> joinCall(String conversationId) async {
+    if (ownCallRinging(conversationId)) return;
     final current = _call;
     if (current != null && current.conversationId != conversationId) {
       _notice('You’re in a call already');
@@ -1143,8 +1274,10 @@ class VoiceController extends ChangeNotifier {
         declineCall();
         return;
       case CallPhase.calling:
-        // The gateway ends a call its caller cancels.
-        _signaling.cancelCall(call.conversationId);
+        // The gateway ends a call its caller cancels. Not always one placed
+        // into a call going on, which joined it: then the CALL_ACCEPTED of
+        // this user that follows shows it again (see [_onAccepted]).
+        if (_signaling.cancelCall(call.conversationId)) _cancelledIn = call.conversationId;
         _record(call, CallOutcome.cancelled);
         _calls = {..._calls}..remove(call.conversationId);
         // The microphone opened for it.
@@ -1297,6 +1430,8 @@ class VoiceController extends ChangeNotifier {
       _teardown(sendLeave: true);
       _call = null;
       _calls = const {};
+      _unanswered = const {};
+      _cancelledIn = null;
       _states.reset();
       _iceServers = _stun;
       _muted = false;

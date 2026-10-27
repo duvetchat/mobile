@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:forui/forui.dart';
@@ -529,6 +531,7 @@ class _GifTabState extends State<_GifTab> {
   String _topic = 'Trending';
   Future<List<Gif>>? _results;
   int _request = 0;
+  Timer? _typing;
 
   @override
   void initState() {
@@ -538,8 +541,16 @@ class _GifTabState extends State<_GifTab> {
 
   @override
   void dispose() {
+    _typing?.cancel();
     _search.dispose();
     super.dispose();
+  }
+
+  /// Typing searches once it pauses for half a second, as the desktop app does: each search counts against the GIF
+  /// provider's hourly limit, which every user of the app shares.
+  void _typed(String _) {
+    _typing?.cancel();
+    _typing = Timer(const Duration(milliseconds: 500), _load);
   }
 
   void _load() {
@@ -561,7 +572,7 @@ class _GifTabState extends State<_GifTab> {
       children: [
         Padding(
           padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
-          child: SearchField(hint: 'Search GIFs', controller: _search, onChanged: (_) => _load()),
+          child: SearchField(hint: 'Search GIFs', controller: _search, onChanged: _typed),
         ),
         SizedBox(
           height: 40,
@@ -657,6 +668,7 @@ class _GifTabState extends State<_GifTab> {
   }
 
   void _choose(String topic) {
+    _typing?.cancel();
     _search.clear();
     _topic = topic;
     _load();

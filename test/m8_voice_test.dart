@@ -9,6 +9,7 @@ import 'package:duvet/data/models.dart';
 import 'package:duvet/data/voice.dart';
 import 'package:duvet/data/voice_engine.dart' show PeerState;
 import 'package:duvet/main.dart';
+import 'package:duvet/widgets/avatar.dart';
 import 'package:duvet/widgets/chrome.dart';
 import 'package:duvet/widgets/facehash.dart';
 import 'package:duvet/widgets/media.dart';
@@ -372,7 +373,8 @@ void main() {
     );
     await tester.tap(find.text('Maya'));
     await tester.pumpAndSettle();
-    expect(find.text('Call in progress'), findsOneWidget);
+    // Who is in it.
+    expect(find.text('Call in progress · Maya'), findsOneWidget);
 
     await tester.tap(find.text('Join'));
     await settle(tester);
@@ -380,6 +382,189 @@ void main() {
     // The call screen, Maya and the user in it.
     expect(find.bySemanticsLabel(RegExp('^Call with Maya')), findsOneWidget);
     expect(find.byWidgetPredicate((w) => w is Facehash && w.name == 'Maya'), findsWidgets);
+    await finish(tester, app);
+  });
+
+  // A call across the user's devices (duvetchat/gateway#25).
+  duvet.VoiceStateUpdatedEvent inCall(String conversation, String user, int version) => duvet.VoiceStateUpdatedEvent(
+    duvet.VoiceStateEvent(roomId: conversation, userId: user, joined: true, version: version),
+  );
+  IconAction button(WidgetTester tester, String label) =>
+      tester.widget(find.byWidgetPredicate((w) => w is IconAction && w.label == label));
+
+  testWidgets('the user\'s own call from another device: no Join and no Call until someone answers it', (tester) async {
+    final app = await pumpApp(tester);
+    // Placed on the user's desktop: it rings nothing here.
+    app.gateway.push(const duvet.CallOutgoingPayloadEvent(duvet.CallOutgoingEvent(conversationId: 'c-maya')));
+    await settle(tester);
+    expect(find.text('Incoming call'), findsNothing);
+    await tester.tap(find.text('Maya'));
+    await tester.pumpAndSettle();
+    expect(find.text('Calling from another device'), findsOneWidget);
+    expect(find.text('Join'), findsNothing);
+    expect(button(tester, 'Call').onPressed, isNull);
+
+    // Maya answered, and the desktop joined: Join, and Call as it does, move
+    // the user's voice here.
+    app.gateway.push(
+      const duvet.CallAcceptedEvent(duvet.CallResponseEvent(conversationId: 'c-maya', userId: FakeRepository.maya)),
+    );
+    app.gateway.push(inCall('c-maya', FakeRepository.me.id, 1));
+    app.gateway.push(inCall('c-maya', FakeRepository.maya, 2));
+    await settle(tester);
+    expect(find.text('Call in progress · You, Maya'), findsOneWidget);
+    expect(find.text('Join'), findsOneWidget);
+    expect(button(tester, 'Call').onPressed, isNotNull);
+    await tester.tap(find.bySemanticsLabel('Call'));
+    await settle(tester);
+    expect(app.gateway.types, ['CALL_INITIATE', 'CALL_ACCEPT', 'VOICE_JOIN', 'VOICE_SYNC']);
+    expect(find.bySemanticsLabel(RegExp('^Call with Maya')), findsOneWidget);
+    await finish(tester, app);
+  });
+
+  testWidgets('the Calls tab\'s Call waits too while the user\'s own call rings from another device', (tester) async {
+    final app = await pumpApp(tester);
+    // Maya called, and the user declined: her row in the Calls tab.
+    app.gateway.push(
+      const duvet.CallIncomingPayloadEvent(
+        duvet.CallIncomingEvent(conversationId: 'c-maya', initiatorId: FakeRepository.maya, initiatorName: 'Maya'),
+      ),
+    );
+    await settle(tester);
+    await tester.tap(find.bySemanticsLabel('Decline the call'));
+    await settle(tester);
+    app.gateway.push(const duvet.CallEndedPayloadEvent(duvet.CallEndedEvent(conversationId: 'c-maya')));
+    await tester.tap(find.descendant(of: find.byType(DuvetTabBar), matching: find.text('Calls')));
+    await settle(tester);
+    expect(button(tester, 'Call Maya').onPressed, isNotNull);
+
+    // The user calls her back from the desktop.
+    app.gateway.push(const duvet.CallOutgoingPayloadEvent(duvet.CallOutgoingEvent(conversationId: 'c-maya')));
+    await settle(tester);
+    expect(button(tester, 'Call Maya').onPressed, isNull);
+    app.gateway.push(
+      const duvet.CallAcceptedEvent(duvet.CallResponseEvent(conversationId: 'c-maya', userId: FakeRepository.maya)),
+    );
+    await settle(tester);
+    expect(button(tester, 'Call Maya').onPressed, isNotNull);
+    app.gateway.push(const duvet.CallEndedPayloadEvent(duvet.CallEndedEvent(conversationId: 'c-maya')));
+
+    // A call placed from here: its button opens its screen again.
+    await tester.tap(find.bySemanticsLabel('Call Maya'));
+    await settle(tester);
+    app.gateway.push(const duvet.CallOutgoingPayloadEvent(duvet.CallOutgoingEvent(conversationId: 'c-maya')));
+    await settle(tester);
+    expect(find.text('Calling…'), findsWidgets);
+    await tester.tap(find.bySemanticsLabel('Back'));
+    await settle(tester);
+    expect(button(tester, 'Call Maya').onPressed, isNotNull);
+    await finish(tester, app);
+  });
+
+  testWidgets('a call ringing here stops when the user declines or answers it on another device', (tester) async {
+    final semantics = tester.ensureSemantics();
+    final app = await pumpApp(tester);
+    // It rang while the phone was away: READY names its caller.
+    app.gateway.ready(
+      calls: const [
+        duvet.GatewayReadyActiveCall(
+          conversationId: 'c-maya',
+          initiatorId: FakeRepository.maya,
+          initiatorName: 'Maya',
+          ringing: true,
+          answered: false,
+        ),
+      ],
+    );
+    await settle(tester);
+    expect(find.bySemanticsLabel('Incoming call from Maya'), findsOneWidget);
+
+    app.gateway.push(
+      duvet.CallDeclinedEvent(duvet.CallResponseEvent(conversationId: 'c-maya', userId: FakeRepository.me.id)),
+    );
+    await settle(tester);
+    expect(find.text('Incoming call'), findsNothing);
+    app.gateway.push(const duvet.CallEndedPayloadEvent(duvet.CallEndedEvent(conversationId: 'c-maya')));
+
+    app.gateway.push(
+      const duvet.CallIncomingPayloadEvent(
+        duvet.CallIncomingEvent(conversationId: 'c-maya', initiatorId: FakeRepository.maya, initiatorName: 'Maya'),
+      ),
+    );
+    await settle(tester);
+    expect(find.text('Incoming call'), findsOneWidget);
+    app.gateway.push(
+      duvet.CallAcceptedEvent(duvet.CallResponseEvent(conversationId: 'c-maya', userId: FakeRepository.me.id)),
+    );
+    await settle(tester);
+    expect(find.text('Incoming call'), findsNothing);
+    expect(app.gateway.sent, isEmpty);
+    semantics.dispose();
+    await finish(tester, app);
+  });
+
+  testWidgets('a group\'s call rung from READY shows its caller, avatar included', (tester) async {
+    final app = await pumpApp(tester);
+    app.gateway.ready(
+      calls: const [
+        duvet.GatewayReadyActiveCall(
+          conversationId: 'c-team',
+          initiatorId: FakeRepository.leo,
+          initiatorName: 'leo',
+          initiatorAvatar: '0a0a0a0a-0000-4000-8000-0000000000a1',
+          ringing: true,
+          answered: false,
+        ),
+      ],
+    );
+    await settle(tester);
+    expect(find.text('Calling Design crew'), findsOneWidget);
+    expect(
+      find.byWidgetPredicate(
+        (w) =>
+            w is UserAvatar &&
+            w.name == 'leo' &&
+            w.url == 'https://example.invalid/attachments/0a0a0a0a-0000-4000-8000-0000000000a1',
+      ),
+      findsOneWidget,
+    );
+    await finish(tester, app);
+  });
+
+  testWidgets('a group\'s call whose ring window ends stops ringing, and its chat shows who is in it, to join', (
+    tester,
+  ) async {
+    final app = await pumpApp(tester);
+    app.gateway.push(
+      const duvet.CallIncomingPayloadEvent(
+        duvet.CallIncomingEvent(conversationId: 'c-team', initiatorId: FakeRepository.leo, initiatorName: 'leo'),
+      ),
+    );
+    await settle(tester);
+    expect(find.text('Calling Design crew'), findsOneWidget);
+
+    // Maya answered; nobody else did in 30 s.
+    app.gateway.push(
+      const duvet.CallOngoingPayloadEvent(
+        duvet.CallOngoingEvent(
+          conversationId: 'c-team',
+          initiatorId: FakeRepository.leo,
+          voiceStates: [
+            duvet.CallVoiceState(userId: FakeRepository.leo, version: 1),
+            duvet.CallVoiceState(userId: FakeRepository.maya, version: 2),
+          ],
+        ),
+      ),
+    );
+    await settle(tester);
+    expect(find.text('Calling Design crew'), findsNothing);
+    await tester.tap(find.text('Design crew'));
+    await tester.pumpAndSettle();
+    expect(find.text('Call in progress · leo, Maya'), findsOneWidget);
+
+    await tester.tap(find.text('Join'));
+    await settle(tester);
+    expect(app.gateway.types, ['CALL_INITIATE', 'CALL_ACCEPT', 'VOICE_JOIN', 'VOICE_SYNC']);
     await finish(tester, app);
   });
 
