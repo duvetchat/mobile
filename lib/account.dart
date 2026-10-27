@@ -635,9 +635,10 @@ class _ChangeEmailPageState extends State<ChangeEmailPage> {
 // Edit profile
 // -----------------------------------------------------------------------------
 
-/// Picks a picture for the profile; tests swap in their own.
+/// Picks a picture for the profile as it is: recompressed, Android's picker
+/// would make a GIF a still image. Tests swap in their own.
 Future<String?> Function() pickProfilePicture = () async =>
-    (await ImagePicker().pickImage(source: ImageSource.gallery, imageQuality: 95))?.path;
+    (await ImagePicker().pickImage(source: ImageSource.gallery))?.path;
 
 class EditProfilePage extends StatefulWidget {
   const EditProfilePage({super.key});

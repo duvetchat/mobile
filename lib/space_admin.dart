@@ -1,11 +1,13 @@
 import 'dart:async';
 import 'dart:io';
+import 'dart:isolate';
 import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
 import 'package:flutter/semantics.dart';
 import 'package:flutter/services.dart';
 import 'package:forui/forui.dart';
+import 'package:image/image.dart' as img;
 import 'package:image_picker/image_picker.dart';
 import 'package:path_provider/path_provider.dart';
 
@@ -20,9 +22,10 @@ import 'widgets/chrome.dart';
 import 'widgets/glass.dart';
 import 'widgets/rows.dart';
 
-/// Picks a Space's banner; tests swap in their own.
+/// Picks a Space's banner as it is: resized, Android's picker would make a GIF
+/// a still image. Tests swap in their own.
 Future<String?> Function() pickSpaceImage = () async =>
-    (await ImagePicker().pickImage(source: ImageSource.gallery, maxWidth: 1024, imageQuality: 90))?.path;
+    (await ImagePicker().pickImage(source: ImageSource.gallery))?.path;
 
 /// Picks an emoji's or a sticker's picture as it is: resized, Android's picker
 /// would make a GIF a still image. Tests swap in their own.
@@ -144,14 +147,38 @@ const bannerSize = (width: 600, height: 240);
 /// An avatar's or a Space icon's side, as the desktop crops one.
 const avatarSide = 256;
 
+/// The banner [crop] frames in the moving GIF [gif], every frame of it, as a
+/// GIF: it stays moving, as the desktop keeps it.
+Uint8List bannerGif(Uint8List gif, CropRect crop) {
+  final cropped = img.copyCrop(
+    img.decodeGif(gif)!,
+    x: crop.x.round(),
+    y: crop.y.round(),
+    width: crop.w.round(),
+    height: crop.h.round(),
+  );
+  return img.encodeGif(
+    img.copyResize(
+      cropped,
+      width: bannerSize.width,
+      height: bannerSize.height,
+      interpolation: img.Interpolation.average,
+    ),
+  );
+}
+
 /// The banner [crop] frames in the picture at [path], in a file to upload;
 /// answers its path. Tests swap in their own.
 Future<String> Function(String path, CropRect crop) saveBannerImage = (path, crop) async {
-  final png = await framedPng(path, crop, bannerSize.width, bannerSize.height);
+  final moving = (await gifAt(path))?.animated ?? false;
+  // Off the UI thread: every frame is decoded and encoded again.
+  final bytes = moving
+      ? await Isolate.run(() async => bannerGif(await File(path).readAsBytes(), crop))
+      : await framedPng(path, crop, bannerSize.width, bannerSize.height);
   final dir = Directory('${(await getTemporaryDirectory()).path}/banner');
   await dir.create(recursive: true);
-  final file = File('${dir.path}/banner-${DateTime.now().microsecondsSinceEpoch}.png');
-  await file.writeAsBytes(png, flush: true);
+  final file = File('${dir.path}/banner-${DateTime.now().microsecondsSinceEpoch}.${moving ? 'gif' : 'png'}');
+  await file.writeAsBytes(bytes, flush: true);
   return file.path;
 };
 

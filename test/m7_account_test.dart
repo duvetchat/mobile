@@ -8,11 +8,12 @@ import 'package:duvet/data/emoji_catalog.dart';
 import 'package:duvet/data/models.dart';
 import 'package:duvet/deep_links.dart';
 import 'package:duvet/main.dart';
-import 'package:duvet/space_admin.dart' show saveBannerImage, saveSquareImage;
+import 'package:duvet/space_admin.dart' show bannerGif, saveBannerImage, saveSquareImage;
 import 'package:duvet/widgets/chrome.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:image/image.dart' as img;
 
 import 'support/fake_repository.dart';
 
@@ -71,6 +72,14 @@ void main() {
     expect(passwordStrength('abc').score, lessThan(2));
     expect(passwordStrength('abc').hint, startsWith('Too short'));
     expect(passwordStrength('correct horse battery 9!').score, 4);
+  });
+
+  test('a moving GIF banner is cropped frame by frame and keeps moving', () {
+    final gif = img.Image(width: 100, height: 100)..frameDuration = 100;
+    gif.addFrame(img.Image(width: 100, height: 100)..frameDuration = 100);
+    final banner = img.decodeGif(bannerGif(img.encodeGif(gif), (x: 0, y: 30, w: 100, h: 40)))!;
+    expect(banner.numFrames, 2);
+    expect((banner.width, banner.height), (600, 240));
   });
 
   testWidgets('sign up: fields check themselves; the account verifies by its emailed link', (tester) async {
