@@ -715,8 +715,6 @@ class _EditProfilePageState extends State<EditProfilePage> {
       if (mounted) _toast(context, 'Couldn’t read this picture');
       return;
     }
-    // The same photo cropped again lands at the same path: the preview mustn't show the last crop.
-    unawaited(FileImage(File(cropped)).evict());
     if (mounted) setState(() => kind == ProfileImage.avatar ? _avatar = cropped : _banner = cropped);
   }
 

@@ -112,13 +112,15 @@ Future<Uint8List> framedPng(String path, CropRect crop, int width, int height) a
 }
 
 /// [squarePng] in a file to upload, named after the picture, as the desktop
-/// names it; answers its path. Tests swap in their own.
+/// names it; answers its path. Each crop has a folder of its own: a picture
+/// shows by its path, so one saved where the last crop was would show as the
+/// last crop. Tests swap in their own.
 Future<String> Function(String path, CropRect crop, int side) saveSquareImage = (path, crop, side) async {
   final png = await squarePng(path, crop, side);
   final name = path.split(Platform.pathSeparator).last;
   final dot = name.lastIndexOf('.');
-  final dir = Directory('${(await getTemporaryDirectory()).path}/square');
-  await dir.create(recursive: true);
+  final squares = await Directory('${(await getTemporaryDirectory()).path}/square').create(recursive: true);
+  final dir = await squares.createTemp();
   final file = File('${dir.path}/${dot > 0 ? name.substring(0, dot) : 'image'}.png');
   await file.writeAsBytes(png, flush: true);
   return file.path;
