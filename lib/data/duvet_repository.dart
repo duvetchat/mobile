@@ -2393,8 +2393,8 @@ class DuvetRepository implements ChatRepository {
   ///
   /// ROOM_DELETE also takes away a room the user can no longer view. Its
   /// overwrites go with it: no event about them comes while it's away, and
-  /// when the user can view it again, ROOM_CREATE brings it with the ones it
-  /// has then.
+  /// when the user can view it again, ROOM_CREATE brings it back, followed by
+  /// the overwrites it has then.
   void _roomGone(String spaceId, String roomId) {
     _overwrites[spaceId]?.remove(roomId);
     final rooms = _spaces[spaceId]?.rooms;

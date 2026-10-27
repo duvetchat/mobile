@@ -617,6 +617,29 @@ void main() {
     expect(h.notices.last, 'You can’t speak in this room');
   });
 
+  _voice('losing SpeakInVoice in the room mutes the user', (async, h) {
+    h.voice.joinRoom(_lounge);
+    async.flushMicrotasks();
+    expect(h.voice.muted, isFalse);
+    h.repository.noSpeak.add('r-lounge');
+    h.repository.spaces.value = [...h.repository.spaces.value];
+    async.flushMicrotasks();
+    expect(h.voice.muted, isTrue);
+    expect(h.notices.last, 'You can’t speak in this room now');
+  });
+
+  _voice('a room that goes while the user is in its voice leaves their microphone as it was', (async, h) {
+    h.voice.joinRoom(_lounge);
+    async.flushMicrotasks();
+    // Its ROOM_DELETE comes before the gateway ends its voice: the room is
+    // gone, and so are its overwrites, with the SpeakInVoice they gave.
+    h.repository.noSpeak.add('r-lounge');
+    unawaited(h.repository.deleteRoom('s-guild', 'r-lounge'));
+    async.flushMicrotasks();
+    expect(h.voice.muted, isFalse);
+    expect(h.notices, isNot(contains('You can’t speak in this room now')));
+  });
+
   _voice('without JoinVoice nothing is joined', (async, h) {
     h.repository.noJoin.add('r-lounge');
     h.voice.joinRoom(_lounge);
