@@ -152,21 +152,27 @@ const avatarSide = 256;
 /// The banner [crop] frames in the moving GIF [gif], every frame of it, as a
 /// GIF: it stays moving, as the desktop keeps it.
 Uint8List bannerGif(Uint8List gif, CropRect crop) {
-  final cropped = img.copyCrop(
-    img.decodeGif(gif)!,
-    x: crop.x.round(),
-    y: crop.y.round(),
-    width: crop.w.round(),
-    height: crop.h.round(),
-  );
-  return img.encodeGif(
-    img.copyResize(
-      cropped,
+  img.Image? banner;
+  // Frame by frame: cropped whole, the animation would give every frame the
+  // first's palette and time. The first frame holds the others, hence a copy
+  // of it alone.
+  for (final frame in img.decodeGif(gif)!.frames) {
+    final framed = img.copyResize(
+      img.copyCrop(
+        img.Image.from(frame, noAnimation: true),
+        x: crop.x.round(),
+        y: crop.y.round(),
+        width: crop.w.round(),
+        height: crop.h.round(),
+      ),
       width: bannerSize.width,
       height: bannerSize.height,
       interpolation: img.Interpolation.average,
-    ),
-  );
+    );
+    banner?.addFrame(framed);
+    banner ??= framed;
+  }
+  return img.encodeGif(banner!);
 }
 
 /// The banner [crop] frames in the picture at [path], in a file to upload;
