@@ -1632,6 +1632,41 @@ void main() {
       expect(requests.last.body, isNot(contains('remove_banner')));
       expect(requests.last.body, contains('name="banner"'));
     });
+
+    test('taking the banner away uploads nothing, so says no upload\'s progress; a new one does', () async {
+      await signIn();
+      repository.handleEvent(_event('SPACE_CREATE', _spaceOf('s-1', 'Duvet Official', banner: banner)));
+      // Each change reaches the API whole, which holds its answer.
+      late Completer<void> sent;
+      late Completer<Object?> answer;
+      routes[('PATCH', '/api/spaces/s-1')] = (_) {
+        sent.complete();
+        return answer.future;
+      };
+      final progress = <double>[];
+
+      sent = Completer();
+      answer = Completer();
+      final removing = repository.updateSpace('s-1', removeBanner: true, onProgress: progress.add);
+      await sent.future;
+      expect(requests.last.body, contains('name="remove_banner"'));
+      expect(progress, isEmpty);
+      answer.complete(updated(null));
+      await removing;
+      expect(progress, isEmpty);
+
+      final dir = Directory.systemTemp.createTempSync('duvet_banners');
+      addTearDown(() => dir.deleteSync(recursive: true));
+      final upload = '${dir.path}/banner.png';
+      File(upload).writeAsBytesSync(const [1, 2, 3]);
+      sent = Completer();
+      answer = Completer();
+      final uploading = repository.updateSpace('s-1', bannerPath: upload, onProgress: progress.add);
+      await sent.future;
+      expect(progress.last, 1);
+      answer.complete(updated(other));
+      await uploading;
+    });
   });
 
   group('room descriptions', () {
