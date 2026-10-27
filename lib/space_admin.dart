@@ -1,11 +1,13 @@
 import 'dart:async';
 import 'dart:io';
+import 'dart:isolate';
 import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
 import 'package:flutter/semantics.dart';
 import 'package:flutter/services.dart';
 import 'package:forui/forui.dart';
+import 'package:image/image.dart' as img;
 import 'package:image_picker/image_picker.dart';
 import 'package:path_provider/path_provider.dart';
 
@@ -22,9 +24,10 @@ import 'widgets/glass.dart';
 import 'widgets/rows.dart';
 import 'widgets/scrolling.dart' show CarouselPhysics;
 
-/// Picks a Space's banner; tests swap in their own.
+/// Picks a Space's banner as it is: resized, Android's picker would make a GIF
+/// a still image. Tests swap in their own.
 Future<String?> Function() pickSpaceImage = () async =>
-    (await ImagePicker().pickImage(source: ImageSource.gallery, maxWidth: 1024, imageQuality: 90))?.path;
+    (await ImagePicker().pickImage(source: ImageSource.gallery))?.path;
 
 /// Picks an emoji's or a sticker's picture as it is: resized, Android's picker
 /// would make a GIF a still image. Tests swap in their own.
@@ -121,18 +124,63 @@ Future<String> Function(String path, CropRect crop, int side) saveSquareImage = 
   return file.path;
 };
 
-/// A Space banner's frame, as the desktop crops one: 5:2, 600 by 240.
-const spaceBannerAspect = 5 / 2;
-const spaceBannerSize = (width: 600, height: 240);
+/// Picks a Space's icon and crops it square, as the desktop does; answers the
+/// cropped picture's path, or null when the user backs out.
+Future<String?> chooseSpaceIcon(BuildContext context) async {
+  final path = await pickSpaceIcon();
+  if (path == null || !context.mounted) return null;
+  final crop = await Navigator.of(context).push<CropRect>(
+    MaterialPageRoute(fullscreenDialog: true, builder: (_) => CropPage(path: path, aspect: 1, round: false)),
+  );
+  if (crop == null || !context.mounted) return null;
+  try {
+    return await saveSquareImage(path, crop, avatarSide);
+  } catch (e) {
+    debugPrint('icon: $e');
+    if (context.mounted) _toast(context, 'Couldn’t read this picture');
+    return null;
+  }
+}
+
+/// A banner's pixels, a Space's or a profile's, as the desktop crops one: 5:2
+/// ([bannerAspect]).
+const bannerSize = (width: 600, height: 240);
+
+/// An avatar's or a Space icon's side, as the desktop crops one.
+const avatarSide = 256;
+
+/// The banner [crop] frames in the moving GIF [gif], every frame of it, as a
+/// GIF: it stays moving, as the desktop keeps it.
+Uint8List bannerGif(Uint8List gif, CropRect crop) {
+  final cropped = img.copyCrop(
+    img.decodeGif(gif)!,
+    x: crop.x.round(),
+    y: crop.y.round(),
+    width: crop.w.round(),
+    height: crop.h.round(),
+  );
+  return img.encodeGif(
+    img.copyResize(
+      cropped,
+      width: bannerSize.width,
+      height: bannerSize.height,
+      interpolation: img.Interpolation.average,
+    ),
+  );
+}
 
 /// The banner [crop] frames in the picture at [path], in a file to upload;
 /// answers its path. Tests swap in their own.
 Future<String> Function(String path, CropRect crop) saveBannerImage = (path, crop) async {
-  final png = await framedPng(path, crop, spaceBannerSize.width, spaceBannerSize.height);
+  final moving = (await gifAt(path))?.animated ?? false;
+  // Off the UI thread: every frame is decoded and encoded again.
+  final bytes = moving
+      ? await Isolate.run(() async => bannerGif(await File(path).readAsBytes(), crop))
+      : await framedPng(path, crop, bannerSize.width, bannerSize.height);
   final dir = Directory('${(await getTemporaryDirectory()).path}/banner');
   await dir.create(recursive: true);
-  final file = File('${dir.path}/banner-${DateTime.now().microsecondsSinceEpoch}.png');
-  await file.writeAsBytes(png, flush: true);
+  final file = File('${dir.path}/banner-${DateTime.now().microsecondsSinceEpoch}.${moving ? 'gif' : 'png'}');
+  await file.writeAsBytes(bytes, flush: true);
   return file.path;
 };
 
@@ -688,6 +736,7 @@ class _SpaceOverviewPageState extends State<SpaceOverviewPage> {
   String? _banner;
   bool _removeBanner = false;
   bool _saving = false;
+  final _upload = ValueNotifier<double?>(null);
 
   Future<void> _pickBanner() async {
     final path = await pickSpaceImage();
@@ -695,7 +744,7 @@ class _SpaceOverviewPageState extends State<SpaceOverviewPage> {
     final crop = await Navigator.of(context).push<CropRect>(
       MaterialPageRoute(
         fullscreenDialog: true,
-        builder: (_) => CropPage(path: path, aspect: spaceBannerAspect, round: false),
+        builder: (_) => CropPage(path: path, aspect: bannerAspect, round: false),
       ),
     );
     if (crop == null || !mounted) return;
@@ -719,6 +768,7 @@ class _SpaceOverviewPageState extends State<SpaceOverviewPage> {
   void dispose() {
     _name.dispose();
     _about.dispose();
+    _upload.dispose();
     super.dispose();
   }
 
@@ -739,9 +789,14 @@ class _SpaceOverviewPageState extends State<SpaceOverviewPage> {
         iconPath: _icon,
         bannerPath: _banner,
         removeBanner: _removeBanner,
+        onProgress: (p) {
+          // Left mid-upload, the page is gone, and its note with it.
+          if (mounted) _upload.value = p;
+        },
       ),
     );
     if (!mounted) return;
+    _upload.value = null;
     setState(() => _saving = false);
     if (ok) navigator.pop();
   }
@@ -781,7 +836,7 @@ class _SpaceOverviewPageState extends State<SpaceOverviewPage> {
               child: ClipRRect(
                 borderRadius: BorderRadius.circular(DuvetTokens.radiusCard),
                 child: AspectRatio(
-                  aspectRatio: spaceBannerAspect,
+                  aspectRatio: bannerAspect,
                   child: Image.file(
                     File(path),
                     fit: BoxFit.cover,
@@ -796,7 +851,7 @@ class _SpaceOverviewPageState extends State<SpaceOverviewPage> {
           AdminPanel(
             children: [
               picked('Icon', _icon, () async {
-                final path = await pickSpaceIcon();
+                final path = await chooseSpaceIcon(context);
                 if (path != null && mounted) setState(() => _icon = path);
               }),
               picked('Banner', _banner, _pickBanner, has: hasBanner),
@@ -812,6 +867,7 @@ class _SpaceOverviewPageState extends State<SpaceOverviewPage> {
                 ),
             ],
           ),
+          UploadNote(_upload),
           const SizedBox(height: 8),
           Text(
             'Everyone in the Space sees the change.',
@@ -2761,10 +2817,19 @@ class _AssetsPageState extends State<AssetsPage> {
   late AssetKind _kind = _may(AssetKind.emoji) || !_may(AssetKind.sticker) ? AssetKind.emoji : AssetKind.sticker;
   late Future<List<SpaceAsset>> _list;
 
+  // The picture going up: its sheet is gone, and the list waits for it.
+  final _upload = ValueNotifier<double?>(null);
+
   @override
   void didChangeDependencies() {
     super.didChangeDependencies();
     _list = context.repository.assets(widget.spaceId, _kind);
+  }
+
+  @override
+  void dispose() {
+    _upload.dispose();
+    super.dispose();
   }
 
   /// Each kind takes its own permission, as in the API and the desktop's
@@ -2821,17 +2886,24 @@ class _AssetsPageState extends State<AssetsPage> {
     final got = await askName<void>(context, title: 'Name the $_noun', action: 'Add');
     if (got == null || !mounted) return;
     final repository = context.repository;
+    void progress(double p) {
+      if (mounted) _upload.value = p;
+    }
+
     await _try(context, 'Couldn’t add the $_noun', () async {
-      if (crop == null) return repository.addAsset(widget.spaceId, kind, got.$1, path);
+      if (crop == null) return repository.addAsset(widget.spaceId, kind, got.$1, path, onProgress: progress);
       final square = await saveSquareImage(path, crop, kind == AssetKind.emoji ? emojiSide : stickerSide);
       try {
-        await repository.addAsset(widget.spaceId, kind, got.$1, square);
+        await repository.addAsset(widget.spaceId, kind, got.$1, square, onProgress: progress);
       } finally {
         // Best effort: the list needn't wait for it.
         unawaited(File(square).delete().then((_) {}, onError: (Object e) => debugPrint('square image: $e')));
       }
     });
-    if (mounted) _reload();
+    if (mounted) {
+      _upload.value = null;
+      _reload();
+    }
   }
 
   Future<void> _options(SpaceAsset a) async {
@@ -2899,6 +2971,7 @@ class _AssetsPageState extends State<AssetsPage> {
                   ),
               ],
             ),
+            UploadNote(_upload),
             if (!may)
               Padding(
                 padding: const EdgeInsets.fromLTRB(4, 12, 4, 0),

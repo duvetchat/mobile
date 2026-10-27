@@ -8,10 +8,12 @@ import 'package:duvet/data/emoji_catalog.dart';
 import 'package:duvet/data/models.dart';
 import 'package:duvet/deep_links.dart';
 import 'package:duvet/main.dart';
+import 'package:duvet/space_admin.dart' show bannerGif, saveBannerImage, saveSquareImage;
 import 'package:duvet/widgets/chrome.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:image/image.dart' as img;
 
 import 'support/fake_repository.dart';
 
@@ -70,6 +72,14 @@ void main() {
     expect(passwordStrength('abc').score, lessThan(2));
     expect(passwordStrength('abc').hint, startsWith('Too short'));
     expect(passwordStrength('correct horse battery 9!').score, 4);
+  });
+
+  test('a moving GIF banner is cropped frame by frame and keeps moving', () {
+    final gif = img.Image(width: 100, height: 100)..frameDuration = 100;
+    gif.addFrame(img.Image(width: 100, height: 100)..frameDuration = 100);
+    final banner = img.decodeGif(bannerGif(img.encodeGif(gif), (x: 0, y: 30, w: 100, h: 40)))!;
+    expect(banner.numFrames, 2);
+    expect((banner.width, banner.height), (600, 240));
   });
 
   testWidgets('sign up: fields check themselves; the account verifies by its emailed link', (tester) async {
@@ -243,8 +253,21 @@ void main() {
     semantics.dispose();
   });
 
-  // A 400 × 200 picture, which the picker hands over.
+  // The frames cropped, each with the size of the picture made of it.
+  final crops = <String>[];
+
+  // A 400 × 200 picture, which the picker hands over; what's cropped of it is
+  // saved beside it as avatar.png or banner.png.
   Future<String> pickable(WidgetTester tester) async {
+    crops.clear();
+    saveSquareImage = (path, crop, side) async {
+      crops.add('${crop.w.round()}x${crop.h.round()} as ${side}x$side');
+      return File(path).copySync(path.replaceFirst('me.png', 'avatar.png')).path;
+    };
+    saveBannerImage = (path, crop) async {
+      crops.add('${crop.w.round()}x${crop.h.round()} as 600x240');
+      return File(path).copySync(path.replaceFirst('me.png', 'banner.png')).path;
+    };
     final dir = Directory.systemTemp.createTempSync('duvet_crop');
     addTearDown(() => dir.deleteSync(recursive: true));
     final path = '${dir.path}/me.png';
@@ -279,12 +302,15 @@ void main() {
     await tapLabel(tester, 'Edit');
     await cropPicture(tester, 'Change profile photo');
     await cropPicture(tester, 'Change banner');
+    // A square from the 400 × 200 picture, its full height, made 256 square;
+    // a banner 5 to 2, its full width, made 600 × 240, as the desktop's.
+    expect(crops, ['200x200 as 256x256', '400x160 as 600x240']);
     expect(repository.account, isEmpty);
 
+    // The cropped pictures go up, then the rest.
     await tapLabel(tester, 'Save');
-    // A square from the 400 × 200 picture, its full height; a banner 3 to 1,
-    // its full width. Then the rest.
-    expect(repository.account, ['avatar $path 200x200', 'banner $path 400x133', 'alias Gaby']);
+    final dir = File(path).parent.path;
+    expect(repository.account, ['avatar $dir/avatar.png', 'banner $dir/banner.png', 'alias Gaby']);
     expect(find.text('Edit profile'), findsNothing);
     semantics.dispose();
   });
@@ -316,7 +342,25 @@ void main() {
     repository.pictureRefused = null;
     await tester.pump(const Duration(seconds: 4));
     await tapLabel(tester, 'Save');
-    expect(repository.account, ['avatar $path 200x200', 'alias Gaby']);
+    expect(repository.account, ['avatar ${File(path).parent.path}/avatar.png', 'alias Gaby']);
+    semantics.dispose();
+  });
+
+  testWidgets('a picture going up shows how far it is', (tester) async {
+    final repository = await pumpApp(tester);
+    await pickable(tester);
+    await openYou(tester);
+    await tapLabel(tester, 'Edit');
+    await cropPicture(tester, 'Change profile photo');
+    repository.holdUploads = Completer();
+    await tapLabel(tester, 'Save');
+    expect(find.text('Uploading · 0%'), findsOneWidget);
+    repository.lastUpload!(0.42);
+    await tester.pump();
+    expect(find.text('Uploading · 42%'), findsOneWidget);
+    repository.holdUploads!.complete();
+    await tester.pumpAndSettle();
+    expect(find.text('Edit profile'), findsNothing);
     semantics.dispose();
   });
 

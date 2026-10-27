@@ -150,9 +150,10 @@ class _ProfileState extends State<_Profile> {
           controller: widget.scroll,
           padding: EdgeInsets.zero,
           children: [
-            // Their banner, or a soft block until they set one.
-            SizedBox(
-              height: 120,
+            // Their banner, 5:2 as it's cropped, or a soft block until they
+            // set one.
+            AspectRatio(
+              aspectRatio: bannerAspect,
               child: m.bannerUrl == null
                   ? ColoredBox(color: colors.secondary)
                   : Image.network(

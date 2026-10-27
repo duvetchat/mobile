@@ -189,8 +189,9 @@ abstract interface class ChatRepository {
   /// [Presence.doNotDisturb]: what others see while they're connected.
   Future<void> setStatus(Presence status);
 
-  /// A new avatar or banner: [crop] of the picture at [path].
-  Future<void> uploadProfileImage(ProfileImage kind, String path, CropRect crop);
+  /// A new avatar or banner: the picture at [path], cropped already.
+  /// [onProgress] follows the upload (0 to 1).
+  Future<void> uploadProfileImage(ProfileImage kind, String path, {void Function(double progress)? onProgress});
 
   Future<List<MyFile>> myFiles();
   Future<void> deleteMyFile(String id);
@@ -209,7 +210,8 @@ abstract interface class ChatRepository {
   bool canInRoom(String spaceId, String roomId, int bit);
 
   /// Changes the Space; [removeBanner] takes its banner away, as no
-  /// [bannerPath] can.
+  /// [bannerPath] can. With pictures, [onProgress] follows their upload (0 to
+  /// 1).
   Future<void> updateSpace(
     String spaceId, {
     String? name,
@@ -217,6 +219,7 @@ abstract interface class ChatRepository {
     String? iconPath,
     String? bannerPath,
     bool removeBanner = false,
+    void Function(double progress)? onProgress,
   });
 
   /// Rooms and categories, by position.
@@ -256,7 +259,15 @@ abstract interface class ChatRepository {
   Future<void> revokeInvite(String spaceId, String inviteId);
 
   Future<List<SpaceAsset>> assets(String spaceId, AssetKind kind);
-  Future<void> addAsset(String spaceId, AssetKind kind, String name, String path);
+
+  /// [onProgress] follows the picture's upload (0 to 1).
+  Future<void> addAsset(
+    String spaceId,
+    AssetKind kind,
+    String name,
+    String path, {
+    void Function(double progress)? onProgress,
+  });
   Future<void> renameAsset(String spaceId, AssetKind kind, String id, String name);
   Future<void> deleteAsset(String spaceId, AssetKind kind, String id);
 

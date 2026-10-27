@@ -354,9 +354,20 @@ class FakeRepository implements ChatRepository {
   }
 
   @override
-  Future<void> uploadProfileImage(ProfileImage kind, String path, CropRect crop) async {
+  Future<void> uploadProfileImage(ProfileImage kind, String path, {void Function(double progress)? onProgress}) async {
+    await _upload(onProgress);
     if (pictureRefused != null) throw ActionFailed(pictureRefused!);
-    account.add('${kind.name} $path ${crop.w.round()}x${crop.h.round()}');
+    account.add('${kind.name} $path');
+  }
+
+  /// Held, an upload waits on it, its progress in [lastUpload].
+  Completer<void>? holdUploads;
+
+  Future<void> _upload(void Function(double progress)? onProgress) async {
+    if (onProgress == null) return;
+    onProgress(0);
+    lastUpload = onProgress;
+    await holdUploads?.future;
   }
 
   @override
@@ -437,7 +448,9 @@ class FakeRepository implements ChatRepository {
     String? iconPath,
     String? bannerPath,
     bool removeBanner = false,
+    void Function(double progress)? onProgress,
   }) async {
+    if (iconPath != null || bannerPath != null) await _upload(onProgress);
     admin.add(
       'space ${[if (name != null) 'name=$name', if (description != null) 'about=$description', if (iconPath != null) 'icon=$iconPath', if (bannerPath != null) 'banner=$bannerPath', if (removeBanner && bannerPath == null) 'banner=none'].join(' ')}',
     );
@@ -734,7 +747,14 @@ class FakeRepository implements ChatRepository {
   Future<List<SpaceAsset>> assets(String spaceId, AssetKind kind) async => [...assetList[kind]!];
 
   @override
-  Future<void> addAsset(String spaceId, AssetKind kind, String name, String path) async {
+  Future<void> addAsset(
+    String spaceId,
+    AssetKind kind,
+    String name,
+    String path, {
+    void Function(double progress)? onProgress,
+  }) async {
+    await _upload(onProgress);
     admin.add('${kind.name}+ $name $path');
     assetList[kind]!.add(SpaceAsset(id: '${kind.name}-$name', name: name, url: 'https://x/$name.png'));
   }

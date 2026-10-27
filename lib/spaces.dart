@@ -603,7 +603,7 @@ class _CreateSpacePageState extends State<CreateSpacePage> {
   }
 
   Future<void> _pickIcon() async {
-    final path = await pickSpaceIcon();
+    final path = await chooseSpaceIcon(context);
     if (path != null && mounted) setState(() => _icon = path);
   }
 }

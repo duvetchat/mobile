@@ -14,6 +14,7 @@ import 'data/links.dart';
 import 'data/models.dart';
 import 'data/scope.dart';
 import 'people.dart';
+import 'space_admin.dart' show avatarSide, saveBannerImage, saveSquareImage;
 import 'tabs.dart' show LiveIndicator;
 import 'theme.dart';
 import 'widgets/avatar.dart';
@@ -633,9 +634,10 @@ class _ChangeEmailPageState extends State<ChangeEmailPage> {
 // Edit profile
 // -----------------------------------------------------------------------------
 
-/// Picks a picture for the profile; tests swap in their own.
+/// Picks a picture for the profile as it is: recompressed, Android's picker
+/// would make a GIF a still image. Tests swap in their own.
 Future<String?> Function() pickProfilePicture = () async =>
-    (await ImagePicker().pickImage(source: ImageSource.gallery, imageQuality: 95))?.path;
+    (await ImagePicker().pickImage(source: ImageSource.gallery))?.path;
 
 class EditProfilePage extends StatefulWidget {
   const EditProfilePage({super.key});
@@ -653,10 +655,11 @@ class _EditProfilePageState extends State<EditProfilePage> {
   bool _fieldsMade = false;
   bool _saving = false;
 
-  // The pictures picked and cropped: they go up on Save, and Cancel drops
-  // them.
-  ({String path, CropRect crop})? _avatar;
-  ({String path, CropRect crop})? _banner;
+  // The pictures picked and cropped, in files: they go up on Save, and
+  // Cancel drops them.
+  String? _avatar;
+  String? _banner;
+  final _upload = ValueNotifier<double?>(null);
 
   /// The bio's length as the API counts it: code points, so an emoji is one.
   int get _bioLength => _bio.text.trim().runes.length;
@@ -682,7 +685,13 @@ class _EditProfilePageState extends State<EditProfilePage> {
   void dispose() {
     _alias.dispose();
     _bio.dispose();
+    _upload.dispose();
     super.dispose();
+  }
+
+  // Left mid-upload, the page is gone, and its note with it.
+  void _progress(double p) {
+    if (mounted) _upload.value = p;
   }
 
   Future<void> _change(ProfileImage kind) async {
@@ -691,12 +700,24 @@ class _EditProfilePageState extends State<EditProfilePage> {
     final crop = await Navigator.of(context).push<CropRect>(
       MaterialPageRoute(
         fullscreenDialog: true,
-        builder: (_) => CropPage(path: path, aspect: kind == ProfileImage.avatar ? 1 : 3),
+        builder: (_) => CropPage(path: path, aspect: kind == ProfileImage.avatar ? 1 : bannerAspect),
       ),
     );
     if (crop == null || !mounted) return;
-    final picture = (path: path, crop: crop);
-    setState(() => kind == ProfileImage.avatar ? _avatar = picture : _banner = picture);
+    // Cropped here: the API stores what it's sent, whole.
+    final String cropped;
+    try {
+      cropped = kind == ProfileImage.avatar
+          ? await saveSquareImage(path, crop, avatarSide)
+          : await saveBannerImage(path, crop);
+    } catch (e) {
+      debugPrint('profile picture: $e');
+      if (mounted) _toast(context, 'Couldn’t read this picture');
+      return;
+    }
+    // The same photo cropped again lands at the same path: the preview mustn't show the last crop.
+    unawaited(FileImage(File(cropped)).evict());
+    if (mounted) setState(() => kind == ProfileImage.avatar ? _avatar = cropped : _banner = cropped);
   }
 
   Future<void> _save() async {
@@ -710,14 +731,14 @@ class _EditProfilePageState extends State<EditProfilePage> {
     try {
       // The pictures first. Each one up is done with, should what follows
       // fail and Save be pressed again.
-      if (_avatar case final picture?) {
+      if (_avatar case final path?) {
         failure = 'Couldn’t change the photo';
-        await repository.uploadProfileImage(ProfileImage.avatar, picture.path, picture.crop);
+        await repository.uploadProfileImage(ProfileImage.avatar, path, onProgress: _progress);
         _avatar = null;
       }
-      if (_banner case final picture?) {
+      if (_banner case final path?) {
         failure = 'Couldn’t change the banner';
-        await repository.uploadProfileImage(ProfileImage.banner, picture.path, picture.crop);
+        await repository.uploadProfileImage(ProfileImage.banner, path, onProgress: _progress);
         _banner = null;
       }
       failure = 'Couldn’t save your profile';
@@ -727,7 +748,10 @@ class _EditProfilePageState extends State<EditProfilePage> {
     } catch (e) {
       if (mounted) _toast(context, e is ActionFailed ? e.message : failure);
     } finally {
-      if (mounted) setState(() => _saving = false);
+      if (mounted) {
+        _upload.value = null;
+        setState(() => _saving = false);
+      }
     }
   }
 
@@ -738,6 +762,8 @@ class _EditProfilePageState extends State<EditProfilePage> {
     final tokens = context.duvet;
     final padding = MediaQuery.paddingOf(context);
     if (profile == null) return const SizedBox.shrink();
+    // 5:2 across the list's width, inside its padding.
+    final bannerHeight = (MediaQuery.sizeOf(context).width - 32) / bannerAspect;
     return Scaffold(
       backgroundColor: colors.background,
       body: Stack(
@@ -747,16 +773,16 @@ class _EditProfilePageState extends State<EditProfilePage> {
               padding: EdgeInsets.fromLTRB(16, GlassTopBar.heightOf(context) + 8, 16, padding.bottom + 24),
               children: [
                 SizedBox(
-                  height: 128 + 48,
+                  height: bannerHeight + 48,
                   child: Stack(
                     clipBehavior: Clip.none,
                     children: [
                       Container(
-                        height: 128,
+                        height: bannerHeight,
                         decoration: BoxDecoration(
                           color: colors.secondary,
                           borderRadius: BorderRadius.circular(DuvetTokens.radiusCard),
-                          image: switch (_banner?.path ?? profile.bannerUrl) {
+                          image: switch (_banner ?? profile.bannerUrl) {
                             final b? => DecorationImage(
                               image: b.startsWith('http') ? NetworkImage(b) : FileImage(File(b)) as ImageProvider,
                               fit: BoxFit.cover,
@@ -795,7 +821,7 @@ class _EditProfilePageState extends State<EditProfilePage> {
                       ),
                       Positioned(
                         left: 16,
-                        top: 128 - 40,
+                        top: bannerHeight - 40,
                         child: Semantics(
                           container: true,
                           button: true,
@@ -815,12 +841,7 @@ class _EditProfilePageState extends State<EditProfilePage> {
                                   ),
                                   child: _avatar != null
                                       ? ClipOval(
-                                          child: Image.file(
-                                            File(_avatar!.path),
-                                            width: 88,
-                                            height: 88,
-                                            fit: BoxFit.cover,
-                                          ),
+                                          child: Image.file(File(_avatar!), width: 88, height: 88, fit: BoxFit.cover),
                                         )
                                       : UserAvatar(name: profile.displayName, url: profile.avatarUrl, size: 88),
                                 ),
@@ -846,6 +867,7 @@ class _EditProfilePageState extends State<EditProfilePage> {
                     ],
                   ),
                 ),
+                UploadNote(_upload),
                 const SizedBox(height: 8),
                 // At most 32 characters, as the API takes; empty, the username shows.
                 DuvetTextField(
@@ -901,11 +923,11 @@ class _EditProfilePageState extends State<EditProfilePage> {
 }
 
 /// Cropping, before an upload: pan and pinch the picture inside the frame;
-/// the frame's part goes up (the server crops).
+/// the caller makes the frame's part into the picture that goes up.
 class CropPage extends StatefulWidget {
   final String path;
 
-  /// Width over height: 1 for an avatar, 3 for a banner.
+  /// Width over height: 1 for an avatar, [bannerAspect] for a banner.
   final double aspect;
 
   /// A square frame drawn round, as an avatar shows; an emoji's isn't.

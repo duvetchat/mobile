@@ -1684,12 +1684,13 @@ void main() {
       addTearDown(() => dir.deleteSync(recursive: true));
       final path = '${dir.path}/me.png';
       File(path).writeAsBytesSync([1, 2, 3]);
-      const crop = (x: 0.0, y: 0.0, w: 1.0, h: 1.0);
-      await repository.uploadProfileImage(ProfileImage.avatar, path, crop);
+      final progress = <double>[];
+      await repository.uploadProfileImage(ProfileImage.avatar, path, onProgress: progress.add);
       expect(repository.profile.value!.avatarUrl, 'https://api.duvet.chat/attachments/$_avatar');
+      expect(progress.last, 1);
       pictureRefusal = http.Response(jsonEncode({'error': 'file is too large'}), 413);
       await expectLater(
-        repository.uploadProfileImage(ProfileImage.banner, path, crop),
+        repository.uploadProfileImage(ProfileImage.banner, path),
         throwsA(isA<ActionFailed>().having((e) => e.message, 'message', 'File is too large')),
       );
     });
