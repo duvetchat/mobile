@@ -82,6 +82,23 @@ void main() {
     expect((banner.width, banner.height), (600, 240));
   });
 
+  test('a moving GIF banner keeps each frame’s colours and time', () {
+    // Three frames of one colour each, from a palette of its own, each shown
+    // for a time of its own, as GIF makers write them.
+    img.Image frame(int r, int g, int b, int ms) => img.Image(width: 100, height: 100, withPalette: true)
+      ..palette!.setRgb(0, r, g, b)
+      ..frameDuration = ms;
+    final gif = frame(220, 30, 30, 100)
+      ..addFrame(frame(30, 200, 60, 400))
+      ..addFrame(frame(40, 80, 230, 700));
+    final banner = img.decodeGif(bannerGif(img.encodeGif(gif), (x: 0, y: 30, w: 100, h: 40)))!;
+    expect(
+      [for (final f in banner.frames) (f.getPixel(300, 120).r, f.getPixel(300, 120).g, f.getPixel(300, 120).b)],
+      [(220, 30, 30), (30, 200, 60), (40, 80, 230)],
+    );
+    expect([for (final f in banner.frames) f.frameDuration], [100, 400, 700]);
+  });
+
   testWidgets('sign up: fields check themselves; the account verifies by its emailed link', (tester) async {
     final repository = await pumpApp(tester, signedIn: false);
     await tapLabel(tester, 'Create an account');
