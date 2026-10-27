@@ -145,6 +145,12 @@ void main() {
     expect(store.mode, 'dark');
     expect(Theme.of(tester.element(find.text('Gabriela').first)).brightness, Brightness.dark);
 
+    expect(appearance.replyGesture, ReplyGesture.swipeLeft);
+    await tester.ensureVisible(find.text('Swipe right'));
+    await tapLabel(tester, 'Swipe right');
+    expect(appearance.replyGesture, ReplyGesture.swipeRight);
+    expect(store.replyGesture, 'swipeRight');
+
     await tester.ensureVisible(find.text('Change email'));
     await tester.pumpAndSettle();
     await tapLabel(tester, 'Change email');

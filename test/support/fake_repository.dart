@@ -620,6 +620,8 @@ class FakeRepository implements ChatRepository {
         id: r.id,
         name: r.name,
         color: r.color,
+        colorVia: r.colorVia,
+        colorTo: r.colorTo,
         perms: r.perms,
         position: r.position,
         everyone: r.everyone,
@@ -642,13 +644,18 @@ class FakeRepository implements ChatRepository {
     String spaceId,
     String roleId, {
     String? name,
-    int? color,
-    bool clearColor = false,
+    RoleColors? colors,
     int? perms,
     bool? hoisted,
   }) async {
+    String hex(int c) => c.toRadixString(16);
     admin.add(
-      'role~ $roleId ${[if (name != null) 'name=$name', if (color != null) 'color=${color.toRadixString(16)}', if (clearColor) 'nocolor', if (perms != null) 'perms=$perms', if (hoisted != null) 'hoisted=$hoisted'].join(' ')}',
+      'role~ $roleId ${[
+        if (name != null) 'name=$name',
+        if (colors != null) colors.from == null ? 'nocolor' : 'color=${[colors.from, colors.via, colors.to].nonNulls.map(hex).join('..')}',
+        if (perms != null) 'perms=$perms',
+        if (hoisted != null) 'hoisted=$hoisted',
+      ].join(' ')}',
     );
     roles(spaceId);
     final list = roleList[spaceId]!;
@@ -657,12 +664,45 @@ class FakeRepository implements ChatRepository {
     list[i] = SpaceRole(
       id: r.id,
       name: name ?? r.name,
-      color: clearColor ? null : (color ?? r.color),
+      color: colors == null ? r.color : colors.from,
+      colorVia: colors == null ? r.colorVia : colors.via,
+      colorTo: colors == null ? r.colorTo : colors.to,
       perms: perms ?? r.perms,
       position: r.position,
       everyone: r.everyone,
       hoisted: hoisted ?? r.hoisted,
     );
+  }
+
+  @override
+  Future<void> moveRole(String spaceId, String roleId, int position) async {
+    admin.add('role^ $roleId $position');
+    roles(spaceId);
+    final list = roleList[spaceId]!;
+    final from = list.firstWhere((r) => r.id == roleId).position;
+    // As the API: clamped above @everyone, the roles between shifted one place.
+    final to = position.clamp(1, list.length - 1);
+    SpaceRole at(SpaceRole r, int position) => SpaceRole(
+      id: r.id,
+      name: r.name,
+      color: r.color,
+      colorVia: r.colorVia,
+      colorTo: r.colorTo,
+      perms: r.perms,
+      position: position,
+      everyone: r.everyone,
+      hoisted: r.hoisted,
+    );
+    for (final (i, r) in list.indexed) {
+      if (r.id == roleId) {
+        list[i] = at(r, to);
+      } else if (!r.everyone && to > from && r.position > from && r.position <= to) {
+        list[i] = at(r, r.position - 1);
+      } else if (!r.everyone && to < from && r.position >= to && r.position < from) {
+        list[i] = at(r, r.position + 1);
+      }
+    }
+    list.sort((a, b) => a.everyone != b.everyone ? (a.everyone ? 1 : -1) : b.position.compareTo(a.position));
   }
 
   @override
@@ -732,6 +772,32 @@ class FakeRepository implements ChatRepository {
     admin.add('hook~ ${webhook.id}');
     _refuse('resetWebhook');
     return 'https://api.duvet.chat/api/webhooks/${webhook.id}/fresh';
+  }
+
+  @override
+  Future<void> updateWebhook(
+    String spaceId,
+    SpaceWebhook webhook, {
+    String? name,
+    String? avatarPath,
+    bool removeAvatar = false,
+  }) async {
+    admin.add(
+      'hook* ${webhook.id} ${[if (name != null) 'name=$name', if (avatarPath != null) 'avatar', if (removeAvatar) 'noavatar'].join(' ')}',
+    );
+    webhookList = [
+      for (final w in webhookList)
+        w.id != webhook.id
+            ? w
+            : SpaceWebhook(
+                id: w.id,
+                roomId: w.roomId,
+                roomName: w.roomName,
+                name: name ?? w.name,
+                createdAt: w.createdAt,
+                avatarUrl: removeAvatar ? null : (avatarPath == null ? w.avatarUrl : 'https://example.invalid/hook.png'),
+              ),
+    ];
   }
 
   @override

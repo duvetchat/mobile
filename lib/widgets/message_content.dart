@@ -729,19 +729,23 @@ class _PictureState extends State<_Picture> {
     );
   }
 
-  void _open(BuildContext context) => Navigator.of(context).push(
-    PageRouteBuilder<void>(
-      opaque: false,
-      barrierColor: Colors.black,
-      transitionDuration: DuvetTokens.panelIn,
-      reverseTransitionDuration: DuvetTokens.panelOut,
-      pageBuilder: (_, _, _) => ImageViewer(gallery: widget.gallery, initial: widget.index),
-      transitionsBuilder: (_, animation, _, child) => FadeTransition(
-        opacity: CurvedAnimation(parent: animation, curve: DuvetTokens.decelerate),
-        child: child,
+  void _open(BuildContext context) {
+    // Out of the composer: or closing the viewer hands it the keyboard back.
+    FocusManager.instance.primaryFocus?.unfocus();
+    Navigator.of(context).push(
+      PageRouteBuilder<void>(
+        opaque: false,
+        barrierColor: Colors.black,
+        transitionDuration: DuvetTokens.panelIn,
+        reverseTransitionDuration: DuvetTokens.panelOut,
+        pageBuilder: (_, _, _) => ImageViewer(gallery: widget.gallery, initial: widget.index),
+        transitionsBuilder: (_, animation, _, child) => FadeTransition(
+          opacity: CurvedAnimation(parent: animation, curve: DuvetTokens.decelerate),
+          child: child,
+        ),
       ),
-    ),
-  );
+    );
+  }
 }
 
 String _heroTag(MessageAttachment a) => 'attachment:${a.id}:${a.url}';

@@ -212,6 +212,8 @@ class _PickerState extends State<_Picker> {
         Expanded(
           child: CustomScrollView(
             controller: widget.scroll,
+            // Scrolling to look puts the search's keyboard away.
+            keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
             slivers: [
               ...slivers,
               const SliverToBoxAdapter(child: SizedBox(height: 24)),
@@ -349,6 +351,7 @@ class _PickerState extends State<_Picker> {
               ? message('No stickers match “${_search.text.trim()}”')
               : GridView.builder(
                   controller: widget.scroll,
+                  keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
                   padding: const EdgeInsets.fromLTRB(12, 4, 12, 24),
                   gridDelegate: const SliverGridDelegateWithMaxCrossAxisExtent(
                     maxCrossAxisExtent: 112,
@@ -628,6 +631,7 @@ class _GifTabState extends State<_GifTab> {
               }
               return SingleChildScrollView(
                 controller: widget.scroll,
+                keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
                 padding: const EdgeInsets.fromLTRB(16, 4, 16, 8),
                 child: Column(
                   children: [

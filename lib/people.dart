@@ -596,6 +596,7 @@ class _FriendsPageState extends State<FriendsPage> {
             children: [
               Positioned.fill(
                 child: ListView(
+                  keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
                   padding: EdgeInsets.only(top: GlassTopBar.heightOf(context) + 8, bottom: padding.bottom + 24),
                   children: [
                     Padding(
@@ -623,10 +624,12 @@ class _FriendsPageState extends State<FriendsPage> {
                           child: Text(_addError!, style: DuvetType.caption.copyWith(color: colors.destructive)),
                         ),
                       ),
+                    // Edge to edge: the tabs scroll to the screen's edge, 16 in at rest.
                     Padding(
-                      padding: const EdgeInsets.fromLTRB(16, 8, 16, 0),
+                      padding: const EdgeInsets.only(top: 8),
                       child: SingleChildScrollView(
                         scrollDirection: Axis.horizontal,
+                        padding: const EdgeInsets.symmetric(horizontal: 16),
                         child: Row(
                           children: [
                             for (final (t, label) in [
@@ -634,6 +637,7 @@ class _FriendsPageState extends State<FriendsPage> {
                               (_FriendsTab.pending, 'Pending ${f.incoming.length}'),
                               (_FriendsTab.sent, 'Sent ${f.outgoing.length}'),
                             ]) ...[
+                              if (t != _FriendsTab.all) const SizedBox(width: 24),
                               Semantics(
                                 button: true,
                                 selected: _tab == t,
@@ -654,7 +658,6 @@ class _FriendsPageState extends State<FriendsPage> {
                                   ),
                                 ),
                               ),
-                              const SizedBox(width: 24),
                             ],
                           ],
                         ),
@@ -903,6 +906,7 @@ class _NewConversationPageState extends State<NewConversationPage> {
         children: [
           Positioned.fill(
             child: ListView(
+              keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
               padding: EdgeInsets.only(top: GlassTopBar.heightOf(context) + 8, bottom: padding.bottom + 96),
               children: [
                 Padding(

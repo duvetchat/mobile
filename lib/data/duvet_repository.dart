@@ -2173,8 +2173,8 @@ class DuvetRepository implements ChatRepository {
       (api) => api.uploadProfileImage(
         kind == ProfileImage.avatar ? duvet.ProfileImageKind.avatar : duvet.ProfileImageKind.banner,
         bytes,
+        // shortcut: the API ignored the crop, so duvet-client stopped sending it; the image-uploads branch crops on the device.
         path.split(Platform.pathSeparator).last,
-        (x: crop.x, y: crop.y, w: crop.w, h: crop.h),
       ),
     );
     _setProfile(me);
@@ -2498,6 +2498,8 @@ class DuvetRepository implements ChatRepository {
     id: r.id,
     name: r.name,
     color: r.colorFrom,
+    colorVia: r.colorVia,
+    colorTo: r.colorTo,
     perms: r.permissions,
     position: r.position,
     everyone: r.id == spaceId,
@@ -2528,8 +2530,7 @@ class DuvetRepository implements ChatRepository {
     String spaceId,
     String roleId, {
     String? name,
-    int? color,
-    bool clearColor = false,
+    RoleColors? colors,
     int? perms,
     bool? hoisted,
   }) async {
@@ -2538,15 +2539,71 @@ class DuvetRepository implements ChatRepository {
         spaceId,
         roleId,
         name: name,
-        colorFrom: color,
+        // All three with clearColors, as the desktop saves them: a null stop is cleared.
+        colorFrom: colors?.from,
+        colorVia: colors?.via,
+        colorTo: colors?.to,
         permissions: perms,
-        clearColors: clearColor,
+        clearColors: colors != null,
         hoisted: hoisted,
       ),
     );
     (_roles[spaceId] ??= {})[r.id] = r;
     _publishSpaces();
   }
+
+  @override
+  Future<void> moveRole(String spaceId, String roleId, int position) async {
+    final roles = _roles[spaceId];
+    final moved = roles?[roleId];
+    if (roles == null || moved == null) return;
+    // As the API will: clamped above @everyone, the roles between shifted one
+    // place. Shown at once; its ROLE_UPDATEs then say the same.
+    final to = position.clamp(1, roles.length - 1);
+    final from = moved.position;
+    // What this move shifted, from and to: undone alone if it fails, and only
+    // where nothing since (another move, a ROLE_UPDATE) has moved it again.
+    final shifts = <String, (int, int)>{};
+    for (final r in roles.values.toList()) {
+      final shifted = r.id == roleId
+          ? to
+          : to < from && r.position >= to && r.position < from
+          ? r.position + 1
+          : to > from && r.position > from && r.position <= to
+          ? r.position - 1
+          : r.position;
+      if (shifted == r.position) continue;
+      shifts[r.id] = (r.position, shifted);
+      roles[r.id] = _atPosition(r, shifted);
+    }
+    _publishSpaces();
+    try {
+      await _explained((api) => api.updateRole(spaceId, roleId, position: to));
+    } catch (_) {
+      final now = _roles[spaceId];
+      for (final MapEntry(key: id, value: (was, shifted)) in shifts.entries) {
+        if (now?[id] case final r? when r.position == shifted) now![id] = _atPosition(r, was);
+      }
+      _publishSpaces();
+      rethrow;
+    }
+  }
+
+  duvet.GatewayRole _atPosition(duvet.GatewayRole r, int position) => duvet.GatewayRole(
+    id: r.id,
+    spaceId: r.spaceId,
+    name: r.name,
+    colorFrom: r.colorFrom,
+    colorVia: r.colorVia,
+    colorTo: r.colorTo,
+    flags: r.flags,
+    permissions: r.permissions,
+    hoisted: r.hoisted,
+    position: position,
+    createdAt: r.createdAt,
+    updatedAt: r.updatedAt,
+    deletedAt: r.deletedAt,
+  );
 
   @override
   Future<void> deleteRole(String spaceId, String roleId) async {
@@ -2681,6 +2738,24 @@ class DuvetRepository implements ChatRepository {
   @override
   Future<void> deleteWebhook(String spaceId, SpaceWebhook webhook) =>
       _explained((api) => api.deleteWebhook(spaceId, webhook.roomId, webhook.id));
+
+  @override
+  Future<void> updateWebhook(
+    String spaceId,
+    SpaceWebhook webhook, {
+    String? name,
+    String? avatarPath,
+    bool removeAvatar = false,
+  }) => _explained(
+    (api) => api.updateWebhook(
+      spaceId,
+      webhook.roomId,
+      webhook.id,
+      username: name,
+      avatar: avatarPath == null ? null : File(avatarPath),
+      removeAvatar: removeAvatar,
+    ),
+  );
 
   @override
   Future<SpaceStorage> spaceStorage(String spaceId) async {

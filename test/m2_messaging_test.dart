@@ -2,6 +2,7 @@ import 'dart:ui' show Tristate;
 
 import 'package:duvet/data/markdown.dart';
 import 'package:duvet/data/models.dart';
+import 'package:duvet/data/appearance.dart';
 import 'package:duvet/main.dart';
 import 'package:duvet/widgets/code_highlight.dart';
 import 'package:duvet/widgets/message_content.dart';
@@ -19,13 +20,20 @@ final _me = FakeRepository.me.id;
 void main() {
   late SemanticsHandle semantics;
 
-  Future<FakeRepository> openMaya(WidgetTester tester, {void Function(FakeRepository r)? setUp}) async {
+  Future<FakeRepository> openMaya(
+    WidgetTester tester, {
+    void Function(FakeRepository r)? setUp,
+    ReplyGesture reply = ReplyGesture.swipeLeft,
+  }) async {
     semantics = tester.ensureSemantics();
     tester.view.physicalSize = const Size(390 * 3, 844 * 3);
     tester.view.devicePixelRatio = 3;
     addTearDown(tester.view.reset);
     final repository = FakeRepository();
-    await tester.pumpWidget(DuvetApp(repository: repository));
+    final appearance = Appearance(MemoryAppearanceStore()..replyGesture = reply.name);
+    await appearance.load();
+    addTearDown(appearance.dispose);
+    await tester.pumpWidget(DuvetApp(repository: repository, appearance: appearance));
     await tester.pumpAndSettle();
     setUp?.call(repository);
     await tester.tap(find.text('Maya'));
@@ -186,7 +194,7 @@ void main() {
   });
 
   testWidgets('double-tap replies: the strip, the reference, and the quote above the sent bubble', (tester) async {
-    final repository = await openMaya(tester);
+    final repository = await openMaya(tester, reply: ReplyGesture.doubleTap);
     await tester.tap(find.text('Hey! Did you see the new tab bar?'));
     await tester.pump(const Duration(milliseconds: 50));
     await tester.tap(find.text('Hey! Did you see the new tab bar?'));
@@ -224,6 +232,23 @@ void main() {
     await tester.pumpAndSettle();
     final beside = Offset(tester.getSize(find.byType(MaterialApp)).width - 24, tester.getCenter(message).dy);
     await tester.dragFrom(beside, const Offset(-120, 0));
+    await tester.pumpAndSettle();
+    expect(find.text('Replying to Maya — Hey! Did you see the new tab bar?'), findsOneWidget);
+    semantics.dispose();
+  });
+
+  testWidgets('with swipe right picked, a swipe right replies; a swipe left or a double tap does not', (tester) async {
+    await openMaya(tester, reply: ReplyGesture.swipeRight);
+    final message = find.text('Hey! Did you see the new tab bar?');
+    await tester.drag(message, const Offset(-120, 0));
+    await tester.pumpAndSettle();
+    await tester.tap(message);
+    await tester.pump(const Duration(milliseconds: 50));
+    await tester.tap(message);
+    await tester.pumpAndSettle();
+    expect(find.textContaining('Replying to Maya —'), findsNothing);
+
+    await tester.drag(message, const Offset(120, 0));
     await tester.pumpAndSettle();
     expect(find.text('Replying to Maya — Hey! Did you see the new tab bar?'), findsOneWidget);
     semantics.dispose();
@@ -639,9 +664,7 @@ void main() {
 
   testWidgets('a draft waits in its chat: text, files and reply', (tester) async {
     await openMaya(tester);
-    await tester.tap(find.text('Hey! Did you see the new tab bar?'));
-    await tester.pump(const Duration(milliseconds: 50));
-    await tester.tap(find.text('Hey! Did you see the new tab bar?'));
+    await tester.drag(find.text('Hey! Did you see the new tab bar?'), const Offset(-120, 0));
     await tester.pumpAndSettle();
     await tester.enterText(find.byType(EditableText), 'half a thought');
     await tester.pump();

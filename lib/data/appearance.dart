@@ -1,12 +1,27 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 
-/// System, light or dark, kept on the device.
+/// The one gesture that replies to a message. Only [doubleTap] makes a tap
+/// on a picture wait to rule out a second one.
+enum ReplyGesture { swipeLeft, swipeRight, doubleTap }
+
+/// System, light or dark, and the reply gesture, kept on the device.
 class Appearance extends ValueNotifier<ThemeMode> {
   final AppearanceStore _store;
   Appearance([AppearanceStore? store]) : _store = store ?? const SecureAppearanceStore(), super(ThemeMode.system);
 
+  ReplyGesture replyGesture = ReplyGesture.swipeLeft;
+
   Future<void> load() async {
+    try {
+      final gesture = ReplyGesture.values.asNameMap()[await _store.readReplyGesture()];
+      if (gesture != null && gesture != replyGesture) {
+        replyGesture = gesture;
+        notifyListeners();
+      }
+    } catch (e) {
+      debugPrint('appearance: $e');
+    }
     try {
       value = switch (await _store.read()) {
         'light' => ThemeMode.light,
@@ -27,6 +42,16 @@ class Appearance extends ValueNotifier<ThemeMode> {
     }
   }
 
+  Future<void> setReplyGesture(ReplyGesture gesture) async {
+    replyGesture = gesture;
+    notifyListeners();
+    try {
+      await _store.writeReplyGesture(gesture.name);
+    } catch (e) {
+      debugPrint('appearance: $e');
+    }
+  }
+
   /// The brightness to draw with, given the system's.
   Brightness resolve(Brightness system) => switch (value) {
     ThemeMode.light => Brightness.light,
@@ -38,11 +63,14 @@ class Appearance extends ValueNotifier<ThemeMode> {
 abstract interface class AppearanceStore {
   Future<String?> read();
   Future<void> write(String mode);
+  Future<String?> readReplyGesture();
+  Future<void> writeReplyGesture(String gesture);
 }
 
 class SecureAppearanceStore implements AppearanceStore {
   const SecureAppearanceStore();
   static const _key = 'duvet_appearance';
+  static const _replyKey = 'duvet_reply_gesture';
   static const _storage = FlutterSecureStorage();
 
   @override
@@ -50,15 +78,28 @@ class SecureAppearanceStore implements AppearanceStore {
 
   @override
   Future<void> write(String mode) => _storage.write(key: _key, value: mode);
+
+  @override
+  Future<String?> readReplyGesture() => _storage.read(key: _replyKey);
+
+  @override
+  Future<void> writeReplyGesture(String gesture) => _storage.write(key: _replyKey, value: gesture);
 }
 
 class MemoryAppearanceStore implements AppearanceStore {
   String? mode;
+  String? replyGesture;
   @override
   Future<String?> read() async => mode;
 
   @override
   Future<void> write(String mode) async => this.mode = mode;
+
+  @override
+  Future<String?> readReplyGesture() async => replyGesture;
+
+  @override
+  Future<void> writeReplyGesture(String gesture) async => replyGesture = gesture;
 }
 
 /// Hands the [Appearance] down the tree.
@@ -66,6 +107,9 @@ class AppearanceScope extends InheritedNotifier<Appearance> {
   const AppearanceScope({required Appearance appearance, required super.child, super.key})
     : super(notifier: appearance);
 
-  static Appearance of(BuildContext context) =>
-      context.dependOnInheritedWidgetOfExactType<AppearanceScope>()!.notifier!;
+  static Appearance of(BuildContext context) => maybeOf(context)!;
+
+  /// Null outside the app: a widget pumped alone in a test.
+  static Appearance? maybeOf(BuildContext context) =>
+      context.dependOnInheritedWidgetOfExactType<AppearanceScope>()?.notifier;
 }

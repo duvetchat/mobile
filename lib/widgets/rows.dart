@@ -9,7 +9,9 @@ import 'avatar.dart';
 import 'depth.dart';
 
 /// A two-line list row (ChatRow, ChannelRow): 72pt, no divider, a 48pt
-/// leading avatar or Space icon, the name over a one-line snippet.
+/// leading avatar or Space icon, the name over a one-line snippet. With
+/// neither a leading nor a snippet (a room nobody wrote in yet) it is one
+/// 44pt line.
 ///
 /// Unread is weight and `ink` alone, never blue and never a dot. Pressing
 /// shows a `base-sunken` highlight inset 8pt; the selected row (the current
@@ -74,6 +76,7 @@ class ListRow extends StatelessWidget {
     final secondary = colors.mutedForeground;
     final detail = [if (mentions > 0) mentions == 1 ? '1 mention' : '$mentions mentions', ?this.detail].join(', ');
     final name = selected ? tokens.accentText : colors.foreground;
+    final compact = leading == null && snippet == null && mentions == 0;
     final label = [
       '${hash ? '# ' : ''}$title${titleSuffix == null ? '' : ' $titleSuffix'}',
       if (unread) 'unread',
@@ -97,8 +100,8 @@ class ListRow extends StatelessWidget {
           padding: const EdgeInsets.symmetric(horizontal: 8),
           child: AnimatedContainer(
             duration: pressed ? DuvetTokens.pressIn : DuvetTokens.pressOut,
-            constraints: const BoxConstraints(minHeight: DuvetTokens.sizeRow),
-            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 12),
+            constraints: BoxConstraints(minHeight: compact ? DuvetTokens.sizeRowCompact : DuvetTokens.sizeRow),
+            padding: EdgeInsets.symmetric(horizontal: 8, vertical: compact ? 10 : 12),
             decoration: BoxDecoration(
               color: pressed
                   ? colors.secondary
@@ -281,7 +284,7 @@ class CategoryHeader extends StatelessWidget {
               const SizedBox(width: 4),
               AnimatedRotation(
                 turns: collapsed ? -0.25 : 0,
-                duration: MediaQuery.disableAnimationsOf(context) ? Duration.zero : DuvetTokens.pressOut,
+                duration: MediaQuery.disableAnimationsOf(context) ? Duration.zero : DuvetTokens.dropdownIn,
                 curve: DuvetTokens.decelerate,
                 child: Icon(
                   FLucideIcons.chevronDown,
@@ -293,6 +296,61 @@ class CategoryHeader extends StatelessWidget {
           ),
         ),
       ),
+    );
+  }
+}
+
+/// A category's rooms under its [CategoryHeader]: they slide and fade away
+/// when it folds, and back out when it opens, in step with its chevron.
+class CategoryFold extends StatefulWidget {
+  final bool open;
+  final Widget child;
+  const CategoryFold({required this.open, required this.child, super.key});
+
+  @override
+  State<CategoryFold> createState() => _CategoryFoldState();
+}
+
+class _CategoryFoldState extends State<CategoryFold> with SingleTickerProviderStateMixin {
+  late final _controller = AnimationController(
+    vsync: this,
+    duration: DuvetTokens.dropdownIn,
+    reverseDuration: DuvetTokens.panelOut,
+    value: widget.open ? 1 : 0,
+  )..addStatusListener((_) => setState(() {}));
+  late final _curve = CurvedAnimation(
+    parent: _controller,
+    curve: DuvetTokens.decelerate,
+    reverseCurve: Curves.easeInCubic,
+  );
+
+  @override
+  void didUpdateWidget(CategoryFold oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (widget.open == oldWidget.open) return;
+    if (MediaQuery.disableAnimationsOf(context)) {
+      _controller.value = widget.open ? 1 : 0;
+    } else if (widget.open) {
+      _controller.forward();
+    } else {
+      _controller.reverse();
+    }
+  }
+
+  @override
+  void dispose() {
+    _curve.dispose();
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (_controller.isDismissed) return const SizedBox.shrink();
+    return SizeTransition(
+      sizeFactor: _curve,
+      alignment: Alignment.topCenter,
+      child: FadeTransition(opacity: _curve, child: widget.child),
     );
   }
 }
@@ -880,7 +938,21 @@ class DuvetChip extends StatelessWidget {
 
   /// A radio in a group (one of several), else a toggle.
   final bool radio;
-  const DuvetChip({required this.label, required this.selected, required this.onTap, this.radio = true, super.key});
+
+  /// Neither: a button that does something, as Add member does.
+  final bool action;
+
+  /// Before the label: a small avatar or icon.
+  final Widget? leading;
+  const DuvetChip({
+    required this.label,
+    required this.selected,
+    required this.onTap,
+    this.radio = true,
+    this.leading,
+    this.action = false,
+    super.key,
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -889,9 +961,9 @@ class DuvetChip extends StatelessWidget {
     return Semantics(
       container: true,
       button: true,
-      inMutuallyExclusiveGroup: radio,
-      checked: radio ? selected : null,
-      toggled: radio ? null : selected,
+      inMutuallyExclusiveGroup: radio && !action,
+      checked: radio && !action ? selected : null,
+      toggled: radio || action ? null : selected,
       label: label,
       excludeSemantics: true,
       onTap: onTap,
@@ -909,6 +981,7 @@ class DuvetChip extends StatelessWidget {
           child: Row(
             mainAxisSize: MainAxisSize.min,
             children: [
+              if (leading case final leading?) ...[leading, const SizedBox(width: 6)],
               Text(
                 label,
                 style: DuvetType.snippet.copyWith(
@@ -972,6 +1045,92 @@ class DuvetSwitch extends StatelessWidget {
                 ),
               ),
             ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// One of a few choices, side by side in a recess, the chosen one raised
+/// (Appearance's System, Light, Dark). Each choice's text is its label.
+class Segmented<T> extends StatelessWidget {
+  final String label;
+  final T value;
+  final Map<T, String> options;
+  final ValueChanged<T> onChanged;
+  const Segmented({
+    required this.label,
+    required this.value,
+    required this.options,
+    required this.onChanged,
+    super.key,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = context.theme.colors;
+    final tokens = context.duvet;
+    const radius = BorderRadius.all(Radius.circular(DuvetTokens.radiusField));
+    return Semantics(
+      container: true,
+      label: label,
+      explicitChildNodes: true,
+      child: Container(
+        // 44 inside the recess: each choice a full tap target.
+        height: 48,
+        padding: const EdgeInsets.all(2),
+        decoration: const BoxDecoration(borderRadius: radius).copyWith(color: colors.secondary),
+        child: InsetShadow(
+          shadows: tokens.shadowWell,
+          borderRadius: radius,
+          child: Row(
+            children: [
+              for (final MapEntry(:key, value: text) in options.entries)
+                Expanded(
+                  child: Semantics(
+                    container: true,
+                    button: true,
+                    inMutuallyExclusiveGroup: true,
+                    checked: key == value,
+                    label: text,
+                    excludeSemantics: true,
+                    onTap: () => onChanged(key),
+                    child: GestureDetector(
+                      behavior: HitTestBehavior.opaque,
+                      onTap: () {
+                        HapticFeedback.selectionClick();
+                        onChanged(key);
+                      },
+                      child: AnimatedContainer(
+                        duration: MediaQuery.disableAnimationsOf(context) ? Duration.zero : DuvetTokens.pressOut,
+                        alignment: Alignment.center,
+                        decoration: BoxDecoration(
+                          color: key == value ? colors.card : null,
+                          borderRadius: BorderRadius.circular(10),
+                          boxShadow: key == value ? tokens.shadowControl : null,
+                        ),
+                        // One line, shrunk to fit at large text sizes rather
+                        // than cut ("Do not disturb").
+                        child: Padding(
+                          padding: const EdgeInsets.symmetric(horizontal: 6),
+                          child: FittedBox(
+                            fit: BoxFit.scaleDown,
+                            child: Text(
+                              text,
+                              maxLines: 1,
+                              style: DuvetType.label.copyWith(
+                                fontSize: 15,
+                                color: key == value ? colors.foreground : colors.mutedForeground,
+                              ),
+                            ),
+                          ),
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+            ],
           ),
         ),
       ),

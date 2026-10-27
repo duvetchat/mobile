@@ -4,12 +4,14 @@ import 'dart:ui' as ui;
 import 'package:duvet/account.dart';
 import 'package:duvet/data/emoji_catalog.dart';
 import 'package:duvet/data/models.dart';
+import 'package:duvet/data/scope.dart';
 import 'package:duvet/deep_links.dart';
 import 'package:duvet/main.dart';
 import 'package:duvet/space_admin.dart';
+import 'package:duvet/spaces.dart' show pickSpaceIcon;
 import 'package:duvet/theme.dart';
 import 'package:duvet/widgets/chrome.dart';
-import 'package:duvet/widgets/rows.dart' show SpaceBanner;
+import 'package:duvet/widgets/rows.dart' show DuvetChip, SpaceBanner;
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
@@ -79,6 +81,15 @@ void main() {
   Future<void> choose(WidgetTester tester, String row, String choice) async {
     final found = find.descendant(of: find.bySemanticsLabel(row).last, matching: find.text(choice));
     await reveal(tester, found);
+    await tester.tap(found);
+    await tester.pumpAndSettle();
+  }
+
+  // A choice on the room permissions card shown, its card scrolled to it.
+  Future<void> onCard(WidgetTester tester, String row, String choice) async {
+    final found = find.descendant(of: find.bySemanticsLabel(row), matching: find.text(choice)).hitTestable();
+    await tester.dragUntilVisible(found, find.byType(PageView), const Offset(0, -150));
+    await tester.pumpAndSettle();
     await tester.tap(found);
     await tester.pumpAndSettle();
   }
@@ -325,9 +336,10 @@ void main() {
     // For @everyone, the last role: no sending here.
     await choose(tester, 'Send messages', 'Deny');
     expect(repository.admin.last, 'overwrite r-crit s-guild +0 -${Perm.sendMessages}');
-    await tester.tap(find.text('Moderator'));
+    await tester.tap(find.widgetWithText(DuvetChip, 'Moderator'));
     await tester.pumpAndSettle();
-    await choose(tester, 'Pin messages', 'Allow');
+    // On the card shown: scrolling one beside it into view would turn back to it.
+    await onCard(tester, 'Pin messages', 'Allow');
     expect(repository.admin.last, 'overwrite r-crit role-mod +${Perm.pinMessages} -0');
     await tester.tap(find.bySemanticsLabel('Back').last);
     await tester.pumpAndSettle();
@@ -561,7 +573,9 @@ void main() {
     expect(find.text('Edit role'), findsOneWidget);
 
     await tapLabel(tester, 'Name color: default');
+    await tapLabel(tester, 'Solid');
     await tapLabel(tester, '#30A46C');
+    await tapLabel(tester, 'Done');
     await tapLabel(tester, RegExp(r'^0 members'));
     await tapLabel(tester, 'Maya');
     expect(repository.admin.last, 'give role-Hosts Maya');
@@ -583,6 +597,143 @@ void main() {
     expect(repository.admin.last, 'role- role-Hosts');
     expect(find.text('Hosts'), findsNothing);
     semantics.dispose();
+  });
+
+  testWidgets('a role\'s name color can be a gradient: from its color to another, a middle stop optional', (tester) async {
+    final repository = await pumpSettings(tester);
+    await tapLabel(tester, RegExp(r'^Roles'));
+    await tapLabel(tester, RegExp(r'^Moderator'));
+    await tapLabel(tester, 'Name color: #30A46C');
+    await tapLabel(tester, 'Gradient');
+    expect(find.bySemanticsLabel('Preview: Moderator, gradient, #30A46C to #0090FF'), findsOneWidget);
+    await tapLabel(tester, 'Middle');
+    await tapLabel(tester, '#D6A400');
+    await tapLabel(tester, 'Done');
+    await tapLabel(tester, 'Save');
+    expect(repository.admin.last, 'role~ role-mod color=30a46c..d6a400..90ff');
+
+    // Back to one color: all three go, the gradient's stops cleared.
+    await tapLabel(tester, RegExp(r'^Moderator'));
+    await tapLabel(tester, RegExp(r'^Name color: gradient'));
+    await tapLabel(tester, 'Solid');
+    await tapLabel(tester, 'Done');
+    await tapLabel(tester, 'Save');
+    expect(repository.admin.last, 'role~ role-mod color=30a46c');
+    semantics.dispose();
+  });
+
+  group('roles, in order', () {
+    // Highest first; [gap] spaces the positions out, as deleted roles leave them.
+    void four(FakeRepository r, {int gap = 1}) => r.roleList['s-guild'] = [
+      SpaceRole(id: 'role-helpers', name: 'Helpers', position: 3 * gap),
+      SpaceRole(id: 'role-mod', name: 'Moderator', perms: Perm.manageChannels, position: 2 * gap),
+      SpaceRole(id: 'role-admins', name: 'Admins', perms: Perm.administrator, position: gap, hoisted: true),
+      const SpaceRole(id: 's-guild', name: '@everyone', everyone: true),
+    ];
+
+    List<String> order(WidgetTester tester) => [
+      for (final name in ['Helpers', 'Moderator', 'Admins', '@everyone'])
+        if (find.text(name).evaluate().isNotEmpty) name,
+    ]..sort((a, b) => tester.getTopLeft(find.text(a)).dy.compareTo(tester.getTopLeft(find.text(b)).dy));
+
+    testWidgets('a role dragged by its edge goes to the place of the role it lands by', (tester) async {
+      final repository = await pumpSettings(tester, setUp: four);
+      await tapLabel(tester, RegExp(r'^Roles'));
+      expect(order(tester), ['Helpers', 'Moderator', 'Admins', '@everyone']);
+      expect(find.text('Administrator'), findsNothing, reason: 'said under the name, with its members');
+      expect(find.textContaining('Administrator'), findsOneWidget);
+
+      // Admins, by a screen reader's move, up one: to Moderator's place.
+      final node = tester.getSemantics(find.bySemanticsLabel(RegExp(r'^Admins, ')).last);
+      node.owner!.performAction(
+        node.id,
+        SemanticsAction.customAction,
+        CustomSemanticsAction.getIdentifier(const CustomSemanticsAction(label: 'Move up')),
+      );
+      await tester.pumpAndSettle();
+      expect(repository.admin.last, 'role^ role-admins 2');
+      expect(order(tester), ['Helpers', 'Admins', 'Moderator', '@everyone']);
+
+      // Helpers, down to the bottom: to the place of the one it lands under.
+      final helpers = tester.getSemantics(find.bySemanticsLabel(RegExp(r'^Helpers')).last);
+      helpers.owner!.performAction(
+        helpers.id,
+        SemanticsAction.customAction,
+        CustomSemanticsAction.getIdentifier(const CustomSemanticsAction(label: 'Move to the end')),
+      );
+      await tester.pumpAndSettle();
+      expect(repository.admin.last, 'role^ role-helpers 1');
+      expect(order(tester), ['Admins', 'Moderator', 'Helpers', '@everyone']);
+      semantics.dispose();
+    });
+
+    testWidgets('a drop into a gap the API would clamp lays the roles out again instead', (tester) async {
+      final repository = await pumpSettings(tester, setUp: (r) => four(r, gap: 2));
+      await tapLabel(tester, RegExp(r'^Roles'));
+      final node = tester.getSemantics(find.bySemanticsLabel(RegExp(r'^Admins, ')).last);
+      node.owner!.performAction(
+        node.id,
+        SemanticsAction.customAction,
+        CustomSemanticsAction.getIdentifier(const CustomSemanticsAction(label: 'Move up')),
+      );
+      await tester.pumpAndSettle();
+      // Moderator's 4 is past 3, the count less one: each to the bottom, top first.
+      expect(repository.admin.where((a) => a.startsWith('role^')), [
+        'role^ role-helpers 1',
+        'role^ role-admins 1',
+        'role^ role-mod 1',
+      ]);
+      expect(order(tester), ['Helpers', 'Admins', 'Moderator', '@everyone']);
+      semantics.dispose();
+    });
+
+    testWidgets('Admins first: Administrator on top, then managers, the rest after, gaps and all', (tester) async {
+      // Past what the API takes (it clamps to the count less one): each goes
+      // to the bottom instead, top first.
+      final repository = await pumpSettings(tester, setUp: (r) => four(r, gap: 2));
+      await tapLabel(tester, RegExp(r'^Roles'));
+      await tapLabel(tester, 'Admins first');
+      await tapLabel(tester, 'Reorder');
+      expect(repository.admin.where((a) => a.startsWith('role^')), [
+        'role^ role-admins 1',
+        'role^ role-mod 1',
+        'role^ role-helpers 1',
+      ]);
+      expect(order(tester), ['Admins', 'Moderator', 'Helpers', '@everyone']);
+      expect(find.bySemanticsLabel('Admins first'), findsNothing, reason: 'nothing left to sort');
+      semantics.dispose();
+    });
+
+    testWidgets('roles at or above the user\'s highest are locked, and nothing goes above it', (tester) async {
+      final repository = await pumpSettings(
+        tester,
+        setUp: (r) {
+          four(r);
+          r.spaceOwner = false;
+          r.roleTags[r.profile.value!.id] = [const RoleTag('Moderator', id: 'role-mod', position: 2)];
+        },
+      );
+      await tapLabel(tester, RegExp(r'^Roles'));
+      final helpers = tester.getSemantics(find.bySemanticsLabel(RegExp(r'^Helpers')).last);
+      expect(helpers.getSemanticsData().label, isNot(contains('use actions to move it')));
+      final admins = tester.getSemantics(find.bySemanticsLabel(RegExp(r'^Admins, ')).last);
+      expect(admins.getSemanticsData().label, contains('use actions to move it'));
+      admins.owner!.performAction(
+        admins.id,
+        SemanticsAction.customAction,
+        CustomSemanticsAction.getIdentifier(const CustomSemanticsAction(label: 'Move up')),
+      );
+      await tester.pumpAndSettle();
+      expect(repository.admin.where((a) => a.startsWith('role^')), isEmpty);
+      expect(find.text('Roles can only go below your highest role'), findsOneWidget);
+
+      // Opened, a locked role is there to read: nothing to save or delete.
+      await tapLabel(tester, RegExp(r'^Helpers, '));
+      expect(find.textContaining('only those above it change it'), findsOneWidget);
+      expect(find.bySemanticsLabel('Save'), findsNothing);
+      expect(find.text('Delete role'), findsNothing);
+      semantics.dispose();
+    });
   });
 
   testWidgets('an administrator role has every permission: the rest are on and fixed', (tester) async {
@@ -664,6 +815,95 @@ void main() {
     expect(squares.last.$3, 320);
     expect(repository.admin.last, 'sticker+ Wave /squares/320.png');
     semantics.dispose();
+  });
+
+  testWidgets('room permissions: a page per role, swiped between, the role chips following', (tester) async {
+    tester.view.physicalSize = const Size(390 * 3, 844 * 3);
+    tester.view.devicePixelRatio = 3;
+    addTearDown(tester.view.reset);
+    final repository = FakeRepository();
+    await tester.pumpWidget(
+      RepositoryScope(
+        repository: repository,
+        child: MaterialApp(
+          theme: Duvet.material(Brightness.light),
+          home: FTheme(
+            data: Duvet.theme(Brightness.light),
+            child: const RoomPermissionsPage(
+              spaceId: 's-guild',
+              room: AdminRoom(id: 'r-general', name: 'general', kind: AdminRoomKind.text, position: 0),
+            ),
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+    Future<void> allowPins() => onCard(tester, 'Pin messages', 'Allow');
+
+    // @everyone's first; a swipe to the right brings the role before it.
+    await allowPins();
+    expect(repository.admin.last, startsWith('overwrite r-general s-guild +${Perm.pinMessages}'));
+    await tester.fling(find.byType(PageView), const Offset(120, 0), 600);
+    await tester.pumpAndSettle();
+    await allowPins();
+    expect(repository.admin.last, startsWith('overwrite r-general role-mod +${Perm.pinMessages}'));
+
+    // A chip turns to its page.
+    await tester.tap(find.widgetWithText(DuvetChip, '@everyone'));
+    await tester.pumpAndSettle();
+    await onCard(tester, 'Pin messages', 'Deny');
+    expect(repository.admin.last, startsWith('overwrite r-general s-guild +0 -${Perm.pinMessages}'));
+
+    // The card peeking in at the side turns to the front when tapped.
+    await tester.tapAt(Offset(8, tester.getCenter(find.byType(PageView)).dy));
+    await tester.pumpAndSettle();
+    await allowPins();
+    expect(repository.admin.last, startsWith('overwrite r-general role-mod'));
+  });
+
+  testWidgets('room permissions: a member of their own, added, set, and removed', (tester) async {
+    tester.view.physicalSize = const Size(390 * 3, 844 * 3);
+    tester.view.devicePixelRatio = 3;
+    addTearDown(tester.view.reset);
+    final repository = FakeRepository();
+    await tester.pumpWidget(
+      RepositoryScope(
+        repository: repository,
+        child: MaterialApp(
+          theme: Duvet.material(Brightness.light),
+          home: FTheme(
+            data: Duvet.theme(Brightness.light),
+            child: const RoomPermissionsPage(
+              spaceId: 's-guild',
+              room: AdminRoom(id: 'r-general', name: 'general', kind: AdminRoomKind.text, position: 0),
+            ),
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+    // Every room permission, Video and managing the room among them.
+    expect(find.text('Manage the room'), findsWidgets);
+    expect(find.text('Video'), findsWidgets);
+
+    await tester.tap(find.widgetWithText(DuvetChip, 'Add member'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Maya').last);
+    await tester.pumpAndSettle();
+    expect(find.widgetWithText(DuvetChip, 'Maya'), findsOneWidget);
+    expect(find.text('Theirs alone, over what their roles say'), findsOneWidget);
+    await tester.tap(
+      find.descendant(of: find.bySemanticsLabel('Send messages'), matching: find.text('Deny')).hitTestable(),
+    );
+    await tester.pumpAndSettle();
+    const maya = FakeRepository.maya;
+    expect(repository.admin.last, 'overwrite r-general $maya +0 -${Perm.sendMessages}');
+    expect(repository.overwrites('s-guild', 'r-general').single.targetType, 1);
+
+    await tester.tap(find.bySemanticsLabel('Remove Maya’s own permissions'));
+    await tester.pumpAndSettle();
+    expect(repository.admin.last, 'overwrite r-general $maya +0 -0');
+    expect(find.widgetWithText(DuvetChip, 'Maya'), findsNothing);
   });
 
   testWidgets('the cropper starts centered, as the desktop\'s: a square, a banner', (tester) async {
@@ -860,6 +1100,65 @@ void main() {
     await tapLabel(tester, 'Delete');
     await tapLabel(tester, 'Delete webhook');
     expect(repository.admin.last, 'hook- w-CI');
+    semantics.dispose();
+  });
+
+  testWidgets('webhooks: renamed, given a picture cropped round, and the picture removed', (tester) async {
+    final path = await picture(tester);
+    pickSpaceIcon = () async => path;
+    final squares = <int>[];
+    saveSquareImage = (path, crop, side) async {
+      squares.add(side);
+      return '/squares/$side.png';
+    };
+    final repository = await pumpSettings(
+      tester,
+      setUp: (r) => r.webhookList = [
+        SpaceWebhook(id: 'w-ci', roomId: 'r-general', roomName: 'general', name: 'CI', createdAt: DateTime(2026)),
+      ],
+    );
+    await tapLabel(tester, RegExp(r'^Webhooks'));
+    await tapLabel(tester, RegExp(r'^CI'));
+    await tapLabel(tester, 'Rename');
+    await tester.enterText(find.byType(EditableText).last, 'Builds');
+    await tester.pump();
+    await tapLabel(tester, 'Save');
+    expect(repository.admin.last, 'hook* w-ci name=Builds');
+    expect(find.text('Builds'), findsOneWidget);
+
+    await tapLabel(tester, RegExp(r'^Builds'));
+    await tester.tap(find.bySemanticsLabel(RegExp(r'^Add a picture')).last);
+    await useCrop(tester);
+    expect(squares, [256]);
+    expect(repository.admin.last, 'hook* w-ci avatar');
+
+    await tapLabel(tester, RegExp(r'^Builds'));
+    await tapLabel(tester, 'Remove picture');
+    expect(repository.admin.last, 'hook* w-ci noavatar');
+    semantics.dispose();
+  });
+
+  testWidgets('a member who runs nothing sees the emojis and stickers, to look at only', (tester) async {
+    semantics = tester.ensureSemantics();
+    tester.view.physicalSize = const Size(390 * 3, 844 * 3);
+    tester.view.devicePixelRatio = 3;
+    addTearDown(tester.view.reset);
+    final repository = FakeRepository()
+      ..spaceOwner = false
+      ..spacePerms = Perm.viewChannels | Perm.sendMessages;
+    await tester.pumpWidget(DuvetApp(repository: repository));
+    await tester.pumpAndSettle();
+    await tester.tap(find.descendant(of: find.byType(DuvetTabBar), matching: find.text('Spaces')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Design Guild'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.bySemanticsLabel('Design Guild, Space menu').last);
+    await tester.pumpAndSettle();
+    expect(find.bySemanticsLabel('Space settings'), findsNothing);
+    await tapLabel(tester, 'Emojis and stickers');
+    expect(find.text('Emojis and stickers'), findsOneWidget);
+    expect(find.bySemanticsLabel('Add emoji'), findsNothing);
+    expect(find.textContaining('Those who manage emojis add and change them'), findsOneWidget);
     semantics.dispose();
   });
 

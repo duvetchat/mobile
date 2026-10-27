@@ -18,8 +18,12 @@ import 'login.dart';
 import 'tabs.dart';
 import 'theme.dart';
 import 'widgets/chrome.dart';
+import 'widgets/scrolling.dart';
 
-void main() => runApp(DuvetApp(repository: DuvetRepository()));
+void main() {
+  DuvetBinding();
+  runApp(DuvetApp(repository: DuvetRepository()));
+}
 
 class DuvetApp extends StatefulWidget {
   final ChatRepository repository;
@@ -89,6 +93,7 @@ class _DuvetAppState extends State<DuvetApp> {
         voice: _voice,
         child: MaterialApp(
           debugShowCheckedModeBanner: false,
+          scrollBehavior: const DuvetScrollBehavior(),
           // forui's list brings material_ui's and cupertino_ui's localizations; the framework's widgets
           // (TextField first) read their own, which only English has without these, and fail to build.
           localizationsDelegates: const [
