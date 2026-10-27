@@ -424,6 +424,8 @@ class _SpaceDirectoryState extends State<SpaceDirectory> {
                     ? const EmptyState(icon: FLucideIcons.hash, text: 'No rooms here yet')
                     : ListView(
                         controller: _scroll,
+                        // A list with its own controller only scrolls once full; a short one bounces too.
+                        physics: const AlwaysScrollableScrollPhysics(),
                         padding: EdgeInsets.only(top: barHeight, bottom: MediaQuery.paddingOf(context).bottom + 16),
                         children: [
                           if (space.bannerUrl case final banner?)
@@ -436,7 +438,7 @@ class _SpaceDirectoryState extends State<SpaceDirectory> {
                               height: 240,
                               child: EmptyState(icon: FLucideIcons.hash, text: 'No rooms here yet'),
                             ),
-                          for (final section in space.sections) ...[
+                          for (final (i, section) in space.sections.indexed) ...[
                             // Outside any category: a plain header. A category
                             // folds away, empty ones too.
                             if (section.id case final id?)
@@ -449,34 +451,42 @@ class _SpaceDirectoryState extends State<SpaceDirectory> {
                               )
                             else if (section.rooms.isNotEmpty)
                               Overline(section.name ?? 'Rooms'),
-                            if (!collapsed.contains(section.id))
-                              for (final room in section.rooms)
-                                switch (room.kind) {
-                                  RoomKind.text => ListRow(
-                                    key: ValueKey(room.id),
-                                    title: room.name,
-                                    hash: true,
-                                    snippet:
-                                        typingSentence(repository.typingNow.value[room.id] ?? const []) ??
-                                        switch (latest[room.id]) {
-                                          final m? =>
-                                            '${m.authorId == me ? 'You' : m.authorName}: ${repository.previewOf(m)}',
-                                          null => null,
-                                        },
-                                    unread: unread.contains(room.id),
-                                    onTap: () => openChat(context, room.target, '# ${room.name}'),
-                                  ),
-                                  // Who's in, the user first when their voice is here (no
-                                  // accent: the tab bar has the screen's).
-                                  RoomKind.voice => ListRow(
-                                    key: ValueKey(room.id),
-                                    leading: Icon(FLucideIcons.volume2, size: 24, color: colors.mutedForeground),
-                                    title: room.name,
-                                    snippet: voiceSnippet(repository, voice, room.id),
-                                    detail: voice.target?.id == room.id ? 'you’re in voice here' : null,
-                                    onTap: () => openVoiceRoom(context, room),
-                                  ),
-                                },
+                            CategoryFold(
+                              key: ValueKey('fold-${section.id ?? i}'),
+                              open: !collapsed.contains(section.id),
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.stretch,
+                                children: [
+                                  for (final room in section.rooms)
+                                    switch (room.kind) {
+                                      RoomKind.text => ListRow(
+                                        key: ValueKey(room.id),
+                                        title: room.name,
+                                        hash: true,
+                                        snippet:
+                                            typingSentence(repository.typingNow.value[room.id] ?? const []) ??
+                                            switch (latest[room.id]) {
+                                              final m? =>
+                                                '${m.authorId == me ? 'You' : m.authorName}: ${repository.previewOf(m)}',
+                                              null => null,
+                                            },
+                                        unread: unread.contains(room.id),
+                                        onTap: () => openChat(context, room.target, '# ${room.name}'),
+                                      ),
+                                      // Who's in, the user first when their voice is here (no
+                                      // accent: the tab bar has the screen's).
+                                      RoomKind.voice => ListRow(
+                                        key: ValueKey(room.id),
+                                        leading: Icon(FLucideIcons.volume2, size: 24, color: colors.mutedForeground),
+                                        title: room.name,
+                                        snippet: voiceSnippet(repository, voice, room.id),
+                                        detail: voice.target?.id == room.id ? 'you’re in voice here' : null,
+                                        onTap: () => openVoiceRoom(context, room),
+                                      ),
+                                    },
+                                ],
+                              ),
+                            ),
                           ],
                         ],
                       ),

@@ -5,6 +5,7 @@ import 'package:duvet/data/emoji_catalog.dart';
 import 'package:duvet/data/gifs.dart';
 import 'package:duvet/data/links.dart';
 import 'package:duvet/data/models.dart';
+import 'package:duvet/data/appearance.dart';
 import 'package:duvet/main.dart';
 import 'package:duvet/theme.dart';
 import 'package:duvet/widgets/media.dart';
@@ -133,13 +134,20 @@ void main() {
     ChatView.debugPickFiles = null;
   });
 
-  Future<FakeRepository> openMaya(WidgetTester tester, {void Function(FakeRepository r)? setUp}) async {
+  Future<FakeRepository> openMaya(
+    WidgetTester tester, {
+    void Function(FakeRepository r)? setUp,
+    ReplyGesture reply = ReplyGesture.swipeLeft,
+  }) async {
     semantics = tester.ensureSemantics();
     tester.view.physicalSize = const Size(390 * 3, 844 * 3);
     tester.view.devicePixelRatio = 3;
     addTearDown(tester.view.reset);
     final repository = FakeRepository();
-    await tester.pumpWidget(DuvetApp(repository: repository));
+    final appearance = Appearance(MemoryAppearanceStore()..replyGesture = reply.name);
+    await appearance.load();
+    addTearDown(appearance.dispose);
+    await tester.pumpWidget(DuvetApp(repository: repository, appearance: appearance));
     await tester.pumpAndSettle();
     setUp?.call(repository);
     await tester.tap(find.text('Maya'));
@@ -372,7 +380,7 @@ void main() {
   });
 
   testWidgets('a picture alone: a long press opens its actions, a double tap replies, a tap opens it', (tester) async {
-    final repository = await openMaya(tester);
+    final repository = await openMaya(tester, reply: ReplyGesture.doubleTap);
     repository.push(
       'c-maya',
       MessageCreated(

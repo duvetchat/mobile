@@ -895,7 +895,10 @@ Future<void> showSpaceMenu(BuildContext anchor, {required Space space}) async {
         hint: inviteRoom == null ? 'Not allowed in this Space' : null,
       ),
       if (anchor.repository.spaceProfile(space.id)?.helpsRun ?? false)
-        const GlassMenuItem(icon: FLucideIcons.settings, label: 'Space settings', value: 'settings'),
+        const GlassMenuItem(icon: FLucideIcons.settings, label: 'Space settings', value: 'settings')
+      // Any member may see them, as on the desktop; only those who manage them change them.
+      else
+        const GlassMenuItem(icon: FLucideIcons.smile, label: 'Emojis and stickers', value: 'assets'),
       const GlassMenuItem(icon: FLucideIcons.checkCheck, label: 'Mark all as read', value: 'read'),
       // Its owner can't leave it: they delete it.
       if (anchor.repository.spaceProfile(space.id)?.owner ?? false)
@@ -921,6 +924,8 @@ Future<void> showSpaceMenu(BuildContext anchor, {required Space space}) async {
       if (await deleteSpace(anchor, space) && anchor.mounted) Navigator.of(anchor).maybePop();
     case 'settings':
       await Navigator.of(anchor).push(MaterialPageRoute<void>(builder: (_) => SpaceSettingsPage(spaceId: space.id)));
+    case 'assets':
+      await Navigator.of(anchor).push(MaterialPageRoute<void>(builder: (_) => AssetsPage(spaceId: space.id)));
     case 'read':
       repository.markSpaceRead(space.id);
     case 'leave':

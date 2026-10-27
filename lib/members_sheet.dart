@@ -138,6 +138,8 @@ class _MembersSheetState extends State<_MembersSheet> {
             final online = all.where((m) => !away(m)).length;
             return CustomScrollView(
               controller: widget.scroll,
+              // Scrolling the members puts the search's keyboard away.
+              keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
               slivers: [
                 SliverToBoxAdapter(
                   child: SheetTitle(

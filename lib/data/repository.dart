@@ -241,15 +241,13 @@ abstract interface class ChatRepository {
   /// Roles, highest first, @everyone last.
   List<SpaceRole> roles(String spaceId);
   Future<SpaceRole> createRole(String spaceId, String name);
-  Future<void> updateRole(
-    String spaceId,
-    String roleId, {
-    String? name,
-    int? color,
-    bool clearColor = false,
-    int? perms,
-    bool? hoisted,
-  });
+  /// Changes what's given. [colors] replaces all of the role's colors: a
+  /// stop left null is cleared.
+  Future<void> updateRole(String spaceId, String roleId, {String? name, RoleColors? colors, int? perms, bool? hoisted});
+
+  /// Moves a role to [position] (higher is above; @everyone is 0, and stays
+  /// there), the roles between shifting one place to make room.
+  Future<void> moveRole(String spaceId, String roleId, int position);
   Future<void> deleteRole(String spaceId, String roleId);
   List<String> roleMembers(String spaceId, String roleId);
   Future<void> setRole(String spaceId, String roleId, String userId, {required bool has});
@@ -268,6 +266,16 @@ abstract interface class ChatRepository {
   Future<String> createWebhook(String spaceId, String roomId, String name);
   Future<String> resetWebhook(String spaceId, SpaceWebhook webhook);
   Future<void> deleteWebhook(String spaceId, SpaceWebhook webhook);
+
+  /// Renames a webhook, or changes its picture: a file at [avatarPath], or
+  /// none with [removeAvatar]. Its past messages keep the one they had.
+  Future<void> updateWebhook(
+    String spaceId,
+    SpaceWebhook webhook, {
+    String? name,
+    String? avatarPath,
+    bool removeAvatar = false,
+  });
 
   Future<SpaceStorage> spaceStorage(String spaceId);
 

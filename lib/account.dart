@@ -18,7 +18,6 @@ import 'tabs.dart' show LiveIndicator;
 import 'theme.dart';
 import 'widgets/avatar.dart';
 import 'widgets/chrome.dart';
-import 'widgets/depth.dart';
 import 'widgets/glass.dart';
 import 'widgets/rows.dart';
 
@@ -1198,10 +1197,12 @@ class _MyFilesPageState extends State<MyFilesPage> {
                       ),
                   ],
                 ],
+                // Edge to edge: the filters scroll to the screen's edge, 16 in at rest.
                 Padding(
-                  padding: const EdgeInsets.fromLTRB(16, 12, 16, 0),
+                  padding: const EdgeInsets.only(top: 12),
                   child: SingleChildScrollView(
                     scrollDirection: Axis.horizontal,
+                    padding: const EdgeInsets.symmetric(horizontal: 16),
                     child: Row(
                       children: [
                         for (final (f, label) in const [
@@ -1210,6 +1211,7 @@ class _MyFilesPageState extends State<MyFilesPage> {
                           (_FileFilter.images, 'Images'),
                           (_FileFilter.voice, 'Voice'),
                         ]) ...[
+                          if (f != _FileFilter.all) const SizedBox(width: 24),
                           Semantics(
                             button: true,
                             selected: _filter == f,
@@ -1230,7 +1232,6 @@ class _MyFilesPageState extends State<MyFilesPage> {
                               ),
                             ),
                           ),
-                          const SizedBox(width: 24),
                         ],
                       ],
                     ),
@@ -1621,19 +1622,21 @@ class _YouTabState extends State<YouTab> {
                   ]),
                   // What others see while you're connected.
                   const Overline('Status'),
-                  _Segmented<Presence>(
+                  Segmented<Presence>(
                     label: 'Status',
                     value: _choosing ?? profile.status,
                     options: const {Presence.online: 'Online', Presence.doNotDisturb: 'Do not disturb'},
                     onChanged: _setStatus,
                   ),
                   const Overline('Appearance'),
-                  _Segmented<ThemeMode>(
+                  Segmented<ThemeMode>(
                     label: 'Appearance',
                     value: appearance.value,
                     options: const {ThemeMode.system: 'System', ThemeMode.light: 'Light', ThemeMode.dark: 'Dark'},
                     onChanged: appearance.set,
                   ),
+                  const Overline('Reply to a message'),
+                  _ReplyGesturePicker(value: appearance.replyGesture, onChanged: appearance.setReplyGesture),
                   const Overline('Storage'),
                   Semantics(
                     container: true,
@@ -1666,78 +1669,218 @@ class _YouTabState extends State<YouTab> {
 }
 
 /// A segmented control: the chosen option raised out of a recess.
-class _Segmented<T> extends StatelessWidget {
-  final String label;
-  final T value;
-  final Map<T, String> options;
-  final ValueChanged<T> onChanged;
-  const _Segmented({required this.label, required this.value, required this.options, required this.onChanged});
+/// The gesture that replies to a message, each option acted out on a tiny
+/// bubble: the one picked plays twice, then all hold mid-gesture.
+class _ReplyGesturePicker extends StatefulWidget {
+  final ReplyGesture value;
+  final ValueChanged<ReplyGesture> onChanged;
+  const _ReplyGesturePicker({required this.value, required this.onChanged});
+
+  @override
+  State<_ReplyGesturePicker> createState() => _ReplyGesturePickerState();
+}
+
+class _ReplyGesturePickerState extends State<_ReplyGesturePicker> with SingleTickerProviderStateMixin {
+  static const _options = {
+    ReplyGesture.swipeLeft: 'Swipe left',
+    ReplyGesture.swipeRight: 'Swipe right',
+    ReplyGesture.doubleTap: 'Double tap',
+  };
+
+  // A moment of each gesture that reads at a glance, for those held still.
+  static const _pose = 0.3;
+
+  late final _loop = AnimationController(vsync: this, duration: const Duration(milliseconds: 1800), value: _pose);
+  bool _played = false;
+
+  // Twice through, then on to the pose: the loop's start and end are both at rest.
+  void _play() {
+    if (MediaQuery.disableAnimationsOf(context)) {
+      _loop.value = _pose;
+      return;
+    }
+    _loop.repeat(count: 2).whenComplete(() {
+      if (mounted) {
+        _loop
+          ..value = 0
+          ..animateTo(_pose);
+      }
+    });
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    if (_played) return;
+    _played = true;
+    _play();
+  }
+
+  @override
+  void didUpdateWidget(_ReplyGesturePicker oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (widget.value != oldWidget.value) _play();
+  }
+
+  @override
+  void dispose() {
+    _loop.dispose();
+    super.dispose();
+  }
 
   @override
   Widget build(BuildContext context) {
     final colors = context.theme.colors;
     final tokens = context.duvet;
-    const radius = BorderRadius.all(Radius.circular(DuvetTokens.radiusField));
+    final still = MediaQuery.disableAnimationsOf(context);
+    const radius = BorderRadius.all(Radius.circular(DuvetTokens.radiusButton));
     return Semantics(
-      label: label,
+      label: 'Reply to a message',
       explicitChildNodes: true,
-      child: Container(
-        height: 40,
-        padding: const EdgeInsets.all(2),
-        decoration: const BoxDecoration(borderRadius: radius).copyWith(color: colors.secondary),
-        child: InsetShadow(
-          shadows: tokens.shadowWell,
-          borderRadius: radius,
-          child: Row(
-            children: [
-              for (final MapEntry(:key, value: text) in options.entries)
-                Expanded(
-                  child: Semantics(
-                    container: true,
-                    button: true,
-                    inMutuallyExclusiveGroup: true,
-                    checked: key == value,
-                    label: text,
-                    excludeSemantics: true,
-                    onTap: () => onChanged(key),
-                    child: GestureDetector(
-                      behavior: HitTestBehavior.opaque,
-                      onTap: () {
-                        HapticFeedback.selectionClick();
-                        onChanged(key);
-                      },
-                      child: AnimatedContainer(
-                        duration: MediaQuery.disableAnimationsOf(context) ? Duration.zero : DuvetTokens.pressOut,
-                        alignment: Alignment.center,
-                        decoration: BoxDecoration(
-                          color: key == value ? colors.card : null,
-                          borderRadius: BorderRadius.circular(10),
-                          boxShadow: key == value ? tokens.shadowControl : null,
+      child: Row(
+        children: [
+          for (final (i, MapEntry(key: gesture, value: text)) in _options.entries.indexed) ...[
+            if (i > 0) const SizedBox(width: 8),
+            Expanded(
+              child: Semantics(
+                container: true,
+                button: true,
+                inMutuallyExclusiveGroup: true,
+                checked: gesture == widget.value,
+                label: text,
+                excludeSemantics: true,
+                onTap: () => widget.onChanged(gesture),
+                child: GestureDetector(
+                  behavior: HitTestBehavior.opaque,
+                  onTap: () {
+                    HapticFeedback.selectionClick();
+                    widget.onChanged(gesture);
+                  },
+                  child: AnimatedContainer(
+                    duration: still ? Duration.zero : DuvetTokens.pressOut,
+                    height: 104,
+                    padding: const EdgeInsets.fromLTRB(8, 12, 8, 10),
+                    decoration: BoxDecoration(
+                      color: gesture == widget.value ? colors.card : colors.secondary,
+                      borderRadius: radius,
+                      border: Border.all(
+                        color: gesture == widget.value ? tokens.accentText : const Color(0x00000000),
+                        width: 1.5,
+                      ),
+                      boxShadow: gesture == widget.value ? tokens.shadowControl : null,
+                    ),
+                    child: Column(
+                      children: [
+                        Expanded(
+                          child: gesture == widget.value
+                              ? AnimatedBuilder(
+                                  animation: _loop,
+                                  builder: (context, _) =>
+                                      _ReplyGestureDemo(gesture: gesture, t: _loop.value, picked: true),
+                                )
+                              : _ReplyGestureDemo(gesture: gesture, t: _pose, picked: false),
                         ),
-                        // One line, shrunk to fit at large text sizes rather
-                        // than cut ("Do not disturb").
-                        child: Padding(
-                          padding: const EdgeInsets.symmetric(horizontal: 6),
-                          child: FittedBox(
-                            fit: BoxFit.scaleDown,
-                            child: Text(
-                              text,
-                              maxLines: 1,
-                              style: DuvetType.label.copyWith(
-                                fontSize: 15,
-                                color: key == value ? colors.foreground : colors.mutedForeground,
-                              ),
+                        const SizedBox(height: 8),
+                        FittedBox(
+                          fit: BoxFit.scaleDown,
+                          child: Text(
+                            text,
+                            maxLines: 1,
+                            style: DuvetType.label.copyWith(
+                              fontSize: 14,
+                              color: gesture == widget.value ? colors.foreground : colors.mutedForeground,
                             ),
                           ),
                         ),
-                      ),
+                      ],
                     ),
                   ),
                 ),
+              ),
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+}
+
+/// One reply gesture on a tiny bubble at [t] through its loop: slid off its
+/// reply icon and back, or tapped twice with a ring for each tap.
+class _ReplyGestureDemo extends StatelessWidget {
+  final ReplyGesture gesture;
+  final double t;
+  final bool picked;
+  const _ReplyGestureDemo({required this.gesture, required this.t, required this.picked});
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = context.theme.colors;
+    final ink = picked ? context.duvet.accentText : colors.mutedForeground;
+    final bubble = Container(
+      width: 44,
+      height: 22,
+      decoration: BoxDecoration(
+        color: picked ? Duvet.accent : colors.mutedForeground.withValues(alpha: 0.35),
+        borderRadius: BorderRadius.circular(11),
+      ),
+    );
+    if (gesture == ReplyGesture.doubleTap) {
+      // Two taps in the loop's first half, then a rest.
+      final tap = t < 0.5 ? (t % 0.25) / 0.25 : null;
+      return Stack(
+        alignment: Alignment.center,
+        children: [
+          bubble,
+          if (tap != null)
+            Transform.scale(
+              scale: 0.6 + tap * 0.9,
+              child: Container(
+                width: 28,
+                height: 28,
+                decoration: BoxDecoration(
+                  shape: BoxShape.circle,
+                  border: Border.all(color: ink.withValues(alpha: 1 - tap), width: 2),
+                ),
+              ),
+            ),
+          Transform.translate(
+            offset: Offset(12, 14 - (tap == null ? 0 : 3 * (1 - tap))),
+            child: Icon(FLucideIcons.pointer, size: 18, color: ink),
+          ),
+        ],
+      );
+    }
+    final left = gesture == ReplyGesture.swipeLeft;
+    // Out to the reply icon, held, then home.
+    final out = t < 0.4
+        ? Curves.easeOut.transform(t / 0.4)
+        : t < 0.6
+        ? 1.0
+        : 1 - Curves.easeInOut.transform((t - 0.6) / 0.4);
+    return Column(
+      mainAxisAlignment: MainAxisAlignment.center,
+      children: [
+        SizedBox(
+          width: 84,
+          height: 22,
+          child: Stack(
+            alignment: Alignment.center,
+            children: [
+              Align(
+                alignment: left ? Alignment.centerRight : Alignment.centerLeft,
+                child: Opacity(
+                  opacity: out,
+                  child: Icon(FLucideIcons.reply, size: 16, color: ink),
+                ),
+              ),
+              Transform.translate(offset: Offset((left ? -18 : 18) * out, 0), child: bubble),
             ],
           ),
         ),
-      ),
+        const SizedBox(height: 6),
+        Icon(left ? FLucideIcons.arrowLeft : FLucideIcons.arrowRight, size: 14, color: ink),
+      ],
     );
   }
 }

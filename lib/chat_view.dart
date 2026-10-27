@@ -14,6 +14,7 @@ import 'package:file_picker/file_picker.dart';
 import 'package:image_picker/image_picker.dart';
 
 import 'calls.dart';
+import 'data/appearance.dart' show AppearanceScope, ReplyGesture;
 import 'data/emoji_catalog.dart';
 import 'data/links.dart';
 import 'data/message_tokens.dart';
@@ -2207,70 +2208,83 @@ class _ChatViewState extends State<ChatView> {
               child: GlassChrome(
                 top: false,
                 hairline: _underComposer,
+                // The tray runs edge to edge, its files scrolling to the
+                // screen's edges; the rest sits 16 in.
                 child: Padding(
-                  padding: EdgeInsets.fromLTRB(16, 8, 16, 8 + MediaQuery.paddingOf(context).bottom),
+                  padding: EdgeInsets.fromLTRB(0, 8, 0, 8 + MediaQuery.paddingOf(context).bottom),
                   child: Column(
                     mainAxisSize: MainAxisSize.min,
                     children: [
-                      _TypingLine(
-                        users: [
-                          for (final MapEntry(key: id, value: t) in _typing.entries)
-                            TypingUser(userId: id, name: t.name, recording: t.recording),
-                        ],
+                      Padding(
+                        padding: const EdgeInsets.symmetric(horizontal: 16),
+                        child: _TypingLine(
+                          users: [
+                            for (final MapEntry(key: id, value: t) in _typing.entries)
+                              TypingUser(userId: id, name: t.name, recording: t.recording),
+                          ],
+                        ),
                       ),
                       if (_files.isNotEmpty && _editing == null)
                         _AttachmentTray(files: _files, onRemove: (f) => setState(() => _files.remove(f))),
-                      _ComposerStrip(
-                        reply: _replyTo,
-                        editing: _editing != null,
-                        onClose: () {
-                          if (_editing != null) {
-                            setState(_stopEditing);
-                          } else {
-                            _cancelReply();
-                          }
-                        },
-                      ),
-                      if (_recording && !_recordLocked) const _RecordingHint(),
-                      // The field stays while recording, unseen: a held Send
-                      // keeps its gesture until it's released.
-                      Stack(
-                        children: [
-                          Visibility(
-                            visible: !_recording,
-                            maintainState: true,
-                            maintainAnimation: true,
-                            maintainSize: true,
-                            maintainInteractivity: true,
-                            maintainSemantics: false,
-                            child: _ComposerField(
-                              controller: _composer,
-                              focusNode: _focus,
-                              hint: widget.threadOf != null
-                                  ? 'Reply in thread'
-                                  : 'Message ${widget.title.replaceFirst('# ', '#')}',
-                              canSend: _canSend,
+                      Padding(
+                        padding: const EdgeInsets.symmetric(horizontal: 16),
+                        child: Column(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            _ComposerStrip(
+                              reply: _replyTo,
                               editing: _editing != null,
-                              onAttach: _openAttachMenu,
-                              onEmoji: _openPicker,
-                              onSend: _send,
-                              onHoldStart: () => _startRecording(locked: false),
-                              onHoldMove: _onHoldMove,
-                              onHoldEnd: _onHoldEnd,
+                              onClose: () {
+                                if (_editing != null) {
+                                  setState(_stopEditing);
+                                } else {
+                                  _cancelReply();
+                                }
+                              },
                             ),
-                          ),
-                          if (_recording)
-                            Positioned.fill(
-                              child: _RecordingField(
-                                elapsed: _recorded,
-                                levels: _levels,
-                                locked: _recordLocked,
-                                slide: _recordSlide,
-                                onCancel: () => _stopRecording(send: false),
-                                onSend: () => _stopRecording(send: true),
-                              ),
+                            if (_recording && !_recordLocked) const _RecordingHint(),
+                            // The field stays while recording, unseen: a held Send
+                            // keeps its gesture until it's released.
+                            Stack(
+                              children: [
+                                Visibility(
+                                  visible: !_recording,
+                                  maintainState: true,
+                                  maintainAnimation: true,
+                                  maintainSize: true,
+                                  maintainInteractivity: true,
+                                  maintainSemantics: false,
+                                  child: _ComposerField(
+                                    controller: _composer,
+                                    focusNode: _focus,
+                                    hint: widget.threadOf != null
+                                        ? 'Reply in thread'
+                                        : 'Message ${widget.title.replaceFirst('# ', '#')}',
+                                    canSend: _canSend,
+                                    editing: _editing != null,
+                                    onAttach: _openAttachMenu,
+                                    onEmoji: _openPicker,
+                                    onSend: _send,
+                                    onHoldStart: () => _startRecording(locked: false),
+                                    onHoldMove: _onHoldMove,
+                                    onHoldEnd: _onHoldEnd,
+                                  ),
+                                ),
+                                if (_recording)
+                                  Positioned.fill(
+                                    child: _RecordingField(
+                                      elapsed: _recorded,
+                                      levels: _levels,
+                                      locked: _recordLocked,
+                                      slide: _recordSlide,
+                                      onCancel: () => _stopRecording(send: false),
+                                      onSend: () => _stopRecording(send: true),
+                                    ),
+                                  ),
+                              ],
                             ),
-                        ],
+                          ],
+                        ),
                       ),
                     ],
                   ),
@@ -2350,6 +2364,9 @@ class _ChatViewState extends State<ChatView> {
     return ListView.builder(
       controller: _scroll,
       reverse: true,
+      // A list with its own controller only scrolls once full: a short chat bounces too.
+      physics: const AlwaysScrollableScrollPhysics(),
+      keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
       padding: EdgeInsets.fromLTRB(16, top + 8, 16, _composerHeight + 8),
       itemCount: count,
       itemBuilder: (context, index) {
