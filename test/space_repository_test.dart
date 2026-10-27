@@ -665,6 +665,76 @@ void main() {
       expect(listed(), ['r-mods']);
       expect(repository.adminRooms('s-1').map((r) => r.id), ['c-staff', 'r-mods']);
     });
+
+    test('give the user no other permission in them, as the API has it', () async {
+      await signIn();
+      // The helpers run rooms, pin and invite. @everyone can't see #mods, and
+      // #logs lets the helpers in again.
+      repository.handleEvent(
+        _event(
+          'SPACE_CREATE',
+          _space(
+            rooms: {
+              'r-general': _room('r-general'),
+              'r-mods': _room('r-mods', position: 1),
+              'r-logs': _room('r-logs', position: 2),
+            },
+            roles: {'role-helper': Perm.manageChannels | Perm.pinMessages | Perm.createInvites},
+            mine: ['role-helper'],
+            overwrites: {
+              'r-mods': [_overwrite('r-mods', 's-1', deny: Perm.viewChannels)],
+              'r-logs': [
+                _overwrite('r-logs', 's-1', deny: Perm.viewChannels),
+                _overwrite('r-logs', 'role-helper', allow: Perm.viewChannels),
+              ],
+            },
+          ),
+        ),
+      );
+      for (final bit in [Perm.sendMessages, Perm.manageChannels, Perm.pinMessages, Perm.createInvites]) {
+        expect(repository.canInRoom('s-1', 'r-general', bit), isTrue, reason: 'bit $bit in #general');
+        expect(repository.canInRoom('s-1', 'r-mods', bit), isFalse, reason: 'bit $bit in #mods');
+        expect(repository.canInRoom('s-1', 'r-logs', bit), isTrue, reason: 'bit $bit in #logs');
+      }
+    });
+
+    // Denied ViewChannels by @everyone's overwrite and their own.
+    final hidden = {
+      'r-mods': [
+        _overwrite('r-mods', 's-1', deny: Perm.viewChannels),
+        _overwrite('r-mods', _me, type: 1, deny: Perm.viewChannels),
+      ],
+    };
+
+    test('an Administrator keeps every permission in them', () async {
+      await signIn();
+      repository.handleEvent(
+        _event(
+          'SPACE_CREATE',
+          _space(
+            rooms: {'r-mods': _room('r-mods')},
+            roles: {'role-admin': Perm.administrator},
+            mine: ['role-admin'],
+            overwrites: hidden,
+          ),
+        ),
+      );
+      expect(repository.canInRoom('s-1', 'r-mods', Perm.manageChannels), isTrue);
+      expect(repository.canInRoom('s-1', 'r-mods', Perm.viewChannels), isTrue);
+    });
+
+    test('and so does the Space\'s owner', () async {
+      await signIn();
+      repository.handleEvent(
+        _event('SPACE_CREATE', {
+          ..._space(rooms: {'r-mods': _room('r-mods')}, overwrites: hidden),
+          'space': {'id': 's-1', 'name': 'Duvet Official', 'owner_id': _me, 'created_at': _at, 'updated_at': _at},
+          'owner_id': _me,
+        }),
+      );
+      expect(repository.canInRoom('s-1', 'r-mods', Perm.manageChannels), isTrue);
+      expect(repository.canInRoom('s-1', 'r-mods', Perm.viewChannels), isTrue);
+    });
   });
 
   group('rooms in order', () {
