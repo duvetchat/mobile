@@ -2173,8 +2173,8 @@ class DuvetRepository implements ChatRepository {
       (api) => api.uploadProfileImage(
         kind == ProfileImage.avatar ? duvet.ProfileImageKind.avatar : duvet.ProfileImageKind.banner,
         bytes,
-        // shortcut: the API ignored the crop, so duvet-client stopped sending it; the image-uploads branch crops on the device.
         path.split(Platform.pathSeparator).last,
+        (x: crop.x, y: crop.y, w: crop.w, h: crop.h),
       ),
     );
     _setProfile(me);
