@@ -565,9 +565,7 @@ void main() {
           key: [for (final u in value) '${u.name}${u.recording ? ' (recording)' : ''}'],
       };
       void typed(String type, String userId, String username) {
-        repository.handleEvent(
-          _event(type, {'conversation_id': 'c-1', 'user_id': userId, 'username': username}),
-        );
+        repository.handleEvent(_event(type, {'conversation_id': 'c-1', 'user_id': userId, 'username': username}));
         async.flushMicrotasks();
       }
 
