@@ -48,6 +48,9 @@ dependencies:
   flutter_secure_storage: ^11.2.0
   flutter_svg: ^2.3.0
   image_picker: ^1.2.4
+  # To pick from Android's Photo Picker everywhere (main.dart).
+  image_picker_android: ^0.8.13+25
+  image_picker_platform_interface: ^2.11.2
   url_launcher: ^6.3.3
   video_player: ^2.14.1
   just_audio: ^0.10.6
@@ -71,7 +74,7 @@ dependencies:
 
 # Until duvet_client 1.0.1 is on pub.dev (SPACE_CREATE's member_statuses, a
 # message `count`), and the version after it (its CHANGELOG's Unreleased: bios,
-# setStatus).
+# setStatus, upload progress, uploadProfileImage without a crop).
 dependency_overrides:
   duvet_client:
     path: ../duvet-client

@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_localizations/flutter_localizations.dart';
 import 'package:forui/forui.dart';
+import 'package:image_picker_android/image_picker_android.dart';
+import 'package:image_picker_platform_interface/image_picker_platform_interface.dart';
 
 import 'data/appearance.dart';
 import 'data/launchpad.dart';
@@ -19,7 +21,13 @@ import 'tabs.dart';
 import 'theme.dart';
 import 'widgets/chrome.dart';
 
-void main() => runApp(DuvetApp(repository: DuvetRepository()));
+void main() {
+  // Android's Photo Picker for every picture, as Android 16 does anyway: before
+  // it, a pick of photos and GIFs opened the file chooser, and one of a single
+  // picture Google Photos (#77).
+  if (ImagePickerPlatform.instance case final ImagePickerAndroid android) android.useAndroidPhotoPicker = true;
+  runApp(DuvetApp(repository: DuvetRepository()));
+}
 
 class DuvetApp extends StatefulWidget {
   final ChatRepository repository;

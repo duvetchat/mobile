@@ -2167,14 +2167,14 @@ class DuvetRepository implements ChatRepository {
   }
 
   @override
-  Future<void> uploadProfileImage(ProfileImage kind, String path, CropRect crop) async {
+  Future<void> uploadProfileImage(ProfileImage kind, String path, {void Function(double progress)? onProgress}) async {
     final bytes = await File(path).readAsBytes();
     final me = await _attempt(
       (api) => api.uploadProfileImage(
         kind == ProfileImage.avatar ? duvet.ProfileImageKind.avatar : duvet.ProfileImageKind.banner,
         bytes,
         path.split(Platform.pathSeparator).last,
-        (x: crop.x, y: crop.y, w: crop.w, h: crop.h),
+        onProgress: _bytesSent(onProgress),
       ),
     );
     _setProfile(me);
@@ -2292,6 +2292,7 @@ class DuvetRepository implements ChatRepository {
     String? iconPath,
     String? bannerPath,
     bool removeBanner = false,
+    void Function(double progress)? onProgress,
   }) async {
     final removesBanner = removeBanner && bannerPath == null;
     // Pictures, or taking the banner away, go as a form, where the API skips
@@ -2308,6 +2309,7 @@ class DuvetRepository implements ChatRepository {
           icon: iconPath == null ? null : File(iconPath),
           banner: bannerPath == null ? null : File(bannerPath),
           removeBanner: removesBanner,
+          onProgress: _bytesSent(onProgress),
         ),
       );
     } on duvet.DuvetApiException catch (e) {
@@ -2620,11 +2622,18 @@ class DuvetRepository implements ChatRepository {
   }
 
   @override
-  Future<void> addAsset(String spaceId, AssetKind kind, String name, String path) async {
+  Future<void> addAsset(
+    String spaceId,
+    AssetKind kind,
+    String name,
+    String path, {
+    void Function(double progress)? onProgress,
+  }) async {
+    final progress = _bytesSent(onProgress);
     await _explained(
       (api) => kind == AssetKind.emoji
-          ? api.createEmoji(spaceId, name, File(path))
-          : api.createSticker(spaceId, name, File(path)),
+          ? api.createEmoji(spaceId, name, File(path), onProgress: progress)
+          : api.createSticker(spaceId, name, File(path), onProgress: progress),
     );
     _assetsChanged(spaceId);
   }
@@ -3165,3 +3174,7 @@ class DuvetRepository implements ChatRepository {
     collapsedCategories.dispose();
   }
 }
+
+/// [onProgress] (0 to 1) as the client reports it: bytes sent, of a total.
+void Function(int sent, int total)? _bytesSent(void Function(double progress)? onProgress) =>
+    onProgress == null ? null : (sent, total) => onProgress(total == 0 ? 0 : sent / total);

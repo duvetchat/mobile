@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 import 'dart:ui' as ui;
 
@@ -7,6 +8,7 @@ import 'package:duvet/data/models.dart';
 import 'package:duvet/deep_links.dart';
 import 'package:duvet/main.dart';
 import 'package:duvet/space_admin.dart';
+import 'package:duvet/spaces.dart' show pickSpaceIcon;
 import 'package:duvet/theme.dart';
 import 'package:duvet/widgets/chrome.dart';
 import 'package:duvet/widgets/rows.dart' show SpaceBanner;
@@ -254,6 +256,36 @@ void main() {
     await tapLabel(tester, 'Save');
     expect(repository.admin.last, 'space banner=none');
     expect(repository.spaces.value.single.bannerUrl, isNull);
+    semantics.dispose();
+  });
+
+  testWidgets('overview: an icon, cropped square at 256 px as the desktop does; its upload shows how far it is', (
+    tester,
+  ) async {
+    final path = await picture(tester);
+    pickSpaceIcon = () async => path;
+    final squares = <(CropRect, int)>[];
+    saveSquareImage = (path, crop, side) async {
+      squares.add((crop, side));
+      return '/icons/new.png';
+    };
+    final repository = await pumpSettings(tester);
+    await tapLabel(tester, RegExp(r'^Overview'));
+    await tester.tap(find.bySemanticsLabel(RegExp(r'^Icon')).last);
+    await useCrop(tester);
+    // A square of the picture's full height, from its middle.
+    final (crop, side) = squares.single;
+    expect([crop.x, crop.y, crop.w, crop.h, side].map((v) => v.round()), [100, 0, 200, 200, 256]);
+    expect(find.bySemanticsLabel(RegExp(r'^Icon, New one chosen')), findsOneWidget);
+
+    repository.holdUploads = Completer();
+    await tapLabel(tester, 'Save');
+    repository.lastUpload!(0.5);
+    await tester.pump();
+    expect(find.text('Uploading · 50%'), findsOneWidget);
+    repository.holdUploads!.complete();
+    await tester.pumpAndSettle();
+    expect(repository.admin.last, 'space icon=/icons/new.png');
     semantics.dispose();
   });
 
@@ -639,7 +671,16 @@ void main() {
     await tester.tap(find.bySemanticsLabel('Add emoji').last);
     await useCrop(tester);
     await typeName(tester, 'party time!');
+    // The sheet gone, the list says how far the upload is.
+    repository.holdUploads = Completer();
     await tapLabel(tester, 'Add');
+    repository.lastUpload!(0.25);
+    await tester.pump();
+    expect(find.text('Uploading · 25%'), findsOneWidget);
+    repository.holdUploads!.complete();
+    await tester.pumpAndSettle();
+    repository.holdUploads = null;
+    expect(find.textContaining('Uploading'), findsNothing);
     // A square of the picture's full height, from its middle.
     final (picked, crop, side) = squares.single;
     expect((picked, side), (path, 128));

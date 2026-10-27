@@ -1,4 +1,5 @@
 import 'package:clock/clock.dart';
+import 'package:flutter/foundation.dart' show ValueListenable;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:forui/forui.dart';
@@ -297,6 +298,33 @@ class CategoryHeader extends StatelessWidget {
   }
 }
 
+/// A banner's frame, a Space's or a profile's, as the desktop crops one.
+const bannerAspect = 5 / 2;
+
+/// "Uploading · 42%" while [progress] (0 to 1) has a value, as a message's
+/// upload says it; nothing otherwise.
+class UploadNote extends StatelessWidget {
+  final ValueListenable<double?> progress;
+  const UploadNote(this.progress, {super.key});
+
+  @override
+  Widget build(BuildContext context) => ValueListenableBuilder(
+    valueListenable: progress,
+    builder: (context, p, _) => p == null
+        ? const SizedBox.shrink()
+        : Padding(
+            padding: const EdgeInsets.symmetric(vertical: 8),
+            child: Semantics(
+              liveRegion: true,
+              child: Text(
+                'Uploading · ${(p * 100).round()}%',
+                style: DuvetType.caption.copyWith(color: context.theme.colors.mutedForeground),
+              ),
+            ),
+          ),
+  );
+}
+
 /// A Space's banner, 5:2 as the desktop crops it, its corners `radius-card`.
 /// Nothing at all when it can't be had; base-sunken while it comes.
 class SpaceBanner extends StatelessWidget {
@@ -307,7 +335,7 @@ class SpaceBanner extends StatelessWidget {
   Widget build(BuildContext context) => LayoutBuilder(
     builder: (context, constraints) {
       final width = constraints.maxWidth;
-      final height = width / 2.5;
+      final height = width / bannerAspect;
       return ExcludeSemantics(
         child: ClipRRect(
           borderRadius: BorderRadius.circular(DuvetTokens.radiusCard),
