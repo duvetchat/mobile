@@ -2,7 +2,7 @@
 
 _23 October 2026 · Flutter app in `mobile/`, against `duvet_client` 1.0.1 (local, unpublished) and the Duvet design system (`L1t5M8Kr96KAEGfwD1pjEQ`) with the Feature Layouts canvas (`UYB8DxdUxBCcgauVFZshq2`)._
 
-**In short:** every milestone is built. Messaging, media, navigation and search, people, Spaces and invites, account (now with the status, online or do not disturb, and the bio), bots, Space administration, and voice rooms and calls work, laid out to the design system and covered by widget tests. **M8 (voice and calls) is written and tested against fakes, but hasn't run on a device**: WebRTC can't run here. The status, bio editing and Delete Space need the server's 23 October round deployed. Three platform tasks remain: push notifications (which calls need to ring in the background), an accessibility pass, Spanish. A debug build runs on the phone against the live server with no crashes. `TODO.md` has the task list; its **Needs you** section lists what needs a server change, a credential, a Mac or the phone.
+**In short:** every milestone is built. Messaging, media, navigation and search, people, Spaces and invites, account (now with the status, online or do not disturb, and the bio), bots, Space administration, and voice rooms and calls work, laid out to the design system and covered by widget tests. **M8 (voice and calls) is written and tested against fakes, but hasn't run on a device**: WebRTC can't run here. Three platform tasks remain: push notifications (which calls need to ring in the background), an accessibility pass, Spanish. A debug build runs on the phone against the live server with no crashes. `TODO.md` has the task list; its **Needs you** section lists what needs a server change, a credential, a Mac or the phone.
 
 | | |
 |---|---|
@@ -85,11 +85,11 @@ All screens and components in the wireframes and the 37 feature layouts are buil
 
 ## 6. Not verified
 
-- **Voice and calls (M8):** written against the gateway's code and tested with a fake gateway and a fake WebRTC; nothing has carried audio yet. `TODO.md`'s **Needs you** lists the pass to make on the phone, the reviews' checks included: a join made offline, listening with the phone locked, a voice note during a Bluetooth call, signing out in voice, switching rooms, a release build, a TCP-only network. Calls ring only while the app is open (no push yet), and not on a locked screen.
+- **Voice and calls (M8):** written against the gateway's code and tested with a fake gateway and a fake WebRTC; nothing has carried audio yet. The pass to make on the phone, the reviews' checks included, is [#72](https://github.com/duvetchat/mobile/issues/72): a join made offline, listening with the phone locked, a voice note during a Bluetooth call, signing out in voice, switching rooms, a release build, a TCP-only network. Calls ring only while the app is open (no push yet), and not on a locked screen.
 - **Release build:** not built yet; the release keystore is yours to make (see `TODO.md`).
 - **iOS:** configured, never built (needs a Mac).
 - **Sending from the device:** messages, files, voice notes, bot commands and admin changes are tested against the fake repository only.
-- **Status, bio and Delete Space against a server:** they need the API's and the gateway's unmerged branches (`dnd-status`, `space-delete-bio`). They're tested against fakes and mocks of those contracts, which `duvet_client`'s fixtures take from the branches.
+- **Status, bio and Delete Space against a server:** the server has them since its 23 October round was deployed. The app's side is tested against fakes and mocks of those contracts, which `duvet_client`'s fixtures take from the server's code.
 - **CI:** the workflow is written but has never run, since there's no remote here.
 
 ## 7. Left out on purpose
