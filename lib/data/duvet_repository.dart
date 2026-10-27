@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert' show jsonDecode;
 import 'dart:io';
+import 'dart:ui' as ui;
 
 import 'package:clock/clock.dart';
 import 'package:duvet_client/duvet.dart' as duvet;
@@ -2169,14 +2170,20 @@ class DuvetRepository implements ChatRepository {
   @override
   Future<void> uploadProfileImage(ProfileImage kind, String path, {void Function(double progress)? onProgress}) async {
     final bytes = await File(path).readAsBytes();
+    // shortcut: duvet-client main still takes a crop (the API ignores it) and
+    // reports no progress; the picture is cropped on the device, so the crop
+    // is all of it, and progress says only when it's done. duvet-client#13
+    // drops the crop and reports bytes sent: pass _bytesSent(onProgress) then.
+    final (w, h) = await _imageSize(bytes);
     final me = await _attempt(
       (api) => api.uploadProfileImage(
         kind == ProfileImage.avatar ? duvet.ProfileImageKind.avatar : duvet.ProfileImageKind.banner,
         bytes,
         path.split(Platform.pathSeparator).last,
-        onProgress: _bytesSent(onProgress),
+        (x: 0, y: 0, w: w, h: h),
       ),
     );
+    onProgress?.call(1);
     _setProfile(me);
   }
 
@@ -2309,9 +2316,10 @@ class DuvetRepository implements ChatRepository {
           icon: iconPath == null ? null : File(iconPath),
           banner: bannerPath == null ? null : File(bannerPath),
           removeBanner: removesBanner,
-          onProgress: _bytesSent(onProgress),
         ),
       );
+      // shortcut: as uploadProfileImage's, until duvet-client#13 reports bytes sent.
+      if (multipart) onProgress?.call(1);
     } on duvet.DuvetApiException catch (e) {
       // E.g. 422: pictures need the Space to have a storage bucket.
       if (e.statusCode == 400 || e.statusCode == 422) {
@@ -2686,12 +2694,13 @@ class DuvetRepository implements ChatRepository {
     String path, {
     void Function(double progress)? onProgress,
   }) async {
-    final progress = _bytesSent(onProgress);
+    // shortcut: as uploadProfileImage's, until duvet-client#13 reports bytes sent.
     await _explained(
       (api) => kind == AssetKind.emoji
-          ? api.createEmoji(spaceId, name, File(path), onProgress: progress)
-          : api.createSticker(spaceId, name, File(path), onProgress: progress),
+          ? api.createEmoji(spaceId, name, File(path))
+          : api.createSticker(spaceId, name, File(path)),
     );
+    onProgress?.call(1);
     _assetsChanged(spaceId);
   }
 
@@ -3250,6 +3259,17 @@ class DuvetRepository implements ChatRepository {
   }
 }
 
-/// [onProgress] (0 to 1) as the client reports it: bytes sent, of a total.
-void Function(int sent, int total)? _bytesSent(void Function(double progress)? onProgress) =>
-    onProgress == null ? null : (sent, total) => onProgress(total == 0 ? 0 : sent / total);
+/// A picture's width and height, read from its header; zero when it can't be
+/// read (the API ignores the crop they make).
+Future<(int, int)> _imageSize(Uint8List bytes) async {
+  try {
+    final buffer = await ui.ImmutableBuffer.fromUint8List(bytes);
+    final image = await ui.ImageDescriptor.encoded(buffer);
+    final size = (image.width, image.height);
+    image.dispose();
+    buffer.dispose();
+    return size;
+  } catch (_) {
+    return (0, 0);
+  }
+}
