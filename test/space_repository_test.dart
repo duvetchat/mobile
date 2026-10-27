@@ -12,6 +12,8 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
 
+import 'support/eventually.dart';
+
 const _me = '00000000-0000-4000-8000-000000000001';
 const _maya = '00000000-0000-4000-8000-000000000002';
 const _leo = '00000000-0000-4000-8000-000000000003';
@@ -1787,7 +1789,7 @@ void main() {
       repository.setCategoryCollapsed('c-empty', true);
       repository.setCategoryCollapsed('c-empty', false);
       // The cache writes a moment after the changes.
-      await Future<void>.delayed(const Duration(milliseconds: 700));
+      await eventually(() => expect(cache.data.keys, contains('collapsed')));
 
       final next = again();
       addTearDown(next.dispose);
@@ -1811,7 +1813,7 @@ void main() {
       first.handleEvent(_event('SPACE_CREATE', guild()));
       first.setCategoryCollapsed('c-talk', true);
       // The home and the folds write a moment after.
-      await Future<void>.delayed(const Duration(milliseconds: 700));
+      await eventually(() => expect(cache.data.keys, containsAll(['home', 'collapsed'])));
 
       // The server out of reach: the session opens from what's saved.
       routes[('GET', '/api/users/@me')] = (_) => throw const SocketException('no network');
@@ -1844,7 +1846,7 @@ void main() {
     test('signing out forgets them', () async {
       await signIn();
       repository.setCategoryCollapsed('c-talk', true);
-      await Future<void>.delayed(const Duration(milliseconds: 700));
+      await eventually(() => expect(cache.data.keys, contains('collapsed')));
       await repository.logOut();
       expect(repository.collapsedCategories.value, isEmpty);
 

@@ -14,6 +14,8 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
 
+import 'support/eventually.dart';
+
 const _me = '00000000-0000-4000-8000-000000000001';
 const _maya = '00000000-0000-4000-8000-000000000002';
 const _leo = '00000000-0000-4000-8000-000000000003';
@@ -464,8 +466,7 @@ void main() {
     await repository.logIn('gaby@duvet.chat', 'secret');
     await repository.messages(const ConversationTarget('c-1'));
     // The cache writes a moment after the changes.
-    await Future<void>.delayed(const Duration(milliseconds: 700));
-    expect(cache.data.keys, containsAll(['home', 'chat_c-1']));
+    await eventually(() => expect(cache.data.keys, containsAll(['home', 'chat_c-1'])));
 
     final offline = DuvetRepository(
       store: store,
@@ -798,7 +799,7 @@ void main() {
     test('opened offline after a renewal at launch, it goes on with the renewed tokens', () async {
       // A session that loaded once, which the cache opens offline.
       await repository.logIn('gaby@duvet.chat', 'secret');
-      await Future<void>.delayed(const Duration(milliseconds: 700));
+      await eventually(() => expect(cache.data.keys, contains('home')));
       await store.write((token: 'access-1', sessionToken: 'refresh-1', refreshedAt: null));
       meUnreachable = true;
       final offline = newRepository();
@@ -815,7 +816,7 @@ void main() {
 
     test('opened offline, back in front it tries the server again at once', () async {
       await repository.logIn('gaby@duvet.chat', 'secret');
-      await Future<void>.delayed(const Duration(milliseconds: 700));
+      await eventually(() => expect(cache.data.keys, contains('home')));
       var reachable = false;
       final asked = <String>[];
       final offline = DuvetRepository(
