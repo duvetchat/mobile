@@ -20,8 +20,10 @@ import 'login.dart';
 import 'tabs.dart';
 import 'theme.dart';
 import 'widgets/chrome.dart';
+import 'widgets/scrolling.dart';
 
 void main() {
+  DuvetBinding();
   // Android's Photo Picker for every picture, as Android 16 does anyway: before
   // it, a pick of photos and GIFs opened the file chooser, and one of a single
   // picture Google Photos (#77).
@@ -97,6 +99,7 @@ class _DuvetAppState extends State<DuvetApp> {
         voice: _voice,
         child: MaterialApp(
           debugShowCheckedModeBanner: false,
+          scrollBehavior: const DuvetScrollBehavior(),
           // forui's list brings material_ui's and cupertino_ui's localizations; the framework's widgets
           // (TextField first) read their own, which only English has without these, and fail to build.
           localizationsDelegates: const [

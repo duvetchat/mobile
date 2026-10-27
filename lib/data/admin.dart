@@ -137,8 +137,14 @@ class SpaceRole {
   final String id;
   final String name;
 
-  /// RGB, or null for the default ink.
+  /// RGB, or null for the default ink: a solid color, or a gradient's
+  /// start.
   final int? color;
+
+  /// A gradient's middle (optional) and end, left to right, in RGB; without
+  /// [colorTo] the color is solid.
+  final int? colorVia;
+  final int? colorTo;
   final int perms;
   final int position;
   final int memberCount;
@@ -152,13 +158,22 @@ class SpaceRole {
     required this.id,
     required this.name,
     this.color,
+    this.colorVia,
+    this.colorTo,
     this.perms = 0,
     this.position = 0,
     this.memberCount = 0,
     this.everyone = false,
     this.hoisted = false,
   });
+
+  /// Its colors as one value, to compare and to save.
+  RoleColors get colors => (from: color, via: colorVia, to: colorTo);
 }
+
+/// A role's color: none (no [from]), solid ([from] alone), or a gradient
+/// from [from] through [via] to [to], always left to right.
+typedef RoleColors = ({int? from, int? via, int? to});
 
 enum AdminRoomKind { text, voice, category }
 

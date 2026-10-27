@@ -260,6 +260,7 @@ class DuvetTokens {
   static const radiusSheet = 24.0;
 
   static const sizeRow = 72.0;
+  static const sizeRowCompact = 44.0;
   static const sizeTopBar = 52.0;
   static const sizeTabBar = 56.0;
 

@@ -202,7 +202,8 @@ void main() {
     await tester.pumpAndSettle();
     expect(find.text('@gaby'), findsOneWidget);
 
-    await tester.ensureVisible(find.text('Sign out'));
+    // Below the fold, so not built yet: dragged into view.
+    await tester.dragUntilVisible(find.text('Sign out'), find.text('@gaby'), const Offset(0, -200));
     await tester.pumpAndSettle();
     await tester.tap(find.text('Sign out'));
     await tester.pumpAndSettle();

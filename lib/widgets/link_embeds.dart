@@ -133,12 +133,26 @@ class _MessageLinkCardState extends State<MessageLinkCard> {
                         ],
                       ),
                       const SizedBox(height: 4),
-                      Text(
-                        m.content.isEmpty ? repository.previewOf(m) : repository.previewOf(m),
-                        maxLines: 2,
-                        overflow: TextOverflow.ellipsis,
-                        style: DuvetType.snippet.copyWith(color: colors.foreground),
-                      ),
+                      if (m.content.isEmpty)
+                        Text(
+                          repository.previewOf(m),
+                          maxLines: 2,
+                          overflow: TextOverflow.ellipsis,
+                          style: DuvetType.snippet.copyWith(color: colors.foreground),
+                        )
+                      else
+                        // Its markdown as the chat shows it, cut off past a few lines.
+                        ConstrainedBox(
+                          constraints: const BoxConstraints(maxHeight: 120),
+                          child: SingleChildScrollView(
+                            physics: const NeverScrollableScrollPhysics(),
+                            child: MessageText(
+                              content: m.content,
+                              directory: widget.directory,
+                              style: DuvetType.snippet.copyWith(color: colors.foreground),
+                            ),
+                          ),
+                        ),
                       const SizedBox(height: 8),
                       Row(
                         children: [
