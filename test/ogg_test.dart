@@ -131,12 +131,30 @@ void main() {
       ),
       isNull,
     );
-    // Cut short.
-    final headers = _file([
+    // Cut short, in its last page.
+    final whole = _file([
       _page(2, 0, 0, [_head]),
       _page(0, 0, 1, [_tags]),
+      _page(0, 0, 2, [_frame]),
     ]);
-    expect(repairOggOpus(Uint8List.sublistView(headers, 0, 40)), isNull);
+    expect(repairOggOpus(whole), isNotNull);
+    expect(repairOggOpus(Uint8List.sublistView(whole, 0, whole.length - 1)), isNull);
+  });
+
+  test('the Ogg CRC: the check value of its parameters', () {
+    expect(oggCrc(Uint8List.fromList(ascii.encode('123456789'))), 0x89a1897f);
+  });
+
+  test('only an Ogg recording is repaired before it goes up', () {
+    final android = _file([
+      _page(2, 0, 0, [_head]),
+      _page(0, 0, 1, [_tags]),
+      _page(0, 0, 2, [_frame]),
+    ]);
+    expect(_pagesOf(recordingToUpload(android, 'ogg')).map((p) => p.granule), [0, 0, 960]);
+    expect(recordingToUpload(android, 'm4a'), same(android));
+    final wav = Uint8List.fromList(ascii.encode('RIFF....WAVEfmt '));
+    expect(recordingToUpload(wav, 'ogg'), same(wav));
   });
 
   test('a packet\'s samples at 48 kHz come from its TOC byte', () {

@@ -1,3 +1,4 @@
+import 'dart:math' as math;
 import 'dart:typed_data';
 
 // Ogg Opus as Android's MediaMuxer writes it (the voice recorder, on Android 10 and later): each page carries its
@@ -22,7 +23,7 @@ int oggCrc(Uint8List bytes) {
 }
 
 /// How many samples, at 48 kHz, an Opus packet decodes to, from its TOC byte (RFC 6716, 3.1).
-int opusSamples(Uint8List packet) {
+int opusSamples(List<int> packet) {
   final config = packet[0] >> 3;
   // A frame's length, in tenths of a millisecond.
   final tenths = config < 12
@@ -41,14 +42,20 @@ int opusSamples(Uint8List packet) {
   return frames * tenths * 48 ~/ 10;
 }
 
+/// The bytes of a recording to upload: an Ogg one repaired ([repairOggOpus]) when it can be, any other as it is.
+Uint8List recordingToUpload(Uint8List bytes, String format) => format == 'ogg' ? repairOggOpus(bytes) ?? bytes : bytes;
+
 /// The recording with each page's granule position at the end of the last packet it completes (pre-skip included, -1
 /// on a page that completes none), the last page ending the stream, and the CRCs computed again; null when it isn't
-/// one whole Ogg Opus stream.
+/// whole Ogg pages of one stream, the first packet OpusHead, with three packets at least.
 Uint8List? repairOggOpus(Uint8List input) {
   final data = Uint8List.fromList(input);
   final view = ByteData.sublistView(data);
   final pages = <({int at, int length, int completes, int samples})>[];
-  final packet = <int>[];
+  // Of the packet being read, only what's needed of it: its first eight bytes (OpusHead's magic, or a TOC byte and a
+  // frame count) and its length, so that a file of one huge packet takes no more memory than any other.
+  var head = <int>[];
+  var packetLength = 0;
   var packets = 0;
   var pos = 0;
   while (pos < data.length) {
@@ -66,15 +73,16 @@ Uint8List? repairOggOpus(Uint8List input) {
     var samples = 0;
     for (var i = 0; i < segments; i++) {
       final size = data[pos + 27 + i];
-      packet.addAll(Uint8List.sublistView(data, body, body + size));
+      if (head.length < 8) head.addAll(Uint8List.sublistView(data, body, body + math.min(size, 8 - head.length)));
+      packetLength += size;
       body += size;
       if (size < 255) {
-        final bytes = Uint8List.fromList(packet);
-        if (packets == 0 && String.fromCharCodes(bytes.take(8)) != 'OpusHead') return null;
-        if (packets >= 2 && bytes.isNotEmpty) samples += opusSamples(bytes);
+        if (packets == 0 && String.fromCharCodes(head) != 'OpusHead') return null;
+        if (packets >= 2 && packetLength > 0) samples += opusSamples(head);
         packets++;
         completes++;
-        packet.clear();
+        head = [];
+        packetLength = 0;
       }
     }
     pages.add((at: pos, length: end - pos, completes: completes, samples: samples));

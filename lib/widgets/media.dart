@@ -684,8 +684,7 @@ class RecordVoiceRecorder implements VoiceRecorder {
     final bytes = await file.readAsBytes();
     unawaited(file.delete().then((_) {}, onError: (_) {}));
     // Android's Ogg muxer puts each packet's start where its end goes, which Firefox rejects (data/ogg.dart).
-    final audio = _format == 'ogg' ? repairOggOpus(bytes) ?? bytes : bytes;
-    return (bytes: audio, format: _format, length: DateTime.now().difference(started));
+    return (bytes: recordingToUpload(bytes, _format), format: _format, length: DateTime.now().difference(started));
   }
 
   @override
