@@ -123,6 +123,10 @@ class Cushion extends StatelessWidget {
   final List<BoxShadow>? shadows;
   final Clip clipBehavior;
 
+  /// The fill; the theme's card unless the cushion sits on something else,
+  /// such as a sheet ([DuvetTokensContext.cushionOnSheet]).
+  final Color? color;
+
   const Cushion({
     required this.child,
     this.width,
@@ -132,6 +136,7 @@ class Cushion extends StatelessWidget {
     this.radius = DuvetTokens.radiusCard,
     this.shadows,
     this.clipBehavior = Clip.none,
+    this.color,
     super.key,
   });
 
@@ -145,7 +150,7 @@ class Cushion extends StatelessWidget {
       margin: margin,
       clipBehavior: clipBehavior,
       decoration: BoxDecoration(
-        color: context.theme.colors.card,
+        color: color ?? context.theme.colors.card,
         borderRadius: shape,
         boxShadow: shadows ?? tokens.shadowRest,
       ),

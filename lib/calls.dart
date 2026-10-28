@@ -194,18 +194,16 @@ class _CallScreenState extends State<CallScreen> with _Ticking {
                         leaveLabel: 'Hang up',
                         leaveSemanticLabel: 'Hang up the call',
                       )
-                    : GlassChrome(
-                        top: false,
-                        child: Padding(
-                          padding: EdgeInsets.fromLTRB(16, 12, 16, 12 + media.padding.bottom),
-                          child: Center(
-                            child: VoiceButton(
-                              icon: FLucideIcons.phoneOff,
-                              label: call.phase == CallPhase.calling ? 'Cancel' : 'Hang up',
-                              semanticLabel: call.phase == CallPhase.calling ? 'Cancel the call' : 'Hang up the call',
-                              destructive: true,
-                              onPressed: voice.hangUp,
-                            ),
+                    // Not in its voice yet: Cancel or Hang up alone, on the
+                    // same floating dock as the controls.
+                    : VoiceDock(
+                        child: Center(
+                          child: VoiceButton(
+                            icon: FLucideIcons.phoneOff,
+                            label: call.phase == CallPhase.calling ? 'Cancel' : 'Hang up',
+                            semanticLabel: call.phase == CallPhase.calling ? 'Cancel the call' : 'Hang up the call',
+                            destructive: true,
+                            onPressed: voice.hangUp,
                           ),
                         ),
                       ),
@@ -305,13 +303,15 @@ class _IncomingCallScreenState extends State<IncomingCallScreen> {
                   const Spacer(),
                   ExcludeSemantics(
                     // A DM's avatar is the caller's; a group's call shows its caller's.
-                    child: UserAvatar(
-                      name: call.initiatorName,
-                      url: group ? repository.avatarUrl(call.initiatorAvatar) : summary?.avatarUrl,
-                      size: 120,
+                    child: _BreathingRing(
+                      child: UserAvatar(
+                        name: call.initiatorName,
+                        url: group ? repository.avatarUrl(call.initiatorAvatar) : summary?.avatarUrl,
+                        size: 160,
+                      ),
                     ),
                   ),
-                  const SizedBox(height: 24),
+                  const SizedBox(height: 32),
                   Semantics(
                     header: true,
                     liveRegion: true,
@@ -338,28 +338,35 @@ class _IncomingCallScreenState extends State<IncomingCallScreen> {
                     ),
                   ),
                   const Spacer(flex: 2),
-                  Row(
-                    mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-                    children: [
-                      _AnswerButton(
-                        icon: FLucideIcons.phoneOff,
-                        label: 'Decline',
-                        semanticLabel: 'Decline the call',
-                        color: colors.destructive,
-                        ink: colors.destructiveForeground,
-                        onPressed: voice.declineCall,
-                      ),
-                      _AnswerButton(
-                        icon: FLucideIcons.phone,
-                        label: 'Accept',
-                        semanticLabel: 'Accept the call',
-                        color: colors.primary,
-                        ink: colors.primaryForeground,
-                        onPressed: voice.acceptCall,
-                      ),
-                    ],
+                  Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 24),
+                    child: Row(
+                      children: [
+                        Expanded(
+                          child: _AnswerButton(
+                            icon: FLucideIcons.phoneOff,
+                            label: 'Decline',
+                            semanticLabel: 'Decline the call',
+                            color: colors.destructive,
+                            ink: colors.destructiveForeground,
+                            onPressed: voice.declineCall,
+                          ),
+                        ),
+                        const SizedBox(width: 16),
+                        Expanded(
+                          child: _AnswerButton(
+                            icon: FLucideIcons.phone,
+                            label: 'Accept',
+                            semanticLabel: 'Accept the call',
+                            color: colors.primary,
+                            ink: colors.primaryForeground,
+                            onPressed: voice.acceptCall,
+                          ),
+                        ),
+                      ],
+                    ),
                   ),
-                  const SizedBox(height: 48),
+                  const SizedBox(height: 32),
                 ],
               ),
             ),
@@ -370,8 +377,63 @@ class _IncomingCallScreenState extends State<IncomingCallScreen> {
   }
 }
 
-/// Accept and Decline: 72pt filled rounded squares, Accept the screen's
-/// accent.
+/// The caller's face in a ring of ice, what's alive, breathing slowly while
+/// the call rings; still where animations are off.
+class _BreathingRing extends StatefulWidget {
+  final Widget child;
+  const _BreathingRing({required this.child});
+
+  @override
+  State<_BreathingRing> createState() => _BreathingRingState();
+}
+
+class _BreathingRingState extends State<_BreathingRing> with SingleTickerProviderStateMixin {
+  late final _breath = AnimationController(vsync: this, duration: const Duration(milliseconds: 2400), value: 0.5);
+  late final _curve = CurvedAnimation(parent: _breath, curve: Curves.easeInOut);
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    if (MediaQuery.disableAnimationsOf(context)) {
+      _breath
+        ..stop()
+        ..value = 0.5;
+    } else if (!_breath.isAnimating) {
+      _breath.repeat(reverse: true);
+    }
+  }
+
+  @override
+  void dispose() {
+    _curve.dispose();
+    _breath.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final alive = context.duvet.alive;
+    return AnimatedBuilder(
+      animation: _curve,
+      builder: (context, child) {
+        final t = _curve.value;
+        return Container(
+          padding: EdgeInsets.all(10 + 6 * t),
+          decoration: BoxDecoration(
+            shape: BoxShape.circle,
+            color: alive.withValues(alpha: 0.08 + 0.08 * t),
+            border: Border.all(color: alive.withValues(alpha: 0.45 + 0.4 * t), width: 3),
+          ),
+          child: child,
+        );
+      },
+      child: Padding(padding: const EdgeInsets.all(6), child: widget.child),
+    );
+  }
+}
+
+/// Accept and Decline: big cushions side by side, filled (Accept the
+/// screen's accent), the icon over the word.
 class _AnswerButton extends StatelessWidget {
   final IconData icon;
   final String label;
@@ -400,27 +462,29 @@ class _AnswerButton extends StatelessWidget {
       onTap: onPressed,
       child: Pressable(
         onTap: onPressed,
-        builder: (context, pressed) => Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            AnimatedContainer(
-              duration: pressed ? DuvetTokens.pressIn : DuvetTokens.pressOut,
-              width: 72,
-              height: 72,
-              decoration: BoxDecoration(
-                color: color,
-                borderRadius: radius,
-                boxShadow: pressed ? null : tokens.shadowControl,
-              ),
-              child: InsetShadow(
-                shadows: pressed ? tokens.shadowPressed : const [],
-                borderRadius: radius,
-                child: Center(child: Icon(icon, size: 32, color: ink)),
-              ),
+        builder: (context, pressed) => AnimatedContainer(
+          duration: pressed ? DuvetTokens.pressIn : DuvetTokens.pressOut,
+          height: 96,
+          decoration: BoxDecoration(
+            color: color,
+            borderRadius: radius,
+            boxShadow: pressed ? null : tokens.shadowControl,
+          ),
+          child: InsetShadow(
+            shadows: pressed ? tokens.shadowPressed : tokens.cushionAccent,
+            borderRadius: radius,
+            child: Column(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                Icon(icon, size: 30, color: ink),
+                const SizedBox(height: 6),
+                Text(
+                  label,
+                  style: DuvetType.label.copyWith(color: ink, fontWeight: FontWeight.w700),
+                ),
+              ],
             ),
-            const SizedBox(height: 8),
-            Text(label, style: DuvetType.label.copyWith(color: context.theme.colors.foreground)),
-          ],
+          ),
         ),
       ),
     );
@@ -632,10 +696,16 @@ class _VoiceListenerState extends State<VoiceListener> {
   Widget build(BuildContext context) => widget.child;
 }
 
-/// The Calls tab's list: the calls this phone saw, the newest first. Duvet
-/// keeps no call history, so this phone's is all there is.
+/// The Calls tab's list: the calls this phone saw, the newest first. The
+/// calls missed in the last week go first, under Missed, each on a cushion
+/// with its Call back; the rest under their day. Duvet keeps no call
+/// history, so this phone's is all there is.
 class CallHistoryList extends StatelessWidget {
   const CallHistoryList({super.key});
+
+  /// How long a missed call stays under Missed. This phone doesn't keep when
+  /// the list was last seen, so a week stands in for "since then".
+  static const missedFor = Duration(days: 7);
 
   static String describe(CallRecord c) => switch (c.outcome) {
     CallOutcome.answered => [
@@ -661,12 +731,31 @@ class CallHistoryList extends StatelessWidget {
         if (calls.isEmpty) {
           return const SliverFillRemaining(hasScrollBody: false, child: EmptyState(text: 'No calls yet'));
         }
+        // The voice's clock, which stamped the calls.
+        final now = voice.now();
+        bool fresh(CallRecord c) => c.outcome == CallOutcome.missed && now.difference(c.at) < missedFor;
+        // Headers ("Missed", "Today", "Monday, 20 October") and the calls under them.
+        final items = <Object>[];
+        if (calls.where(fresh).toList() case final missed when missed.isNotEmpty) {
+          items
+            ..add('Missed')
+            ..addAll(missed);
+        }
+        String? day;
+        for (final c in calls) {
+          if (fresh(c)) continue;
+          final label = dayLabel(c.at.toLocal(), now);
+          if (label != day) items.add(day = label);
+          items.add(c);
+        }
         return SliverPadding(
           padding: const EdgeInsets.only(top: 8),
           sliver: SliverList.builder(
-            itemCount: calls.length,
+            itemCount: items.length,
             itemBuilder: (context, i) {
-              final c = calls[i];
+              final item = items[i];
+              if (item is String) return Overline(item);
+              final c = item as CallRecord;
               final summary = summaries[c.conversationId];
               final title = summary?.title ?? c.title;
               return _CallRow(
@@ -674,6 +763,8 @@ class CallHistoryList extends StatelessWidget {
                 call: c,
                 title: title,
                 avatarUrl: summary?.isGroup == true ? null : summary?.avatarUrl,
+                missed: fresh(c),
+                now: now,
                 onOpen: () => openChat(context, ConversationTarget(c.conversationId), title),
                 // As the banner's Join, it waits for someone to answer the
                 // user's own call ringing from another device.
@@ -689,24 +780,53 @@ class CallHistoryList extends StatelessWidget {
   }
 }
 
+/// A call in the list. Missed lately, it reads like an unread chat (a
+/// cushion, its name in weight, never a dot) with Call back on it; under its
+/// day, it lies flat with the time it was, and a plain Call.
 class _CallRow extends StatelessWidget {
   final CallRecord call;
   final String title;
   final String? avatarUrl;
+  final bool missed;
+  final DateTime now;
   final VoidCallback onOpen;
   final VoidCallback? onCall;
   const _CallRow({
     required this.call,
     required this.title,
     required this.avatarUrl,
+    required this.missed,
+    required this.now,
     required this.onOpen,
     required this.onCall,
     super.key,
   });
 
+  static const _callBackWidth = 112.0;
+
   @override
   Widget build(BuildContext context) {
-    final missed = call.outcome == CallOutcome.missed;
+    final at = call.at.toLocal();
+    if (missed) {
+      return Stack(
+        alignment: Alignment.centerRight,
+        children: [
+          ListRow(
+            leading: UserAvatar(name: title, url: avatarUrl, size: 48),
+            title: title,
+            snippet: CallHistoryList.describe(call),
+            trailing: shortTime(at, now: now),
+            unread: true,
+            endInset: _callBackWidth + 8,
+            onTap: onOpen,
+          ),
+          Positioned(
+            right: 16,
+            child: _CallBack(label: 'Call $title', width: _callBackWidth, onPressed: onCall),
+          ),
+        ],
+      );
+    }
     return Row(
       children: [
         Expanded(
@@ -714,9 +834,8 @@ class _CallRow extends StatelessWidget {
             leading: UserAvatar(name: title, url: avatarUrl, size: 48),
             title: title,
             snippet: CallHistoryList.describe(call),
-            trailing: shortTime(call.at),
-            // A missed call reads like an unread chat: weight, never a dot.
-            unread: missed,
+            // The day is its header's.
+            trailing: '${at.hour.toString().padLeft(2, '0')}:${at.minute.toString().padLeft(2, '0')}',
             onTap: onOpen,
           ),
         ),
@@ -729,11 +848,69 @@ class _CallRow extends StatelessWidget {
   }
 }
 
-/// A conversation's call, in its chat's top bar: "Call in progress", with
-/// who is in it, and Join; "You’re in this call · Open" for the one here; or
-/// "Calling from another device", with nothing to join yet, while the user's
-/// own call still rings the others from there. A `base-sunken` strip, as the
-/// connection banner is.
+/// A missed call's Call back: a 44pt cushion in the accent's tint, on the
+/// call's own; dimmed while there's nothing to call.
+class _CallBack extends StatelessWidget {
+  final String label;
+  final double width;
+  final VoidCallback? onPressed;
+  const _CallBack({required this.label, required this.width, required this.onPressed});
+
+  @override
+  Widget build(BuildContext context) {
+    final tokens = context.duvet;
+    const radius = BorderRadius.all(Radius.circular(DuvetTokens.radiusButton));
+    return Semantics(
+      container: true,
+      button: true,
+      enabled: onPressed != null,
+      label: label,
+      excludeSemantics: true,
+      onTap: onPressed,
+      child: Opacity(
+        opacity: onPressed == null ? 0.5 : 1,
+        child: Pressable(
+          onTap: onPressed,
+          builder: (context, pressed) => AnimatedContainer(
+            duration: pressed ? DuvetTokens.pressIn : DuvetTokens.pressOut,
+            width: width,
+            height: 44,
+            decoration: BoxDecoration(color: tokens.accentTint, borderRadius: radius),
+            child: InsetShadow(
+              shadows: pressed ? tokens.shadowPressed : tokens.cushion,
+              borderRadius: radius,
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  Icon(FLucideIcons.phone, size: 18, color: tokens.accentText),
+                  const SizedBox(width: 6),
+                  Flexible(
+                    child: Text(
+                      'Call back',
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: DuvetType.label.copyWith(
+                        fontSize: 15,
+                        color: tokens.accentText,
+                        fontWeight: FontWeight.w700,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// A conversation's call, in its chat's top bar: who is in it, by their
+/// faces after the ice dot, "Call in progress · Maya", and Join; "You’re in
+/// this call · Open" for the one here; or "Calling from another device",
+/// with nothing to join yet, while the user's own call still rings the
+/// others from there.
 class CallBanner extends StatelessWidget {
   final String conversationId;
   const CallBanner({required this.conversationId, super.key});
@@ -745,7 +922,6 @@ class CallBanner extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final voice = context.voice;
-    final colors = context.theme.colors;
     final mine = voice.call?.conversationId == conversationId && voice.call?.phase != CallPhase.ringing;
     final elsewhere = callingElsewhere(voice, conversationId);
     final text = mine
@@ -755,36 +931,15 @@ class CallBanner extends StatelessWidget {
         : voice.participants(conversationId).isEmpty
         ? 'Call in progress'
         : 'Call in progress · ${voiceSnippet(context.repository, voice, conversationId)}';
-    const radius = BorderRadius.all(Radius.circular(DuvetTokens.radiusField));
-    return Container(
-      height: 36,
-      padding: EdgeInsets.only(left: 12, right: elsewhere ? 12 : 0),
-      decoration: BoxDecoration(color: colors.secondary, borderRadius: radius),
-      child: InsetShadow(
-        shadows: context.duvet.shadowWell,
-        borderRadius: radius,
-        child: Row(
-          children: [
-            ExcludeSemantics(child: Icon(FLucideIcons.phoneCall, size: 16, color: colors.foreground)),
-            const SizedBox(width: 8),
-            Expanded(
-              child: Text(
-                text,
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-                style: DuvetType.caption.copyWith(color: colors.foreground),
-              ),
-            ),
-            // The user's voice would be in it alone: the device that placed
-            // it joins at the first answer.
-            if (!elsewhere)
-              TextAction(
-                label: mine ? 'Open' : 'Join',
-                onPressed: () => mine ? openCall(context, conversationId) : callConversation(context, conversationId),
-              ),
-          ],
-        ),
-      ),
+    return LiveStrip(
+      people: voicePeople(context.repository, voice, conversationId),
+      text: text,
+      // The user's voice would be in it alone: the device that placed it
+      // joins at the first answer.
+      action: elsewhere ? null : (mine ? 'Open' : 'Join'),
+      onAction: elsewhere
+          ? null
+          : () => mine ? openCall(context, conversationId) : callConversation(context, conversationId),
     );
   }
 }

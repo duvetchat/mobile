@@ -9,16 +9,20 @@ import 'data/models.dart';
 import 'data/repository.dart';
 import 'data/scope.dart';
 import 'people.dart' show PersonRow;
-import 'tabs.dart' show SpaceDirectory;
+import 'tabs.dart' show SpaceDirectory, voiceSnippet;
+import 'voice_room.dart' show openVoiceRoom;
 import 'theme.dart';
 import 'widgets/avatar.dart';
 import 'widgets/chrome.dart';
 import 'widgets/glass.dart';
+import 'widgets/mascot.dart';
 import 'widgets/rows.dart';
 
-/// [text] with each place [query]'s words match in Bold `accent-text`: never a
-/// block or a yellow highlight.
-List<InlineSpan> highlighted(String text, String query, Color accent) {
+/// [text] with each place [query]'s words match in Bold [accent], as Global
+/// Search marks them: never a yellow highlight. With [tint], on it too (the
+/// `accent-tint` behind a hit in one chat's search, where the match is the
+/// point of each row).
+List<InlineSpan> highlighted(String text, String query, Color accent, {Color? tint}) {
   final words = query.toLowerCase().split(RegExp(r'\s+')).where((w) => w.isNotEmpty).toList();
   if (words.isEmpty) return [TextSpan(text: text)];
   final lower = text.toLowerCase();
@@ -39,7 +43,7 @@ List<InlineSpan> highlighted(String text, String query, Color accent) {
         marks[start]
             ? TextSpan(
                 text: part,
-                style: TextStyle(color: accent, fontWeight: FontWeight.w700),
+                style: TextStyle(color: accent, fontWeight: FontWeight.w700, backgroundColor: tint),
               )
             : TextSpan(text: part),
       );
@@ -49,13 +53,22 @@ List<InlineSpan> highlighted(String text, String query, Color accent) {
   return spans;
 }
 
-/// A search result: who, when, and the message with its matches marked.
+/// A search result: who, when, and the message with its matches marked;
+/// [tinted], on the `accent-tint` too.
 class SearchResultRow extends StatelessWidget {
   final ChatMessage message;
   final String query;
   final String? where;
+  final bool tinted;
   final VoidCallback onTap;
-  const SearchResultRow({required this.message, required this.query, required this.onTap, this.where, super.key});
+  const SearchResultRow({
+    required this.message,
+    required this.query,
+    required this.onTap,
+    this.where,
+    this.tinted = false,
+    super.key,
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -108,7 +121,11 @@ class SearchResultRow extends StatelessWidget {
                       ],
                     ),
                     Text.rich(
-                      TextSpan(children: highlighted(text, query, tokens.accentText)),
+                      TextSpan(
+                        children: tinted
+                            ? highlighted(text, query, colors.foreground, tint: tokens.accentTint)
+                            : highlighted(text, query, tokens.accentText),
+                      ),
                       maxLines: 2,
                       overflow: TextOverflow.ellipsis,
                       style: DuvetType.snippet.copyWith(color: colors.foreground),
@@ -239,6 +256,7 @@ class _InChatSearchState extends State<InChatSearch> {
                         message: h.message,
                         query: _query.text,
                         where: _wholeSpace ? _roomName(h.target) : null,
+                        tinted: true,
                         onTap: () => Navigator.of(context).pop(h),
                       ),
                   ],
@@ -269,10 +287,17 @@ class _InChatSearchState extends State<InChatSearch> {
                           excludeSemantics: true,
                           onTap: () => Navigator.of(context).pop(),
                           child: GestureDetector(
+                            behavior: HitTestBehavior.opaque,
                             onTap: () => Navigator.of(context).pop(),
-                            child: Padding(
-                              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 10),
-                              child: Text('Cancel', style: DuvetType.label.copyWith(color: tokens.accentText)),
+                            child: SizedBox(
+                              height: 44,
+                              child: Padding(
+                                padding: const EdgeInsets.symmetric(horizontal: 8),
+                                child: Center(
+                                  widthFactor: 1,
+                                  child: Text('Cancel', style: DuvetType.label.copyWith(color: tokens.accentText)),
+                                ),
+                              ),
                             ),
                           ),
                         ),
@@ -281,18 +306,30 @@ class _InChatSearchState extends State<InChatSearch> {
                     const SizedBox(height: 8),
                     Row(
                       children: [
-                        _Toggle(
+                        DuvetChip(
                           label: 'Has file',
-                          on: _hasFile,
+                          selected: _hasFile,
+                          radio: false,
+                          leading: Icon(
+                            FLucideIcons.paperclip,
+                            size: 16,
+                            color: _hasFile ? tokens.chosenText : colors.mutedForeground,
+                          ),
                           onTap: () {
                             setState(() => _hasFile = !_hasFile);
                             _run();
                           },
                         ),
                         const SizedBox(width: 8),
-                        _Toggle(
+                        DuvetChip(
                           label: 'Pinned',
-                          on: _pinned,
+                          selected: _pinned,
+                          radio: false,
+                          leading: Icon(
+                            FLucideIcons.pin,
+                            size: 16,
+                            color: _pinned ? tokens.chosenText : colors.mutedForeground,
+                          ),
                           onTap: () {
                             setState(() => _pinned = !_pinned);
                             _run();
@@ -334,9 +371,10 @@ class _InChatSearchState extends State<InChatSearch> {
                           excludeSemantics: true,
                           onTap: _widen,
                           child: GestureDetector(
+                            behavior: HitTestBehavior.opaque,
                             onTap: _widen,
                             child: SizedBox(
-                              height: 40,
+                              height: 44,
                               child: Center(
                                 child: Text(
                                   'Search all of $_spaceName',
@@ -362,48 +400,6 @@ class _InChatSearchState extends State<InChatSearch> {
   void _widen() {
     setState(() => _wholeSpace = true);
     _run();
-  }
-}
-
-/// A filter chip that turns on and off.
-class _Toggle extends StatelessWidget {
-  final String label;
-  final bool on;
-  final VoidCallback onTap;
-  const _Toggle({required this.label, required this.on, required this.onTap});
-
-  @override
-  Widget build(BuildContext context) {
-    final colors = context.theme.colors;
-    final tokens = context.duvet;
-    return Semantics(
-      container: true,
-      button: true,
-      toggled: on,
-      label: label,
-      excludeSemantics: true,
-      onTap: onTap,
-      child: GestureDetector(
-        onTap: onTap,
-        child: Container(
-          height: 32,
-          padding: const EdgeInsets.symmetric(horizontal: 12),
-          alignment: Alignment.center,
-          decoration: BoxDecoration(
-            color: on ? tokens.chosen : colors.card,
-            borderRadius: BorderRadius.circular(DuvetTokens.radiusChip),
-            boxShadow: tokens.shadowRest,
-          ),
-          child: Text(
-            label,
-            style: DuvetType.snippet.copyWith(
-              color: on ? tokens.chosenText : colors.foreground,
-              fontWeight: on ? FontWeight.w700 : FontWeight.w500,
-            ),
-          ),
-        ),
-      ),
-    );
   }
 }
 
@@ -511,7 +507,6 @@ class _GlobalSearchState extends State<GlobalSearch> {
   Widget _dropdown(BuildContext context) {
     final repository = context.repository;
     final colors = context.theme.colors;
-    final tokens = context.duvet;
     final text = _query.text.trim();
     final q = text.toLowerCase();
     final screen = MediaQuery.sizeOf(context);
@@ -529,27 +524,19 @@ class _GlobalSearchState extends State<GlobalSearch> {
         : repository.spaces.value.where((s) => s.name.toLowerCase().contains(q)).take(5).toList();
     bool show(_Filter f) => _filter == _Filter.all || _filter == f;
 
+    final rooms = q.isEmpty
+        ? const <({Space space, Room room})>[]
+        : [
+            for (final space in repository.spaces.value)
+              for (final room in space.rooms)
+                if (room.name.toLowerCase().contains(q)) (space: space, room: room),
+          ].take(5).toList();
+    // Headers name the kinds while more than one could show.
+    final headed = _filter == _Filter.all || (_filter == _Filter.spaces && rooms.isNotEmpty);
+
+    // By kind: the shapes first, people's circles, then Spaces' and rooms'
+    // rounded squares; the messages, longer, under them.
     final results = <Widget>[
-      if (show(_Filter.messages) && _messages.isNotEmpty) ...[
-        if (_filter == _Filter.all) const Overline('Messages'),
-        for (final h in _messages)
-          SearchResultRow(
-            message: h.message,
-            query: text,
-            where: _where(repository, h.target),
-            onTap: () {
-              _close();
-              final title = h.target is RoomTarget
-                  ? '# ${_where(repository, h.target).substring(1)}'
-                  : _where(repository, h.target);
-              Navigator.of(context, rootNavigator: true).push(
-                MaterialPageRoute<void>(
-                  builder: (_) => ChatView(target: h.target, title: title, jumpTo: h.message.id),
-                ),
-              );
-            },
-          ),
-      ],
       if (show(_Filter.people) && people.isNotEmpty) ...[
         if (_filter == _Filter.all) const Overline('People'),
         for (final m in people)
@@ -576,7 +563,7 @@ class _GlobalSearchState extends State<GlobalSearch> {
           ),
       ],
       if (show(_Filter.spaces) && spaces.isNotEmpty) ...[
-        if (_filter == _Filter.all) const Overline('Spaces'),
+        if (headed) const Overline('Spaces'),
         for (final s in spaces)
           ListRow(
             leading: SpaceIcon(space: s),
@@ -587,6 +574,49 @@ class _GlobalSearchState extends State<GlobalSearch> {
               Navigator.of(context, rootNavigator: true).push(
                 MaterialPageRoute<void>(
                   builder: (_) => SpaceDirectory(spaceId: s.id, name: s.name),
+                ),
+              );
+            },
+          ),
+      ],
+      if (show(_Filter.spaces) && rooms.isNotEmpty) ...[
+        if (headed) const Overline('Rooms'),
+        for (final (:space, :room) in rooms)
+          ListRow(
+            leading: RoomMark(kind: room.kind, live: context.voice.participants(room.id).isNotEmpty),
+            title: room.name,
+            hash: room.kind == RoomKind.text,
+            snippet: switch (room.kind) {
+              RoomKind.text => space.name,
+              RoomKind.voice => '${space.name} · ${voiceSnippet(repository, context.voice, room.id)}',
+            },
+            detail: room.kind == RoomKind.voice ? 'voice room' : null,
+            onTap: () {
+              _close();
+              switch (room.kind) {
+                case RoomKind.text:
+                  openChat(this.context, room.target, '# ${room.name}');
+                case RoomKind.voice:
+                  openVoiceRoom(this.context, room);
+              }
+            },
+          ),
+      ],
+      if (show(_Filter.messages) && _messages.isNotEmpty) ...[
+        if (_filter == _Filter.all) const Overline('Messages'),
+        for (final h in _messages)
+          SearchResultRow(
+            message: h.message,
+            query: text,
+            where: _where(repository, h.target),
+            onTap: () {
+              _close();
+              final title = h.target is RoomTarget
+                  ? '# ${_where(repository, h.target).substring(1)}'
+                  : _where(repository, h.target);
+              Navigator.of(context, rootNavigator: true).push(
+                MaterialPageRoute<void>(
+                  builder: (_) => ChatView(target: h.target, title: title, jumpTo: h.message.id),
                 ),
               );
             },
@@ -623,56 +653,47 @@ class _GlobalSearchState extends State<GlobalSearch> {
                       crossAxisAlignment: CrossAxisAlignment.stretch,
                       children: [
                         Padding(
-                          padding: const EdgeInsets.fromLTRB(16, 8, 16, 0),
-                          child: SingleChildScrollView(
-                            scrollDirection: Axis.horizontal,
-                            child: Row(
-                              children: [
-                                for (final (f, label) in const [
-                                  (_Filter.all, 'All'),
-                                  (_Filter.messages, 'Messages'),
-                                  (_Filter.people, 'People'),
-                                  (_Filter.spaces, 'Spaces'),
-                                ]) ...[
-                                  Semantics(
-                                    button: true,
-                                    selected: _filter == f,
-                                    label: label,
-                                    excludeSemantics: true,
-                                    onTap: () => setState(() => _filter = f),
-                                    child: GestureDetector(
-                                      behavior: HitTestBehavior.opaque,
-                                      onTap: () => setState(() => _filter = f),
-                                      child: Padding(
-                                        padding: const EdgeInsets.symmetric(vertical: 10),
-                                        child: Text(
-                                          label,
-                                          style: DuvetType.label.copyWith(
-                                            color: _filter == f ? tokens.accentText : colors.mutedForeground,
-                                          ),
-                                        ),
-                                      ),
-                                    ),
-                                  ),
-                                  if (f != _Filter.spaces) const SizedBox(width: 24),
-                                ],
-                              ],
-                            ),
+                          padding: const EdgeInsets.fromLTRB(8, 8, 8, 0),
+                          child: Segmented(
+                            label: 'Show',
+                            value: _filter,
+                            options: const {
+                              _Filter.all: 'All',
+                              _Filter.messages: 'Messages',
+                              _Filter.people: 'People',
+                              _Filter.spaces: 'Spaces',
+                            },
+                            onChanged: (f) => setState(() => _filter = f),
                           ),
                         ),
                         Flexible(
                           child: results.isEmpty
-                              ? Padding(
-                                  padding: const EdgeInsets.all(16),
-                                  child: Text(
-                                    text.isEmpty
-                                        ? 'Search messages, people and Spaces'
-                                        : _searching
-                                        ? 'Searching…'
-                                        : 'Nothing found for “$text”',
-                                    style: DuvetType.body.copyWith(color: colors.mutedForeground),
-                                  ),
-                                )
+                              ? text.isNotEmpty && _searching
+                                    ? Padding(
+                                        padding: const EdgeInsets.all(16),
+                                        child: Text(
+                                          'Searching…',
+                                          style: DuvetType.body.copyWith(color: colors.mutedForeground),
+                                        ),
+                                      )
+                                    : _Nothing(
+                                        text: text.isEmpty
+                                            ? 'Search messages, people and Spaces'
+                                            : 'Nothing found for “$text”',
+                                        next: text.isEmpty
+                                            ? null
+                                            : _filter != _Filter.all
+                                            ? null
+                                            : text.length < 2
+                                            ? 'Type another letter to search messages too.'
+                                            : 'Try fewer words, or search one chat from its top bar.',
+                                        action: text.isNotEmpty && _filter != _Filter.all
+                                            ? TextAction(
+                                                label: 'Search everything',
+                                                onPressed: () => setState(() => _filter = _Filter.all),
+                                              )
+                                            : null,
+                                      )
                               : ListView(
                                   shrinkWrap: true,
                                   // A drag through the results puts the keyboard away; they stay open.
@@ -689,6 +710,43 @@ class _GlobalSearchState extends State<GlobalSearch> {
             ),
           ),
         ),
+      ),
+    );
+  }
+}
+
+/// The dropdown with nothing in it: the mascot over what to search, or over
+/// what found nothing, and the next thing to try.
+class _Nothing extends StatelessWidget {
+  final String text;
+  final String? next;
+  final Widget? action;
+  const _Nothing({required this.text, this.next, this.action});
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = context.theme.colors;
+    return SingleChildScrollView(
+      padding: const EdgeInsets.fromLTRB(24, 16, 24, 16),
+      child: Column(
+        children: [
+          const Mascot(size: 64),
+          const SizedBox(height: 12),
+          Text(
+            text,
+            textAlign: TextAlign.center,
+            style: DuvetType.rowTitle.copyWith(color: colors.foreground),
+          ),
+          if (next case final next?) ...[
+            const SizedBox(height: 4),
+            Text(
+              next,
+              textAlign: TextAlign.center,
+              style: DuvetType.caption.copyWith(color: colors.mutedForeground),
+            ),
+          ],
+          if (action case final action?) ...[const SizedBox(height: 4), action],
+        ],
       ),
     );
   }

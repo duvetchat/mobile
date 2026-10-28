@@ -27,9 +27,9 @@ import 'people.dart';
 import 'search.dart';
 import 'space_admin.dart' show askDescription, askName, confirmDestructive, RoomPermissionsPage;
 import 'spaces.dart' show showInviteSheet;
-import 'tabs.dart' show SpaceDirectory;
+import 'tabs.dart' show SpaceDirectory, voiceSnippet;
 import 'theme.dart';
-import 'voice_room.dart' show openVoiceRoom;
+import 'voice_room.dart' show LiveStrip, VoicePerson, openVoiceRoom, voicePeople;
 import 'widgets/avatar.dart';
 import 'widgets/bot_ui.dart';
 import 'widgets/chrome.dart';
@@ -1355,9 +1355,129 @@ class _ChatViewState extends State<ChatView> {
     };
     final call = _callable && CallBanner.shows(context.voice, widget.target.id)
         ? CallBanner(conversationId: widget.target.id)
-        : null;
+        : _spaceVoice();
     if (status == null || call == null) return status ?? call;
     return Column(mainAxisSize: MainAxisSize.min, children: [status, const SizedBox(height: 8), call]);
+  }
+
+  /// In a room, its Space's voice room with the most people in it, as a
+  /// strip of their faces: Join goes in, as the room's own Join voice does,
+  /// and opens it; Open, for the one the user is in, or one they can't join
+  /// from here (not allowed, or a call they'd end). Nothing while the
+  /// Space's voice rooms are quiet, and nothing in a thread.
+  Widget? _spaceVoice() {
+    final target = widget.target;
+    if (target is! RoomTarget || widget.threadOf != null) return null;
+    final space = _repository.spaces.value.where((s) => s.id == target.spaceId).firstOrNull;
+    if (space == null) return null;
+    final voice = context.voice;
+    ({Room room, List<VoicePerson> people})? busiest;
+    for (final room in space.rooms) {
+      if (room.kind != RoomKind.voice) continue;
+      final people = voicePeople(_repository, voice, room.id);
+      if (people.isNotEmpty && people.length > (busiest?.people.length ?? 0)) busiest = (room: room, people: people);
+    }
+    if (busiest == null) return null;
+    final (:room, :people) = busiest;
+    final join = voice.target?.id != room.id && voice.canJoin(room) && voice.call == null;
+    return LiveStrip(
+      people: people,
+      text: '${room.name} · ${voiceSnippet(_repository, voice, room.id)}',
+      action: join ? 'Join' : 'Open',
+      actionLabel: join ? 'Join ${room.name}' : 'Open ${room.name}',
+      onAction: () {
+        if (join) unawaited(voice.joinRoom(room));
+        openVoiceRoom(context, room);
+      },
+    );
+  }
+
+  /// What this place is, at the start of the top bar: a DM's face with their
+  /// presence and status, a group's faces and how many are in it, a room's
+  /// Space icon with its name and what it's for (or its Space's name); a
+  /// thread, as one.
+  Widget _title(BuildContext context) {
+    final colors = context.theme.colors;
+    final ground = colors.background;
+    Widget caption(String text) => Text(
+      text,
+      maxLines: 1,
+      overflow: TextOverflow.ellipsis,
+      style: DuvetType.caption.copyWith(color: colors.mutedForeground),
+    );
+    Widget lines(Widget name, String? under) => Column(
+      mainAxisSize: MainAxisSize.min,
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [name, if (under != null && under.isNotEmpty) caption(under)],
+    );
+    Widget beside(Widget mark, Widget text) => Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        ExcludeSemantics(child: mark),
+        const SizedBox(width: 10),
+        Flexible(child: text),
+      ],
+    );
+    Widget name(String text) => Text(text, maxLines: 1, overflow: TextOverflow.ellipsis);
+
+    if (widget.threadOf != null) return lines(const Text('Thread'), widget.title);
+    switch (widget.target) {
+      case RoomTarget(:final spaceId):
+        final space = _repository.spaces.value.where((s) => s.id == spaceId).firstOrNull;
+        final text = lines(
+          Text.rich(
+            TextSpan(
+              children: [
+                TextSpan(
+                  text: '# ',
+                  style: TextStyle(color: colors.mutedForeground),
+                ),
+                TextSpan(text: _roomName),
+              ],
+            ),
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+          ),
+          _room?.description ?? space?.name,
+        );
+        return space == null ? text : beside(SpaceIcon(space: space, size: 32), text);
+      case ConversationTarget(:final conversationId):
+        final chat = _repository.conversations.value.where((c) => c.id == conversationId).firstOrNull;
+        if (chat != null && chat.isGroup) {
+          // The others first; the user last, the third face at most.
+          final faces = [
+            for (final m in [..._members.where((m) => m.userId != _me), ..._members.where((m) => m.userId == _me)])
+              (name: m.displayName, avatarUrl: m.avatarUrl),
+          ];
+          final count = chat.memberCount == 1 ? '1 member' : '${chat.memberCount} members';
+          return Semantics(
+            label: '${widget.title}, group, $count',
+            excludeSemantics: true,
+            child: beside(
+              faces.isEmpty
+                  ? UserAvatar(name: widget.title, url: chat.avatarUrl, size: 32)
+                  : FaceStack(faces: faces, size: 28, ring: ground),
+              lines(name(widget.title), count),
+            ),
+          );
+        }
+        final presence = _dmPresence;
+        final face = switch (chat?.otherUserId) {
+          final id? => PresenceAvatar(
+            member: Member(userId: id, username: widget.title, avatarUrl: chat?.avatarUrl),
+            presence: presence,
+            size: 36,
+            ring: ground,
+          ),
+          null => UserAvatar(name: widget.title, url: chat?.avatarUrl, size: 36),
+        };
+        final status = presence == null ? null : presenceText(presence);
+        return Semantics(
+          label: [widget.title, ?status].join(', '),
+          excludeSemantics: true,
+          child: beside(face, lines(name(widget.title), status)),
+        );
+    }
   }
 
   Future<void> _openMore(BuildContext anchor) async {
@@ -1459,8 +1579,8 @@ class _ChatViewState extends State<ChatView> {
     }
   }
 
-  /// The Space's rooms in a glass sheet, this one selected; picking another
-  /// swaps the chat.
+  /// The Space's rooms in a glass sheet, this one chosen; picking another
+  /// swaps the chat, and a voice room opens over it.
   Future<void> _openSwitcher() async {
     final target = widget.target;
     if (target is! RoomTarget) return;
@@ -1468,6 +1588,11 @@ class _ChatViewState extends State<ChatView> {
     if (space == null) return;
     final room = await showChannelSwitcher(context, space: space, current: target.roomId);
     if (room == null || !mounted || room.id == target.roomId) return;
+    // A voice room opens over the chat, as from the Space's rooms.
+    if (room.kind == RoomKind.voice) {
+      await openVoiceRoom(context, room);
+      return;
+    }
     Navigator.of(context).pushReplacement(
       PageRouteBuilder<void>(
         transitionDuration: Duration.zero,
@@ -1633,30 +1758,40 @@ class _ChatViewState extends State<ChatView> {
     final sent = entry.delivery == _Delivery.sent && !m.isEphemeral;
     final canPin = _canPin;
     final canDelete = mine || _canDeleteOthers;
-    final items = [
-      if (sent) const GlassMenuItem(icon: FLucideIcons.reply, label: 'Reply', value: _Action.reply),
-      if (sent && widget.threadOf == null)
-        const GlassMenuItem(icon: FLucideIcons.messagesSquare, label: 'View thread', value: _Action.thread),
-      if (sent && m.reactions.isNotEmpty)
-        const GlassMenuItem(icon: FLucideIcons.smile, label: 'Reactions', value: _Action.reactions),
-      if (readable.isNotEmpty) const GlassMenuItem(icon: FLucideIcons.copy, label: 'Copy text', value: _Action.copy),
-      if (sent) const GlassMenuItem(icon: FLucideIcons.link, label: 'Copy link', value: _Action.copyLink),
-      if (mine && sent && m.content.isNotEmpty && m.stickerUrl == null)
-        const GlassMenuItem(icon: FLucideIcons.pencil, label: 'Edit', value: _Action.edit),
-      if (sent && !m.isNotice && canPin)
-        m.pinned
-            ? const GlassMenuItem(icon: FLucideIcons.pinOff, label: 'Unpin', value: _Action.unpin)
-            : const GlassMenuItem(icon: FLucideIcons.pin, label: 'Pin', value: _Action.pin),
-      if (!mine && m.authorId != null && !m.isEphemeral)
-        GlassMenuItem(icon: FLucideIcons.atSign, label: 'Mention ${m.authorName}', value: _Action.mention),
-      if (entry.delivery == _Delivery.failed)
-        const GlassMenuItem(icon: FLucideIcons.rotateCw, label: 'Send again', value: _Action.retry),
-      if (canDelete && sent)
-        const GlassMenuItem(icon: FLucideIcons.trash2, label: 'Delete', value: _Action.delete, destructive: true),
-      if (entry.delivery == _Delivery.failed)
-        const GlassMenuItem(icon: FLucideIcons.trash2, label: 'Delete', value: _Action.discard, destructive: true),
+    // Grouped: answering it, then taking it elsewhere or changing it, then
+    // sending it again, and apart from the rest, deleting it.
+    final groups = [
+      [
+        if (sent) const GlassMenuItem(icon: FLucideIcons.reply, label: 'Reply', value: _Action.reply),
+        if (sent && widget.threadOf == null)
+          const GlassMenuItem(icon: FLucideIcons.messagesSquare, label: 'View thread', value: _Action.thread),
+        if (sent && m.reactions.isNotEmpty)
+          const GlassMenuItem(icon: FLucideIcons.smile, label: 'Reactions', value: _Action.reactions),
+        if (!mine && m.authorId != null && !m.isEphemeral)
+          GlassMenuItem(icon: FLucideIcons.atSign, label: 'Mention ${m.authorName}', value: _Action.mention),
+      ],
+      [
+        if (readable.isNotEmpty) const GlassMenuItem(icon: FLucideIcons.copy, label: 'Copy text', value: _Action.copy),
+        if (sent) const GlassMenuItem(icon: FLucideIcons.link, label: 'Copy link', value: _Action.copyLink),
+        if (mine && sent && m.content.isNotEmpty && m.stickerUrl == null)
+          const GlassMenuItem(icon: FLucideIcons.pencil, label: 'Edit', value: _Action.edit),
+        if (sent && !m.isNotice && canPin)
+          m.pinned
+              ? const GlassMenuItem(icon: FLucideIcons.pinOff, label: 'Unpin', value: _Action.unpin)
+              : const GlassMenuItem(icon: FLucideIcons.pin, label: 'Pin', value: _Action.pin),
+      ],
+      [
+        if (entry.delivery == _Delivery.failed)
+          const GlassMenuItem(icon: FLucideIcons.rotateCw, label: 'Send again', value: _Action.retry),
+      ],
+      [
+        if (canDelete && sent)
+          const GlassMenuItem(icon: FLucideIcons.trash2, label: 'Delete', value: _Action.delete, destructive: true),
+        if (entry.delivery == _Delivery.failed)
+          const GlassMenuItem(icon: FLucideIcons.trash2, label: 'Delete', value: _Action.discard, destructive: true),
+      ],
     ];
-    if (items.isEmpty && !sent) return;
+    if (groups.every((g) => g.isEmpty) && !sent) return;
     final box = anchor.findRenderObject() as RenderBox?;
     if (box == null || !box.attached) return;
     // Out of the composer: or the menu and any sheet after it hand the
@@ -1670,7 +1805,7 @@ class _ChatViewState extends State<ChatView> {
       me: _me,
       reactions: sent ? m.reactions : null,
       catalog: _catalog,
-      items: items,
+      groups: groups,
     );
     if (!mounted || picked == null) return;
     switch (picked) {
@@ -2109,63 +2244,9 @@ class _ChatViewState extends State<ChatView> {
                 ]),
                 builder: (context, _) => GlassTopBar(
                   hairline: _underTop,
+                  titleStart: true,
                   onBack: () => Navigator.of(context).maybePop(),
-                  title: widget.threadOf != null
-                      ? Column(
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            const Text('Thread'),
-                            Text(
-                              widget.title,
-                              maxLines: 1,
-                              overflow: TextOverflow.ellipsis,
-                              style: DuvetType.caption.copyWith(color: colors.mutedForeground),
-                            ),
-                          ],
-                        )
-                      : switch (_dmPresence) {
-                          final presence? => Column(
-                            mainAxisSize: MainAxisSize.min,
-                            children: [
-                              Text(widget.title, maxLines: 1, overflow: TextOverflow.ellipsis),
-                              Text(
-                                presenceText(presence),
-                                style: DuvetType.caption.copyWith(color: colors.mutedForeground),
-                              ),
-                            ],
-                          ),
-                          null => () {
-                            final name = Text.rich(
-                              TextSpan(
-                                children: [
-                                  if (isRoom)
-                                    TextSpan(
-                                      text: '# ',
-                                      style: TextStyle(color: colors.mutedForeground),
-                                    ),
-                                  TextSpan(text: isRoom ? _roomName : widget.title),
-                                ],
-                              ),
-                              maxLines: 1,
-                              overflow: TextOverflow.ellipsis,
-                            );
-                            // What the room is for, under its name: one line.
-                            final description = isRoom ? _room?.description : null;
-                            if (description == null) return name;
-                            return Column(
-                              mainAxisSize: MainAxisSize.min,
-                              children: [
-                                name,
-                                Text(
-                                  description,
-                                  maxLines: 1,
-                                  overflow: TextOverflow.ellipsis,
-                                  style: DuvetType.caption.copyWith(color: colors.mutedForeground),
-                                ),
-                              ],
-                            );
-                          }(),
-                        },
+                  title: _title(context),
                   onTitle: isRoom && widget.threadOf == null ? _openSwitcher : null,
                   titleLabel: isRoom && widget.threadOf == null
                       ? ['Channel $_roomName', ?_room?.description, 'switch channel'].join(', ')
@@ -2300,8 +2381,16 @@ class _ChatViewState extends State<ChatView> {
   bool get _canSend => _composer.text.trim().isNotEmpty || (_files.isNotEmpty && _editing == null);
 
   /// [pinned]: in the pins, where a reply or a quote tapped closes them
-  /// first, and holding it does nothing.
-  Widget _bubbleFor(_Entry entry, {bool lifted = false, bool first = true, bool last = true, bool pinned = false}) {
+  /// first, and holding it does nothing. Pins, and a thread's first message,
+  /// are [plain]: on a card that names who wrote it.
+  Widget _bubbleFor(
+    _Entry entry, {
+    bool lifted = false,
+    bool first = true,
+    bool last = true,
+    bool pinned = false,
+    bool plain = false,
+  }) {
     final m = entry.message;
     void closingPins(VoidCallback then) {
       if (pinned) Navigator.of(context).pop();
@@ -2316,6 +2405,7 @@ class _ChatViewState extends State<ChatView> {
       firstOfRun: first,
       lastOfRun: last,
       lifted: lifted,
+      plain: plain || pinned,
       directory: _directory,
       stickerName: m.stickerUrl == null ? null : _stickerList.where((s) => s.url == m.stickerUrl).firstOrNull?.name,
       editing: _editing?.id == m.id,
@@ -2396,7 +2486,12 @@ class _ChatViewState extends State<ChatView> {
                       child: _Vanish(
                         hidden: _vanishing.contains(entry.message.id),
                         closed: _closing.contains(entry.message.id),
-                        child: _bubbleFor(entry, first: first, last: last),
+                        child: entry.message.id == widget.threadOf
+                            ? _ThreadParent(
+                                byline: Byline(message: entry.message, onAuthor: () => _openAuthor(entry.message)),
+                                child: _bubbleFor(entry, plain: true),
+                              )
+                            : _bubbleFor(entry, first: first, last: last),
                       ),
                     ),
                   ),
@@ -2448,6 +2543,41 @@ class _ChatViewState extends State<ChatView> {
       a.isEphemeral == b.isEphemeral &&
       _sameDay(a.createdAt, b.createdAt) &&
       b.createdAt.difference(a.createdAt).abs() <= const Duration(minutes: 5);
+}
+
+/// A thread's first message, over its replies: a quiet card, sunk into the
+/// ground, that says who wrote it and when.
+class _ThreadParent extends StatelessWidget {
+  final Widget byline;
+  final Widget child;
+  const _ThreadParent({required this.byline, required this.child});
+
+  @override
+  Widget build(BuildContext context) {
+    const radius = BorderRadius.all(Radius.circular(DuvetTokens.radiusCard));
+    return Padding(
+      padding: const EdgeInsets.only(top: 8),
+      child: DecoratedBox(
+        decoration: BoxDecoration(color: context.theme.colors.secondary, borderRadius: radius),
+        child: InsetShadow(
+          shadows: context.duvet.shadowWell,
+          borderRadius: radius,
+          child: Padding(
+            // The message's own 4pt inset lines its text up with the byline.
+            padding: const EdgeInsets.fromLTRB(8, 12, 8, 8),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                Padding(padding: const EdgeInsets.only(left: 4), child: byline),
+                const SizedBox(height: 4),
+                child,
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
 }
 
 /// A message on its way out: hidden while it goes to dust, its place held,

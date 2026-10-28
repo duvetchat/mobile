@@ -1,7 +1,9 @@
 import 'package:duvet/data/emoji_catalog.dart';
 import 'package:duvet/data/models.dart';
 import 'package:duvet/main.dart';
+import 'package:duvet/members_sheet.dart' show MemberFace;
 import 'package:duvet/widgets/chrome.dart';
+import 'package:duvet/widgets/depth.dart' show Cushion;
 import 'package:duvet/widgets/rows.dart';
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
@@ -272,7 +274,9 @@ void main() {
     semantics.dispose();
   });
 
-  testWidgets('a profile counts the Spaces the person is in as Mutual Spaces', (tester) async {
+  testWidgets('a profile shows the Spaces the person is in as Mutual Spaces, each by its icon and name', (
+    tester,
+  ) async {
     await pumpApp(
       tester,
       setUp: (r) {
@@ -290,13 +294,16 @@ void main() {
 
     await tapLabel(tester, 'Leo’s profile');
     expect(find.text('Mutual Spaces'), findsOneWidget);
+    final mutual = find.ancestor(of: find.text('Mutual Spaces'), matching: find.byType(Column)).first;
+    // Design Guild, which Leo is in; not Night Runners, which he isn't.
     expect(
-      find.descendant(
-        of: find.ancestor(of: find.text('Mutual Spaces'), matching: find.byType(Column)).first,
-        matching: find.text('1'),
-      ),
-      findsOneWidget,
+      tester
+          .widgetList<SpaceIcon>(find.descendant(of: mutual, matching: find.byType(SpaceIcon)))
+          .map((i) => i.space.id),
+      ['s-guild'],
     );
+    expect(find.descendant(of: mutual, matching: find.text('Design Guild')), findsOneWidget);
+    expect(find.descendant(of: mutual, matching: find.text('Night Runners')), findsNothing);
     semantics.dispose();
   });
 
@@ -402,6 +409,51 @@ void main() {
     semantics.dispose();
   });
 
+  testWidgets('friends: who asked first, as cushions to answer; then those online as faces; then the rest as rows', (
+    tester,
+  ) async {
+    final repository = await pumpApp(
+      tester,
+      setUp: (r) {
+        r.presence.value = {_maya: Presence.online};
+        r.friendsOnServer = Friends(
+          friends: const [
+            Member(userId: _maya, username: 'maya', alias: 'Maya'),
+            Member(userId: _leo, username: 'leo'),
+          ],
+          incoming: [
+            FriendRequestItem(
+              id: 'req-in',
+              person: const Member(userId: 'u-sam', username: 'sam', alias: 'Sam'),
+              at: DateTime(2026, 10, 22),
+            ),
+          ],
+        );
+      },
+    );
+    await tester.tap(find.bySemanticsLabel('Friends').hitTestable().first);
+    await tester.pumpAndSettle();
+    double top(Finder f) => tester.getTopLeft(f).dy;
+    // Sam's request, on a cushion with Decline and Accept, above everyone.
+    expect(find.ancestor(of: find.text('Sam'), matching: find.byType(Cushion)), findsOneWidget);
+    expect(top(find.text('Wants to be friends')), lessThan(top(find.text('Online — 1'))));
+    expect(top(find.text('Online — 1')), lessThan(top(find.text('Offline — 1'))));
+    // Maya, online: a face in the grid, read with her status; long-press offers removing her.
+    final maya = find.byWidgetPredicate((w) => w is MemberFace && w.member.userId == _maya);
+    expect(maya, findsOneWidget);
+    expect(find.bySemanticsLabel('Maya, Online · @maya'), findsOneWidget);
+    // Leo, offline: a row under the faces.
+    expect(find.byWidgetPredicate((w) => w is MemberFace && w.member.userId == _leo), findsNothing);
+    expect(find.widgetWithText(ListRow, 'leo'), findsOneWidget);
+    expect(top(maya), lessThan(top(find.widgetWithText(ListRow, 'leo'))));
+
+    await tester.longPress(maya);
+    await tester.pumpAndSettle();
+    await tapLabel(tester, 'Remove friend');
+    expect(repository.friendCalls, ['unfriend $_maya']);
+    semantics.dispose();
+  });
+
   testWidgets('the Friends button counts the requests to the user, as the desktop\'s does', (tester) async {
     final repository = await pumpApp(tester);
     Finder count(String text) => find.descendant(of: find.byType(IconAction), matching: find.text(text));
@@ -440,6 +492,16 @@ void main() {
     await tapLabel(tester, 'Maya, @maya');
     await tapLabel(tester, 'leo, @leo');
     expect(find.text('Start group with 2 people'), findsOneWidget);
+    // Who's picked, as faces over the field: a tap takes one off, and back on from the list.
+    expect(
+      tester.getBottomLeft(find.bySemanticsLabel('Remove Maya')).dy,
+      lessThanOrEqualTo(tester.getTopLeft(find.byType(SearchField)).dy),
+    );
+    await tapLabel(tester, 'Remove leo');
+    expect(find.bySemanticsLabel('Remove leo'), findsNothing);
+    expect(find.text('Start conversation'), findsOneWidget);
+    await tapLabel(tester, 'leo, @leo');
+    expect(find.bySemanticsLabel('Remove leo'), findsOneWidget);
     await tester.enterText(find.byType(EditableText).last, 'Crit crew');
     await tapLabel(tester, 'Start group with 2 people');
     expect(repository.conversationCalls.single, 'group Crit crew $_maya,$_leo');
@@ -476,6 +538,10 @@ void main() {
     await tapLabel(tester, 'More');
     await tapLabel(tester, 'Group info');
     expect(find.text('Group info'), findsOneWidget);
+    // The hero: the group's people, as faces, over its name.
+    final hero = tester.widget<FaceStack>(find.byWidgetPredicate((w) => w is FaceStack && w.size == 72));
+    expect(hero.faces.map((f) => f.name), ['Gaby', 'Maya']);
+    expect(tester.getTopLeft(find.byWidget(hero)).dy, lessThan(tester.getTopLeft(find.text('Design crew').last).dy));
     return repository;
   }
 

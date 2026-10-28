@@ -513,7 +513,14 @@ class VoiceControls extends StatelessWidget {
 /// and above the safe area as the tab bar is: [VoiceControls]' dock.
 class VoiceDock extends StatelessWidget {
   final Widget child;
-  const VoiceDock({required this.child, super.key});
+
+  /// Around [child], inside the cushion.
+  final EdgeInsetsGeometry padding;
+  const VoiceDock({
+    required this.child,
+    this.padding = const EdgeInsets.symmetric(horizontal: 8, vertical: 10),
+    super.key,
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -528,7 +535,7 @@ class VoiceDock extends StatelessWidget {
       child: Cushion(
         radius: DuvetTokens.radiusBar,
         shadows: context.duvet.shadowRaised,
-        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 10),
+        padding: padding,
         child: child,
       ),
     );
@@ -626,19 +633,17 @@ class _VoiceRoomScreenState extends State<VoiceRoomScreen> {
   }
 }
 
-/// Join voice: the screen's one Primary action, and its one accent.
+/// Join voice: the screen's one Primary action, and its one accent, on the
+/// floating dock the controls take its place on once the user is in.
 class _JoinPanel extends StatelessWidget {
   final Room room;
   final VoiceController voice;
   const _JoinPanel({required this.room, required this.voice});
 
   @override
-  Widget build(BuildContext context) => GlassChrome(
-    top: false,
-    child: Padding(
-      padding: EdgeInsets.fromLTRB(16, 12, 16, 12 + MediaQuery.paddingOf(context).bottom),
-      child: JoinVoiceButton(room: room, voice: voice, expand: true),
-    ),
+  Widget build(BuildContext context) => VoiceDock(
+    padding: const EdgeInsets.all(12),
+    child: JoinVoiceButton(room: room, voice: voice, expand: true),
   );
 }
 
@@ -687,6 +692,83 @@ class JoinVoiceButton extends StatelessWidget {
             ),
           ),
       ],
+    );
+  }
+}
+
+/// Something alive, in a chat's top bar: a conversation's call, or a voice
+/// room of the room's Space with people in it. A cushion with the ice dot of
+/// what's alive, the first faces in it, what it is in words, and its action
+/// ([action], e.g. Join) at its end, the strip's height a target. Without
+/// [onAction], the words alone.
+class LiveStrip extends StatelessWidget {
+  final List<VoicePerson> people;
+  final String text;
+  final String? action;
+  final VoidCallback? onAction;
+
+  /// What screen readers hear for the action, when the label alone doesn't
+  /// say what it joins.
+  final String? actionLabel;
+  const LiveStrip({required this.people, required this.text, this.action, this.onAction, this.actionLabel, super.key});
+
+  static const height = 44.0;
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = context.theme.colors;
+    final tokens = context.duvet;
+    const radius = BorderRadius.all(Radius.circular(DuvetTokens.radiusRow));
+    return Container(
+      height: height,
+      decoration: BoxDecoration(color: colors.card, borderRadius: radius, boxShadow: tokens.shadowRest),
+      child: InsetShadow(
+        shadows: tokens.cushion,
+        borderRadius: radius,
+        child: Row(
+          children: [
+            const SizedBox(width: 12),
+            const AliveDot(),
+            const SizedBox(width: 8),
+            if (people.isNotEmpty) ...[
+              FaceStack(faces: [for (final p in people) (name: p.name, avatarUrl: p.avatarUrl)], size: 24),
+              const SizedBox(width: 6),
+            ],
+            Expanded(
+              child: Text(
+                text,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: DuvetType.caption.copyWith(color: colors.foreground, fontWeight: FontWeight.w500),
+              ),
+            ),
+            if (action case final action? when onAction != null)
+              Semantics(
+                container: true,
+                button: true,
+                label: actionLabel ?? action,
+                excludeSemantics: true,
+                onTap: onAction,
+                child: GestureDetector(
+                  behavior: HitTestBehavior.opaque,
+                  onTap: onAction,
+                  child: Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 16),
+                    child: Center(
+                      widthFactor: 1,
+                      child: Text(
+                        action,
+                        style: DuvetType.label.copyWith(color: tokens.accentText, fontWeight: FontWeight.w700),
+                      ),
+                    ),
+                  ),
+                ),
+              )
+            else
+              const SizedBox(width: 12),
+          ],
+        ),
+      ),
     );
   }
 }

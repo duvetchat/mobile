@@ -141,6 +141,10 @@ class GlassTopBar extends StatelessWidget {
   /// In place of Back, e.g. Cancel.
   final Widget? leading;
 
+  /// The title from Back to the actions, read from the start, rather than
+  /// centered: a chat's, a face or an icon beside its name.
+  final bool titleStart;
+
   const GlassTopBar({
     this.title,
     this.onBack,
@@ -150,6 +154,7 @@ class GlassTopBar extends StatelessWidget {
     this.onTitle,
     this.titleLabel,
     this.leading,
+    this.titleStart = false,
     super.key,
   });
 
@@ -163,6 +168,10 @@ class GlassTopBar extends StatelessWidget {
     // Text actions (Cancel, Save) take a wider slot than icons.
     final text = leading != null || actions.any((a) => a is! IconAction && a is! Builder);
     final side = text ? 88.0 : 8 + 40.0 * (actions.length > 1 ? actions.length : 1);
+    // From the start, each side takes only what it holds.
+    final start = titleStart ? (leading == null && onBack == null ? 16.0 : 52.0) : side;
+    final end = titleStart ? (actions.isEmpty ? 16.0 : 8 + 40.0 * actions.length) : side;
+    final titleAlignment = titleStart ? Alignment.centerLeft : Alignment.center;
     return GlassChrome(
       hairline: hairline,
       child: Padding(
@@ -175,7 +184,7 @@ class GlassTopBar extends StatelessWidget {
               child: Row(
                 children: [
                   SizedBox(
-                    width: side,
+                    width: start,
                     child: Align(
                       alignment: Alignment.centerLeft,
                       child: leading != null
@@ -192,7 +201,8 @@ class GlassTopBar extends StatelessWidget {
                     ),
                   ),
                   Expanded(
-                    child: Center(
+                    child: Align(
+                      alignment: titleAlignment,
                       child: DefaultTextStyle.merge(
                         style: DuvetType.navTitle.copyWith(color: colors.foreground),
                         maxLines: 1,
@@ -208,13 +218,17 @@ class GlassTopBar extends StatelessWidget {
                                 onTap: onTitle,
                                 child: Pressable(
                                   onTap: onTitle,
-                                  builder: (context, _) => Row(
-                                    mainAxisSize: MainAxisSize.min,
-                                    children: [
-                                      Flexible(child: title ?? const SizedBox.shrink()),
-                                      const SizedBox(width: 4),
-                                      Icon(FLucideIcons.chevronDown, size: 14, color: colors.mutedForeground),
-                                    ],
+                                  // The bar's height, all of it a target.
+                                  builder: (context, _) => ConstrainedBox(
+                                    constraints: const BoxConstraints(minHeight: 44),
+                                    child: Row(
+                                      mainAxisSize: MainAxisSize.min,
+                                      children: [
+                                        Flexible(child: title ?? const SizedBox.shrink()),
+                                        const SizedBox(width: 4),
+                                        Icon(FLucideIcons.chevronDown, size: 14, color: colors.mutedForeground),
+                                      ],
+                                    ),
                                   ),
                                 ),
                               ),
@@ -222,7 +236,7 @@ class GlassTopBar extends StatelessWidget {
                     ),
                   ),
                   SizedBox(
-                    width: side,
+                    width: end,
                     child: Padding(
                       padding: const EdgeInsets.only(right: 8),
                       child: Align(

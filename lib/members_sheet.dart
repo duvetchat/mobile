@@ -6,6 +6,7 @@ import 'data/repository.dart';
 import 'people.dart' show showProfileSheet;
 import 'theme.dart';
 import 'widgets/avatar.dart';
+import 'widgets/depth.dart';
 import 'widgets/glass.dart';
 import 'widgets/rows.dart';
 
@@ -135,6 +136,10 @@ class _MembersSheetState extends State<_MembersSheet> {
               ];
             }
             final online = all.where((m) => !away(m)).length;
+            // Their highest colored role's color, in a Space.
+            int? roleColor(Member m) => spaceId == null
+                ? null
+                : widget.repository.rolesOf(spaceId, m.userId).map((r) => r.color).nonNulls.firstOrNull;
             return CustomScrollView(
               controller: widget.scroll,
               // Scrolling the members puts the search's keyboard away.
@@ -177,26 +182,39 @@ class _MembersSheetState extends State<_MembersSheet> {
                         ),
                       ),
                     ),
+                    // Those connected as a grid of faces; those away as a
+                    // compact list under them.
                     SliverPadding(
                       padding: const EdgeInsets.symmetric(horizontal: 8),
-                      sliver: SliverList.builder(
-                        itemCount: members.length,
-                        itemBuilder: (context, i) => _MemberRow(
-                          member: members[i],
-                          presence: of(members[i]),
-                          me: widget.repository.profile.value?.id == members[i].userId,
-                          spaceId: spaceId,
-                          roleColor: switch (widget.target) {
-                            RoomTarget(:final spaceId) =>
-                              widget.repository
-                                  .rolesOf(spaceId, members[i].userId)
-                                  .map((r) => r.color)
-                                  .nonNulls
-                                  .firstOrNull,
-                            _ => null,
-                          },
-                        ),
-                      ),
+                      sliver: identical(members, rest)
+                          ? SliverList.builder(
+                              itemCount: members.length,
+                              itemBuilder: (context, i) => _MemberRow(
+                                member: members[i],
+                                presence: of(members[i]),
+                                me: widget.repository.profile.value?.id == members[i].userId,
+                                spaceId: spaceId,
+                                roleColor: roleColor(members[i]),
+                              ),
+                            )
+                          : SliverGrid.builder(
+                              gridDelegate: SliverGridDelegateWithMaxCrossAxisExtent(
+                                maxCrossAxisExtent: 96,
+                                mainAxisExtent: MemberFace.extent(context),
+                              ),
+                              itemCount: members.length,
+                              itemBuilder: (context, i) {
+                                final me = widget.repository.profile.value?.id == members[i].userId;
+                                return MemberFace(
+                                  member: members[i],
+                                  presence: of(members[i]),
+                                  detail: _memberDetail(members[i], of(members[i]), me: me),
+                                  hint: me ? null : 'Double tap for options',
+                                  roleColor: roleColor(members[i]),
+                                  onTap: () => _openMember(context, members[i], spaceId),
+                                );
+                              },
+                            ),
                     ),
                   ],
                 const SliverToBoxAdapter(child: SizedBox(height: 24)),
@@ -211,6 +229,98 @@ class _MembersSheetState extends State<_MembersSheet> {
   static int _byName(Member a, Member b) => a.displayName.toLowerCase().compareTo(b.displayName.toLowerCase());
 }
 
+/// What a member reads as, after their name: their status, then who they
+/// are ("Online · @maya · you").
+String _memberDetail(Member member, Presence? presence, {required bool me}) {
+  final status = switch (presence) {
+    Presence.online => 'Online',
+    Presence.doNotDisturb => 'Do not disturb',
+    Presence.offline => 'Offline',
+    null => null,
+  };
+  return [?status, '@${member.username}', if (member.isBot) 'bot', if (me) 'you'].join(' · ');
+}
+
+/// Their profile over the sheet; the sheet closes only for what's picked
+/// there.
+Future<void> _openMember(BuildContext context, Member member, String? spaceId) async {
+  final action = await showProfileSheet(context, member: member, spaceId: spaceId, canMention: true);
+  if (action != null && context.mounted) Navigator.of(context).pop((member, action));
+}
+
+/// Someone connected, in a grid of faces (the members sheet's, Friends'):
+/// their face with their presence, their name under it (in their role's
+/// color, in a Space), their banner faintly behind. Read as their row is:
+/// their name, then [detail].
+class MemberFace extends StatelessWidget {
+  final Member member;
+  final Presence? presence;
+  final String detail;
+  final String? hint;
+  final int? roleColor;
+  final VoidCallback onTap;
+  final VoidCallback? onLongPress;
+  const MemberFace({
+    required this.member,
+    required this.presence,
+    required this.detail,
+    required this.onTap,
+    this.hint,
+    this.roleColor,
+    this.onLongPress,
+    super.key,
+  });
+
+  static const _face = 56.0;
+
+  /// A tile's height: the face, the name under it at any text size, and
+  /// the padding around them.
+  static double extent(BuildContext context) =>
+      _face + 6 + MediaQuery.textScalerOf(context).scale(DuvetType.caption.fontSize! * 1.4) * 2 + 16;
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = context.theme.colors;
+    return Semantics(
+      button: true,
+      label: '${member.displayName}, $detail',
+      hint: hint,
+      excludeSemantics: true,
+      onTap: onTap,
+      onLongPress: onLongPress,
+      child: Pressable(
+        onTap: onTap,
+        onLongPress: onLongPress,
+        builder: (context, pressed) => AnimatedContainer(
+          duration: pressed ? DuvetTokens.pressIn : DuvetTokens.pressOut,
+          padding: const EdgeInsets.fromLTRB(4, 8, 4, 8),
+          decoration: BoxDecoration(
+            color: pressed ? colors.foreground.withValues(alpha: 0.08) : Colors.transparent,
+            image: memberBanner(context, member.bannerUrl, offline: isOffline(presence)),
+            borderRadius: BorderRadius.circular(DuvetTokens.radiusCard),
+          ),
+          child: Column(
+            children: [
+              PresenceAvatar(member: member, presence: presence, size: _face),
+              const SizedBox(height: 6),
+              Text(
+                member.displayName,
+                maxLines: 2,
+                overflow: TextOverflow.ellipsis,
+                textAlign: TextAlign.center,
+                style: DuvetType.caption.copyWith(
+                  fontWeight: FontWeight.w500,
+                  color: roleColor == null ? colors.foreground : readableOn(Color(roleColor!), colors.card),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
 class _MemberRow extends StatelessWidget {
   final Member member;
   final Presence? presence;
@@ -222,32 +332,17 @@ class _MemberRow extends StatelessWidget {
   const _MemberRow({required this.member, required this.presence, required this.me, this.spaceId, this.roleColor});
 
   @override
-  Widget build(BuildContext context) {
-    final status = switch (presence) {
-      Presence.online => 'Online',
-      Presence.doNotDisturb => 'Do not disturb',
-      Presence.offline => 'Offline',
-      null => null,
-    };
+  Widget build(BuildContext context) => GlassRow(
+    label: member.displayName,
+    labelColor: roleColor == null ? null : readableOn(Color(roleColor!), context.theme.colors.card),
     // The status as the caption line, then who they are.
-    final detail = [?status, '@${member.username}', if (member.isBot) 'bot', if (me) 'you'].join(' · ');
-    return Builder(
-      builder: (rowContext) => GlassRow(
-        label: member.displayName,
-        labelColor: roleColor == null ? null : readableOn(Color(roleColor!), context.theme.colors.card),
-        detail: detail,
-        hint: me ? null : 'Double tap for options',
-        leading: PresenceAvatar(member: member, presence: presence, size: 48),
-        banner: member.bannerUrl,
-        bannerOffline: isOffline(presence),
-        // Their profile over this sheet; it closes only for what's picked there.
-        onPressed: () async {
-          final action = await showProfileSheet(context, member: member, spaceId: spaceId, canMention: true);
-          if (action != null && context.mounted) Navigator.of(context).pop((member, action));
-        },
-      ),
-    );
-  }
+    detail: _memberDetail(member, presence, me: me),
+    hint: me ? null : 'Double tap for options',
+    leading: PresenceAvatar(member: member, presence: presence, size: 48),
+    banner: member.bannerUrl,
+    bannerOffline: isOffline(presence),
+    onPressed: () => _openMember(context, member, spaceId),
+  );
 }
 
 /// A member's avatar with their presence: a filled dot when online, a dot with
@@ -257,7 +352,10 @@ class PresenceAvatar extends StatelessWidget {
   final Member member;
   final Presence? presence;
   final double size;
-  const PresenceAvatar({required this.member, required this.presence, this.size = 40, super.key});
+
+  /// The ground the dot is cut out of: the card it sits on, by default.
+  final Color? ring;
+  const PresenceAvatar({required this.member, required this.presence, this.size = 40, this.ring, super.key});
 
   @override
   Widget build(BuildContext context) {
@@ -273,7 +371,8 @@ class PresenceAvatar extends StatelessWidget {
               child: UserAvatar(name: member.displayName, url: member.avatarUrl, size: size),
             ),
           ),
-          if (presence case final presence?) Positioned(right: -1, bottom: -1, child: dotFor(context, presence, dot)),
+          if (presence case final presence?)
+            Positioned(right: -1, bottom: -1, child: dotFor(context, presence, dot, ring: ring)),
         ],
       ),
     );
@@ -281,15 +380,16 @@ class PresenceAvatar extends StatelessWidget {
 
   /// Presence by shape: a filled ice dot online, a dot with a bar for do not
   /// disturb, a ring offline.
-  static Widget dotFor(BuildContext context, Presence presence, double dot) {
+  static Widget dotFor(BuildContext context, Presence presence, double dot, {Color? ring}) {
     final colors = context.theme.colors;
+    final ground = ring ?? colors.card;
     // Online is the mascot's ice: what's alive.
     final online = context.duvet.alive;
     return Container(
       width: dot,
       height: dot,
       padding: const EdgeInsets.all(2),
-      decoration: BoxDecoration(color: colors.card, shape: BoxShape.circle),
+      decoration: BoxDecoration(color: ground, shape: BoxShape.circle),
       child: switch (presence) {
         Presence.online => DecoratedBox(
           decoration: BoxDecoration(color: online, shape: BoxShape.circle),
@@ -297,7 +397,7 @@ class PresenceAvatar extends StatelessWidget {
         Presence.doNotDisturb => DecoratedBox(
           decoration: BoxDecoration(color: colors.destructive, shape: BoxShape.circle),
           child: Center(
-            child: Container(width: dot * 0.45, height: 2, color: colors.card),
+            child: Container(width: dot * 0.45, height: 2, color: ground),
           ),
         ),
         Presence.offline => DecoratedBox(

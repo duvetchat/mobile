@@ -21,15 +21,16 @@ enum _Action {
 const _quickReactions = ['👍', '❤️', '😂', '😮', '👏'];
 const _quickNames = {'👍': 'thumbs up', '❤️': 'heart', '😂': 'laughing', '😮': 'surprised', '👏': 'clapping'};
 
-/// A long press on a message: the chat dims behind a scrim, the bubble lifts,
-/// a glass bar of quick reactions sits over it and a glass menu of its
-/// actions under it. Answers the action picked (with the emoji, for a
-/// reaction), or null.
+/// A long press on a message: the chat dims and softens behind a scrim, the
+/// bubble lifts, a row of quick reactions sits over it as cushion chips, and
+/// its actions under it as a grouped list: what to do with it, then what
+/// takes it away, apart and in the danger color. Answers the action picked
+/// (with the emoji, for a reaction), or null.
 Future<(_Action, String?)?> _showMessageActions(
   BuildContext context, {
   required Rect bubble,
   required Widget lifted,
-  required List<GlassMenuItem<_Action>> items,
+  required List<List<GlassMenuItem<_Action>>> groups,
   required String? me,
   List<Reaction>? reactions,
   EmojiCatalog? catalog,
@@ -37,7 +38,10 @@ Future<(_Action, String?)?> _showMessageActions(
   _MessageActionsRoute(
     bubble: bubble,
     lifted: lifted,
-    items: items,
+    groups: [
+      for (final g in groups)
+        if (g.isNotEmpty) g,
+    ],
     me: me,
     reactions: reactions,
     catalog: catalog,
@@ -48,7 +52,10 @@ Future<(_Action, String?)?> _showMessageActions(
 class _MessageActionsRoute extends PopupRoute<(_Action, String?)> {
   final Rect bubble;
   final Widget lifted;
-  final List<GlassMenuItem<_Action>> items;
+
+  /// The actions, a group at a time; a group of destructive ones goes on a
+  /// surface of its own, under the rest.
+  final List<List<GlassMenuItem<_Action>>> groups;
   final String? me;
 
   /// Null when the message can't take reactions (not sent yet).
@@ -59,7 +66,7 @@ class _MessageActionsRoute extends PopupRoute<(_Action, String?)> {
   _MessageActionsRoute({
     required this.bubble,
     required this.lifted,
-    required this.items,
+    required this.groups,
     required this.me,
     required this.reactions,
     required this.catalog,
@@ -68,8 +75,23 @@ class _MessageActionsRoute extends PopupRoute<(_Action, String?)> {
 
   static const _menuWidth = 248.0;
   static const _rowHeight = 52.0;
-  static const _barHeight = 56.0;
+  static const _barHeight = 44.0;
   static const _gap = 8.0;
+
+  /// Between two groups on one surface: a hairline, 4pt either side.
+  static const _divider = 9.0;
+
+  List<List<GlassMenuItem<_Action>>> get _safe => [
+    for (final g in groups)
+      if (!g.every((i) => i.destructive)) g,
+  ];
+  List<List<GlassMenuItem<_Action>>> get _danger => [
+    for (final g in groups)
+      if (g.every((i) => i.destructive)) g,
+  ];
+
+  static double _surfaceHeight(List<List<GlassMenuItem<_Action>>> groups) =>
+      groups.isEmpty ? 0 : groups.fold(0, (n, g) => n + g.length) * _rowHeight + 16 + (groups.length - 1) * _divider;
 
   @override
   Color? get barrierColor => null;
@@ -92,7 +114,10 @@ class _MessageActionsRoute extends PopupRoute<(_Action, String?)> {
     final screen = media.size;
     final top = media.padding.top + 8;
     final bottom = screen.height - media.padding.bottom - 8;
-    final menuHeight = items.length * _rowHeight + 16;
+    final safe = _safe;
+    final danger = _danger;
+    final menuHeight =
+        _surfaceHeight(safe) + _surfaceHeight(danger) + (safe.isNotEmpty && danger.isNotEmpty ? _gap : 0);
     final barSpace = reactions == null ? 0.0 : _barHeight + _gap;
     // The bubble where it was, moved up when the menu wouldn't fit under it,
     // and clipped when it's taller than the room left.
@@ -104,7 +129,29 @@ class _MessageActionsRoute extends PopupRoute<(_Action, String?)> {
     final rightAligned = bubble.center.dx > screen.width / 2;
     final reduce = MediaQuery.disableAnimationsOf(context);
     final colors = context.theme.colors;
-    final dark = Theme.of(context).brightness == Brightness.dark;
+    final tokens = context.duvet;
+
+    Widget surface(List<List<GlassMenuItem<_Action>>> groups) => GlassSurface(
+      child: Padding(
+        padding: const EdgeInsets.all(8),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            for (final (i, group) in groups.indexed) ...[
+              if (i > 0) Container(height: 1, margin: const EdgeInsets.symmetric(vertical: 4), color: tokens.hairline),
+              for (final item in group)
+                GlassRow(
+                  icon: item.icon,
+                  label: item.label,
+                  hint: item.hint,
+                  destructive: item.destructive,
+                  onPressed: () => Navigator.of(context).pop((item.value, null)),
+                ),
+            ],
+          ],
+        ),
+      ),
+    );
 
     Positioned aligned(Widget child, double width) => Positioned(
       left: rightAligned ? null : bubble.left.clamp(16, max(16.0, screen.width - width - 16)),
@@ -129,9 +176,7 @@ class _MessageActionsRoute extends PopupRoute<(_Action, String?)> {
                   opacity: animation,
                   child: BackdropFilter(
                     filter: ImageFilter.blur(sigmaX: 10, sigmaY: 10),
-                    child: ColoredBox(
-                      color: (dark ? Duvet.night : colors.background).withValues(alpha: dark ? 0.62 : 0.55),
-                    ),
+                    child: ColoredBox(color: colors.barrier),
                   ),
                 ),
               ),
@@ -170,23 +215,13 @@ class _MessageActionsRoute extends PopupRoute<(_Action, String?)> {
                 animation: animation,
                 reduce: reduce,
                 from: -8,
-                child: GlassSurface(
-                  child: Padding(
-                    padding: const EdgeInsets.all(8),
-                    child: Column(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        for (final item in items)
-                          GlassRow(
-                            icon: item.icon,
-                            label: item.label,
-                            hint: item.hint,
-                            destructive: item.destructive,
-                            onPressed: () => Navigator.of(context).pop((item.value, null)),
-                          ),
-                      ],
-                    ),
-                  ),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    if (safe.isNotEmpty) surface(safe),
+                    if (safe.isNotEmpty && danger.isNotEmpty) const SizedBox(height: _gap),
+                    if (danger.isNotEmpty) surface(danger),
+                  ],
                 ),
               ),
               _menuWidth,
@@ -225,8 +260,8 @@ class _Lift extends AnimatedWidget {
   }
 }
 
-/// The glass bar of quick reactions; the user's own are selected. The last
-/// button opens the full picker.
+/// The quick reactions, a row of cushion chips; the user's own sit on the
+/// chosen slate pill. The last chip opens the full picker.
 class _QuickReactions extends StatelessWidget {
   final Set<String> mine;
   final EmojiCatalog? catalog;
@@ -236,7 +271,8 @@ class _QuickReactions extends StatelessWidget {
   Widget build(BuildContext context) {
     final colors = context.theme.colors;
     final tokens = context.duvet;
-    Widget button({required String label, required Widget child, required (_Action, String?) value, bool on = false}) =>
+    const radius = BorderRadius.all(Radius.circular(DuvetTokens.radiusField));
+    Widget chip({required String label, required Widget child, required (_Action, String?) value, bool on = false}) =>
         Semantics(
           container: true,
           button: true,
@@ -246,47 +282,45 @@ class _QuickReactions extends StatelessWidget {
           onTap: () => Navigator.of(context).pop(value),
           child: Pressable(
             onTap: () => Navigator.of(context).pop(value),
-            builder: (context, pressed) => Container(
+            builder: (context, pressed) => AnimatedContainer(
+              duration: pressed ? DuvetTokens.pressIn : DuvetTokens.pressOut,
               width: 44,
               height: 44,
-              alignment: Alignment.center,
               decoration: BoxDecoration(
-                color: on ? tokens.accentTint : (pressed ? colors.secondary : null),
-                borderRadius: BorderRadius.circular(DuvetTokens.radiusField),
-                border: on ? Border.all(color: tokens.accentText) : null,
+                color: on ? tokens.chosen : colors.card,
+                borderRadius: radius,
+                boxShadow: pressed ? null : tokens.shadowRaised,
               ),
-              child: child,
+              child: InsetShadow(
+                shadows: pressed ? tokens.shadowPressed : tokens.cushion,
+                borderRadius: radius,
+                child: Center(child: child),
+              ),
             ),
           ),
         );
     return Semantics(
       label: 'Quick reactions',
       explicitChildNodes: true,
-      child: GlassSurface(
-        child: Padding(
-          padding: const EdgeInsets.all(6),
-          child: Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              for (final emoji in _quickReactions)
-                Padding(
-                  padding: const EdgeInsets.only(right: 2),
-                  child: button(
-                    label:
-                        'React ${catalog?.nameOf(emoji) ?? _quickNames[emoji] ?? emoji}${mine.contains(emoji) ? ', you reacted' : ''}',
-                    on: mine.contains(emoji),
-                    value: (_Action.react, emoji),
-                    child: Text(emoji, style: const TextStyle(fontSize: 24, height: 1.1)),
-                  ),
-                ),
-              button(
-                label: 'More reactions',
-                value: (_Action.moreReactions, null),
-                child: Icon(FLucideIcons.smilePlus, size: 24, color: colors.mutedForeground),
-              ),
-            ],
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          for (final emoji in _quickReactions) ...[
+            chip(
+              label:
+                  'React ${catalog?.nameOf(emoji) ?? _quickNames[emoji] ?? emoji}${mine.contains(emoji) ? ', you reacted' : ''}',
+              on: mine.contains(emoji),
+              value: (_Action.react, emoji),
+              child: Text(emoji, style: const TextStyle(fontSize: 22, height: 1.1)),
+            ),
+            const SizedBox(width: 6),
+          ],
+          chip(
+            label: 'More reactions',
+            value: (_Action.moreReactions, null),
+            child: Icon(FLucideIcons.smilePlus, size: 22, color: colors.mutedForeground),
           ),
-        ),
+        ],
       ),
     );
   }

@@ -5,7 +5,7 @@ import 'package:forui/forui.dart';
 import 'chat_view.dart';
 import 'data/models.dart';
 import 'data/scope.dart';
-import 'members_sheet.dart' show MemberAction, PresenceAvatar;
+import 'members_sheet.dart' show MemberAction, MemberFace, PresenceAvatar;
 import 'theme.dart';
 import 'widgets/avatar.dart';
 import 'widgets/chrome.dart';
@@ -49,6 +49,12 @@ class _Profile extends StatefulWidget {
 }
 
 class _ProfileState extends State<_Profile> {
+  /// The face at the hero's foot.
+  static const _face = 104.0;
+
+  /// The banner's height at most: a phone's, 5:2 across it.
+  static const _bannerMax = 180.0;
+
   bool _asked = false;
   bool _accepting = false;
 
@@ -145,171 +151,188 @@ class _ProfileState extends State<_Profile> {
         final pending = _asked || f.outgoing.any((r) => r.person.userId == m.userId);
         // They asked the user: Accept request, as on the desktop's profile.
         final asking = f.incoming.where((r) => r.person.userId == m.userId).firstOrNull;
-        final mutual = repository.spaces.value.where((s) => repository.isMember(s.id, m.userId)).length;
+        final mutual = repository.spaces.value.where((s) => repository.isMember(s.id, m.userId)).toList();
         return ListView(
           controller: widget.scroll,
           padding: EdgeInsets.zero,
           children: [
-            // Their banner, 5:2 as it's cropped, or the mascot's slate
-            // until they set one.
-            AspectRatio(
-              aspectRatio: bannerAspect,
-              child: m.bannerUrl == null
-                  ? const ColoredBox(color: Duvet.slate)
-                  : Image.network(
-                      m.bannerUrl!,
-                      fit: BoxFit.cover,
-                      errorBuilder: (_, _, _) => const ColoredBox(color: Duvet.slate),
+            // The hero: their banner, 5:2 as it's cropped (no taller than a
+            // phone's, on a wider screen), or the mascot's slate until they
+            // set one, and their face large over its foot.
+            Stack(
+              clipBehavior: Clip.none,
+              alignment: Alignment.topCenter,
+              children: [
+                Padding(
+                  padding: const EdgeInsets.only(bottom: _face / 2),
+                  child: LayoutBuilder(
+                    builder: (context, constraints) => SizedBox(
+                      height: (constraints.maxWidth / bannerAspect).clamp(0, _bannerMax),
+                      width: double.infinity,
+                      child: m.bannerUrl == null
+                          ? const ColoredBox(color: Duvet.slate)
+                          : Image.network(
+                              m.bannerUrl!,
+                              fit: BoxFit.cover,
+                              errorBuilder: (_, _, _) => const ColoredBox(color: Duvet.slate),
+                            ),
                     ),
+                  ),
+                ),
+                Positioned(
+                  bottom: 0,
+                  child: DecoratedBox(
+                    decoration: BoxDecoration(
+                      shape: BoxShape.circle,
+                      border: Border.all(color: colors.background, width: 5),
+                      boxShadow: tokens.shadowRaised,
+                    ),
+                    child: ExcludeSemantics(
+                      child: UserAvatar(name: m.displayName, url: m.avatarUrl, size: _face),
+                    ),
+                  ),
+                ),
+              ],
             ),
-            Transform.translate(
-              offset: const Offset(0, -40),
-              child: Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 16),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Row(
-                      crossAxisAlignment: CrossAxisAlignment.end,
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 10, 16, 24),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  Semantics(
+                    header: true,
+                    child: Text(
+                      m.displayName,
+                      textAlign: TextAlign.center,
+                      style: DuvetType.title.copyWith(fontSize: 24, color: colors.foreground),
+                    ),
+                  ),
+                  // Their handle (none where only their name is known: a
+                  // mention of someone the app hasn't met) beside their presence.
+                  if (m.username.isNotEmpty || m.isBot || presence != null) ...[
+                    const SizedBox(height: 6),
+                    Wrap(
+                      alignment: WrapAlignment.center,
+                      crossAxisAlignment: WrapCrossAlignment.center,
+                      spacing: 8,
+                      runSpacing: 4,
                       children: [
-                        DecoratedBox(
-                          decoration: BoxDecoration(
-                            shape: BoxShape.circle,
-                            border: Border.all(color: colors.background, width: 4),
-                            boxShadow: tokens.shadowRaised,
+                        if (m.username.isNotEmpty || m.isBot)
+                          Text(
+                            [if (m.username.isNotEmpty) '@${m.username}', if (m.isBot) 'bot'].join(' · '),
+                            style: DuvetType.caption.copyWith(color: colors.mutedForeground),
                           ),
-                          child: ExcludeSemantics(
-                            child: UserAvatar(name: m.displayName, url: m.avatarUrl, size: 80),
-                          ),
-                        ),
-                        const SizedBox(width: 12),
                         if (presence != null)
-                          Padding(
-                            padding: const EdgeInsets.only(bottom: 4),
-                            child: Container(
-                              height: 28,
-                              padding: const EdgeInsets.symmetric(horizontal: 10),
-                              decoration: BoxDecoration(
-                                color: colors.secondary,
-                                borderRadius: BorderRadius.circular(DuvetTokens.radiusChip),
-                              ),
-                              child: Row(
-                                mainAxisSize: MainAxisSize.min,
-                                children: [
-                                  PresenceAvatar.dotFor(context, presence, 10),
-                                  const SizedBox(width: 6),
-                                  Text(
-                                    presenceText(presence),
-                                    style: DuvetType.caption.copyWith(color: colors.foreground),
-                                  ),
-                                ],
-                              ),
+                          Container(
+                            height: 28,
+                            padding: const EdgeInsets.symmetric(horizontal: 10),
+                            decoration: BoxDecoration(
+                              color: colors.secondary,
+                              borderRadius: BorderRadius.circular(DuvetTokens.radiusChip),
+                            ),
+                            child: Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                PresenceAvatar.dotFor(context, presence, 10),
+                                const SizedBox(width: 6),
+                                Text(
+                                  presenceText(presence),
+                                  style: DuvetType.caption.copyWith(color: colors.foreground),
+                                ),
+                              ],
                             ),
                           ),
                       ],
                     ),
+                  ],
+                  if (!me) ...[
                     const SizedBox(height: 16),
-                    Semantics(
-                      header: true,
-                      child: Text(m.displayName, style: DuvetType.title.copyWith(color: colors.foreground)),
-                    ),
-                    // No handle where only their name is known (a mention of
-                    // someone the app hasn't met).
-                    if (m.username.isNotEmpty || m.isBot) ...[
-                      const SizedBox(height: 4),
-                      Text(
-                        [if (m.username.isNotEmpty) '@${m.username}', if (m.isBot) 'bot'].join(' · '),
-                        style: DuvetType.caption.copyWith(color: colors.mutedForeground),
-                      ),
-                    ],
-                    if (!me) ...[
-                      const SizedBox(height: 16),
-                      Row(
-                        children: [
-                          Expanded(
-                            child: DuvetButton(
-                              label: 'Message',
-                              icon: FLucideIcons.messageCircle,
-                              variant: ButtonVariant.primary,
-                              expand: true,
-                              onPressed: widget.canMention
-                                  ? () => Navigator.of(context).pop(MemberAction.message)
-                                  : _message,
-                            ),
+                    Row(
+                      children: [
+                        Expanded(
+                          child: DuvetButton(
+                            label: 'Message',
+                            icon: FLucideIcons.messageCircle,
+                            variant: ButtonVariant.primary,
+                            expand: true,
+                            onPressed: widget.canMention
+                                ? () => Navigator.of(context).pop(MemberAction.message)
+                                : _message,
                           ),
-                          if (widget.canMention) ...[
-                            const SizedBox(width: 8),
-                            _SquareButton(
-                              label: 'Mention ${m.displayName}',
-                              icon: FLucideIcons.atSign,
-                              onPressed: () => Navigator.of(context).pop(MemberAction.mention),
-                            ),
-                          ],
-                          if (!m.isBot) ...[
-                            const SizedBox(width: 8),
-                            _SquareButton(
-                              label: isFriend
-                                  ? 'Friends'
-                                  : asking != null
-                                  ? 'Accept request'
-                                  : pending
-                                  ? 'Friend request sent'
-                                  : 'Add friend',
-                              icon: isFriend
-                                  ? FLucideIcons.userCheck
-                                  : pending && asking == null
-                                  ? FLucideIcons.clock
-                                  : FLucideIcons.userPlus,
-                              onPressed: isFriend
-                                  ? null
-                                  : asking != null
-                                  ? (_accepting ? null : () => _accept(asking.id))
-                                  : pending
-                                  ? null
-                                  : _addFriend,
-                            ),
-                          ],
+                        ),
+                        if (widget.canMention) ...[
+                          const SizedBox(width: 8),
+                          _SquareButton(
+                            label: 'Mention ${m.displayName}',
+                            icon: FLucideIcons.atSign,
+                            onPressed: () => Navigator.of(context).pop(MemberAction.mention),
+                          ),
                         ],
-                      ),
-                    ],
-                    const SizedBox(height: 16),
-                    Cushion(
-                      padding: const EdgeInsets.all(16),
-                      shadows: tokens.shadowRest,
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          _Label('About'),
-                          const SizedBox(height: 4),
-                          if (m.bio case final bio?)
-                            // With the messages' markdown, as the desktop's About me.
-                            MessageText(
-                              content: bio,
-                              directory: MessageDirectory(
-                                me: context.repository.profile.value?.id,
-                                nameOf: context.repository.nameOf,
-                                emojiOf: (_) => null,
-                              ),
-                              style: DuvetType.body.copyWith(color: colors.foreground),
-                            )
-                          else
-                            Text('Nothing here yet.', style: DuvetType.body.copyWith(color: colors.mutedForeground)),
-                          if (roles.isNotEmpty) ...[
-                            const SizedBox(height: 16),
-                            _Label('Roles in ${spaceName ?? 'this Space'}'),
-                            const SizedBox(height: 8),
-                            Wrap(spacing: 8, runSpacing: 8, children: [for (final r in roles) RoleChip(role: r)]),
-                          ],
-                          if (!me && mutual > 0) ...[
-                            const SizedBox(height: 16),
-                            _Label('Mutual Spaces'),
-                            Text('$mutual', style: DuvetType.body.copyWith(color: colors.foreground)),
-                          ],
+                        if (!m.isBot) ...[
+                          const SizedBox(width: 8),
+                          _SquareButton(
+                            label: isFriend
+                                ? 'Friends'
+                                : asking != null
+                                ? 'Accept request'
+                                : pending
+                                ? 'Friend request sent'
+                                : 'Add friend',
+                            icon: isFriend
+                                ? FLucideIcons.userCheck
+                                : pending && asking == null
+                                ? FLucideIcons.clock
+                                : FLucideIcons.userPlus,
+                            onPressed: isFriend
+                                ? null
+                                : asking != null
+                                ? (_accepting ? null : () => _accept(asking.id))
+                                : pending
+                                ? null
+                                : _addFriend,
+                          ),
                         ],
-                      ),
+                      ],
                     ),
                   ],
-                ),
+                  const SizedBox(height: 16),
+                  Cushion(
+                    padding: const EdgeInsets.all(16),
+                    shadows: tokens.shadowRest,
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        _Label('About'),
+                        const SizedBox(height: 4),
+                        if (m.bio case final bio?)
+                          // With the messages' markdown, as the desktop's About me.
+                          MessageText(
+                            content: bio,
+                            directory: MessageDirectory(
+                              me: context.repository.profile.value?.id,
+                              nameOf: context.repository.nameOf,
+                              emojiOf: (_) => null,
+                            ),
+                            style: DuvetType.body.copyWith(color: colors.foreground),
+                          )
+                        else
+                          Text('Nothing here yet.', style: DuvetType.body.copyWith(color: colors.mutedForeground)),
+                        if (roles.isNotEmpty) ...[
+                          const SizedBox(height: 16),
+                          _Label('Roles in ${spaceName ?? 'this Space'}'),
+                          const SizedBox(height: 8),
+                          Wrap(spacing: 8, runSpacing: 8, children: [for (final r in roles) RoleChip(role: r)]),
+                        ],
+                        if (!me && mutual.isNotEmpty) ...[
+                          const SizedBox(height: 16),
+                          _Label('Mutual Spaces'),
+                          const SizedBox(height: 8),
+                          _MutualSpaces(spaces: mutual),
+                        ],
+                      ],
+                    ),
+                  ),
+                ],
               ),
             ),
           ],
@@ -317,6 +340,43 @@ class _ProfileState extends State<_Profile> {
       },
     );
   }
+}
+
+/// The Spaces the user shares with someone, as a row of their icons, each
+/// named under it.
+class _MutualSpaces extends StatelessWidget {
+  final List<Space> spaces;
+  const _MutualSpaces({required this.spaces});
+
+  @override
+  Widget build(BuildContext context) => SingleChildScrollView(
+    scrollDirection: Axis.horizontal,
+    clipBehavior: Clip.none,
+    child: Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        for (final (i, space) in spaces.indexed) ...[
+          if (i > 0) const SizedBox(width: 8),
+          SizedBox(
+            width: 64,
+            child: Column(
+              children: [
+                SpaceIcon(space: space, size: 44),
+                const SizedBox(height: 6),
+                Text(
+                  space.name,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  textAlign: TextAlign.center,
+                  style: DuvetType.caption.copyWith(color: context.theme.colors.foreground),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ],
+    ),
+  );
 }
 
 class _Label extends StatelessWidget {
@@ -502,8 +562,9 @@ class PersonRow extends StatelessWidget {
 
 enum _FriendsTab { all, pending, sent }
 
-/// Friends: add one by username, then everyone, the requests to the user,
-/// and theirs.
+/// Friends: add one by username; then who asked the user, waiting on an
+/// answer; the friends online now, as faces; everyone else, as a list; and
+/// whom the user asked.
 class FriendsPage extends StatefulWidget {
   const FriendsPage({super.key});
 
@@ -569,7 +630,6 @@ class _FriendsPageState extends State<FriendsPage> {
   Widget build(BuildContext context) {
     final repository = context.repository;
     final colors = context.theme.colors;
-    final tokens = context.duvet;
     final padding = MediaQuery.paddingOf(context);
     return Scaffold(
       backgroundColor: colors.background,
@@ -590,6 +650,8 @@ class _FriendsPageState extends State<FriendsPage> {
             onTap: () => showProfileSheet(context, member: m),
             onLongPress: () => _confirmUnfriend(m),
           );
+          final requests = _tab != _FriendsTab.sent && f.incoming.isNotEmpty;
+          final asked = _tab != _FriendsTab.pending && f.outgoing.isNotEmpty;
           return Stack(
             children: [
               Positioned.fill(
@@ -610,7 +672,10 @@ class _FriendsPageState extends State<FriendsPage> {
                               },
                             ),
                           ),
-                          TextAction(label: 'Add', onPressed: _addByName),
+                          SizedBox(
+                            height: 44,
+                            child: TextAction(label: 'Add', onPressed: _addByName),
+                          ),
                         ],
                       ),
                     ),
@@ -622,43 +687,17 @@ class _FriendsPageState extends State<FriendsPage> {
                           child: Text(_addError!, style: DuvetType.caption.copyWith(color: colors.destructive)),
                         ),
                       ),
-                    // Edge to edge: the tabs scroll to the screen's edge, 16 in at rest.
                     Padding(
-                      padding: const EdgeInsets.only(top: 8),
-                      child: SingleChildScrollView(
-                        scrollDirection: Axis.horizontal,
-                        padding: const EdgeInsets.symmetric(horizontal: 16),
-                        child: Row(
-                          children: [
-                            for (final (t, label) in [
-                              (_FriendsTab.all, 'All ${f.friends.length}'),
-                              (_FriendsTab.pending, 'Pending ${f.incoming.length}'),
-                              (_FriendsTab.sent, 'Sent ${f.outgoing.length}'),
-                            ]) ...[
-                              if (t != _FriendsTab.all) const SizedBox(width: 24),
-                              Semantics(
-                                button: true,
-                                selected: _tab == t,
-                                label: label,
-                                excludeSemantics: true,
-                                onTap: () => setState(() => _tab = t),
-                                child: GestureDetector(
-                                  behavior: HitTestBehavior.opaque,
-                                  onTap: () => setState(() => _tab = t),
-                                  child: Padding(
-                                    padding: const EdgeInsets.symmetric(vertical: 10),
-                                    child: Text(
-                                      label,
-                                      style: DuvetType.label.copyWith(
-                                        color: _tab == t ? tokens.accentText : colors.mutedForeground,
-                                      ),
-                                    ),
-                                  ),
-                                ),
-                              ),
-                            ],
-                          ],
-                        ),
+                      padding: const EdgeInsets.fromLTRB(16, 12, 16, 0),
+                      child: Segmented(
+                        label: 'Show',
+                        value: _tab,
+                        options: {
+                          _FriendsTab.all: 'All ${f.friends.length}',
+                          _FriendsTab.pending: 'Pending ${f.incoming.length}',
+                          _FriendsTab.sent: 'Sent ${f.outgoing.length}',
+                        },
+                        onChanged: (t) => setState(() => _tab = t),
                       ),
                     ),
                     if (_loading && f.friends.isEmpty && f.incoming.isEmpty)
@@ -666,21 +705,20 @@ class _FriendsPageState extends State<FriendsPage> {
                         padding: EdgeInsets.all(24),
                         child: Center(child: FCircularProgress()),
                       ),
-                    if (_tab != _FriendsTab.sent && f.incoming.isNotEmpty) ...[
+                    // What waits on the user first: who asked, to answer.
+                    if (requests) ...[
                       const Overline('Wants to be friends'),
                       for (final r in f.incoming)
                         _RequestRow(
                           request: r,
                           meta: 'Asked ${shortTime(r.at)}',
                           actions: [
-                            IconAction(
-                              icon: FLucideIcons.x,
+                            _DeclineButton(
                               label: 'Decline ${r.person.displayName}',
-                              color: colors.mutedForeground,
                               onPressed: () =>
                                   _act(() => repository.rejectFriendRequest(r.id), 'Couldn’t decline the request'),
                             ),
-                            const SizedBox(width: 4),
+                            const SizedBox(width: 8),
                             DuvetButton(
                               label: 'Accept',
                               onPressed: () =>
@@ -689,31 +727,55 @@ class _FriendsPageState extends State<FriendsPage> {
                           ],
                         ),
                     ],
-                    if (_tab != _FriendsTab.pending && f.outgoing.isNotEmpty) ...[
-                      const Overline('You asked'),
-                      for (final r in f.outgoing)
-                        _RequestRow(
-                          request: r,
-                          meta: 'Sent ${shortTime(r.at)}',
-                          actions: [
-                            TextAction(
-                              label: 'Cancel request',
-                              onPressed: () =>
-                                  _act(() => repository.rejectFriendRequest(r.id), 'Couldn’t cancel the request'),
-                            ),
-                          ],
-                        ),
-                    ],
                     if (_tab == _FriendsTab.all) ...[
+                      // Who's here now, as faces; everyone else, a list.
                       if (online.isNotEmpty) ...[
                         Overline('Online — ${online.length}'),
-                        for (final m in online) friendRow(m),
+                        GridView.builder(
+                          shrinkWrap: true,
+                          physics: const NeverScrollableScrollPhysics(),
+                          padding: const EdgeInsets.symmetric(horizontal: 8),
+                          gridDelegate: SliverGridDelegateWithMaxCrossAxisExtent(
+                            maxCrossAxisExtent: 96,
+                            mainAxisExtent: MemberFace.extent(context),
+                          ),
+                          itemCount: online.length,
+                          itemBuilder: (context, i) {
+                            final m = online[i];
+                            return MemberFace(
+                              member: m,
+                              presence: presence[m.userId],
+                              detail: [presenceText(presence[m.userId]), '@${m.username}'].join(' · '),
+                              onTap: () => showProfileSheet(context, member: m),
+                              onLongPress: () => _confirmUnfriend(m),
+                            );
+                          },
+                        ),
                       ],
                       if (offline.isNotEmpty) ...[
                         Overline('Offline — ${offline.length}'),
                         for (final m in offline) friendRow(m),
                       ],
-                      if (!_loading && f.friends.isEmpty) const ListNote('No friends yet'),
+                      if (!_loading && f.friends.isEmpty && !requests) const ListNote('No friends yet'),
+                    ],
+                    if (asked) ...[
+                      const Overline('You asked'),
+                      for (final r in f.outgoing)
+                        _RequestRow(
+                          request: r,
+                          meta: 'Sent ${shortTime(r.at)}',
+                          quiet: true,
+                          actions: [
+                            SizedBox(
+                              height: 44,
+                              child: TextAction(
+                                label: 'Cancel request',
+                                onPressed: () =>
+                                    _act(() => repository.rejectFriendRequest(r.id), 'Couldn’t cancel the request'),
+                              ),
+                            ),
+                          ],
+                        ),
                     ],
                   ],
                 ),
@@ -759,39 +821,80 @@ class _FriendsPageState extends State<FriendsPage> {
   }
 }
 
+/// A friend request: an incoming one up on a cushion, waiting on the user,
+/// with Decline and Accept; one the user sent lies flat ([quiet]), with
+/// Cancel request.
 class _RequestRow extends StatelessWidget {
   final FriendRequestItem request;
   final String meta;
   final List<Widget> actions;
-  const _RequestRow({required this.request, required this.meta, required this.actions});
+  final bool quiet;
+  const _RequestRow({required this.request, required this.meta, required this.actions, this.quiet = false});
 
   @override
   Widget build(BuildContext context) {
     final colors = context.theme.colors;
+    final row = Row(
+      children: [
+        ExcludeSemantics(
+          child: UserAvatar(name: request.person.displayName, url: request.person.avatarUrl, size: 48),
+        ),
+        const SizedBox(width: 12),
+        Expanded(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                request.person.displayName,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: (quiet ? DuvetType.rowTitle : DuvetType.rowTitleUnread).copyWith(color: colors.foreground),
+              ),
+              Text(meta, maxLines: 1, style: DuvetType.caption.copyWith(color: colors.mutedForeground)),
+            ],
+          ),
+        ),
+        ...actions,
+      ],
+    );
+    if (quiet) {
+      return Padding(padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12), child: row);
+    }
     return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-      child: Row(
-        children: [
-          ExcludeSemantics(
-            child: UserAvatar(name: request.person.displayName, url: request.person.avatarUrl, size: 48),
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+      child: Cushion(radius: DuvetTokens.radiusRow, padding: const EdgeInsets.fromLTRB(8, 12, 8, 12), child: row),
+    );
+  }
+}
+
+/// Decline: a 44pt sunken square with an ×, beside Accept.
+class _DeclineButton extends StatelessWidget {
+  final String label;
+  final VoidCallback onPressed;
+  const _DeclineButton({required this.label, required this.onPressed});
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = context.theme.colors;
+    const radius = BorderRadius.all(Radius.circular(DuvetTokens.radiusButton));
+    return Semantics(
+      container: true,
+      button: true,
+      label: label,
+      excludeSemantics: true,
+      onTap: onPressed,
+      child: Pressable(
+        onTap: onPressed,
+        builder: (context, pressed) => Container(
+          width: 44,
+          height: 44,
+          decoration: const BoxDecoration(borderRadius: radius).copyWith(color: colors.secondary),
+          child: InsetShadow(
+            shadows: pressed ? context.duvet.shadowPressed : context.duvet.shadowWell,
+            borderRadius: radius,
+            child: Icon(FLucideIcons.x, size: 20, color: colors.mutedForeground),
           ),
-          const SizedBox(width: 12),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  request.person.displayName,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: DuvetType.rowTitle.copyWith(color: colors.foreground),
-                ),
-                Text(meta, maxLines: 1, style: DuvetType.caption.copyWith(color: colors.mutedForeground)),
-              ],
-            ),
-          ),
-          ...actions,
-        ],
+        ),
       ),
     );
   }
@@ -801,8 +904,8 @@ class _RequestRow extends StatelessWidget {
 // New conversation
 // -----------------------------------------------------------------------------
 
-/// New conversation: pick people (chips in the To field), name a group if
-/// it's one, then start it.
+/// New conversation: pick people (their faces at the top, a tap takes one
+/// off), name a group if it's one, then start it.
 class NewConversationPage extends StatefulWidget {
   const NewConversationPage({super.key});
 
@@ -888,7 +991,6 @@ class _NewConversationPageState extends State<NewConversationPage> {
   Widget build(BuildContext context) {
     final repository = context.repository;
     final colors = context.theme.colors;
-    final tokens = context.duvet;
     final padding = MediaQuery.paddingOf(context);
     final q = _query.text.trim().toLowerCase();
     // Friends alone, as the desktop offers: the API opens DMs and groups only
@@ -907,73 +1009,19 @@ class _NewConversationPageState extends State<NewConversationPage> {
               keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
               padding: EdgeInsets.only(top: GlassTopBar.heightOf(context) + 8, bottom: padding.bottom + 96),
               children: [
-                Padding(
-                  padding: const EdgeInsets.symmetric(horizontal: 16),
-                  child: Container(
-                    constraints: const BoxConstraints(minHeight: 48),
-                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-                    decoration: BoxDecoration(
-                      color: colors.card,
-                      borderRadius: BorderRadius.circular(DuvetTokens.radiusField),
-                      border: Border.all(color: tokens.hairline),
-                    ),
-                    child: Wrap(
-                      spacing: 6,
-                      runSpacing: 6,
-                      crossAxisAlignment: WrapCrossAlignment.center,
-                      children: [
-                        Text(
-                          'To',
-                          style: DuvetType.caption.copyWith(color: colors.foreground, fontWeight: FontWeight.w500),
-                        ),
-                        for (final p in _picked)
-                          Semantics(
-                            container: true,
-                            button: true,
-                            label: 'Remove ${p.displayName}',
-                            excludeSemantics: true,
-                            onTap: () => _toggle(p),
-                            child: GestureDetector(
-                              onTap: () => _toggle(p),
-                              child: Container(
-                                height: 28,
-                                padding: const EdgeInsets.symmetric(horizontal: 4),
-                                decoration: BoxDecoration(
-                                  color: tokens.accentTint,
-                                  borderRadius: BorderRadius.circular(DuvetTokens.radiusChip),
-                                  border: Border.all(color: tokens.accentText),
-                                ),
-                                child: Row(
-                                  mainAxisSize: MainAxisSize.min,
-                                  children: [
-                                    UserAvatar(name: p.displayName, url: p.avatarUrl, size: 20),
-                                    const SizedBox(width: 6),
-                                    Text(
-                                      p.displayName.split(' ').first,
-                                      style: DuvetType.caption.copyWith(color: tokens.accentText),
-                                    ),
-                                    Icon(FLucideIcons.x, size: 14, color: tokens.accentText),
-                                  ],
-                                ),
-                              ),
-                            ),
-                          ),
-                        ConstrainedBox(
-                          constraints: const BoxConstraints(minWidth: 80, maxWidth: 240),
-                          child: TextField(
-                            controller: _query,
-                            autofocus: true,
-                            cursorColor: tokens.accentText,
-                            style: DuvetType.body.copyWith(color: colors.foreground),
-                            decoration: InputDecoration.collapsed(
-                              hintText: _picked.isEmpty ? 'Name or username' : '',
-                              hintStyle: DuvetType.body.copyWith(color: colors.mutedForeground),
-                            ),
-                          ),
-                        ),
-                      ],
+                // Who it's with so far, as their faces: a tap takes one off.
+                if (_picked.isNotEmpty)
+                  SingleChildScrollView(
+                    scrollDirection: Axis.horizontal,
+                    padding: const EdgeInsets.fromLTRB(12, 0, 12, 12),
+                    child: Row(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [for (final p in _picked) _PickedFace(member: p, onRemove: () => _toggle(p))],
                     ),
                   ),
+                Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 16),
+                  child: SearchField(controller: _query, autofocus: true, hint: 'Name or username'),
                 ),
                 if (group)
                   Padding(
@@ -1027,11 +1075,74 @@ class _NewConversationPageState extends State<NewConversationPage> {
   }
 }
 
+/// Someone picked for a new conversation, at its top: their face with a
+/// small × on its corner (a rounded square: it's a control), their first
+/// name under it. A tap takes them off.
+class _PickedFace extends StatelessWidget {
+  final Member member;
+  final VoidCallback onRemove;
+  const _PickedFace({required this.member, required this.onRemove});
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = context.theme.colors;
+    final tokens = context.duvet;
+    return Semantics(
+      container: true,
+      button: true,
+      label: 'Remove ${member.displayName}',
+      excludeSemantics: true,
+      onTap: onRemove,
+      child: Pressable(
+        onTap: onRemove,
+        builder: (context, _) => SizedBox(
+          width: 68,
+          child: Column(
+            children: [
+              SizedBox.square(
+                dimension: 56,
+                child: Stack(
+                  clipBehavior: Clip.none,
+                  children: [
+                    UserAvatar(name: member.displayName, url: member.avatarUrl, size: 56),
+                    Positioned(
+                      top: -2,
+                      right: -4,
+                      child: Container(
+                        width: 22,
+                        height: 22,
+                        decoration: BoxDecoration(
+                          color: tokens.chosen,
+                          borderRadius: BorderRadius.circular(7),
+                          border: Border.all(color: colors.background, width: 2),
+                        ),
+                        child: Icon(FLucideIcons.x, size: 12, color: tokens.chosenText),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(height: 6),
+              Text(
+                member.displayName.split(' ').first,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: DuvetType.caption.copyWith(color: colors.foreground, fontWeight: FontWeight.w500),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
 // -----------------------------------------------------------------------------
 // Group info
 // -----------------------------------------------------------------------------
 
-/// A group's info: its people (as people: overlapping circles), leave. Its
+/// A group's info, as a profile is: a hero of its people's faces (a group
+/// is people, so it's drawn as people), its name, and the people; leave. Its
 /// owner renames it, and adds and removes people, as the API allows only the
 /// owner.
 class GroupInfoPage extends StatefulWidget {
@@ -1043,6 +1154,9 @@ class GroupInfoPage extends StatefulWidget {
 }
 
 class _GroupInfoPageState extends State<GroupInfoPage> {
+  /// Each face in the hero.
+  static const _face = 72.0;
+
   List<Member> _members = const [];
   bool _friendsAsked = false;
 
@@ -1186,7 +1300,7 @@ class _GroupInfoPageState extends State<GroupInfoPage> {
           group?.title ?? 'Group',
           maxLines: 1,
           overflow: TextOverflow.ellipsis,
-          style: DuvetType.title.copyWith(color: colors.foreground),
+          style: DuvetType.title.copyWith(fontSize: 24, color: colors.foreground),
         );
         return Scaffold(
           backgroundColor: colors.background,
@@ -1194,34 +1308,40 @@ class _GroupInfoPageState extends State<GroupInfoPage> {
             children: [
               Positioned.fill(
                 child: ListView(
-                  padding: EdgeInsets.fromLTRB(16, GlassTopBar.heightOf(context) + 16, 16, padding.bottom + 24),
+                  padding: EdgeInsets.fromLTRB(16, GlassTopBar.heightOf(context) + 8, 16, padding.bottom + 24),
                   children: [
-                    // A group is people, so it's drawn as people.
+                    // The profile's hero: the mascot's slate where a banner
+                    // would be, and the group as people, its faces large
+                    // over the slate's foot.
                     ExcludeSemantics(
-                      child: Center(
-                        child: SizedBox(
-                          width: 56.0 + 24 * (faces.length - 1).clamp(0, 2),
-                          height: 72,
-                          child: Stack(
-                            children: [
-                              for (final (i, m) in faces.indexed)
-                                Positioned(
-                                  left: 24.0 * i,
-                                  top: i.isOdd ? 0 : 12,
-                                  child: DecoratedBox(
-                                    decoration: BoxDecoration(
-                                      shape: BoxShape.circle,
-                                      border: Border.all(color: colors.background, width: 3),
-                                    ),
-                                    child: UserAvatar(name: m.displayName, url: m.avatarUrl, size: 56),
-                                  ),
+                      child: Stack(
+                        clipBehavior: Clip.none,
+                        alignment: Alignment.topCenter,
+                        children: [
+                          Padding(
+                            padding: const EdgeInsets.only(bottom: _face / 2),
+                            child: LayoutBuilder(
+                              builder: (context, constraints) => Container(
+                                height: (constraints.maxWidth / bannerAspect).clamp(0, 140),
+                                decoration: BoxDecoration(
+                                  color: Duvet.slate,
+                                  borderRadius: BorderRadius.circular(DuvetTokens.radiusCard),
                                 ),
-                            ],
+                              ),
+                            ),
                           ),
-                        ),
+                          Positioned(
+                            bottom: 0,
+                            child: FaceStack(
+                              faces: [for (final m in faces) (name: m.displayName, avatarUrl: m.avatarUrl)],
+                              size: _face,
+                              ring: colors.background,
+                            ),
+                          ),
+                        ],
                       ),
                     ),
-                    const SizedBox(height: 12),
+                    const SizedBox(height: 10),
                     Center(
                       child: owner
                           ? Semantics(
@@ -1263,8 +1383,11 @@ class _GroupInfoPageState extends State<GroupInfoPage> {
                           if (owner)
                             GlassRow(
                               label: 'Add people',
-                              leading: Icon(FLucideIcons.userPlus, color: tokens.accentText),
-                              selected: true,
+                              labelColor: tokens.accentText,
+                              leading: SizedBox.square(
+                                dimension: 40,
+                                child: Icon(FLucideIcons.userPlus, color: tokens.accentText),
+                              ),
                               onPressed: _addPeople,
                             ),
                           for (final m in _members)

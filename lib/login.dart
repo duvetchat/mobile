@@ -5,7 +5,8 @@ import 'package:forui/forui.dart';
 import 'account.dart';
 import 'data/scope.dart';
 import 'theme.dart';
-import 'widgets/mascot.dart';
+import 'widgets/chrome.dart';
+import 'widgets/pillow.dart';
 import 'widgets/rows.dart';
 
 class LoginScreen extends StatefulWidget {
@@ -18,13 +19,31 @@ class LoginScreen extends StatefulWidget {
 class _LoginScreenState extends State<LoginScreen> {
   final _email = TextEditingController();
   final _password = TextEditingController();
+  final _emailFocus = FocusNode();
+  final _passwordFocus = FocusNode();
+  bool _show = false;
   bool _busy = false;
   String? _error;
+
+  @override
+  void initState() {
+    super.initState();
+    // The face follows the email as it's typed, and the password's field.
+    for (final l in <Listenable>[_email, _emailFocus, _passwordFocus]) {
+      l.addListener(_changed);
+    }
+  }
+
+  void _changed() {
+    if (mounted) setState(() {});
+  }
 
   @override
   void dispose() {
     _email.dispose();
     _password.dispose();
+    _emailFocus.dispose();
+    _passwordFocus.dispose();
     super.dispose();
   }
 
@@ -72,76 +91,20 @@ class _LoginScreenState extends State<LoginScreen> {
             padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 24),
             child: ConstrainedBox(
               constraints: const BoxConstraints(maxWidth: 400),
-              child: AutofillGroup(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.stretch,
-                  children: [
-                    const Center(child: Mascot(size: 120)),
-                    const SizedBox(height: 20),
-                    Semantics(
-                      header: true,
-                      child: Text(
-                        'Sign in to Duvet',
-                        textAlign: TextAlign.center,
-                        style: DuvetType.largeTitle.copyWith(color: colors.foreground),
-                      ),
-                    ),
-                    const SizedBox(height: 6),
-                    Text(
-                      'A cozy place to talk',
-                      textAlign: TextAlign.center,
-                      style: DuvetType.snippet.copyWith(color: colors.mutedForeground),
-                    ),
-                    const SizedBox(height: 32),
-                    DuvetTextField(
-                      label: 'Email',
-                      controller: _email,
-                      keyboardType: TextInputType.emailAddress,
-                      textInputAction: TextInputAction.next,
-                      autofillHints: const [AutofillHints.email],
-                    ),
-                    const SizedBox(height: 16),
-                    DuvetTextField(
-                      label: 'Password',
-                      controller: _password,
-                      obscure: true,
-                      textInputAction: TextInputAction.done,
-                      autofillHints: const [AutofillHints.password],
-                      onSubmitted: (_) => _submit(),
-                    ),
-                    Align(
-                      alignment: Alignment.centerRight,
-                      child: TextAction(
-                        label: 'Forgot password?',
-                        onPressed: () => _push(const ForgotPasswordScreen()),
-                      ),
-                    ),
-                    if (_error case final error?) ...[
-                      const SizedBox(height: 8),
-                      Semantics(
-                        liveRegion: true,
-                        child: Text(error, style: DuvetType.caption.copyWith(color: colors.error)),
-                      ),
-                    ],
-                    const SizedBox(height: 16),
-                    DuvetButton(
-                      label: 'Sign in',
-                      variant: ButtonVariant.primary,
-                      expand: true,
-                      busy: _busy,
-                      onPressed: _submit,
-                    ),
-                    const SizedBox(height: 16),
-                    Wrap(
-                      alignment: WrapAlignment.center,
-                      crossAxisAlignment: WrapCrossAlignment.center,
-                      children: [
-                        Text('New to Duvet?', style: DuvetType.snippet.copyWith(color: colors.mutedForeground)),
-                        TextAction(label: 'Create an account', onPressed: () => _push(const SignUpScreen())),
-                      ],
-                    ),
-                  ],
-                ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  const Wordmark(),
+                  const SizedBox(height: 20),
+                  // The form inside the mascot: its eyes on the email as
+                  // it's typed, shut over the password, one peeking while
+                  // it's shown.
+                  PillowPanel(
+                    mood: passwordMood(shown: _show, typing: _passwordFocus.hasFocus),
+                    gaze: _show ? const Offset(0.4, 0.7) : gazeAlong(_email.text, typing: _emailFocus.hasFocus),
+                    child: AutofillGroup(child: _form()),
+                  ),
+                ],
               ),
             ),
           ),
@@ -149,4 +112,71 @@ class _LoginScreenState extends State<LoginScreen> {
       ),
     );
   }
+
+  // In the panel, so in night's colors: see [PillowPanel].
+  Widget _form() => Builder(
+    builder: (context) {
+      final colors = context.theme.colors;
+      return Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Semantics(
+            header: true,
+            child: Text(
+              'Sign in to Duvet',
+              textAlign: TextAlign.center,
+              style: DuvetType.title.copyWith(fontSize: 26, color: colors.foreground),
+            ),
+          ),
+          const SizedBox(height: 24),
+          DuvetTextField(
+            label: 'Email',
+            controller: _email,
+            focusNode: _emailFocus,
+            keyboardType: TextInputType.emailAddress,
+            textInputAction: TextInputAction.next,
+            autofillHints: const [AutofillHints.email],
+          ),
+          const SizedBox(height: 16),
+          DuvetTextField(
+            label: 'Password',
+            controller: _password,
+            focusNode: _passwordFocus,
+            obscure: !_show,
+            textInputAction: TextInputAction.done,
+            autofillHints: const [AutofillHints.password],
+            onSubmitted: (_) => _submit(),
+            trailing: IconAction(
+              icon: _show ? FLucideIcons.eyeOff : FLucideIcons.eye,
+              label: _show ? 'Hide password' : 'Show password',
+              color: colors.mutedForeground,
+              onPressed: () => setState(() => _show = !_show),
+            ),
+          ),
+          Align(
+            alignment: Alignment.centerRight,
+            child: TextAction(label: 'Forgot password?', onPressed: () => _push(const ForgotPasswordScreen())),
+          ),
+          if (_error case final error?) ...[
+            const SizedBox(height: 8),
+            Semantics(
+              liveRegion: true,
+              child: Text(error, style: DuvetType.caption.copyWith(color: colors.error)),
+            ),
+          ],
+          const SizedBox(height: 16),
+          DuvetButton(label: 'Sign in', variant: ButtonVariant.primary, expand: true, busy: _busy, onPressed: _submit),
+          const SizedBox(height: 12),
+          Wrap(
+            alignment: WrapAlignment.center,
+            crossAxisAlignment: WrapCrossAlignment.center,
+            children: [
+              Text('New to Duvet?', style: DuvetType.snippet.copyWith(color: colors.mutedForeground)),
+              TextAction(label: 'Create an account', onPressed: () => _push(const SignUpScreen())),
+            ],
+          ),
+        ],
+      );
+    },
+  );
 }

@@ -7,7 +7,11 @@ import 'package:duvet/main.dart';
 import 'package:duvet/search.dart';
 import 'package:duvet/spaces.dart';
 import 'package:duvet/widgets/chrome.dart';
-import 'package:duvet/widgets/rows.dart' show Overline;
+import 'package:duvet/widgets/depth.dart' show Cushion, InsetShadow;
+import 'package:duvet/widgets/mascot.dart';
+import 'package:duvet/widgets/rows.dart' show InVoice, ListRow, Overline, RoomMark, Segmented;
+import 'package:duvet/widgets/sheets.dart' show Byline;
+import 'package:duvet_client/duvet.dart' as duvet;
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
@@ -63,6 +67,8 @@ void main() {
     await tester.pumpAndSettle();
   }
 
+  Finder row(String title) => find.byWidgetPredicate((w) => w is ListRow && w.title == title);
+
   void twoRooms(FakeRepository r) {
     r.spaces.value = const [
       Space(
@@ -92,6 +98,20 @@ void main() {
     expect(spans.cast<TextSpan>().every((s) => s.style?.backgroundColor == null), isTrue);
   });
 
+  test('in one chat\'s search, the matches are on the accent tint too, the rest plain', () {
+    const tint = Color(0x1A5A62DE);
+    final spans = highlighted(
+      'Press the button, press!',
+      'press',
+      const Color(0xFF22243A),
+      tint: tint,
+    ).cast<TextSpan>();
+    expect(
+      [for (final s in spans) (s.text, s.style?.backgroundColor)],
+      [('Press', tint), (' the button, ', null), ('press', tint), ('!', null)],
+    );
+  });
+
   test('invite codes come from links or the code alone', () {
     expect(inviteCodeOf('duvet.chat/invite/paper-club'), 'paper-club');
     expect(inviteCodeOf('https://duvet.chat/invite?code=abc'), 'abc');
@@ -103,11 +123,67 @@ void main() {
     await pumpApp(tester, setUp: twoRooms);
     await openGeneral(tester);
     await tapLabel(tester, 'Channel general, switch channel');
-    // The current room is selected.
+    // The current room is selected: on the chosen slate pill.
     final current = tester.getSemantics(find.bySemanticsLabel(RegExp(r'^# general')).last);
     expect(current.getSemanticsData().flagsCollection.isSelected.toString(), contains('isTrue'));
+    final general = tester.widget<ListRow>(row('general'));
+    expect(general.selected, isTrue);
     await tapLabel(tester, RegExp(r'^# crit'));
     expect(find.text('Crit at 7'), findsOneWidget);
+    semantics.dispose();
+  });
+
+  testWidgets('the Channel Switcher: rooms by category, news on cushions with mentions, a voice room\'s faces', (
+    tester,
+  ) async {
+    final repository = await pumpApp(
+      tester,
+      setUp: (r) {
+        twoRooms(r);
+        r.spaces.value = [
+          Space(
+            id: 's-guild',
+            name: 'Design Guild',
+            sections: [
+              r.spaces.value.single.sections.single,
+              const RoomSection(
+                id: 'cat-voice',
+                name: 'Talk',
+                rooms: [Room(id: 'r-lounge', spaceId: 's-guild', name: 'lounge', kind: RoomKind.voice, position: 2)],
+              ),
+            ],
+          ),
+        ];
+        r.unread.value = {'r-crit'};
+        r.mentions.value = {'r-crit': 2};
+      },
+    );
+    await openGeneral(tester);
+    await tapLabel(tester, 'Channel general, switch channel');
+    expect(find.widgetWithText(Overline, 'Rooms'), findsOneWidget);
+    expect(find.widgetWithText(Overline, 'Talk'), findsOneWidget);
+    // #crit has news: bold, up on its cushion, with the mentions' pill.
+    final crit = tester.widget<ListRow>(row('crit'));
+    expect((crit.unread, crit.mentions), (true, 2));
+    expect(find.descendant(of: row('crit'), matching: find.text('@2')), findsOneWidget);
+    expect(find.bySemanticsLabel(RegExp(r'^# crit, unread, 2 mentions')), findsOneWidget);
+    // The voice room, quiet, then with Maya's face in it.
+    expect(find.bySemanticsLabel(RegExp(r'^lounge, voice room, No one’s here')), findsOneWidget);
+    expect(find.byType(InVoice), findsNothing);
+    repository.voiceSignaling.push(
+      const duvet.VoiceStateUpdatedEvent(
+        duvet.VoiceStateEvent(roomId: 'r-lounge', userId: FakeRepository.maya, joined: true, version: 3),
+      ),
+    );
+    await tester.pumpAndSettle();
+    expect(find.bySemanticsLabel(RegExp(r'^lounge, voice room, 1 in voice, Maya')), findsOneWidget);
+    expect(tester.widget<InVoice>(find.byType(InVoice)).faces.map((f) => f.name), ['Maya']);
+    // Picked, it opens over the chat, as from the Space.
+    await tapLabel(tester, RegExp(r'^lounge, voice room'));
+    expect(find.text('Join voice'), findsOneWidget);
+    await tester.binding.handlePopRoute();
+    await tester.pumpAndSettle();
+    expect(find.text('Pushed the new type ramp'), findsOneWidget);
     semantics.dispose();
   });
 
@@ -121,6 +197,19 @@ void main() {
     expect(repository.searches.last.roomId, 'r-general');
     expect(find.text('1 result in #general'), findsOneWidget);
     expect(find.bySemanticsLabel(RegExp(r'^Leo, .*Pushed the new type ramp')), findsOneWidget);
+    // The match, on the accent tint.
+    final hit = tester.widget<SearchResultRow>(find.byType(SearchResultRow));
+    expect(hit.tinted, isTrue);
+    final marked = <String?>[];
+    for (final t in tester.widgetList<RichText>(
+      find.descendant(of: find.byType(SearchResultRow), matching: find.byType(RichText)),
+    )) {
+      t.text.visitChildren((span) {
+        if (span is TextSpan && span.style?.backgroundColor != null) marked.add(span.text);
+        return true;
+      });
+    }
+    expect(marked, ['ramp']);
 
     await tapLabel(tester, 'Search all of Design Guild');
     expect(repository.searches.last.roomId, isNull);
@@ -180,6 +269,11 @@ void main() {
     );
 
     expect(find.bySemanticsLabel('Jump to Leo’s message'), findsOneWidget);
+    // A card that says who wrote it and when, over the message itself (no bubble's name over it).
+    final card = find.ancestor(of: find.byType(Byline), matching: find.byType(Cushion));
+    expect(card, findsOneWidget);
+    expect(find.descendant(of: card, matching: find.text('Leo')), findsOneWidget);
+    expect(find.descendant(of: card, matching: find.textContaining(' at 09:00')), findsOneWidget);
 
     // A reply from a pin closes the pins, then replies in the chat.
     node.owner!.performAction(
@@ -213,6 +307,16 @@ void main() {
     expect(find.text('Thread'), findsOneWidget);
     expect(find.text('1 reply'), findsOneWidget);
     expect(find.text('Looks great'), findsOneWidget);
+    // The first message on its quiet card, with who wrote it, above the replies.
+    final card = find.ancestor(of: find.byType(Byline), matching: find.byType(InsetShadow)).first;
+    expect(find.descendant(of: find.byType(Byline), matching: find.text('Leo')), findsOneWidget);
+    expect(find.descendant(of: card, matching: find.text('Pushed the new type ramp')), findsOneWidget);
+    expect(find.descendant(of: card, matching: find.text('Looks great')), findsNothing);
+    expect(
+      tester.getBottomLeft(find.text('Pushed the new type ramp')).dy,
+      lessThan(tester.getTopLeft(find.text('1 reply')).dy),
+    );
+    expect(tester.getTopLeft(find.text('1 reply')).dy, lessThan(tester.getTopLeft(find.text('Looks great')).dy));
 
     await tester.enterText(find.byType(EditableText), 'Agreed');
     await tester.pump();
@@ -239,6 +343,56 @@ void main() {
     await tapLabel(tester, 'Messages');
     expect(find.widgetWithText(Overline, 'Spaces'), findsNothing);
     expect(repository.searches.map((q) => q.spaceId), contains('s-guild'));
+    semantics.dispose();
+  });
+
+  testWidgets('global search by kind: people, Spaces and rooms by their shapes, then messages; nothing, the mascot', (
+    tester,
+  ) async {
+    await pumpApp(
+      tester,
+      setUp: (r) {
+        r.people = [...FakeRepository.everyone, const Member(userId: 'u-lola', username: 'lola', alias: 'Lola')];
+        r.spaces.value = [...r.spaces.value, const Space(id: 's-lizards', name: 'Lounge Lizards')];
+        r.history['r-general']!.add(
+          FakeRepository.message('m4', author: FakeRepository.maya, name: 'Maya', text: 'See you in the lounge'),
+        );
+      },
+    );
+    await tester.tap(find.byType(EditableText).first);
+    await tester.pumpAndSettle();
+    expect(find.byType(Mascot), findsOneWidget);
+    await tester.enterText(find.byType(EditableText).first, 'lo');
+    await tester.pump(const Duration(milliseconds: 350));
+    await tester.pumpAndSettle();
+    double top(String header) => tester.getTopLeft(find.widgetWithText(Overline, header)).dy;
+    expect(top('People'), lessThan(top('Spaces')));
+    expect(top('Spaces'), lessThan(top('Rooms')));
+    expect(top('Rooms'), lessThan(top('Messages')));
+    expect(find.bySemanticsLabel('Lola, @lola'), findsOneWidget);
+    expect(row('Lounge Lizards'), findsOneWidget);
+    // The voice room by its rounded square; picked, it opens.
+    expect(find.descendant(of: row('lounge'), matching: find.byType(RoomMark)), findsOneWidget);
+    expect(find.byType(Mascot), findsNothing);
+
+    // Nothing for it: the mascot, and what to try next.
+    await tester.enterText(find.byType(EditableText).first, 'zebra');
+    await tester.pump(const Duration(milliseconds: 350));
+    await tester.pumpAndSettle();
+    expect(find.text('Nothing found for “zebra”'), findsOneWidget);
+    expect(find.byType(Mascot), findsOneWidget);
+    expect(find.text('Try fewer words, or search one chat from its top bar.'), findsOneWidget);
+    // Within one kind, the next step is all of them.
+    await tapLabel(tester, 'People');
+    await tapLabel(tester, 'Search everything');
+    final filters = tester.widget<Segmented<Object?>>(find.byWidgetPredicate((w) => w is Segmented));
+    expect(filters.options[filters.value], 'All');
+
+    await tester.enterText(find.byType(EditableText).first, 'lounge');
+    await tester.pump(const Duration(milliseconds: 350));
+    await tester.pumpAndSettle();
+    await tapLabel(tester, RegExp(r'^lounge, voice room'));
+    expect(find.text('Join voice'), findsOneWidget);
     semantics.dispose();
   });
 

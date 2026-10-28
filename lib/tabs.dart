@@ -332,7 +332,7 @@ class _VoiceNowCard extends StatelessWidget {
               child: Row(
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  _Faces(people: people),
+                  FaceStack(faces: [for (final p in people) (name: p.name, avatarUrl: p.avatarUrl)]),
                   const SizedBox(width: 10),
                   Flexible(
                     child: Column(
@@ -342,7 +342,7 @@ class _VoiceNowCard extends StatelessWidget {
                         Row(
                           mainAxisSize: MainAxisSize.min,
                           children: [
-                            const _AliveDot(),
+                            const AliveDot(),
                             const SizedBox(width: 6),
                             Flexible(
                               child: Text(
@@ -373,65 +373,46 @@ class _VoiceNowCard extends StatelessWidget {
   }
 }
 
-/// The first three faces in a voice room, each overlapping the one before
-/// it, ringed in the card they sit on.
-class _Faces extends StatelessWidget {
-  final List<VoicePerson> people;
-  const _Faces({required this.people});
-
-  static const _size = 28.0;
-  static const _overlap = 8.0;
-
-  @override
-  Widget build(BuildContext context) {
-    final card = context.theme.colors.card;
-    final shown = people.take(3).toList();
-    return SizedBox(
-      width: _size + (shown.length - 1) * (_size - _overlap) + 4,
-      height: _size + 4,
-      child: Stack(
-        children: [
-          for (final (i, p) in shown.indexed)
-            Positioned(
-              left: i * (_size - _overlap),
-              child: Container(
-                padding: const EdgeInsets.all(2),
-                decoration: BoxDecoration(color: card, shape: BoxShape.circle),
-                child: UserAvatar(name: p.name, url: p.avatarUrl, size: _size),
-              ),
-            ),
-        ],
-      ),
-    );
-  }
-}
-
-/// The ice dot of what's alive: someone online, someone in voice.
-class _AliveDot extends StatelessWidget {
-  const _AliveDot();
-
-  @override
-  Widget build(BuildContext context) => Container(
-    width: 8,
-    height: 8,
-    decoration: BoxDecoration(color: context.duvet.alive, shape: BoxShape.circle),
-  );
-}
-
-/// The Launchpad: the user's Spaces as a two-column grid of cards.
+/// The Launchpad: the user's Spaces as a two-column grid of cards (or a list,
+/// or wide cards), each with what's going on in it: who's in its voice rooms,
+/// whether a room has news, its mentions of the user, who's online.
 class SpacesTab extends StatelessWidget {
   const SpacesTab({super.key});
 
   @override
   Widget build(BuildContext context) {
     final repository = context.repository;
+    final voice = context.voice;
     return ListenableBuilder(
-      listenable: Listenable.merge([repository.spaces, repository.unread, repository.status]),
+      listenable: Listenable.merge([
+        repository.spaces,
+        repository.unread,
+        repository.mentions,
+        repository.status,
+        repository.profile,
+        voice,
+      ]),
       builder: (context, _) {
         final prefs = LaunchpadScope.of(context).value;
         final spaces = sortedSpaces(repository.spaces.value, prefs.sort);
         final unread = repository.unread.value;
-        bool news(Space space) => space.rooms.any((r) => unread.contains(r.id));
+        final mentions = repository.mentions.value;
+        // As its directory has them: its rooms' unread marks and mentions,
+        // and who's in its voice rooms, as Chats' "In voice now" names them.
+        // A mention is news too, as a chat's is in Chats.
+        SpaceLife life(Space space) {
+          final at = space.rooms.fold(0, (n, r) => n + (mentions[r.id] ?? 0));
+          return (
+            unread: at > 0 || space.rooms.any((r) => unread.contains(r.id)),
+            mentions: at,
+            inVoice: [
+              for (final room in space.rooms)
+                if (room.kind == RoomKind.voice)
+                  for (final p in voicePeople(repository, voice, room.id)) (name: p.name, avatarUrl: p.avatarUrl),
+            ],
+          );
+        }
+
         void open(Space space) => Navigator.of(context).push(
           MaterialPageRoute<void>(
             builder: (_) => SpaceDirectory(spaceId: space.id, name: space.name),
@@ -467,29 +448,40 @@ class SpacesTab extends StatelessWidget {
                       mainAxisExtent: 160,
                     ),
                     itemCount: spaces.length,
-                    itemBuilder: (context, i) => SpaceCard(
-                      key: ValueKey(spaces[i].id),
-                      space: spaces[i],
-                      unread: news(spaces[i]),
-                      onTap: () => open(spaces[i]),
-                    ),
+                    itemBuilder: (context, i) {
+                      final (:unread, :mentions, :inVoice) = life(spaces[i]);
+                      return SpaceCard(
+                        key: ValueKey(spaces[i].id),
+                        space: spaces[i],
+                        unread: unread,
+                        mentions: mentions,
+                        inVoice: inVoice,
+                        onTap: () => open(spaces[i]),
+                      );
+                    },
                   ),
                 ),
                 SpaceView.list => SliverPadding(
                   padding: const EdgeInsets.only(top: 8),
                   sliver: SliverList.builder(
                     itemCount: spaces.length,
-                    itemBuilder: (context, i) => ListRow(
-                      key: ValueKey(spaces[i].id),
-                      leading: SpaceIcon(space: spaces[i]),
-                      title: spaces[i].name,
-                      snippet: switch (spaces[i].onlineCount) {
-                        final n? => '$n online',
-                        null => null,
-                      },
-                      unread: news(spaces[i]),
-                      onTap: () => open(spaces[i]),
-                    ),
+                    itemBuilder: (context, i) {
+                      final (:unread, :mentions, :inVoice) = life(spaces[i]);
+                      return ListRow(
+                        key: ValueKey(spaces[i].id),
+                        leading: SpaceIcon(space: spaces[i]),
+                        title: spaces[i].name,
+                        snippet: switch (spaces[i].onlineCount) {
+                          final n? => '$n online',
+                          null => null,
+                        },
+                        unread: unread,
+                        mentions: mentions,
+                        detail: inVoice.isEmpty ? null : '${inVoice.length} in voice',
+                        accessory: inVoice.isEmpty ? null : InVoice(faces: inVoice),
+                        onTap: () => open(spaces[i]),
+                      );
+                    },
                   ),
                 ),
                 SpaceView.cards => SliverPadding(
@@ -497,12 +489,17 @@ class SpacesTab extends StatelessWidget {
                   sliver: SliverList.separated(
                     itemCount: spaces.length,
                     separatorBuilder: (_, _) => const SizedBox(height: 12),
-                    itemBuilder: (context, i) => SpaceWideCard(
-                      key: ValueKey(spaces[i].id),
-                      space: spaces[i],
-                      unread: news(spaces[i]),
-                      onTap: () => open(spaces[i]),
-                    ),
+                    itemBuilder: (context, i) {
+                      final (:unread, :mentions, :inVoice) = life(spaces[i]);
+                      return SpaceWideCard(
+                        key: ValueKey(spaces[i].id),
+                        space: spaces[i],
+                        unread: unread,
+                        mentions: mentions,
+                        inVoice: inVoice,
+                        onTap: () => open(spaces[i]),
+                      );
+                    },
                   ),
                 ),
               },
@@ -669,7 +666,10 @@ class _SpaceDirectoryState extends State<SpaceDirectory> {
                                         // accent: the tab bar has the screen's).
                                         RoomKind.voice => ListRow(
                                           key: ValueKey(room.id),
-                                          leading: _VoiceRoomMark(live: voice.participants(room.id).isNotEmpty),
+                                          leading: RoomMark(
+                                            kind: RoomKind.voice,
+                                            live: voice.participants(room.id).isNotEmpty,
+                                          ),
                                           title: room.name,
                                           snippet: voiceSnippet(repository, voice, room.id),
                                           detail: voice.target?.id == room.id ? 'you’re in voice here' : null,
@@ -736,7 +736,7 @@ class _SpaceHeader extends StatelessWidget {
                   const SizedBox(height: 4),
                   Row(
                     children: [
-                      const _AliveDot(),
+                      const AliveDot(),
                       const SizedBox(width: 6),
                       Text('$online online', style: DuvetType.caption.copyWith(color: colors.mutedForeground)),
                     ],
@@ -787,7 +787,7 @@ class _VoiceStage extends StatelessWidget {
                   constraints: const BoxConstraints(minHeight: 44),
                   child: Row(
                     children: [
-                      const _AliveDot(),
+                      const AliveDot(),
                       const SizedBox(width: 8),
                       Expanded(
                         child: Text(
@@ -886,35 +886,6 @@ class _StageFaces extends StatelessWidget {
             );
           }(),
       ],
-    );
-  }
-}
-
-/// A voice room's mark in its row: a small cushion with a speaker, ice while
-/// someone's in.
-class _VoiceRoomMark extends StatelessWidget {
-  final bool live;
-  const _VoiceRoomMark({required this.live});
-
-  @override
-  Widget build(BuildContext context) {
-    final colors = context.theme.colors;
-    final tokens = context.duvet;
-    const radius = BorderRadius.all(Radius.circular(DuvetTokens.radiusField));
-    return SizedBox.square(
-      dimension: 48,
-      child: DecoratedBox(
-        decoration: BoxDecoration(color: live ? tokens.chosen : colors.secondary, borderRadius: radius),
-        child: InsetShadow(
-          shadows: live ? tokens.cushion : tokens.shadowWell,
-          borderRadius: radius,
-          child: Icon(
-            live ? FLucideIcons.audioLines : FLucideIcons.volume2,
-            size: 22,
-            color: live ? tokens.alive : colors.mutedForeground,
-          ),
-        ),
-      ),
     );
   }
 }

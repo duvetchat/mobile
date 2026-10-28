@@ -341,4 +341,11 @@ class DuvetTokens {
 
 extension DuvetTokensContext on BuildContext {
   DuvetTokens get duvet => Duvet.tokens(Theme.of(this).brightness);
+
+  /// A cushion's fill inside a sheet. At night `card` sits under the sheet's
+  /// popover, so what's raised there stands up a step lighter; by day the
+  /// card already reads.
+  Color get cushionOnSheet => Theme.of(this).brightness == Brightness.dark
+      ? Color.alphaBlend(theme.colors.foreground.withValues(alpha: 0.06), duvet.popover)
+      : theme.colors.card;
 }

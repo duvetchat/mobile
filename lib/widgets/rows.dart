@@ -18,7 +18,7 @@ import 'depth.dart';
 /// What has news is puffed up and what's read lies flat: an unread row sits on
 /// a cushion, its name in weight and `ink`, never blue and never a dot.
 /// Pressing sinks it; the selected row (the current channel in the Channel
-/// Switcher) has an `accent-tint` highlight.
+/// Switcher) sits on the slate pill a chosen tab does.
 class ListRow extends StatelessWidget {
   final Widget? leading;
   final String title;
@@ -44,12 +44,24 @@ class ListRow extends StatelessWidget {
   /// At the end of the snippet line: the unread mentions, as "@2". Weight
   /// and count only, never a blue dot.
   final int mentions;
+
+  /// At the end of the snippet line, before the mentions: e.g. who's in a
+  /// Space's voice rooms. A look only: [detail] says it.
+  final Widget? accessory;
+
+  /// Room kept clear at the row's end, inside its cushion, for a button laid
+  /// over it: a missed call's Call back.
+  final double endInset;
   final VoidCallback? onTap;
   final VoidCallback? onLongPress;
 
   /// A member's banner, faintly behind the row: see [memberBanner].
   final String? banner;
   final bool bannerOffline;
+
+  /// The cushion an unread row sits on, where `card` wouldn't stand up from
+  /// what's under it: a sheet's popover, at night.
+  final Color? cushionColor;
 
   /// Whether screen readers meet the row as a node of its own. False gives
   /// its name and tap to the node around it instead: a reorderable list's
@@ -68,11 +80,14 @@ class ListRow extends StatelessWidget {
     this.selected = false,
     this.detail,
     this.mentions = 0,
+    this.accessory,
+    this.endInset = 0,
     this.onTap,
     this.onLongPress,
     this.banner,
     this.bannerOffline = false,
     this.ownNode = true,
+    this.cushionColor,
     super.key,
   });
 
@@ -80,10 +95,11 @@ class ListRow extends StatelessWidget {
   Widget build(BuildContext context) {
     final colors = context.theme.colors;
     final tokens = context.duvet;
-    final secondary = colors.mutedForeground;
     final detail = [if (mentions > 0) mentions == 1 ? '1 mention' : '$mentions mentions', ?this.detail].join(', ');
-    final name = selected ? tokens.accentText : colors.foreground;
-    final compact = leading == null && snippet == null && mentions == 0;
+    // On the chosen pill, everything takes its ink; the quieter parts fade.
+    final name = selected ? tokens.chosenText : colors.foreground;
+    final secondary = selected ? tokens.chosenText.withValues(alpha: 0.72) : colors.mutedForeground;
+    final compact = leading == null && snippet == null && mentions == 0 && accessory == null;
     final label = [
       '${hash ? '# ' : ''}$title${titleSuffix == null ? '' : ' $titleSuffix'}',
       if (unread) 'unread',
@@ -112,23 +128,23 @@ class ListRow extends StatelessWidget {
               color: pressed
                   ? colors.secondary
                   : selected
-                  ? tokens.accentTint
+                  ? tokens.chosen
                   : unread
-                  ? colors.card
+                  ? cushionColor ?? colors.card
                   : Colors.transparent,
               image: memberBanner(context, banner, offline: bannerOffline),
               borderRadius: BorderRadius.circular(DuvetTokens.radiusRow),
-              boxShadow: unread && !pressed && !selected ? tokens.shadowRest : null,
+              boxShadow: (unread || selected) && !pressed ? tokens.shadowRest : null,
             ),
             child: InsetShadow(
               shadows: pressed
                   ? tokens.shadowPressed
-                  : unread && !selected
+                  : unread || selected
                   ? tokens.cushion
                   : const [],
               borderRadius: BorderRadius.circular(DuvetTokens.radiusRow),
               child: Padding(
-                padding: EdgeInsets.symmetric(horizontal: 8, vertical: compact ? 10 : 12),
+                padding: EdgeInsets.fromLTRB(8, compact ? 10 : 12, 8 + endInset, compact ? 10 : 12),
                 child: Row(
                   children: [
                     if (leading != null) ...[leading!, const SizedBox(width: 12)],
@@ -160,7 +176,9 @@ class ListRow extends StatelessWidget {
                                   ),
                                   maxLines: 1,
                                   overflow: TextOverflow.ellipsis,
-                                  style: (unread ? DuvetType.rowTitleUnread : DuvetType.rowTitle).copyWith(color: name),
+                                  style: (unread || selected ? DuvetType.rowTitleUnread : DuvetType.rowTitle).copyWith(
+                                    color: name,
+                                  ),
                                 ),
                               ),
                               if (trailing != null) ...[
@@ -169,7 +187,7 @@ class ListRow extends StatelessWidget {
                               ],
                             ],
                           ),
-                          if (snippet != null || mentions > 0) ...[
+                          if (snippet != null || mentions > 0 || accessory != null) ...[
                             const SizedBox(height: 4),
                             Row(
                               // Beside a longer snippet, the mentions stay on its first line.
@@ -182,10 +200,13 @@ class ListRow extends StatelessWidget {
                                     snippet ?? '',
                                     maxLines: snippetLines,
                                     overflow: TextOverflow.ellipsis,
-                                    style: DuvetType.snippet.copyWith(color: unread ? colors.foreground : secondary),
+                                    style: DuvetType.snippet.copyWith(
+                                      color: unread && !selected ? colors.foreground : secondary,
+                                    ),
                                   ),
                                 ),
-                                if (mentions > 0) ...[const SizedBox(width: 8), _MentionCount(mentions)],
+                                if (accessory case final accessory?) ...[const SizedBox(width: 8), accessory],
+                                if (mentions > 0) ...[const SizedBox(width: 8), MentionCount(mentions)],
                               ],
                             ),
                           ],
@@ -205,9 +226,9 @@ class ListRow extends StatelessWidget {
 
 /// "@2": unread mentions, the one thing in a list that takes the accent: a
 /// small cushion in it.
-class _MentionCount extends StatelessWidget {
+class MentionCount extends StatelessWidget {
   final int count;
-  const _MentionCount(this.count);
+  const MentionCount(this.count, {super.key});
 
   @override
   Widget build(BuildContext context) {
@@ -487,14 +508,54 @@ class SpaceIcon extends StatelessWidget {
   }
 }
 
+/// Someone's face where only their name and picture matter: in a Space's
+/// voice rooms, say.
+typedef PersonFace = ({String name, String? avatarUrl});
+
+/// What a Space has going on, as its card or row says it: who's in its voice
+/// rooms, its unread mentions of the user, and whether any room has news.
+typedef SpaceLife = ({bool unread, int mentions, List<PersonFace> inVoice});
+
+/// A Space's card or row as screen readers hear it: "Design Guild, unread,
+/// 2 mentions, 3 in voice, 12 online".
+String spaceLabel(Space space, SpaceLife life) => [
+  space.name,
+  if (life.unread) 'unread',
+  ?_mentionsText(life.mentions),
+  if (life.inVoice.isNotEmpty) '${life.inVoice.length} in voice',
+  if (space.onlineCount case final n?) '$n online',
+].join(', ');
+
+String? _mentionsText(int n) => n <= 0
+    ? null
+    : n == 1
+    ? '1 mention'
+    : '$n mentions';
+
 /// A Launchpad tile: a raised cushion, `radius-card`, 160pt tall, the Space's
-/// icon, name (2 lines at most) and online count. Pressing sinks it.
+/// icon and who's in its voice rooms, its name (2 lines at most), its online
+/// count and its mentions. What has news has its name in weight. Pressing
+/// sinks it.
 class SpaceCard extends StatelessWidget {
   final Space space;
   final bool unread;
+
+  /// Unread mentions of the user in its rooms: a pill in the accent.
+  final int mentions;
+
+  /// Who's in its voice rooms: their faces, after an ice dot.
+  final List<PersonFace> inVoice;
   final VoidCallback onTap;
   final VoidCallback? onLongPress;
-  const SpaceCard({required this.space, required this.onTap, this.unread = false, this.onLongPress, super.key});
+  const SpaceCard({
+    required this.space,
+    required this.onTap,
+    this.unread = false,
+    this.mentions = 0,
+    this.inVoice = const [],
+    this.onLongPress,
+    super.key,
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -503,7 +564,7 @@ class SpaceCard extends StatelessWidget {
     final online = space.onlineCount == null ? null : '${space.onlineCount} online';
     return Semantics(
       button: true,
-      label: [space.name, if (unread) 'unread', ?online].join(', '),
+      label: spaceLabel(space, (unread: unread, mentions: mentions, inVoice: inVoice)),
       excludeSemantics: true,
       onTap: onTap,
       onLongPress: onLongPress,
@@ -527,19 +588,30 @@ class SpaceCard extends StatelessWidget {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  SpaceIcon(space: space),
-                  const SizedBox(height: 12),
+                  Row(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      SpaceIcon(space: space),
+                      const Spacer(),
+                      if (inVoice.isNotEmpty) InVoice(faces: inVoice),
+                    ],
+                  ),
+                  // Two lines of name and the mentions' pill still fit.
+                  const SizedBox(height: 8),
                   Flexible(
                     child: Text(
                       space.name,
                       maxLines: 2,
                       overflow: TextOverflow.ellipsis,
-                      style: (unread ? DuvetType.rowTitleUnread : DuvetType.rowTitle).copyWith(
+                      style: (unread || mentions > 0 ? DuvetType.rowTitleUnread : DuvetType.rowTitle).copyWith(
                         color: colors.foreground,
                       ),
                     ),
                   ),
-                  if (online != null) ...[const SizedBox(height: 4), _Online(online)],
+                  if (online != null || mentions > 0) ...[
+                    const SizedBox(height: 4),
+                    _OnlineLine(online: online, mentions: mentions),
+                  ],
                 ],
               ),
             ),
@@ -550,39 +622,157 @@ class SpaceCard extends StatelessWidget {
   }
 }
 
-/// "12 online": the count of who's here, after the ice dot of someone alive.
-class _Online extends StatelessWidget {
-  final String text;
-  const _Online(this.text);
+/// "12 online" after the ice dot of someone alive, and at the line's end the
+/// mentions' pill.
+class _OnlineLine extends StatelessWidget {
+  final String? online;
+  final int mentions;
+  const _OnlineLine({required this.online, required this.mentions});
 
   @override
   Widget build(BuildContext context) => Row(
     children: [
-      Container(
-        width: 8,
-        height: 8,
-        decoration: BoxDecoration(color: context.duvet.alive, shape: BoxShape.circle),
-      ),
-      const SizedBox(width: 6),
-      Flexible(
-        child: Text(
-          text,
-          maxLines: 1,
-          overflow: TextOverflow.ellipsis,
-          style: DuvetType.caption.copyWith(color: context.theme.colors.mutedForeground),
+      if (online case final online?) ...[
+        const AliveDot(),
+        const SizedBox(width: 6),
+        Expanded(
+          child: Text(
+            online,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: DuvetType.caption.copyWith(color: context.theme.colors.mutedForeground),
+          ),
         ),
-      ),
+      ] else
+        const Spacer(),
+      if (mentions > 0) ...[const SizedBox(width: 8), MentionCount(mentions)],
     ],
   );
 }
 
+/// The ice dot of what's alive: someone online, someone in voice.
+class AliveDot extends StatelessWidget {
+  const AliveDot({super.key});
+
+  @override
+  Widget build(BuildContext context) => Container(
+    width: 8,
+    height: 8,
+    decoration: BoxDecoration(color: context.duvet.alive, shape: BoxShape.circle),
+  );
+}
+
+/// The first three faces of [faces], each overlapping the one before it,
+/// ringed in [ring] (the card they sit on, by default). Decoration: what
+/// holds them says who they are.
+class FaceStack extends StatelessWidget {
+  final List<PersonFace> faces;
+  final double size;
+  final Color? ring;
+  const FaceStack({required this.faces, this.size = 28, this.ring, super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    final ring = this.ring ?? context.theme.colors.card;
+    final overlap = size * 0.3;
+    final shown = faces.take(3).toList();
+    if (shown.isEmpty) return const SizedBox.shrink();
+    return ExcludeSemantics(
+      child: SizedBox(
+        width: size + (shown.length - 1) * (size - overlap) + 4,
+        height: size + 4,
+        child: Stack(
+          children: [
+            for (final (i, f) in shown.indexed)
+              Positioned(
+                left: i * (size - overlap),
+                child: Container(
+                  padding: const EdgeInsets.all(2),
+                  decoration: BoxDecoration(color: ring, shape: BoxShape.circle),
+                  child: UserAvatar(name: f.name, url: f.avatarUrl, size: size),
+                ),
+              ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+/// Who's in a Space's voice rooms, on its card or row: the ice dot of
+/// what's alive, then their first faces.
+class InVoice extends StatelessWidget {
+  final List<PersonFace> faces;
+  const InVoice({required this.faces, super.key});
+
+  @override
+  Widget build(BuildContext context) => Row(
+    mainAxisSize: MainAxisSize.min,
+    children: [
+      const AliveDot(),
+      const SizedBox(width: 4),
+      FaceStack(faces: faces, size: 24),
+    ],
+  );
+}
+
+/// A room's mark, where a row needs a leading shape: a rounded square
+/// (rooms are not people), sunken with a `#` for a text room or a speaker for
+/// a voice room; a voice room with someone in it sits up on the slate
+/// cushion, its sound waves in ice. Decoration: the row says what it is.
+class RoomMark extends StatelessWidget {
+  final RoomKind kind;
+  final bool live;
+  final double size;
+  const RoomMark({required this.kind, this.live = false, this.size = 48, super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = context.theme.colors;
+    final tokens = context.duvet;
+    final on = live && kind == RoomKind.voice;
+    const radius = BorderRadius.all(Radius.circular(DuvetTokens.radiusField));
+    return ExcludeSemantics(
+      child: SizedBox.square(
+        dimension: size,
+        child: DecoratedBox(
+          decoration: BoxDecoration(color: on ? tokens.chosen : colors.secondary, borderRadius: radius),
+          child: InsetShadow(
+            shadows: on ? tokens.cushion : tokens.shadowWell,
+            borderRadius: radius,
+            child: Icon(
+              switch (kind) {
+                RoomKind.text => FLucideIcons.hash,
+                RoomKind.voice when on => FLucideIcons.audioLines,
+                RoomKind.voice => FLucideIcons.volume2,
+              },
+              size: size * 0.46,
+              color: on ? tokens.alive : colors.mutedForeground,
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
 /// A Space full width, the Spaces tab's Cards view: its banner over its icon,
-/// name and who's online. Without a banner, the rest alone.
+/// name, who's online and who's in its voice rooms, and its mentions.
+/// Without a banner, the rest alone.
 class SpaceWideCard extends StatelessWidget {
   final Space space;
   final bool unread;
+  final int mentions;
+  final List<PersonFace> inVoice;
   final VoidCallback onTap;
-  const SpaceWideCard({required this.space, required this.onTap, this.unread = false, super.key});
+  const SpaceWideCard({
+    required this.space,
+    required this.onTap,
+    this.unread = false,
+    this.mentions = 0,
+    this.inVoice = const [],
+    super.key,
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -591,7 +781,7 @@ class SpaceWideCard extends StatelessWidget {
     final online = space.onlineCount == null ? null : '${space.onlineCount} online';
     return Semantics(
       button: true,
-      label: [space.name, if (unread) 'unread', ?online].join(', '),
+      label: spaceLabel(space, (unread: unread, mentions: mentions, inVoice: inVoice)),
       excludeSemantics: true,
       onTap: onTap,
       child: Pressable(
@@ -626,15 +816,24 @@ class SpaceWideCard extends StatelessWidget {
                         child: Column(
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
-                            Text(
-                              space.name,
-                              maxLines: 2,
-                              overflow: TextOverflow.ellipsis,
-                              style: (unread ? DuvetType.rowTitleUnread : DuvetType.rowTitle).copyWith(
-                                color: colors.foreground,
-                              ),
+                            Row(
+                              children: [
+                                Expanded(
+                                  child: Text(
+                                    space.name,
+                                    maxLines: 2,
+                                    overflow: TextOverflow.ellipsis,
+                                    style: (unread || mentions > 0 ? DuvetType.rowTitleUnread : DuvetType.rowTitle)
+                                        .copyWith(color: colors.foreground),
+                                  ),
+                                ),
+                                if (inVoice.isNotEmpty) ...[const SizedBox(width: 8), InVoice(faces: inVoice)],
+                              ],
                             ),
-                            if (online != null) ...[const SizedBox(height: 4), _Online(online)],
+                            if (online != null || mentions > 0) ...[
+                              const SizedBox(height: 4),
+                              _OnlineLine(online: online, mentions: mentions),
+                            ],
                           ],
                         ),
                       ),

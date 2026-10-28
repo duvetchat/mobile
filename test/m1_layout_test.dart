@@ -254,15 +254,31 @@ void main() {
       expect(dayLabel(DateTime(2025, 12, 31), now), '31 December 2025');
     });
 
-    testWidgets('member rows: 48pt avatars and the status as a caption', (tester) async {
+    testWidgets('members: those online as 56pt faces with their names, the rest as rows of 48pt avatars and the '
+        'status as a caption', (tester) async {
       final semantics = tester.ensureSemantics();
       await openMaya(tester);
       await tester.tap(find.bySemanticsLabel('More'));
       await tester.pumpAndSettle();
       await tester.tap(find.bySemanticsLabel('Members'));
       await tester.pumpAndSettle();
-      expect(find.text('Online · @maya'), findsOneWidget);
-      expect(tester.getSize(find.byType(PresenceAvatar).first), const Size(48, 48));
+      // In the sheet: the chat's top bar shows Maya's face too.
+      Finder avatar(String userId) => find.descendant(
+        of: find.byType(DraggableScrollableSheet),
+        matching: find.byWidgetPredicate((w) => w is PresenceAvatar && w.member.userId == userId),
+      );
+      // Maya is online: her face, named under it, read as her row was.
+      expect(tester.getSize(avatar(FakeRepository.maya)), const Size(56, 56));
+      expect(find.text('Maya'), findsWidgets);
+      expect(find.bySemanticsLabel('Maya, Online · @maya'), findsOneWidget);
+      expect(find.text('Online · @maya'), findsNothing);
+      // The user's presence isn't reported: a row, its caption under the name.
+      expect(tester.getSize(avatar(FakeRepository.me.id)), const Size(48, 48));
+      expect(find.text('@gaby · you'), findsOneWidget);
+      expect(
+        tester.getTopLeft(avatar(FakeRepository.maya)).dy,
+        lessThan(tester.getTopLeft(avatar(FakeRepository.me.id)).dy),
+      );
       semantics.dispose();
     });
   });

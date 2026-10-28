@@ -5,11 +5,13 @@ import 'package:duvet/data/models.dart';
 import 'package:duvet/data/appearance.dart';
 import 'package:duvet/main.dart';
 import 'package:duvet/widgets/code_highlight.dart';
+import 'package:duvet/widgets/glass.dart';
 import 'package:duvet/widgets/message_content.dart';
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:forui/forui.dart' show FLucideIcons;
 
 import 'support/fake_repository.dart';
 
@@ -427,6 +429,36 @@ void main() {
     await tapLabel(tester, 'Delete');
     expect(repository.deletes, ['n1']);
     expect(notice, findsNothing);
+    semantics.dispose();
+  });
+
+  testWidgets('a message held: reactions as chips over it, its actions grouped under it, Delete apart', (tester) async {
+    await openMaya(tester);
+    await longPress(tester, 'Yes, way better than the side panels.');
+    Finder surfaceOf(String label) =>
+        find.ancestor(of: find.widgetWithText(GlassRow, label), matching: find.byType(GlassSurface));
+    // Delete on a surface of its own, in the danger color, under the rest.
+    expect(surfaceOf('Delete'), findsOneWidget);
+    expect(find.descendant(of: surfaceOf('Delete'), matching: find.byType(GlassRow)), findsOneWidget);
+    expect(tester.widget<GlassRow>(find.widgetWithText(GlassRow, 'Delete')).destructive, isTrue);
+    expect(find.descendant(of: surfaceOf('Reply'), matching: find.widgetWithText(GlassRow, 'Delete')), findsNothing);
+    expect(
+      find.descendant(of: surfaceOf('Reply'), matching: find.widgetWithText(GlassRow, 'Copy text')),
+      findsOneWidget,
+    );
+    expect(tester.getTopLeft(surfaceOf('Delete')).dy, greaterThan(tester.getBottomLeft(surfaceOf('Reply')).dy));
+    // The quick reactions are chips of their own, over the bubble, on no shared bar.
+    final quick = find.bySemanticsLabel('More reactions');
+    expect(quick, findsOneWidget);
+    expect(tester.getSize(quick), const Size(44, 44));
+    expect(
+      find.ancestor(of: find.byIcon(FLucideIcons.smilePlus).last, matching: find.byType(GlassSurface)),
+      findsNothing,
+    );
+    expect(
+      tester.getBottomLeft(quick).dy,
+      lessThanOrEqualTo(tester.getTopLeft(find.text('Yes, way better than the side panels.').last).dy),
+    );
     semantics.dispose();
   });
 

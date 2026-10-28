@@ -22,21 +22,35 @@ import 'widgets/chrome.dart';
 import 'widgets/depth.dart';
 import 'widgets/glass.dart';
 import 'widgets/mascot.dart';
+import 'widgets/pillow.dart';
 import 'widgets/rows.dart';
 
 void _toast(BuildContext context, String text) {
   if (context.mounted) showFToast(context: context, title: Text(text), duration: const Duration(seconds: 3));
 }
 
-/// A form screen: a back chevron (or none), the large title and its line,
-/// the fields, then its one Primary action at the bottom.
+/// A form screen: a back chevron (or none), then the form inside the
+/// mascot's pillow, as the sign-in's: its title and line under the face, the
+/// fields, its one Primary action, and what follows it.
 class _FormPage extends StatelessWidget {
   final String title;
   final String? lead;
   final List<Widget> children;
   final Widget? action;
   final List<Widget> after;
-  const _FormPage({required this.title, required this.children, this.lead, this.action, this.after = const []});
+
+  /// The face's mood and where it looks: see [PillowPanel].
+  final FaceMood mood;
+  final Offset gaze;
+  const _FormPage({
+    required this.title,
+    required this.children,
+    this.lead,
+    this.action,
+    this.after = const [],
+    this.mood = FaceMood.look,
+    this.gaze = Offset.zero,
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -50,18 +64,46 @@ class _FormPage extends StatelessWidget {
             child: ListView(
               padding: EdgeInsets.fromLTRB(24, padding.top + DuvetTokens.sizeTopBar, 24, padding.bottom + 24),
               children: [
-                Semantics(
-                  header: true,
-                  child: Text(title, style: DuvetType.largeTitle.copyWith(color: colors.foreground)),
+                Center(
+                  child: ConstrainedBox(
+                    constraints: const BoxConstraints(maxWidth: 400),
+                    child: PillowPanel(
+                      mood: mood,
+                      gaze: gaze,
+                      // In the panel, so in night's colors.
+                      child: Builder(
+                        builder: (context) {
+                          final colors = context.theme.colors;
+                          return Column(
+                            crossAxisAlignment: CrossAxisAlignment.stretch,
+                            children: [
+                              Semantics(
+                                header: true,
+                                child: Text(
+                                  title,
+                                  textAlign: TextAlign.center,
+                                  style: DuvetType.title.copyWith(fontSize: 26, color: colors.foreground),
+                                ),
+                              ),
+                              if (lead != null) ...[
+                                const SizedBox(height: 8),
+                                Text(
+                                  lead!,
+                                  textAlign: TextAlign.center,
+                                  style: DuvetType.snippet.copyWith(color: colors.mutedForeground),
+                                ),
+                              ],
+                              const SizedBox(height: 24),
+                              ...children,
+                              if (action != null) ...[const SizedBox(height: 24), action!],
+                              ...after,
+                            ],
+                          );
+                        },
+                      ),
+                    ),
+                  ),
                 ),
-                if (lead != null) ...[
-                  const SizedBox(height: 8),
-                  Text(lead!, style: DuvetType.snippet.copyWith(color: colors.mutedForeground)),
-                ],
-                const SizedBox(height: 32),
-                ...children,
-                if (action != null) ...[const SizedBox(height: 32), action!],
-                ...after,
               ],
             ),
           ),
@@ -119,6 +161,9 @@ class _SignUpScreenState extends State<SignUpScreen> {
   final _username = TextEditingController();
   final _email = TextEditingController();
   final _password = TextEditingController();
+  final _usernameFocus = FocusNode();
+  final _emailFocus = FocusNode();
+  final _passwordFocus = FocusNode();
   bool _show = false;
   bool _busy = false;
   String? _failure;
@@ -126,8 +171,8 @@ class _SignUpScreenState extends State<SignUpScreen> {
   @override
   void initState() {
     super.initState();
-    for (final c in [_username, _email, _password]) {
-      c.addListener(() => setState(() {}));
+    for (final l in <Listenable>[_username, _email, _password, _usernameFocus, _emailFocus, _passwordFocus]) {
+      l.addListener(() => setState(() {}));
     }
   }
 
@@ -136,6 +181,9 @@ class _SignUpScreenState extends State<SignUpScreen> {
     _username.dispose();
     _email.dispose();
     _password.dispose();
+    _usernameFocus.dispose();
+    _emailFocus.dispose();
+    _passwordFocus.dispose();
     super.dispose();
   }
 
@@ -163,12 +211,20 @@ class _SignUpScreenState extends State<SignUpScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final colors = context.theme.colors;
+    // What it draws is in the pillow's panel: night's colors, in either theme.
+    final colors = Duvet.dark;
     final strength = passwordStrength(_password.text);
     final ready = _validName && _validEmail && _password.text.length >= 8;
     return _FormPage(
       title: 'Create your account',
       lead: 'One account for every Space you join.',
+      // As the sign-in's: the eyes on what's typed, shut over the password.
+      mood: passwordMood(shown: _show, typing: _passwordFocus.hasFocus),
+      gaze: _show
+          ? const Offset(0.4, 0.7)
+          : _usernameFocus.hasFocus
+          ? gazeAlong(_username.text, typing: true)
+          : gazeAlong(_email.text, typing: _emailFocus.hasFocus),
       action: DuvetButton(
         label: 'Create account',
         variant: ButtonVariant.primary,
@@ -191,6 +247,7 @@ class _SignUpScreenState extends State<SignUpScreen> {
         DuvetTextField(
           label: 'Username',
           controller: _username,
+          focusNode: _usernameFocus,
           autofocus: true,
           autofillHints: const [AutofillHints.newUsername],
           textInputAction: TextInputAction.next,
@@ -200,6 +257,7 @@ class _SignUpScreenState extends State<SignUpScreen> {
         DuvetTextField(
           label: 'Email',
           controller: _email,
+          focusNode: _emailFocus,
           keyboardType: TextInputType.emailAddress,
           autofillHints: const [AutofillHints.email],
           textInputAction: TextInputAction.next,
@@ -209,6 +267,7 @@ class _SignUpScreenState extends State<SignUpScreen> {
         DuvetTextField(
           label: 'Password',
           controller: _password,
+          focusNode: _passwordFocus,
           obscure: !_show,
           autofillHints: const [AutofillHints.newPassword],
           trailing: IconAction(
@@ -338,8 +397,9 @@ class _VerifyEmailPageState extends State<VerifyEmailPage> {
 
   @override
   Widget build(BuildContext context) {
-    final colors = context.theme.colors;
-    final tokens = context.duvet;
+    // What it draws is in the pillow's panel: night's colors, in either theme.
+    final colors = Duvet.dark;
+    const tokens = DuvetTokens.dark;
     return ValueListenableBuilder(
       valueListenable: context.repository.profile,
       builder: (context, profile, _) {
@@ -438,8 +498,9 @@ class _ForgotPasswordScreenState extends State<ForgotPasswordScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final colors = context.theme.colors;
-    final tokens = context.duvet;
+    // What it draws is in the pillow's panel: night's colors, in either theme.
+    final colors = Duvet.dark;
+    const tokens = DuvetTokens.dark;
     return _FormPage(
       title: 'Reset your password',
       lead: 'Enter your email and we’ll send you a link. It works for 30 minutes.',

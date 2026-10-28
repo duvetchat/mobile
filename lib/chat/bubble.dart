@@ -15,6 +15,11 @@ class _Bubble extends StatelessWidget {
 
   /// The copy shown over the scrim with its actions: the bubble alone.
   final bool lifted;
+
+  /// On a card that says who wrote it and when (a pin, a thread's first
+  /// message): its text on the card itself, no bubble, no name over it, no
+  /// avatar beside it, no time under it.
+  final bool plain;
   final MessageDirectory directory;
   final String? stickerName;
 
@@ -78,6 +83,7 @@ class _Bubble extends StatelessWidget {
     required this.onOpenReactors,
     required this.onLongPress,
     this.lifted = false,
+    this.plain = false,
     this.stickerName,
     this.editing = false,
     this.flash = false,
@@ -159,6 +165,18 @@ class _Bubble extends StatelessWidget {
                 style: DuvetType.body.copyWith(color: colors.foreground),
               ),
             )
+          else if (plain && !lifted)
+            GestureDetector(
+              onDoubleTap: onDoubleTap,
+              child: MessageText(
+                content: m.content,
+                directory: directory,
+                style: DuvetType.body.copyWith(color: colors.foreground),
+                onMention: onOpenMention,
+                onRoom: onOpenRoom,
+                messageActions: anchor == null ? const {} : actionsAt(anchor),
+              ),
+            )
           else
             Pressable(
               scale: 0.98,
@@ -214,7 +232,7 @@ class _Bubble extends StatelessWidget {
       ];
 
       Widget content = Column(
-        crossAxisAlignment: mine ? CrossAxisAlignment.end : CrossAxisAlignment.start,
+        crossAxisAlignment: mine && !plain ? CrossAxisAlignment.end : CrossAxisAlignment.start,
         mainAxisSize: MainAxisSize.min,
         children: [
           for (final (i, part) in parts.indexed)
@@ -226,7 +244,7 @@ class _Bubble extends StatelessWidget {
       );
       // A mention with no text bubble to outline (a bot's components, a
       // sticker): the outline goes round the whole message.
-      if (mentionsMe && !textBubble) {
+      if (mentionsMe && !textBubble && !plain) {
         content = Container(
           padding: const EdgeInsets.all(4),
           decoration: BoxDecoration(
@@ -248,7 +266,7 @@ class _Bubble extends StatelessWidget {
     }
 
     // The time under the run's last bubble; "edited" under the edited one.
-    final meta = [if (lastOfRun) _time(m.createdAt), if (m.edited) 'edited'].join(' · ');
+    final meta = [if (lastOfRun && !plain) _time(m.createdAt), if (m.edited) 'edited'].join(' · ');
     final status = switch (entry.delivery) {
       _ when editing => _Caption(icon: FLucideIcons.pencil, text: 'Editing', style: secondary),
       _Delivery.failed => _FailedActions(onRetry: tooLarge ? null : onRetry, onDiscard: onDiscard, tooLarge: tooLarge),
@@ -268,9 +286,9 @@ class _Bubble extends StatelessWidget {
     };
 
     final column = Column(
-      crossAxisAlignment: mine ? CrossAxisAlignment.end : CrossAxisAlignment.start,
+      crossAxisAlignment: mine && !plain ? CrossAxisAlignment.end : CrossAxisAlignment.start,
       children: [
-        if (firstOfRun && !mine)
+        if (firstOfRun && !mine && !plain)
           GestureDetector(
             onTap: onOpenAuthor,
             child: Padding(
@@ -342,6 +360,13 @@ class _Bubble extends StatelessWidget {
     final gap = EdgeInsets.only(top: firstOfRun ? 8 : 0);
     final onSwipe = repliable && gesture != ReplyGesture.doubleTap ? onReply : null;
     final left = gesture != ReplyGesture.swipeRight;
+    if (plain) {
+      return _SwipeToReply(
+        onReply: onSwipe,
+        left: left,
+        child: Align(alignment: Alignment.centerLeft, child: highlighted),
+      );
+    }
     if (mine) {
       return Padding(
         padding: gap,

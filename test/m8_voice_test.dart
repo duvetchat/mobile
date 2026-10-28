@@ -13,6 +13,8 @@ import 'package:duvet/widgets/avatar.dart';
 import 'package:duvet/widgets/chrome.dart';
 import 'package:duvet/widgets/facehash.dart';
 import 'package:duvet/widgets/media.dart';
+import 'package:duvet/voice_room.dart' show LiveStrip;
+import 'package:duvet/widgets/rows.dart' show AliveDot, FaceStack, SpaceCard;
 import 'package:duvet_client/duvet.dart' as duvet;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -211,6 +213,76 @@ void main() {
     await finish(tester, app);
   });
 
+  testWidgets('the Calls tab: the week\'s missed calls first, under Missed, with Call back; the rest by day', (
+    tester,
+  ) async {
+    final semantics = tester.ensureSemantics();
+    final app = await pumpApp(tester);
+    // Oldest first: each one recorded goes on top. It's Friday 23 October, 10:00.
+    for (final (id, title, outcome, at) in [
+      ('c-leo', 'Leo', CallOutcome.missed, DateTime(2026, 10, 10, 9)),
+      ('c-maya', 'Maya', CallOutcome.answered, DateTime(2026, 10, 22, 18, 5)),
+      ('c-maya', 'Maya', CallOutcome.missed, DateTime(2026, 10, 23, 8, 30)),
+    ]) {
+      app.voice.history.add(CallRecord(conversationId: id, title: title, outgoing: true, outcome: outcome, at: at));
+    }
+    await tester.tap(find.descendant(of: find.byType(DuvetTabBar), matching: find.text('Calls')));
+    await settle(tester);
+
+    double top(Finder f) => tester.getTopLeft(f).dy;
+    expect(find.text('Missed'), findsOneWidget);
+    expect(find.text('Missed call'), findsNWidgets(2));
+    expect(find.text('Call back'), findsOneWidget, reason: 'the one missed this week');
+    expect(top(find.text('Missed')), lessThan(top(find.text('Call back'))));
+    expect(top(find.text('Call back')), lessThan(top(find.text('Yesterday'))));
+    expect(top(find.text('Yesterday')), lessThan(top(find.text('Outgoing'))));
+    // Two weeks ago, under its day: flat, with the time it was, and a plain Call.
+    expect(top(find.text('Outgoing')), lessThan(top(find.text('Saturday, 10 October'))));
+    expect(top(find.text('Saturday, 10 October')), lessThan(top(find.text('Leo'))));
+    expect(find.text('09:00'), findsOneWidget);
+    expect(find.bySemanticsLabel(RegExp(r'^Leo, unread')), findsNothing);
+    expect(find.bySemanticsLabel(RegExp(r'^Maya, unread, Missed call')), findsOneWidget);
+    expect(find.textContaining('Duvet keeps no call history'), findsOneWidget);
+
+    // Call back calls, as the row's Call does.
+    await tester.tap(find.text('Call back'));
+    await settle(tester);
+    expect(app.gateway.types.first, 'CALL_INITIATE');
+    expect(app.gateway.last('CALL_INITIATE')!['conversation_id'], 'c-maya');
+    semantics.dispose();
+    await finish(tester, app);
+  });
+
+  testWidgets('the Spaces tab shows each Space\'s life: who\'s in its voice rooms, its mentions, who\'s online', (
+    tester,
+  ) async {
+    final semantics = tester.ensureSemantics();
+    final app = await pumpApp(tester);
+    await tester.tap(find.descendant(of: find.byType(DuvetTabBar), matching: find.text('Spaces')));
+    await tester.pumpAndSettle();
+    expect(find.bySemanticsLabel('Design Guild, 1 online'), findsOneWidget);
+    expect(find.byType(FaceStack), findsNothing);
+
+    app.gateway.push(state(FakeRepository.maya, 3));
+    app.repository.mentions.value = {'r-general': 2};
+    await tester.pumpAndSettle();
+    expect(find.bySemanticsLabel('Design Guild, unread, 2 mentions, 1 in voice, 1 online'), findsOneWidget);
+    expect(find.text('@2'), findsOneWidget);
+    final faces = tester.widget<FaceStack>(find.byType(FaceStack));
+    expect(faces.faces.map((f) => f.name), ['Maya']);
+    final name = tester.widget<Text>(find.descendant(of: find.byType(SpaceCard), matching: find.text('Design Guild')));
+    expect(name.style?.fontWeight, FontWeight.w700);
+
+    // She leaves, and the mention is read: as it was.
+    app.gateway.push(state(FakeRepository.maya, 4, joined: false));
+    app.repository.mentions.value = const {};
+    await tester.pumpAndSettle();
+    expect(find.bySemanticsLabel('Design Guild, 1 online'), findsOneWidget);
+    expect(find.byType(FaceStack), findsNothing);
+    semantics.dispose();
+    await finish(tester, app);
+  });
+
   testWidgets('signing out while a call rings takes its screen away', (tester) async {
     final app = await pumpApp(tester);
     app.gateway.push(
@@ -373,8 +445,14 @@ void main() {
     );
     await tester.tap(find.text('Maya'));
     await tester.pumpAndSettle();
-    // Who is in it.
+    // Who is in it, in words and by her face after the ice dot.
     expect(find.text('Call in progress · Maya'), findsOneWidget);
+    final strip = find.byType(LiveStrip);
+    expect(find.descendant(of: strip, matching: find.byType(AliveDot)), findsOneWidget);
+    expect(
+      tester.widget<FaceStack>(find.descendant(of: strip, matching: find.byType(FaceStack))).faces.map((f) => f.name),
+      ['Maya'],
+    );
 
     await tester.tap(find.text('Join'));
     await settle(tester);
@@ -382,6 +460,54 @@ void main() {
     // The call screen, Maya and the user in it.
     expect(find.bySemanticsLabel(RegExp('^Call with Maya')), findsOneWidget);
     expect(find.byWidgetPredicate((w) => w is Facehash && w.name == 'Maya'), findsWidgets);
+    await finish(tester, app);
+  });
+
+  testWidgets('a room\'s top bar shows its Space\'s voice room while people are in it; Join goes in and opens it', (
+    tester,
+  ) async {
+    final semantics = tester.ensureSemantics();
+    final app = await pumpApp(tester);
+    await openLounge(tester);
+    await tester.tap(find.text('# general'));
+    await tester.pumpAndSettle();
+    // The Space's voice rooms are quiet: nothing in the bar.
+    expect(find.byType(LiveStrip), findsNothing);
+
+    app.gateway.push(state(FakeRepository.maya, 3));
+    await tester.pumpAndSettle();
+    final strip = find.byType(LiveStrip);
+    expect(find.descendant(of: strip, matching: find.text('lounge · Maya')), findsOneWidget);
+    expect(find.descendant(of: strip, matching: find.byType(AliveDot)), findsOneWidget);
+    expect(
+      tester.widget<FaceStack>(find.descendant(of: strip, matching: find.byType(FaceStack))).faces.map((f) => f.name),
+      ['Maya'],
+    );
+
+    // Join, as the room's own Join voice: in, and the room open.
+    await tester.tap(find.bySemanticsLabel('Join lounge'));
+    await settle(tester);
+    expect(app.gateway.types.first, 'VOICE_JOIN');
+    expect(app.voice.target, const RoomVoice(spaceId: 's-guild', roomId: 'r-lounge'));
+    expect(find.bySemanticsLabel('Mute'), findsOneWidget);
+
+    // Back in the chat, the user is in it: Open, which joins nothing more.
+    await tester.binding.handlePopRoute();
+    await settle(tester);
+    expect(find.descendant(of: strip, matching: find.text('lounge · You, Maya')), findsOneWidget);
+    final sent = app.gateway.sent.length;
+    await tester.tap(find.bySemanticsLabel('Open lounge'));
+    await settle(tester);
+    expect(app.gateway.types.skip(sent), isNot(contains('VOICE_JOIN')));
+    expect(find.bySemanticsLabel('Mute'), findsOneWidget);
+
+    // She leaves, the user too: the bar is quiet again.
+    app.voice.leave();
+    app.gateway.push(state(FakeRepository.maya, 4, joined: false));
+    await tester.binding.handlePopRoute();
+    await settle(tester);
+    expect(find.byType(LiveStrip), findsNothing);
+    semantics.dispose();
     await finish(tester, app);
   });
 

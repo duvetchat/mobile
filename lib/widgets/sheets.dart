@@ -5,50 +5,97 @@ import 'package:forui/forui.dart';
 
 import '../data/models.dart';
 import '../data/scope.dart';
+import '../tabs.dart' show voiceSnippet;
 import '../theme.dart';
+import '../voice_room.dart' show voicePeople;
+import 'avatar.dart';
+import 'bot_ui.dart';
+import 'depth.dart';
 import 'glass.dart';
 import 'message_content.dart';
 import 'rows.dart';
 
-/// The Channel Switcher: the Space's directory in a glass sheet, the current
-/// room selected. Answers the room picked.
+/// The Channel Switcher: the Space's rooms in a glass sheet, by category.
+/// What has news sits up on a cushion, its name in weight, with the
+/// mentions' pill; a voice room shows who's in it; the current room is on the
+/// chosen slate pill. Answers the room picked.
 Future<Room?> showChannelSwitcher(BuildContext context, {required Space space, required String current}) =>
     showGlassSheet<Room>(
       context,
       label: space.name,
       builder: (context, scroll) {
         final repository = context.repository;
+        final voice = context.voice;
         repository.loadLatest([
           for (final r in space.rooms)
             if (r.kind == RoomKind.text) r.target,
         ]);
         return ListenableBuilder(
-          listenable: Listenable.merge([repository.unread, repository.latest]),
+          listenable: Listenable.merge([repository.unread, repository.latest, repository.mentions, voice]),
           builder: (context, _) {
             final unread = repository.unread.value;
             final latest = repository.latest.value;
+            final mentions = repository.mentions.value;
             final me = repository.profile.value?.id;
+            final cushion = context.cushionOnSheet;
+            Widget row(Room room) => switch (room.kind) {
+              RoomKind.text => ListRow(
+                key: ValueKey(room.id),
+                title: room.name,
+                hash: true,
+                selected: room.id == current,
+                unread: unread.contains(room.id),
+                cushionColor: cushion,
+                mentions: mentions[room.id] ?? 0,
+                snippet: switch (latest[room.id]) {
+                  final m? => '${m.authorId == me ? 'You' : m.authorName}: ${repository.previewOf(m)}',
+                  null => null,
+                },
+                onTap: () => Navigator.of(context).pop(room),
+              ),
+              RoomKind.voice => () {
+                final people = voicePeople(repository, voice, room.id);
+                return ListRow(
+                  key: ValueKey(room.id),
+                  leading: RoomMark(kind: RoomKind.voice, live: people.isNotEmpty, size: 40),
+                  title: room.name,
+                  snippet: voiceSnippet(repository, voice, room.id),
+                  detail: people.isEmpty ? 'voice room' : 'voice room, ${people.length} in voice',
+                  accessory: people.isEmpty
+                      ? null
+                      : InVoice(faces: [for (final p in people) (name: p.name, avatarUrl: p.avatarUrl)]),
+                  onTap: () => Navigator.of(context).pop(room),
+                );
+              }(),
+            };
             return ListView(
               controller: scroll,
               padding: const EdgeInsets.only(bottom: 24),
               children: [
-                SheetTitle(title: space.name),
-                for (final section in space.sections)
-                  if (section.rooms.any((r) => r.kind == RoomKind.text)) ...[
-                    Overline(section.name ?? 'Rooms'),
-                    for (final room in section.rooms)
-                      if (room.kind == RoomKind.text)
-                        ListRow(
-                          title: room.name,
-                          hash: true,
-                          selected: room.id == current,
-                          unread: unread.contains(room.id),
-                          snippet: switch (latest[room.id]) {
-                            final m? => '${m.authorId == me ? 'You' : m.authorName}: ${repository.previewOf(m)}',
-                            null => null,
-                          },
-                          onTap: () => Navigator.of(context).pop(room),
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(16, 4, 16, 0),
+                  child: Row(
+                    children: [
+                      SpaceIcon(space: space, size: 40),
+                      const SizedBox(width: 12),
+                      Expanded(
+                        child: Semantics(
+                          header: true,
+                          child: Text(
+                            space.name,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: DuvetType.title.copyWith(color: context.theme.colors.foreground),
+                          ),
                         ),
+                      ),
+                    ],
+                  ),
+                ),
+                for (final section in space.sections)
+                  if (section.rooms.isNotEmpty) ...[
+                    Overline(section.name ?? 'Rooms'),
+                    for (final room in section.rooms) row(room),
                   ],
               ],
             );
@@ -186,16 +233,18 @@ class _PinsState extends State<_Pins> {
           for (final m in pins)
             Padding(
               padding: const EdgeInsets.only(bottom: 12),
-              child: Container(
-                padding: const EdgeInsets.fromLTRB(4, 4, 4, 8),
-                decoration: BoxDecoration(
-                  color: colors.card,
-                  borderRadius: BorderRadius.circular(DuvetTokens.radiusButton),
-                  boxShadow: tokens.shadowRest,
-                ),
+              child: Cushion(
+                color: context.cushionOnSheet,
+                // The message's own 4pt inset lines its text up with the byline.
+                padding: const EdgeInsets.fromLTRB(8, 12, 4, 0),
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.stretch,
                   children: [
+                    Padding(
+                      padding: const EdgeInsets.fromLTRB(4, 0, 8, 0),
+                      child: Byline(message: m),
+                    ),
+                    const SizedBox(height: 4),
                     widget.message(m),
                     Row(
                       children: [
@@ -209,14 +258,21 @@ class _PinsState extends State<_Pins> {
                             child: GestureDetector(
                               behavior: HitTestBehavior.opaque,
                               onTap: () => Navigator.of(context).pop(m),
-                              child: Padding(
-                                padding: const EdgeInsets.fromLTRB(12, 10, 12, 10),
-                                child: Text(
-                                  'Jump to message',
-                                  style: DuvetType.caption.copyWith(
-                                    color: tokens.accentText,
-                                    fontWeight: FontWeight.w500,
-                                  ),
+                              child: Container(
+                                height: 44,
+                                padding: const EdgeInsets.only(left: 4),
+                                child: Row(
+                                  children: [
+                                    Text(
+                                      'Jump to message',
+                                      style: DuvetType.caption.copyWith(
+                                        color: tokens.accentText,
+                                        fontWeight: FontWeight.w700,
+                                      ),
+                                    ),
+                                    const SizedBox(width: 4),
+                                    Icon(FLucideIcons.arrowRight, size: 14, color: tokens.accentText),
+                                  ],
                                 ),
                               ),
                             ),
@@ -241,6 +297,69 @@ class _PinsState extends State<_Pins> {
   }
 }
 
+/// Who wrote a message and when, over it on a card (a pin, a thread's first
+/// message): their face (a bot's square), their name, the day and time.
+class Byline extends StatelessWidget {
+  final ChatMessage message;
+
+  /// Their face or name tapped: their profile.
+  final VoidCallback? onAuthor;
+  const Byline({required this.message, this.onAuthor, super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = context.theme.colors;
+    final m = message;
+    final t = m.createdAt;
+    final when = '${dayLabel(t)} at ${t.hour.toString().padLeft(2, '0')}:${t.minute.toString().padLeft(2, '0')}';
+    final line = Row(
+      children: [
+        ExcludeSemantics(
+          child: m.fromBot
+              ? const BotAvatar(size: 32)
+              : UserAvatar(name: m.authorName, url: m.authorAvatarUrl, size: 32),
+        ),
+        const SizedBox(width: 10),
+        Expanded(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                children: [
+                  Flexible(
+                    child: Text(
+                      m.authorName,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: DuvetType.rowTitle.copyWith(fontSize: 15, color: colors.foreground),
+                    ),
+                  ),
+                  if (m.fromBot || m.fromWebhook) ...[const SizedBox(width: 6), BotTag(webhook: m.fromWebhook)],
+                ],
+              ),
+              Text(
+                when,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: DuvetType.caption.copyWith(color: colors.mutedForeground),
+              ),
+            ],
+          ),
+        ),
+      ],
+    );
+    if (onAuthor == null) return line;
+    return Semantics(
+      container: true,
+      button: true,
+      label: '${m.authorName}’s profile, $when',
+      excludeSemantics: true,
+      onTap: onAuthor,
+      child: GestureDetector(behavior: HitTestBehavior.opaque, onTap: onAuthor, child: line),
+    );
+  }
+}
+
 class _UnpinButton extends StatelessWidget {
   final String name;
   final VoidCallback onPressed;
@@ -255,8 +374,9 @@ class _UnpinButton extends StatelessWidget {
     onTap: onPressed,
     child: GestureDetector(
       onTap: onPressed,
+      behavior: HitTestBehavior.opaque,
       child: SizedBox.square(
-        dimension: 40,
+        dimension: 44,
         child: Icon(FLucideIcons.pinOff, size: 20, color: context.theme.colors.mutedForeground),
       ),
     ),

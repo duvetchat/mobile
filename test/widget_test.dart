@@ -6,6 +6,7 @@ import 'package:duvet/members_sheet.dart';
 import 'package:duvet/widgets/avatar.dart';
 import 'package:duvet/widgets/chrome.dart';
 import 'package:duvet/widgets/facehash.dart';
+import 'package:duvet/widgets/pillow.dart';
 import 'package:duvet/widgets/rows.dart' show Overline;
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -31,15 +32,52 @@ void main() {
 
     await tester.enterText(find.byType(EditableText).at(0), 'gaby@duvet.chat');
     await tester.enterText(find.byType(EditableText).at(1), 'wrong');
+    // The form sits in the mascot's pillow, under the wordmark: below the
+    // fold of the test's 800 × 600 window.
+    await tester.ensureVisible(find.text('Sign in'));
     await tester.tap(find.text('Sign in'));
     await tester.pumpAndSettle();
     expect(find.text('Couldn’t reach Duvet. Check your connection.'), findsOneWidget);
 
     await tester.enterText(find.byType(EditableText).at(1), 'secret');
+    await tester.ensureVisible(find.text('Sign in'));
     await tester.tap(find.text('Sign in'));
     await tester.pumpAndSettle();
     expect(find.text('Maya'), findsOneWidget);
     expect(find.text('4 members'), findsOneWidget);
+  });
+
+  testWidgets('the sign-in\'s face follows the email, shuts its eyes over the password, and peeks while it shows', (
+    tester,
+  ) async {
+    final semantics = tester.ensureSemantics();
+    await pumpApp(tester, signedIn: false);
+    PillowFace face() => tester.widget(find.byType(PillowFace));
+    expect((face().mood, face().gaze), (FaceMood.look, Offset.zero));
+
+    await tester.enterText(find.byType(EditableText).at(0), 'g');
+    await tester.pumpAndSettle();
+    final short = face().gaze;
+    expect(short.dy, greaterThan(0), reason: 'down at the field');
+    await tester.enterText(find.byType(EditableText).at(0), 'gaby@duvet.chat');
+    await tester.pumpAndSettle();
+    expect(face().gaze.dx, greaterThan(short.dx), reason: 'along the text as it grows');
+    expect(face().mood, FaceMood.look);
+
+    await tester.enterText(find.byType(EditableText).at(1), 'secret');
+    await tester.pumpAndSettle();
+    expect(face().mood, FaceMood.shut);
+    expect(tester.widget<EditableText>(find.byType(EditableText).at(1)).obscureText, isTrue);
+
+    await tester.ensureVisible(find.bySemanticsLabel('Show password'));
+    await tester.tap(find.bySemanticsLabel('Show password'));
+    await tester.pumpAndSettle();
+    expect(face().mood, FaceMood.peek);
+    expect(tester.widget<EditableText>(find.byType(EditableText).at(1)).obscureText, isFalse);
+    await tester.tap(find.bySemanticsLabel('Hide password'));
+    await tester.pumpAndSettle();
+    expect(face().mood, FaceMood.shut);
+    semantics.dispose();
   });
 
   // forui's delegates bring material_ui's localizations, and the framework's TextField reads its own: without
@@ -51,6 +89,7 @@ void main() {
 
     await tester.enterText(find.byType(EditableText).at(0), 'gaby@duvet.chat');
     await tester.enterText(find.byType(EditableText).at(1), 'secret');
+    await tester.ensureVisible(find.text('Sign in'));
     await tester.tap(find.text('Sign in'));
     await tester.pumpAndSettle();
     expect(find.text('Maya'), findsOneWidget);
