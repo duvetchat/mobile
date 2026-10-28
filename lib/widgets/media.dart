@@ -11,6 +11,7 @@ import 'package:record/record.dart' as rec;
 import 'package:video_player/video_player.dart';
 
 import '../data/models.dart';
+import '../data/ogg.dart';
 import '../theme.dart';
 import 'depth.dart';
 
@@ -682,7 +683,8 @@ class RecordVoiceRecorder implements VoiceRecorder {
     final file = File(path);
     final bytes = await file.readAsBytes();
     unawaited(file.delete().then((_) {}, onError: (_) {}));
-    return (bytes: bytes, format: _format, length: DateTime.now().difference(started));
+    // Android's Ogg muxer puts each packet's start where its end goes, which Firefox rejects (data/ogg.dart).
+    return (bytes: recordingToUpload(bytes, _format), format: _format, length: DateTime.now().difference(started));
   }
 
   @override
