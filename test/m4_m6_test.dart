@@ -7,6 +7,7 @@ import 'package:duvet/main.dart';
 import 'package:duvet/search.dart';
 import 'package:duvet/spaces.dart';
 import 'package:duvet/widgets/chrome.dart';
+import 'package:duvet/widgets/rows.dart' show Overline;
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
@@ -228,15 +229,15 @@ void main() {
     await tester.enterText(find.byType(EditableText).first, 'ma');
     await tester.pump(const Duration(milliseconds: 350));
     await tester.pumpAndSettle();
-    expect(find.text('PEOPLE'), findsOneWidget);
+    expect(find.widgetWithText(Overline, 'People'), findsOneWidget);
     expect(find.bySemanticsLabel('Maya, @maya'), findsOneWidget);
 
     await tester.enterText(find.byType(EditableText).first, 'design');
     await tester.pump(const Duration(milliseconds: 350));
     await tester.pumpAndSettle();
-    expect(find.text('SPACES'), findsOneWidget);
+    expect(find.widgetWithText(Overline, 'Spaces'), findsOneWidget);
     await tapLabel(tester, 'Messages');
-    expect(find.text('SPACES'), findsNothing);
+    expect(find.widgetWithText(Overline, 'Spaces'), findsNothing);
     expect(repository.searches.map((q) => q.spaceId), contains('s-guild'));
     semantics.dispose();
   });

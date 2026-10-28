@@ -345,9 +345,9 @@ class _Check extends StatelessWidget {
       width: 24,
       height: 24,
       decoration: BoxDecoration(
-        color: on ? Duvet.accent : null,
+        color: on ? colors.primary : null,
         borderRadius: BorderRadius.circular(DuvetTokens.radiusChip),
-        border: Border.all(color: on ? Duvet.accent : colors.mutedForeground, width: 1.5),
+        border: Border.all(color: on ? colors.primary : colors.mutedForeground, width: 1.5),
       ),
       child: on ? Icon(FLucideIcons.check, size: 16, color: colors.primaryForeground) : null,
     );
@@ -687,21 +687,21 @@ class BotAvatar extends StatelessWidget {
 
 /// The quiet tag after a bot's name.
 class BotTag extends StatelessWidget {
-  /// A webhook's message: WEBHOOK, as on the desktop.
+  /// A webhook's message: Webhook, as on the desktop.
   final bool webhook;
   const BotTag({this.webhook = false, super.key});
 
   @override
   Widget build(BuildContext context) {
-    final colors = context.theme.colors;
+    final tokens = context.duvet;
     return Container(
-      height: 16,
-      padding: const EdgeInsets.symmetric(horizontal: 4),
+      height: 18,
+      padding: const EdgeInsets.symmetric(horizontal: 6),
       alignment: Alignment.center,
-      decoration: BoxDecoration(color: colors.secondary, borderRadius: BorderRadius.circular(4)),
+      decoration: BoxDecoration(color: tokens.chosen, borderRadius: BorderRadius.circular(6)),
       child: Text(
-        webhook ? 'WEBHOOK' : 'BOT',
-        style: DuvetType.tabLabel.copyWith(fontSize: 10, fontWeight: FontWeight.w700, color: colors.foreground),
+        webhook ? 'Webhook' : 'Bot',
+        style: DuvetType.tabLabel.copyWith(fontWeight: FontWeight.w700, color: tokens.chosenText, height: 1),
       ),
     );
   }
@@ -1004,7 +1004,7 @@ class _BotInviteCardState extends State<BotInviteCard> {
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 ExcludeSemantics(
-                  child: Text('ADD A BOT', style: DuvetType.overline.copyWith(color: colors.mutedForeground)),
+                  child: Text('Add a bot', style: DuvetType.overline.copyWith(color: colors.mutedForeground)),
                 ),
                 const SizedBox(height: 12),
                 Row(

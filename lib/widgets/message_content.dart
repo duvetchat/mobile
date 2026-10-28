@@ -162,7 +162,7 @@ class _MessageTextState extends State<MessageText> {
         ? const Color(0x29FFFFFF)
         : dark
         ? const Color(0x14FFFFFF)
-        : const Color(0x0F141416);
+        : const Color(0x0F22243A);
     final links = <String>[];
     // The people mentioned where a mention shows (not in code, a link's text
     // or a hidden spoiler), in order, each once: their IDs and names.
@@ -777,7 +777,7 @@ class _Badge extends StatelessWidget {
   @override
   Widget build(BuildContext context) => Container(
     padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
-    decoration: BoxDecoration(color: const Color(0xB3141416), borderRadius: BorderRadius.circular(8)),
+    decoration: BoxDecoration(color: Duvet.night.withValues(alpha: 0.72), borderRadius: BorderRadius.circular(8)),
     child: Text(
       text,
       style: DuvetType.tabLabel.copyWith(color: Colors.white, fontWeight: FontWeight.w700),
@@ -1074,8 +1074,8 @@ class _ImageViewerState extends State<ImageViewer> with TickerProviderStateMixin
   // either would take a pinch with one finger still.
   bool get _pinching => _fingers.length > 1;
 
-  static const _ink = Color(0xFFF2F1EE);
-  static const _ground = Color(0xFF0A0A0B);
+  static const _ink = Duvet.moon;
+  static const _ground = Duvet.nightDeep;
 
   @override
   void initState() {
@@ -1443,7 +1443,7 @@ class _ImageViewerState extends State<ImageViewer> with TickerProviderStateMixin
                                   if (widget.gallery.length > 1)
                                     Text(
                                       '${_index + 1} of ${widget.gallery.length}',
-                                      style: DuvetType.caption.copyWith(color: const Color(0xFF949392)),
+                                      style: DuvetType.caption.copyWith(color: Duvet.dark.mutedForeground),
                                     ),
                                 ],
                               ),
@@ -1522,7 +1522,7 @@ class _DarkGlass extends StatelessWidget {
     child: BackdropFilter(
       filter: glassBackdrop(16),
       child: DecoratedBox(
-        decoration: BoxDecoration(color: const Color(0x8C111113), border: edge),
+        decoration: BoxDecoration(color: Duvet.night.withValues(alpha: 0.55), border: edge),
         child: child,
       ),
     ),

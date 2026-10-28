@@ -5,7 +5,7 @@ import 'package:forui/forui.dart';
 import 'account.dart';
 import 'data/scope.dart';
 import 'theme.dart';
-import 'widgets/facehash.dart';
+import 'widgets/mascot.dart';
 import 'widgets/rows.dart';
 
 class LoginScreen extends StatefulWidget {
@@ -76,8 +76,8 @@ class _LoginScreenState extends State<LoginScreen> {
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.stretch,
                   children: [
-                    const Center(child: Facehash(name: 'Duvet', size: 72)),
-                    const SizedBox(height: 16),
+                    const Center(child: Mascot(size: 120)),
+                    const SizedBox(height: 20),
                     Semantics(
                       header: true,
                       child: Text(
@@ -85,6 +85,12 @@ class _LoginScreenState extends State<LoginScreen> {
                         textAlign: TextAlign.center,
                         style: DuvetType.largeTitle.copyWith(color: colors.foreground),
                       ),
+                    ),
+                    const SizedBox(height: 6),
+                    Text(
+                      'A cozy place to talk',
+                      textAlign: TextAlign.center,
+                      style: DuvetType.snippet.copyWith(color: colors.mutedForeground),
                     ),
                     const SizedBox(height: 32),
                     DuvetTextField(

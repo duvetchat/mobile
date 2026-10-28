@@ -293,7 +293,7 @@ class _InviteCardState extends State<InviteCard> {
               children: [
                 ExcludeSemantics(
                   child: Text(
-                    'YOU’RE INVITED TO A SPACE',
+                    'You’re invited to a Space',
                     style: DuvetType.overline.copyWith(color: colors.mutedForeground),
                   ),
                 ),

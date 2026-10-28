@@ -245,14 +245,17 @@ void main() {
       await pumpApp(tester, setUp: (r) => r.spaces.value = [_guild(banner: 'https://example.invalid/banner.png')]);
       await openGuild(tester);
       expect(find.byType(SpaceBanner), findsOneWidget);
-      expect(tester.getTopLeft(find.byType(SpaceBanner)).dy, lessThan(tester.getTopLeft(find.text('ROOMS')).dy));
+      expect(
+        tester.getTopLeft(find.byType(SpaceBanner)).dy,
+        lessThan(tester.getTopLeft(find.widgetWithText(Overline, 'Rooms')).dy),
+      );
       semantics.dispose();
     });
 
     testWidgets('categories show empty, and fold away and open again', (tester) async {
       final repository = await pumpApp(tester, setUp: (r) => r.spaces.value = [_guild()]);
       await openGuild(tester);
-      expect(find.text('ARCHIVE'), findsOneWidget);
+      expect(find.text('Archive'), findsOneWidget);
       expect(find.text('lounge'), findsOneWidget);
       final voice = find.byKey(const ValueKey('category-c-voice'));
       expect(
@@ -317,7 +320,7 @@ void main() {
         ],
       );
       await openGuild(tester);
-      expect(find.text('SOON'), findsOneWidget);
+      expect(find.text('Soon'), findsOneWidget);
       expect(find.text('No rooms here yet'), findsNothing);
       semantics.dispose();
     });
@@ -348,13 +351,13 @@ void main() {
           ..presence.value = {...r.presence.value, FakeRepository.me.id: Presence.online},
       );
       await openMembers(tester);
-      expect(find.text('MODS — 1'), findsOneWidget, reason: 'Maya goes once, under her highest');
+      expect(find.text('Mods — 1'), findsOneWidget, reason: 'Maya goes once, under her highest');
       // Leo is busy: still connected, under his role.
-      expect(find.text('CREW — 1'), findsOneWidget);
-      expect(find.text('ONLINE — 1'), findsOneWidget);
-      expect(find.text('DO NOT DISTURB — 1'), findsNothing);
-      expect(top(tester, 'MODS — 1'), lessThan(top(tester, 'CREW — 1')));
-      expect(top(tester, 'CREW — 1'), lessThan(top(tester, 'ONLINE — 1')));
+      expect(find.text('Crew — 1'), findsOneWidget);
+      expect(find.text('Online — 1'), findsOneWidget);
+      expect(find.text('Do not disturb — 1'), findsNothing);
+      expect(top(tester, 'Mods — 1'), lessThan(top(tester, 'Crew — 1')));
+      expect(top(tester, 'Crew — 1'), lessThan(top(tester, 'Online — 1')));
       semantics.dispose();
     });
 
@@ -367,8 +370,8 @@ void main() {
           ..roleTags[_maya] = const [RoleTag('Mods', id: 'role-mod', position: 5, hoisted: true)],
       );
       await openMembers(tester);
-      expect(find.text('MODS — 1'), findsNothing);
-      expect(find.text('OFFLINE — 3'), findsOneWidget);
+      expect(find.text('Mods — 1'), findsNothing);
+      expect(find.text('Offline — 3'), findsOneWidget);
       semantics.dispose();
     });
   });

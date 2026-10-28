@@ -276,10 +276,7 @@ class _PickerState extends State<_Picker> {
         padding: const EdgeInsets.fromLTRB(16, 16, 16, 4),
         child: Semantics(
           header: true,
-          child: Text(
-            label.toUpperCase(),
-            style: DuvetType.overline.copyWith(color: context.theme.colors.mutedForeground),
-          ),
+          child: Text(label, style: DuvetType.overline.copyWith(color: context.theme.colors.mutedForeground)),
         ),
       ),
     ),
@@ -441,7 +438,7 @@ class _SearchField extends StatelessWidget {
       decoration: InputDecoration(
         isDense: true,
         hintText: hint,
-        hintStyle: TextStyle(color: colors.mutedForeground),
+        hintStyle: DuvetType.body.copyWith(color: colors.mutedForeground),
         prefixIcon: Icon(FLucideIcons.search, size: 20, color: colors.mutedForeground),
         suffixIcon: controller.text.isEmpty
             ? null
@@ -451,7 +448,7 @@ class _SearchField extends StatelessWidget {
                 icon: Icon(FLucideIcons.x, size: 20, color: colors.mutedForeground),
               ),
         filled: true,
-        fillColor: colors.foreground.withValues(alpha: 0.06),
+        fillColor: colors.secondary,
         contentPadding: const EdgeInsets.symmetric(vertical: 12),
         border: OutlineInputBorder(
           borderRadius: BorderRadius.circular(DuvetTokens.radiusField),
@@ -462,7 +459,7 @@ class _SearchField extends StatelessWidget {
   }
 }
 
-/// Two or three options in a pill track; the active one in the accent tint.
+/// Two or three options in a sunken track; the active one on the slate pill.
 class _Segmented<T> extends StatelessWidget {
   final T value;
   final Map<T, String> options;
@@ -476,10 +473,7 @@ class _Segmented<T> extends StatelessWidget {
     return Container(
       height: 40,
       padding: const EdgeInsets.all(4),
-      decoration: BoxDecoration(
-        color: colors.foreground.withValues(alpha: 0.06),
-        borderRadius: BorderRadius.circular(DuvetTokens.radiusField),
-      ),
+      decoration: BoxDecoration(color: colors.secondary, borderRadius: BorderRadius.circular(DuvetTokens.radiusField)),
       child: Row(
         children: [
           for (final MapEntry(:key, value: label) in options.entries)
@@ -499,13 +493,13 @@ class _Segmented<T> extends StatelessWidget {
                         : const Duration(milliseconds: 250),
                     curve: DuvetTokens.decelerate,
                     decoration: BoxDecoration(
-                      color: key == value ? tokens.accentTint : Colors.transparent,
-                      borderRadius: BorderRadius.circular(8),
+                      color: key == value ? tokens.chosen : Colors.transparent,
+                      borderRadius: BorderRadius.circular(DuvetTokens.radiusField - 4),
                     ),
                     alignment: Alignment.center,
                     child: Text(
                       label,
-                      style: DuvetType.label.copyWith(color: key == value ? tokens.accentText : colors.mutedForeground),
+                      style: DuvetType.label.copyWith(color: key == value ? tokens.chosenText : colors.mutedForeground),
                     ),
                   ),
                 ),
@@ -718,10 +712,10 @@ class _GifTile extends StatelessWidget {
                     padding: const EdgeInsets.symmetric(horizontal: 6),
                     alignment: Alignment.center,
                     decoration: BoxDecoration(
-                      color: const Color(0x8C111113),
+                      color: Duvet.night.withValues(alpha: 0.55),
                       borderRadius: BorderRadius.circular(DuvetTokens.radiusChip),
                     ),
-                    child: Text('GIF', style: DuvetType.tabLabel.copyWith(color: const Color(0xFFF2F1EE))),
+                    child: Text('GIF', style: DuvetType.tabLabel.copyWith(color: Duvet.moon)),
                   ),
                 ),
               ],
@@ -733,7 +727,7 @@ class _GifTile extends StatelessWidget {
   );
 }
 
-/// A chip: 32pt, `radius-chip`, raised; the chosen one in the selected state.
+/// A chip: 32pt, `radius-chip`, raised; the chosen one on the slate pill.
 class _Chip extends StatelessWidget {
   final String text;
   final bool on;
@@ -748,16 +742,15 @@ class _Chip extends StatelessWidget {
       padding: const EdgeInsets.symmetric(horizontal: 12),
       alignment: Alignment.center,
       decoration: BoxDecoration(
-        color: on ? tokens.accentTint : colors.card,
+        color: on ? tokens.chosen : colors.card,
         borderRadius: BorderRadius.circular(DuvetTokens.radiusChip),
-        border: on ? Border.all(color: tokens.accentText) : null,
-        boxShadow: on ? null : tokens.shadowRest,
+        boxShadow: tokens.shadowRest,
       ),
       child: Text(
         text,
         style: DuvetType.snippet.copyWith(
-          color: on ? tokens.accentText : colors.foreground,
-          fontWeight: FontWeight.w500,
+          color: on ? tokens.chosenText : colors.foreground,
+          fontWeight: on ? FontWeight.w700 : FontWeight.w500,
         ),
       ),
     );

@@ -108,9 +108,10 @@ class _ComposerStrip extends StatelessWidget {
   }
 }
 
-/// The composer: one `radius-card` field holding exactly four controls,
-/// Attach, the text, Emoji and Send. While there's nothing to send, Send is a
-/// mic to hold for a voice note; then a 32pt accent square; editing, it saves.
+/// The composer: one cushion, round as a pillow, holding exactly four
+/// controls, Attach, the text, Emoji and Send. While there's nothing to send,
+/// Send is a mic to hold for a voice note; then a 36pt accent cushion;
+/// editing, it saves.
 class _ComposerField extends StatelessWidget {
   final TextEditingController controller;
   final FocusNode focusNode;
@@ -145,19 +146,15 @@ class _ComposerField extends StatelessWidget {
   Widget build(BuildContext context) {
     final colors = context.theme.colors;
     final tokens = context.duvet;
-    const radius = BorderRadius.all(Radius.circular(DuvetTokens.radiusCard));
+    const radius = BorderRadius.all(Radius.circular(24));
     return Container(
-      constraints: const BoxConstraints(minHeight: 40),
-      decoration: BoxDecoration(
-        color: colors.card,
-        borderRadius: radius,
-        border: Border.all(color: tokens.hairline),
-      ),
+      constraints: const BoxConstraints(minHeight: 48),
+      decoration: BoxDecoration(color: colors.card, borderRadius: radius, boxShadow: tokens.shadowRaised),
       child: InsetShadow(
-        shadows: tokens.shadowWell,
+        shadows: tokens.cushion,
         borderRadius: radius,
         child: Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 4),
+          padding: const EdgeInsets.all(4),
           child: Row(
             // The controls stay on the bottom line as the text grows.
             crossAxisAlignment: CrossAxisAlignment.end,
@@ -172,7 +169,7 @@ class _ComposerField extends StatelessWidget {
               ),
               Expanded(
                 child: Padding(
-                  padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 9),
+                  padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 13),
                   child: TextField(
                     controller: controller,
                     focusNode: focusNode,
@@ -222,7 +219,7 @@ class _SendButton extends StatelessWidget {
   Widget build(BuildContext context) {
     final colors = context.theme.colors;
     final tokens = context.duvet;
-    const radius = BorderRadius.all(Radius.circular(DuvetTokens.radiusField));
+    const radius = BorderRadius.all(Radius.circular(DuvetTokens.radiusChip + 4));
     // Nothing to send: a voice note, held to record (or from Add).
     final voice = !enabled && !editing;
     return Semantics(
@@ -243,15 +240,19 @@ class _SendButton extends StatelessWidget {
           child: Center(
             child: AnimatedContainer(
               duration: pressed ? DuvetTokens.pressIn : DuvetTokens.pressOut,
-              width: 32,
-              height: 32,
+              width: 36,
+              height: 36,
               decoration: BoxDecoration(
-                color: enabled ? Duvet.accent : Colors.transparent,
+                color: enabled ? colors.primary : Colors.transparent,
                 borderRadius: radius,
                 boxShadow: enabled && !pressed ? tokens.shadowControl : null,
               ),
               child: InsetShadow(
-                shadows: enabled && pressed ? tokens.shadowPressed : const [],
+                shadows: !enabled
+                    ? const []
+                    : pressed
+                    ? tokens.shadowPressed
+                    : tokens.cushionAccent,
                 borderRadius: radius,
                 child: Icon(
                   editing
@@ -294,7 +295,7 @@ class _RecordingField extends StatelessWidget {
   Widget build(BuildContext context) {
     final colors = context.theme.colors;
     final tokens = context.duvet;
-    const radius = BorderRadius.all(Radius.circular(DuvetTokens.radiusCard));
+    const radius = BorderRadius.all(Radius.circular(24));
     final seconds = elapsed.inSeconds;
     final bars = [
       ...List.filled(math.max(0, 24 - levels.length), 0.0),
@@ -308,16 +309,13 @@ class _RecordingField extends StatelessWidget {
           ? 'Recording voice note, $seconds seconds'
           : 'Recording voice note, $seconds seconds. Release to send, slide left to cancel, slide up to lock',
       child: Container(
-        decoration: BoxDecoration(
-          color: colors.card,
-          borderRadius: radius,
-          border: Border.all(color: tokens.hairline),
-        ),
+        constraints: const BoxConstraints(minHeight: 48),
+        decoration: BoxDecoration(color: colors.card, borderRadius: radius, boxShadow: tokens.shadowRaised),
         child: InsetShadow(
-          shadows: tokens.shadowWell,
+          shadows: tokens.cushion,
           borderRadius: radius,
           child: Padding(
-            padding: const EdgeInsets.only(left: 16, right: 4),
+            padding: const EdgeInsets.fromLTRB(16, 4, 4, 4),
             child: Row(
               children: [
                 ExcludeSemantics(
@@ -566,7 +564,7 @@ class _TrayBadge extends StatelessWidget {
   @override
   Widget build(BuildContext context) => Container(
     padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 1),
-    decoration: BoxDecoration(color: const Color(0xB3141416), borderRadius: BorderRadius.circular(6)),
+    decoration: BoxDecoration(color: Duvet.night.withValues(alpha: 0.72), borderRadius: BorderRadius.circular(6)),
     child: Text(
       text,
       style: DuvetType.tabLabel.copyWith(color: Colors.white, fontWeight: FontWeight.w700),

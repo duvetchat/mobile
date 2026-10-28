@@ -10,13 +10,15 @@ import 'avatar.dart';
 import 'depth.dart';
 
 /// A two-line list row (ChatRow, ChannelRow): 72pt, no divider, a 48pt
-/// leading avatar or Space icon, the name over a one-line snippet. With
+/// leading avatar or Space icon, the name over a one-line snippet (or up to
+/// [snippetLines]). With
 /// neither a leading nor a snippet (a room nobody wrote in yet) it is one
 /// 44pt line.
 ///
-/// Unread is weight and `ink` alone, never blue and never a dot. Pressing
-/// shows a `base-sunken` highlight inset 8pt; the selected row (the current
-/// channel in the Channel Switcher) an `accent-tint` one.
+/// What has news is puffed up and what's read lies flat: an unread row sits on
+/// a cushion, its name in weight and `ink`, never blue and never a dot.
+/// Pressing sinks it; the selected row (the current channel in the Channel
+/// Switcher) has an `accent-tint` highlight.
 class ListRow extends StatelessWidget {
   final Widget? leading;
   final String title;
@@ -27,6 +29,9 @@ class ListRow extends StatelessWidget {
   /// After the title, in `ink-secondary`, e.g. "· Space name".
   final String? titleSuffix;
   final String? snippet;
+
+  /// How many lines the snippet may take: two for what's new in Chats.
+  final int snippetLines;
 
   /// Right-aligned on the first line, e.g. the time.
   final String? trailing;
@@ -57,6 +62,7 @@ class ListRow extends StatelessWidget {
     this.hash = false,
     this.titleSuffix,
     this.snippet,
+    this.snippetLines = 1,
     this.trailing,
     this.unread = false,
     this.selected = false,
@@ -98,80 +104,97 @@ class ListRow extends StatelessWidget {
         onLongPress: onLongPress,
         scale: 1,
         builder: (context, pressed) => Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 8),
+          padding: EdgeInsets.symmetric(horizontal: 8, vertical: unread ? 2 : 0),
           child: AnimatedContainer(
             duration: pressed ? DuvetTokens.pressIn : DuvetTokens.pressOut,
             constraints: BoxConstraints(minHeight: compact ? DuvetTokens.sizeRowCompact : DuvetTokens.sizeRow),
-            padding: EdgeInsets.symmetric(horizontal: 8, vertical: compact ? 10 : 12),
             decoration: BoxDecoration(
               color: pressed
                   ? colors.secondary
                   : selected
                   ? tokens.accentTint
+                  : unread
+                  ? colors.card
                   : Colors.transparent,
               image: memberBanner(context, banner, offline: bannerOffline),
-              borderRadius: BorderRadius.circular(DuvetTokens.radiusField),
+              borderRadius: BorderRadius.circular(DuvetTokens.radiusRow),
+              boxShadow: unread && !pressed && !selected ? tokens.shadowRest : null,
             ),
-            child: Row(
-              children: [
-                if (leading != null) ...[leading!, const SizedBox(width: 12)],
-                Expanded(
-                  child: Column(
-                    mainAxisSize: MainAxisSize.min,
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Row(
-                        crossAxisAlignment: CrossAxisAlignment.baseline,
-                        textBaseline: TextBaseline.alphabetic,
+            child: InsetShadow(
+              shadows: pressed
+                  ? tokens.shadowPressed
+                  : unread && !selected
+                  ? tokens.cushion
+                  : const [],
+              borderRadius: BorderRadius.circular(DuvetTokens.radiusRow),
+              child: Padding(
+                padding: EdgeInsets.symmetric(horizontal: 8, vertical: compact ? 10 : 12),
+                child: Row(
+                  children: [
+                    if (leading != null) ...[leading!, const SizedBox(width: 12)],
+                    Expanded(
+                      child: Column(
+                        mainAxisSize: MainAxisSize.min,
+                        crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
-                          Expanded(
-                            child: Text.rich(
-                              TextSpan(
-                                children: [
-                                  if (hash)
-                                    TextSpan(
-                                      text: '# ',
-                                      style: TextStyle(color: secondary),
-                                    ),
-                                  TextSpan(text: title),
-                                  if (titleSuffix != null)
-                                    TextSpan(
-                                      text: ' $titleSuffix',
-                                      style: TextStyle(color: secondary, fontWeight: FontWeight.w400),
-                                    ),
-                                ],
+                          Row(
+                            crossAxisAlignment: CrossAxisAlignment.baseline,
+                            textBaseline: TextBaseline.alphabetic,
+                            children: [
+                              Expanded(
+                                child: Text.rich(
+                                  TextSpan(
+                                    children: [
+                                      if (hash)
+                                        TextSpan(
+                                          text: '# ',
+                                          style: TextStyle(color: secondary),
+                                        ),
+                                      TextSpan(text: title),
+                                      if (titleSuffix != null)
+                                        TextSpan(
+                                          text: ' $titleSuffix',
+                                          style: TextStyle(color: secondary, fontWeight: FontWeight.w400),
+                                        ),
+                                    ],
+                                  ),
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                  style: (unread ? DuvetType.rowTitleUnread : DuvetType.rowTitle).copyWith(color: name),
+                                ),
                               ),
-                              maxLines: 1,
-                              overflow: TextOverflow.ellipsis,
-                              style: (unread ? DuvetType.rowTitleUnread : DuvetType.rowTitle).copyWith(color: name),
-                            ),
+                              if (trailing != null) ...[
+                                const SizedBox(width: 8),
+                                Text(trailing!, style: DuvetType.caption.copyWith(color: secondary)),
+                              ],
+                            ],
                           ),
-                          if (trailing != null) ...[
-                            const SizedBox(width: 8),
-                            Text(trailing!, style: DuvetType.caption.copyWith(color: secondary)),
+                          if (snippet != null || mentions > 0) ...[
+                            const SizedBox(height: 4),
+                            Row(
+                              // Beside a longer snippet, the mentions stay on its first line.
+                              crossAxisAlignment: snippetLines > 1
+                                  ? CrossAxisAlignment.start
+                                  : CrossAxisAlignment.center,
+                              children: [
+                                Expanded(
+                                  child: Text(
+                                    snippet ?? '',
+                                    maxLines: snippetLines,
+                                    overflow: TextOverflow.ellipsis,
+                                    style: DuvetType.snippet.copyWith(color: unread ? colors.foreground : secondary),
+                                  ),
+                                ),
+                                if (mentions > 0) ...[const SizedBox(width: 8), _MentionCount(mentions)],
+                              ],
+                            ),
                           ],
                         ],
                       ),
-                      if (snippet != null || mentions > 0) ...[
-                        const SizedBox(height: 4),
-                        Row(
-                          children: [
-                            Expanded(
-                              child: Text(
-                                snippet ?? '',
-                                maxLines: 1,
-                                overflow: TextOverflow.ellipsis,
-                                style: DuvetType.snippet.copyWith(color: unread ? colors.foreground : secondary),
-                              ),
-                            ),
-                            if (mentions > 0) ...[const SizedBox(width: 8), _MentionCount(mentions)],
-                          ],
-                        ),
-                      ],
-                    ],
-                  ),
+                    ),
+                  ],
                 ),
-              ],
+              ),
             ),
           ),
         ),
@@ -180,7 +203,8 @@ class ListRow extends StatelessWidget {
   }
 }
 
-/// "@2": unread mentions, in a small `base-sunken` recess, bold `ink`.
+/// "@2": unread mentions, the one thing in a list that takes the accent: a
+/// small cushion in it.
 class _MentionCount extends StatelessWidget {
   final int count;
   const _MentionCount(this.count);
@@ -188,26 +212,26 @@ class _MentionCount extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final colors = context.theme.colors;
-    const radius = BorderRadius.all(Radius.circular(DuvetTokens.radiusChip));
+    const radius = BorderRadius.all(Radius.circular(11));
     return Container(
-      height: 20,
-      padding: const EdgeInsets.symmetric(horizontal: 6),
+      height: 22,
+      padding: const EdgeInsets.symmetric(horizontal: 8),
       alignment: Alignment.center,
-      decoration: BoxDecoration(color: colors.secondary, borderRadius: radius),
+      decoration: BoxDecoration(color: colors.primary, borderRadius: radius),
       child: InsetShadow(
-        shadows: context.duvet.shadowWell,
+        shadows: context.duvet.cushionAccent,
         borderRadius: radius,
         child: Text(
           '@${count > 99 ? '99+' : count}',
-          style: DuvetType.overline.copyWith(color: colors.foreground, fontWeight: FontWeight.w700, letterSpacing: 0),
+          style: DuvetType.caption.copyWith(color: colors.primaryForeground, fontWeight: FontWeight.w700, height: 1),
         ),
       ),
     );
   }
 }
 
-/// A group header in a list: `overline`, uppercase, `ink-secondary`, 24pt
-/// above and 8pt below. Never sticky, never blurred.
+/// A group header in a list: `overline` as written, `ink-secondary`, 24pt
+/// above and 8pt below. Never sticky.
 class Overline extends StatelessWidget {
   final String text;
   const Overline(this.text, {super.key});
@@ -217,7 +241,7 @@ class Overline extends StatelessWidget {
     padding: const EdgeInsets.fromLTRB(16, 24, 16, 8),
     child: Semantics(
       header: true,
-      child: Text(text.toUpperCase(), style: DuvetType.overline.copyWith(color: context.theme.colors.mutedForeground)),
+      child: Text(text, style: DuvetType.overline.copyWith(color: context.theme.colors.mutedForeground)),
     ),
   );
 }
@@ -273,7 +297,7 @@ class CategoryHeader extends StatelessWidget {
             children: [
               Flexible(
                 child: Text(
-                  name.toUpperCase(),
+                  name,
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
                   style: DuvetType.overline.copyWith(
@@ -419,7 +443,7 @@ class SpaceBanner extends StatelessWidget {
 }
 
 /// A Space's icon: always a rounded square (circles are for people), its
-/// image or a monogram on `base-sunken`.
+/// image or a monogram on a slate cushion, the mascot's own color.
 class SpaceIcon extends StatelessWidget {
   final Space space;
   final double size;
@@ -427,20 +451,18 @@ class SpaceIcon extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final colors = context.theme.colors;
-    final tokens = context.duvet;
     const radius = BorderRadius.all(Radius.circular(DuvetTokens.radiusField));
     final monogram = SizedBox.square(
       dimension: size,
       child: DecoratedBox(
-        decoration: BoxDecoration(color: colors.secondary, borderRadius: radius),
+        decoration: const BoxDecoration(color: Duvet.slate, borderRadius: radius),
         child: InsetShadow(
-          shadows: tokens.shadowWell,
+          shadows: DuvetTokens.dark.cushion,
           borderRadius: radius,
           child: Center(
             child: Text(
               space.name.isEmpty ? '' : space.name.characters.first.toUpperCase(),
-              style: DuvetType.navTitle.copyWith(color: colors.foreground, fontSize: size * 0.4),
+              style: DuvetType.navTitle.copyWith(color: DuvetTokens.dark.receivedText, fontSize: size * 0.4),
             ),
           ),
         ),
@@ -465,9 +487,8 @@ class SpaceIcon extends StatelessWidget {
   }
 }
 
-/// A Launchpad tile: `base-raised`, `radius-card`, `shadow-raised`, 160pt
-/// tall, the Space's icon, name (2 lines at most) and online count. Pressing
-/// settles it toward the surface: 0.98, `shadow-raised` to `shadow-rest`.
+/// A Launchpad tile: a raised cushion, `radius-card`, 160pt tall, the Space's
+/// icon, name (2 lines at most) and online count. Pressing sinks it.
 class SpaceCard extends StatelessWidget {
   final Space space;
   final bool unread;
@@ -493,35 +514,66 @@ class SpaceCard extends StatelessWidget {
         builder: (context, pressed) => AnimatedContainer(
           duration: pressed ? DuvetTokens.pressIn : DuvetTokens.pressOut,
           height: 160,
-          padding: const EdgeInsets.all(16),
           decoration: BoxDecoration(
             color: colors.card,
             borderRadius: BorderRadius.circular(DuvetTokens.radiusCard),
-            boxShadow: pressed ? tokens.shadowRest : tokens.shadowRaised,
+            boxShadow: pressed ? null : tokens.shadowRaised,
           ),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              SpaceIcon(space: space),
-              const SizedBox(height: 12),
-              Flexible(
-                child: Text(
-                  space.name,
-                  maxLines: 2,
-                  overflow: TextOverflow.ellipsis,
-                  style: (unread ? DuvetType.rowTitleUnread : DuvetType.rowTitle).copyWith(color: colors.foreground),
-                ),
+          child: InsetShadow(
+            shadows: pressed ? tokens.shadowPressed : tokens.cushion,
+            borderRadius: BorderRadius.circular(DuvetTokens.radiusCard),
+            child: Padding(
+              padding: const EdgeInsets.all(16),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  SpaceIcon(space: space),
+                  const SizedBox(height: 12),
+                  Flexible(
+                    child: Text(
+                      space.name,
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                      style: (unread ? DuvetType.rowTitleUnread : DuvetType.rowTitle).copyWith(
+                        color: colors.foreground,
+                      ),
+                    ),
+                  ),
+                  if (online != null) ...[const SizedBox(height: 4), _Online(online)],
+                ],
               ),
-              if (online != null) ...[
-                const SizedBox(height: 4),
-                Text(online, maxLines: 1, style: DuvetType.caption.copyWith(color: colors.mutedForeground)),
-              ],
-            ],
+            ),
           ),
         ),
       ),
     );
   }
+}
+
+/// "12 online": the count of who's here, after the ice dot of someone alive.
+class _Online extends StatelessWidget {
+  final String text;
+  const _Online(this.text);
+
+  @override
+  Widget build(BuildContext context) => Row(
+    children: [
+      Container(
+        width: 8,
+        height: 8,
+        decoration: BoxDecoration(color: context.duvet.alive, shape: BoxShape.circle),
+      ),
+      const SizedBox(width: 6),
+      Flexible(
+        child: Text(
+          text,
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
+          style: DuvetType.caption.copyWith(color: context.theme.colors.mutedForeground),
+        ),
+      ),
+    ],
+  );
 }
 
 /// A Space full width, the Spaces tab's Cards view: its banner over its icon,
@@ -551,45 +603,46 @@ class SpaceWideCard extends StatelessWidget {
           decoration: BoxDecoration(
             color: colors.card,
             borderRadius: BorderRadius.circular(DuvetTokens.radiusCard),
-            boxShadow: pressed ? tokens.shadowRest : tokens.shadowRaised,
+            boxShadow: pressed ? null : tokens.shadowRaised,
           ),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
-              if (space.bannerUrl case final banner?)
+          child: InsetShadow(
+            shadows: pressed ? tokens.shadowPressed : tokens.cushion,
+            borderRadius: BorderRadius.circular(DuvetTokens.radiusCard),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                if (space.bannerUrl case final banner?)
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(8, 8, 8, 0),
+                    child: SpaceBanner(key: ValueKey(banner), url: banner),
+                  ),
                 Padding(
-                  padding: const EdgeInsets.fromLTRB(8, 8, 8, 0),
-                  child: SpaceBanner(key: ValueKey(banner), url: banner),
-                ),
-              Padding(
-                padding: const EdgeInsets.all(16),
-                child: Row(
-                  children: [
-                    SpaceIcon(space: space),
-                    const SizedBox(width: 12),
-                    Expanded(
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Text(
-                            space.name,
-                            maxLines: 2,
-                            overflow: TextOverflow.ellipsis,
-                            style: (unread ? DuvetType.rowTitleUnread : DuvetType.rowTitle).copyWith(
-                              color: colors.foreground,
+                  padding: const EdgeInsets.all(16),
+                  child: Row(
+                    children: [
+                      SpaceIcon(space: space),
+                      const SizedBox(width: 12),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              space.name,
+                              maxLines: 2,
+                              overflow: TextOverflow.ellipsis,
+                              style: (unread ? DuvetType.rowTitleUnread : DuvetType.rowTitle).copyWith(
+                                color: colors.foreground,
+                              ),
                             ),
-                          ),
-                          if (online != null) ...[
-                            const SizedBox(height: 4),
-                            Text(online, maxLines: 1, style: DuvetType.caption.copyWith(color: colors.mutedForeground)),
+                            if (online != null) ...[const SizedBox(height: 4), _Online(online)],
                           ],
-                        ],
+                        ),
                       ),
-                    ),
-                  ],
+                    ],
+                  ),
                 ),
-              ),
-            ],
+              ],
+            ),
           ),
         ),
       ),
@@ -599,8 +652,9 @@ class SpaceWideCard extends StatelessWidget {
 
 enum ButtonVariant { primary, secondary, destructive }
 
-/// Duvet's button: 48pt, `radius-button`, `label` type. Secondary (outlined
-/// in `accent-text`) is the default; one Primary (filled) per screen at most.
+/// Duvet's button: a 48pt cushion, `radius-button`, `label` type. Secondary
+/// (raised, its label in `accent-text`) is the default; one Primary (in the
+/// accent) per screen at most. Pressing sinks it.
 class DuvetButton extends StatelessWidget {
   final String label;
   final IconData? icon;
@@ -646,35 +700,44 @@ class DuvetButton extends StatelessWidget {
           builder: (context, pressed) => AnimatedContainer(
             duration: pressed ? DuvetTokens.pressIn : DuvetTokens.pressOut,
             height: 48,
-            padding: const EdgeInsets.symmetric(horizontal: 24),
             decoration: BoxDecoration(
-              color: variant == ButtonVariant.primary ? Duvet.accent : Colors.transparent,
+              color: variant == ButtonVariant.primary ? colors.primary : colors.card,
               borderRadius: radius,
-              border: variant == ButtonVariant.primary ? null : Border.all(color: ink),
-              boxShadow: variant == ButtonVariant.primary && !pressed ? tokens.shadowControl : null,
+              boxShadow: pressed
+                  ? null
+                  : variant == ButtonVariant.primary
+                  ? tokens.shadowControl
+                  : tokens.shadowRest,
             ),
             child: InsetShadow(
-              shadows: pressed ? tokens.shadowPressed : const [],
+              shadows: pressed
+                  ? tokens.shadowPressed
+                  : variant == ButtonVariant.primary
+                  ? tokens.cushionAccent
+                  : tokens.cushion,
               borderRadius: radius,
-              child: Row(
-                mainAxisSize: expand ? MainAxisSize.max : MainAxisSize.min,
-                mainAxisAlignment: MainAxisAlignment.center,
-                children: [
-                  if (busy)
-                    SizedBox.square(dimension: 20, child: CircularProgressIndicator(strokeWidth: 2, color: ink))
-                  else ...[
-                    if (icon != null) ...[Icon(icon, size: 24, color: ink), const SizedBox(width: 8)],
-                    // Large text wraps no button off the screen.
-                    Flexible(
-                      child: Text(
-                        label,
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: DuvetType.label.copyWith(color: ink),
+              child: Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 24),
+                child: Row(
+                  mainAxisSize: expand ? MainAxisSize.max : MainAxisSize.min,
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    if (busy)
+                      SizedBox.square(dimension: 20, child: CircularProgressIndicator(strokeWidth: 2, color: ink))
+                    else ...[
+                      if (icon != null) ...[Icon(icon, size: 24, color: ink), const SizedBox(width: 8)],
+                      // Large text wraps no button off the screen.
+                      Flexible(
+                        child: Text(
+                          label,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: DuvetType.label.copyWith(color: ink, fontWeight: FontWeight.w700),
+                        ),
                       ),
-                    ),
+                    ],
                   ],
-                ],
+                ),
               ),
             ),
           ),
@@ -957,8 +1020,8 @@ class TextAction extends StatelessWidget {
   );
 }
 
-/// A chip: 32pt, `radius-chip`, raised; selected, `accent-tint` with an
-/// `accent-text` edge.
+/// A chip: a 32pt cushion, `radius-chip`; selected, the slate pill a chosen
+/// tab sits on.
 class DuvetChip extends StatelessWidget {
   final String label;
   final bool selected;
@@ -999,25 +1062,30 @@ class DuvetChip extends StatelessWidget {
         onTap: onTap,
         child: Container(
           height: 32,
-          padding: const EdgeInsets.symmetric(horizontal: 12),
           decoration: BoxDecoration(
-            color: selected ? tokens.accentTint : colors.card,
+            color: selected ? tokens.chosen : colors.card,
             borderRadius: BorderRadius.circular(DuvetTokens.radiusChip),
-            border: selected ? Border.all(color: tokens.accentText) : null,
-            boxShadow: selected ? null : tokens.shadowRest,
+            boxShadow: tokens.shadowRest,
           ),
-          child: Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              if (leading case final leading?) ...[leading, const SizedBox(width: 6)],
-              Text(
-                label,
-                style: DuvetType.snippet.copyWith(
-                  color: selected ? tokens.accentText : colors.foreground,
-                  fontWeight: FontWeight.w500,
-                ),
+          child: InsetShadow(
+            shadows: tokens.cushion,
+            borderRadius: BorderRadius.circular(DuvetTokens.radiusChip),
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 12),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  if (leading case final leading?) ...[leading, const SizedBox(width: 6)],
+                  Text(
+                    label,
+                    style: DuvetType.snippet.copyWith(
+                      color: selected ? tokens.chosenText : colors.foreground,
+                      fontWeight: selected ? FontWeight.w700 : FontWeight.w500,
+                    ),
+                  ),
+                ],
               ),
-            ],
+            ),
           ),
         ),
       ),
@@ -1025,8 +1093,8 @@ class DuvetChip extends StatelessWidget {
   }
 }
 
-/// An on/off switch: a sunken track, a raised knob that springs across, the
-/// accent when on.
+/// An on/off switch: a sunken track, a cushioned knob that springs across,
+/// the accent when on.
 class DuvetSwitch extends StatelessWidget {
   final bool value;
   final ValueChanged<bool>? onChanged;
@@ -1054,7 +1122,7 @@ class DuvetSwitch extends StatelessWidget {
           duration: reduce ? Duration.zero : const Duration(milliseconds: 200),
           width: 52,
           height: 32,
-          decoration: BoxDecoration(color: value ? Duvet.accent : colors.secondary, borderRadius: radius),
+          decoration: BoxDecoration(color: value ? colors.primary : colors.secondary, borderRadius: radius),
           child: InsetShadow(
             shadows: value ? const [] : tokens.shadowWell,
             borderRadius: radius,
@@ -1067,9 +1135,9 @@ class DuvetSwitch extends StatelessWidget {
                 height: 24,
                 margin: const EdgeInsets.all(4),
                 decoration: BoxDecoration(
-                  color: value ? const Color(0xFFFFFFFF) : colors.card,
-                  borderRadius: BorderRadius.circular(8),
-                  boxShadow: tokens.shadowControl,
+                  color: value ? colors.primaryForeground : colors.card,
+                  borderRadius: BorderRadius.circular(9),
+                  boxShadow: tokens.shadowRest,
                 ),
               ),
             ),
@@ -1080,8 +1148,9 @@ class DuvetSwitch extends StatelessWidget {
   }
 }
 
-/// One of a few choices, side by side in a recess, the chosen one raised
-/// (Appearance's System, Light, Dark). Each choice's text is its label.
+/// One of a few choices, side by side in a recess, the chosen one on the
+/// slate pill (Appearance's System, Light, Dark). Each choice's text is its
+/// label.
 class Segmented<T> extends StatelessWidget {
   final String label;
   final T value;
@@ -1134,9 +1203,9 @@ class Segmented<T> extends StatelessWidget {
                         duration: MediaQuery.disableAnimationsOf(context) ? Duration.zero : DuvetTokens.pressOut,
                         alignment: Alignment.center,
                         decoration: BoxDecoration(
-                          color: key == value ? colors.card : null,
-                          borderRadius: BorderRadius.circular(10),
-                          boxShadow: key == value ? tokens.shadowControl : null,
+                          color: key == value ? tokens.chosen : null,
+                          borderRadius: BorderRadius.circular(DuvetTokens.radiusField - 2),
+                          boxShadow: key == value ? tokens.shadowRest : null,
                         ),
                         // One line, shrunk to fit at large text sizes rather
                         // than cut ("Do not disturb").
@@ -1149,7 +1218,7 @@ class Segmented<T> extends StatelessWidget {
                               maxLines: 1,
                               style: DuvetType.label.copyWith(
                                 fontSize: 15,
-                                color: key == value ? colors.foreground : colors.mutedForeground,
+                                color: key == value ? tokens.chosenText : colors.mutedForeground,
                               ),
                             ),
                           ),

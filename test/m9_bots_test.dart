@@ -205,8 +205,8 @@ void main() {
       createdAt: DateTime(2026, 10, 24, 9),
     );
     await pumpGeneral(tester, history: [hook]);
-    expect(find.text('WEBHOOK'), findsOneWidget);
-    expect(find.text('BOT'), findsNothing);
+    expect(find.text('Webhook'), findsOneWidget);
+    expect(find.text('Bot'), findsNothing);
     expect(find.bySemanticsLabel('Deploys, webhook,’s profile'), findsOneWidget);
     final back = messageFromJson(jsonDecode(jsonEncode(messageToJson(hook))) as Map<String, Object?>);
     expect(back.fromWebhook, isTrue);
@@ -215,7 +215,7 @@ void main() {
 
   testWidgets('a bot message: rounded-square avatar, BOT tag, buttons and a select', (tester) async {
     final repository = await pumpGeneral(tester, history: [poll()]);
-    expect(find.text('BOT'), findsOneWidget);
+    expect(find.text('Bot'), findsOneWidget);
     expect(find.bySemanticsLabel('Ballot, bot,’s profile'), findsOneWidget);
     await tapLabel(tester, 'Dune');
     expect(repository.interactions, ['component vote-a']);

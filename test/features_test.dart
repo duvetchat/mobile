@@ -354,13 +354,13 @@ void main() {
       await tester.tap(find.bySemanticsLabel('Members'));
       await tester.pumpAndSettle();
       // Maya is reported online; nobody else is reported at all.
-      expect(find.text('ONLINE — 1'), findsOneWidget);
-      expect(find.text('MEMBERS — 2'), findsOneWidget);
+      expect(find.text('Online — 1'), findsOneWidget);
+      expect(find.text('Members — 2'), findsOneWidget);
       expect(find.text('1 online · 3'), findsOneWidget);
 
       await tester.enterText(find.byType(EditableText).last, 'le');
       await tester.pumpAndSettle();
-      expect(find.text('ONLINE — 1'), findsNothing);
+      expect(find.text('Online — 1'), findsNothing);
       await tester.enterText(find.byType(EditableText).last, '');
       await tester.pumpAndSettle();
 
@@ -368,18 +368,18 @@ void main() {
       await tester.pumpAndSettle();
       // Her profile over the members sheet: back returns to it.
       expect(find.bySemanticsLabel('Maya’s profile'), findsWidgets);
-      expect(find.text('ONLINE — 1'), findsOneWidget);
+      expect(find.text('Online — 1'), findsOneWidget);
       await tester.binding.handlePopRoute();
       await tester.pumpAndSettle();
       expect(find.bySemanticsLabel('Maya’s profile'), findsNothing);
-      expect(find.text('ONLINE — 1'), findsOneWidget);
+      expect(find.text('Online — 1'), findsOneWidget);
 
       // Mention closes both.
       await tester.tap(find.bySemanticsLabel('Maya, Online · @maya'));
       await tester.pumpAndSettle();
       await tester.tap(find.bySemanticsLabel('Mention Maya'));
       await tester.pumpAndSettle();
-      expect(find.text('ONLINE — 1'), findsNothing);
+      expect(find.text('Online — 1'), findsNothing);
       expect(find.text('@Maya '), findsOneWidget);
       semantics.dispose();
     });

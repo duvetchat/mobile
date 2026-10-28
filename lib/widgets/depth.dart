@@ -1,10 +1,13 @@
 import 'package:flutter/material.dart';
+import 'package:forui/forui.dart';
 
 import '../theme.dart';
 
-/// Inner shadows inside [borderRadius], over [child]: `shadow-well` (a field's
-/// resting recess) and `shadow-pressed` (a control pushed into the screen).
-/// Flutter's [BoxShadow] only falls outward, so these are painted.
+/// Inner shadows inside [borderRadius], over [child]: `cushion` (a raised
+/// surface, lit along its top edge),
+/// `shadow-well` (a field's resting recess) and `shadow-pressed` (a control
+/// pushed into the screen). Flutter's [BoxShadow] only falls outward, so
+/// these are painted.
 class InsetShadow extends StatelessWidget {
   final List<BoxShadow> shadows;
   final BorderRadius borderRadius;
@@ -35,12 +38,12 @@ class _InsetPainter extends CustomPainter {
         ..fillType = PathFillType.evenOdd
         ..addRect((Offset.zero & size).inflate(spread))
         ..addRRect(shape.shift(s.offset));
-      canvas.drawPath(
-        frame,
-        Paint()
-          ..color = s.color
-          ..maskFilter = MaskFilter.blur(BlurStyle.normal, Shadow.convertRadiusToSigma(s.blurRadius)),
-      );
+      final paint = Paint()..color = s.color;
+      // A sharp edge (the cushion's lit top) has no blur to give.
+      if (s.blurRadius > 0) {
+        paint.maskFilter = MaskFilter.blur(BlurStyle.normal, Shadow.convertRadiusToSigma(s.blurRadius));
+      }
+      canvas.drawPath(frame, paint);
     }
     canvas.restore();
   }
@@ -103,6 +106,53 @@ class _PressableState extends State<Pressable> {
         duration: _pressed ? DuvetTokens.pressIn : DuvetTokens.pressOut,
         curve: Curves.easeOutCubic,
         child: widget.builder(context, _pressed),
+      ),
+    );
+  }
+}
+
+/// A raised surface in Duvet's one material: a cushion in `card`, lit along
+/// its top edge, resting on [shadows] (`shadow-rest` by default).
+class Cushion extends StatelessWidget {
+  final Widget child;
+  final double? width;
+  final double? height;
+  final EdgeInsetsGeometry? padding;
+  final EdgeInsetsGeometry? margin;
+  final double radius;
+  final List<BoxShadow>? shadows;
+  final Clip clipBehavior;
+
+  const Cushion({
+    required this.child,
+    this.width,
+    this.height,
+    this.padding,
+    this.margin,
+    this.radius = DuvetTokens.radiusCard,
+    this.shadows,
+    this.clipBehavior = Clip.none,
+    super.key,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final tokens = context.duvet;
+    final shape = BorderRadius.circular(radius);
+    return Container(
+      width: width,
+      height: height,
+      margin: margin,
+      clipBehavior: clipBehavior,
+      decoration: BoxDecoration(
+        color: context.theme.colors.card,
+        borderRadius: shape,
+        boxShadow: shadows ?? tokens.shadowRest,
+      ),
+      child: InsetShadow(
+        shadows: tokens.cushion,
+        borderRadius: shape,
+        child: padding == null ? child : Padding(padding: padding!, child: child),
       ),
     );
   }

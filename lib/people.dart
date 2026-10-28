@@ -150,16 +150,16 @@ class _ProfileState extends State<_Profile> {
           controller: widget.scroll,
           padding: EdgeInsets.zero,
           children: [
-            // Their banner, 5:2 as it's cropped, or a soft block until they
-            // set one.
+            // Their banner, 5:2 as it's cropped, or the mascot's slate
+            // until they set one.
             AspectRatio(
               aspectRatio: bannerAspect,
               child: m.bannerUrl == null
-                  ? ColoredBox(color: colors.secondary)
+                  ? const ColoredBox(color: Duvet.slate)
                   : Image.network(
                       m.bannerUrl!,
                       fit: BoxFit.cover,
-                      errorBuilder: (_, _, _) => ColoredBox(color: colors.secondary),
+                      errorBuilder: (_, _, _) => const ColoredBox(color: Duvet.slate),
                     ),
             ),
             Transform.translate(
@@ -273,13 +273,9 @@ class _ProfileState extends State<_Profile> {
                       ),
                     ],
                     const SizedBox(height: 16),
-                    Container(
+                    Cushion(
                       padding: const EdgeInsets.all(16),
-                      decoration: BoxDecoration(
-                        color: colors.card,
-                        borderRadius: BorderRadius.circular(DuvetTokens.radiusCard),
-                        boxShadow: tokens.shadowRest,
-                      ),
+                      shadows: tokens.shadowRest,
                       child: Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
@@ -330,7 +326,7 @@ class _Label extends StatelessWidget {
   @override
   Widget build(BuildContext context) => Semantics(
     header: true,
-    child: Text(text.toUpperCase(), style: DuvetType.overline.copyWith(color: context.theme.colors.mutedForeground)),
+    child: Text(text, style: DuvetType.overline.copyWith(color: context.theme.colors.mutedForeground)),
   );
 }
 
@@ -390,11 +386,12 @@ class _SquareButton extends StatelessWidget {
           width: 48,
           height: 48,
           decoration: BoxDecoration(
+            color: colors.card,
             borderRadius: radius,
-            border: Border.all(color: ink),
+            boxShadow: pressed ? null : tokens.shadowRest,
           ),
           child: InsetShadow(
-            shadows: pressed ? tokens.shadowPressed : const [],
+            shadows: pressed ? tokens.shadowPressed : tokens.cushion,
             borderRadius: radius,
             child: Icon(icon, size: 22, color: ink),
           ),
@@ -417,9 +414,9 @@ class SquareCheck extends StatelessWidget {
       width: 24,
       height: 24,
       decoration: BoxDecoration(
-        color: checked ? Duvet.accent : null,
+        color: checked ? colors.primary : null,
         borderRadius: BorderRadius.circular(DuvetTokens.radiusChip),
-        border: Border.all(color: checked ? Duvet.accent : colors.mutedForeground, width: 1.5),
+        border: Border.all(color: checked ? colors.primary : colors.mutedForeground, width: 1.5),
       ),
       child: checked ? Icon(FLucideIcons.check, size: 16, color: colors.primaryForeground) : null,
     );

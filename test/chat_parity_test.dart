@@ -705,7 +705,7 @@ void main() {
       ],
     );
     // A name and a tag over each run's first message: three runs.
-    expect(find.text('WEBHOOK'), findsNWidgets(3));
+    expect(find.text('Webhook'), findsNWidgets(3));
     expect(find.text('Deploys'), findsNWidgets(2));
     expect(find.text('Alerts'), findsOneWidget);
     semantics.dispose();

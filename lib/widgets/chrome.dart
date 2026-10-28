@@ -3,11 +3,11 @@ import 'package:forui/forui.dart';
 
 import '../theme.dart';
 import 'depth.dart';
-import 'glass.dart';
+import 'mascot.dart';
 
-/// Liquid Glass chrome: the bars (top, tab, composer). The lighter
-/// `blur-chrome` over the saturated backdrop, and a 1px hairline on the edge
-/// facing the content, shown once content scrolls beneath it.
+/// The bars at a screen's edges (top bar, composer): the ground's own color,
+/// so content passes under them unseen, and a 1px hairline on the edge facing
+/// the content, shown once content scrolls beneath it.
 class GlassChrome extends StatelessWidget {
   final Widget child;
 
@@ -20,20 +20,13 @@ class GlassChrome extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final tokens = context.duvet;
-    final colors = context.theme.colors;
-    final opaque = MediaQuery.highContrastOf(context);
-    final edge = BorderSide(color: hairline ? tokens.hairline : Colors.transparent);
-    final fill = DecoratedBox(
+    final edge = BorderSide(color: hairline ? context.duvet.hairline : Colors.transparent);
+    return DecoratedBox(
       decoration: BoxDecoration(
-        color: opaque ? colors.background : tokens.glass,
+        color: context.theme.colors.background,
         border: top ? Border(bottom: edge) : Border(top: edge),
       ),
       child: child,
-    );
-    if (opaque) return fill;
-    return ClipRect(
-      child: BackdropFilter(filter: glassBackdrop(DuvetTokens.blurChrome), child: fill),
     );
   }
 }
@@ -128,7 +121,7 @@ class IconAction extends StatelessWidget {
   }
 }
 
-/// The inline top bar of a pushed screen: glass, 52pt below the status bar, a
+/// The inline top bar of a pushed screen: 52pt below the status bar, a
 /// back chevron at x8, the title centered in `nav-title`, actions on the right.
 class GlassTopBar extends StatelessWidget {
   final Widget? title;
@@ -136,7 +129,7 @@ class GlassTopBar extends StatelessWidget {
   final List<Widget> actions;
   final bool hairline;
 
-  /// Under the bar, inside its glass: e.g. a [ConnectionBanner].
+  /// Under the bar, inside it: e.g. a [ConnectionBanner].
   final Widget? bottom;
 
   /// Tapping the title, e.g. the Channel Switcher: it gets a ⌄ and presses.
@@ -305,8 +298,7 @@ class ConnectionBanner extends StatelessWidget {
 }
 
 /// A tab root: the `large-title` scrolls away with the content, and a 52pt
-/// glass bar with the `nav-title` fades in over it. The bar is laid over the
-/// list, never inside it: no blur in a scrolling list.
+/// bar with the `nav-title` fades in over it, laid over the list.
 class LargeTitlePage extends StatefulWidget {
   final String title;
 
@@ -414,9 +406,9 @@ class _LargeTitlePageState extends State<LargeTitlePage> {
 /// One tab of the [DuvetTabBar].
 typedef TabItem = ({IconData icon, String label});
 
-/// The bottom tab bar: glass, 56pt above the safe area, four equal columns.
-/// The active tab is `accent-text` with a 56×32 `accent-tint` pill behind its
-/// icon, which springs between tabs.
+/// The bottom tab bar: a cushion floating [DuvetTokens.tabBarInset] off the
+/// screen's edges, four equal columns. The chosen tab sits on a slate pill
+/// that springs between tabs.
 class DuvetTabBar extends StatelessWidget {
   final int index;
   final List<TabItem> items;
@@ -424,71 +416,95 @@ class DuvetTabBar extends StatelessWidget {
 
   const DuvetTabBar({required this.index, required this.items, required this.onChange, super.key});
 
-  static double heightOf(BuildContext context) => DuvetTokens.sizeTabBar + MediaQuery.paddingOf(context).bottom;
+  /// Below it: the safe area, or the inset where there's none.
+  static double _below(BuildContext context) {
+    final safe = MediaQuery.paddingOf(context).bottom;
+    return safe > 0 ? safe : DuvetTokens.tabBarInset;
+  }
+
+  /// What it covers at the screen's bottom, its gap below included.
+  static double heightOf(BuildContext context) => DuvetTokens.sizeTabBar + _below(context);
 
   @override
   Widget build(BuildContext context) {
     final colors = context.theme.colors;
     final tokens = context.duvet;
     final reduce = MediaQuery.disableAnimationsOf(context);
-    return GlassChrome(
-      top: false,
-      child: Padding(
-        padding: EdgeInsets.only(bottom: MediaQuery.paddingOf(context).bottom),
-        child: SizedBox(
-          height: DuvetTokens.sizeTabBar,
-          child: LayoutBuilder(
-            builder: (context, constraints) {
-              final column = constraints.maxWidth / items.length;
-              return Stack(
-                children: [
-                  AnimatedPositioned(
-                    duration: reduce ? Duration.zero : DuvetTokens.tabPill,
-                    curve: DuvetTokens.pillSpring,
-                    left: column * index + column / 2 - 28,
-                    top: 4,
-                    width: 56,
-                    height: 32,
-                    child: DecoratedBox(
-                      decoration: BoxDecoration(color: tokens.accentTint, borderRadius: BorderRadius.circular(16)),
+    const radius = BorderRadius.all(Radius.circular(DuvetTokens.radiusBar));
+    // Inside the bar's 6pt gap, its corners follow the bar's.
+    const pill = BorderRadius.all(Radius.circular(DuvetTokens.radiusBar - 6));
+    return Padding(
+      padding: EdgeInsets.fromLTRB(DuvetTokens.tabBarInset, 0, DuvetTokens.tabBarInset, _below(context)),
+      child: DecoratedBox(
+        decoration: BoxDecoration(color: colors.card, borderRadius: radius, boxShadow: tokens.shadowRaised),
+        child: InsetShadow(
+          shadows: tokens.cushion,
+          borderRadius: radius,
+          child: SizedBox(
+            height: DuvetTokens.sizeTabBar,
+            child: LayoutBuilder(
+              builder: (context, constraints) {
+                const gap = 6.0;
+                final column = (constraints.maxWidth - gap * 2) / items.length;
+                return Stack(
+                  children: [
+                    AnimatedPositioned(
+                      duration: reduce ? Duration.zero : DuvetTokens.tabPill,
+                      curve: DuvetTokens.pillSpring,
+                      left: gap + column * index,
+                      top: gap,
+                      bottom: gap,
+                      width: column,
+                      child: DecoratedBox(
+                        decoration: BoxDecoration(color: tokens.chosen, borderRadius: pill),
+                        child: InsetShadow(shadows: tokens.cushion, borderRadius: pill),
+                      ),
                     ),
-                  ),
-                  Row(
-                    children: [
-                      for (final (i, item) in items.indexed)
-                        Expanded(
-                          child: Semantics(
-                            button: true,
-                            selected: i == index,
-                            inMutuallyExclusiveGroup: true,
-                            label: item.label,
-                            hint: 'Tab ${i + 1} of ${items.length}',
-                            excludeSemantics: true,
-                            onTap: () => onChange(i),
-                            child: Pressable(
-                              onTap: () => onChange(i),
-                              scale: 0.94,
-                              builder: (context, _) {
-                                final color = i == index ? tokens.accentText : colors.mutedForeground;
-                                return Padding(
-                                  padding: const EdgeInsets.only(top: 8),
-                                  child: Column(
-                                    children: [
-                                      Icon(item.icon, size: 24, color: color),
-                                      const SizedBox(height: 4),
-                                      Text(item.label, style: DuvetType.tabLabel.copyWith(color: color)),
-                                    ],
-                                  ),
-                                );
-                              },
+                    Padding(
+                      padding: const EdgeInsets.symmetric(horizontal: gap),
+                      child: Row(
+                        children: [
+                          for (final (i, item) in items.indexed)
+                            Expanded(
+                              child: Semantics(
+                                button: true,
+                                selected: i == index,
+                                inMutuallyExclusiveGroup: true,
+                                label: item.label,
+                                hint: 'Tab ${i + 1} of ${items.length}',
+                                excludeSemantics: true,
+                                onTap: () => onChange(i),
+                                child: Pressable(
+                                  onTap: () => onChange(i),
+                                  scale: 0.94,
+                                  builder: (context, _) {
+                                    final color = i == index ? tokens.chosenText : colors.mutedForeground;
+                                    return Column(
+                                      mainAxisAlignment: MainAxisAlignment.center,
+                                      children: [
+                                        Icon(item.icon, size: 22, color: color),
+                                        const SizedBox(height: 3),
+                                        Text(
+                                          item.label,
+                                          maxLines: 1,
+                                          style: DuvetType.tabLabel.copyWith(
+                                            color: color,
+                                            fontWeight: i == index ? FontWeight.w700 : FontWeight.w500,
+                                          ),
+                                        ),
+                                      ],
+                                    );
+                                  },
+                                ),
+                              ),
                             ),
-                          ),
-                        ),
-                    ],
-                  ),
-                ],
-              );
-            },
+                        ],
+                      ),
+                    ),
+                  ],
+                );
+              },
+            ),
           ),
         ),
       ),
@@ -496,12 +512,17 @@ class DuvetTabBar extends StatelessWidget {
   }
 }
 
-/// A screen title-less placeholder: an icon and a line, centered.
+/// A screen with nothing in it: the mascot over a line, centered. Awake when
+/// there's nothing yet ("No calls yet"); with [icon], that icon instead, for
+/// what's gone or broke.
 class EmptyState extends StatelessWidget {
-  final IconData icon;
+  final IconData? icon;
   final String text;
   final Widget? action;
-  const EmptyState({required this.icon, required this.text, this.action, super.key});
+
+  /// The mascot asleep: Duvet couldn't be reached.
+  final bool asleep;
+  const EmptyState({required this.text, this.icon, this.action, this.asleep = false, super.key});
 
   @override
   Widget build(BuildContext context) {
@@ -512,12 +533,15 @@ class EmptyState extends StatelessWidget {
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            Icon(icon, size: 32, color: colors.mutedForeground),
-            const SizedBox(height: 12),
+            if (icon case final icon?)
+              Icon(icon, size: 32, color: colors.mutedForeground)
+            else
+              Mascot(size: 104, asleep: asleep),
+            const SizedBox(height: 16),
             Text(
               text,
               textAlign: TextAlign.center,
-              style: DuvetType.body.copyWith(color: colors.mutedForeground),
+              style: DuvetType.rowTitle.copyWith(color: icon == null ? colors.foreground : colors.mutedForeground),
             ),
             if (action != null) ...[const SizedBox(height: 16), action!],
           ],

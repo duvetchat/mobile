@@ -61,12 +61,11 @@ class _MembersSheetState extends State<_MembersSheet> {
           return Column(
             mainAxisAlignment: MainAxisAlignment.center,
             children: [
-              Text('Couldn’t load members', style: TextStyle(color: colors.mutedForeground)),
+              Text('Couldn’t load members', style: DuvetType.body.copyWith(color: colors.mutedForeground)),
               const SizedBox(height: 12),
-              FButton(
-                mainAxisSize: MainAxisSize.min,
-                onPress: () => setState(() => _members = widget.repository.members(widget.target, refresh: true)),
-                child: const Text('Try again'),
+              DuvetButton(
+                label: 'Try again',
+                onPressed: () => setState(() => _members = widget.repository.members(widget.target, refresh: true)),
               ),
             ],
           );
@@ -172,7 +171,7 @@ class _MembersSheetState extends State<_MembersSheet> {
                         child: Semantics(
                           header: true,
                           child: Text(
-                            '${label.toUpperCase()} — ${members.length}',
+                            '$label — ${members.length}',
                             style: DuvetType.overline.copyWith(color: colors.mutedForeground),
                           ),
                         ),
@@ -280,12 +279,12 @@ class PresenceAvatar extends StatelessWidget {
     );
   }
 
-  /// Presence by shape: a filled dot online, a dot with a bar for do not
+  /// Presence by shape: a filled ice dot online, a dot with a bar for do not
   /// disturb, a ring offline.
   static Widget dotFor(BuildContext context, Presence presence, double dot) {
     final colors = context.theme.colors;
-    final dark = Theme.of(context).brightness == Brightness.dark;
-    final online = dark ? const Color(0xFF4CC38A) : const Color(0xFF2F9E62);
+    // Online is the mascot's ice: what's alive.
+    final online = context.duvet.alive;
     return Container(
       width: dot,
       height: dot,

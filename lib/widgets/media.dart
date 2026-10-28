@@ -227,8 +227,8 @@ class VoiceNotePlayer extends StatelessWidget {
             width: 260,
             padding: const EdgeInsets.fromLTRB(8, 8, 12, 8),
             decoration: BoxDecoration(
-              color: mine ? Duvet.accent : colors.card,
-              borderRadius: BorderRadius.circular(DuvetTokens.radiusButton),
+              color: mine ? colors.primary : tokens.received,
+              borderRadius: BorderRadius.circular(DuvetTokens.radiusBubble),
               boxShadow: tokens.shadowRest,
             ),
             child: Row(
@@ -416,7 +416,7 @@ class _Scrub extends StatelessWidget {
 // Video
 // -----------------------------------------------------------------------------
 
-const _media = Color(0xFF2B2D33);
+const _media = Duvet.slate;
 
 /// A video in a message: a poster with a play button; tapping plays it full
 /// screen.
@@ -465,11 +465,11 @@ class VideoTile extends StatelessWidget {
               width: 48,
               height: 48,
               decoration: BoxDecoration(
-                color: const Color(0x8C111113),
+                color: Duvet.night.withValues(alpha: 0.55),
                 borderRadius: BorderRadius.circular(DuvetTokens.radiusButton),
                 border: Border.all(color: const Color(0x1FFFFFFF)),
               ),
-              child: const Icon(FLucideIcons.play, color: Color(0xFFF2F1EE), size: 24),
+              child: const Icon(FLucideIcons.play, color: Duvet.moon, size: 24),
             ),
           ),
         ),
@@ -524,7 +524,7 @@ class _VideoPageState extends State<VideoPage> {
 
   @override
   Widget build(BuildContext context) {
-    const ink = Color(0xFFF2F1EE);
+    const ink = Duvet.moon;
     final value = _controller.value;
     final duration = value.duration;
     final progress = duration == Duration.zero ? 0.0 : value.position.inMilliseconds / duration.inMilliseconds;

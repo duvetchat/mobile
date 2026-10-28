@@ -130,7 +130,7 @@ class _MessageActionsRoute extends PopupRoute<(_Action, String?)> {
                   child: BackdropFilter(
                     filter: ImageFilter.blur(sigmaX: 10, sigmaY: 10),
                     child: ColoredBox(
-                      color: (dark ? const Color(0xFF111113) : colors.background).withValues(alpha: dark ? 0.62 : 0.55),
+                      color: (dark ? Duvet.night : colors.background).withValues(alpha: dark ? 0.62 : 0.55),
                     ),
                   ),
                 ),
@@ -333,20 +333,24 @@ Future<bool?> _showDeleteSheet(
                 child: Container(
                   padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
                   decoration: BoxDecoration(
-                    color: mine ? Duvet.accent : colors.card,
-                    borderRadius: BorderRadius.circular(DuvetTokens.radiusButton),
+                    color: mine ? colors.primary : context.duvet.received,
+                    borderRadius: BorderRadius.circular(DuvetTokens.radiusBubble),
                   ),
                   child: message.content.isEmpty
                       ? Text(
                           readableAttachments(message),
-                          style: DuvetType.body.copyWith(color: mine ? colors.primaryForeground : colors.foreground),
+                          style: DuvetType.body.copyWith(
+                            color: mine ? colors.primaryForeground : context.duvet.receivedText,
+                          ),
                         )
                       : MessageText(
                           content: message.content,
                           directory: directory,
                           onAccent: mine,
                           singleLine: true,
-                          style: DuvetType.body.copyWith(color: mine ? colors.primaryForeground : colors.foreground),
+                          style: DuvetType.body.copyWith(
+                            color: mine ? colors.primaryForeground : context.duvet.receivedText,
+                          ),
                         ),
                 ),
               ),

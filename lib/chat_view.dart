@@ -2344,19 +2344,16 @@ class _ChatViewState extends State<ChatView> {
   }
 
   Widget _body(BuildContext context) {
-    final colors = context.theme.colors;
     if (_loading && _entries.isEmpty) return const Center(child: FCircularProgress());
     if (_error != null && _entries.isEmpty) {
       return EmptyState(
-        icon: FLucideIcons.cloudOff,
+        asleep: true,
         text: 'Couldn’t load messages',
         action: DuvetButton(label: 'Try again', onPressed: _load),
       );
     }
     if (_entries.isEmpty) {
-      return Center(
-        child: Text('No messages yet. Say hi!', style: DuvetType.body.copyWith(color: colors.mutedForeground)),
-      );
+      return const EmptyState(text: 'No messages yet. Say hi!');
     }
     final items = _items();
     final count = items.length + (_loadingOlder ? 1 : 0);

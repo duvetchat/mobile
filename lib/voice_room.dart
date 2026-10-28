@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
@@ -79,34 +80,46 @@ List<VoicePerson> voicePeople(ChatRepository repository, VoiceController voice, 
   return people;
 }
 
-/// The faces in a grid of [columns] look at whoever is speaking, as on the
-/// desktop: each one's eyes turned toward the speaker's tile, and straight
-/// ahead in silence.
-Map<String, Offset> eyesToward(List<VoicePerson> people, Map<String, double> levels, int columns) {
-  final speaker = people.indexWhere((p) => (levels[p.id] ?? 0) > 0);
-  if (speaker < 0) return const {};
-  final (sr, sc) = (speaker ~/ columns, speaker % columns);
+/// The faces in a grid of [columns] under the spotlight look up at it while
+/// its speaker speaks, as on the desktop: each one's eyes turned toward the
+/// spotlight's middle, and straight ahead in silence.
+Map<String, Offset> eyesToward(List<VoicePerson> grid, int columns, {required bool speaking}) {
+  if (!speaking) return const {};
+  // The spotlight spans the grid's width, about two rows tall, above its first row.
+  final (sr, sc) = (-1.5, (columns - 1) / 2);
   return {
-    for (final (i, p) in people.indexed)
-      if (i != speaker)
-        p.id: () {
-          final (dx, dy) = ((sc - i % columns).toDouble(), (sr - i ~/ columns).toDouble());
-          final length = math.sqrt(dx * dx + dy * dy);
-          return Offset(dx / length, dy / length) * 0.8;
-        }(),
+    for (final (i, p) in grid.indexed)
+      p.id: () {
+        final (dx, dy) = (sc - i % columns, sr - i ~/ columns);
+        final length = math.sqrt(dx * dx + dy * dy);
+        return Offset(dx / length, dy / length) * 0.8;
+      }(),
   };
 }
 
-/// A person in voice: their face, its mouth moving with their voice, their
-/// name, and whether they're muted or deafened. Speaking rings the tile in
-/// `accent-text`, the screen's one accent while in voice.
+/// A person in voice, on a cushion: their face, its mouth moving with their
+/// voice, their name, and whether they're muted or deafened. Speaking rings
+/// the tile in the mascot's ice, what's alive, and it glows.
 class VoiceTile extends StatelessWidget {
   final VoicePerson person;
 
   /// How open the mouth is (0–1).
   final double level;
   final Offset eyes;
-  const VoiceTile({required this.person, this.level = 0, this.eyes = Offset.zero, super.key});
+
+  /// The face's size: large in the spotlight, smaller in the grid.
+  final double faceSize;
+
+  /// In the spotlight: "speaking" under the name while they speak.
+  final bool spotlight;
+  const VoiceTile({
+    required this.person,
+    this.level = 0,
+    this.eyes = Offset.zero,
+    this.faceSize = 56,
+    this.spotlight = false,
+    super.key,
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -134,66 +147,169 @@ class VoiceTile extends StatelessWidget {
           color: colors.card,
           image: memberBanner(context, person.bannerUrl),
           borderRadius: BorderRadius.circular(DuvetTokens.radiusCard),
-          boxShadow: tokens.shadowRest,
-          border: Border.all(color: speaking ? tokens.accentText : Colors.transparent, width: 2),
+          boxShadow: speaking
+              ? [BoxShadow(color: tokens.alive.withValues(alpha: 0.35), blurRadius: 18)]
+              : tokens.shadowRaised,
+          border: Border.all(color: speaking ? tokens.alive : Colors.transparent, width: 2.5),
         ),
-        padding: const EdgeInsets.all(12),
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            TweenAnimationBuilder<double>(
-              tween: Tween(end: speaking ? level : 0),
-              duration: reduce ? Duration.zero : const Duration(milliseconds: 150),
-              builder: (context, open, _) =>
-                  UserAvatar(name: person.name, url: person.avatarUrl, size: 72, mouthOpen: open, eyeOffset: eyes),
-            ),
-            const SizedBox(height: 12),
-            Row(
+        child: InsetShadow(
+          shadows: tokens.cushion,
+          borderRadius: BorderRadius.circular(DuvetTokens.radiusCard - 2.5),
+          child: Padding(
+            padding: EdgeInsets.symmetric(horizontal: 12, vertical: spotlight ? 24 : 12),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
               mainAxisAlignment: MainAxisAlignment.center,
               children: [
-                if (state != null) ...[Icon(state, size: 16, color: colors.mutedForeground), const SizedBox(width: 4)],
-                Flexible(
-                  child: Text(
-                    person.name,
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: DuvetType.rowTitle.copyWith(color: colors.foreground),
+                TweenAnimationBuilder<double>(
+                  tween: Tween(end: speaking ? level : 0),
+                  duration: reduce ? Duration.zero : const Duration(milliseconds: 150),
+                  builder: (context, open, _) => UserAvatar(
+                    name: person.name,
+                    url: person.avatarUrl,
+                    size: faceSize,
+                    mouthOpen: open,
+                    eyeOffset: eyes,
                   ),
                 ),
+                SizedBox(height: spotlight ? 14 : 8),
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    if (state != null) ...[
+                      Icon(state, size: 16, color: colors.mutedForeground),
+                      const SizedBox(width: 4),
+                    ],
+                    Flexible(
+                      child: Text(
+                        person.name,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: (spotlight ? DuvetType.navTitle : DuvetType.rowTitle).copyWith(color: colors.foreground),
+                      ),
+                    ),
+                  ],
+                ),
+                if (spotlight && speaking) ...[
+                  const SizedBox(height: 4),
+                  Text('speaking', style: DuvetType.caption.copyWith(color: colors.mutedForeground)),
+                ],
               ],
             ),
-          ],
+          ),
         ),
       ),
     );
   }
 }
 
-/// The people in voice, two to a row, scrolling under the bars.
-class VoiceGrid extends StatelessWidget {
+/// The people in voice, scrolling under the bars: whoever is speaking in
+/// the spotlight, large, and everyone else three to a row under them.
+///
+/// The spotlight goes to the loudest speaker, and stays with them while
+/// they speak, so two voices at once don't trade it back and forth; in a
+/// silence it stays with the last to speak, and before anyone has, it's
+/// the first in.
+class VoiceGrid extends StatefulWidget {
   final List<VoicePerson> people;
   final Map<String, double> levels;
   final EdgeInsets padding;
   const VoiceGrid({required this.people, required this.levels, required this.padding, super.key});
 
-  static const columns = 2;
+  static const columns = 3;
+
+  @override
+  State<VoiceGrid> createState() => _VoiceGridState();
+}
+
+class _VoiceGridState extends State<VoiceGrid> {
+  String? _spotlight;
+
+  @override
+  void initState() {
+    super.initState();
+    _follow();
+  }
+
+  @override
+  void didUpdateWidget(VoiceGrid old) {
+    super.didUpdateWidget(old);
+    _follow();
+  }
+
+  bool _speaking(VoicePerson p) => (widget.levels[p.id] ?? 0) > 0 && !p.muted;
+
+  void _follow() {
+    final people = widget.people;
+    final current = people.where((p) => p.id == _spotlight).firstOrNull;
+    if (current != null && _speaking(current)) return;
+    VoicePerson? loudest;
+    for (final p in people.where(_speaking)) {
+      if (loudest == null || widget.levels[p.id]! > widget.levels[loudest.id]!) loudest = p;
+    }
+    if (loudest != null) {
+      _spotlight = loudest.id;
+    } else if (current == null) {
+      _spotlight = people.firstOrNull?.id;
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
-    final eyes = eyesToward(people, levels, columns);
-    return GridView.builder(
-      padding: padding,
-      gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-        crossAxisCount: columns,
-        mainAxisSpacing: 12,
-        crossAxisSpacing: 12,
-        mainAxisExtent: 156,
-      ),
-      itemCount: people.length,
-      itemBuilder: (context, i) {
-        final p = people[i];
-        return VoiceTile(key: ValueKey(p.id), person: p, level: levels[p.id] ?? 0, eyes: eyes[p.id] ?? Offset.zero);
-      },
+    final levels = widget.levels;
+    final reduce = MediaQuery.disableAnimationsOf(context);
+    final lead = widget.people.where((p) => p.id == _spotlight).firstOrNull;
+    final grid = [
+      for (final p in widget.people)
+        if (p.id != lead?.id) p,
+    ];
+    final eyes = eyesToward(grid, VoiceGrid.columns, speaking: lead != null && _speaking(lead));
+    // A face, the space under it and the name, whatever the text size, in
+    // the tile's padding and its speaking ring.
+    final extent =
+        56 + 8 + 12 * 2 + 2.5 * 2 + MediaQuery.textScalerOf(context).scale(DuvetType.rowTitle.fontSize! * 1.4);
+    return CustomScrollView(
+      slivers: [
+        SliverPadding(
+          padding: widget.padding,
+          sliver: SliverMainAxisGroup(
+            slivers: [
+              if (lead != null)
+                SliverToBoxAdapter(
+                  child: AnimatedSwitcher(
+                    duration: reduce ? Duration.zero : const Duration(milliseconds: 200),
+                    child: VoiceTile(
+                      key: ValueKey(lead.id),
+                      person: lead,
+                      level: levels[lead.id] ?? 0,
+                      faceSize: 110,
+                      spotlight: true,
+                    ),
+                  ),
+                ),
+              if (lead != null && grid.isNotEmpty) const SliverToBoxAdapter(child: SizedBox(height: 12)),
+              SliverGrid.builder(
+                gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+                  crossAxisCount: VoiceGrid.columns,
+                  mainAxisSpacing: 12,
+                  crossAxisSpacing: 12,
+                  mainAxisExtent: extent,
+                ),
+                itemCount: grid.length,
+                itemBuilder: (context, i) {
+                  final p = grid[i];
+                  return VoiceTile(
+                    key: ValueKey(p.id),
+                    person: p,
+                    level: levels[p.id] ?? 0,
+                    eyes: eyes[p.id] ?? Offset.zero,
+                  );
+                },
+              ),
+            ],
+          ),
+        ),
+      ],
     );
   }
 }
@@ -207,8 +323,8 @@ Widget? voiceLinkBanner(VoiceLink? link) => switch (link) {
   VoiceLink.connected || null => null,
 };
 
-/// A voice control: a 56pt rounded square (circles are for people) over its
-/// caption. On, it's sunk into `ink` with the icon in `base`; the destructive
+/// A voice control: a 56pt cushion, a rounded square (circles are for
+/// people), over its caption. On, it's sunk into the slate; the destructive
 /// one is filled `destructive`.
 class VoiceButton extends StatelessWidget {
   final IconData icon;
@@ -240,12 +356,12 @@ class VoiceButton extends StatelessWidget {
     final fill = destructive
         ? colors.destructive
         : active
-        ? colors.foreground
+        ? tokens.chosen
         : colors.card;
     final ink = destructive
         ? colors.destructiveForeground
         : active
-        ? colors.background
+        ? tokens.chosenText
         : colors.foreground;
     return Semantics(
       container: true,
@@ -272,7 +388,12 @@ class VoiceButton extends StatelessWidget {
                   boxShadow: pressed || active ? null : tokens.shadowControl,
                 ),
                 child: InsetShadow(
-                  shadows: pressed ? tokens.shadowPressed : const [],
+                  // On, it stays sunk, as a pressed cushion does.
+                  shadows: pressed || active
+                      ? tokens.shadowPressed
+                      : destructive
+                      ? tokens.cushionAccent
+                      : tokens.cushion,
                   borderRadius: radius,
                   child: Center(child: Icon(icon, size: 24, color: ink)),
                 ),
@@ -340,8 +461,9 @@ class AudioRouteButton extends StatelessWidget {
   }
 }
 
-/// The controls while in voice, on a glass bar at the bottom: mute, deafen,
-/// where the sound plays, and leave.
+/// The controls while in voice, docked on a cushion floating over the
+/// screen's bottom, as the tab bar does: mute, deafen, where the sound
+/// plays, and leave.
 class VoiceControls extends StatelessWidget {
   final VoiceController voice;
   final String leaveLabel;
@@ -356,39 +478,61 @@ class VoiceControls extends StatelessWidget {
   });
 
   @override
-  Widget build(BuildContext context) => GlassChrome(
-    top: false,
-    child: Padding(
-      padding: EdgeInsets.fromLTRB(16, 12, 16, 12 + MediaQuery.paddingOf(context).bottom),
-      child: Row(
-        mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-        children: [
-          VoiceButton(
-            icon: voice.muted ? FLucideIcons.micOff : FLucideIcons.mic,
-            label: voice.muted ? 'Unmute' : 'Mute',
-            semanticLabel: 'Mute',
-            on: voice.muted,
-            onPressed: voice.toggleMute,
-          ),
-          VoiceButton(
-            icon: voice.deafened ? FLucideIcons.headphoneOff : FLucideIcons.headphones,
-            label: voice.deafened ? 'Undeafen' : 'Deafen',
-            semanticLabel: 'Deafen',
-            on: voice.deafened,
-            onPressed: voice.toggleDeafen,
-          ),
-          AudioRouteButton(voice: voice),
-          VoiceButton(
-            icon: FLucideIcons.phoneOff,
-            label: leaveLabel,
-            semanticLabel: leaveSemanticLabel,
-            destructive: true,
-            onPressed: onLeave,
-          ),
-        ],
-      ),
+  Widget build(BuildContext context) => VoiceDock(
+    child: Row(
+      mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+      children: [
+        VoiceButton(
+          icon: voice.muted ? FLucideIcons.micOff : FLucideIcons.mic,
+          label: voice.muted ? 'Unmute' : 'Mute',
+          semanticLabel: 'Mute',
+          on: voice.muted,
+          onPressed: voice.toggleMute,
+        ),
+        VoiceButton(
+          icon: voice.deafened ? FLucideIcons.headphoneOff : FLucideIcons.headphones,
+          label: voice.deafened ? 'Undeafen' : 'Deafen',
+          semanticLabel: 'Deafen',
+          on: voice.deafened,
+          onPressed: voice.toggleDeafen,
+        ),
+        AudioRouteButton(voice: voice),
+        VoiceButton(
+          icon: FLucideIcons.phoneOff,
+          label: leaveLabel,
+          semanticLabel: leaveSemanticLabel,
+          destructive: true,
+          onPressed: onLeave,
+        ),
+      ],
     ),
   );
+}
+
+/// A raised cushion floating over the screen's bottom, inset from its edges
+/// and above the safe area as the tab bar is: [VoiceControls]' dock.
+class VoiceDock extends StatelessWidget {
+  final Widget child;
+  const VoiceDock({required this.child, super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    final safe = MediaQuery.paddingOf(context).bottom;
+    return Padding(
+      padding: EdgeInsets.fromLTRB(
+        DuvetTokens.tabBarInset,
+        0,
+        DuvetTokens.tabBarInset,
+        safe > 0 ? safe : DuvetTokens.tabBarInset,
+      ),
+      child: Cushion(
+        radius: DuvetTokens.radiusBar,
+        shadows: context.duvet.shadowRaised,
+        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 10),
+        child: child,
+      ),
+    );
+  }
 }
 
 /// A voice room: who's in, and Join voice; once the user is in, the controls.
@@ -437,7 +581,7 @@ class _VoiceRoomScreenState extends State<VoiceRoomScreen> {
                 child: room == null
                     ? const EmptyState(icon: FLucideIcons.volumeX, text: 'This voice room is gone')
                     : people.isEmpty
-                    ? EmptyState(icon: FLucideIcons.volume2, text: 'No one’s here yet')
+                    ? EmptyState(text: 'No one’s here yet')
                     : VoiceGrid(
                         people: people,
                         levels: voice.levels.value,
@@ -489,37 +633,60 @@ class _JoinPanel extends StatelessWidget {
   const _JoinPanel({required this.room, required this.voice});
 
   @override
+  Widget build(BuildContext context) => GlassChrome(
+    top: false,
+    child: Padding(
+      padding: EdgeInsets.fromLTRB(16, 12, 16, 12 + MediaQuery.paddingOf(context).bottom),
+      child: JoinVoiceButton(room: room, voice: voice, expand: true),
+    ),
+  );
+}
+
+/// Join voice, Primary, and under it why it can't be ("You can’t join this
+/// voice room") or what it ends ("Joining ends your call"): the voice room
+/// screen's own, and its Space's stage's. Joining leaves any other voice or
+/// call, and asks for the microphone, in [VoiceController.joinRoom];
+/// [onJoin] follows it, e.g. to open the room.
+class JoinVoiceButton extends StatelessWidget {
+  final Room room;
+  final VoiceController voice;
+
+  /// Full width, the caption centered under it.
+  final bool expand;
+  final VoidCallback? onJoin;
+  const JoinVoiceButton({required this.room, required this.voice, this.expand = false, this.onJoin, super.key});
+
+  @override
   Widget build(BuildContext context) {
     final colors = context.theme.colors;
     final allowed = voice.canJoin(room);
     final inCall = voice.call != null;
-    return GlassChrome(
-      top: false,
-      child: Padding(
-        padding: EdgeInsets.fromLTRB(16, 12, 16, 12 + MediaQuery.paddingOf(context).bottom),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            DuvetButton(
-              label: 'Join voice',
-              icon: FLucideIcons.audioLines,
-              variant: ButtonVariant.primary,
-              expand: true,
-              onPressed: allowed ? () => voice.joinRoom(room) : null,
-            ),
-            if (!allowed || inCall)
-              Padding(
-                padding: const EdgeInsets.only(top: 8),
-                child: Text(
-                  !allowed ? 'You can’t join this voice room' : 'Joining ends your call',
-                  textAlign: TextAlign.center,
-                  style: DuvetType.caption.copyWith(color: colors.mutedForeground),
-                ),
-              ),
-          ],
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      crossAxisAlignment: expand ? CrossAxisAlignment.stretch : CrossAxisAlignment.start,
+      children: [
+        DuvetButton(
+          label: 'Join voice',
+          icon: FLucideIcons.audioLines,
+          variant: ButtonVariant.primary,
+          expand: expand,
+          onPressed: allowed
+              ? () {
+                  unawaited(voice.joinRoom(room));
+                  onJoin?.call();
+                }
+              : null,
         ),
-      ),
+        if (!allowed || inCall)
+          Padding(
+            padding: const EdgeInsets.only(top: 8),
+            child: Text(
+              !allowed ? 'You can’t join this voice room' : 'Joining ends your call',
+              textAlign: expand ? TextAlign.center : TextAlign.start,
+              style: DuvetType.caption.copyWith(color: colors.mutedForeground),
+            ),
+          ),
+      ],
     );
   }
 }

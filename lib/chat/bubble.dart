@@ -114,6 +114,16 @@ class _Bubble extends StatelessWidget {
     final maxWidth = MediaQuery.sizeOf(context).width * 0.75;
     final secondary = DuvetType.caption.copyWith(color: colors.mutedForeground);
     final faded = entry.delivery != _Delivery.sent;
+    // A run's last bubble tucks its corner toward its sender, as the
+    // mascot's pillow tucks in at the bottom.
+    const round = Radius.circular(DuvetTokens.radiusBubble);
+    const tail = Radius.circular(DuvetTokens.radiusBubbleTail);
+    final shape = BorderRadius.only(
+      topLeft: round,
+      topRight: round,
+      bottomLeft: lastOfRun && !mine ? tail : round,
+      bottomRight: lastOfRun && mine ? tail : round,
+    );
 
     // With double tap picked, double-tap a text bubble (which does the press),
     // a sticker, a big emoji or a picture to reply; files, videos and voice
@@ -154,23 +164,29 @@ class _Bubble extends StatelessWidget {
               scale: 0.98,
               onDoubleTap: onDoubleTap,
               builder: (context, _) => Container(
-                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
                 constraints: BoxConstraints(maxWidth: maxWidth),
                 decoration: BoxDecoration(
-                  color: mine ? Duvet.accent : colors.card,
-                  borderRadius: BorderRadius.circular(DuvetTokens.radiusButton),
+                  color: mine ? colors.primary : tokens.received,
+                  borderRadius: shape,
                   boxShadow: editing ? null : (lifted ? tokens.shadowFloat : tokens.shadowRest),
                   // Mentioning the user: the accent as an outline, never a fill.
                   border: mentionsMe ? Border.all(color: tokens.accentText, width: 1.5) : null,
                 ),
-                child: MessageText(
-                  content: m.content,
-                  directory: directory,
-                  onAccent: mine,
-                  style: DuvetType.body.copyWith(color: mine ? colors.primaryForeground : colors.foreground),
-                  onMention: onOpenMention,
-                  onRoom: onOpenRoom,
-                  messageActions: anchor == null ? const {} : actionsAt(anchor),
+                child: InsetShadow(
+                  shadows: mine ? tokens.cushionAccent : tokens.cushion,
+                  borderRadius: shape,
+                  child: Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 13, vertical: 9),
+                    child: MessageText(
+                      content: m.content,
+                      directory: directory,
+                      onAccent: mine,
+                      style: DuvetType.body.copyWith(color: mine ? colors.primaryForeground : tokens.receivedText),
+                      onMention: onOpenMention,
+                      onRoom: onOpenRoom,
+                      messageActions: anchor == null ? const {} : actionsAt(anchor),
+                    ),
+                  ),
                 ),
               ),
             ),
@@ -946,24 +962,42 @@ class _Reactions extends StatelessWidget {
   }
 }
 
-/// Where the day changes: centered `caption`, no rule.
+/// Where the day changes: the day, centered in a small sunken pill.
 class _DaySeparator extends StatelessWidget {
   final DateTime day;
   const _DaySeparator({required this.day});
 
   @override
-  Widget build(BuildContext context) => Padding(
-    padding: const EdgeInsets.only(top: 16, bottom: 4),
-    child: Center(
-      child: Semantics(
-        header: true,
-        child: Text(dayLabel(day), style: DuvetType.caption.copyWith(color: context.theme.colors.mutedForeground)),
+  Widget build(BuildContext context) {
+    final colors = context.theme.colors;
+    const radius = BorderRadius.all(Radius.circular(12));
+    return Padding(
+      padding: const EdgeInsets.only(top: 16, bottom: 4),
+      child: Center(
+        child: Semantics(
+          header: true,
+          child: DecoratedBox(
+            decoration: BoxDecoration(color: colors.secondary, borderRadius: radius),
+            child: InsetShadow(
+              shadows: context.duvet.shadowWell,
+              borderRadius: radius,
+              child: Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 3),
+                child: Text(
+                  dayLabel(day),
+                  style: DuvetType.caption.copyWith(color: colors.mutedForeground, fontWeight: FontWeight.w500),
+                ),
+              ),
+            ),
+          ),
+        ),
       ),
-    ),
-  );
+    );
+  }
 }
 
-/// Before the first unread message: "New messages" between two hairlines.
+/// Before the first unread message: "New messages" in the accent, between
+/// two hairlines.
 class _NewMessagesDivider extends StatelessWidget {
   final String text;
 
@@ -973,7 +1007,10 @@ class _NewMessagesDivider extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final hairline = Expanded(child: Container(height: 1, color: context.duvet.hairline));
+    final tokens = context.duvet;
+    final hairline = Expanded(
+      child: Container(height: 1, color: quiet ? tokens.hairline : tokens.accentText.withValues(alpha: 0.4)),
+    );
     return Padding(
       padding: const EdgeInsets.only(top: 16, bottom: 4),
       child: Semantics(
@@ -985,8 +1022,8 @@ class _NewMessagesDivider extends StatelessWidget {
             Text(
               text,
               style: DuvetType.caption.copyWith(
-                color: quiet ? context.theme.colors.mutedForeground : context.theme.colors.foreground,
-                fontWeight: quiet ? FontWeight.w400 : FontWeight.w500,
+                color: quiet ? context.theme.colors.mutedForeground : tokens.accentText,
+                fontWeight: quiet ? FontWeight.w400 : FontWeight.w700,
               ),
             ),
             const SizedBox(width: 12),

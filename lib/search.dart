@@ -390,16 +390,15 @@ class _Toggle extends StatelessWidget {
           padding: const EdgeInsets.symmetric(horizontal: 12),
           alignment: Alignment.center,
           decoration: BoxDecoration(
-            color: on ? tokens.accentTint : colors.card,
+            color: on ? tokens.chosen : colors.card,
             borderRadius: BorderRadius.circular(DuvetTokens.radiusChip),
-            border: on ? Border.all(color: tokens.accentText) : null,
-            boxShadow: on ? null : tokens.shadowRest,
+            boxShadow: tokens.shadowRest,
           ),
           child: Text(
             label,
             style: DuvetType.snippet.copyWith(
-              color: on ? tokens.accentText : colors.foreground,
-              fontWeight: FontWeight.w500,
+              color: on ? tokens.chosenText : colors.foreground,
+              fontWeight: on ? FontWeight.w700 : FontWeight.w500,
             ),
           ),
         ),

@@ -53,7 +53,7 @@ void main() {
     await tester.pumpAndSettle();
 
     await tapLabel(tester, 'Leo’s profile');
-    expect(find.text('ROLES IN DESIGN GUILD'), findsOneWidget);
+    expect(find.text('Roles in Design Guild'), findsOneWidget);
     expect(find.text('Moderator'), findsOneWidget);
     expect(find.text('Nothing here yet.'), findsOneWidget);
     await tapLabel(tester, 'Add friend');
@@ -126,10 +126,10 @@ void main() {
     // The bubble waits to see if it's a double tap (a reply) first.
     await tester.pump(kDoubleTapTimeout);
     await tester.pumpAndSettle();
-    expect(find.text('ROLES IN DESIGN GUILD'), findsOneWidget);
+    expect(find.text('Roles in Design Guild'), findsOneWidget);
     expect(find.text('Designer'), findsOneWidget);
     await closeSheet(tester);
-    expect(find.text('ROLES IN DESIGN GUILD'), findsNothing);
+    expect(find.text('Roles in Design Guild'), findsNothing);
 
     // One stop: the text with its time, and the message's actions with the
     // mention's.
@@ -138,7 +138,7 @@ void main() {
 
     expect(actionsOf(message), containsAll(['Reply', 'Message options', 'Open Maya’s profile']));
     await perform(tester, message, 'Open Maya’s profile');
-    expect(find.text('ROLES IN DESIGN GUILD'), findsOneWidget);
+    expect(find.text('Roles in Design Guild'), findsOneWidget);
     semantics.dispose();
   });
 
@@ -289,10 +289,10 @@ void main() {
     await tester.pumpAndSettle();
 
     await tapLabel(tester, 'Leo’s profile');
-    expect(find.text('MUTUAL SPACES'), findsOneWidget);
+    expect(find.text('Mutual Spaces'), findsOneWidget);
     expect(
       find.descendant(
-        of: find.ancestor(of: find.text('MUTUAL SPACES'), matching: find.byType(Column)).first,
+        of: find.ancestor(of: find.text('Mutual Spaces'), matching: find.byType(Column)).first,
         matching: find.text('1'),
       ),
       findsOneWidget,
@@ -347,7 +347,7 @@ void main() {
     await tester.pumpAndSettle();
     await tester.tap(find.bySemanticsLabel('Members'));
     await tester.pumpAndSettle();
-    expect(find.text('ONLINE — 2'), findsOneWidget);
+    expect(find.text('Online — 2'), findsOneWidget);
 
     await tester.tap(find.bySemanticsLabel(RegExp('^leo, Online')));
     await tester.pumpAndSettle();
@@ -379,8 +379,8 @@ void main() {
     );
     await tester.tap(find.bySemanticsLabel('Friends').hitTestable().first);
     await tester.pumpAndSettle();
-    expect(find.text('WANTS TO BE FRIENDS'), findsOneWidget);
-    expect(find.text('ONLINE — 1'), findsOneWidget);
+    expect(find.text('Wants to be friends'), findsOneWidget);
+    expect(find.text('Online — 1'), findsOneWidget);
     expect(find.text('Pending 1'), findsOneWidget);
 
     await tapLabel(tester, 'Accept');
@@ -396,8 +396,8 @@ void main() {
     expect(find.text('No one called @nobody shares a Space or a chat with you'), findsOneWidget);
 
     await tapLabel(tester, 'Sent 1');
-    expect(find.text('WANTS TO BE FRIENDS'), findsNothing);
-    expect(find.text('YOU ASKED'), findsOneWidget);
+    expect(find.text('Wants to be friends'), findsNothing);
+    expect(find.text('You asked'), findsOneWidget);
     await tester.pump(const Duration(seconds: 4));
     semantics.dispose();
   });
@@ -584,7 +584,7 @@ void main() {
       friends: [Member(userId: _maya, username: 'maya', alias: 'Maya')],
     );
     await tester.pumpAndSettle();
-    expect(find.text('FRIENDS'), findsOneWidget);
+    expect(find.widgetWithText(Overline, 'Friends'), findsOneWidget);
     expect(find.bySemanticsLabel('Maya, @maya'), findsOneWidget);
     expect(find.bySemanticsLabel('leo, @leo'), findsNothing);
     semantics.dispose();

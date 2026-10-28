@@ -353,7 +353,7 @@ class _IncomingCallScreenState extends State<IncomingCallScreen> {
                         icon: FLucideIcons.phone,
                         label: 'Accept',
                         semanticLabel: 'Accept the call',
-                        color: Duvet.accent,
+                        color: colors.primary,
                         ink: colors.primaryForeground,
                         onPressed: voice.acceptCall,
                       ),
@@ -427,8 +427,8 @@ class _AnswerButton extends StatelessWidget {
   }
 }
 
-/// Voice or a call going on: a glass strip over the tab bar, to go back to
-/// it, mute, or leave.
+/// Voice or a call going on: a slate cushion floating over the tab bar, its
+/// mark in ice while you're live, to go back to it, mute, or leave.
 class VoiceBar extends StatefulWidget {
   const VoiceBar({super.key});
 
@@ -446,7 +446,6 @@ class _VoiceBarState extends State<VoiceBar> with _Ticking {
   Widget build(BuildContext context) {
     final repository = context.repository;
     final voice = context.voice;
-    final colors = context.theme.colors;
     final call = voice.call;
     final target = voice.target;
     final String title;
@@ -474,71 +473,82 @@ class _VoiceBarState extends State<VoiceBar> with _Ticking {
         open = () => openCall(context, call.conversationId);
     }
     final isCall = target is! RoomVoice;
-    return GlassChrome(
-      top: false,
-      child: SizedBox(
-        height: VoiceBar.height,
-        child: Row(
-          children: [
-            Expanded(
-              child: Semantics(
-                container: true,
-                button: true,
-                label: '${isCall ? 'Call with' : 'Voice in'} $title, $status. Open',
-                excludeSemantics: true,
-                onTap: open,
-                child: Pressable(
-                  onTap: open,
-                  scale: 1,
-                  builder: (context, _) => Padding(
-                    padding: const EdgeInsets.fromLTRB(16, 8, 8, 8),
-                    child: Row(
-                      children: [
-                        Icon(
-                          isCall ? FLucideIcons.phoneCall : FLucideIcons.volume2,
-                          size: 24,
-                          color: colors.foreground,
-                        ),
-                        const SizedBox(width: 12),
-                        Expanded(
-                          child: Column(
-                            mainAxisSize: MainAxisSize.min,
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              Text(
-                                title,
-                                maxLines: 1,
-                                overflow: TextOverflow.ellipsis,
-                                style: DuvetType.rowTitle.copyWith(color: colors.foreground),
+    final tokens = context.duvet;
+    const radius = BorderRadius.all(Radius.circular(DuvetTokens.radiusBar));
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(DuvetTokens.tabBarInset, 0, DuvetTokens.tabBarInset, 8),
+      child: DecoratedBox(
+        decoration: BoxDecoration(color: tokens.chosen, borderRadius: radius, boxShadow: tokens.shadowRaised),
+        child: InsetShadow(
+          shadows: tokens.cushion,
+          borderRadius: radius,
+          child: SizedBox(
+            height: VoiceBar.height - 8,
+            child: Row(
+              children: [
+                Expanded(
+                  child: Semantics(
+                    container: true,
+                    button: true,
+                    label: '${isCall ? 'Call with' : 'Voice in'} $title, $status. Open',
+                    excludeSemantics: true,
+                    onTap: open,
+                    child: Pressable(
+                      onTap: open,
+                      scale: 1,
+                      builder: (context, _) => Padding(
+                        padding: const EdgeInsets.fromLTRB(16, 8, 8, 8),
+                        child: Row(
+                          children: [
+                            Icon(
+                              isCall ? FLucideIcons.phoneCall : FLucideIcons.audioLines,
+                              size: 24,
+                              color: tokens.alive,
+                            ),
+                            const SizedBox(width: 12),
+                            Expanded(
+                              child: Column(
+                                mainAxisSize: MainAxisSize.min,
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Text(
+                                    title,
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis,
+                                    style: DuvetType.rowTitle.copyWith(color: tokens.chosenText),
+                                  ),
+                                  Text(
+                                    status,
+                                    maxLines: 1,
+                                    style: DuvetType.caption.copyWith(color: tokens.chosenText.withValues(alpha: 0.72)),
+                                  ),
+                                ],
                               ),
-                              Text(
-                                status,
-                                maxLines: 1,
-                                style: DuvetType.caption.copyWith(color: colors.mutedForeground),
-                              ),
-                            ],
-                          ),
+                            ),
+                          ],
                         ),
-                      ],
+                      ),
                     ),
                   ),
                 ),
-              ),
+                if (target != null)
+                  IconAction(
+                    icon: voice.muted ? FLucideIcons.micOff : FLucideIcons.mic,
+                    label: voice.muted ? 'Unmute' : 'Mute',
+                    color: tokens.chosenText,
+                    onPressed: voice.toggleMute,
+                  ),
+                IconAction(
+                  icon: FLucideIcons.phoneOff,
+                  label: isCall ? 'Hang up' : 'Leave voice',
+                  // On the slate, in either theme: night's red reads on it.
+                  color: Duvet.dark.destructive,
+                  onPressed: voice.leave,
+                ),
+                const SizedBox(width: 8),
+              ],
             ),
-            if (target != null)
-              IconAction(
-                icon: voice.muted ? FLucideIcons.micOff : FLucideIcons.mic,
-                label: voice.muted ? 'Unmute' : 'Mute',
-                onPressed: voice.toggleMute,
-              ),
-            IconAction(
-              icon: FLucideIcons.phoneOff,
-              label: isCall ? 'Hang up' : 'Leave voice',
-              color: colors.destructive,
-              onPressed: voice.leave,
-            ),
-            const SizedBox(width: 8),
-          ],
+          ),
         ),
       ),
     );
@@ -649,10 +659,7 @@ class CallHistoryList extends StatelessWidget {
         final calls = voice.history.calls.value;
         final summaries = {for (final c in repository.conversations.value) c.id: c};
         if (calls.isEmpty) {
-          return const SliverFillRemaining(
-            hasScrollBody: false,
-            child: EmptyState(icon: FLucideIcons.phone, text: 'No calls yet'),
-          );
+          return const SliverFillRemaining(hasScrollBody: false, child: EmptyState(text: 'No calls yet'));
         }
         return SliverPadding(
           padding: const EdgeInsets.only(top: 8),

@@ -497,7 +497,8 @@ void main() {
       ),
     );
     await openYou(tester);
-    await tester.ensureVisible(find.byType(BucketMeter));
+    // Below the fold, so maybe not built yet: scrolled into view.
+    await tester.scrollUntilVisible(find.byType(BucketMeter), 200, scrollable: find.byType(Scrollable).first);
     await tester.pumpAndSettle();
     expect(find.byType(StorageMeter), findsNothing, reason: 'the active bucket keeps the uploads');
     expect(find.bySemanticsLabel('Your own storage, Backblaze: 3.0 MB used · no quota'), findsOneWidget);
@@ -505,7 +506,7 @@ void main() {
     await tester.tap(find.byType(BucketMeter));
     await tester.pumpAndSettle();
     expect(find.bySemanticsLabel(RegExp(r'^Default storage: 0 B of 5\.0 GB used')), findsOneWidget);
-    expect(find.text('YOUR BUCKETS'), findsOneWidget);
+    expect(find.text('Your buckets'), findsOneWidget);
     expect(find.text('3.0 MB used · Active'), findsOneWidget);
     expect(find.text('1.0 MB of 10.0 MB · Off'), findsOneWidget);
     semantics.dispose();
@@ -533,7 +534,8 @@ void main() {
     ];
     repository.usage = const StorageInfo(used: 3 * 1024 * 1024 + 200 * 1024, max: 5 * 1024 * 1024 * 1024);
     await openYou(tester);
-    await tester.ensureVisible(find.byType(StorageMeter));
+    // Below the fold, so maybe not built yet: scrolled into view.
+    await tester.scrollUntilVisible(find.byType(StorageMeter), 200, scrollable: find.byType(Scrollable).first);
     await tester.pumpAndSettle();
     await tester.tap(find.byType(StorageMeter));
     await tester.pumpAndSettle();

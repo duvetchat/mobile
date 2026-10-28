@@ -173,13 +173,9 @@ class _JoinState extends State<_Join> {
                       label:
                           '${invite.spaceName}, ${invite.memberCount} members${invite.description.isEmpty ? '' : '. ${invite.description}'}',
                       excludeSemantics: true,
-                      child: Container(
+                      child: Cushion(
                         padding: const EdgeInsets.fromLTRB(16, 24, 16, 16),
-                        decoration: BoxDecoration(
-                          color: colors.card,
-                          borderRadius: BorderRadius.circular(DuvetTokens.radiusCard),
-                          boxShadow: tokens.shadowRaised,
-                        ),
+                        shadows: tokens.shadowRaised,
                         child: Column(
                           children: [
                             SpaceIcon(
@@ -481,15 +477,11 @@ class _CreateSpacePageState extends State<CreateSpacePage> {
               children: [
                 // The card it will become.
                 Center(
-                  child: Container(
+                  child: Cushion(
                     width: 173,
                     height: 160,
                     padding: const EdgeInsets.all(16),
-                    decoration: BoxDecoration(
-                      color: colors.card,
-                      borderRadius: BorderRadius.circular(DuvetTokens.radiusCard),
-                      boxShadow: tokens.shadowRaised,
-                    ),
+                    shadows: tokens.shadowRaised,
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [

@@ -19,7 +19,7 @@ import 'spaces.dart' show deleteSpace, inviteRoomOf, pickSpaceIcon, showInviteSh
 import 'theme.dart';
 import 'widgets/avatar.dart';
 import 'widgets/chrome.dart';
-import 'widgets/depth.dart' show Pressable;
+import 'widgets/depth.dart' show Cushion, InsetShadow, Pressable;
 import 'widgets/glass.dart';
 import 'widgets/rows.dart';
 import 'widgets/scrolling.dart' show CarouselPhysics;
@@ -330,13 +330,9 @@ class _SpaceSettingsPageState extends State<SpaceSettingsPage> {
           title: 'Space settings',
           backLabel: 'Back to ${space.name}',
           children: [
-            Container(
+            Cushion(
               padding: const EdgeInsets.all(16),
-              decoration: BoxDecoration(
-                color: colors.card,
-                borderRadius: BorderRadius.circular(DuvetTokens.radiusCard),
-                boxShadow: tokens.shadowRaised,
-              ),
+              shadows: tokens.shadowRaised,
               child: Row(
                 children: [
                   ExcludeSemantics(child: SpaceIcon(space: space, size: 64)),
@@ -480,14 +476,20 @@ class AdminPanel extends StatelessWidget {
   const AdminPanel({required this.children, super.key});
 
   @override
-  Widget build(BuildContext context) => Container(
-    padding: const EdgeInsets.all(4),
+  Widget build(BuildContext context) => DecoratedBox(
     decoration: BoxDecoration(
       color: context.theme.colors.card,
       borderRadius: BorderRadius.circular(DuvetTokens.radiusCard),
       boxShadow: context.duvet.shadowRest,
     ),
-    child: Column(children: children),
+    child: InsetShadow(
+      shadows: context.duvet.cushion,
+      borderRadius: BorderRadius.circular(DuvetTokens.radiusCard),
+      child: Padding(
+        padding: const EdgeInsets.all(4),
+        child: Column(children: children),
+      ),
+    ),
   );
 }
 
@@ -1158,15 +1160,11 @@ class _RoomsAdminPageState extends State<RoomsAdminPage> {
       ),
     );
     // One raised panel: the rooms outside any category, or a category's.
-    Widget panel(Widget child, {Key? key}) => Container(
+    Widget panel(Widget child, {Key? key}) => Cushion(
       key: key,
       margin: const EdgeInsets.only(bottom: 12),
       clipBehavior: Clip.antiAlias,
-      decoration: BoxDecoration(
-        color: colors.card,
-        borderRadius: BorderRadius.circular(DuvetTokens.radiusCard),
-        boxShadow: tokens.shadowRaised,
-      ),
+      shadows: tokens.shadowRaised,
       child: child,
     );
     // A room off its panel while held: raised on its own.
@@ -1250,7 +1248,7 @@ class _RoomsAdminPageState extends State<RoomsAdminPage> {
                 const SizedBox(width: 8),
                 Expanded(
                   child: Text(
-                    c.name.toUpperCase(),
+                    c.name,
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
                     style: DuvetType.overline.copyWith(color: colors.mutedForeground),
@@ -1593,7 +1591,7 @@ class _RoomPermissionsPageState extends State<RoomPermissionsPage> {
                 padding: const EdgeInsets.fromLTRB(12, 14, 12, 0),
                 child: Semantics(
                   header: true,
-                  child: Text(group.toUpperCase(), style: DuvetType.overline.copyWith(color: colors.mutedForeground)),
+                  child: Text(group, style: DuvetType.overline.copyWith(color: colors.mutedForeground)),
                 ),
               ),
               for (final p in perms)
@@ -2372,15 +2370,7 @@ class _RolesPageState extends State<RolesPage> {
       );
     }
 
-    Widget panel(Widget child) => Container(
-      clipBehavior: Clip.antiAlias,
-      decoration: BoxDecoration(
-        color: colors.card,
-        borderRadius: BorderRadius.circular(DuvetTokens.radiusCard),
-        boxShadow: tokens.shadowRaised,
-      ),
-      child: child,
-    );
+    Widget panel(Widget child) => Cushion(clipBehavior: Clip.antiAlias, shadows: tokens.shadowRaised, child: child);
 
     return AdminPage(
       title: 'Roles',
@@ -3300,13 +3290,9 @@ class _SpaceStoragePageState extends State<SpaceStoragePage> {
                 child: Center(child: FCircularProgress()),
               )
             else ...[
-              Container(
+              Cushion(
                 padding: const EdgeInsets.all(16),
-                decoration: BoxDecoration(
-                  color: colors.card,
-                  borderRadius: BorderRadius.circular(DuvetTokens.radiusCard),
-                  boxShadow: tokens.shadowRaised,
-                ),
+                shadows: tokens.shadowRaised,
                 child: Semantics(
                   label: '${formatBytes(s.used)} used by ${s.files.length} files',
                   excludeSemantics: true,

@@ -3,6 +3,7 @@ import 'package:duvet/main.dart';
 import 'package:duvet/members_sheet.dart';
 import 'package:duvet/theme.dart';
 import 'package:duvet/widgets/chrome.dart';
+import 'package:duvet/widgets/depth.dart';
 import 'package:duvet/widgets/glass.dart';
 import 'package:duvet/widgets/rows.dart';
 import 'package:flutter/material.dart';
@@ -39,21 +40,23 @@ void main() {
     expect(DuvetType.largeTitle.fontFamily, 'Fira Sans');
     expect(
       (DuvetType.largeTitle.fontSize, DuvetType.largeTitle.height, DuvetType.largeTitle.fontWeight),
-      (32, 1.1, FontWeight.w700),
+      (34, 1.1, FontWeight.w700),
     );
     expect((DuvetType.navTitle.fontSize, DuvetType.title.fontSize), (17, 20));
     expect((DuvetType.body.fontSize, DuvetType.body.height, DuvetType.body.fontWeight), (16, 1.4, FontWeight.w400));
     expect(DuvetType.rowTitle.fontWeight, FontWeight.w500);
     expect(DuvetType.rowTitleUnread.fontWeight, FontWeight.w700);
     expect((DuvetType.snippet.fontSize, DuvetType.caption.fontSize), (15, 13));
-    expect((DuvetType.overline.fontSize, DuvetType.tabLabel.fontSize), (12, 11));
+    expect((DuvetType.overline.fontSize, DuvetType.tabLabel.fontSize), (14, 11));
+    // Headers as written, never in tracked capitals.
+    expect(DuvetType.overline.letterSpacing, isNull);
     // forui's own widgets read the same face.
     final theme = Duvet.theme(Brightness.light);
     expect(theme.typography.body.fontFamily, 'Fira Sans');
     expect(theme.typography.body.sm.fontSize, 16);
   });
 
-  testWidgets('glass saturates what it blurs', (tester) async {
+  testWidgets('a floating surface is a cushion, not glass; only a picture is frosted', (tester) async {
     await tester.pumpWidget(
       MaterialApp(
         home: FTheme(
@@ -62,27 +65,32 @@ void main() {
         ),
       ),
     );
-    final filter = tester.widget<BackdropFilter>(find.byType(BackdropFilter)).filter;
-    expect(filter.toString(), allOf(contains('matrix'), contains('blur')));
+    expect(find.byType(BackdropFilter), findsNothing);
+    final cushion = tester.widget<InsetShadow>(find.byType(InsetShadow));
+    expect(cushion.shadows, DuvetTokens.light.cushion);
+    // The image viewer's bars still frost the picture under them.
+    expect(glassBackdrop(16).toString(), allOf(contains('matrix'), contains('blur')));
   });
 
-  testWidgets('the tab bar is glass, 56pt, and its pill moves to the active tab', (tester) async {
+  testWidgets('the tab bar floats, a 60pt cushion, and its pill moves to the active tab', (tester) async {
     final semantics = tester.ensureSemantics();
     await pumpApp(tester);
     final bar = find.byType(DuvetTabBar);
-    expect(tester.getSize(bar).height, 56);
-    expect(find.descendant(of: bar, matching: find.byType(BackdropFilter)), findsOneWidget);
+    // 60 tall, 12 off the bottom with no safe area there.
+    expect(tester.getSize(bar).height, 72);
+    expect(find.descendant(of: bar, matching: find.byType(BackdropFilter)), findsNothing);
 
     double pillLeft() => tester.getTopLeft(find.descendant(of: bar, matching: find.byType(AnimatedPositioned))).dx;
-    // Centered in the first of four 97.5pt columns.
-    expect(pillLeft(), closeTo(97.5 / 2 - 28, 0.01));
+    // 12 in from the screen's edge and 6 inside the bar: the first of four
+    // 88.5pt columns.
+    expect(pillLeft(), closeTo(12 + 6, 0.01));
     expect(
       tester.getSemantics(find.bySemanticsLabel('Chats').last).getSemanticsData().flagsCollection.isSelected,
       Tristate.isTrue,
     );
 
     await tab(tester, 'Spaces');
-    expect(pillLeft(), closeTo(97.5 * 1.5 - 28, 0.01));
+    expect(pillLeft(), closeTo(12 + 6 + 88.5, 0.01));
     expect(
       tester.getSemantics(find.bySemanticsLabel('Spaces').last).getSemanticsData().flagsCollection.isSelected,
       Tristate.isTrue,
@@ -178,14 +186,14 @@ void main() {
       return repository;
     }
 
-    testWidgets('the composer holds its four controls in one radius-20 field; empty, Send is a voice note', (
+    testWidgets('the composer holds its four controls in one round cushion; empty, Send is a voice note', (
       tester,
     ) async {
       final semantics = tester.ensureSemantics();
       await openMaya(tester);
       final field = find.ancestor(of: find.byType(EditableText), matching: find.byType(Container)).first;
       final decoration = tester.widget<Container>(field).decoration! as BoxDecoration;
-      expect(decoration.borderRadius, BorderRadius.circular(20));
+      expect(decoration.borderRadius, BorderRadius.circular(24));
       const voice = 'Voice note, touch and hold to record';
       for (final label in ['Add photos, a sticker or a mention', 'Emoji and stickers', voice]) {
         expect(

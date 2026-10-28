@@ -6,49 +6,46 @@ import 'package:forui/forui.dart';
 
 import '../theme.dart';
 import 'avatar.dart';
+import 'depth.dart';
 
-/// Duvet's Liquid Glass: a 78% glass fill over a backdrop blur, a 1px edge that
-/// catches the light, and a large, weak float shadow. Only for overlays and
-/// floating chrome, never inside a scrolling list.
+/// A floating surface: menus, sheets, the bars over a picture. A cushion one
+/// step above the ground, with a 1px edge where it meets what's under it and
+/// a large, weak float shadow. Only for overlays and floating chrome, never
+/// inside a scrolling list.
 ///
-/// With high contrast on, the glass turns opaque: blur under text costs
-/// legibility some people can't spare.
+/// With high contrast on, its edge turns to ink.
 class GlassSurface extends StatelessWidget {
   final BorderRadius borderRadius;
-  final double blur;
   final Widget child;
 
   const GlassSurface({
     required this.child,
     this.borderRadius = const BorderRadius.all(Radius.circular(DuvetTokens.radiusCard)),
-    this.blur = DuvetTokens.blurGlass,
     super.key,
   });
 
   @override
   Widget build(BuildContext context) {
     final tokens = context.duvet;
-    final opaque = MediaQuery.highContrastOf(context);
-    final fill = DecoratedBox(
-      decoration: BoxDecoration(
-        color: opaque ? context.theme.colors.card : tokens.glass,
-        borderRadius: borderRadius,
-        border: Border.all(color: opaque ? context.theme.colors.foreground : tokens.glassEdge),
-      ),
-      child: child,
-    );
+    final contrast = MediaQuery.highContrastOf(context);
     return DecoratedBox(
-      decoration: BoxDecoration(borderRadius: borderRadius, boxShadow: tokens.shadowFloat),
+      decoration: BoxDecoration(
+        color: tokens.popover,
+        borderRadius: borderRadius,
+        border: Border.all(color: contrast ? context.theme.colors.foreground : tokens.popoverEdge),
+        boxShadow: tokens.shadowFloat,
+      ),
       child: ClipRRect(
         borderRadius: borderRadius,
-        child: opaque ? fill : BackdropFilter(filter: glassBackdrop(blur), child: fill),
+        child: InsetShadow(shadows: tokens.cushion, borderRadius: borderRadius, child: child),
       ),
     );
   }
 }
 
-/// The backdrop of Liquid Glass: [blur], then the colors underneath saturated
-/// 1.8× so they stay alive through the fill.
+/// A frosted backdrop: [blur], then the colors underneath saturated 1.8× so
+/// they stay alive through it. Only over a picture, as the image viewer's
+/// bars are.
 ImageFilter glassBackdrop(double blur) => ImageFilter.compose(
   outer: const ColorFilter.matrix(_saturate18),
   inner: ImageFilter.blur(sigmaX: blur, sigmaY: blur),
@@ -83,7 +80,7 @@ class GlassMenuItem<T> {
   });
 }
 
-/// Opens a Liquid Glass dropdown under (or, without room, over) the widget of
+/// Opens a dropdown under (or, without room, over) the widget of
 /// [anchor]'s context, and answers the picked item's value, or null when
 /// dismissed. It's a route: back, a tap outside and a screen reader's
 /// dismiss gesture all close it, and focus stays inside while it's open.
@@ -253,7 +250,7 @@ class _GlassMenuTransition extends AnimatedWidget {
   }
 }
 
-/// A pressable row on glass: a 24px line icon and a label, at least 48px tall.
+/// A pressable row in a menu or sheet: a 24px line icon and a label, at least 48px tall.
 /// Pressing sinks it (0.97 and a sunken highlight), Duvet's one press language.
 class GlassRow extends StatefulWidget {
   final IconData? icon;
@@ -377,8 +374,8 @@ class _GlassRowState extends State<GlassRow> {
   }
 }
 
-/// Opens a Liquid Glass bottom sheet: 24px top corners, a grabber, the heavier
-/// overlay blur. It springs in and decelerates out; drag it down, tap outside
+/// Opens a bottom sheet: a cushion with `radius-sheet` top corners and a
+/// grabber, over a dimmed screen. It springs in and decelerates out; drag it down, tap outside
 /// or use back to close.
 Future<T?> showGlassSheet<T>(
   BuildContext context, {
@@ -394,7 +391,7 @@ Future<T?> showGlassSheet<T>(
     useSafeArea: true,
     backgroundColor: Colors.transparent,
     elevation: 0,
-    barrierColor: const Color(0x52000000),
+    barrierColor: context.theme.colors.barrier,
     barrierLabel: 'Close ${label.toLowerCase()}',
     sheetAnimationStyle: reduce
         ? AnimationStyle.noAnimation
@@ -432,7 +429,7 @@ Future<T?> showGlassSheet<T>(
   );
 }
 
-/// A short Liquid Glass sheet that fits its content: a confirmation, a form.
+/// A short sheet that fits its content: a confirmation, a form.
 /// It's an alert dialog to screen readers, named [label].
 Future<T?> showGlassDialogSheet<T>(BuildContext context, {required String label, required WidgetBuilder builder}) {
   final reduce = MediaQuery.disableAnimationsOf(context);
@@ -443,7 +440,7 @@ Future<T?> showGlassDialogSheet<T>(BuildContext context, {required String label,
     useRootNavigator: true,
     backgroundColor: Colors.transparent,
     elevation: 0,
-    barrierColor: const Color(0x52000000),
+    barrierColor: context.theme.colors.barrier,
     barrierLabel: 'Close ${label.toLowerCase()}',
     sheetAnimationStyle: reduce
         ? AnimationStyle.noAnimation

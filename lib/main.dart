@@ -20,6 +20,8 @@ import 'login.dart';
 import 'tabs.dart';
 import 'theme.dart';
 import 'widgets/chrome.dart';
+import 'widgets/mascot.dart';
+import 'widgets/rows.dart';
 import 'widgets/scrolling.dart';
 
 void main() {
@@ -176,18 +178,13 @@ class _Unreachable extends StatelessWidget {
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            Icon(FLucideIcons.wifiOff, size: 32, color: colors.mutedForeground),
-            const SizedBox(height: 12),
-            Text('Couldn’t reach Duvet', style: DuvetType.body.copyWith(color: colors.mutedForeground)),
+            const Mascot(size: 120, asleep: true),
             const SizedBox(height: 16),
-            FButton(onPress: onRetry, mainAxisSize: MainAxisSize.min, child: const Text('Try again')),
+            Text('Couldn’t reach Duvet', style: DuvetType.rowTitle.copyWith(color: colors.foreground)),
+            const SizedBox(height: 16),
+            DuvetButton(label: 'Try again', variant: ButtonVariant.primary, onPressed: onRetry),
             const SizedBox(height: 8),
-            FButton(
-              variant: .ghost,
-              onPress: onSignIn,
-              mainAxisSize: MainAxisSize.min,
-              child: const Text('Sign in instead'),
-            ),
+            TextAction(label: 'Sign in instead', onPressed: onSignIn),
           ],
         ),
       ),

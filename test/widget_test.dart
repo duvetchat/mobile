@@ -6,6 +6,7 @@ import 'package:duvet/members_sheet.dart';
 import 'package:duvet/widgets/avatar.dart';
 import 'package:duvet/widgets/chrome.dart';
 import 'package:duvet/widgets/facehash.dart';
+import 'package:duvet/widgets/rows.dart' show Overline;
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
@@ -153,7 +154,7 @@ void main() {
 
     await tester.tap(find.text('Design Guild'));
     await tester.pumpAndSettle();
-    expect(find.text('VOICE'), findsOneWidget);
+    expect(find.widgetWithText(Overline, 'Voice'), findsOneWidget);
     // Each room previews its last message.
     expect(find.text('Leo: Pushed the new type ramp'), findsOneWidget);
     await tester.tap(find.text('# general'));
@@ -202,8 +203,8 @@ void main() {
     await tester.pumpAndSettle();
     expect(find.text('@gaby'), findsOneWidget);
 
-    // Below the fold, so not built yet: dragged into view.
-    await tester.dragUntilVisible(find.text('Sign out'), find.text('@gaby'), const Offset(0, -200));
+    // Below the fold, so not built yet: scrolled into view.
+    await tester.scrollUntilVisible(find.text('Sign out'), 200, scrollable: find.byType(Scrollable).first);
     await tester.pumpAndSettle();
     await tester.tap(find.text('Sign out'));
     await tester.pumpAndSettle();

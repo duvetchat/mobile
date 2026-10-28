@@ -19,7 +19,9 @@ import 'tabs.dart' show LiveIndicator;
 import 'theme.dart';
 import 'widgets/avatar.dart';
 import 'widgets/chrome.dart';
+import 'widgets/depth.dart';
 import 'widgets/glass.dart';
+import 'widgets/mascot.dart';
 import 'widgets/rows.dart';
 
 void _toast(BuildContext context, String text) {
@@ -371,14 +373,11 @@ class _VerifyEmailPageState extends State<VerifyEmailPage> {
             ),
           ],
           children: [
-            Container(
+            Cushion(
               width: 64,
               height: 64,
-              decoration: BoxDecoration(
-                color: colors.card,
-                borderRadius: BorderRadius.circular(DuvetTokens.radiusButton),
-                boxShadow: tokens.shadowRaised,
-              ),
+              radius: DuvetTokens.radiusButton,
+              shadows: tokens.shadowRaised,
               child: Icon(FLucideIcons.mail, size: 28, color: colors.foreground),
             ),
             const SizedBox(height: 24),
@@ -985,11 +984,11 @@ class _CropPageState extends State<CropPage> {
 
   @override
   Widget build(BuildContext context) {
-    const ink = Color(0xFFF2F1EE);
+    const ink = Duvet.moon;
     final padding = MediaQuery.paddingOf(context);
     final image = _image;
     return Scaffold(
-      backgroundColor: const Color(0xFF0A0A0B),
+      backgroundColor: Duvet.nightDeep,
       body: LayoutBuilder(
         builder: (context, constraints) {
           final width = constraints.maxWidth - 32;
@@ -1361,13 +1360,9 @@ class StorageMeter extends StatelessWidget {
       (files, colors.mutedForeground, 'Files'),
       (voice, tokens.grabber, 'Voice'),
     ];
-    return Container(
+    return Cushion(
       padding: const EdgeInsets.all(16),
-      decoration: BoxDecoration(
-        color: colors.card,
-        borderRadius: BorderRadius.circular(DuvetTokens.radiusCard),
-        boxShadow: big ? tokens.shadowRaised : tokens.shadowRest,
-      ),
+      shadows: big ? tokens.shadowRaised : tokens.shadowRest,
       child: Semantics(
         container: true,
         label:
@@ -1460,13 +1455,9 @@ class BucketMeter extends StatelessWidget {
     final tokens = context.duvet;
     final max = bucket.max;
     final of = max == null ? 'used · no quota' : 'of ${formatBytes(max)} used';
-    return Container(
+    return Cushion(
       padding: const EdgeInsets.all(16),
-      decoration: BoxDecoration(
-        color: colors.card,
-        borderRadius: BorderRadius.circular(DuvetTokens.radiusCard),
-        boxShadow: big ? tokens.shadowRaised : tokens.shadowRest,
-      ),
+      shadows: big ? tokens.shadowRaised : tokens.shadowRest,
       child: Semantics(
         container: true,
         label: 'Your own storage, ${bucket.name}: ${formatBytes(bucket.used)} $of',
@@ -1524,6 +1515,196 @@ class BucketMeter extends StatelessWidget {
 // -----------------------------------------------------------------------------
 
 /// You: the profile card (Edit), friends, appearance, storage, account.
+/// The top of the You tab: a cushion with your banner across its top, your
+/// face overlapping it, your name, your handle and Edit.
+class _YouHeader extends StatelessWidget {
+  final Profile profile;
+  final VoidCallback onEdit;
+  const _YouHeader({required this.profile, required this.onEdit});
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = context.theme.colors;
+    final tokens = context.duvet;
+    const radius = BorderRadius.all(Radius.circular(DuvetTokens.radiusCard));
+    return DecoratedBox(
+      decoration: BoxDecoration(color: colors.card, borderRadius: radius, boxShadow: tokens.shadowRaised),
+      child: InsetShadow(
+        shadows: tokens.cushion,
+        borderRadius: radius,
+        child: ClipRRect(
+          borderRadius: radius,
+          child: Column(
+            children: [
+              SizedBox(
+                height: 132,
+                child: Stack(
+                  clipBehavior: Clip.none,
+                  children: [
+                    Positioned.fill(
+                      bottom: 44,
+                      child: profile.bannerUrl == null
+                          ? const ColoredBox(color: Duvet.slate)
+                          : ExcludeSemantics(
+                              child: Image.network(
+                                profile.bannerUrl!,
+                                fit: BoxFit.cover,
+                                errorBuilder: (_, _, _) => const ColoredBox(color: Duvet.slate),
+                              ),
+                            ),
+                    ),
+                    Positioned(
+                      left: 0,
+                      right: 0,
+                      bottom: 0,
+                      child: Center(
+                        child: Container(
+                          padding: const EdgeInsets.all(4),
+                          decoration: BoxDecoration(color: colors.card, shape: BoxShape.circle),
+                          child: ExcludeSemantics(
+                            child: UserAvatar(name: profile.displayName, url: profile.avatarUrl, size: 80),
+                          ),
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              Padding(
+                padding: const EdgeInsets.fromLTRB(16, 10, 16, 16),
+                child: Column(
+                  children: [
+                    Text(
+                      profile.displayName,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: DuvetType.title.copyWith(color: colors.foreground),
+                    ),
+                    const SizedBox(height: 2),
+                    Text('@${profile.username}', style: DuvetType.snippet.copyWith(color: colors.mutedForeground)),
+                    const SizedBox(height: 14),
+                    DuvetButton(label: 'Edit', icon: FLucideIcons.pencil, onPressed: onEdit),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// Online or do not disturb: two cards side by side, the mascot awake on
+/// one and asleep on the other. The chosen one sits on the slate pill, the
+/// other is a raised cushion; to screen readers, a radio group.
+class _StatusPicker extends StatelessWidget {
+  final Presence value;
+  final ValueChanged<Presence> onChanged;
+  const _StatusPicker({required this.value, required this.onChanged});
+
+  @override
+  Widget build(BuildContext context) => Semantics(
+    container: true,
+    label: 'Status',
+    explicitChildNodes: true,
+    child: IntrinsicHeight(
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          for (final (i, (status, label)) in const [
+            (Presence.online, 'Online'),
+            (Presence.doNotDisturb, 'Do not disturb'),
+          ].indexed) ...[
+            if (i > 0) const SizedBox(width: 12),
+            Expanded(
+              child: _StatusCard(
+                label: label,
+                asleep: status == Presence.doNotDisturb,
+                chosen: status == value,
+                onTap: () => onChanged(status),
+              ),
+            ),
+          ],
+        ],
+      ),
+    ),
+  );
+}
+
+class _StatusCard extends StatelessWidget {
+  final String label;
+  final bool asleep;
+  final bool chosen;
+  final VoidCallback onTap;
+  const _StatusCard({required this.label, required this.asleep, required this.chosen, required this.onTap});
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = context.theme.colors;
+    final tokens = context.duvet;
+    final reduce = MediaQuery.disableAnimationsOf(context);
+    const radius = BorderRadius.all(Radius.circular(DuvetTokens.radiusCard));
+    void choose() {
+      HapticFeedback.selectionClick();
+      onTap();
+    }
+
+    return Semantics(
+      container: true,
+      button: true,
+      inMutuallyExclusiveGroup: true,
+      checked: chosen,
+      label: label,
+      excludeSemantics: true,
+      onTap: onTap,
+      child: Pressable(
+        onTap: choose,
+        scale: 0.98,
+        builder: (context, pressed) => AnimatedContainer(
+          duration: reduce
+              ? Duration.zero
+              : pressed
+              ? DuvetTokens.pressIn
+              : DuvetTokens.pressOut,
+          decoration: BoxDecoration(
+            color: chosen ? tokens.chosen : colors.card,
+            borderRadius: radius,
+            boxShadow: pressed ? null : tokens.shadowRest,
+          ),
+          child: InsetShadow(
+            shadows: pressed ? tokens.shadowPressed : tokens.cushion,
+            borderRadius: radius,
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(12, 14, 12, 12),
+              child: Column(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  Mascot(size: 56, asleep: asleep, onSlate: chosen),
+                  const SizedBox(height: 8),
+                  // One line, shrunk to fit at large text sizes rather than cut.
+                  FittedBox(
+                    fit: BoxFit.scaleDown,
+                    child: Text(
+                      label,
+                      maxLines: 1,
+                      style: DuvetType.label.copyWith(
+                        fontSize: 15,
+                        fontWeight: chosen ? FontWeight.w700 : FontWeight.w500,
+                        color: chosen ? tokens.chosenText : colors.foreground,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
 class YouTab extends StatefulWidget {
   const YouTab({super.key});
 
@@ -1573,14 +1754,20 @@ class _YouTabState extends State<YouTab> {
       builder: (context, _) {
         final profile = repository.profile.value;
         if (profile == null) return const SizedBox.shrink();
-        Widget panel(List<Widget> rows) => Container(
-          padding: const EdgeInsets.all(4),
+        Widget panel(List<Widget> rows) => DecoratedBox(
           decoration: BoxDecoration(
             color: colors.card,
             borderRadius: BorderRadius.circular(DuvetTokens.radiusCard),
             boxShadow: tokens.shadowRest,
           ),
-          child: Column(children: rows),
+          child: InsetShadow(
+            shadows: tokens.cushion,
+            borderRadius: BorderRadius.circular(DuvetTokens.radiusCard),
+            child: Padding(
+              padding: const EdgeInsets.all(4),
+              child: Column(children: rows),
+            ),
+          ),
         );
         Widget row(String label, VoidCallback onTap, {String? value, bool warn = false}) =>
             GlassRow(label: label, detail: value, destructive: warn, onPressed: onTap);
@@ -1592,40 +1779,9 @@ class _YouTabState extends State<YouTab> {
               padding: const EdgeInsets.fromLTRB(16, 16, 16, 0),
               sliver: SliverList.list(
                 children: [
-                  Container(
-                    padding: const EdgeInsets.all(16),
-                    decoration: BoxDecoration(
-                      color: colors.card,
-                      borderRadius: BorderRadius.circular(DuvetTokens.radiusCard),
-                      boxShadow: tokens.shadowRaised,
-                    ),
-                    child: Row(
-                      children: [
-                        ExcludeSemantics(
-                          child: UserAvatar(name: profile.displayName, url: profile.avatarUrl, size: 56),
-                        ),
-                        const SizedBox(width: 12),
-                        Expanded(
-                          child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              Text(
-                                profile.displayName,
-                                maxLines: 1,
-                                overflow: TextOverflow.ellipsis,
-                                style: DuvetType.rowTitleUnread.copyWith(fontSize: 17, color: colors.foreground),
-                              ),
-                              Text(
-                                '@${profile.username}',
-                                style: DuvetType.caption.copyWith(color: colors.mutedForeground),
-                              ),
-                            ],
-                          ),
-                        ),
-                        DuvetButton(label: 'Edit', onPressed: () => _push(const EditProfilePage())),
-                      ],
-                    ),
-                  ),
+                  // Who you are to everyone else: your face, on your
+                  // banner when you have one, your name and handle.
+                  _YouHeader(profile: profile, onEdit: () => _push(const EditProfilePage())),
                   if (!profile.emailVerified) ...[
                     const SizedBox(height: 16),
                     panel([row('Verify your email', () => _push(const VerifyEmailPage()), value: 'Not verified yet')]),
@@ -1642,12 +1798,7 @@ class _YouTabState extends State<YouTab> {
                   ]),
                   // What others see while you're connected.
                   const Overline('Status'),
-                  Segmented<Presence>(
-                    label: 'Status',
-                    value: _choosing ?? profile.status,
-                    options: const {Presence.online: 'Online', Presence.doNotDisturb: 'Do not disturb'},
-                    onChanged: _setStatus,
-                  ),
+                  _StatusPicker(value: _choosing ?? profile.status, onChanged: _setStatus),
                   const Overline('Appearance'),
                   Segmented<ThemeMode>(
                     label: 'Appearance',
@@ -1841,7 +1992,7 @@ class _ReplyGestureDemo extends StatelessWidget {
       width: 44,
       height: 22,
       decoration: BoxDecoration(
-        color: picked ? Duvet.accent : colors.mutedForeground.withValues(alpha: 0.35),
+        color: picked ? colors.primary : colors.mutedForeground.withValues(alpha: 0.35),
         borderRadius: BorderRadius.circular(11),
       ),
     );
