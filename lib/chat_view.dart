@@ -1291,6 +1291,7 @@ class _ChatViewState extends State<ChatView> {
     'wav' => 'audio/wav',
     'gif' => 'image/gif',
     'png' => 'image/png',
+    'apng' => 'image/apng',
     'webp' => 'image/webp',
     'jpg' || 'jpeg' => 'image/jpeg',
     'heic' => 'image/heic',

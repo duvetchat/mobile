@@ -3220,7 +3220,12 @@ class DuvetRepository implements ChatRepository {
         title: e.title ?? e.author?.name,
         description: e.description,
         url: e.url,
-        imageUrl: e.image?.url ?? e.thumbnail?.url,
+        imageUrl: e.image?.url,
+        imageWidth: e.image?.width,
+        imageHeight: e.image?.height,
+        thumbnailUrl: e.thumbnail?.url,
+        videoUrl: e.video?.url,
+        videoContentType: e.video?.contentType,
         provider: e.provider,
       ),
   ]..removeWhere((e) => e.isEmpty);

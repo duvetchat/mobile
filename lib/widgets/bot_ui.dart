@@ -175,6 +175,19 @@ class _BotComponentsState extends State<BotComponents> {
                 ),
               );
       case ComponentKind.mediaGallery:
+        // One picture shows whole, at its own ratio (the desktop's
+        // object-contain); several are square thumbnails.
+        if (c.galleryUrls.length == 1) {
+          return ClipRRect(
+            borderRadius: BorderRadius.circular(DuvetTokens.radiusField),
+            child: Image.network(
+              c.galleryUrls.single,
+              width: 268,
+              fit: BoxFit.contain,
+              errorBuilder: (_, _, _) => const SizedBox.square(dimension: 128),
+            ),
+          );
+        }
         return Wrap(
           spacing: 4,
           runSpacing: 4,
@@ -223,7 +236,10 @@ class _BotButton extends StatelessWidget {
       onPressed: c.disabled
           ? null
           : link
-          ? (c.url == null ? null : () => MessageText.launch(Uri.parse(c.url!)))
+          ? switch (Uri.tryParse(c.url ?? '')) {
+              final u? when u.scheme == 'http' || u.scheme == 'https' => () => MessageText.launch(u),
+              _ => null,
+            }
           : onPressed,
     );
   }

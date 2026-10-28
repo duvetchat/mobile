@@ -82,6 +82,39 @@ void main() {
     expect(paragraph.didExceedMaxLines, isFalse);
   });
 
+  testWidgets('a GIF link\'s embed is its picture alone, at its own ratio; a card keeps its thumbnail small', (
+    tester,
+  ) async {
+    await tester.pumpWidget(
+      themed(
+        const EmbedCard(
+          embed: MessageEmbed(
+            url: 'https://example.invalid/wave.gif',
+            imageUrl: 'https://example.invalid/wave.gif',
+            imageWidth: 400,
+            imageHeight: 200,
+          ),
+        ),
+      ),
+    );
+    expect(find.byType(Container), findsNothing);
+    expect(tester.getSize(find.byType(Image)), const Size(260, 130));
+
+    await tester.pumpWidget(
+      themed(
+        const EmbedCard(
+          embed: MessageEmbed(
+            title: 'A page',
+            url: 'javascript:alert(1)',
+            thumbnailUrl: 'https://example.invalid/logo.png',
+          ),
+        ),
+      ),
+    );
+    expect(tester.getSize(find.byType(Image)), const Size(64, 64));
+    expect(tester.widget<GestureDetector>(find.byType(GestureDetector)).onTap, isNull);
+  });
+
   testWidgets('a sticker is a base-sunken square until it loads', (tester) async {
     await loading(() async {
       await tester.pumpWidget(themed(const StickerView(url: 'https://example.invalid/wave-loading.png', name: 'wave')));

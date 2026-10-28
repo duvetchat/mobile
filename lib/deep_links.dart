@@ -19,6 +19,10 @@ abstract interface class DeepLinkSource {
   Stream<Uri> get links;
 
   static DeepLinkSource instance = AppLinksSource();
+
+  /// Duvet's own links tapped in a message's text, opened in the app rather
+  /// than handed to the browser.
+  static final tapped = StreamController<Uri>.broadcast();
 }
 
 class AppLinksSource implements DeepLinkSource {
@@ -38,10 +42,12 @@ class DeepLinkHandler extends StatefulWidget {
 
 class _DeepLinkHandlerState extends State<DeepLinkHandler> {
   StreamSubscription<Uri>? _sub;
+  late final StreamSubscription<Uri> _tapped = DeepLinkSource.tapped.stream.listen(_open);
 
   @override
   void initState() {
     super.initState();
+    _tapped;
     try {
       _sub = DeepLinkSource.instance.links.listen(_open, onError: (Object e) => debugPrint('links: $e'));
     } catch (e) {
@@ -53,6 +59,7 @@ class _DeepLinkHandlerState extends State<DeepLinkHandler> {
   @override
   void dispose() {
     _sub?.cancel();
+    _tapped.cancel();
     super.dispose();
   }
 
