@@ -5,6 +5,7 @@ import 'package:duvet/widgets/chrome.dart';
 import 'package:duvet/widgets/rows.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:forui/forui.dart' show FCircularProgress;
 
 import 'support/fake_repository.dart';
 
@@ -86,7 +87,7 @@ void main() {
       text: 'note $id',
       at: DateTime(2026, 10, 29, 9).add(Duration(minutes: minute)),
     );
-    final app = await pumpApp(
+    await pumpApp(
       tester,
       setUp: (r) {
         r.history['r-general'] = [for (var i = 0; i < 100; i++) note('m-$i', 10 + i)];
@@ -102,6 +103,7 @@ void main() {
     // A full page: older ones may come, and they're on their way.
     await tester.fling(find.byType(ListView).last, const Offset(0, 6000), 4000);
     await tester.pump(const Duration(milliseconds: 300));
+    expect(find.byType(FCircularProgress), findsOneWidget);
     expect(find.text(start), findsNothing);
 
     // Fewer than a page came: that was the start.
@@ -111,7 +113,6 @@ void main() {
     await tester.pumpAndSettle();
     expect(find.text('note o-0'), findsOneWidget);
     expect(find.text(start), findsOneWidget);
-    app.pageDelay = Duration.zero;
   });
 
   testWidgets('friends online say what they\'re doing; offline, their handle', (tester) async {
