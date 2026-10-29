@@ -1,3 +1,4 @@
+import 'package:clock/clock.dart';
 import 'package:flutter/foundation.dart' show ValueListenable;
 import 'package:flutter/material.dart';
 import 'package:forui/forui.dart';
@@ -143,9 +144,10 @@ class _ProfileState extends State<_Profile> {
     final roles = widget.spaceId == null ? const <RoleTag>[] : repository.rolesOf(widget.spaceId!, m.userId);
     final spaceName = repository.spaces.value.where((s) => s.id == widget.spaceId).firstOrNull?.name;
     return ListenableBuilder(
-      listenable: Listenable.merge([repository.presence, repository.friends]),
+      listenable: Listenable.merge([repository.presence, repository.friends, repository.activities]),
       builder: (context, _) {
         final presence = presenceIn(repository.presence.value, m.userId, spaceId: widget.spaceId);
+        final activity = shownActivity(repository.activities.value[m.userId], clock.now());
         final f = repository.friends.value;
         final isFriend = f.friends.any((x) => x.userId == m.userId);
         final pending = _asked || f.outgoing.any((r) => r.person.userId == m.userId);
@@ -245,6 +247,7 @@ class _ProfileState extends State<_Profile> {
                       ],
                     ),
                   ],
+                  if (activity != null) ...[const SizedBox(height: 14), ActivityCard(activity: activity)],
                   if (!me) ...[
                     const SizedBox(height: 16),
                     Row(
@@ -344,6 +347,67 @@ class _ProfileState extends State<_Profile> {
 
 /// The Spaces the user shares with someone, as a row of their icons, each
 /// named under it.
+/// What someone is doing, on a cushion: the song and its artist under
+/// "Listening to Spotify", or the game under "Playing".
+class ActivityCard extends StatelessWidget {
+  final UserActivity activity;
+
+  const ActivityCard({required this.activity, super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = context.theme.colors;
+    final song = activity.spotify && activity.details != null;
+    return Semantics(
+      container: true,
+      label: activity.sentence,
+      excludeSemantics: true,
+      child: Cushion(
+        padding: const EdgeInsets.all(12),
+        shadows: context.duvet.shadowRest,
+        child: Row(
+          children: [
+            Container(
+              width: 40,
+              height: 40,
+              decoration: BoxDecoration(
+                color: Duvet.slate,
+                borderRadius: BorderRadius.circular(DuvetTokens.radiusChip),
+              ),
+              child: Icon(activity.listening ? FLucideIcons.music : FLucideIcons.gamepad2, size: 20, color: Duvet.ice),
+            ),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    song ? 'Listening to Spotify' : (activity.listening ? 'Listening to' : 'Playing'),
+                    style: DuvetType.caption.copyWith(color: colors.mutedForeground),
+                  ),
+                  Text(
+                    song ? activity.details! : activity.name,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: DuvetType.rowTitle.copyWith(color: colors.foreground),
+                  ),
+                  if (song && activity.state != null)
+                    Text(
+                      activity.state!,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: DuvetType.caption.copyWith(color: colors.mutedForeground),
+                    ),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
 class _MutualSpaces extends StatelessWidget {
   final List<Space> spaces;
   const _MutualSpaces({required this.spaces});
@@ -634,13 +698,17 @@ class _FriendsPageState extends State<FriendsPage> {
     return Scaffold(
       backgroundColor: colors.background,
       body: ListenableBuilder(
-        listenable: Listenable.merge([repository.friends, repository.presence]),
+        listenable: Listenable.merge([repository.friends, repository.presence, repository.activities]),
         builder: (context, _) {
           final f = repository.friends.value;
           final presence = repository.presence.value;
+          final now = clock.now();
           bool away(Member m) => isOffline(presence[m.userId]);
           final online = f.friends.where((m) => !away(m)).toList();
           final offline = f.friends.where(away).toList();
+          // Those online doing something, as rows that say what, first.
+          final doing = {for (final m in online) m.userId: ?shownActivity(repository.activities.value[m.userId], now)};
+          final faces = online.where((m) => !doing.containsKey(m.userId)).toList();
           Widget friendRow(Member m) => ListRow(
             leading: PresenceAvatar(member: m, presence: presence[m.userId], size: 48),
             title: m.displayName,
@@ -728,9 +796,22 @@ class _FriendsPageState extends State<FriendsPage> {
                         ),
                     ],
                     if (_tab == _FriendsTab.all) ...[
-                      // Who's here now, as faces; everyone else, a list.
+                      // Who's here now: what they're doing, or else their faces; everyone
+                      // else, a list.
                       if (online.isNotEmpty) ...[
                         Overline('Online — ${online.length}'),
+                        for (final m in online)
+                          if (doing[m.userId] case final activity?)
+                            ListRow(
+                              leading: PresenceAvatar(member: m, presence: presence[m.userId], size: 48),
+                              title: m.displayName,
+                              snippet: activity.sentence,
+                              banner: m.bannerUrl,
+                              onTap: () => showProfileSheet(context, member: m),
+                              onLongPress: () => _confirmUnfriend(m),
+                            ),
+                      ],
+                      if (faces.isNotEmpty) ...[
                         GridView.builder(
                           shrinkWrap: true,
                           physics: const NeverScrollableScrollPhysics(),
@@ -739,9 +820,9 @@ class _FriendsPageState extends State<FriendsPage> {
                             maxCrossAxisExtent: 96,
                             mainAxisExtent: MemberFace.extent(context),
                           ),
-                          itemCount: online.length,
+                          itemCount: faces.length,
                           itemBuilder: (context, i) {
-                            final m = online[i];
+                            final m = faces[i];
                             return MemberFace(
                               member: m,
                               presence: presence[m.userId],
