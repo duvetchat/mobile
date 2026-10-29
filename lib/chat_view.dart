@@ -39,6 +39,7 @@ import 'widgets/depth.dart';
 import 'widgets/emoji_picker.dart';
 import 'widgets/glass.dart';
 import 'widgets/link_embeds.dart';
+import 'widgets/mascot.dart';
 import 'widgets/media.dart';
 import 'widgets/message_content.dart';
 import 'widgets/rows.dart';
@@ -47,6 +48,7 @@ import 'widgets/sheets.dart';
 part 'chat/actions.dart';
 part 'chat/bubble.dart';
 part 'chat/composer.dart';
+part 'chat/intro.dart';
 part 'chat/reactors.dart';
 
 /// Pushes the Chat View over everything, the tab bar included.
@@ -2442,12 +2444,19 @@ class _ChatViewState extends State<ChatView> {
         action: DuvetButton(label: 'Try again', onPressed: _load),
       );
     }
+    final top = _topHeight == 0 ? GlassTopBar.heightOf(context) : _topHeight;
+    // A thread starts at its first message, which says what it's about.
+    final intro = widget.threadOf == null && !_hasOlder && !_loadingOlder;
     if (_entries.isEmpty) {
-      return const EmptyState(text: 'No messages yet. Say hi!');
+      if (!intro) return const EmptyState(text: 'No messages yet. Say hi!');
+      return ListView(
+        reverse: true,
+        padding: EdgeInsets.fromLTRB(16, top + 8, 16, _composerHeight + 8),
+        children: [_intro(context)],
+      );
     }
     final items = _items();
-    final count = items.length + (_loadingOlder ? 1 : 0);
-    final top = _topHeight == 0 ? GlassTopBar.heightOf(context) : _topHeight;
+    final count = items.length + (_loadingOlder || intro ? 1 : 0);
     return ListView.builder(
       controller: _scroll,
       reverse: true,
@@ -2458,6 +2467,7 @@ class _ChatViewState extends State<ChatView> {
       itemCount: count,
       itemBuilder: (context, index) {
         if (index == items.length) {
+          if (intro) return _intro(context);
           return const Padding(
             padding: EdgeInsets.all(12),
             child: Center(child: FCircularProgress(size: .sm)),
@@ -2499,6 +2509,118 @@ class _ChatViewState extends State<ChatView> {
       },
     );
   }
+
+  /// The chat's start ([_ChatIntro]): a room's name and its Space (what it's
+  /// for is under the name above), with Invite people for those who may; a DM's person, their presence
+  /// and what they're doing, and the Spaces shared with them; a group's faces
+  /// and names. Call where no call goes on here (its banner has Join).
+  Widget _intro(BuildContext context) => ListenableBuilder(
+    listenable: Listenable.merge([
+      _repository.presence,
+      _repository.activities,
+      _repository.spaces,
+      _repository.conversations,
+      context.voice,
+    ]),
+    builder: (context, _) {
+      final colors = context.theme.colors;
+      final voice = context.voice;
+      final call =
+          voice.call == null &&
+              !voice.callsInProgress.contains(widget.target.id) &&
+              !callingElsewhere(voice, widget.target.id)
+          ? DuvetButton(
+              label: 'Call',
+              icon: FLucideIcons.phone,
+              onPressed: () => callConversation(context, widget.target.id),
+            )
+          : null;
+      switch (widget.target) {
+        case RoomTarget(:final spaceId):
+          final space = _repository.spaces.value.where((s) => s.id == spaceId).firstOrNull;
+          return _ChatIntro(
+            face: Cushion(
+              width: 56,
+              height: 56,
+              radius: DuvetTokens.radiusCard,
+              child: Center(
+                child: Text('#', style: DuvetType.title.copyWith(fontSize: 28, color: colors.mutedForeground)),
+              ),
+            ),
+            title: '#$_roomName',
+            lines: [Text(space == null ? 'The start of #$_roomName.' : 'The start of #$_roomName in ${space.name}.')],
+            actions: [
+              if (_inRoomMay(Perm.createInvites))
+                DuvetButton(
+                  label: 'Invite people',
+                  icon: FLucideIcons.userPlus,
+                  onPressed: () => _roomAction('invite'),
+                ),
+            ],
+          );
+        case ConversationTarget(:final conversationId):
+          final chat = _repository.conversations.value.where((c) => c.id == conversationId).firstOrNull;
+          final others = _members.where((m) => m.userId != _me).toList();
+          if (chat != null && chat.isGroup) {
+            return _ChatIntro(
+              face: others.isEmpty
+                  ? UserAvatar(name: widget.title, url: chat.avatarUrl, size: 56)
+                  : FaceStack(
+                      faces: [for (final m in others) (name: m.displayName, avatarUrl: m.avatarUrl)],
+                      size: 52,
+                      ring: colors.background,
+                    ),
+              title: widget.title,
+              lines: [
+                if (others.isNotEmpty) Text(_names([for (final m in others) m.displayName])),
+                const Text('This is the start of the group.'),
+              ],
+              actions: [?call],
+            );
+          }
+          final otherId = chat?.otherUserId;
+          final other = others.where((m) => m.userId == otherId).firstOrNull;
+          final presence = _dmPresence;
+          final activity = otherId == null
+              ? null
+              : shownActivity(_repository.activities.value[otherId], time.clock.now());
+          final shared = otherId == null
+              ? const <Space>[]
+              : _repository.spaces.value.where((s) => _repository.isMember(s.id, otherId)).toList();
+          return _ChatIntro(
+            face: PresenceAvatar(
+              member: other ?? Member(userId: otherId ?? '', username: widget.title, avatarUrl: chat?.avatarUrl),
+              presence: presence,
+              size: 72,
+              ring: colors.background,
+            ),
+            title: widget.title,
+            lines: [
+              if ([
+                    if (other != null && other.username.isNotEmpty) '@${other.username}',
+                    presenceText(presence),
+                  ].where((t) => t.isNotEmpty).toList()
+                  case final about when about.isNotEmpty)
+                Text(about.join('   ')),
+              if (activity != null) ...[const SizedBox(height: 6), ActivityCard(activity: activity)],
+              const SizedBox(height: 2),
+              Text('This is the start of your conversation with ${widget.title}.'),
+            ],
+            actions: [
+              for (final space in shared) _SharedSpace(space: space),
+              ?call,
+            ],
+          );
+      }
+    },
+  );
+
+  /// Names as a sentence: "Ana, Bruno and Carla".
+  static String _names(List<String> names) => switch (names.length) {
+    0 => '',
+    1 => names.single,
+    _ => '${names.sublist(0, names.length - 1).join(', ')} and ${names.last}',
+  };
 
   /// The entries, oldest first, with a separator where the day changes, the
   /// "New messages" divider after the last one read (or above [_unreadFrom]),

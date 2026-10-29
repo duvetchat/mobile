@@ -240,7 +240,8 @@ void main() {
     await tester.pump(kDoubleTapTimeout);
     await tester.pumpAndSettle();
     expect(find.text('leo'), findsOneWidget);
-    expect(find.byWidgetPredicate((w) => w is Text && (w.data ?? '').startsWith('@')), findsNothing);
+    // In the profile: the DM's start under it has Maya's.
+    expect(find.byWidgetPredicate((w) => w is Text && (w.data ?? '').startsWith('@')).hitTestable(), findsNothing);
     semantics.dispose();
   });
 

@@ -993,7 +993,8 @@ void main() {
       );
       await tapLabel(tester, 'Pick a room');
       expect(find.text('Talk'), findsOneWidget);
-      expect(find.text('#general'), findsOneWidget);
+      // Over the chat's start, which names #general too.
+      expect(find.text('#general').hitTestable(), findsOneWidget);
       expect(find.text('#lounge'), findsOneWidget);
       expect(find.text('#mods'), findsNothing);
       await tester.tapAt(const Offset(10, 10));
@@ -1001,7 +1002,7 @@ void main() {
 
       await tapLabel(tester, 'Pick a voice room');
       expect(find.text('#lounge'), findsOneWidget);
-      expect(find.text('#general'), findsNothing);
+      expect(find.text('#general').hitTestable(), findsNothing);
       expect(find.text('Talk'), findsNothing);
       semantics.dispose();
     });
@@ -1017,7 +1018,7 @@ void main() {
       await tester.enterText(find.byType(EditableText), '/go');
       await tester.pumpAndSettle();
       await tapLabel(tester, RegExp(r'^/go'));
-      expect(find.text('#general'), findsOneWidget);
+      expect(find.text('#general').hitTestable(), findsOneWidget);
       expect(find.text('#lounge'), findsNothing);
       expect(find.text('#mods'), findsNothing);
       expect(find.text('Talk'), findsNothing);

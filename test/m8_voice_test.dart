@@ -340,9 +340,9 @@ void main() {
 
     // The microphone's permission dialog: the call isn't placed yet.
     app.engine.holdMic = Completer<void>();
-    await tester.tap(find.bySemanticsLabel('Call'));
+    await tester.tap(_topBarCall);
     await tester.pump();
-    await tester.tap(find.bySemanticsLabel('Call'));
+    await tester.tap(_topBarCall);
     await tester.pump();
     app.engine.holdMic!.complete();
     app.engine.holdMic = null;
@@ -359,7 +359,7 @@ void main() {
     await tester.tap(find.text('Maya'));
     await tester.pumpAndSettle();
 
-    await tester.tap(find.bySemanticsLabel('Call'));
+    await tester.tap(_topBarCall);
     await settle(tester);
     expect(app.gateway.last('CALL_INITIATE'), {
       'conversation_id': 'c-maya',
@@ -742,3 +742,6 @@ class _Recorder implements VoiceRecorder {
   @override
   Future<void> cancel() async => onCancel?.call();
 }
+
+// The top bar's Call: the chat's start has one too, while nothing's said.
+final _topBarCall = find.byWidgetPredicate((w) => w is IconAction && w.label == 'Call');
