@@ -20,11 +20,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:forui/forui.dart';
 
 import 'support/fake_repository.dart';
-
-class _NoLinks implements DeepLinkSource {
-  @override
-  Stream<Uri> get links => const Stream.empty();
-}
+import 'support/no_links.dart';
 
 /// M10 · Space administration.
 void main() {
@@ -32,7 +28,7 @@ void main() {
 
   setUpAll(() async {
     TestWidgetsFlutterBinding.ensureInitialized();
-    DeepLinkSource.instance = _NoLinks();
+    DeepLinkSource.instance = NoLinks();
     EmojiCatalog.debugUse(await EmojiCatalog.load());
   });
 

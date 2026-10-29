@@ -112,19 +112,6 @@ class SecureCallHistoryStore implements CallHistoryStore {
   }
 }
 
-class MemoryCallHistoryStore implements CallHistoryStore {
-  final data = <String, String>{};
-
-  @override
-  Future<String?> read(String userId) async => data[userId];
-
-  @override
-  Future<void> write(String userId, String json) async => data[userId] = json;
-
-  @override
-  Future<void> clearAll() async => data.clear();
-}
-
 /// The signed-in account's calls on this device, the newest first.
 class CallHistory {
   static const _max = 100;

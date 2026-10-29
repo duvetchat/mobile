@@ -6,12 +6,8 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:clock/clock.dart';
-import 'package:duvet/data/cache.dart';
-import 'package:duvet/data/call_history.dart';
 import 'package:duvet/data/duvet_repository.dart';
 import 'package:duvet/data/models.dart';
-import 'package:duvet/data/recent_chats.dart';
-import 'package:duvet/data/session_store.dart';
 import 'package:duvet/data/voice.dart';
 import 'package:duvet_client/http/router.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -19,6 +15,7 @@ import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
 
 import 'support/fake_voice.dart';
+import 'support/memory_stores.dart';
 
 const _me = '00000000-0000-4000-8000-000000000001';
 const _at = '2026-10-23T09:00:00Z';

@@ -86,22 +86,6 @@ class SecureAppearanceStore implements AppearanceStore {
   Future<void> writeReplyGesture(String gesture) => _storage.write(key: _replyKey, value: gesture);
 }
 
-class MemoryAppearanceStore implements AppearanceStore {
-  String? mode;
-  String? replyGesture;
-  @override
-  Future<String?> read() async => mode;
-
-  @override
-  Future<void> write(String mode) async => this.mode = mode;
-
-  @override
-  Future<String?> readReplyGesture() async => replyGesture;
-
-  @override
-  Future<void> writeReplyGesture(String gesture) async => replyGesture = gesture;
-}
-
 /// Hands the [Appearance] down the tree.
 class AppearanceScope extends InheritedNotifier<Appearance> {
   const AppearanceScope({required Appearance appearance, required super.child, super.key})

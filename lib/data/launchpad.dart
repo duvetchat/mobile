@@ -72,17 +72,6 @@ class SecureLaunchpadStore implements LaunchpadStore {
   Future<void> write(String choice) => _storage.write(key: _key, value: choice);
 }
 
-class MemoryLaunchpadStore implements LaunchpadStore {
-  String? choice;
-  MemoryLaunchpadStore([this.choice]);
-
-  @override
-  Future<String?> read() async => choice;
-
-  @override
-  Future<void> write(String choice) async => this.choice = choice;
-}
-
 /// Hands the [LaunchpadPrefs] down the tree.
 class LaunchpadScope extends InheritedNotifier<LaunchpadPrefs> {
   const LaunchpadScope({required LaunchpadPrefs prefs, required super.child, super.key}) : super(notifier: prefs);

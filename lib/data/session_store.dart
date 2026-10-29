@@ -52,18 +52,3 @@ class SecureSessionStore implements SessionStore {
     await _storage.delete(key: _refreshedKey);
   }
 }
-
-/// Keeps the tokens until the app exits.
-class MemorySessionStore implements SessionStore {
-  StoredSession? _session;
-  MemorySessionStore([this._session]);
-
-  @override
-  Future<StoredSession?> read() async => _session;
-
-  @override
-  Future<void> write(StoredSession session) async => _session = session;
-
-  @override
-  Future<void> clear() async => _session = null;
-}

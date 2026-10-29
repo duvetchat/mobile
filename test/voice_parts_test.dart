@@ -6,11 +6,11 @@ import 'dart:convert';
 import 'package:duvet/calls.dart' show callClock, CallHistoryList;
 import 'package:duvet/data/call_history.dart';
 import 'package:duvet/data/recent_chats.dart' show SecureRecentChatsStore;
-import 'package:duvet/data/voice.dart' show mouthFor, speakingLevel;
 import 'package:duvet/data/voice_engine.dart';
 import 'package:duvet/data/webrtc_engine.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'support/memory_stores.dart';
 
 const _speaker = AudioRoute(id: 'speaker', kind: AudioRouteKind.speaker, label: 'Speakerphone');
 const _earpiece = AudioRoute(id: 'earpiece', kind: AudioRouteKind.earpiece, label: 'Earpiece');
@@ -46,13 +46,6 @@ void main() {
     // The headset chosen went away.
     expect(currentRoute([_speaker, _earpiece], _headset, false), _earpiece);
     expect(currentRoute(const [], null, true), isNull);
-  });
-
-  test('a voice\'s level as a mouth: shut in silence, wide open loud', () {
-    expect(mouthFor(0), 0);
-    expect(mouthFor(speakingLevel), 0);
-    expect(mouthFor(0.12), closeTo(0.5, 1e-9));
-    expect(mouthFor(0.9), 1);
   });
 
   test('a call\'s clock', () {

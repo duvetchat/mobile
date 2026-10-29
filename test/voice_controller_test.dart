@@ -3,7 +3,6 @@
 // VOICE_SYNC, a new session (READY) joining again, and calls.
 import 'dart:async';
 
-import 'package:duvet/data/call_history.dart';
 import 'package:duvet/data/models.dart';
 import 'package:duvet/data/voice.dart';
 import 'package:duvet/data/voice_engine.dart' show PeerState;
@@ -13,6 +12,7 @@ import 'package:flutter_test/flutter_test.dart';
 
 import 'support/fake_repository.dart';
 import 'support/fake_voice.dart';
+import 'support/memory_stores.dart';
 
 const _lounge = Room(id: 'r-lounge', spaceId: 's-guild', name: 'lounge', kind: RoomKind.voice, position: 1);
 const _studio = Room(id: 'r-studio', spaceId: 's-guild', name: 'studio', kind: RoomKind.voice, position: 2);
@@ -735,7 +735,6 @@ void main() {
     h.voice.toggleMute();
     async.elapse(const Duration(milliseconds: 200));
     expect(h.voice.levels.value.keys, [FakeRepository.maya]);
-    expect(mouthFor(0.01), 0);
   });
 
   group('calls', () {

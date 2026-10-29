@@ -14,14 +14,10 @@ import 'package:flutter/rendering.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import 'support/fake_repository.dart';
+import 'support/no_links.dart';
 
 const _maya = FakeRepository.maya;
 final _me = FakeRepository.me.id;
-
-class _NoLinks implements DeepLinkSource {
-  @override
-  Stream<Uri> get links => const Stream.empty();
-}
 
 /// The fake, with the room permissions a test takes away, sends and pins the
 /// API refuses, and an edit answered as the API answers it: the message
@@ -101,7 +97,7 @@ void main() {
 
   setUpAll(() async {
     TestWidgetsFlutterBinding.ensureInitialized();
-    DeepLinkSource.instance = _NoLinks();
+    DeepLinkSource.instance = NoLinks();
     EmojiCatalog.debugUse(await EmojiCatalog.load());
   });
 

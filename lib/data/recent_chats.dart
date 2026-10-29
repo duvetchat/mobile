@@ -126,19 +126,6 @@ class SecureRecentChatsStore implements RecentChatsStore {
   }
 }
 
-class MemoryRecentChatsStore implements RecentChatsStore {
-  final _data = <String, String>{};
-
-  @override
-  Future<String?> read(String userId) async => _data[userId];
-
-  @override
-  Future<void> write(String userId, String json) async => _data[userId] = json;
-
-  @override
-  Future<void> clearAll() async => _data.clear();
-}
-
 /// The recent chats, the newest first, for whoever is signed in.
 class RecentChats {
   static const limit = 50;

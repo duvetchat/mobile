@@ -14,6 +14,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:forui/forui.dart' show FLucideIcons;
 
 import 'support/fake_repository.dart';
+import 'support/memory_stores.dart';
 
 const _maya = FakeRepository.maya;
 final _me = FakeRepository.me.id;

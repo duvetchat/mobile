@@ -127,17 +127,17 @@ class ActiveCall {
 }
 
 /// A voice level (0–1, linear) as a face's mouth opens: shut below
-/// [speakingLevel], wide open at [speakingLevel] + [mouthRange].
+/// [_speakingLevel], wide open at [_speakingLevel] + [_mouthRange].
 ///
 /// The desktop app meters a frequency analyser instead; these numbers are
 /// for WebRTC's audio levels, and want checking against real voices.
-double mouthFor(double level) => level <= speakingLevel ? 0 : math.min(1, (level - speakingLevel) / mouthRange);
+double _mouthFor(double level) => level <= _speakingLevel ? 0 : math.min(1, (level - _speakingLevel) / _mouthRange);
 
 /// Quieter than this is silence (about −34 dBFS).
-const speakingLevel = 0.02;
+const _speakingLevel = 0.02;
 
-/// How much louder than [speakingLevel] opens a mouth wide.
-const mouthRange = 0.2;
+/// How much louder than [_speakingLevel] opens a mouth wide.
+const _mouthRange = 0.2;
 
 /// Voice rooms and calls, as desktop's `VoiceChat` and the call parts of its
 /// gateway connection do them, through [VoiceSignaling] and [VoiceEngine].
@@ -1360,8 +1360,8 @@ class VoiceController extends ChangeNotifier {
       final local = read.local;
       final next = <String, double>{
         for (final MapEntry(:key, :value) in read.remote.entries)
-          if (mouthFor(value) > 0) key: mouthFor(value),
-        if (me != null && _sending && local != null && mouthFor(local) > 0) me: mouthFor(local),
+          if (_mouthFor(value) > 0) key: _mouthFor(value),
+        if (me != null && _sending && local != null && _mouthFor(local) > 0) me: _mouthFor(local),
       };
       if (!mapEquals(next, levels.value)) levels.value = next;
     } catch (e) {

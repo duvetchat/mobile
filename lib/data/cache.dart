@@ -56,18 +56,6 @@ class FileChatCacheStore implements ChatCacheStore {
   ];
 }
 
-class MemoryChatCacheStore implements ChatCacheStore {
-  final data = <String, String>{};
-  @override
-  Future<String?> read(String key) async => data[key];
-  @override
-  Future<void> write(String key, String json) async => data[key] = json;
-  @override
-  Future<void> clear() async => data.clear();
-  @override
-  Future<List<String>> keys() async => [...data.keys];
-}
-
 // A change of the pages' messages ([ChatCache.changeMessages]).
 typedef _Change = ChatMessage Function(String chatId, ChatMessage m);
 

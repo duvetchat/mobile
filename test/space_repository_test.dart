@@ -5,14 +5,13 @@ import 'dart:io';
 import 'package:duvet/data/cache.dart';
 import 'package:duvet/data/duvet_repository.dart';
 import 'package:duvet/data/models.dart';
-import 'package:duvet/data/recent_chats.dart';
-import 'package:duvet/data/session_store.dart';
 import 'package:duvet_client/duvet.dart' as duvet;
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
 
 import 'support/eventually.dart';
+import 'support/memory_stores.dart';
 
 const _me = '00000000-0000-4000-8000-000000000001';
 const _maya = '00000000-0000-4000-8000-000000000002';
@@ -990,15 +989,6 @@ void main() {
     };
     Map<String, dynamic> sent() => jsonDecode(requests.last.body) as Map<String, dynamic>;
 
-    test('a room moves into a category with its place there', () async {
-      await signIn();
-      repository.handleEvent(_event('SPACE_CREATE', guild()));
-      patches();
-      await repository.moveRoom('s-1', 'r-general', parentId: 'c-talk', position: 0);
-      expect(requests.last.method, 'PATCH');
-      expect(sent(), {'parent_id': 'c-talk', 'position': 0});
-    });
-
     test('a room leaves its category for the end of the rooms outside any', () async {
       await signIn();
       repository.handleEvent(
@@ -1020,10 +1010,14 @@ void main() {
       expect(sent(), {'parent_id': null, 'position': 5});
     });
 
-    test('moving a room sends the position as the API takes it', () async {
+    test('a move sends the category and the position as the API takes them', () async {
       await signIn();
       repository.handleEvent(_event('SPACE_CREATE', guild()));
       patches();
+      await repository.moveRoom('s-1', 'r-general', parentId: 'c-talk', position: 0);
+      expect(requests.last.method, 'PATCH');
+      expect(sent(), {'parent_id': 'c-talk', 'position': 0});
+      // Out of any category, at the place asked, not one worked out here.
       await repository.moveRoom('s-1', 'r-general', position: 2);
       expect(sent(), {'parent_id': null, 'position': 2});
     });

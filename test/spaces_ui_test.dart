@@ -1,5 +1,6 @@
 import 'dart:async';
 
+import 'package:duvet/chat_view.dart' show ChatView;
 import 'package:duvet/data/emoji_catalog.dart';
 import 'package:duvet/data/models.dart';
 import 'package:duvet/deep_links.dart';
@@ -11,11 +12,7 @@ import 'package:flutter/rendering.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import 'support/fake_repository.dart';
-
-class _NoLinks implements DeepLinkSource {
-  @override
-  Stream<Uri> get links => const Stream.empty();
-}
+import 'support/no_links.dart';
 
 class _Links implements DeepLinkSource {
   final controller = StreamController<Uri>.broadcast();
@@ -48,7 +45,7 @@ void main() {
 
   setUpAll(() async {
     TestWidgetsFlutterBinding.ensureInitialized();
-    DeepLinkSource.instance = _NoLinks();
+    DeepLinkSource.instance = NoLinks();
     EmojiCatalog.debugUse(await EmojiCatalog.load());
   });
 
@@ -69,17 +66,18 @@ void main() {
     testWidgets('from the system', (tester) async {
       final links = _Links();
       DeepLinkSource.instance = links;
-      addTearDown(() => DeepLinkSource.instance = _NoLinks());
+      addTearDown(() => DeepLinkSource.instance = NoLinks());
       await pumpApp(tester, setUp: _club1);
       links.controller.add(Uri.parse('https://duvet.chat/channels/$_club/$_secret/$_linked'));
       await tester.pumpAndSettle();
       expect(find.text('That room isn’t available'), findsOneWidget);
-      expect(find.text('# general'), findsNothing);
+      expect(find.byType(ChatView), findsNothing);
       await tester.pump(const Duration(seconds: 4));
 
       // One the user sees opens.
       links.controller.add(Uri.parse('https://duvet.chat/channels/$_club/$_general/$_linked'));
       await tester.pumpAndSettle();
+      expect(find.byType(ChatView), findsOneWidget);
       expect(find.text('# general'), findsOneWidget);
       semantics.dispose();
     });
@@ -110,7 +108,9 @@ void main() {
       await tester.tap(find.bySemanticsLabel(RegExp('^Linked message from Leo')).last);
       await tester.pumpAndSettle();
       expect(find.text('That room isn’t available'), findsOneWidget);
-      expect(find.text('psst'), findsOneWidget, reason: 'still the card, in #general');
+      // Still #general, the one chat open, with the card in it.
+      expect(find.byType(ChatView), findsOneWidget);
+      expect(find.text('psst'), findsOneWidget);
       await tester.pump(const Duration(seconds: 4));
       semantics.dispose();
     });

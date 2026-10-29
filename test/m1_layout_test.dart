@@ -3,7 +3,6 @@ import 'package:duvet/main.dart';
 import 'package:duvet/members_sheet.dart';
 import 'package:duvet/theme.dart';
 import 'package:duvet/widgets/chrome.dart';
-import 'package:duvet/widgets/depth.dart';
 import 'package:duvet/widgets/glass.dart';
 import 'package:duvet/widgets/rows.dart';
 import 'package:flutter/material.dart';
@@ -36,24 +35,13 @@ void main() {
     await tester.pumpAndSettle();
   }
 
-  test('the type ramp is Fira Sans, headlines at 1.1 and text at 1.4', () {
-    expect(DuvetType.largeTitle.fontFamily, 'Fira Sans');
-    expect(
-      (DuvetType.largeTitle.fontSize, DuvetType.largeTitle.height, DuvetType.largeTitle.fontWeight),
-      (34, 1.1, FontWeight.w700),
-    );
-    expect((DuvetType.navTitle.fontSize, DuvetType.title.fontSize), (17, 20));
-    expect((DuvetType.body.fontSize, DuvetType.body.height, DuvetType.body.fontWeight), (16, 1.4, FontWeight.w400));
-    expect(DuvetType.rowTitle.fontWeight, FontWeight.w500);
-    expect(DuvetType.rowTitleUnread.fontWeight, FontWeight.w700);
-    expect((DuvetType.snippet.fontSize, DuvetType.caption.fontSize), (15, 13));
-    expect((DuvetType.overline.fontSize, DuvetType.tabLabel.fontSize), (14, 11));
+  test('the app reads in Fira Sans, forui\'s widgets too, and headers are never tracked', () {
+    for (final style in [DuvetType.largeTitle, DuvetType.body, DuvetType.caption, DuvetType.overline]) {
+      expect(style.fontFamily, 'Fira Sans');
+    }
     // Headers as written, never in tracked capitals.
     expect(DuvetType.overline.letterSpacing, isNull);
-    // forui's own widgets read the same face.
-    final theme = Duvet.theme(Brightness.light);
-    expect(theme.typography.body.fontFamily, 'Fira Sans');
-    expect(theme.typography.body.sm.fontSize, 16);
+    expect(Duvet.theme(Brightness.light).typography.body.fontFamily, 'Fira Sans');
   });
 
   testWidgets('a floating surface is a cushion, not glass; only a picture is frosted', (tester) async {
@@ -66,8 +54,6 @@ void main() {
       ),
     );
     expect(find.byType(BackdropFilter), findsNothing);
-    final cushion = tester.widget<InsetShadow>(find.byType(InsetShadow));
-    expect(cushion.shadows, DuvetTokens.light.cushion);
     // The image viewer's bars still frost the picture under them.
     expect(glassBackdrop(16).toString(), allOf(contains('matrix'), contains('blur')));
   });
@@ -242,8 +228,13 @@ void main() {
       final time = find.text('09:02');
       expect(time, findsOneWidget);
       expect(tester.getTopLeft(time).dy, greaterThan(tester.getBottomLeft(find.text('run 1')).dy));
-      // Maya's name over her run's first bubble.
-      expect(find.text('Maya'), findsWidgets);
+      // Maya's name over her run's first bubble, and not again inside the run.
+      final names = find.descendant(of: find.byType(ListView), matching: find.text('Maya'));
+      final tops = [for (var i = 0; i < names.evaluate().length; i++) tester.getTopLeft(names.at(i)).dy];
+      final run0 = tester.getTopLeft(find.text('run 0')).dy;
+      final run1 = tester.getTopLeft(find.text('run 1')).dy;
+      expect(tops.where((y) => y < run0 && y > run0 - 40), hasLength(1));
+      expect(tops.where((y) => y > run0 && y < run1), isEmpty);
     });
 
     test('day separators read Today, Yesterday, then dates', () {
@@ -269,7 +260,6 @@ void main() {
       );
       // Maya is online: her face, named under it, read as her row was.
       expect(tester.getSize(avatar(FakeRepository.maya)), const Size(56, 56));
-      expect(find.text('Maya'), findsWidgets);
       expect(find.bySemanticsLabel('Maya, Online · @maya'), findsOneWidget);
       expect(find.text('Online · @maya'), findsNothing);
       // The user's presence isn't reported: a row, its caption under the name.

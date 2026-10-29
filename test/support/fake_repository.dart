@@ -7,6 +7,7 @@ import 'package:duvet/data/repository.dart';
 import 'package:flutter/foundation.dart';
 
 import 'fake_voice.dart';
+import 'memory_stores.dart';
 
 /// An in-memory [ChatRepository]: the shell's old sample data, and hooks for
 /// tests to push what the gateway would.

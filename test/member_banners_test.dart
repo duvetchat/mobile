@@ -1,4 +1,3 @@
-import 'package:duvet/data/call_history.dart';
 import 'package:duvet/data/emoji_catalog.dart';
 import 'package:duvet/data/models.dart';
 import 'package:duvet/data/voice.dart';
@@ -15,11 +14,8 @@ import 'package:forui/forui.dart';
 
 import 'support/fake_repository.dart';
 import 'support/fake_voice.dart';
-
-class _NoLinks implements DeepLinkSource {
-  @override
-  Stream<Uri> get links => const Stream.empty();
-}
+import 'support/memory_stores.dart';
+import 'support/no_links.dart';
 
 const _maya = FakeRepository.maya;
 const _noorBanner = 'https://example.invalid/noor-banner.png';
@@ -49,7 +45,7 @@ void main() {
 
   setUpAll(() async {
     TestWidgetsFlutterBinding.ensureInitialized();
-    DeepLinkSource.instance = _NoLinks();
+    DeepLinkSource.instance = NoLinks();
     EmojiCatalog.debugUse(await EmojiCatalog.load());
   });
 

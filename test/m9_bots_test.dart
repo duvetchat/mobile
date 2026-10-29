@@ -13,11 +13,7 @@ import 'package:flutter/rendering.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import 'support/fake_repository.dart';
-
-class _NoLinks implements DeepLinkSource {
-  @override
-  Stream<Uri> get links => const Stream.empty();
-}
+import 'support/no_links.dart';
 
 const _ballot = 'u-ballot';
 
@@ -55,7 +51,7 @@ void main() {
 
   setUpAll(() async {
     TestWidgetsFlutterBinding.ensureInitialized();
-    DeepLinkSource.instance = _NoLinks();
+    DeepLinkSource.instance = NoLinks();
     EmojiCatalog.debugUse(await EmojiCatalog.load());
   });
 
@@ -213,7 +209,7 @@ void main() {
     semantics.dispose();
   });
 
-  testWidgets('a bot message: rounded-square avatar, BOT tag, buttons and a select', (tester) async {
+  testWidgets('a bot message: its name and BOT tag, buttons and a select', (tester) async {
     final repository = await pumpGeneral(tester, history: [poll()]);
     expect(find.text('Bot'), findsOneWidget);
     expect(find.bySemanticsLabel('Ballot, bot,’s profile'), findsOneWidget);

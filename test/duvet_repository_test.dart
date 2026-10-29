@@ -6,7 +6,6 @@ import 'package:clock/clock.dart';
 import 'package:duvet/data/cache.dart';
 import 'package:duvet/data/duvet_repository.dart';
 import 'package:duvet/data/models.dart';
-import 'package:duvet/data/recent_chats.dart';
 import 'package:duvet/data/session_store.dart';
 import 'package:duvet_client/duvet.dart' as duvet;
 import 'package:fake_async/fake_async.dart';
@@ -15,6 +14,7 @@ import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
 
 import 'support/eventually.dart';
+import 'support/memory_stores.dart';
 
 const _me = '00000000-0000-4000-8000-000000000001';
 const _maya = '00000000-0000-4000-8000-000000000002';

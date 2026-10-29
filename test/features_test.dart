@@ -8,6 +8,7 @@ import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:image_picker/image_picker.dart' show ImageSource;
 
 import 'support/fake_repository.dart';
 
@@ -288,16 +289,21 @@ void main() {
       semantics.dispose();
     });
 
-    testWidgets('photos and GIFs attach, can be removed, and send', (tester) async {
-      ChatView.debugPickMedia = (_) async => const [
-        OutgoingFile(path: '/nowhere/party.gif', name: 'party.gif', contentType: 'image/gif'),
-        OutgoingFile(path: '/nowhere/cat.jpg', name: 'cat.jpg', contentType: 'image/jpeg'),
-      ];
+    testWidgets('photos and GIFs come from the gallery, attach, can be removed, and send', (tester) async {
+      final sources = <ImageSource>[];
+      ChatView.debugPickMedia = (source) async {
+        sources.add(source);
+        return const [
+          OutgoingFile(path: '/nowhere/party.gif', name: 'party.gif', contentType: 'image/gif'),
+          OutgoingFile(path: '/nowhere/cat.jpg', name: 'cat.jpg', contentType: 'image/jpeg'),
+        ];
+      };
       final repository = await openGeneral(tester);
       await tester.tap(find.bySemanticsLabel('Add photos, a sticker or a mention'));
       await tester.pumpAndSettle();
       await tester.tap(find.bySemanticsLabel('Photos & GIFs'));
       await tester.pumpAndSettle();
+      expect(sources, [ImageSource.gallery]);
       expect(find.bySemanticsLabel('GIF, party.gif'), findsOneWidget);
       await tester.tap(find.bySemanticsLabel('Remove cat.jpg'));
       await tester.pumpAndSettle();

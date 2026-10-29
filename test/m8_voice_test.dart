@@ -4,7 +4,6 @@
 import 'dart:async';
 
 import 'package:duvet/calls.dart' show CallScreen;
-import 'package:duvet/data/call_history.dart';
 import 'package:duvet/data/models.dart';
 import 'package:duvet/data/voice.dart';
 import 'package:duvet/data/voice_engine.dart' show PeerState;
@@ -22,6 +21,7 @@ import 'package:flutter_test/flutter_test.dart';
 
 import 'support/fake_repository.dart';
 import 'support/fake_voice.dart';
+import 'support/memory_stores.dart';
 
 class _App {
   final repository = FakeRepository();

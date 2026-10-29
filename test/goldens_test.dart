@@ -14,13 +14,15 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:forui/forui.dart';
 
 import 'support/fake_repository.dart';
+import 'support/memory_stores.dart';
+import 'support/no_links.dart';
 
 /// The design-system components and screens, drawn in both themes. Update
 /// them with `flutter test --update-goldens test/goldens_test.dart`.
 void main() {
   setUpAll(() async {
     TestWidgetsFlutterBinding.ensureInitialized();
-    DeepLinkSource.instance = _NoLinks();
+    DeepLinkSource.instance = NoLinks();
     // The app's own faces, not the test font's boxes.
     final sans = FontLoader('Fira Sans');
     for (final w in ['Regular', 'Medium', 'Bold']) {
@@ -199,9 +201,4 @@ void main() {
       ),
     );
   }
-}
-
-class _NoLinks implements DeepLinkSource {
-  @override
-  Stream<Uri> get links => const Stream.empty();
 }

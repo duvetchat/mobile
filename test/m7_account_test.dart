@@ -17,6 +17,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:image/image.dart' as img;
 
 import 'support/fake_repository.dart';
+import 'support/memory_stores.dart';
 
 class _Links implements DeepLinkSource {
   final controller = StreamController<Uri>.broadcast();
@@ -152,7 +153,7 @@ void main() {
     semantics.dispose();
   });
 
-  testWidgets('You: edit the display name, change email, appearance, sign out', (tester) async {
+  testWidgets('You: edit the display name, change email, appearance', (tester) async {
     final repository = await pumpApp(tester);
     await openYou(tester);
     await tapLabel(tester, 'Edit');

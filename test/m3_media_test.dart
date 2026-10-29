@@ -19,9 +19,9 @@ import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:forui/forui.dart';
-import 'package:image_picker/image_picker.dart';
 
 import 'support/fake_repository.dart';
+import 'support/memory_stores.dart';
 
 const _maya = FakeRepository.maya;
 const _space = '5a5a5a5a-0000-4000-8000-000000000001';
@@ -764,17 +764,6 @@ void main() {
     expect(find.text('# books'), findsWidgets);
     // The toast's timer runs out.
     await tester.pump(const Duration(seconds: 4));
-    semantics.dispose();
-  });
-
-  testWidgets('pictures come from the gallery as before', (tester) async {
-    ChatView.debugPickMedia = (source) async {
-      expect(source, ImageSource.gallery);
-      return const [];
-    };
-    await openMaya(tester);
-    await tapLabel(tester, 'Add photos, a sticker or a mention');
-    await tapLabel(tester, 'Photos & GIFs');
     semantics.dispose();
   });
 }

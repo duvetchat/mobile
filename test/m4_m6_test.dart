@@ -1,5 +1,6 @@
 import 'dart:async';
 
+import 'package:duvet/chat_view.dart' show ChatView;
 import 'package:duvet/data/emoji_catalog.dart';
 import 'package:duvet/data/models.dart';
 import 'package:duvet/deep_links.dart';
@@ -224,7 +225,7 @@ void main() {
     semantics.dispose();
   });
 
-  testWidgets('pins: pin from a message, list them in a sheet, unpin, jump', (tester) async {
+  testWidgets('pins: pin from a message, list them in a sheet, unpin', (tester) async {
     final repository = await pumpApp(tester);
     await openGeneral(tester);
     await tester.longPress(find.text('Pushed the new type ramp'));
@@ -431,13 +432,15 @@ void main() {
     semantics.dispose();
   });
 
-  testWidgets('a message link opens its chat', (tester) async {
+  testWidgets('a message link opens its conversation', (tester) async {
     await pumpApp(tester);
     links.controller.add(
       Uri.parse('duvet://conversations/0a0a0a0a-0000-4000-8000-0000000000c1/0a0a0a0a-0000-4000-8000-0000000000d1'),
     );
     await tester.pumpAndSettle();
-    expect(find.bySemanticsLabel('Back'), findsWidgets);
+    // A conversation the list doesn't hold yet opens under a stand-in name.
+    expect(find.byType(ChatView), findsOneWidget);
+    expect(find.descendant(of: find.byType(GlassTopBar), matching: find.text('Direct message')), findsOneWidget);
     semantics.dispose();
   });
 
