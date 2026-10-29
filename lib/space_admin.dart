@@ -246,63 +246,50 @@ class _SpaceSettingsPageState extends State<SpaceSettingsPage> {
   @override
   Widget build(BuildContext context) {
     final repository = context.repository;
-    final colors = context.theme.colors;
-    final tokens = context.duvet;
     return ValueListenableBuilder(
       valueListenable: repository.spaces,
       builder: (context, spaces, _) {
         final space = spaces.where((s) => s.id == widget.spaceId).firstOrNull;
         final profile = repository.spaceProfile(widget.spaceId);
         if (space == null || profile == null) {
-          return const AdminPage(title: 'Space settings', children: [ListNote('This Space is gone')]);
+          return const AdminPage(
+            title: 'Space settings',
+            placeholder: EmptyState(icon: FLucideIcons.layoutGrid, text: 'This Space is gone'),
+          );
         }
         final id = space.id;
         final rooms = repository.adminRooms(id).where((r) => r.kind != AdminRoomKind.category).length;
         final roles = repository.roles(id).length;
+        Widget row(IconData icon, String label, String? detail, Widget page) =>
+            GlassRow(leading: AdminMark(icon), label: label, detail: detail, onPressed: () => _open(page));
         final groups = <(String, List<Widget>)>[
           (
             'Space',
             [
               if (profile.can(Perm.administrator))
-                GlassRow(
-                  icon: FLucideIcons.squarePen,
-                  label: 'Overview',
-                  detail: 'Name, icon, banner',
-                  onPressed: () => _open(SpaceOverviewPage(spaceId: id)),
-                ),
+                row(FLucideIcons.squarePen, 'Overview', 'Name, icon, banner', SpaceOverviewPage(spaceId: id)),
               // ManageChannels in the Space makes rooms; in a room, runs it.
               if (profile.can(Perm.manageChannels) || profile.managesRooms)
-                GlassRow(
-                  icon: FLucideIcons.hash,
-                  label: 'Rooms',
-                  detail: '$rooms',
-                  onPressed: () => _open(RoomsAdminPage(spaceId: id)),
-                ),
+                row(FLucideIcons.hash, 'Rooms', '$rooms', RoomsAdminPage(spaceId: id)),
               // Any member's to see; changed by those who manage them.
-              GlassRow(
-                icon: FLucideIcons.smile,
-                label: 'Emojis and stickers',
-                detail: _assets == null ? null : '${_assets!.$1} · ${_assets!.$2}',
-                onPressed: () => _open(AssetsPage(spaceId: id)),
+              row(
+                FLucideIcons.smile,
+                'Emojis and stickers',
+                _assets == null ? null : '${_assets!.$1} · ${_assets!.$2}',
+                AssetsPage(spaceId: id),
               ),
             ],
           ),
           (
             'People',
             [
-              if (profile.can(Perm.manageRoles))
-                GlassRow(
-                  icon: FLucideIcons.shield,
-                  label: 'Roles',
-                  detail: '$roles',
-                  onPressed: () => _open(RolesPage(spaceId: id)),
-                ),
+              if (profile.can(Perm.manageRoles)) row(FLucideIcons.shield, 'Roles', '$roles', RolesPage(spaceId: id)),
               if (profile.can(Perm.manageInvites))
-                GlassRow(
-                  icon: FLucideIcons.link,
-                  label: 'Invites',
-                  detail: _invites == null ? null : '$_invites active',
-                  onPressed: () => _open(InvitesAdminPage(spaceId: id)),
+                row(
+                  FLucideIcons.link,
+                  'Invites',
+                  _invites == null ? null : '$_invites active',
+                  InvitesAdminPage(spaceId: id),
                 ),
             ],
           ),
@@ -310,18 +297,18 @@ class _SpaceSettingsPageState extends State<SpaceSettingsPage> {
             'Integrations',
             [
               if (profile.can(Perm.manageWebhooks))
-                GlassRow(
-                  icon: FLucideIcons.webhook,
-                  label: 'Webhooks',
-                  detail: _webhooks == null ? null : '$_webhooks',
-                  onPressed: () => _open(WebhooksPage(spaceId: id)),
+                row(
+                  FLucideIcons.webhook,
+                  'Webhooks',
+                  _webhooks == null ? null : '$_webhooks',
+                  WebhooksPage(spaceId: id),
                 ),
               if (profile.can(Perm.manageAttachments) || profile.can(Perm.manageBuckets))
-                GlassRow(
-                  icon: FLucideIcons.database,
-                  label: 'Storage',
-                  detail: _storage == null ? null : '${formatBytes(_storage!)} used',
-                  onPressed: () => _open(SpaceStoragePage(spaceId: id)),
+                row(
+                  FLucideIcons.database,
+                  'Storage',
+                  _storage == null ? null : '${formatBytes(_storage!)} used',
+                  SpaceStoragePage(spaceId: id),
                 ),
             ],
           ),
@@ -330,43 +317,24 @@ class _SpaceSettingsPageState extends State<SpaceSettingsPage> {
           title: 'Space settings',
           backLabel: 'Back to ${space.name}',
           children: [
-            Cushion(
-              padding: const EdgeInsets.all(16),
-              shadows: tokens.shadowRaised,
-              child: Row(
-                children: [
-                  ExcludeSemantics(child: SpaceIcon(space: space, size: 64)),
-                  const SizedBox(width: 16),
-                  Expanded(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(space.name, style: DuvetType.title.copyWith(color: colors.foreground)),
-                        const SizedBox(height: 4),
-                        Text(
-                          '${profile.memberCount} ${profile.memberCount == 1 ? 'member' : 'members'} · ${profile.standing}',
-                          style: DuvetType.caption.copyWith(color: colors.mutedForeground),
-                        ),
-                      ],
-                    ),
-                  ),
-                ],
-              ),
+            // The Space as it opens: its banner, its icon and name.
+            SpaceFace(
+              space: space,
+              bannerUrl: space.bannerUrl,
+              caption:
+                  '${profile.memberCount} ${profile.memberCount == 1 ? 'member' : 'members'} · ${profile.standing}',
             ),
             for (final (name, rows) in groups)
               if (rows.isNotEmpty) ...[Overline(name), AdminPanel(children: rows)],
-            if (profile.owner) ...[
-              const SizedBox(height: 32),
-              DuvetButton(
+            if (profile.owner)
+              AdminApart(
+                icon: FLucideIcons.trash2,
                 label: 'Delete Space',
-                variant: ButtonVariant.destructive,
-                expand: true,
                 onPressed: () async {
                   final navigator = Navigator.of(context);
                   if (await deleteSpace(context, space)) navigator.popUntil((r) => r.isFirst);
                 },
               ),
-            ],
           ],
         );
       },
@@ -389,11 +357,16 @@ class AdminPage extends StatelessWidget {
   /// In place of [children]: a list of its own, given the padding that
   /// clears the bars.
   final Widget Function(EdgeInsets padding)? list;
+
+  /// In place of any list: what the page says when it has nothing to list
+  /// or couldn't load it, centered between the bars ([EmptyState]).
+  final Widget? placeholder;
   final Widget? bottom;
   const AdminPage({
     required this.title,
     this.children = const [],
     this.list,
+    this.placeholder,
     this.bottom,
     this.backLabel,
     this.actions = const [],
@@ -419,7 +392,9 @@ class AdminPage extends StatelessWidget {
       body: Stack(
         children: [
           Positioned.fill(
-            child: list?.call(clear) ?? ListView(padding: clear, children: children),
+            child: placeholder != null
+                ? Padding(padding: clear, child: placeholder)
+                : list?.call(clear) ?? ListView(padding: clear, children: children),
           ),
           if (bottom case final bottom?)
             Positioned(
@@ -470,27 +445,176 @@ class AdminPage extends StatelessWidget {
   }
 }
 
-/// Rows on one raised panel.
+/// Rows on one cushion, a group of settings as the You tab has them.
 class AdminPanel extends StatelessWidget {
   final List<Widget> children;
   const AdminPanel({required this.children, super.key});
 
   @override
-  Widget build(BuildContext context) => DecoratedBox(
-    decoration: BoxDecoration(
-      color: context.theme.colors.card,
-      borderRadius: BorderRadius.circular(DuvetTokens.radiusCard),
-      boxShadow: context.duvet.shadowRest,
-    ),
-    child: InsetShadow(
-      shadows: context.duvet.cushion,
-      borderRadius: BorderRadius.circular(DuvetTokens.radiusCard),
-      child: Padding(
-        padding: const EdgeInsets.all(4),
-        child: Column(children: children),
+  Widget build(BuildContext context) => Cushion(
+    padding: const EdgeInsets.all(4),
+    child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: children),
+  );
+}
+
+/// A settings row's mark: its glyph on a small square sunk into the
+/// cushion, as a room's is (only people are round), in [color] when it isn't
+/// ink. At night it sinks to the ground's own shade rather than a hole.
+/// Decoration: the row says what it is.
+class AdminMark extends StatelessWidget {
+  final IconData icon;
+  final Color? color;
+  final double size;
+  const AdminMark(this.icon, {this.color, this.size = 36, super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = context.theme.colors;
+    const radius = BorderRadius.all(Radius.circular(DuvetTokens.radiusChip));
+    return ExcludeSemantics(
+      child: SizedBox.square(
+        dimension: size,
+        child: DecoratedBox(
+          decoration: BoxDecoration(
+            color: Theme.of(context).brightness == Brightness.dark ? colors.background : colors.secondary,
+            borderRadius: radius,
+          ),
+          child: InsetShadow(
+            shadows: context.duvet.shadowWell,
+            borderRadius: radius,
+            child: Icon(icon, size: size * 0.5, color: color ?? colors.foreground),
+          ),
+        ),
       ),
+    );
+  }
+}
+
+/// What can't be undone, set apart under the rest: on a cushion of its own,
+/// in the danger color, as a message's Delete is under its other actions.
+class AdminApart extends StatelessWidget {
+  final IconData icon;
+  final String label;
+  final String? detail;
+  final VoidCallback onPressed;
+  const AdminApart({required this.icon, required this.label, required this.onPressed, this.detail, super.key});
+
+  @override
+  Widget build(BuildContext context) => Padding(
+    padding: const EdgeInsets.only(top: 32),
+    child: AdminPanel(
+      children: [
+        GlassRow(
+          leading: AdminMark(icon, color: context.theme.colors.destructive),
+          label: label,
+          detail: detail,
+          destructive: true,
+          onPressed: onPressed,
+        ),
+      ],
     ),
   );
+}
+
+/// A Space's face, as the Space opens on it and its card shows it: its
+/// banner ([bannerUrl], none without) over its icon, name and [caption].
+/// [iconFile] and [bannerFile] show pictures chosen and not saved yet.
+/// Screen readers get the name and caption; the pictures are decoration.
+class SpaceFace extends StatelessWidget {
+  final Space space;
+  final String? name;
+  final String? caption;
+  final String? iconFile;
+  final String? bannerFile;
+  final String? bannerUrl;
+  const SpaceFace({
+    required this.space,
+    required this.bannerUrl,
+    this.name,
+    this.caption,
+    this.iconFile,
+    this.bannerFile,
+    super.key,
+  });
+
+  static const _icon = 64.0;
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = context.theme.colors;
+    const banner = BorderRadius.all(Radius.circular(DuvetTokens.radiusRow));
+    const square = BorderRadius.all(Radius.circular(DuvetTokens.radiusField));
+    // Under the picture while it loads, or where it can't: the mascot's slate.
+    Widget framed(Widget picture) => AspectRatio(
+      aspectRatio: bannerAspect,
+      child: DecoratedBox(
+        decoration: const BoxDecoration(color: Duvet.slate, borderRadius: banner),
+        child: ClipRRect(borderRadius: banner, child: picture),
+      ),
+    );
+    return Cushion(
+      shadows: context.duvet.shadowRaised,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          if (bannerFile case final path?)
+            Padding(
+              padding: const EdgeInsets.fromLTRB(8, 8, 8, 0),
+              child: ExcludeSemantics(
+                child: framed(
+                  Image.file(File(path), fit: BoxFit.cover, errorBuilder: (_, _, _) => const SizedBox.shrink()),
+                ),
+              ),
+            )
+          else if (bannerUrl case final url?)
+            Padding(
+              padding: const EdgeInsets.fromLTRB(8, 8, 8, 0),
+              child: framed(SpaceBanner(key: ValueKey(url), url: url)),
+            ),
+          Padding(
+            padding: const EdgeInsets.all(16),
+            child: Row(
+              children: [
+                if (iconFile case final path?)
+                  ExcludeSemantics(
+                    child: ClipRRect(
+                      borderRadius: square,
+                      child: Image.file(
+                        File(path),
+                        width: _icon,
+                        height: _icon,
+                        fit: BoxFit.cover,
+                        errorBuilder: (_, _, _) => SpaceIcon(space: space, size: _icon),
+                      ),
+                    ),
+                  )
+                else
+                  SpaceIcon(space: space, size: _icon),
+                const SizedBox(width: 14),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        name ?? space.name,
+                        maxLines: 2,
+                        overflow: TextOverflow.ellipsis,
+                        style: DuvetType.title.copyWith(color: colors.foreground),
+                      ),
+                      if (caption case final caption?) ...[
+                        const SizedBox(height: 4),
+                        Text(caption, style: DuvetType.caption.copyWith(color: colors.mutedForeground)),
+                      ],
+                    ],
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
 }
 
 /// Asks before something that can't be undone, or ([destructive] false)
@@ -511,7 +635,7 @@ Future<bool> confirmDestructive(
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            Text(title, style: DuvetType.title.copyWith(color: context.theme.colors.foreground)),
+            _SheetHeading(title),
             const SizedBox(height: 12),
             Text(body, style: DuvetType.snippet.copyWith(color: context.theme.colors.mutedForeground)),
             const SizedBox(height: 24),
@@ -594,12 +718,12 @@ class _DescriptionSheetState extends State<_DescriptionSheet> {
     // As the field and the API's column count them: code points.
     final left = roomDescriptionLimit - _text.text.runes.length;
     return Padding(
-      padding: const EdgeInsets.fromLTRB(16, 8, 16, 24),
+      padding: const EdgeInsets.fromLTRB(24, 16, 24, 24),
       child: Column(
         mainAxisSize: MainAxisSize.min,
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          Text(widget.title, style: DuvetType.title.copyWith(color: colors.foreground)),
+          _SheetHeading(widget.title),
           const SizedBox(height: 16),
           DuvetTextField(
             label: 'Description',
@@ -619,7 +743,7 @@ class _DescriptionSheetState extends State<_DescriptionSheet> {
                 : '$left characters left',
             style: DuvetType.caption.copyWith(color: colors.mutedForeground),
           ),
-          const SizedBox(height: 16),
+          const SizedBox(height: 24),
           DuvetButton(
             label: 'Save',
             variant: ButtonVariant.primary,
@@ -675,12 +799,12 @@ class _NameSheetState<T> extends State<_NameSheet<T>> {
 
   @override
   Widget build(BuildContext context) => Padding(
-    padding: const EdgeInsets.fromLTRB(16, 8, 16, 24),
+    padding: const EdgeInsets.fromLTRB(24, 16, 24, 24),
     child: Column(
       mainAxisSize: MainAxisSize.min,
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        Text(widget.title, style: DuvetType.title.copyWith(color: context.theme.colors.foreground)),
+        _SheetHeading(widget.title),
         const SizedBox(height: 16),
         DuvetTextField(label: widget.label, controller: _name, autofocus: true, maxLength: widget.maxLength),
         if (widget.choices.isNotEmpty) ...[
@@ -694,7 +818,7 @@ class _NameSheetState<T> extends State<_NameSheet<T>> {
             ],
           ),
         ],
-        const SizedBox(height: 16),
+        const SizedBox(height: 24),
         DuvetButton(
           label: widget.action,
           variant: ButtonVariant.primary,
@@ -704,6 +828,28 @@ class _NameSheetState<T> extends State<_NameSheet<T>> {
       ],
     ),
   );
+}
+
+/// A dialog sheet's title, as the app's other dialog sheets set theirs.
+class _SheetHeading extends StatelessWidget {
+  final String text;
+  const _SheetHeading(this.text);
+
+  @override
+  Widget build(BuildContext context) => Semantics(
+    header: true,
+    child: Text(text, style: DuvetType.title.copyWith(color: context.theme.colors.foreground)),
+  );
+}
+
+/// A hairline across a sheet, between its actions and those that can't be
+/// undone, as a message's actions set Delete apart.
+class _SheetRule extends StatelessWidget {
+  const _SheetRule();
+
+  @override
+  Widget build(BuildContext context) =>
+      Container(height: 1, margin: const EdgeInsets.fromLTRB(16, 4, 16, 4), color: context.duvet.hairline);
 }
 
 void _toast(BuildContext context, String message) {
@@ -815,8 +961,12 @@ class _SpaceOverviewPageState extends State<SpaceOverviewPage> {
   Widget build(BuildContext context) {
     final colors = context.theme.colors;
     final p = _profile;
-    Widget picked(String label, String? path, VoidCallback onTap, {bool has = false}) => GlassRow(
-      icon: FLucideIcons.image,
+    // Its face from the Space list; from what settings know of it otherwise.
+    final space =
+        context.repository.spaces.value.where((s) => s.id == widget.spaceId).firstOrNull ??
+        (p == null ? null : Space(id: p.id, name: p.name, iconUrl: p.iconUrl, bannerUrl: p.bannerUrl));
+    Widget picked(IconData icon, String label, String? path, VoidCallback onTap, {bool has = false}) => GlassRow(
+      leading: AdminMark(icon),
       label: label,
       detail: path != null
           ? 'New one chosen'
@@ -831,43 +981,36 @@ class _SpaceOverviewPageState extends State<SpaceOverviewPage> {
     return AdminPage(
       title: 'Overview',
       actions: [TextAction(label: 'Save', onPressed: _saving || p == null ? null : _save)],
+      placeholder: p == null ? const EmptyState(icon: FLucideIcons.layoutGrid, text: 'This Space is gone') : null,
       children: [
-        if (p == null)
-          const ListNote('This Space is gone')
-        else ...[
-          const SizedBox(height: 8),
+        if (p != null && space != null) ...[
+          // The Space as everyone will see it once saved, its name as typed.
+          ListenableBuilder(
+            listenable: _name,
+            builder: (context, _) => SpaceFace(
+              space: space,
+              name: _name.text.trim().isEmpty ? p.name : _name.text.trim(),
+              caption: '${p.memberCount} ${p.memberCount == 1 ? 'member' : 'members'} · ${p.standing}',
+              iconFile: _icon,
+              bannerFile: _banner,
+              bannerUrl: bannerNow,
+            ),
+          ),
+          const SizedBox(height: 24),
           DuvetTextField(label: 'Name', controller: _name),
           const SizedBox(height: 16),
           DuvetTextField(label: 'What it’s about', controller: _about, maxLines: 3),
           const Overline('Pictures'),
-          // The banner as it will look, 5:2.
-          if (_banner case final path?)
-            ExcludeSemantics(
-              child: ClipRRect(
-                borderRadius: BorderRadius.circular(DuvetTokens.radiusCard),
-                child: AspectRatio(
-                  aspectRatio: bannerAspect,
-                  child: Image.file(
-                    File(path),
-                    fit: BoxFit.cover,
-                    errorBuilder: (context, error, stackTrace) => const SizedBox.shrink(),
-                  ),
-                ),
-              ),
-            )
-          else if (bannerNow case final url?)
-            SpaceBanner(url: url),
-          if (hasBanner) const SizedBox(height: 12),
           AdminPanel(
             children: [
-              picked('Icon', _icon, () async {
+              picked(FLucideIcons.squareDashed, 'Icon', _icon, () async {
                 final path = await chooseSpaceIcon(context);
                 if (path != null && mounted) setState(() => _icon = path);
               }),
-              picked('Banner', _banner, _pickBanner, has: hasBanner),
+              picked(FLucideIcons.image, 'Banner', _banner, _pickBanner, has: hasBanner),
               if (hasBanner)
                 GlassRow(
-                  icon: FLucideIcons.trash2,
+                  leading: AdminMark(FLucideIcons.trash2, color: colors.destructive),
                   label: 'Remove banner',
                   destructive: true,
                   onPressed: () => setState(() {
@@ -878,10 +1021,12 @@ class _SpaceOverviewPageState extends State<SpaceOverviewPage> {
             ],
           ),
           UploadNote(_upload),
-          const SizedBox(height: 8),
-          Text(
-            'Everyone in the Space sees the change.',
-            style: DuvetType.caption.copyWith(color: colors.mutedForeground),
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 12, 16, 0),
+            child: Text(
+              'Everyone in the Space sees the change.',
+              style: DuvetType.caption.copyWith(color: colors.mutedForeground),
+            ),
           ),
         ],
       ],
@@ -995,6 +1140,8 @@ class _RoomsAdminPageState extends State<RoomsAdminPage> {
               label: 'Permissions',
               onPressed: () => Navigator.of(context).pop('perms'),
             ),
+          // What can't be undone, apart under the rest.
+          const _SheetRule(),
           GlassRow(
             icon: FLucideIcons.trash2,
             label: 'Delete',
@@ -1141,10 +1288,10 @@ class _RoomsAdminPageState extends State<RoomsAdminPage> {
     // to change, move or delete it, and in the Space to make one.
     bool manages(AdminRoom r) => repository.canInRoom(widget.spaceId, r.id, Perm.manageChannels);
     final makes = repository.spaceProfile(widget.spaceId)?.can(Perm.manageChannels) ?? false;
-    // The trailing edge, ridged like a grip: drag it to move the row, in the
-    // list it's nearest to. Down a panel the edges make one ridge.
+    // The grip at the row's end: drag it to move the row, in the list it's
+    // nearest to.
     Widget grip(int index) => DragEdge(index: index);
-    // A plain row on its panel, with its edge to drag by when it may move.
+    // A plain row on its panel, with its grip to drag by when it may move.
     Widget row(Widget body, int index, {double indent = 0, bool moves = true}) => IntrinsicHeight(
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -1301,20 +1448,19 @@ class _RoomsAdminPageState extends State<RoomsAdminPage> {
               onPressed: _create,
             )
           : null,
-      list: (padding) => all.isEmpty
-          ? ListView(padding: padding, children: const [ListNote('No rooms yet')])
-          : ReorderableListView.builder(
-              padding: padding,
-              buildDefaultDragHandles: false,
-              header: loose.isEmpty ? null : panel(rooms(loose, null)),
-              itemCount: categories.length,
-              itemBuilder: (context, i) => block(i),
-              onReorderItem: (from, to) {
-                if (!manages(categories[from])) return _cantMove(categories[from]);
-                if (from != to) _move(categories[from], [...categories]..removeAt(from), to);
-              },
-              proxyDecorator: liftPanel,
-            ),
+      placeholder: all.isEmpty ? const EmptyState(text: 'No rooms yet') : null,
+      list: (padding) => ReorderableListView.builder(
+        padding: padding,
+        buildDefaultDragHandles: false,
+        header: loose.isEmpty ? null : panel(rooms(loose, null)),
+        itemCount: categories.length,
+        itemBuilder: (context, i) => block(i),
+        onReorderItem: (from, to) {
+          if (!manages(categories[from])) return _cantMove(categories[from]);
+          if (from != to) _move(categories[from], [...categories]..removeAt(from), to);
+        },
+        proxyDecorator: liftPanel,
+      ),
     );
   }
 }
@@ -1530,7 +1676,13 @@ class _RoomPermissionsPageState extends State<RoomPermissionsPage> {
       padding: const EdgeInsets.fromLTRB(12, 14, 8, 4),
       child: Row(
         children: [
-          if (t.type == 1) ...[UserAvatar(name: t.name, url: t.avatarUrl, size: 24), const SizedBox(width: 8)],
+          if (t.type == 1) ...[
+            UserAvatar(name: t.name, url: t.avatarUrl, size: 24),
+            const SizedBox(width: 8),
+          ] else ...[
+            RoleDot(colors: t.colors!),
+            const SizedBox(width: 10),
+          ],
           Expanded(
             child: Align(
               alignment: AlignmentDirectional.centerStart,
@@ -1586,7 +1738,9 @@ class _RoomPermissionsPageState extends State<RoomPermissionsPage> {
                   style: DuvetType.caption.copyWith(color: colors.mutedForeground),
                 ),
               ),
-            for (final (group, perms) in _groups) ...[
+            for (final (i, (group, perms)) in _groups.indexed) ...[
+              if (i > 0)
+                Container(height: 1, margin: const EdgeInsets.fromLTRB(12, 10, 12, 0), color: context.duvet.hairline),
               Padding(
                 padding: const EdgeInsets.fromLTRB(12, 14, 12, 0),
                 child: Semantics(
@@ -1603,10 +1757,10 @@ class _RoomPermissionsPageState extends State<RoomPermissionsPage> {
                       Text(p.label, style: DuvetType.rowTitle.copyWith(color: colors.foreground)),
                       Text(p.description, style: DuvetType.caption.copyWith(color: colors.mutedForeground)),
                       const SizedBox(height: 8),
-                      Segmented<bool?>(
+                      PermissionChoice(
                         label: p.label,
                         value: overwrite.stateOf(p.bit),
-                        options: {false: 'Deny', null: t.type == 1 ? 'Their roles' : 'Role default', true: 'Allow'},
+                        neutral: t.type == 1 ? 'Their roles' : 'Role default',
                         onChanged: (state) => _set(t, p.bit, state),
                       ),
                     ],
@@ -1733,7 +1887,11 @@ class _RoomPermissionsPageState extends State<RoomPermissionsPage> {
                       child: DuvetChip(
                         label: t.name,
                         selected: t.id == _shown,
-                        leading: t.type == 1 ? UserAvatar(name: t.name, url: t.avatarUrl, size: 18) : null,
+                        leading: t.type == 1
+                            ? UserAvatar(name: t.name, url: t.avatarUrl, size: 18)
+                            : t.colors!.from == null
+                            ? null
+                            : RoleDot(colors: t.colors!, size: 10),
                         onTap: () => _pick(i),
                       ),
                     ),
@@ -1771,6 +1929,123 @@ class _RoomPermissionsPageState extends State<RoomPermissionsPage> {
           ],
         );
       },
+    );
+  }
+}
+
+/// A room permission's three states side by side in a recess: denied, as
+/// the roles say ([neutral]), or allowed. The one chosen stands out: a deny
+/// in the danger color, an allow in the accent (tinted and outlined, as a
+/// selection is), the roles' say raised plain. Deny and Allow carry a mark,
+/// so the state never rests on color alone. Each choice's text is its label.
+class PermissionChoice extends StatelessWidget {
+  final String label;
+  final bool? value;
+  final String neutral;
+  final ValueChanged<bool?> onChanged;
+  const PermissionChoice({
+    required this.label,
+    required this.value,
+    required this.neutral,
+    required this.onChanged,
+    super.key,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = context.theme.colors;
+    final tokens = context.duvet;
+    final reduce = MediaQuery.disableAnimationsOf(context);
+    const radius = BorderRadius.all(Radius.circular(DuvetTokens.radiusField));
+    const inner = BorderRadius.all(Radius.circular(DuvetTokens.radiusField - 2));
+    // The chosen one, raised from the recess: at night a step lighter than
+    // the card it's on, or it would barely stand up.
+    final raised = Theme.of(context).brightness == Brightness.dark
+        ? Color.alphaBlend(colors.foreground.withValues(alpha: 0.06), colors.card)
+        : colors.card;
+    final options = <(bool?, String, IconData?, Color)>[
+      (false, 'Deny', FLucideIcons.x, colors.destructive),
+      (null, neutral, null, colors.foreground),
+      (true, 'Allow', FLucideIcons.check, tokens.accentText),
+    ];
+    return Semantics(
+      container: true,
+      label: label,
+      explicitChildNodes: true,
+      child: Container(
+        // 44 inside the recess: each choice a full tap target.
+        height: 48,
+        padding: const EdgeInsets.all(2),
+        decoration: BoxDecoration(color: colors.secondary, borderRadius: radius),
+        child: InsetShadow(
+          shadows: tokens.shadowWell,
+          borderRadius: radius,
+          child: Row(
+            children: [
+              for (final (state, text, icon, ink) in options)
+                Expanded(
+                  child: Semantics(
+                    container: true,
+                    button: true,
+                    inMutuallyExclusiveGroup: true,
+                    checked: state == value,
+                    label: text,
+                    excludeSemantics: true,
+                    onTap: () => onChanged(state),
+                    child: GestureDetector(
+                      behavior: HitTestBehavior.opaque,
+                      onTap: () {
+                        HapticFeedback.selectionClick();
+                        onChanged(state);
+                      },
+                      child: AnimatedContainer(
+                        duration: reduce ? Duration.zero : DuvetTokens.pressOut,
+                        alignment: Alignment.center,
+                        decoration: BoxDecoration(
+                          color: state != value
+                              ? null
+                              : state == null
+                              ? raised
+                              : Color.alphaBlend(ink.withValues(alpha: 0.14), raised),
+                          borderRadius: inner,
+                          border: state == value && state != null
+                              ? Border.all(color: ink.withValues(alpha: 0.7), width: 1.5)
+                              : null,
+                          boxShadow: state == value ? tokens.shadowRest : null,
+                        ),
+                        // One line, shrunk to fit at large text sizes rather than cut.
+                        child: Padding(
+                          padding: const EdgeInsets.symmetric(horizontal: 6),
+                          child: FittedBox(
+                            fit: BoxFit.scaleDown,
+                            child: Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                if (icon != null) ...[
+                                  Icon(icon, size: 16, color: state == value ? ink : colors.mutedForeground),
+                                  const SizedBox(width: 4),
+                                ],
+                                Text(
+                                  text,
+                                  maxLines: 1,
+                                  style: DuvetType.label.copyWith(
+                                    fontSize: 15,
+                                    fontWeight: state == value ? FontWeight.w700 : FontWeight.w500,
+                                    color: state == value ? ink : colors.mutedForeground,
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+            ],
+          ),
+        ),
+      ),
     );
   }
 }
@@ -1827,21 +2102,25 @@ class _MemberPickerState extends State<_MemberPicker> {
             child: DuvetTextField(label: 'Search', controller: _search, onChanged: (_) => setState(() {})),
           ),
           if (snapshot.hasError)
-            const ListNote('Couldn’t load the members. Close this and try again.')
+            const EmptyState(asleep: true, text: 'Couldn’t load the members. Close this and try again.')
           else if (!snapshot.hasData)
             const Padding(
               padding: EdgeInsets.all(24),
               child: Center(child: FCircularProgress()),
             )
           else if (offered.isEmpty)
-            Padding(
-              padding: const EdgeInsets.all(24),
-              child: Text(
-                query.isEmpty ? 'Everyone has theirs already' : 'No one by that name',
-                textAlign: TextAlign.center,
-                style: DuvetType.snippet.copyWith(color: colors.mutedForeground),
-              ),
-            )
+            // Nothing to search for is the pillow's to say; a search that
+            // finds no one, a line.
+            query.isEmpty
+                ? const EmptyState(text: 'Everyone has theirs already')
+                : Padding(
+                    padding: const EdgeInsets.all(24),
+                    child: Text(
+                      'No one by that name',
+                      textAlign: TextAlign.center,
+                      style: DuvetType.snippet.copyWith(color: colors.mutedForeground),
+                    ),
+                  )
           else
             for (final m in offered)
               PersonRow(
@@ -1864,41 +2143,22 @@ class _MemberPickerState extends State<_MemberPicker> {
 Color? roleColorOn(BuildContext context, int? rgb) =>
     rgb == null ? null : readableOn(Color(0xFF000000 | rgb), context.theme.colors.background);
 
-/// A reorderable row's trailing edge, ridged like a grip: drag it to move
-/// the row. Down a panel the edges make one ridge.
+/// A reorderable row's grip at its end, on the row's own ground: drag it to
+/// move the row. Dots, not lines, so it doesn't read as a menu.
 class DragEdge extends StatelessWidget {
   final int index;
   const DragEdge({required this.index, super.key});
 
   @override
-  Widget build(BuildContext context) {
-    final colors = context.theme.colors;
-    return ReorderableDragStartListener(
-      index: index,
-      child: ExcludeSemantics(
-        child: Container(
-          width: 32,
-          decoration: BoxDecoration(
-            color: colors.secondary,
-            border: BorderDirectional(start: BorderSide(color: context.duvet.hairline)),
-          ),
-          alignment: Alignment.center,
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              for (var i = 0; i < 3; i++)
-                Container(
-                  width: 14,
-                  height: 2,
-                  margin: const EdgeInsets.symmetric(vertical: 2),
-                  decoration: BoxDecoration(color: colors.mutedForeground, borderRadius: BorderRadius.circular(1)),
-                ),
-            ],
-          ),
-        ),
+  Widget build(BuildContext context) => ReorderableDragStartListener(
+    index: index,
+    child: ExcludeSemantics(
+      child: SizedBox(
+        width: 44,
+        child: Icon(FLucideIcons.gripVertical, size: 18, color: context.theme.colors.mutedForeground),
       ),
-    );
-  }
+    ),
+  );
 }
 
 /// A reorderable row off its panel while held: raised on its own.
@@ -1982,12 +2242,14 @@ String describeRoleColors(RoleColors c) {
 }
 
 /// A role's colors on a small rounded swatch, left to right: the picker's
-/// own preview, never a role's fill elsewhere. The default ink without one.
+/// own preview, and [RoleDot]'s mark beside a role's name; never a fill
+/// behind it. The default ink without one.
 class RoleSwatch extends StatelessWidget {
   final RoleColors colors;
   final double width;
   final double height;
-  const RoleSwatch({required this.colors, this.width = 20, this.height = 20, super.key});
+  final double radius;
+  const RoleSwatch({required this.colors, this.width = 20, this.height = 20, this.radius = 6, super.key});
 
   @override
   Widget build(BuildContext context) {
@@ -1998,8 +2260,34 @@ class RoleSwatch extends StatelessWidget {
       decoration: BoxDecoration(
         color: stops.isEmpty ? context.theme.colors.foreground : stops.first,
         gradient: colors.from != null && colors.to != null ? LinearGradient(colors: stops) : null,
-        borderRadius: BorderRadius.circular(6),
+        borderRadius: BorderRadius.circular(radius),
       ),
+    );
+  }
+}
+
+/// A role's color beside its name, where roles are listed: a small rounded
+/// square, solid or across its gradient; a faint ink one for the default
+/// ink, so a role without a color still lines up with the rest. A mark,
+/// never a fill behind the name. Decoration: the name says whose it is.
+class RoleDot extends StatelessWidget {
+  final RoleColors colors;
+  final double size;
+  const RoleDot({required this.colors, this.size = 14, super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    final radius = BorderRadius.circular(size * 0.3);
+    if (colors.from == null) {
+      return SizedBox.square(
+        dimension: size,
+        child: DecoratedBox(
+          decoration: BoxDecoration(color: context.duvet.grabber, borderRadius: radius),
+        ),
+      );
+    }
+    return ExcludeSemantics(
+      child: RoleSwatch(colors: colors, width: size, height: size, radius: size * 0.3),
     );
   }
 }
@@ -2080,20 +2368,27 @@ class _RoleColorSheetState extends State<_RoleColorSheet> {
       padding: EdgeInsets.only(bottom: 24 + MediaQuery.paddingOf(context).bottom),
       children: [
         const SheetTitle(title: 'Name color', caption: 'Names only, never fills'),
-        // The name as members will see it.
+        // The name as members will see it, sunk into the sheet as the
+        // screen's ground is.
         Padding(
           padding: const EdgeInsets.fromLTRB(16, 4, 16, 16),
-          child: Container(
-            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 18),
+          child: DecoratedBox(
             decoration: BoxDecoration(
               color: colors.background,
               borderRadius: BorderRadius.circular(DuvetTokens.radiusField),
             ),
-            alignment: Alignment.center,
-            child: Semantics(
-              label: 'Preview: ${widget.name}, ${describeRoleColors(_c)}',
-              excludeSemantics: true,
-              child: RoleName(widget.name, colors: _c, style: DuvetType.title),
+            child: InsetShadow(
+              shadows: context.duvet.shadowWell,
+              borderRadius: BorderRadius.circular(DuvetTokens.radiusField),
+              child: Container(
+                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 18),
+                alignment: Alignment.center,
+                child: Semantics(
+                  label: 'Preview: ${widget.name}, ${describeRoleColors(_c)}',
+                  excludeSemantics: true,
+                  child: RoleName(widget.name, colors: _c, style: DuvetType.title),
+                ),
+              ),
             ),
           ),
         ),
@@ -2144,7 +2439,16 @@ class _RoleColorSheetState extends State<_RoleColorSheet> {
                           borderRadius: BorderRadius.circular(DuvetTokens.radiusField),
                           border: _current == rgb ? Border.all(color: accent, width: 3) : null,
                         ),
-                        child: rgb == null ? Icon(FLucideIcons.ban, size: 18, color: colors.mutedForeground) : null,
+                        child: rgb == null
+                            ? Icon(FLucideIcons.ban, size: 18, color: colors.mutedForeground)
+                            : _current == rgb
+                            // Chosen: a check too, in what reads on the swatch.
+                            ? Icon(
+                                FLucideIcons.check,
+                                size: 20,
+                                color: roleColorOn(context, rgb)!.computeLuminance() > 0.4 ? Duvet.night : Colors.white,
+                              )
+                            : null,
                       ),
                     ),
                   ),
@@ -2302,7 +2606,7 @@ class _RolesPageState extends State<RolesPage> {
         if (_adminRank(mine[i]) < _adminRank(mine[i - 1])) i,
     ].isNotEmpty;
 
-    // The trailing edge, ridged like a grip, as the rooms' is.
+    // The grip at the row's end, as the rooms' is.
     Widget grip(int index) => DragEdge(index: index);
     // Above the user's highest role: theirs to see, not to move or change.
     Widget locked() => ExcludeSemantics(
@@ -2333,26 +2637,34 @@ class _RolesPageState extends State<RolesPage> {
             duration: pressed ? DuvetTokens.pressIn : DuvetTokens.pressOut,
             color: pressed ? colors.secondary : colors.card,
             padding: const EdgeInsets.fromLTRB(16, 12, 12, 12),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
+            child: Row(
               children: [
-                Row(
-                  children: [
-                    Flexible(
-                      child: RoleName(r.name, colors: r.colors, style: DuvetType.rowTitleUnread),
-                    ),
-                    if (r.hoisted) ...[
-                      const SizedBox(width: 8),
-                      Icon(FLucideIcons.layers, size: 14, color: colors.mutedForeground),
+                RoleDot(colors: r.colors),
+                const SizedBox(width: 14),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Row(
+                        children: [
+                          Flexible(
+                            child: RoleName(r.name, colors: r.colors, style: DuvetType.rowTitleUnread),
+                          ),
+                          if (r.hoisted) ...[
+                            const SizedBox(width: 8),
+                            Icon(FLucideIcons.layers, size: 14, color: colors.mutedForeground),
+                          ],
+                        ],
+                      ),
+                      const SizedBox(height: 2),
+                      Text(
+                        '$members · ${rolePowers(r)}',
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: DuvetType.caption.copyWith(color: colors.mutedForeground),
+                      ),
                     ],
-                  ],
-                ),
-                const SizedBox(height: 2),
-                Text(
-                  '$members · ${rolePowers(r)}',
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: DuvetType.caption.copyWith(color: colors.mutedForeground),
+                  ),
                 ),
               ],
             ),
@@ -2415,7 +2727,7 @@ class _RolesPageState extends State<RolesPage> {
           Padding(
             padding: const EdgeInsets.fromLTRB(16, 8, 16, 0),
             child: Text(
-              _sorting ? 'Reordering…' : 'Higher roles outrank those below them. Drag a role by its edge to move it.',
+              _sorting ? 'Reordering…' : 'Higher roles outrank those below them. Drag a role by its dots to move it.',
               style: DuvetType.caption.copyWith(color: colors.mutedForeground),
             ),
           ),
@@ -2558,6 +2870,31 @@ class _RoleEditorPageState extends State<RoleEditorPage> {
     final r = widget.role;
     final holders = context.repository.roleMembers(widget.spaceId, r.id);
     final admin = Perm.has(_perms, Perm.administrator);
+    final tokens = context.duvet;
+    // A setting with its switch: its mark, what it does, then the switch.
+    Widget toggle(String label, String description, bool value, ValueChanged<bool>? onChanged, {IconData? icon}) =>
+        Semantics(
+          container: true,
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+            child: Row(
+              children: [
+                if (icon != null) ...[AdminMark(icon), const SizedBox(width: 12)],
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(label, style: DuvetType.rowTitle.copyWith(color: colors.foreground)),
+                      Text(description, style: DuvetType.caption.copyWith(color: colors.mutedForeground)),
+                    ],
+                  ),
+                ),
+                const SizedBox(width: 12),
+                DuvetSwitch(label: label, value: value, onChanged: onChanged),
+              ],
+            ),
+          ),
+        );
     final children = <Widget>[
       const SizedBox(height: 8),
       Row(
@@ -2570,29 +2907,37 @@ class _RoleEditorPageState extends State<RoleEditorPage> {
                 : DuvetTextField(label: 'Role name', controller: _name, maxLength: 64),
           ),
           const SizedBox(width: 12),
+          // The name's color, on a cushion that sinks when pressed.
           Semantics(
             container: true,
             button: true,
             label: 'Name color: ${describeRoleColors(_colors)}',
             excludeSemantics: true,
             onTap: _pickColor,
-            child: GestureDetector(
+            child: Pressable(
               onTap: _pickColor,
-              child: Container(
+              builder: (context, pressed) => AnimatedContainer(
+                duration: pressed ? DuvetTokens.pressIn : DuvetTokens.pressOut,
                 width: 96,
                 height: 48,
-                padding: const EdgeInsets.symmetric(horizontal: 12),
                 decoration: BoxDecoration(
                   color: colors.card,
                   borderRadius: BorderRadius.circular(DuvetTokens.radiusField),
-                  border: Border.all(color: context.duvet.hairline),
+                  boxShadow: pressed ? null : tokens.shadowRest,
                 ),
-                child: Row(
-                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                  children: [
-                    RoleSwatch(colors: _colors, width: 28, height: 20),
-                    Icon(FLucideIcons.chevronDown, size: 16, color: colors.mutedForeground),
-                  ],
+                child: InsetShadow(
+                  shadows: pressed ? tokens.shadowPressed : tokens.cushion,
+                  borderRadius: BorderRadius.circular(DuvetTokens.radiusField),
+                  child: Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 12),
+                    child: Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                        RoleSwatch(colors: _colors, width: 28, height: 20),
+                        Icon(FLucideIcons.chevronDown, size: 16, color: colors.mutedForeground),
+                      ],
+                    ),
+                  ),
                 ),
               ),
             ),
@@ -2603,45 +2948,24 @@ class _RoleEditorPageState extends State<RoleEditorPage> {
         const SizedBox(height: 16),
         AdminPanel(
           children: [
-            GlassRow(
-              icon: FLucideIcons.users,
-              label: '${holders.length} ${holders.length == 1 ? 'member' : 'members'}',
-              detail: 'Manage',
-              onPressed: _members,
-            ),
-          ],
-        ),
-        const SizedBox(height: 12),
-        AdminPanel(
-          children: [
-            // As the desktop's "Display role members separately".
+            // A node of its own beside the switch's, or it would take the
+            // whole panel's.
             Semantics(
               container: true,
-              child: Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-                child: Row(
-                  children: [
-                    Expanded(
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Text('Show members separately', style: DuvetType.rowTitle.copyWith(color: colors.foreground)),
-                          Text(
-                            'In the member list, those online show under this role’s name',
-                            style: DuvetType.caption.copyWith(color: colors.mutedForeground),
-                          ),
-                        ],
-                      ),
-                    ),
-                    const SizedBox(width: 12),
-                    DuvetSwitch(
-                      label: 'Show members separately',
-                      value: _hoisted,
-                      onChanged: (on) => setState(() => _hoisted = on),
-                    ),
-                  ],
-                ),
+              child: GlassRow(
+                leading: const AdminMark(FLucideIcons.users),
+                label: '${holders.length} ${holders.length == 1 ? 'member' : 'members'}',
+                detail: 'Manage',
+                onPressed: _members,
               ),
+            ),
+            // As the desktop's "Display role members separately".
+            toggle(
+              'Show members separately',
+              'In the member list, those online show under this role’s name',
+              _hoisted,
+              (on) => setState(() => _hoisted = on),
+              icon: FLucideIcons.layers,
             ),
           ],
         ),
@@ -2651,37 +2975,19 @@ class _RoleEditorPageState extends State<RoleEditorPage> {
         AdminPanel(
           children: [
             for (final p in perms)
-              Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-                child: Row(
-                  children: [
-                    Expanded(
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Text(p.label, style: DuvetType.rowTitle.copyWith(color: colors.foreground)),
-                          Text(p.description, style: DuvetType.caption.copyWith(color: colors.mutedForeground)),
-                        ],
-                      ),
-                    ),
-                    const SizedBox(width: 12),
-                    DuvetSwitch(
-                      label: p.label,
-                      value: _perms & p.bit != 0 || (admin && p.bit != Perm.administrator),
-                      onChanged: admin && p.bit != Perm.administrator
-                          ? null
-                          : (on) => setState(() => _perms = on ? _perms | p.bit : _perms & ~p.bit),
-                    ),
-                  ],
-                ),
+              toggle(
+                p.label,
+                p.description,
+                _perms & p.bit != 0 || (admin && p.bit != Perm.administrator),
+                admin && p.bit != Perm.administrator
+                    ? null
+                    : (on) => setState(() => _perms = on ? _perms | p.bit : _perms & ~p.bit),
               ),
           ],
         ),
       ],
-      if (!r.everyone && !widget.readOnly) ...[
-        const SizedBox(height: 24),
-        DuvetButton(label: 'Delete role', variant: ButtonVariant.destructive, expand: true, onPressed: _delete),
-      ],
+      if (!r.everyone && !widget.readOnly)
+        AdminApart(icon: FLucideIcons.trash2, label: 'Delete role', onPressed: _delete),
     ];
     if (!widget.readOnly) {
       return AdminPage(
@@ -2695,9 +3001,21 @@ class _RoleEditorPageState extends State<RoleEditorPage> {
       children: [
         Padding(
           padding: const EdgeInsets.fromLTRB(4, 8, 4, 0),
-          child: Text(
-            'It’s at or above your highest role, so only those above it change it.',
-            style: DuvetType.caption.copyWith(color: colors.mutedForeground),
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Padding(
+                padding: const EdgeInsets.only(top: 2),
+                child: Icon(FLucideIcons.lock, size: 14, color: colors.mutedForeground),
+              ),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Text(
+                  'It’s at or above your highest role, so only those above it change it.',
+                  style: DuvetType.caption.copyWith(color: colors.mutedForeground),
+                ),
+              ),
+            ],
           ),
         ),
         IgnorePointer(
@@ -2773,24 +3091,30 @@ class _InvitesAdminPageState extends State<InvitesAdminPage> {
       return AdminPage(
         title: 'Invites',
         actions: [IconAction(icon: FLucideIcons.plus, label: 'New invite', onPressed: _new)],
+        placeholder: snapshot.hasError
+            ? const EmptyState(asleep: true, text: 'Couldn’t load the invites')
+            : invites == null
+            ? const Center(child: FCircularProgress())
+            : invites.isEmpty
+            ? const EmptyState(text: 'No invite links')
+            : null,
         children: [
-          if (snapshot.hasError)
-            const ListNote('Couldn’t load the invites')
-          else if (invites == null)
-            const Padding(
-              padding: EdgeInsets.all(24),
-              child: Center(child: FCircularProgress()),
-            )
-          else if (invites.isEmpty)
-            const ListNote('No invite links')
-          else
-            for (final i in invites)
-              ListRow(
-                title: i.code,
-                snippet: '#${i.roomName} · ${i.createdBy} · ${_until(i.expiresAt)}',
-                detail: 'Double tap to revoke',
-                onTap: () => _revoke(i),
-              ),
+          if (invites != null && invites.isNotEmpty)
+            AdminPanel(
+              children: [
+                for (final i in invites)
+                  ListRow(
+                    leading: AdminMark(
+                      FLucideIcons.link,
+                      color: _until(i.expiresAt) == 'expired' ? context.theme.colors.mutedForeground : null,
+                    ),
+                    title: i.code,
+                    snippet: '#${i.roomName} · ${i.createdBy} · ${_until(i.expiresAt)}',
+                    detail: 'Double tap to revoke',
+                    onTap: () => _revoke(i),
+                  ),
+              ],
+            ),
         ],
       );
     },
@@ -2913,6 +3237,8 @@ class _AssetsPageState extends State<AssetsPage> {
         children: [
           SheetTitle(title: _kind == AssetKind.emoji ? ':${a.name}:' : a.name),
           GlassRow(icon: FLucideIcons.pencil, label: 'Rename', onPressed: () => Navigator.of(context).pop('rename')),
+          // What can't be undone, apart under the rest.
+          const _SheetRule(),
           GlassRow(
             icon: FLucideIcons.trash2,
             label: 'Delete',
@@ -2955,24 +3281,19 @@ class _AssetsPageState extends State<AssetsPage> {
           title: 'Emojis and stickers',
           actions: [if (may) IconAction(icon: FLucideIcons.plus, label: 'Add $_noun', onPressed: _add)],
           children: [
-            Wrap(
-              spacing: 8,
-              children: [
-                for (final k in AssetKind.values)
-                  DuvetChip(
-                    label: k == AssetKind.emoji ? 'Emojis' : 'Stickers',
-                    selected: _kind == k,
-                    onTap: () {
-                      _kind = k;
-                      _reload();
-                    },
-                  ),
-              ],
+            Segmented<AssetKind>(
+              label: 'Show',
+              value: _kind,
+              options: const {AssetKind.emoji: 'Emojis', AssetKind.sticker: 'Stickers'},
+              onChanged: (k) {
+                _kind = k;
+                _reload();
+              },
             ),
             UploadNote(_upload),
             if (!may)
               Padding(
-                padding: const EdgeInsets.fromLTRB(4, 12, 4, 0),
+                padding: const EdgeInsets.fromLTRB(16, 12, 16, 0),
                 child: Text(
                   'Anyone here may use them. Those who manage ${_noun}s add and change them.',
                   style: DuvetType.caption.copyWith(color: colors.mutedForeground),
@@ -2980,58 +3301,103 @@ class _AssetsPageState extends State<AssetsPage> {
               ),
             const SizedBox(height: 16),
             if (snapshot.hasError)
-              const ListNote('Couldn’t load them')
+              const SizedBox(height: 320, child: EmptyState(asleep: true, text: 'Couldn’t load them'))
             else if (list == null)
               const Padding(
                 padding: EdgeInsets.all(24),
                 child: Center(child: FCircularProgress()),
               )
             else if (list.isEmpty)
-              ListNote('No ${_noun}s yet')
+              SizedBox(height: 320, child: EmptyState(text: 'No ${_noun}s yet'))
             else
-              Wrap(
-                spacing: 12,
-                runSpacing: 12,
-                children: [
-                  for (final a in list)
-                    Semantics(
-                      container: true,
-                      button: may,
-                      label: _kind == AssetKind.emoji ? ':${a.name}:' : a.name,
-                      hint: may ? 'Double tap for options' : null,
-                      excludeSemantics: true,
-                      onTap: may ? () => _options(a) : null,
-                      child: GestureDetector(
-                        behavior: HitTestBehavior.opaque,
-                        onTap: may ? () => _options(a) : null,
-                        child: SizedBox(
-                          width: size + 24,
-                          child: Column(
-                            children: [
-                              Image.network(
-                                a.url,
-                                width: size,
-                                height: size,
-                                fit: BoxFit.contain,
-                                errorBuilder: (_, _, _) => SizedBox.square(dimension: size),
-                              ),
-                              const SizedBox(height: 4),
-                              Text(
-                                a.name,
-                                maxLines: 1,
-                                overflow: TextOverflow.ellipsis,
-                                style: DuvetType.caption.copyWith(color: colors.mutedForeground),
-                              ),
-                            ],
+              // A cushion each, four emojis or two stickers a row.
+              LayoutBuilder(
+                builder: (context, constraints) {
+                  const gap = 12.0;
+                  final across = _kind == AssetKind.emoji ? 4 : 2;
+                  final width = (constraints.maxWidth - gap * (across - 1)) / across;
+                  return Wrap(
+                    spacing: gap,
+                    runSpacing: gap,
+                    children: [
+                      for (final a in list)
+                        Semantics(
+                          container: true,
+                          button: may,
+                          label: _kind == AssetKind.emoji ? ':${a.name}:' : a.name,
+                          hint: may ? 'Double tap for options' : null,
+                          excludeSemantics: true,
+                          onTap: may ? () => _options(a) : null,
+                          child: _AssetTile(
+                            url: a.url,
+                            name: a.name,
+                            size: size,
+                            width: width,
+                            onTap: may ? () => _options(a) : null,
                           ),
                         ),
-                      ),
-                    ),
-                ],
+                    ],
+                  );
+                },
               ),
           ],
         );
       },
+    );
+  }
+}
+
+/// An emoji or a sticker on a cushion of its own, its name under it;
+/// pressing sinks it, where it may be changed.
+class _AssetTile extends StatelessWidget {
+  final String url;
+  final String name;
+  final double size;
+  final double width;
+  final VoidCallback? onTap;
+  const _AssetTile({required this.url, required this.name, required this.size, required this.width, this.onTap});
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = context.theme.colors;
+    final tokens = context.duvet;
+    const radius = BorderRadius.all(Radius.circular(DuvetTokens.radiusRow));
+    return Pressable(
+      onTap: onTap,
+      builder: (context, pressed) => AnimatedContainer(
+        duration: pressed ? DuvetTokens.pressIn : DuvetTokens.pressOut,
+        width: width,
+        decoration: BoxDecoration(
+          color: colors.card,
+          borderRadius: radius,
+          boxShadow: pressed ? null : tokens.shadowRest,
+        ),
+        child: InsetShadow(
+          shadows: pressed ? tokens.shadowPressed : tokens.cushion,
+          borderRadius: radius,
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(6, 12, 6, 8),
+            child: Column(
+              children: [
+                Image.network(
+                  url,
+                  width: size,
+                  height: size,
+                  fit: BoxFit.contain,
+                  errorBuilder: (_, _, _) => SizedBox.square(dimension: size),
+                ),
+                const SizedBox(height: 6),
+                Text(
+                  name,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: DuvetType.caption.copyWith(color: colors.mutedForeground),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
     );
   }
 }
@@ -3072,20 +3438,27 @@ class _WebhooksPageState extends State<WebhooksPage> {
         mainAxisSize: MainAxisSize.min,
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          Text('$name’s URL', style: DuvetType.title.copyWith(color: context.theme.colors.foreground)),
+          _SheetHeading('$name’s URL'),
           const SizedBox(height: 12),
           Text(
             'Copy it now: it won’t be shown again. Anyone with it can post as $name.',
             style: DuvetType.snippet.copyWith(color: context.theme.colors.mutedForeground),
           ),
           const SizedBox(height: 16),
-          Container(
-            padding: const EdgeInsets.all(12),
+          // The secret, sunk in a recess.
+          DecoratedBox(
             decoration: BoxDecoration(
               color: context.theme.colors.secondary,
               borderRadius: BorderRadius.circular(DuvetTokens.radiusField),
             ),
-            child: SelectableText(url, style: DuvetType.code.copyWith(color: context.theme.colors.foreground)),
+            child: InsetShadow(
+              shadows: context.duvet.shadowWell,
+              borderRadius: BorderRadius.circular(DuvetTokens.radiusField),
+              child: Padding(
+                padding: const EdgeInsets.all(12),
+                child: SelectableText(url, style: DuvetType.code.copyWith(color: context.theme.colors.foreground)),
+              ),
+            ),
           ),
           const SizedBox(height: 24),
           DuvetButton(
@@ -3171,6 +3544,8 @@ class _WebhooksPageState extends State<WebhooksPage> {
             detail: 'The old one stops working',
             onPressed: () => Navigator.of(context).pop('reset'),
           ),
+          // What can't be undone, apart under the rest.
+          const _SheetRule(),
           GlassRow(
             icon: FLucideIcons.trash2,
             label: 'Delete',
@@ -3228,27 +3603,30 @@ class _WebhooksPageState extends State<WebhooksPage> {
       return AdminPage(
         title: 'Webhooks',
         actions: [IconAction(icon: FLucideIcons.plus, label: 'New webhook', onPressed: _new)],
+        placeholder: snapshot.hasError
+            ? const EmptyState(asleep: true, text: 'Couldn’t load the webhooks')
+            : list == null
+            ? const Center(child: FCircularProgress())
+            : list.isEmpty
+            ? const EmptyState(text: 'No webhooks. Make one to let another app post in a room.')
+            : null,
         children: [
-          if (snapshot.hasError)
-            const ListNote('Couldn’t load the webhooks')
-          else if (list == null)
-            const Padding(
-              padding: EdgeInsets.all(24),
-              child: Center(child: FCircularProgress()),
-            )
-          else if (list.isEmpty)
-            const ListNote('No webhooks. Make one to let another app post in a room.')
-          else
-            for (final w in list)
-              ListRow(
-                leading: ExcludeSemantics(
-                  child: UserAvatar(name: w.name, url: w.avatarUrl, size: 48),
-                ),
-                title: w.name,
-                snippet: 'Posts in #${w.roomName}',
-                detail: 'Double tap for options',
-                onTap: () => _options(w),
-              ),
+          if (list != null && list.isNotEmpty)
+            AdminPanel(
+              children: [
+                for (final w in list)
+                  ListRow(
+                    // It posts as someone would: a face, round.
+                    leading: ExcludeSemantics(
+                      child: UserAvatar(name: w.name, url: w.avatarUrl, size: 48),
+                    ),
+                    title: w.name,
+                    snippet: 'Posts in #${w.roomName}',
+                    detail: 'Double tap for options',
+                    onTap: () => _options(w),
+                  ),
+              ],
+            ),
         ],
       );
     },
@@ -3281,28 +3659,35 @@ class _SpaceStoragePageState extends State<SpaceStoragePage> {
         final s = snapshot.data;
         return AdminPage(
           title: 'Storage',
+          placeholder: snapshot.hasError
+              ? const EmptyState(asleep: true, text: 'Couldn’t load the storage')
+              : s == null
+              ? const Center(child: FCircularProgress())
+              : null,
           children: [
-            if (snapshot.hasError)
-              const ListNote('Couldn’t load the storage')
-            else if (s == null)
-              const Padding(
-                padding: EdgeInsets.all(24),
-                child: Center(child: FCircularProgress()),
-              )
-            else ...[
+            if (s != null) ...[
               Cushion(
                 padding: const EdgeInsets.all(16),
                 shadows: tokens.shadowRaised,
                 child: Semantics(
                   label: '${formatBytes(s.used)} used by ${s.files.length} files',
                   excludeSemantics: true,
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
+                  child: Row(
                     children: [
-                      Text(formatBytes(s.used), style: DuvetType.title.copyWith(color: colors.foreground)),
-                      Text(
-                        '${s.files.length} ${s.files.length == 1 ? 'file' : 'files'}',
-                        style: DuvetType.caption.copyWith(color: colors.mutedForeground),
+                      const AdminMark(FLucideIcons.database, size: 48),
+                      const SizedBox(width: 14),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(formatBytes(s.used), style: DuvetType.title.copyWith(color: colors.foreground)),
+                            const SizedBox(height: 2),
+                            Text(
+                              '${s.files.length} ${s.files.length == 1 ? 'file' : 'files'}',
+                              style: DuvetType.caption.copyWith(color: colors.mutedForeground),
+                            ),
+                          ],
+                        ),
                       ),
                     ],
                   ),
@@ -3310,31 +3695,95 @@ class _SpaceStoragePageState extends State<SpaceStoragePage> {
               ),
               if (s.buckets.isNotEmpty) ...[
                 const Overline('Kept in'),
-                AdminPanel(
-                  children: [
-                    for (final b in s.buckets)
-                      ListRow(
-                        title: b.name,
-                        snippet: [
-                          b.max == null
-                              ? '${formatBytes(b.used)} used'
-                              : '${formatBytes(b.used)} of ${formatBytes(b.max!)}',
-                          if (!b.active) 'off',
-                        ].join(' · '),
-                      ),
-                  ],
-                ),
+                AdminPanel(children: [for (final b in s.buckets) _BucketRow(bucket: b)]),
               ],
               const Overline('Largest files'),
               if (s.files.isEmpty)
-                const ListNote('No files yet')
+                const SizedBox(height: 240, child: EmptyState(text: 'No files yet'))
               else
-                for (final f in s.files.take(20))
-                  ListRow(title: f.name, snippet: '${formatBytes(f.size)} · ${shortTime(f.createdAt)}'),
+                AdminPanel(
+                  children: [
+                    for (final f in s.files.take(20))
+                      ListRow(
+                        leading: AdminMark(switch (f.contentType.split('/').first) {
+                          'image' => FLucideIcons.fileImage,
+                          'audio' => FLucideIcons.fileAudio,
+                          'video' => FLucideIcons.fileVideo,
+                          _ => FLucideIcons.file,
+                        }),
+                        title: f.name,
+                        snippet: '${formatBytes(f.size)} · ${shortTime(f.createdAt)}',
+                      ),
+                  ],
+                ),
             ],
           ],
         );
       },
+    );
+  }
+}
+
+/// A bucket the Space's files are kept in: its name, what it holds (of how
+/// much, and whether it's off), and with a size, a bar of it filled in ink,
+/// as the You tab's storage is: never hues.
+class _BucketRow extends StatelessWidget {
+  final ({String name, int used, int? max, bool active}) bucket;
+  const _BucketRow({required this.bucket});
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = context.theme.colors;
+    final b = bucket;
+    final max = b.max;
+    final detail = [
+      max == null ? '${formatBytes(b.used)} used' : '${formatBytes(b.used)} of ${formatBytes(max)}',
+      if (!b.active) 'off',
+    ].join(' · ');
+    return Semantics(
+      container: true,
+      label: '${b.name}, $detail',
+      excludeSemantics: true,
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(16, 12, 16, 14),
+        child: Row(
+          children: [
+            AdminMark(FLucideIcons.hardDrive, color: b.active ? null : colors.mutedForeground),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  Text(
+                    b.name,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: DuvetType.rowTitle.copyWith(color: b.active ? colors.foreground : colors.mutedForeground),
+                  ),
+                  Text(detail, style: DuvetType.caption.copyWith(color: colors.mutedForeground)),
+                  if (max != null && max > 0) ...[
+                    const SizedBox(height: 8),
+                    Container(
+                      height: 6,
+                      clipBehavior: Clip.antiAlias,
+                      decoration: BoxDecoration(
+                        color: colors.secondary,
+                        borderRadius: BorderRadius.circular(DuvetTokens.radiusChip),
+                      ),
+                      alignment: Alignment.centerLeft,
+                      child: FractionallySizedBox(
+                        widthFactor: (b.used / max).clamp(0.0, 1.0),
+                        heightFactor: 1,
+                        child: ColoredBox(color: b.active ? colors.foreground : colors.mutedForeground),
+                      ),
+                    ),
+                  ],
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
     );
   }
 }
