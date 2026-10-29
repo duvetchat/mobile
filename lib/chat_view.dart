@@ -76,7 +76,6 @@ class ChatView extends StatefulWidget {
   final String title;
 
   /// Tests pass their own; the app uses the system's photo picker and camera.
-  final MediaPicker? pickMedia;
 
   /// A message to open at, e.g. from a link to it.
   final String? jumpTo;
@@ -84,7 +83,7 @@ class ChatView extends StatefulWidget {
   /// A thread: this message's reply chain alone, the composer replying in it.
   final String? threadOf;
 
-  const ChatView({required this.target, required this.title, this.pickMedia, this.jumpTo, this.threadOf, super.key});
+  const ChatView({required this.target, required this.title, this.jumpTo, this.threadOf, super.key});
 
   /// Stands in for the system picker in chats [openChat] opens, in tests.
   @visibleForTesting
@@ -1255,7 +1254,7 @@ class _ChatViewState extends State<ChatView> {
       return;
     }
     try {
-      final picked = await (widget.pickMedia ?? ChatView.debugPickMedia ?? _pickWithImagePicker)(source);
+      final picked = await (ChatView.debugPickMedia ?? _pickWithImagePicker)(source);
       if (!mounted || picked.isEmpty) return;
       final added = picked.take(room).toList();
       setState(() => _files.addAll(added));

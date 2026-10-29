@@ -93,21 +93,10 @@ void main() {
     await pumpApp(tester, setUp: inGeneral);
     await openMembers(tester);
     expect(_banners(tester), {_noorBanner: 0.15, _samBanner: 0.09}, reason: 'none for those without one');
-    semantics.dispose();
-  });
-
-  testWidgets('only a look: the row reads as it did', (tester) async {
-    await pumpApp(tester, setUp: inGeneral);
-    await openMembers(tester);
+    // Only a look: the row reads as it did.
     expect(find.bySemanticsLabel('Noor, Online · @noor'), findsOneWidget);
-    semantics.dispose();
-  });
-
-  testWidgets('decoded once, at one size whatever the row: half the screen\'s pixels, never past the upload\'s', (
-    tester,
-  ) async {
-    await pumpApp(tester, setUp: inGeneral);
-    await openMembers(tester);
+    // Decoded once, at one size whatever the row: half the screen's pixels,
+    // never past the upload's.
     for (final image in _shown(tester).values) {
       final resized = image.image as ResizeImage;
       expect(resized.width, (390 * 3 / 2).round());

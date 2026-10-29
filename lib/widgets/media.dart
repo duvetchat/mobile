@@ -484,16 +484,12 @@ class VideoPage extends StatefulWidget {
   final MessageAttachment attachment;
   const VideoPage({required this.attachment, super.key});
 
-  /// Builds the controller; tests swap in their own.
-  @visibleForTesting
-  static VideoPlayerController Function(Uri url) controllerFor = VideoPlayerController.networkUrl;
-
   @override
   State<VideoPage> createState() => _VideoPageState();
 }
 
 class _VideoPageState extends State<VideoPage> {
-  late final VideoPlayerController _controller = VideoPage.controllerFor(Uri.parse(widget.attachment.url));
+  late final VideoPlayerController _controller = VideoPlayerController.networkUrl(Uri.parse(widget.attachment.url));
   Object? _error;
   double _drag = 0;
 

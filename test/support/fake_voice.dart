@@ -165,9 +165,6 @@ class FakePeer implements VoicePeer {
   bool receiving = true;
   AudioLevels levels = (local: null, remote: const {});
 
-  /// Holds setRemoteDescription while set.
-  Completer<void>? holdRemote;
-
   /// The gateway's offers fail to apply while set.
   bool failOffers = false;
 
@@ -199,7 +196,6 @@ class FakePeer implements VoicePeer {
 
   @override
   Future<void> setRemoteDescription(duvet.SessionDescription description) async {
-    if (holdRemote case final hold?) await hold.future;
     if (failOffers && description.type == 'offer') throw StateError('can’t apply ${description.sdp}');
     log.add('remote ${description.type} ${description.sdp}');
   }

@@ -31,15 +31,14 @@ class EmojiCatalog {
 
   /// Loads the bundled set once.
   static Future<EmojiCatalog> load([AssetBundle? bundle]) =>
-      _loading ??= (bundle ?? rootBundle).loadString('assets/emoji.json').then(parse);
+      _loading ??= (bundle ?? rootBundle).loadString('assets/emoji.json').then(_parse);
 
   /// Hands out [catalog] at once: a test loads the asset off its fake clock,
   /// where a plain future's callbacks wouldn't run.
   @visibleForTesting
   static void debugUse(EmojiCatalog catalog) => _loading = SynchronousFuture(catalog);
 
-  @visibleForTesting
-  static EmojiCatalog parse(String json) {
+  static EmojiCatalog _parse(String json) {
     final data = jsonDecode(json) as Map<String, dynamic>;
     return EmojiCatalog([
       for (final c in data['categories'] as List)

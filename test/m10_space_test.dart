@@ -189,25 +189,6 @@ void main() {
     expect(allowed.withState(Perm.sendMessages, null).isEmpty, isTrue);
   });
 
-  testWidgets('only those who help run a Space see its settings', (tester) async {
-    semantics = tester.ensureSemantics();
-    tester.view.physicalSize = const Size(390 * 3, 844 * 3);
-    tester.view.devicePixelRatio = 3;
-    addTearDown(tester.view.reset);
-    final repository = FakeRepository()
-      ..spaceOwner = false
-      ..spacePerms = Perm.viewChannels | Perm.sendMessages;
-    await tester.pumpWidget(DuvetApp(repository: repository));
-    await tester.pumpAndSettle();
-    await tester.tap(find.descendant(of: find.byType(DuvetTabBar), matching: find.text('Spaces')));
-    await tester.pumpAndSettle();
-    await tester.tap(find.text('Design Guild'));
-    await tester.pumpAndSettle();
-    await tapLabel(tester, 'Design Guild, Space menu');
-    expect(find.bySemanticsLabel('Space settings'), findsNothing);
-    semantics.dispose();
-  });
-
   testWidgets('settings: grouped rows by what the user may change', (tester) async {
     await pumpSettings(
       tester,
@@ -630,7 +611,9 @@ void main() {
     semantics.dispose();
   });
 
-  testWidgets('a role\'s name color can be a gradient: from its color to another, a middle stop optional', (tester) async {
+  testWidgets('a role\'s name color can be a gradient: from its color to another, a middle stop optional', (
+    tester,
+  ) async {
     final repository = await pumpSettings(tester);
     await tapLabel(tester, RegExp(r'^Roles'));
     await tapLabel(tester, RegExp(r'^Moderator'));

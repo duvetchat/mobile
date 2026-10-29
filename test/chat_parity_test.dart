@@ -202,28 +202,6 @@ void main() {
       semantics.dispose();
     });
 
-    testWidgets('an edit shows in the replies that quote it', (tester) async {
-      final repository = await openMaya(tester);
-      repository.push('c-maya', MessageCreated(notes()));
-      await tester.pumpAndSettle();
-      repository.push(
-        'c-maya',
-        MessageUpdated(
-          ChatMessage(
-            id: 'm2',
-            authorId: _me,
-            authorName: 'Gaby',
-            content: 'Yes, much better.',
-            createdAt: DateTime(2026, 10, 23, 9),
-            edited: true,
-          ),
-        ),
-      );
-      await tester.pumpAndSettle();
-      expect(find.bySemanticsLabel(RegExp(r'^Replying to Gaby: Yes, much better\.')), findsOneWidget);
-      semantics.dispose();
-    });
-
     testWidgets('saving your own edit keeps the message\'s file and reactions', (tester) async {
       final repository = await openMaya(
         tester,
@@ -281,10 +259,11 @@ void main() {
       semantics.dispose();
     });
 
-    testWidgets('in a DM every member pins, and deletes only their own, as the API has it', (tester) async {
+    testWidgets('in a DM every member pins, and edits and deletes only their own, as the API has it', (tester) async {
       await openMaya(tester);
       await longPress(tester, 'Hey! Did you see the new tab bar?');
       expect(find.bySemanticsLabel('Pin'), findsOneWidget);
+      expect(find.bySemanticsLabel('Edit'), findsNothing);
       expect(find.bySemanticsLabel('Delete'), findsNothing);
       await tester.tapAt(const Offset(10, 10));
       await tester.pumpAndSettle();

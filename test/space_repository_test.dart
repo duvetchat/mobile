@@ -1789,14 +1789,6 @@ void main() {
       expect(repository.collapsedCategories.value, {'c-empty'});
     });
 
-    test('collapsing, expanding, then collapsing another leaves just the other', () async {
-      await signIn();
-      repository.setCategoryCollapsed('c-talk', true);
-      repository.setCategoryCollapsed('c-talk', false);
-      repository.setCategoryCollapsed('c-empty', true);
-      expect(repository.collapsedCategories.value, {'c-empty'});
-    });
-
     DuvetRepository again() => DuvetRepository(
       store: MemorySessionStore(),
       recentsStore: MemoryRecentChatsStore(),

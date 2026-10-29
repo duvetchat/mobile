@@ -767,10 +767,6 @@ void main() {
     semantics.dispose();
   });
 
-  test('the message text hook opens links', () {
-    expect(MessageText.openLink, isNotNull);
-  });
-
   testWidgets('pictures come from the gallery as before', (tester) async {
     ChatView.debugPickMedia = (source) async {
       expect(source, ImageSource.gallery);

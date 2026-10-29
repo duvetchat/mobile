@@ -77,15 +77,7 @@ void main() {
     expect(passwordStrength('correct horse battery 9!').score, 4);
   });
 
-  test('a moving GIF banner is cropped frame by frame and keeps moving', () {
-    final gif = img.Image(width: 100, height: 100)..frameDuration = 100;
-    gif.addFrame(img.Image(width: 100, height: 100)..frameDuration = 100);
-    final banner = img.decodeGif(bannerGif(img.encodeGif(gif), (x: 0, y: 30, w: 100, h: 40)))!;
-    expect(banner.numFrames, 2);
-    expect((banner.width, banner.height), (600, 240));
-  });
-
-  test('a moving GIF banner keeps each frame’s colours and time', () {
+  test('a moving GIF banner is cropped frame by frame, keeping each frame’s colours and time', () {
     // Three frames of one colour each, from a palette of its own, each shown
     // for a time of its own, as GIF makers write them.
     img.Image frame(int r, int g, int b, int ms) => img.Image(width: 100, height: 100, withPalette: true)
@@ -100,6 +92,7 @@ void main() {
       [(220, 30, 30), (30, 200, 60), (40, 80, 230)],
     );
     expect([for (final f in banner.frames) f.frameDuration], [100, 400, 700]);
+    expect((banner.width, banner.height), (600, 240));
   });
 
   testWidgets('sign up: fields check themselves; the account verifies by its emailed link', (tester) async {

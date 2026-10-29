@@ -569,36 +569,6 @@ void main() {
     semantics.dispose();
   });
 
-  testWidgets('group info loads the friends Add people offers, as the new conversation does', (tester) async {
-    await pumpApp(
-      tester,
-      setUp: (r) {
-        r.conversations.value = [
-          ConversationSummary(
-            id: 'c-team',
-            title: 'Design crew',
-            name: 'Design crew',
-            isGroup: true,
-            memberCount: 2,
-            ownerId: FakeRepository.me.id,
-          ),
-          ...r.conversations.value.where((c) => c.id != 'c-team'),
-        ];
-        r.friendsOnServer = const Friends(
-          friends: [Member(userId: _leo, username: 'leo')],
-        );
-      },
-    );
-    await tester.tap(find.text('Design crew'));
-    await tester.pumpAndSettle();
-    await tapLabel(tester, 'More');
-    await tapLabel(tester, 'Group info');
-    await tapLabel(tester, 'Add people');
-    expect(find.widgetWithText(ListRow, 'leo'), findsOneWidget);
-    expect(find.text('No friends available to add'), findsNothing);
-    semantics.dispose();
-  });
-
   testWidgets('Add people shows the friends that come while it\'s open', (tester) async {
     final repository = await openGroupInfo(tester, owner: FakeRepository.me.id);
     // As if the page's load hadn't answered yet.

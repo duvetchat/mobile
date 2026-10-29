@@ -919,7 +919,6 @@ class FakeRepository implements ChatRepository {
       <
         ({ChatTarget target, String content, String nonce, List<OutgoingFile> files, Sticker? sticker, String? replyTo})
       >[];
-  final directMessagesOpened = <String>[];
   @override
   final ValueNotifier<Map<String, Presence>> presence = ValueNotifier({maya: Presence.online});
   @override
@@ -1203,7 +1202,6 @@ class FakeRepository implements ChatRepository {
 
   @override
   Future<ConversationSummary> directMessage(String userId) async {
-    directMessagesOpened.add(userId);
     if (dmDelay > Duration.zero) await Future<void>.delayed(dmDelay);
     if (dmRefused != null) throw ActionFailed(dmRefused!);
     return conversations.value.first;

@@ -532,15 +532,6 @@ void main() {
     semantics.dispose();
   });
 
-  testWidgets('others’ messages offer no edit or delete', (tester) async {
-    await openMaya(tester);
-    await longPress(tester, 'Hey! Did you see the new tab bar?');
-    expect(find.bySemanticsLabel('Edit'), findsNothing);
-    expect(find.bySemanticsLabel('Delete'), findsNothing);
-    expect(find.bySemanticsLabel('Reply'), findsWidgets);
-    semantics.dispose();
-  });
-
   testWidgets('reactions: chips read their count, a tap toggles, the quick bar adds, events update', (tester) async {
     final repository = await openMaya(
       tester,
