@@ -472,6 +472,40 @@ class Member {
 
 enum Presence { online, doNotDisturb, offline }
 
+/// What someone is doing, as an app of theirs tells the gateway: a game, or
+/// the song Spotify plays (the song in [details], the artist in [state]).
+class UserActivity {
+  final bool listening;
+  final String name;
+  final String? details;
+  final String? state;
+
+  /// When it ends: a song's.
+  final DateTime? ends;
+
+  const UserActivity({required this.name, this.listening = false, this.details, this.state, this.ends});
+
+  bool get spotify => listening && name == 'Spotify';
+
+  /// It in a line: the song and its artist, or what's played or listened to.
+  String get line {
+    if (spotify && details != null) return state != null ? '$details — $state' : details!;
+    return name;
+  }
+
+  /// [line] with what they're doing: listening to it, or playing it.
+  String get sentence => '${listening ? 'Listening to' : 'Playing'} $line';
+}
+
+// A song this long past its end is one whose app stopped updating it (closed,
+// asleep), not one still playing, as the desktop reads it.
+const _staleAfter = Duration(seconds: 30);
+
+/// The activity to show of [list]: the first but a Spotify song that ended a
+/// while ago.
+UserActivity? shownActivity(List<UserActivity>? list, DateTime now) =>
+    list?.where((a) => !a.spotify || a.ends == null || !now.isAfter(a.ends!.add(_staleAfter))).firstOrNull;
+
 /// The key [ChatRepository.presence] keeps a bot's presence in the Space
 /// [spaceId] under, as the desktop keys it: `userId:spaceId`.
 String spacePresenceKey(String userId, String spaceId) => '$userId:$spaceId';

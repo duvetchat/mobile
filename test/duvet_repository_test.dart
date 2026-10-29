@@ -1257,6 +1257,70 @@ void main() {
       expect(repository.spaces.value.single.onlineCount, 1);
     });
 
+    test('activities: SPACE_CREATE seeds them, USER_ACTIVITY_UPDATE replaces them, going offline drops them', () async {
+      await repository.logIn('gaby@duvet.chat', 'secret');
+      repository.handleEvent(
+        _event('SPACE_CREATE', {
+          ...space(statuses: {_maya: 1, _leo: 1}),
+          'activities': {
+            _maya: [
+              {
+                'type': 2,
+                'name': 'Spotify',
+                'details': 'Night Drive',
+                'state': 'Chromatics',
+                'timestamps': {'start': 1000, 'end': 2000},
+              },
+            ],
+            _leo: [
+              {'name': 'Hollow Knight'},
+            ],
+          },
+        }),
+      );
+      final maya = repository.activities.value[_maya]!.single;
+      expect(maya.spotify, isTrue);
+      expect(maya.sentence, 'Listening to Night Drive — Chromatics');
+      expect(maya.ends, DateTime.fromMillisecondsSinceEpoch(2000));
+      expect(repository.activities.value[_leo]!.single.sentence, 'Playing Hollow Knight');
+
+      repository.handleEvent(_event('USER_ACTIVITY_UPDATE', {'user_id': _leo, 'activities': <Object>[]}));
+      expect(repository.activities.value[_leo], isEmpty);
+
+      // A bot's status in one Space isn't theirs everywhere: it keeps them.
+      repository.handleEvent(_event('USER_STATUS_UPDATE', {'user_id': _maya, 'status_id': 0, 'space_id': 's-1'}));
+      expect(repository.activities.value, contains(_maya));
+      repository.handleEvent(_event('USER_STATUS_UPDATE', {'user_id': _maya, 'status_id': 0}));
+      expect(repository.activities.value, isNot(contains(_maya)));
+
+      // A new session starts again from the SPACE_CREATEs.
+      repository.handleEvent(
+        _event('USER_ACTIVITY_UPDATE', {
+          'user_id': _leo,
+          'activities': [
+            {'name': 'Celeste'},
+          ],
+        }),
+      );
+      repository.handleEvent(_event('READY', {'user': _user(_me, 'gaby'), 'sessionToken': 'ws'}));
+      await pumpEventQueue();
+      expect(repository.activities.value, isEmpty);
+    });
+
+    test('shownActivity skips a song that ended over 30 seconds ago', () {
+      final now = DateTime(2026, 10, 29, 12);
+      final song = UserActivity(
+        name: 'Spotify',
+        listening: true,
+        details: 'Song',
+        ends: now.subtract(const Duration(seconds: 31)),
+      );
+      const game = UserActivity(name: 'Celeste');
+      expect(shownActivity([song, game], now), same(game));
+      expect(shownActivity([song], now.subtract(const Duration(seconds: 2))), same(song));
+      expect(shownActivity(null, now), isNull);
+    });
+
     test('a member offline as the gateway connects counts once they come online', () async {
       await repository.logIn('gaby@duvet.chat', 'secret');
       repository.handleEvent(_event('SPACE_CREATE', space(statuses: {_me: 1}, members: [_me, _leo])));

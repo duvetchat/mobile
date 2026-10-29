@@ -815,7 +815,9 @@ class FakeRepository implements ChatRepository {
                 roomName: w.roomName,
                 name: name ?? w.name,
                 createdAt: w.createdAt,
-                avatarUrl: removeAvatar ? null : (avatarPath == null ? w.avatarUrl : 'https://example.invalid/hook.png'),
+                avatarUrl: removeAvatar
+                    ? null
+                    : (avatarPath == null ? w.avatarUrl : 'https://example.invalid/hook.png'),
               ),
     ];
   }
@@ -920,6 +922,8 @@ class FakeRepository implements ChatRepository {
   final directMessagesOpened = <String>[];
   @override
   final ValueNotifier<Map<String, Presence>> presence = ValueNotifier({maya: Presence.online});
+  @override
+  final ValueNotifier<Map<String, List<UserActivity>>> activities = ValueNotifier(const {});
   final reads = <(ChatTarget, String)>[];
 
   /// Completes sends when set; otherwise they answer at once.
@@ -1228,5 +1232,6 @@ class FakeRepository implements ChatRepository {
     _typing.close();
     recentChats.dispose();
     presence.dispose();
+    activities.dispose();
   }
 }

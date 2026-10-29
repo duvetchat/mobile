@@ -198,6 +198,9 @@ class DuvetRepository implements ChatRepository {
   @override
   final ValueNotifier<Map<String, Presence>> presence = ValueNotifier(const {});
 
+  @override
+  final ValueNotifier<Map<String, List<UserActivity>>> activities = ValueNotifier(const {});
+
   // Fetched once per session, by space or conversation ID.
   final _spaceMembers = <String, Future<List<Member>>>{};
   final _conversationMembers = <String, List<Member>>{};
@@ -416,6 +419,7 @@ class DuvetRepository implements ChatRepository {
     _stickers.clear();
     _uploadLimit = null;
     presence.value = const {};
+    activities.value = const {};
     latest.value = const {};
     unawaited(_recents.close());
     profile.value = null;
@@ -623,6 +627,9 @@ class DuvetRepository implements ChatRepository {
           for (final e in presence.value.entries)
             if (e.key == me) e.key: e.value,
         };
+        // The SPACE_CREATEs bring theirs again too, without those a
+        // USER_ACTIVITY_UPDATE missed meanwhile cleared.
+        activities.value = const {};
         // Profile changes made with no session went unheard: anyone's next
         // one reaches their messages, even with the name and avatar the one
         // before gave them.
@@ -698,6 +705,12 @@ class DuvetRepository implements ChatRepository {
         _spaceMemberIds[data.space.id] = {...data.memberRoles.keys, ...data.memberStatuses.keys};
         if (data.memberStatuses.isNotEmpty) {
           presence.value = {...presence.value, for (final e in data.memberStatuses.entries) e.key: _presence(e.value)};
+        }
+        if (data.activities.isNotEmpty) {
+          activities.value = {
+            ...activities.value,
+            for (final e in data.activities.entries) e.key: [for (final a in e.value) _activity(a)],
+          };
         }
         _publishSpaces();
       case duvet.SpaceUpdateEvent(:final data):
@@ -843,7 +856,18 @@ class DuvetRepository implements ChatRepository {
         if (_chosen(data.statusId) case final chosen? when data.userId == me && data.spaceId == null) {
           _choose(chosen);
         }
+        // Gone offline: the gateway dropped their activities too.
+        if (data.statusId == duvet.UserStatus.offline &&
+            data.spaceId == null &&
+            activities.value.containsKey(data.userId)) {
+          activities.value = {...activities.value}..remove(data.userId);
+        }
         if (_spaceMemberIds.values.any((ids) => ids.contains(data.userId))) _publishSpaces();
+      case duvet.UserActivityUpdatedEvent(:final data):
+        activities.value = {
+          ...activities.value,
+          data.userId: [for (final a in data.activities) _activity(a)],
+        };
       case duvet.SpaceEmojiCreatedEvent(:final data) || duvet.SpaceEmojiUpdatedEvent(:final data):
         _emojis.remove(data.spaceId);
       case duvet.SpaceEmojiDeletedEvent(:final data):
@@ -3001,6 +3025,14 @@ class DuvetRepository implements ChatRepository {
     return members;
   }
 
+  static UserActivity _activity(duvet.Activity a) => UserActivity(
+    name: a.name,
+    listening: a.type == duvet.ActivityType.listening,
+    details: a.details,
+    state: a.state,
+    ends: a.timestamps?.end == null ? null : DateTime.fromMillisecondsSinceEpoch(a.timestamps!.end!),
+  );
+
   static Presence _presence(duvet.UserStatus status) => switch (status) {
     duvet.UserStatus.online => Presence.online,
     duvet.UserStatus.dnd => Presence.doNotDisturb,
@@ -3255,6 +3287,7 @@ class DuvetRepository implements ChatRepository {
     typingNow.dispose();
     _recents.dispose();
     presence.dispose();
+    activities.dispose();
     collapsedCategories.dispose();
   }
 }
