@@ -842,16 +842,6 @@ class _SheetHeading extends StatelessWidget {
   );
 }
 
-/// A hairline across a sheet, between its actions and those that can't be
-/// undone, as a message's actions set Delete apart.
-class _SheetRule extends StatelessWidget {
-  const _SheetRule();
-
-  @override
-  Widget build(BuildContext context) =>
-      Container(height: 1, margin: const EdgeInsets.fromLTRB(16, 4, 16, 4), color: context.duvet.hairline);
-}
-
 void _toast(BuildContext context, String message) {
   if (!context.mounted) return;
   showFToast(context: context, title: Text(message), duration: const Duration(seconds: 3));
@@ -1141,7 +1131,7 @@ class _RoomsAdminPageState extends State<RoomsAdminPage> {
               onPressed: () => Navigator.of(context).pop('perms'),
             ),
           // What can't be undone, apart under the rest.
-          const _SheetRule(),
+          const SheetRule(),
           GlassRow(
             icon: FLucideIcons.trash2,
             label: 'Delete',
@@ -3238,7 +3228,7 @@ class _AssetsPageState extends State<AssetsPage> {
           SheetTitle(title: _kind == AssetKind.emoji ? ':${a.name}:' : a.name),
           GlassRow(icon: FLucideIcons.pencil, label: 'Rename', onPressed: () => Navigator.of(context).pop('rename')),
           // What can't be undone, apart under the rest.
-          const _SheetRule(),
+          const SheetRule(),
           GlassRow(
             icon: FLucideIcons.trash2,
             label: 'Delete',
@@ -3545,7 +3535,7 @@ class _WebhooksPageState extends State<WebhooksPage> {
             onPressed: () => Navigator.of(context).pop('reset'),
           ),
           // What can't be undone, apart under the rest.
-          const _SheetRule(),
+          const SheetRule(),
           GlassRow(
             icon: FLucideIcons.trash2,
             label: 'Delete',

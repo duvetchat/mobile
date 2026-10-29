@@ -80,174 +80,54 @@ class GlassMenuItem<T> {
   });
 }
 
-/// Opens a dropdown under (or, without room, over) the widget of
-/// [anchor]'s context, and answers the picked item's value, or null when
-/// dismissed. It's a route: back, a tap outside and a screen reader's
-/// dismiss gesture all close it, and focus stays inside while it's open.
-Future<T?> showGlassMenu<T>(BuildContext anchor, {required List<GlassMenuItem<T>> items, String label = 'Menu'}) {
-  return Navigator.of(anchor).push(_GlassMenuRoute<T>(anchor: anchor, items: items, label: label));
-}
-
-/// Where [anchor]'s widget is on screen now, or null once it's gone.
-Rect? _rectOf(BuildContext anchor) {
-  if (!anchor.mounted) return null;
-  final box = anchor.findRenderObject();
-  if (box is! RenderBox || !box.attached || !box.hasSize) return null;
-  return box.localToGlobal(Offset.zero) & box.size;
-}
-
-class _GlassMenuRoute<T> extends PopupRoute<T> {
-  /// The trigger, measured again as the screen changes: opening the menu
-  /// takes focus from a text field, the keyboard closes, and a trigger above
-  /// it (the composer's +) moves down. The menu follows.
-  final BuildContext anchor;
-  final List<GlassMenuItem<T>> items;
-  final String label;
-  _GlassMenuRoute({required this.anchor, required this.items, required this.label}) : _last = _rectOf(anchor)!;
-
-  Rect _last;
-
-  static const _width = 248.0;
-  static const _rowHeight = 52.0;
-  static const _gap = 8.0; // space-8 below the trigger
-  static const _margin = 16.0;
-
-  @override
-  Color? get barrierColor => Colors.transparent;
-
-  @override
-  bool get barrierDismissible => true;
-
-  @override
-  String get barrierLabel => 'Close ${label.toLowerCase()}';
-
-  @override
-  Duration get transitionDuration => DuvetTokens.dropdownIn;
-
-  @override
-  Duration get reverseTransitionDuration => DuvetTokens.panelOut;
-
-  // Where it opens: under the anchor when it fits, else over it.
-  ({Offset offset, bool below}) _place(Rect anchor, Size screen, EdgeInsets padding) {
-    final height = items.length * _rowHeight + 16;
-    final below =
-        anchor.bottom + _gap + height <= screen.height - padding.bottom - _margin ||
-        anchor.top - _gap - height < padding.top + _margin;
-    final top = below ? anchor.bottom + _gap : anchor.top - _gap - height;
-    // Aligned to the anchor's nearer edge, kept on screen.
-    final left = anchor.center.dx > screen.width / 2 ? anchor.right - _width : anchor.left;
-    return (offset: Offset(left.clamp(_margin, math.max(_margin, screen.width - _width - _margin)), top), below: below);
-  }
-
-  @override
-  Widget buildPage(BuildContext context, Animation<double> animation, Animation<double> secondaryAnimation) =>
-      _Following(route: this, builder: (context) => _menu(context, animation));
-
-  Widget _menu(BuildContext context, Animation<double> animation) {
-    final media = MediaQuery.of(context);
-    // The keyboard's space isn't room for it.
-    final (:offset, :below) = _place(
-      _last,
-      media.size,
-      media.padding + EdgeInsets.only(bottom: media.viewInsets.bottom),
-    );
-    return Stack(
-      children: [
-        Positioned(
-          left: offset.dx,
-          top: offset.dy,
-          width: _width,
-          child: _GlassMenuTransition(
-            animation: animation,
-            below: below,
-            child: Semantics(
-              label: label,
-              explicitChildNodes: true,
-              scopesRoute: true,
-              namesRoute: true,
-              child: GlassSurface(
-                child: Padding(
-                  padding: const EdgeInsets.all(8),
-                  child: Column(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      for (final item in items)
-                        GlassRow(
-                          icon: item.icon,
-                          label: item.label,
-                          hint: item.hint,
-                          destructive: item.destructive,
-                          onPressed: () => Navigator.of(context).pop(item.value),
-                        ),
-                    ],
-                  ),
-                ),
-              ),
-            ),
+/// Opens a menu of actions from the bottom, as every other sheet: [label] as
+/// its title, a row for each item, and what can't be undone apart under a
+/// rule. Answers the picked item's value, or null when dismissed: back, a tap
+/// outside, dragging it down and a screen reader's dismiss gesture all close
+/// it.
+Future<T?> showGlassMenu<T>(BuildContext anchor, {required List<GlassMenuItem<T>> items, String label = 'Menu'}) =>
+    showGlassDialogSheet<T>(
+      anchor,
+      label: label,
+      builder: (context) {
+        Widget row(GlassMenuItem<T> item) => GlassRow(
+          icon: item.icon,
+          label: item.label,
+          hint: item.hint,
+          destructive: item.destructive,
+          onPressed: () => Navigator.of(context).pop(item.value),
+        );
+        final kept = [
+          for (final item in items)
+            if (!item.destructive) item,
+        ];
+        final apart = [
+          for (final item in items)
+            if (item.destructive) item,
+        ];
+        return Padding(
+          padding: const EdgeInsets.only(bottom: 8),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              SheetTitle(title: label),
+              for (final item in kept) row(item),
+              if (kept.isNotEmpty && apart.isNotEmpty) const SheetRule(),
+              for (final item in apart) row(item),
+            ],
           ),
-        ),
-      ],
+        );
+      },
     );
-  }
-}
 
-/// Rebuilds a [_GlassMenuRoute]'s menu where its trigger is now: after each
-/// frame the screen's size or insets change in (the keyboard animating), it
-/// measures the trigger again, once laid out.
-class _Following extends StatefulWidget {
-  final _GlassMenuRoute<dynamic> route;
-  final WidgetBuilder builder;
-  const _Following({required this.route, required this.builder});
+/// A hairline across a sheet, setting what follows apart: what can't be undone.
+class SheetRule extends StatelessWidget {
+  const SheetRule({super.key});
 
   @override
-  State<_Following> createState() => _FollowingState();
-}
-
-class _FollowingState extends State<_Following> {
-  void _measure(Duration _) {
-    if (!mounted) return;
-    final now = _rectOf(widget.route.anchor);
-    if (now != null && now != widget.route._last) setState(() => widget.route._last = now);
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    // Depends on the screen's size and insets: a change rebuilds, then measures.
-    MediaQuery.sizeOf(context);
-    MediaQuery.viewInsetsOf(context);
-    WidgetsBinding.instance.addPostFrameCallback(_measure);
-    return widget.builder(context);
-  }
-}
-
-/// In: drops 8px and fades in on a spring with a ~2% overshoot. Out: fades on
-/// a deceleration. With animations off: a plain fade.
-class _GlassMenuTransition extends AnimatedWidget {
-  final bool below;
-  final Widget child;
-  const _GlassMenuTransition({required Animation<double> animation, required this.below, required this.child})
-    : super(listenable: animation);
-
-  @override
-  Widget build(BuildContext context) {
-    final animation = listenable as Animation<double>;
-    final reduce = MediaQuery.disableAnimationsOf(context);
-    final forward = animation.status != AnimationStatus.reverse;
-    final fade = (forward ? DuvetTokens.decelerate : Curves.easeOut).transform(animation.value);
-    if (reduce) return Opacity(opacity: fade, child: child);
-    final travel = forward ? DuvetTokens.overshoot.transform(animation.value) : 1.0;
-    return Opacity(
-      opacity: fade,
-      child: Transform.translate(
-        offset: Offset(0, (1 - travel) * (below ? -8 : 8)),
-        child: Transform.scale(
-          scale: 0.96 + 0.04 * travel,
-          alignment: below ? Alignment.topCenter : Alignment.bottomCenter,
-          child: child,
-        ),
-      ),
-    );
-  }
+  Widget build(BuildContext context) =>
+      Container(height: 1, margin: const EdgeInsets.fromLTRB(16, 4, 16, 4), color: context.duvet.hairline);
 }
 
 /// A pressable row in a menu or sheet: a 24px line icon and a label, at least 48px tall.

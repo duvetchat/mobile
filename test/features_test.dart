@@ -278,7 +278,7 @@ void main() {
 
       await tester.tap(find.bySemanticsLabel('Add photos, a sticker or a mention'));
       await tester.pumpAndSettle();
-      expect(find.bySemanticsLabel('Add to message'), findsOneWidget);
+      expect(find.text('Add to message'), findsOneWidget);
       await tester.tap(find.bySemanticsLabel('Sticker'));
       await tester.pumpAndSettle();
       await tester.tap(find.bySemanticsLabel('Sticker, wave'));
