@@ -382,9 +382,10 @@ class _TitleButton extends StatelessWidget {
   }
 }
 
-/// Picks a Space's icon; tests swap in their own.
+/// Picks a Space's icon as it is: resized, Android's picker would make a GIF
+/// a still JPEG. The cropper sizes it. Tests swap in their own.
 Future<String?> Function() pickSpaceIcon = () async =>
-    (await ImagePicker().pickImage(source: ImageSource.gallery, maxWidth: 512, imageQuality: 90))?.path;
+    (await ImagePicker().pickImage(source: ImageSource.gallery))?.path;
 
 /// New Space: a live preview of its card, a name (up to 64 characters), what
 /// it's about (up to 256), and Create.

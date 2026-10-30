@@ -630,7 +630,9 @@ void main() {
     semantics.dispose();
   });
 
-  testWidgets('a role\'s name color can be a gradient: from its color to another, a middle stop optional', (tester) async {
+  testWidgets('a role\'s name color can be a gradient: from its color to another, a middle stop optional', (
+    tester,
+  ) async {
     final repository = await pumpSettings(tester);
     await tapLabel(tester, RegExp(r'^Roles'));
     await tapLabel(tester, RegExp(r'^Moderator'));
@@ -1029,7 +1031,7 @@ void main() {
     semantics.dispose();
   });
 
-  testWidgets('a GIF too large to go up as it is goes up still, saying its animation is lost', (tester) async {
+  testWidgets('a GIF too large to go up as it is is cropped, saying so', (tester) async {
     final squares = <int>[];
     saveSquareImage = (path, crop, side) async {
       squares.add(side);
@@ -1042,7 +1044,7 @@ void main() {
     await tester.tap(find.bySemanticsLabel('Add emoji').last);
     await waitFor(tester, find.byType(InteractiveViewer));
     // Said under the frame while it's cropped.
-    expect(find.text('This GIF is over 256 KiB or 512 px, so it goes up still: its animation is lost'), findsOneWidget);
+    expect(find.text('This GIF is over 256 KiB or 512 px, so it goes up cropped and resized'), findsOneWidget);
     await tapLabel(tester, 'Use');
     await typeName(tester, 'dance');
     await tapLabel(tester, 'Add');
@@ -1063,8 +1065,8 @@ void main() {
     await tapLabel(tester, RegExp(r'^Emojis and stickers'));
     await tester.tap(find.bySemanticsLabel('Add emoji').last);
     await waitFor(tester, find.byType(InteractiveViewer));
-    // It has no animation to lose.
-    expect(find.textContaining('animation is lost'), findsNothing);
+    // It's cropped as a picture, nothing to say.
+    expect(find.textContaining('cropped and resized'), findsNothing);
     await tapLabel(tester, 'Use');
     await typeName(tester, 'dot');
     await tapLabel(tester, 'Add');
