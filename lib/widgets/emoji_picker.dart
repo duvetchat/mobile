@@ -696,7 +696,8 @@ class _GifTile extends StatelessWidget {
       onTap: onTap,
       child: AspectRatio(
         // Its own ratio, as the desktop's grid: a clamp would crop it.
-        aspectRatio: gif.height == 0 ? 1 : gif.width / gif.height,
+        // A provider's 0 for a side would make it 0 or infinite: AspectRatio throws.
+        aspectRatio: gif.width > 0 && gif.height > 0 ? gif.width / gif.height : 1,
         child: DecoratedBox(
           decoration: BoxDecoration(borderRadius: BorderRadius.circular(DuvetTokens.radiusField), boxShadow: shadow),
           child: ClipRRect(

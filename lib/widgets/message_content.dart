@@ -665,7 +665,7 @@ class _PictureState extends State<_Picture> {
     final colors = context.theme.colors;
     // Its own ratio, so the box fits the whole picture (the desktop's
     // object-contain): a clamp here would crop tall and wide ones.
-    final ratio = widget.square || a.width == null || a.height == null || a.height == 0 ? 1.0 : a.width! / a.height!;
+    final ratio = widget.square || (a.width ?? 0) <= 0 || (a.height ?? 0) <= 0 ? 1.0 : a.width! / a.height!;
     final height = math.min(widget.width / ratio, 320.0);
     final width = widget.square ? widget.width : math.min(widget.width, height * ratio);
     final still = MediaQuery.disableAnimationsOf(context) && !_playing;
@@ -966,9 +966,7 @@ class EmbedCard extends StatelessWidget {
     // The picture at its own ratio when known (so nothing is cropped), else
     // a banner; a GIF link's embed is only this, bare, up to the card's width.
     Widget picture(double w) {
-      final ratio = e.imageWidth != null && e.imageHeight != null && e.imageHeight! > 0
-          ? e.imageWidth! / e.imageHeight!
-          : null;
+      final ratio = (e.imageWidth ?? 0) > 0 && (e.imageHeight ?? 0) > 0 ? e.imageWidth! / e.imageHeight! : null;
       final height = ratio == null ? 140.0 : math.min(w / ratio, 320.0);
       return ClipRRect(
         borderRadius: BorderRadius.circular(DuvetTokens.radiusField),

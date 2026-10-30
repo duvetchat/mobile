@@ -102,8 +102,10 @@ class _Gifs implements GifSource {
   @override
   String get attribution => 'GIFs from KLIPY';
 
+  List<Gif> trend = const [party];
+
   @override
-  Future<List<Gif>> trending() async => const [party];
+  Future<List<Gif>> trending() async => trend;
 
   @override
   Future<List<Gif>> search(String query) async {
@@ -439,6 +441,22 @@ void main() {
     expect(gifs.searched, ['Celebrate']);
     await tapLabel(tester, 'GIF, party');
     expect(repository.sent.last.content, _Gifs.party.url);
+    semantics.dispose();
+  });
+
+  testWidgets('GIFs: one the provider sizes 0 wide shows square, not a crash', (tester) async {
+    final gifs = _Gifs()
+      ..trend = const [Gif(id: 'g2', url: 'https://static.klipy.com/flat.gif', preview: 'p', width: 0, height: 150)];
+    GifSource.instance = gifs;
+    final repository = await openMaya(tester);
+    await tapLabel(tester, 'Emoji and stickers');
+    await tester.tap(find.text('GIFs'));
+    await tester.pumpAndSettle();
+    expect(tester.takeException(), isNull);
+    final tile = tester.getSize(find.bySemanticsLabel('GIF'));
+    expect(tile.width, tile.height);
+    await tapLabel(tester, 'GIF');
+    expect(repository.sent.last.content, 'https://static.klipy.com/flat.gif');
     semantics.dispose();
   });
 

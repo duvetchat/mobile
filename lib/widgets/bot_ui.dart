@@ -183,6 +183,8 @@ class _BotComponentsState extends State<BotComponents> {
             child: Image.network(
               c.galleryUrls.single,
               width: 268,
+              // Decoded at its shown width: a big GIF's every frame at full size runs the phone out of memory.
+              cacheWidth: (268 * MediaQuery.devicePixelRatioOf(context)).round(),
               fit: BoxFit.contain,
               errorBuilder: (_, _, _) => const SizedBox.square(dimension: 128),
             ),
