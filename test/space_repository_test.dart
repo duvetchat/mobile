@@ -1982,6 +1982,34 @@ void main() {
       expect(repository.presence.value.containsKey(spacePresenceKey(bot, 's-2')), isFalse);
     });
 
+    test('a bot offline in the first Space to come stays so when the next has it online', () async {
+      await signIn();
+      repository.handleEvent(_event('SPACE_CREATE', withMembers(_spaceOf('s-2', 'Two'), {_maya: 1})));
+      repository.handleEvent(_event('SPACE_CREATE', withMembers(_space(), {_maya: 1, bot: 1})));
+      final presence = repository.presence.value;
+      expect(presenceIn(presence, bot, spaceId: 's-2'), Presence.offline);
+      expect(presenceIn(presence, bot, spaceId: 's-1'), Presence.online);
+    });
+
+    test('a person, the same in every Space, has no entry of their own in any', () async {
+      await signIn();
+      repository.handleEvent(_event('SPACE_CREATE', withMembers(_space(), {_maya: 1})));
+      repository.handleEvent(_event('SPACE_CREATE', withMembers(_spaceOf('s-2', 'Two'), {_maya: 1})));
+      expect(repository.presence.value.keys.where((k) => k.contains(':')), isEmpty);
+      expect(presenceIn(repository.presence.value, _leo, spaceId: 's-2'), Presence.offline);
+    });
+
+    test('someone leaving with no entry of their own there leaves presence alone', () async {
+      await signIn();
+      repository.handleEvent(_event('SPACE_CREATE', withMembers(_space(), {_maya: 1})));
+      var told = 0;
+      void tell() => told++;
+      repository.presence.addListener(tell);
+      addTearDown(() => repository.presence.removeListener(tell));
+      repository.handleEvent(_event('SPACE_MEMBER_REMOVE', {'space_id': 's-1', 'user_id': _maya, 'member_id': 'm'}));
+      expect(told, 0);
+    });
+
     test('a person\'s update reaches them in every Space', () async {
       await signIn();
       repository.handleEvent(_event('SPACE_CREATE', withMembers(_space(), {_maya: 1})));
