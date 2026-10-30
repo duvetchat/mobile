@@ -2510,7 +2510,7 @@ class _ChatViewState extends State<ChatView> {
   }
 
   /// The chat's start ([_ChatIntro]): a room's name and its Space (what it's
-  /// for is under the name above), with Invite people for those who may; a DM's person, their presence
+  /// for is under the name above), with Invite people for those who may; a DM's person, their handle
   /// and what they're doing, and the Spaces shared with them; a group's faces
   /// and names. Call where no call goes on here (its banner has Join).
   Widget _intro(BuildContext context) => ListenableBuilder(
@@ -2595,12 +2595,8 @@ class _ChatViewState extends State<ChatView> {
             ),
             title: widget.title,
             lines: [
-              if ([
-                    if (other != null && other.username.isNotEmpty) '@${other.username}',
-                    presenceText(presence),
-                  ].where((t) => t.isNotEmpty).toList()
-                  case final about when about.isNotEmpty)
-                Text(about.join('   ')),
+              // Their presence is the top bar's, right above.
+              if (other != null && other.username.isNotEmpty) Text('@${other.username}'),
               if (activity != null) ...[const SizedBox(height: 6), ActivityCard(activity: activity)],
               const SizedBox(height: 2),
               Text('This is the start of your conversation with ${widget.title}.'),
