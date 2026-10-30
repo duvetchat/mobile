@@ -11,7 +11,8 @@ import 'package:flutter/rendering.dart';
 /// picture at once, so whatever [key] shows can go right after. Nothing
 /// happens with reduced motion, or when [key] isn't on screen in a
 /// [RepaintBoundary]: then it's null, else done once the dust has gone, in
-/// [_cap] at most.
+/// [_cap] at most. The dust follows [key]'s place as its list scrolls, and
+/// goes with it, as when the chat closes.
 Future<void>? disintegrate(BuildContext context, GlobalKey key) {
   if (MediaQuery.disableAnimationsOf(context)) return null;
   final overlay = Overlay.maybeOf(context, rootOverlay: true);
@@ -20,7 +21,15 @@ Future<void>? disintegrate(BuildContext context, GlobalKey key) {
   if (overlay == null || boundary is! RenderRepaintBoundary || !boundary.hasSize || overlayBox is! RenderBox) {
     return null;
   }
-  final rect = MatrixUtils.transformRect(boundary.getTransformTo(overlayBox), Offset.zero & boundary.size);
+  // Where [key] is now; null once it's gone.
+  Rect? where() => switch (key.currentContext?.findRenderObject()) {
+    final RenderBox box when box.attached && box.hasSize && overlayBox.attached => MatrixUtils.transformRect(
+      box.getTransformTo(overlayBox),
+      Offset.zero & box.size,
+    ),
+    _ => null,
+  };
+  final rect = where()!;
   final scale = MediaQuery.devicePixelRatioOf(context);
   final ui.Image image;
   try {
@@ -42,12 +51,7 @@ Future<void>? disintegrate(BuildContext context, GlobalKey key) {
   }
 
   entry = OverlayEntry(
-    builder: (_) => Positioned.fromRect(
-      rect: rect,
-      child: IgnorePointer(
-        child: _Dust(image: image, scale: scale, onDone: finish),
-      ),
-    ),
+    builder: (_) => _Dust(image: image, scale: scale, rect: rect, where: where, onDone: finish),
   );
   overlay.insert(entry);
   // Not for ever, should its pixels never be read: else the picture would
@@ -77,15 +81,24 @@ class _Speck {
 /// few enough to draw every frame.
 const _size = 3.0;
 
+/// The most specks a picture makes: a bigger one makes bigger specks, as
+/// many squares a frame are too many to draw, and to work out first.
+const _maxSpecks = 2500;
+
 /// How long the sweep takes to cross, as a share of the whole.
 const _sweep = 0.45;
 
 /// The latest a speck sets off; each then takes the rest of the time.
 const _lastDelay = _sweep + 0.12;
 
-List<_Speck> _specks(ByteData rgba, int width, int height, double scale) {
+/// The specks of a picture [width] by [height] pixels, and their side in
+/// logical pixels.
+(List<_Speck>, double) _specks(ByteData rgba, int width, int height, double scale) {
   final random = Random();
-  final step = max(1, (_size * scale).round());
+  var step = max(max(1, (_size * scale).round()), sqrt(width * height / _maxSpecks).floor());
+  while ((width / step).ceil() * (height / step).ceil() > _maxSpecks) {
+    step++;
+  }
   final logicalWidth = width / scale;
   final specks = <_Speck>[];
   for (var y = 0; y < height; y += step) {
@@ -107,26 +120,52 @@ List<_Speck> _specks(ByteData rgba, int width, int height, double scale) {
       );
     }
   }
-  return specks;
+  return (specks, step / scale);
+}
+
+/// How many specks a fully opaque picture [width] by [height] pixels makes,
+/// and their side.
+@visibleForTesting
+(int, double) dustOf(int width, int height, double scale) {
+  final (specks, side) = _specks(
+    ByteData(width * height * 4)..buffer.asUint8List().fillRange(0, width * height * 4, 255),
+    width,
+    height,
+    scale,
+  );
+  return (specks.length, side);
 }
 
 /// The picture as it was until its pixels are read, then its specks.
 class _Dust extends StatefulWidget {
   final ui.Image image;
   final double scale;
+
+  /// Where the picture was taken, and where it is now: null once it's gone.
+  final Rect rect;
+  final Rect? Function() where;
   final VoidCallback onDone;
-  const _Dust({required this.image, required this.scale, required this.onDone});
+  const _Dust({
+    required this.image,
+    required this.scale,
+    required this.rect,
+    required this.where,
+    required this.onDone,
+  });
 
   @override
   State<_Dust> createState() => _DustState();
 }
 
-class _DustState extends State<_Dust> with SingleTickerProviderStateMixin {
+class _DustState extends State<_Dust> with TickerProviderStateMixin {
+  // Each frame, where its place is now, the pixels read or not.
+  late final _follow = createTicker((_) => setState(() {}))..start();
   late final _controller = AnimationController(vsync: this, duration: _duration)
     ..addStatusListener((s) {
       if (s == AnimationStatus.completed) widget.onDone();
     });
-  List<_Speck>? _found;
+  (List<_Speck>, double)? _found;
+  late Rect _rect = widget.rect;
 
   @override
   void initState() {
@@ -141,29 +180,48 @@ class _DustState extends State<_Dust> with SingleTickerProviderStateMixin {
       bytes = await image.toByteData();
     } catch (_) {}
     if (!mounted) return;
-    setState(() => _found = bytes == null ? const [] : _specks(bytes, image.width, image.height, widget.scale));
+    setState(
+      () =>
+          _found = bytes == null ? (const <_Speck>[], _size) : _specks(bytes, image.width, image.height, widget.scale),
+    );
     _controller.forward();
   }
 
   @override
   void dispose() {
+    _follow.dispose();
     _controller.dispose();
     widget.image.dispose();
     super.dispose();
   }
 
   @override
-  Widget build(BuildContext context) => switch (_found) {
-    null => RawImage(image: widget.image, scale: widget.scale),
-    final specks => CustomPaint(painter: _DustPainter(widget.image, specks, _controller)),
-  };
+  Widget build(BuildContext context) {
+    _follow;
+    if (widget.where() case final now?) {
+      _rect = now;
+    } else {
+      // Its place went, the chat with it: so does the dust, after this frame.
+      WidgetsBinding.instance.addPostFrameCallback((_) => widget.onDone());
+    }
+    return Positioned.fromRect(
+      rect: _rect,
+      child: IgnorePointer(
+        child: switch (_found) {
+          null => RawImage(image: widget.image, scale: widget.scale),
+          (final specks, final side) => CustomPaint(painter: _DustPainter(widget.image, specks, side, _controller)),
+        },
+      ),
+    );
+  }
 }
 
 class _DustPainter extends CustomPainter {
   final ui.Image image;
   final List<_Speck> specks;
+  final double speck;
   final Animation<double> t;
-  _DustPainter(this.image, this.specks, this.t) : super(repaint: t);
+  _DustPainter(this.image, this.specks, this.speck, this.t) : super(repaint: t);
 
   @override
   void paint(Canvas canvas, Size size) {
@@ -187,7 +245,7 @@ class _DustPainter extends CustomPainter {
       final p = ((t.value - s.delay) / (1 - _lastDelay)).clamp(0.0, 1.0);
       if (p <= 0 || p >= 1) continue;
       final eased = Curves.easeOutCubic.transform(p);
-      final side = _size * (1 - p * 0.6);
+      final side = speck * (1 - p * 0.6);
       paint.color = s.color.withValues(alpha: s.color.a * (1 - p));
       canvas.drawRect(s.origin + s.drift * eased & Size(side, side), paint);
     }
