@@ -112,9 +112,9 @@ Future<Uint8List> framedPng(String path, CropRect crop, int width, int height) a
 }
 
 /// [squarePng] in a file to upload, or [framedGif] for a moving GIF, named
-/// after the picture, as the desktop names it; answers its path. Each crop has a folder of its own: a picture
-/// shows by its path, so one saved where the last crop was would show as the
-/// last crop. Tests swap in their own.
+/// after the picture, as the desktop names it; answers its path. Each crop
+/// has a folder of its own: a picture shows by its path, so one saved where
+/// the last crop was would show as the last crop. Tests swap in their own.
 Future<String> Function(String path, CropRect crop, int side) saveSquareImage = (path, crop, side) async {
   final moving = (await gifAt(path))?.animated ?? false;
   // Off the UI thread: every frame is decoded and encoded again.
@@ -159,7 +159,7 @@ const avatarSide = 256;
 /// drawn [width] by [height] pixels, as a GIF: it stays moving, as the
 /// desktop keeps it.
 Uint8List framedGif(Uint8List gif, CropRect crop, int width, int height) {
-  img.Image? banner;
+  img.Image? moving;
   // Frame by frame: cropped whole, the animation would give every frame the
   // first's palette and time. The first frame holds the others, hence a copy
   // of it alone.
@@ -176,10 +176,10 @@ Uint8List framedGif(Uint8List gif, CropRect crop, int width, int height) {
       height: height,
       interpolation: img.Interpolation.average,
     );
-    banner?.addFrame(framed);
-    banner ??= framed;
+    moving?.addFrame(framed);
+    moving ??= framed;
   }
-  return img.encodeGif(banner!);
+  return img.encodeGif(moving!);
 }
 
 /// The banner [crop] frames in the picture at [path], in a file to upload;
