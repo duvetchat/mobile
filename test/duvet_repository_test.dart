@@ -109,6 +109,10 @@ void main() {
 
   /// Members of `s-1` besides Maya.
   late List<Map<String, dynamic>> moreSpaceMembers;
+  // Maya's status_id in c-1, as the API gives a conversation's members theirs.
+  int? mayaInConversation;
+  // An API since api#63 gives the friends list their banners.
+  late bool friendBanners;
 
   /// While set, holds that answer, as it was when asked.
   Completer<void>? holdAsking;
@@ -144,6 +148,8 @@ void main() {
     expiredToken = null;
     asking = [];
     moreSpaceMembers = [];
+    mayaInConversation = null;
+    friendBanners = false;
     holdAsking = null;
     pictureRefusal = null;
     meUnreachable = false;
@@ -214,6 +220,7 @@ void main() {
                   'user_id': id,
                   'created_at': _at,
                   'updated_at': _at,
+                  if (id == _maya) 'status_id': ?mayaInConversation,
                   'user': {
                     'id': id,
                     'username': name,
@@ -244,6 +251,7 @@ void main() {
               'recipient_id': id,
               'user_username': name,
               'status_id': status,
+              if (friendBanners && name == 'leo') 'user_banner': _banner,
             },
         ],
         ('GET', '/api/users/@me/friends/requests/sent') => <Object>[],
@@ -412,6 +420,31 @@ void main() {
     repository.presence.value = {_leo: Presence.online};
     await repository.loadFriends();
     expect(repository.presence.value, {_leo: Presence.online, _maya: Presence.doNotDisturb});
+  });
+
+  test('a DM\'s or a group\'s members have their presence, where the gateway hasn\'t told it (#86)', () async {
+    mayaInConversation = 1;
+    await repository.logIn('gaby@duvet.chat', 'secret');
+    await pumpEventQueue();
+    expect(repository.presence.value[_maya], Presence.online);
+    // One added later: as CONVERSATION_MEMBER_ADD has it.
+    repository.handleEvent(
+      _event('CONVERSATION_MEMBER_ADD', {
+        'conversation_id': 'c-1',
+        'user_id': _leo,
+        'member_id': 'm-leo',
+        'status_id': 2,
+      }),
+    );
+    expect(repository.presence.value[_leo], Presence.doNotDisturb);
+  });
+
+  test('friends come with their banner from the friends list (#127)', () async {
+    friendBanners = true;
+    await repository.logIn('gaby@duvet.chat', 'secret');
+    await repository.loadFriends();
+    final leo = repository.friends.value.friends.firstWhere((m) => m.userId == _leo);
+    expect(leo.bannerUrl, endsWith(_banner));
   });
 
   test('READY loads the friend requests, and FRIEND_* events keep them current', () async {
@@ -1330,17 +1363,22 @@ void main() {
 
       // Back after a drop too long to resume, during which Leo went offline.
       repository.handleConnectionState(duvet.GatewayConnectionState.reconnecting);
+      // Everyone's own, not their entries in single Spaces.
+      Map<String, Presence> people() => {
+        for (final e in repository.presence.value.entries)
+          if (!e.key.contains(':')) e.key: e.value,
+      };
       repository.handleEvent(_event('READY', {'user': _user(_me, 'gaby'), 'sessionToken': 'ws2'}));
-      expect(repository.presence.value, {_me: Presence.online});
+      expect(people(), {_me: Presence.online});
       expect(repository.spaces.value.single.onlineCount, 1);
+      // Leo isn't connected: a member it doesn't name is offline (#87).
       repository.handleEvent(_event('SPACE_CREATE', space(statuses: {_maya: 1, _me: 1}, members: members)));
-      expect(repository.presence.value, {_me: Presence.online, _maya: Presence.online});
+      expect(people(), {_me: Presence.online, _maya: Presence.online, _leo: Presence.offline});
       expect(repository.spaces.value.single.onlineCount, 2);
 
-      // The friends list fills in whom the gateway didn't name; what it says
-      // is newer.
+      // The friends list changes none of it: what the gateway says is newer.
       await pumpEventQueue();
-      expect(repository.presence.value, {_me: Presence.online, _maya: Presence.online, _leo: Presence.offline});
+      expect(people(), {_me: Presence.online, _maya: Presence.online, _leo: Presence.offline});
     });
 
     test('mentions: counted from READY and MENTION_CREATE, cleared on reading', () async {

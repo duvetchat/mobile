@@ -1932,4 +1932,93 @@ void main() {
       expect(back.rooms.single.description, isNull);
     });
   });
+  group('presence', () {
+    const bot = '00000000-0000-4000-8000-000000000009';
+    // [_space] or another Space of the user's, with Maya, Leo and a bot.
+    Map<String, dynamic> withMembers(Map<String, dynamic> space, Map<String, int> statuses) {
+      final id = (space['space'] as Map)['id'] as String;
+      return {
+        ...space,
+        'member_roles': <String, dynamic>{
+          ...space['member_roles'] as Map<String, dynamic>,
+          for (final u in [_maya, _leo, bot]) u: [id],
+        },
+        'member_statuses': statuses,
+      };
+    }
+
+    test('a loaded Space\'s member it doesn\'t list as connected is offline', () async {
+      await signIn();
+      repository.handleEvent(_event('SPACE_CREATE', withMembers(_space(), {_maya: 1})));
+      final presence = repository.presence.value;
+      expect(presenceIn(presence, _maya, spaceId: 's-1'), Presence.online);
+      expect(presenceIn(presence, _leo, spaceId: 's-1'), Presence.offline);
+      expect(presence[_leo], Presence.offline);
+    });
+
+    test('a bot\'s status is its own in each Space', () async {
+      await signIn();
+      repository.handleEvent(_event('SPACE_CREATE', withMembers(_space(), {_maya: 1, bot: 1})));
+      repository.handleEvent(_event('SPACE_CREATE', withMembers(_spaceOf('s-2', 'Two'), {_maya: 1, bot: 1})));
+      // Its shard holding s-2 goes, and it joins a Space no shard holds.
+      repository.handleEvent(_event('USER_STATUS_UPDATE', {'user_id': bot, 'status_id': 0, 'space_id': 's-2'}));
+      repository.handleEvent(
+        _event('SPACE_MEMBER_ADD', {
+          'space_id': 's-3',
+          'user_id': bot,
+          'member_id': 'mem-bot',
+          'status_id': 0,
+          'user': _user(bot, 'helper', bot: true),
+        }),
+      );
+      var presence = repository.presence.value;
+      expect(presenceIn(presence, bot, spaceId: 's-1'), Presence.online);
+      expect(presenceIn(presence, bot, spaceId: 's-2'), Presence.offline);
+      expect(presenceIn(presence, bot, spaceId: 's-3'), Presence.offline);
+      expect(presence[bot], Presence.online);
+
+      // Gone with the Space it left.
+      repository.handleEvent(_event('SPACE_MEMBER_REMOVE', {'space_id': 's-2', 'user_id': bot, 'member_id': 'm'}));
+      expect(repository.presence.value.containsKey(spacePresenceKey(bot, 's-2')), isFalse);
+    });
+
+    test('a person\'s update reaches them in every Space', () async {
+      await signIn();
+      repository.handleEvent(_event('SPACE_CREATE', withMembers(_space(), {_maya: 1})));
+      repository.handleEvent(_event('USER_STATUS_UPDATE', {'user_id': _maya, 'status_id': 2}));
+      repository.handleEvent(_event('USER_STATUS_UPDATE', {'user_id': _leo, 'status_id': 1}));
+      final presence = repository.presence.value;
+      expect(presenceIn(presence, _maya, spaceId: 's-1'), Presence.doNotDisturb);
+      expect(presenceIn(presence, _leo, spaceId: 's-1'), Presence.online);
+    });
+  });
+
+  group('read states after READY', () {
+    Map<String, dynamic> state(bool unread, {String? lastMsg}) => {
+      'unread': unread,
+      'last_read': null,
+      'last_msg': lastMsg,
+    };
+
+    test('a later SPACE_CREATE\'s and a ROOM_CREATE\'s mark the rooms as READY\'s would', () async {
+      await signIn();
+      repository.handleEvent(
+        _event('SPACE_CREATE', {
+          ..._space(rooms: {'r-general': _room('r-general'), 'r-quiet': _room('r-quiet')}),
+          'read_states': {'r-general': state(true), 'r-quiet': state(false)},
+        }),
+      );
+      expect(repository.unread.value, {'r-general'});
+      repository.handleEvent(_event('ROOM_CREATE', {..._room('r-new'), 'read_state': state(true)}));
+      expect(repository.unread.value, {'r-general', 'r-new'});
+    });
+
+    test('one without them changes nothing', () async {
+      await signIn();
+      repository.handleEvent(_event('SPACE_CREATE', _space()));
+      repository.handleEvent(_event('ROOM_CREATE', {..._room('r-general'), 'read_state': state(true)}));
+      repository.handleEvent(_event('SPACE_CREATE', _space()));
+      expect(repository.unread.value, {'r-general'});
+    });
+  });
 }
