@@ -654,10 +654,7 @@ class _ThinkingState extends State<_Thinking> {
         ],
       );
     }
-    return Text(
-      '${widget.name} is thinking…',
-      style: DuvetType.body.copyWith(color: colors.mutedForeground, fontStyle: FontStyle.italic),
-    );
+    return Text('${widget.name} is thinking…', style: DuvetType.body.copyWith(color: colors.mutedForeground));
   }
 }
 
@@ -815,7 +812,7 @@ class _ReplyRef extends StatelessWidget {
                   'Original message was deleted',
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
-                  style: DuvetType.caption.copyWith(color: colors.mutedForeground, fontStyle: FontStyle.italic),
+                  style: DuvetType.caption.copyWith(color: colors.mutedForeground),
                 ),
               ),
             ],

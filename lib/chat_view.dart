@@ -2447,7 +2447,7 @@ class _ChatViewState extends State<ChatView> {
     // A thread starts at its first message, which says what it's about.
     final intro = widget.threadOf == null && !_hasOlder && !_loadingOlder;
     if (_entries.isEmpty) {
-      if (!intro) return const EmptyState(text: 'No messages yet. Say hi!');
+      if (!intro) return const EmptyState(text: 'No replies yet');
       return ListView(
         reverse: true,
         padding: EdgeInsets.fromLTRB(16, top + 8, 16, _composerHeight + 8),
