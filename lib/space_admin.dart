@@ -4,6 +4,7 @@ import 'dart:isolate';
 import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
+import 'package:flutter/rendering.dart' show ViewportOffset;
 import 'package:flutter/semantics.dart';
 import 'package:flutter/services.dart';
 import 'package:forui/forui.dart';
@@ -911,6 +912,31 @@ class RoomsAdminPage extends StatefulWidget {
 class _RoomsAdminPageState extends State<RoomsAdminPage> {
   List<AdminRoom> get _all => context.repository.adminRooms(widget.spaceId);
 
+  /// The room a drag holds, by ID from the drag's start: the page rebuilds
+  /// on every room event, so by the drop another room may be at its index.
+  String? _held;
+  int? _heldFrom;
+
+  void _hold(List<AdminRoom> list, int i) {
+    _held = list[i].id;
+    _heldFrom = i;
+  }
+
+  // Dropped where it was, no move follows to take the held room: let go of
+  // it, or a screen reader's next move would take it.
+  void _droppedAt(int at) {
+    if (at == _heldFrom || at == _heldFrom! + 1) _held = null;
+  }
+
+  /// The room to move in [list] as it is now: the held one, null when it
+  /// went meanwhile, or with no drag (a screen reader's move) the one at
+  /// [from], which is of this list.
+  AdminRoom? _heldIn(List<AdminRoom> list, int from) {
+    final held = _held;
+    _held = null;
+    return held == null ? list[from] : list.where((r) => r.id == held).firstOrNull;
+  }
+
   /// What to make, then its name and, for a room, its category.
   Future<void> _create() async {
     final kind = await showGlassDialogSheet<AdminRoomKind>(
@@ -1184,16 +1210,15 @@ class _RoomsAdminPageState extends State<RoomsAdminPage> {
       child: Transform.scale(scale: 1.02, child: child),
     );
 
-    // One place's rooms, to reorder there.
-    Widget rooms(List<AdminRoom> list, String? parent) => ReorderableListView.builder(
-      shrinkWrap: true,
-      physics: const NeverScrollableScrollPhysics(),
-      padding: EdgeInsets.zero,
-      buildDefaultDragHandles: false,
+    Widget roomList(List<AdminRoom> list, String? parent) => SliverReorderableList(
       itemCount: list.length,
+      onReorderStart: (i) => _hold(list, i),
+      onReorderEnd: _droppedAt,
       onReorderItem: (from, to) {
-        if (!manages(list[from])) return _cantMove(list[from]);
-        if (from != to) _move(list[from], [...list]..removeAt(from), to, parent: parent);
+        final held = _heldIn(list, from);
+        if (held == null) return;
+        if (!manages(held)) return _cantMove(held);
+        if (list.indexOf(held) != to) _move(held, [...list]..remove(held), to, parent: parent);
       },
       proxyDecorator: liftRow,
       itemBuilder: (context, i) {
@@ -1226,6 +1251,16 @@ class _RoomsAdminPageState extends State<RoomsAdminPage> {
             ? ReorderableDelayedDragStartListener(key: ValueKey(r.id), index: i, child: body)
             : KeyedSubtree(key: ValueKey(r.id), child: body);
       },
+    );
+
+    // One place's rooms, to reorder there. In a viewport that doesn't
+    // scroll, not a list of its own: a drag scrolls the nearest Scrollable,
+    // the page's, so a room goes past the screen's edge in one drag. A node
+    // of their own, as a list's is: else a category's moves would be offered
+    // again around each of its rooms.
+    Widget rooms(List<AdminRoom> list, String? parent) => Semantics(
+      container: true,
+      child: ShrinkWrappingViewport(offset: ViewportOffset.zero(), slivers: [roomList(list, parent)]),
     );
 
     // A category and its rooms, on one panel: they move together.
@@ -1318,9 +1353,13 @@ class _RoomsAdminPageState extends State<RoomsAdminPage> {
               header: loose.isEmpty ? null : panel(rooms(loose, null)),
               itemCount: categories.length,
               itemBuilder: (context, i) => block(i),
+              onReorderStart: (i) => _hold(categories, i),
+              onReorderEnd: _droppedAt,
               onReorderItem: (from, to) {
-                if (!manages(categories[from])) return _cantMove(categories[from]);
-                if (from != to) _move(categories[from], [...categories]..removeAt(from), to);
+                final held = _heldIn(categories, from);
+                if (held == null) return;
+                if (!manages(held)) return _cantMove(held);
+                if (categories.indexOf(held) != to) _move(held, [...categories]..remove(held), to);
               },
               proxyDecorator: liftPanel,
             ),

@@ -539,6 +539,34 @@ void main() {
     });
   });
 
+  testWidgets('rooms: a room dragged to the screen\'s edge in a tall category scrolls the page (#57)', (tester) async {
+    final repository = await pumpSettings(
+      tester,
+      setUp: (r) => r.adminRoomList['s-guild'] = [
+        const AdminRoom(id: 'c-work', name: 'Work', kind: AdminRoomKind.category),
+        for (var i = 0; i < 40; i++)
+          AdminRoom(id: 'r-$i', name: 'room$i', kind: AdminRoomKind.text, parentId: 'c-work', position: i),
+      ],
+    );
+    await tapLabel(tester, RegExp(r'^Rooms'));
+    final page = tester.state<ScrollableState>(find.byType(Scrollable).first).position;
+    expect(page.pixels, 0);
+    final drag = await tester.startGesture(tester.getCenter(find.text('# room0', findRichText: true)));
+    await tester.pump(const Duration(seconds: 1));
+    // Held at the bottom edge: the page scrolls under it.
+    await drag.moveTo(Offset(200, tester.getSize(find.byType(MaterialApp)).height - 4));
+    for (var i = 0; i < 30; i++) {
+      await tester.pump(const Duration(milliseconds: 50));
+    }
+    expect(page.pixels, greaterThan(0));
+    await drag.up();
+    await tester.pumpAndSettle();
+    // Dropped far down, past where the screen first ended.
+    final dropped = RegExp(r'^room> r-0 c-work (\d+)$').firstMatch(repository.admin.last);
+    expect(int.parse(dropped!.group(1)!), greaterThan(10));
+    semantics.dispose();
+  });
+
   testWidgets('rooms: ManageChannels counts in each room; making one takes it in the Space', (tester) async {
     await pumpSettings(
       tester,
