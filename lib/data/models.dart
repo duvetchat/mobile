@@ -505,7 +505,7 @@ class Member {
 
 enum Presence { online, doNotDisturb, offline }
 
-/// The key [ChatRepository.presence] keeps a bot's presence in the Space
+/// The key [ChatRepository.presence] keeps a member's presence in the Space
 /// [spaceId] under, as the desktop keys it: `userId:spaceId`.
 String spacePresenceKey(String userId, String spaceId) => '$userId:$spaceId';
 

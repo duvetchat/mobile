@@ -1,9 +1,11 @@
 import 'dart:async';
 import 'dart:io';
 import 'dart:isolate';
+import 'dart:math' show max, min;
 import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
+import 'package:flutter/rendering.dart' show RenderAbstractViewport, ViewportOffset;
 import 'package:flutter/semantics.dart';
 import 'package:flutter/services.dart';
 import 'package:forui/forui.dart';
@@ -911,6 +913,46 @@ class RoomsAdminPage extends StatefulWidget {
 class _RoomsAdminPageState extends State<RoomsAdminPage> {
   List<AdminRoom> get _all => context.repository.adminRooms(widget.spaceId);
 
+  /// The room a drag holds, by ID from the drag's start: the page rebuilds
+  /// on every room event, so by the drop another room may be at its index.
+  String? _held;
+  int? _heldFrom;
+
+  /// The rooms a held room is among, by category ('' for those in none),
+  /// until the finger lifts: the page scrolls no further than shows them
+  /// ([_HeldRoomsPhysics]). Null while no room is held.
+  String? _heldAmong;
+  final _roomLists = <String, GlobalKey>{};
+
+  void _hold(List<AdminRoom> list, int i) {
+    _held = list[i].id;
+    _heldFrom = i;
+  }
+
+  /// How far the page may scroll while a room is held: from where the start
+  /// of its rooms shows to where their end does.
+  (double, double)? _heldRange() {
+    final box = _roomLists[_heldAmong]?.currentContext?.findRenderObject();
+    if (box is! RenderBox || !box.attached) return null;
+    final viewport = RenderAbstractViewport.maybeOf(box);
+    if (viewport == null) return null;
+    final start = viewport.getOffsetToReveal(box, 0).offset;
+    final end = viewport.getOffsetToReveal(box, 1).offset;
+    return (min(start, end), max(start, end));
+  }
+
+  /// The room to move in [list] as it is now: the held one, null when it
+  /// went meanwhile, or else the one at [from]. A drop names the index its
+  /// drag began at; a screen reader's move names its own room's. So a room
+  /// held by a drag that was cancelled (a system gesture, the list changing),
+  /// which ends with no drop, only counts at that index, where it still is
+  /// unless the list changed.
+  AdminRoom? _heldIn(List<AdminRoom> list, int from) {
+    final held = from == _heldFrom ? _held : null;
+    _held = _heldFrom = null;
+    return held == null ? list[from] : list.where((r) => r.id == held).firstOrNull;
+  }
+
   /// What to make, then its name and, for a room, its category.
   Future<void> _create() async {
     final kind = await showGlassDialogSheet<AdminRoomKind>(
@@ -1184,16 +1226,17 @@ class _RoomsAdminPageState extends State<RoomsAdminPage> {
       child: Transform.scale(scale: 1.02, child: child),
     );
 
-    // One place's rooms, to reorder there.
-    Widget rooms(List<AdminRoom> list, String? parent) => ReorderableListView.builder(
-      shrinkWrap: true,
-      physics: const NeverScrollableScrollPhysics(),
-      padding: EdgeInsets.zero,
-      buildDefaultDragHandles: false,
+    Widget roomList(List<AdminRoom> list, String? parent) => SliverReorderableList(
       itemCount: list.length,
+      onReorderStart: (i) {
+        _hold(list, i);
+        _heldAmong = parent ?? '';
+      },
       onReorderItem: (from, to) {
-        if (!manages(list[from])) return _cantMove(list[from]);
-        if (from != to) _move(list[from], [...list]..removeAt(from), to, parent: parent);
+        final held = _heldIn(list, from);
+        if (held == null) return;
+        if (!manages(held)) return _cantMove(held);
+        if (list.indexOf(held) != to) _move(held, [...list]..remove(held), to, parent: parent);
       },
       proxyDecorator: liftRow,
       itemBuilder: (context, i) {
@@ -1226,6 +1269,17 @@ class _RoomsAdminPageState extends State<RoomsAdminPage> {
             ? ReorderableDelayedDragStartListener(key: ValueKey(r.id), index: i, child: body)
             : KeyedSubtree(key: ValueKey(r.id), child: body);
       },
+    );
+
+    // One place's rooms, to reorder there. In a viewport that doesn't
+    // scroll, not a list of its own: a drag scrolls the nearest Scrollable,
+    // the page's, so a room goes past the screen's edge in one drag. A node
+    // of their own, as a list's is: else a category's moves would be offered
+    // again around each of its rooms.
+    Widget rooms(List<AdminRoom> list, String? parent) => Semantics(
+      key: _roomLists.putIfAbsent(parent ?? '', GlobalKey.new),
+      container: true,
+      child: ShrinkWrappingViewport(offset: ViewportOffset.zero(), slivers: [roomList(list, parent)]),
     );
 
     // A category and its rooms, on one panel: they move together.
@@ -1312,19 +1366,51 @@ class _RoomsAdminPageState extends State<RoomsAdminPage> {
           : null,
       list: (padding) => all.isEmpty
           ? ListView(padding: padding, children: const [ListNote('No rooms yet')])
-          : ReorderableListView.builder(
-              padding: padding,
-              buildDefaultDragHandles: false,
-              header: loose.isEmpty ? null : panel(rooms(loose, null)),
-              itemCount: categories.length,
-              itemBuilder: (context, i) => block(i),
-              onReorderItem: (from, to) {
-                if (!manages(categories[from])) return _cantMove(categories[from]);
-                if (from != to) _move(categories[from], [...categories]..removeAt(from), to);
-              },
-              proxyDecorator: liftPanel,
+          : Listener(
+              // The finger lifted or taken: no room held any more.
+              onPointerUp: (_) => _heldAmong = null,
+              onPointerCancel: (_) => _heldAmong = null,
+              child: ReorderableListView.builder(
+                physics: _HeldRoomsPhysics(() => _heldAmong == null ? null : _heldRange()),
+                padding: padding,
+                buildDefaultDragHandles: false,
+                header: loose.isEmpty ? null : panel(rooms(loose, null)),
+                itemCount: categories.length,
+                itemBuilder: (context, i) => block(i),
+                onReorderStart: (i) => _hold(categories, i),
+                onReorderItem: (from, to) {
+                  final held = _heldIn(categories, from);
+                  if (held == null) return;
+                  if (!manages(held)) return _cantMove(held);
+                  if (categories.indexOf(held) != to) _move(held, [...categories]..remove(held), to);
+                },
+                proxyDecorator: liftPanel,
+              ),
             ),
     );
+  }
+}
+
+/// While a room is held, the page scrolls no further than shows the rooms
+/// it's among ([range]): the drag's autoscroll would carry it on, and their
+/// list, once scrolled off and dropped, would take the drag with it.
+class _HeldRoomsPhysics extends ScrollPhysics {
+  final (double, double)? Function() range;
+  const _HeldRoomsPhysics(this.range, {super.parent});
+
+  @override
+  _HeldRoomsPhysics applyTo(ScrollPhysics? ancestor) => _HeldRoomsPhysics(range, parent: buildParent(ancestor));
+
+  @override
+  double applyBoundaryConditions(ScrollMetrics position, double value) {
+    if (range() case (final start, final end)?) {
+      // Not past it, nor further away when it's already off.
+      final last = max(end, position.pixels);
+      final first = min(start, position.pixels);
+      if (value > last) return value - last;
+      if (value < first) return value - first;
+    }
+    return super.applyBoundaryConditions(position, value);
   }
 }
 
@@ -1494,8 +1580,13 @@ class _RoomPermissionsPageState extends State<RoomPermissionsPage> {
       context,
       label: 'Add a member',
       initialSize: 0.75,
-      builder: (context, scroll) =>
-          _MemberPicker(members: _loadingMembers!, loaded: _members, taken: taken, scroll: scroll),
+      builder: (context, scroll) => _MemberPicker(
+        spaceId: widget.spaceId,
+        members: _loadingMembers!,
+        loaded: _members,
+        taken: taken,
+        scroll: scroll,
+      ),
     );
     if (picked == null || !mounted) return;
     setState(() {
@@ -1787,13 +1878,21 @@ class _RoomPermissionsPageState extends State<RoomPermissionsPage> {
 /// The Space's members, searched by name, to give one their own permissions
 /// in a room; those with theirs already aren't offered. Answers the one picked.
 class _MemberPicker extends StatefulWidget {
+  /// Whose members they are: a bot's status here comes first.
+  final String spaceId;
   final Future<List<Member>> members;
 
   /// The members already had: shown at once, no spinner first.
   final List<Member>? loaded;
   final Set<String> taken;
   final ScrollController scroll;
-  const _MemberPicker({required this.members, required this.loaded, required this.taken, required this.scroll});
+  const _MemberPicker({
+    required this.spaceId,
+    required this.members,
+    required this.loaded,
+    required this.taken,
+    required this.scroll,
+  });
 
   @override
   State<_MemberPicker> createState() => _MemberPickerState();
@@ -1855,7 +1954,7 @@ class _MemberPickerState extends State<_MemberPicker> {
             for (final m in offered)
               PersonRow(
                 member: m,
-                presence: presenceIn(repository.presence.value, m.userId),
+                presence: presenceIn(repository.presence.value, m.userId, spaceId: widget.spaceId),
                 username: false,
                 onTap: () => Navigator.of(context).pop(m),
               ),

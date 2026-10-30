@@ -244,6 +244,7 @@ abstract interface class ChatRepository {
   /// Roles, highest first, @everyone last.
   List<SpaceRole> roles(String spaceId);
   Future<SpaceRole> createRole(String spaceId, String name);
+
   /// Changes what's given. [colors] replaces all of the role's colors: a
   /// stop left null is cleared.
   Future<void> updateRole(String spaceId, String roleId, {String? name, RoleColors? colors, int? perms, bool? hoisted});
@@ -369,8 +370,9 @@ abstract interface class ChatRepository {
   String? emojiNameOf(String emojiId);
 
   /// Who's online, by user ID, as the gateway reports it; someone missing
-  /// hasn't been reported this session. A bot's status in one Space, which
-  /// comes first there ([presenceIn]), is kept under [spacePresenceKey] too.
+  /// hasn't been reported this session. A member's status in one Space (a
+  /// bot's is its shard's there), which comes first there ([presenceIn]), is
+  /// kept under [spacePresenceKey] too.
   ValueListenable<Map<String, Presence>> get presence;
 
   /// The emoji the chat can use beyond Unicode's: its space's. None in DMs.
