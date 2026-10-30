@@ -4,6 +4,7 @@ import 'package:duvet/data/markdown.dart';
 import 'package:duvet/data/models.dart';
 import 'package:duvet/data/appearance.dart';
 import 'package:duvet/main.dart';
+import 'package:duvet/widgets/disintegrate.dart' show dustOf;
 import 'package:duvet/widgets/code_highlight.dart';
 import 'package:duvet/widgets/glass.dart';
 import 'package:duvet/widgets/message_content.dart';
@@ -75,6 +76,12 @@ void main() {
       expect(
         shape(parseInline('see [the notes](https://duvet.chat/notes) or https://duvet.chat.')),
         ('see link(https://duvet.chat/notes, the notes) or link(https://duvet.chat, https://duvet.chat).'),
+      );
+      // A balanced `(…)` belongs to the link; a sentence's `)` doesn't.
+      expect(
+        shape(parseInline('(see https://en.wikipedia.org/wiki/Foo_(bar)) and https://x.com/a)')),
+        '(see link(https://en.wikipedia.org/wiki/Foo_(bar), https://en.wikipedia.org/wiki/Foo_(bar))) '
+        'and link(https://x.com/a, https://x.com/a))',
       );
       // Snake case and mentions stay text.
       expect(shape(parseInline('snake_case_name <@$_maya>')), 'snake_case_name <@$_maya>');
@@ -531,6 +538,64 @@ void main() {
     expect(bubble, findsNothing);
     expect(tester.testTextInput.isVisible, isFalse);
     semantics.dispose();
+  });
+
+  testWidgets('a deleted message\'s dust goes when the chat closes', (tester) async {
+    await openMaya(tester);
+    await longPress(tester, 'Yes, way better than the side panels.');
+    await tapLabel(tester, 'Delete');
+    await tester.tap(find.bySemanticsLabel('Delete for everyone').last);
+    await tester.pump(const Duration(milliseconds: 400));
+    final dust = find.byWidgetPredicate((w) => w.runtimeType.toString() == '_Dust');
+    expect(dust, findsOneWidget);
+    await tester.tap(find.bySemanticsLabel('Back').last);
+    // The page's way out, long before the dust would end on its own.
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 700));
+    for (var i = 0; i < 3; i++) {
+      await tester.pump(const Duration(milliseconds: 16));
+    }
+    expect(dust, findsNothing);
+    // The delete's own waits run out.
+    await tester.pump(const Duration(seconds: 1));
+    semantics.dispose();
+  });
+
+  testWidgets('a deleted message\'s dust follows its place, inside the list and off its bars', (tester) async {
+    await openMaya(tester);
+    await longPress(tester, 'Yes, way better than the side panels.');
+    await tapLabel(tester, 'Delete');
+    await tester.tap(find.bySemanticsLabel('Delete for everyone').last);
+    await tester.pump(const Duration(milliseconds: 400));
+    final bubble = find.text('Yes, way better than the side panels.');
+    final dust = find.byWidgetPredicate((w) => w.runtimeType.toString() == '_Dust');
+    expect(dust, findsOneWidget);
+    // Moved with the bubble's own place, by the compositor, as the list scrolls.
+    final follower = tester.widget<CompositedTransformFollower>(
+      find.ancestor(of: dust, matching: find.byType(CompositedTransformFollower)),
+    );
+    final target = tester.widget<CompositedTransformTarget>(
+      find.ancestor(of: bubble, matching: find.byType(CompositedTransformTarget)).first,
+    );
+    expect(identical(follower.link, target.link), isTrue);
+    // Clipped to where the list shows messages: not over the top bar or the
+    // composer.
+    final list = tester.getRect(find.ancestor(of: bubble, matching: find.byType(Scrollable)).first);
+    final clip = tester.getRect(find.ancestor(of: dust, matching: find.byType(ClipRect)).first);
+    expect(clip.top, greaterThan(list.top));
+    expect(clip.bottom, lessThan(list.bottom));
+    await tester.pump(const Duration(seconds: 3));
+    await tester.pumpAndSettle();
+    semantics.dispose();
+  });
+
+  test('a big message makes no more dust than a small one can', () {
+    // A 3x phone's small bubble: specks 3 px wide.
+    expect(dustOf(300, 120, 3), (34 * 14, 3.0));
+    // A big picture: far fewer squares than its pixels would give, bigger.
+    final (count, side) = dustOf(1080, 1920, 3);
+    expect(count, lessThanOrEqualTo(2500));
+    expect(side, greaterThan(3));
   });
 
   testWidgets('reactions: chips read their count, a tap toggles, the quick bar adds, events update', (tester) async {

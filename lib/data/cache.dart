@@ -410,7 +410,18 @@ Map<String, Object?> messageToJson(ChatMessage m) => {
   ],
   'embeds': [
     for (final e in m.embeds)
-      {'title': e.title, 'description': e.description, 'url': e.url, 'imageUrl': e.imageUrl, 'provider': e.provider},
+      {
+        'title': e.title,
+        'description': e.description,
+        'url': e.url,
+        'imageUrl': e.imageUrl,
+        'imageWidth': e.imageWidth,
+        'imageHeight': e.imageHeight,
+        'thumbnailUrl': e.thumbnailUrl,
+        'videoUrl': e.videoUrl,
+        'videoContentType': e.videoContentType,
+        'provider': e.provider,
+      },
   ],
   if (m.reply case final r?)
     'reply': {
@@ -475,6 +486,11 @@ ChatMessage messageFromJson(Map<String, Object?> j) => ChatMessage(
         description: e['description'] as String?,
         url: e['url'] as String?,
         imageUrl: e['imageUrl'] as String?,
+        imageWidth: e['imageWidth'] as int?,
+        imageHeight: e['imageHeight'] as int?,
+        thumbnailUrl: e['thumbnailUrl'] as String?,
+        videoUrl: e['videoUrl'] as String?,
+        videoContentType: e['videoContentType'] as String?,
         provider: e['provider'] as String?,
       ),
   ],

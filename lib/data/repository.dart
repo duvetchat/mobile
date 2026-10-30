@@ -370,8 +370,9 @@ abstract interface class ChatRepository {
   String? emojiNameOf(String emojiId);
 
   /// Who's online, by user ID, as the gateway reports it; someone missing
-  /// hasn't been reported this session. A bot's status in one Space, which
-  /// comes first there ([presenceIn]), is kept under [spacePresenceKey] too.
+  /// hasn't been reported this session. A member's status in one Space (a
+  /// bot's is its shard's there), which comes first there ([presenceIn]), is
+  /// kept under [spacePresenceKey] too.
   ValueListenable<Map<String, Presence>> get presence;
 
   /// What people are doing, by user ID, as the gateway reports it for those

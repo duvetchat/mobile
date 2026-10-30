@@ -516,6 +516,137 @@ void main() {
     });
   });
 
+  // A screen reader's move on [label], as it offers it in place of a drag.
+  Future<void> readerMove(WidgetTester tester, Pattern label, String action) async {
+    final id = CustomSemanticsAction.getIdentifier(CustomSemanticsAction(label: action));
+    var node = tester.getSemantics(find.bySemanticsLabel(label).last);
+    while (!(node.getSemanticsData().customSemanticsActionIds?.contains(id) ?? false)) {
+      node = node.parent!;
+    }
+    node.owner!.performAction(node.id, SemanticsAction.customAction, id);
+    await tester.pumpAndSettle();
+  }
+
+  void threeRooms(FakeRepository r) => r.adminRoomList['s-guild'] = [
+    for (final (i, name) in ['general', 'lobby', 'memes'].indexed)
+      AdminRoom(id: 'r-$name', name: name, kind: AdminRoomKind.text, position: i),
+  ];
+
+  testWidgets('rooms: a drag cancelled leaves its room alone; a screen reader\'s next move takes its own', (
+    tester,
+  ) async {
+    final repository = await pumpSettings(tester, setUp: threeRooms);
+    await tapLabel(tester, RegExp(r'^Rooms'));
+    final drag = await tester.startGesture(tester.getCenter(find.text('# general', findRichText: true)));
+    await tester.pump(const Duration(seconds: 1));
+    await drag.moveBy(const Offset(0, 30));
+    await tester.pump();
+    // A system gesture takes the pointer.
+    await drag.cancel();
+    await tester.pumpAndSettle();
+    final asked = repository.admin.length;
+    await readerMove(tester, RegExp(r'^# memes'), 'Move up');
+    expect(repository.admin.length, asked + 1);
+    expect(repository.admin.last, startsWith('room> r-memes '));
+    semantics.dispose();
+  });
+
+  testWidgets('rooms: a drag dropped where it began moves nothing, and leaves the next move its own', (tester) async {
+    final repository = await pumpSettings(tester, setUp: threeRooms);
+    await tapLabel(tester, RegExp(r'^Rooms'));
+    final asked = repository.admin.length;
+    final drag = await tester.startGesture(tester.getCenter(find.text('# general', findRichText: true)));
+    await tester.pump(const Duration(seconds: 1));
+    await drag.moveBy(const Offset(0, 4));
+    await tester.pump();
+    await drag.up();
+    await tester.pumpAndSettle();
+    expect(repository.admin.length, asked);
+    await readerMove(tester, RegExp(r'^# memes'), 'Move up');
+    expect(repository.admin.last, startsWith('room> r-memes '));
+    semantics.dispose();
+  });
+
+  testWidgets('rooms: a held drag moves its own room when another takes its place meanwhile (#58)', (tester) async {
+    final repository = await pumpSettings(tester, setUp: threeRooms);
+    await tapLabel(tester, RegExp(r'^Rooms'));
+    final drag = await tester.startGesture(tester.getCenter(find.text('# lobby', findRichText: true)));
+    await tester.pump(const Duration(seconds: 1));
+    await drag.moveBy(const Offset(0, 10));
+    await tester.pump();
+    // Another admin moves general below lobby while it's held: lobby's
+    // index now holds general.
+    repository.adminRoomList['s-guild'] = [
+      const AdminRoom(id: 'r-lobby', name: 'lobby', kind: AdminRoomKind.text, position: 0),
+      const AdminRoom(id: 'r-general', name: 'general', kind: AdminRoomKind.text, position: 1),
+      const AdminRoom(id: 'r-memes', name: 'memes', kind: AdminRoomKind.text, position: 2),
+    ];
+    repository.spaces.value = [...repository.spaces.value];
+    await tester.pump();
+    await drag.moveBy(const Offset(0, 200));
+    await tester.pump();
+    await drag.up();
+    await tester.pumpAndSettle();
+    expect(repository.admin.last, startsWith('room> r-lobby '));
+    semantics.dispose();
+  });
+
+  testWidgets('rooms: a drag held past its category\'s end stays in it, and drops there', (tester) async {
+    final repository = await pumpSettings(
+      tester,
+      setUp: (r) => r.adminRoomList['s-guild'] = [
+        const AdminRoom(id: 'c-work', name: 'Work', kind: AdminRoomKind.category),
+        for (var i = 0; i < 20; i++)
+          AdminRoom(id: 'r-$i', name: 'room$i', kind: AdminRoomKind.text, parentId: 'c-work', position: i),
+        for (var c = 1; c <= 10; c++) ...[
+          AdminRoom(id: 'c-$c', name: 'More $c', kind: AdminRoomKind.category, position: c),
+          for (var i = 0; i < 5; i++)
+            AdminRoom(id: 'r-$c-$i', name: 'more$c-$i', kind: AdminRoomKind.text, parentId: 'c-$c', position: i),
+        ],
+      ],
+    );
+    await tapLabel(tester, RegExp(r'^Rooms'));
+    final drag = await tester.startGesture(tester.getCenter(find.text('# room0', findRichText: true)));
+    await tester.pump(const Duration(seconds: 1));
+    // Held at the bottom edge long enough to scroll well past Work.
+    await drag.moveTo(Offset(200, tester.getSize(find.byType(MaterialApp)).height - 4));
+    for (var i = 0; i < 200; i++) {
+      await tester.pump(const Duration(milliseconds: 50));
+    }
+    await drag.up();
+    await tester.pumpAndSettle();
+    expect(repository.admin.last, matches(RegExp(r'^room> r-0 c-work \d+$')));
+    semantics.dispose();
+  });
+
+  testWidgets('rooms: a room dragged to the screen\'s edge in a tall category scrolls the page (#57)', (tester) async {
+    final repository = await pumpSettings(
+      tester,
+      setUp: (r) => r.adminRoomList['s-guild'] = [
+        const AdminRoom(id: 'c-work', name: 'Work', kind: AdminRoomKind.category),
+        for (var i = 0; i < 40; i++)
+          AdminRoom(id: 'r-$i', name: 'room$i', kind: AdminRoomKind.text, parentId: 'c-work', position: i),
+      ],
+    );
+    await tapLabel(tester, RegExp(r'^Rooms'));
+    final page = tester.state<ScrollableState>(find.byType(Scrollable).first).position;
+    expect(page.pixels, 0);
+    final drag = await tester.startGesture(tester.getCenter(find.text('# room0', findRichText: true)));
+    await tester.pump(const Duration(seconds: 1));
+    // Held at the bottom edge: the page scrolls under it.
+    await drag.moveTo(Offset(200, tester.getSize(find.byType(MaterialApp)).height - 4));
+    for (var i = 0; i < 30; i++) {
+      await tester.pump(const Duration(milliseconds: 50));
+    }
+    expect(page.pixels, greaterThan(0));
+    await drag.up();
+    await tester.pumpAndSettle();
+    // Dropped far down, past where the screen first ended.
+    final dropped = RegExp(r'^room> r-0 c-work (\d+)$').firstMatch(repository.admin.last);
+    expect(int.parse(dropped!.group(1)!), greaterThan(10));
+    semantics.dispose();
+  });
+
   testWidgets('rooms: ManageChannels counts in each room; making one takes it in the Space', (tester) async {
     await pumpSettings(
       tester,
@@ -1008,7 +1139,7 @@ void main() {
     semantics.dispose();
   });
 
-  testWidgets('a GIF too large to go up as it is goes up still, saying its animation is lost', (tester) async {
+  testWidgets('a GIF too large to go up as it is is cropped, saying so', (tester) async {
     final squares = <int>[];
     saveSquareImage = (path, crop, side) async {
       squares.add(side);
@@ -1021,7 +1152,7 @@ void main() {
     await tester.tap(find.bySemanticsLabel('Add emoji').last);
     await waitFor(tester, find.byType(InteractiveViewer));
     // Said under the frame while it's cropped.
-    expect(find.text('This GIF is over 256 KiB or 512 px, so it goes up still: its animation is lost'), findsOneWidget);
+    expect(find.text('This GIF is over 256 KiB or 512 px, so it goes up cropped and resized'), findsOneWidget);
     await tapLabel(tester, 'Use');
     await typeName(tester, 'dance');
     await tapLabel(tester, 'Add');
@@ -1042,8 +1173,8 @@ void main() {
     await tapLabel(tester, RegExp(r'^Emojis and stickers'));
     await tester.tap(find.bySemanticsLabel('Add emoji').last);
     await waitFor(tester, find.byType(InteractiveViewer));
-    // It has no animation to lose.
-    expect(find.textContaining('animation is lost'), findsNothing);
+    // It's cropped as a picture, nothing to say.
+    expect(find.textContaining('cropped and resized'), findsNothing);
     await tapLabel(tester, 'Use');
     await typeName(tester, 'dot');
     await tapLabel(tester, 'Add');

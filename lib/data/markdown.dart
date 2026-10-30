@@ -198,7 +198,12 @@ typedef _Rule = (RegExp, MdInline Function(Match m));
 final List<_Rule> _rules = [
   (RegExp(r'`([^`\n]+)`'), (m) => MdCode(m.group(1)!)),
   (RegExp(r'\[([^\]\n]+)\]\((https?://[^)\s]+)\)'), (m) => MdLink(m.group(2)!, parseInline(m.group(1)!))),
-  (RegExp(r'''(?:https?|duvet)://[^\s<>]*[^\s<>.,;:!?)\]}"']'''), (m) => MdLink(m.group(0)!, [MdText(m.group(0)!)])),
+  // A bare link ends before trailing punctuation; a balanced `(…)` stays in
+  // it (Wikipedia's `Foo_(bar)`), while the `)` closing a sentence doesn't.
+  (
+    RegExp(r'''(?:https?|duvet)://(?:[^\s<>()]|\([^\s<>()]*\))*(?:[^\s<>.,;:!?()\]}"']|\([^\s<>()]*\))'''),
+    (m) => MdLink(m.group(0)!, [MdText(m.group(0)!)]),
+  ),
   (
     RegExp(r'\*\*\*(.+?)\*\*\*', dotAll: true),
     (m) => MdStyled({MdStyle.bold, MdStyle.italic}, parseInline(m.group(1)!)),

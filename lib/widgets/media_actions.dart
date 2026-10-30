@@ -13,7 +13,10 @@ class MediaActions {
   static MediaActions instance = const MediaActions();
 
   /// Opens [url] outside the app: the browser downloads or shows it.
-  Future<bool> open(String url) => launchUrl(Uri.parse(url), mode: LaunchMode.externalApplication);
+  Future<bool> open(String url) => switch (Uri.tryParse(url)) {
+    final uri? => launchUrl(uri, mode: LaunchMode.externalApplication),
+    null => Future.value(false),
+  };
 
   Future<List<int>> download(String url) async {
     final response = await http.get(Uri.parse(url));

@@ -1,9 +1,11 @@
 import 'dart:async';
 import 'dart:io';
 import 'dart:isolate';
+import 'dart:math' show max, min;
 import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
+import 'package:flutter/rendering.dart' show RenderAbstractViewport, ViewportOffset;
 import 'package:flutter/semantics.dart';
 import 'package:flutter/services.dart';
 import 'package:forui/forui.dart';
@@ -111,18 +113,22 @@ Future<Uint8List> framedPng(String path, CropRect crop, int width, int height) a
   }
 }
 
-/// [squarePng] in a file to upload, named after the picture, as the desktop
-/// names it; answers its path. Each crop has a folder of its own: a picture
-/// shows by its path, so one saved where the last crop was would show as the
-/// last crop. Tests swap in their own.
+/// [squarePng] in a file to upload, or [framedGif] for a moving GIF, named
+/// after the picture, as the desktop names it; answers its path. Each crop
+/// has a folder of its own: a picture shows by its path, so one saved where
+/// the last crop was would show as the last crop. Tests swap in their own.
 Future<String> Function(String path, CropRect crop, int side) saveSquareImage = (path, crop, side) async {
-  final png = await squarePng(path, crop, side);
+  final moving = (await gifAt(path))?.animated ?? false;
+  // Off the UI thread: every frame is decoded and encoded again.
+  final bytes = moving
+      ? await Isolate.run(() async => framedGif(await File(path).readAsBytes(), crop, side, side))
+      : await squarePng(path, crop, side);
   final name = path.split(Platform.pathSeparator).last;
   final dot = name.lastIndexOf('.');
   final squares = await Directory('${(await getTemporaryDirectory()).path}/square').create(recursive: true);
   final dir = await squares.createTemp();
-  final file = File('${dir.path}/${dot > 0 ? name.substring(0, dot) : 'image'}.png');
-  await file.writeAsBytes(png, flush: true);
+  final file = File('${dir.path}/${dot > 0 ? name.substring(0, dot) : 'image'}.${moving ? 'gif' : 'png'}');
+  await file.writeAsBytes(bytes, flush: true);
   return file.path;
 };
 
@@ -151,10 +157,11 @@ const bannerSize = (width: 600, height: 240);
 /// An avatar's or a Space icon's side, as the desktop crops one.
 const avatarSide = 256;
 
-/// The banner [crop] frames in the moving GIF [gif], every frame of it, as a
-/// GIF: it stays moving, as the desktop keeps it.
-Uint8List bannerGif(Uint8List gif, CropRect crop) {
-  img.Image? banner;
+/// The part of the moving GIF [gif] that [crop] frames, every frame of it,
+/// drawn [width] by [height] pixels, as a GIF: it stays moving, as the
+/// desktop keeps it.
+Uint8List framedGif(Uint8List gif, CropRect crop, int width, int height) {
+  img.Image? moving;
   // Frame by frame: cropped whole, the animation would give every frame the
   // first's palette and time. The first frame holds the others, hence a copy
   // of it alone.
@@ -167,14 +174,14 @@ Uint8List bannerGif(Uint8List gif, CropRect crop) {
         width: crop.w.round(),
         height: crop.h.round(),
       ),
-      width: bannerSize.width,
-      height: bannerSize.height,
+      width: width,
+      height: height,
       interpolation: img.Interpolation.average,
     );
-    banner?.addFrame(framed);
-    banner ??= framed;
+    moving?.addFrame(framed);
+    moving ??= framed;
   }
-  return img.encodeGif(banner!);
+  return img.encodeGif(moving!);
 }
 
 /// The banner [crop] frames in the picture at [path], in a file to upload;
@@ -183,7 +190,9 @@ Future<String> Function(String path, CropRect crop) saveBannerImage = (path, cro
   final moving = (await gifAt(path))?.animated ?? false;
   // Off the UI thread: every frame is decoded and encoded again.
   final bytes = moving
-      ? await Isolate.run(() async => bannerGif(await File(path).readAsBytes(), crop))
+      ? await Isolate.run(
+          () async => framedGif(await File(path).readAsBytes(), crop, bannerSize.width, bannerSize.height),
+        )
       : await framedPng(path, crop, bannerSize.width, bannerSize.height);
   final dir = Directory('${(await getTemporaryDirectory()).path}/banner');
   await dir.create(recursive: true);
@@ -1041,6 +1050,46 @@ class RoomsAdminPage extends StatefulWidget {
 class _RoomsAdminPageState extends State<RoomsAdminPage> {
   List<AdminRoom> get _all => context.repository.adminRooms(widget.spaceId);
 
+  /// The room a drag holds, by ID from the drag's start: the page rebuilds
+  /// on every room event, so by the drop another room may be at its index.
+  String? _held;
+  int? _heldFrom;
+
+  /// The rooms a held room is among, by category ('' for those in none),
+  /// until the finger lifts: the page scrolls no further than shows them
+  /// ([_HeldRoomsPhysics]). Null while no room is held.
+  String? _heldAmong;
+  final _roomLists = <String, GlobalKey>{};
+
+  void _hold(List<AdminRoom> list, int i) {
+    _held = list[i].id;
+    _heldFrom = i;
+  }
+
+  /// How far the page may scroll while a room is held: from where the start
+  /// of its rooms shows to where their end does.
+  (double, double)? _heldRange() {
+    final box = _roomLists[_heldAmong]?.currentContext?.findRenderObject();
+    if (box is! RenderBox || !box.attached) return null;
+    final viewport = RenderAbstractViewport.maybeOf(box);
+    if (viewport == null) return null;
+    final start = viewport.getOffsetToReveal(box, 0).offset;
+    final end = viewport.getOffsetToReveal(box, 1).offset;
+    return (min(start, end), max(start, end));
+  }
+
+  /// The room to move in [list] as it is now: the held one, null when it
+  /// went meanwhile, or else the one at [from]. A drop names the index its
+  /// drag began at; a screen reader's move names its own room's. So a room
+  /// held by a drag that was cancelled (a system gesture, the list changing),
+  /// which ends with no drop, only counts at that index, where it still is
+  /// unless the list changed.
+  AdminRoom? _heldIn(List<AdminRoom> list, int from) {
+    final held = from == _heldFrom ? _held : null;
+    _held = _heldFrom = null;
+    return held == null ? list[from] : list.where((r) => r.id == held).firstOrNull;
+  }
+
   /// What to make, then its name and, for a room, its category.
   Future<void> _create() async {
     final kind = await showGlassDialogSheet<AdminRoomKind>(
@@ -1312,16 +1361,17 @@ class _RoomsAdminPageState extends State<RoomsAdminPage> {
       child: Transform.scale(scale: 1.02, child: child),
     );
 
-    // One place's rooms, to reorder there.
-    Widget rooms(List<AdminRoom> list, String? parent) => ReorderableListView.builder(
-      shrinkWrap: true,
-      physics: const NeverScrollableScrollPhysics(),
-      padding: EdgeInsets.zero,
-      buildDefaultDragHandles: false,
+    Widget roomList(List<AdminRoom> list, String? parent) => SliverReorderableList(
       itemCount: list.length,
+      onReorderStart: (i) {
+        _hold(list, i);
+        _heldAmong = parent ?? '';
+      },
       onReorderItem: (from, to) {
-        if (!manages(list[from])) return _cantMove(list[from]);
-        if (from != to) _move(list[from], [...list]..removeAt(from), to, parent: parent);
+        final held = _heldIn(list, from);
+        if (held == null) return;
+        if (!manages(held)) return _cantMove(held);
+        if (list.indexOf(held) != to) _move(held, [...list]..remove(held), to, parent: parent);
       },
       proxyDecorator: liftRow,
       itemBuilder: (context, i) {
@@ -1354,6 +1404,17 @@ class _RoomsAdminPageState extends State<RoomsAdminPage> {
             ? ReorderableDelayedDragStartListener(key: ValueKey(r.id), index: i, child: body)
             : KeyedSubtree(key: ValueKey(r.id), child: body);
       },
+    );
+
+    // One place's rooms, to reorder there. In a viewport that doesn't
+    // scroll, not a list of its own: a drag scrolls the nearest Scrollable,
+    // the page's, so a room goes past the screen's edge in one drag. A node
+    // of their own, as a list's is: else a category's moves would be offered
+    // again around each of its rooms.
+    Widget rooms(List<AdminRoom> list, String? parent) => Semantics(
+      key: _roomLists.putIfAbsent(parent ?? '', GlobalKey.new),
+      container: true,
+      child: ShrinkWrappingViewport(offset: ViewportOffset.zero(), slivers: [roomList(list, parent)]),
     );
 
     // A category and its rooms, on one panel: they move together.
@@ -1439,19 +1500,51 @@ class _RoomsAdminPageState extends State<RoomsAdminPage> {
             )
           : null,
       placeholder: all.isEmpty ? const EmptyState(text: 'No rooms yet') : null,
-      list: (padding) => ReorderableListView.builder(
-        padding: padding,
-        buildDefaultDragHandles: false,
-        header: loose.isEmpty ? null : panel(rooms(loose, null)),
-        itemCount: categories.length,
-        itemBuilder: (context, i) => block(i),
-        onReorderItem: (from, to) {
-          if (!manages(categories[from])) return _cantMove(categories[from]);
-          if (from != to) _move(categories[from], [...categories]..removeAt(from), to);
-        },
-        proxyDecorator: liftPanel,
+      list: (padding) => Listener(
+        // The finger lifted or taken: no room held any more.
+        onPointerUp: (_) => _heldAmong = null,
+        onPointerCancel: (_) => _heldAmong = null,
+        child: ReorderableListView.builder(
+          physics: _HeldRoomsPhysics(() => _heldAmong == null ? null : _heldRange()),
+          padding: padding,
+          buildDefaultDragHandles: false,
+          header: loose.isEmpty ? null : panel(rooms(loose, null)),
+          itemCount: categories.length,
+          itemBuilder: (context, i) => block(i),
+          onReorderStart: (i) => _hold(categories, i),
+          onReorderItem: (from, to) {
+            final held = _heldIn(categories, from);
+            if (held == null) return;
+            if (!manages(held)) return _cantMove(held);
+            if (categories.indexOf(held) != to) _move(held, [...categories]..remove(held), to);
+          },
+          proxyDecorator: liftPanel,
+        ),
       ),
     );
+  }
+}
+
+/// While a room is held, the page scrolls no further than shows the rooms
+/// it's among ([range]): the drag's autoscroll would carry it on, and their
+/// list, once scrolled off and dropped, would take the drag with it.
+class _HeldRoomsPhysics extends ScrollPhysics {
+  final (double, double)? Function() range;
+  const _HeldRoomsPhysics(this.range, {super.parent});
+
+  @override
+  _HeldRoomsPhysics applyTo(ScrollPhysics? ancestor) => _HeldRoomsPhysics(range, parent: buildParent(ancestor));
+
+  @override
+  double applyBoundaryConditions(ScrollMetrics position, double value) {
+    if (range() case (final start, final end)?) {
+      // Not past it, nor further away when it's already off.
+      final last = max(end, position.pixels);
+      final first = min(start, position.pixels);
+      if (value > last) return value - last;
+      if (value < first) return value - first;
+    }
+    return super.applyBoundaryConditions(position, value);
   }
 }
 
@@ -1621,8 +1714,13 @@ class _RoomPermissionsPageState extends State<RoomPermissionsPage> {
       context,
       label: 'Add a member',
       initialSize: 0.75,
-      builder: (context, scroll) =>
-          _MemberPicker(members: _loadingMembers!, loaded: _members, taken: taken, scroll: scroll),
+      builder: (context, scroll) => _MemberPicker(
+        spaceId: widget.spaceId,
+        members: _loadingMembers!,
+        loaded: _members,
+        taken: taken,
+        scroll: scroll,
+      ),
     );
     if (picked == null || !mounted) return;
     setState(() {
@@ -2043,13 +2141,21 @@ class PermissionChoice extends StatelessWidget {
 /// The Space's members, searched by name, to give one their own permissions
 /// in a room; those with theirs already aren't offered. Answers the one picked.
 class _MemberPicker extends StatefulWidget {
+  /// Whose members they are: a bot's status here comes first.
+  final String spaceId;
   final Future<List<Member>> members;
 
   /// The members already had: shown at once, no spinner first.
   final List<Member>? loaded;
   final Set<String> taken;
   final ScrollController scroll;
-  const _MemberPicker({required this.members, required this.loaded, required this.taken, required this.scroll});
+  const _MemberPicker({
+    required this.spaceId,
+    required this.members,
+    required this.loaded,
+    required this.taken,
+    required this.scroll,
+  });
 
   @override
   State<_MemberPicker> createState() => _MemberPickerState();
@@ -2115,7 +2221,7 @@ class _MemberPickerState extends State<_MemberPicker> {
             for (final m in offered)
               PersonRow(
                 member: m,
-                presence: presenceIn(repository.presence.value, m.userId),
+                presence: presenceIn(repository.presence.value, m.userId, spaceId: widget.spaceId),
                 username: false,
                 onTap: () => Navigator.of(context).pop(m),
               ),
@@ -3166,9 +3272,8 @@ class _AssetsPageState extends State<AssetsPage> {
     if (path == null || !mounted) return;
     final kind = _kind;
     final cap = kind == AssetKind.emoji ? emojiCap : stickerCap;
-    // A moving GIF the API takes as it is goes up unchanged, still moving:
-    // cropping makes a still image of it. A still GIF is cropped as any
-    // picture is.
+    // A moving GIF the API takes as it is goes up unchanged; a larger one is
+    // cropped, every frame. A still GIF is cropped as any picture is.
     final gif = await gifAt(path);
     if (!mounted) return;
     // The cropper would close on it without a word.
@@ -3188,7 +3293,7 @@ class _AssetsPageState extends State<AssetsPage> {
             aspect: 1,
             round: false,
             note: gif?.animated ?? false
-                ? 'This GIF is over ${cap.bytes ~/ 1024} KiB or ${cap.side} px, so it goes up still: its animation is lost'
+                ? 'This GIF is over ${cap.bytes ~/ 1024} KiB or ${cap.side} px, so it goes up cropped and resized'
                 : null,
           ),
         ),

@@ -420,6 +420,7 @@ class DuvetRepository implements ChatRepository {
     _uploadLimit = null;
     presence.value = const {};
     activities.value = const {};
+    _spaceEntries.clear();
     latest.value = const {};
     unawaited(_recents.close());
     profile.value = null;
@@ -630,6 +631,7 @@ class DuvetRepository implements ChatRepository {
         // The SPACE_CREATEs bring theirs again too, without those a
         // USER_ACTIVITY_UPDATE missed meanwhile cleared.
         activities.value = const {};
+        _spaceEntries.clear();
         // Profile changes made with no session went unheard: anyone's next
         // one reaches their messages, even with the name and avatar the one
         // before gave them.
@@ -701,11 +703,43 @@ class DuvetRepository implements ChatRepository {
           for (final e in data.memberRoles.entries) e.key: [...e.value],
         };
         // Who's in it (each member has @everyone's role), and their presence
-        // as the gateway connects; live updates follow.
-        _spaceMemberIds[data.space.id] = {...data.memberRoles.keys, ...data.memberStatuses.keys};
-        if (data.memberStatuses.isNotEmpty) {
-          presence.value = {...presence.value, for (final e in data.memberStatuses.entries) e.key: _presence(e.value)};
+        // as the gateway connects; live updates follow. It lists only who's
+        // connected: the rest are offline.
+        final spaceId = data.space.id;
+        final members = _spaceMemberIds[spaceId] = {...data.memberRoles.keys, ...data.memberStatuses.keys};
+        final here = {
+          for (final id in members)
+            if (id != me) id: data.memberStatuses[id] == null ? Presence.offline : _presence(data.memberStatuses[id]!),
+        };
+        final before = presence.value;
+        final next = {
+          for (final e in here.entries)
+            if (e.value == Presence.offline) e.key: e.value,
+          ...before,
+          for (final e in data.memberStatuses.entries) e.key: _presence(e.value),
+        };
+        // The Space's own entry only where its status isn't the user's, as a
+        // bot's whose shard here isn't connected: a person's status is the
+        // same in every Space. Where this changed the user's, the Spaces
+        // that had theirs as it was keep that.
+        for (final MapEntry(key: id, value: status) in here.entries) {
+          if (before[id] case final old? when old != next[id]) {
+            for (final MapEntry(key: other, value: ids) in _spaceMemberIds.entries) {
+              if (other != spaceId && ids.contains(id) && !next.containsKey(spacePresenceKey(id, other))) {
+                next[spacePresenceKey(id, other)] = old;
+                _entered(id, other);
+              }
+            }
+          }
+          if (status != next[id]) {
+            next[spacePresenceKey(id, spaceId)] = status;
+            _entered(id, spaceId);
+          } else if (next.remove(spacePresenceKey(id, spaceId)) != null) {
+            _spaceEntries[id]?.remove(spaceId);
+          }
         }
+        presence.value = next;
+        _readStates(data.readStates);
         if (data.activities.isNotEmpty) {
           activities.value = {
             ...activities.value,
@@ -724,6 +758,7 @@ class DuvetRepository implements ChatRepository {
       case duvet.RoomCreateEvent(:final data) || duvet.RoomUpdateEvent(:final data):
         if (_spaces[data.spaceId] case final known?) {
           known.rooms[data.id] = data;
+          if (data.readState case final state?) _readStates({data.id: state});
           _publishSpaces();
         }
       // Every room of a Space after one moved: their places, as the desktop
@@ -846,11 +881,10 @@ class DuvetRepository implements ChatRepository {
 
       case duvet.UserStatusUpdatedEvent(:final data):
         final status = _presence(data.statusId);
-        presence.value = {
-          ...presence.value,
-          data.userId: status,
+        presence.value = switch (data.spaceId) {
           // A bot's in one Space (its shard's there), as the desktop keeps it.
-          if (data.spaceId case final spaceId?) spacePresenceKey(data.userId, spaceId): status,
+          final spaceId? => {...presence.value, spacePresenceKey(data.userId, _entered(data.userId, spaceId)): status},
+          null => _presentEverywhere(data.userId, status),
         };
         // The user's own: the status they chose, on this device or another.
         if (_chosen(data.statusId) case final chosen? when data.userId == me && data.spaceId == null) {
@@ -880,13 +914,24 @@ class DuvetRepository implements ChatRepository {
         _spaceMembers.clear();
         if (data.userId case final userId?) {
           (_spaceMemberIds[data.spaceId] ??= {}).add(userId);
-          // Their status as they join, which USER_STATUS_UPDATE carries on.
-          if (data.statusId case final status?) presence.value = {...presence.value, userId: _presence(status)};
+          // Their status as they join, which USER_STATUS_UPDATE carries on;
+          // a bot's is its status in this Space alone.
+          final status = data.statusId == null ? Presence.offline : _presence(data.statusId!);
+          if (data.user?.isBot ?? false) {
+            presence.value = {...presence.value, spacePresenceKey(userId, _entered(userId, data.spaceId)): status};
+          } else if (data.statusId != null) {
+            presence.value = _presentEverywhere(userId, status);
+          } else if (!presence.value.containsKey(userId)) {
+            presence.value = {...presence.value, userId: status};
+          }
           _publishSpaces();
         }
       case duvet.SpaceMemberRemovedEvent(:final data):
         _spaceMembers.clear();
         if (data.userId case final userId? when _spaceMemberIds[data.spaceId]?.remove(userId) ?? false) {
+          if (_spaceEntries[userId]?.remove(data.spaceId) ?? false) {
+            presence.value = {...presence.value}..remove(spacePresenceKey(userId, data.spaceId));
+          }
           _publishSpaces();
         }
       case duvet.GuildMemberAddedEvent() || duvet.GuildMemberRemovedEvent():
@@ -906,6 +951,11 @@ class DuvetRepository implements ChatRepository {
           duvet.ConversationDeletedEvent() ||
           duvet.ConversationMemberAddedEvent() ||
           duvet.ConversationMemberRemovedEvent():
+        // The added member's status as they're added, which USER_STATUS_UPDATE
+        // carries on.
+        if (event case duvet.ConversationMemberAddedEvent(:final data) when data.userId != me) {
+          if (data.statusId case final status?) presence.value = _presentEverywhere(data.userId, _presence(status));
+        }
         unawaited(refreshConversations().catchError((_) {}));
 
       case duvet.UserUpdatedEvent(:final data):
@@ -1048,6 +1098,46 @@ class DuvetRepository implements ChatRepository {
   static const _anyChat = '*';
 
   void _mentioned(String chatId) => mentions.value = {...mentions.value, chatId: (mentions.value[chatId] ?? 0) + 1};
+
+  /// [userId]'s presence everywhere, a person's: it outdates the Spaces' own
+  /// entries a SPACE_CREATE gave them.
+  Map<String, Presence> _presentEverywhere(String userId, Presence status) {
+    final next = {...presence.value, userId: status};
+    for (final spaceId in _spaceEntries.remove(userId) ?? const <String>{}) {
+      next.remove(spacePresenceKey(userId, spaceId));
+    }
+    return next;
+  }
+
+  /// The Spaces each user has an entry of their own in ([spacePresenceKey]):
+  /// few, bots' mostly, so a Space's or a person's are found without going
+  /// through every entry.
+  final _spaceEntries = <String, Set<String>>{};
+
+  /// [userId] has an entry of their own in [spaceId] now; answers [spaceId].
+  String _entered(String userId, String spaceId) {
+    (_spaceEntries[userId] ??= {}).add(spaceId);
+    return spaceId;
+  }
+
+  /// Rooms' read states that came after READY, as READY's mark them. A
+  /// newer message heard meanwhile keeps an unread room unread.
+  void _readStates(Map<String, duvet.RoomReadState> states) {
+    if (states.isEmpty) return;
+    final marked = {...unread.value};
+    for (final MapEntry(key: id, value: state) in states.entries) {
+      if (state.lastRead case final read?) _lastRead[id] = read;
+      if (state.lastMsg case final newest?) _lastMessage[id] = newest;
+      final heard = latest.value[id]?.id;
+      final newer = heard != null && heard.compareTo(state.lastMsg ?? '') > 0 && marked.contains(id);
+      if (state.unread || newer) {
+        marked.add(id);
+      } else {
+        marked.remove(id);
+      }
+    }
+    if (!setEquals(marked, unread.value)) unread.value = marked;
+  }
 
   void _markUnread(String id) {
     if (!unread.value.contains(id)) unread.value = {...unread.value, id};
@@ -1267,6 +1357,15 @@ class DuvetRepository implements ChatRepository {
           in list.where((c) => c.deletedAt == null).toList()..sort((a, b) => b.updatedAt.compareTo(a.updatedAt)))
         _summary(c, me),
     ];
+    // Members who share only a DM or a group with the user have no presence
+    // from the gateway until it changes: the list's, for those it hasn't told
+    // about.
+    final listed = {
+      for (final c in list)
+        for (final m in c.members)
+          if (m.statusId case final status? when m.userId != me) m.userId: _presence(status),
+    };
+    if (listed.keys.any((id) => !presence.value.containsKey(id))) presence.value = {...listed, ...presence.value};
     _fillFriendBanners();
     _saveHome();
     unawaited(_catchUpConversations());
@@ -1777,6 +1876,17 @@ class DuvetRepository implements ChatRepository {
     _nicknames.remove(spaceId);
     _spaceMemberIds.remove(spaceId);
     _forgetMembers(spaceId);
+    final entered = [
+      for (final MapEntry(key: userId, value: spaces) in _spaceEntries.entries)
+        if (spaces.remove(spaceId)) userId,
+    ];
+    if (entered.isNotEmpty) {
+      final next = {...presence.value};
+      for (final userId in entered) {
+        next.remove(spacePresenceKey(userId, spaceId));
+      }
+      presence.value = next;
+    }
     if (unread.value.any(rooms.contains)) unread.value = unread.value.difference(rooms);
     if (mentions.value.keys.any(rooms.contains)) {
       mentions.value = {...mentions.value}..removeWhere((id, _) => rooms.contains(id));
@@ -1908,8 +2018,8 @@ class DuvetRepository implements ChatRepository {
   int _friendsLoads = 0;
   int _friendsShown = 0;
 
-  Member _person(String id, String username, String? alias, String? avatar) =>
-      Member(userId: id, username: username, alias: alias, avatarUrl: avatarUrl(avatar));
+  Member _person(String id, String username, String? alias, String? avatar, String? banner) =>
+      Member(userId: id, username: username, alias: alias, avatarUrl: avatarUrl(avatar), bannerUrl: avatarUrl(banner));
 
   @override
   Future<void> loadFriends() async {
@@ -1933,13 +2043,19 @@ class DuvetRepository implements ChatRepository {
     final loaded = Friends(
       friends: [
         for (final f in list)
-          _person(f.senderId == me ? f.recipientId : f.senderId, f.userUsername, f.userAlias, f.userAvatar),
+          _person(
+            f.senderId == me ? f.recipientId : f.senderId,
+            f.userUsername,
+            f.userAlias,
+            f.userAvatar,
+            f.userBanner,
+          ),
       ]..sort((a, b) => a.displayName.toLowerCase().compareTo(b.displayName.toLowerCase())),
       incoming: [
         for (final r in incoming)
           FriendRequestItem(
             id: r.id,
-            person: _person(r.senderId, r.userUsername ?? 'someone', r.userAlias, r.userAvatar),
+            person: _person(r.senderId, r.userUsername ?? 'someone', r.userAlias, r.userAvatar, r.userBanner),
             at: r.createdAt.toLocal(),
           ),
       ],
@@ -1947,7 +2063,7 @@ class DuvetRepository implements ChatRepository {
         for (final r in outgoing)
           FriendRequestItem(
             id: r.id,
-            person: _person(r.recipientId, r.userUsername ?? 'someone', r.userAlias, r.userAvatar),
+            person: _person(r.recipientId, r.userUsername ?? 'someone', r.userAlias, r.userAvatar, r.userBanner),
             at: r.createdAt.toLocal(),
           ),
       ],
@@ -1961,8 +2077,8 @@ class DuvetRepository implements ChatRepository {
     }
   }
 
-  // The friends lists come without banners (#15); a Space's or a
-  // conversation's members have them. [f] with the banners known for its
+  // The friends lists have banners since api#63; from an API before, they
+  // come without (#15), and a Space's or a conversation's members have them. [f] with the banners known for its
   // people, or [f] itself when none is new.
   Friends _withBanners(Friends f) {
     final banners = {for (final p in people) p.userId: ?p.bannerUrl};
@@ -3252,7 +3368,12 @@ class DuvetRepository implements ChatRepository {
         title: e.title ?? e.author?.name,
         description: e.description,
         url: e.url,
-        imageUrl: e.image?.url ?? e.thumbnail?.url,
+        imageUrl: e.image?.url,
+        imageWidth: e.image?.width,
+        imageHeight: e.image?.height,
+        thumbnailUrl: e.thumbnail?.url,
+        videoUrl: e.video?.url,
+        videoContentType: e.video?.contentType,
         provider: e.provider,
       ),
   ]..removeWhere((e) => e.isEmpty);

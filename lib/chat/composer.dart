@@ -498,7 +498,7 @@ class _AttachmentTray extends StatelessWidget {
                       ),
                     ),
                   ),
-                  if (f.contentType == 'image/gif')
+                  if (f.contentType == 'image/gif' || f.contentType == 'image/apng')
                     const Positioned(
                       left: 4,
                       bottom: 4,
@@ -548,7 +548,7 @@ class _AttachmentTray extends StatelessWidget {
     );
   }
 
-  static String _kind(String type) => type == 'image/gif'
+  static String _kind(String type) => type == 'image/gif' || type == 'image/apng'
       ? 'GIF'
       : type.startsWith('image/')
       ? 'Photo'

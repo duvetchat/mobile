@@ -10,10 +10,13 @@ import 'package:forui/forui.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 import '../data/emoji_catalog.dart';
+import '../data/links.dart';
 import '../data/markdown.dart';
+import '../deep_links.dart';
 import '../data/message_tokens.dart';
 import '../data/models.dart';
 import '../theme.dart';
+import 'apng.dart';
 import 'code_highlight.dart';
 import 'depth.dart';
 import 'glass.dart';
@@ -76,7 +79,14 @@ class MessageText extends StatefulWidget {
 
   /// Opens a link; tests replace it.
   @visibleForTesting
-  static Future<bool> Function(Uri uri) openLink = (uri) => launchUrl(uri, mode: LaunchMode.externalApplication);
+  static Future<bool> Function(Uri uri) openLink = (uri) async {
+    // Duvet's own (an invite, a message): the app opens it, not the browser.
+    if (parseDeepLink(uri.toString()) != null) {
+      DeepLinkSource.tapped.add(uri);
+      return true;
+    }
+    return launchUrl(uri, mode: LaunchMode.externalApplication);
+  };
 
   /// Opens a link outside the app, as a tapped link in a message does.
   static Future<bool> launch(Uri uri) => openLink(uri);
@@ -653,9 +663,9 @@ class _PictureState extends State<_Picture> {
   Widget build(BuildContext context) {
     final a = widget.attachment;
     final colors = context.theme.colors;
-    final ratio = widget.square || a.width == null || a.height == null || a.height == 0
-        ? 1.0
-        : (a.width! / a.height!).clamp(0.5, 2.5);
+    // Its own ratio, so the box fits the whole picture (the desktop's
+    // object-contain): a clamp here would crop tall and wide ones.
+    final ratio = widget.square || (a.width ?? 0) <= 0 || (a.height ?? 0) <= 0 ? 1.0 : a.width! / a.height!;
     final height = math.min(widget.width / ratio, 320.0);
     final width = widget.square ? widget.width : math.min(widget.width, height * ratio);
     final still = MediaQuery.disableAnimationsOf(context) && !_playing;
@@ -755,7 +765,7 @@ Widget _image(MessageAttachment a, double width, {BoxFit fit = BoxFit.cover}) {
   final cache = (width * dpr).round();
   Widget broken(BuildContext context, Object _, StackTrace? _) =>
       Center(child: Icon(FLucideIcons.imageOff, color: context.theme.colors.mutedForeground));
-  return a.local
+  final still = a.local
       ? Image.file(File(a.url), fit: fit, cacheWidth: fit == BoxFit.cover ? cache : null, errorBuilder: broken)
       : Image.network(
           a.url,
@@ -768,6 +778,10 @@ Widget _image(MessageAttachment a, double width, {BoxFit fit = BoxFit.cover}) {
             child: child,
           ),
         );
+  // Flutter plays GIFs and WebPs itself, APNGs not: apng.dart does.
+  return a.contentType == 'image/apng'
+      ? ApngImage(url: a.url, local: a.local, width: width, fit: fit, placeholder: still)
+      : still;
 }
 
 class _Badge extends StatelessWidget {
@@ -943,13 +957,111 @@ class EmbedCard extends StatelessWidget {
   Widget build(BuildContext context) {
     final colors = context.theme.colors;
     final e = embed;
+    // Only a web link opens (the desktop's webEmbed): any other scheme, or a
+    // malformed one, is nothing to tap.
+    final uri = e.url == null ? null : Uri.tryParse(e.url!);
+    final link = uri != null && (uri.scheme == 'http' || uri.scheme == 'https') ? uri : null;
+    final dpr = MediaQuery.devicePixelRatioOf(context);
+
+    // The picture at its own ratio when known (so nothing is cropped), else
+    // a banner; a GIF link's embed is only this, bare, up to the card's width.
+    Widget picture(double w) {
+      final ratio = (e.imageWidth ?? 0) > 0 && (e.imageHeight ?? 0) > 0 ? e.imageWidth! / e.imageHeight! : null;
+      final height = ratio == null ? 140.0 : math.min(w / ratio, 320.0);
+      return ClipRRect(
+        borderRadius: BorderRadius.circular(DuvetTokens.radiusField),
+        child: Image.network(
+          e.imageUrl!,
+          width: ratio == null ? w : math.min(w, height * ratio),
+          height: height,
+          cacheWidth: (w * dpr).round(),
+          fit: ratio == null ? BoxFit.cover : BoxFit.contain,
+          excludeFromSemantics: true,
+          errorBuilder: (_, _, _) => const SizedBox.shrink(),
+        ),
+      );
+    }
+
+    // Its video as the chat's own play (a file), or its poster with a play
+    // mark that opens the player page (YouTube) in the browser.
+    Widget? media(double w) {
+      if (e.isDirectVideo) {
+        return VideoTile(
+          attachment: MessageAttachment(
+            id: e.videoUrl!,
+            filename: e.title ?? 'Video',
+            contentType: e.videoContentType ?? 'video/mp4',
+            url: e.videoUrl!,
+            width: e.imageWidth,
+            height: e.imageHeight,
+          ),
+          width: w,
+        );
+      }
+      if (e.imageUrl == null) return null;
+      if (e.videoUrl == null) return picture(w);
+      return Stack(
+        alignment: Alignment.center,
+        children: [
+          picture(w),
+          Container(
+            width: 48,
+            height: 48,
+            decoration: BoxDecoration(
+              color: const Color(0x8C111113),
+              borderRadius: BorderRadius.circular(DuvetTokens.radiusButton),
+              border: Border.all(color: const Color(0x1FFFFFFF)),
+            ),
+            child: const Icon(FLucideIcons.play, color: Color(0xFFF2F1EE), size: 24),
+          ),
+        ],
+      );
+    }
+
+    if (e.title == null && e.description == null && (e.isBareImage || e.isDirectVideo)) {
+      final bare = media(width)!;
+      if (e.isDirectVideo) return bare;
+      final play = e.videoUrl != null && link != null;
+      return Semantics(
+        image: !play,
+        button: play,
+        label: play ? 'Video preview. Play' : 'Image preview',
+        child: GestureDetector(onTap: play ? () => MessageText.openLink(link) : null, child: bare),
+      );
+    }
+
+    final text = Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        if (e.provider != null) Text(e.provider!, style: DuvetType.caption.copyWith(color: colors.mutedForeground)),
+        // Four lines here hold what the desktop's two do in its wider
+        // card: a GitHub run's title with its result at the end.
+        if (e.title != null)
+          Text(
+            e.title!,
+            maxLines: 4,
+            overflow: TextOverflow.ellipsis,
+            style: DuvetType.rowTitle.copyWith(color: colors.foreground),
+          ),
+        if (e.description != null)
+          Padding(
+            padding: const EdgeInsets.only(top: 4),
+            child: Text(
+              e.description!,
+              maxLines: 4,
+              overflow: TextOverflow.ellipsis,
+              style: DuvetType.snippet.copyWith(color: colors.mutedForeground),
+            ),
+          ),
+      ],
+    );
     return Semantics(
       container: true,
-      button: e.url != null,
-      hint: e.url != null ? 'Double tap to open' : null,
+      button: link != null,
+      hint: link != null ? 'Double tap to open' : null,
       child: Builder(
         builder: (context) => GestureDetector(
-          onTap: e.url == null ? null : () => MessageText.openLink(Uri.parse(e.url!)),
+          onTap: link == null ? null : () => MessageText.openLink(link),
           child: Container(
             width: width,
             padding: const EdgeInsets.all(12),
@@ -961,43 +1073,30 @@ class EmbedCard extends StatelessWidget {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                if (e.provider != null)
-                  Text(e.provider!, style: DuvetType.caption.copyWith(color: colors.mutedForeground)),
-                // Four lines here hold what the desktop's two do in its wider
-                // card: a GitHub run's title with its result at the end.
-                if (e.title != null)
-                  Text(
-                    e.title!,
-                    maxLines: 4,
-                    overflow: TextOverflow.ellipsis,
-                    style: DuvetType.rowTitle.copyWith(color: colors.foreground),
-                  ),
-                if (e.description != null)
-                  Padding(
-                    padding: const EdgeInsets.only(top: 4),
-                    child: Text(
-                      e.description!,
-                      maxLines: 4,
-                      overflow: TextOverflow.ellipsis,
-                      style: DuvetType.snippet.copyWith(color: colors.mutedForeground),
-                    ),
-                  ),
-                if (e.imageUrl != null)
-                  Padding(
-                    padding: const EdgeInsets.only(top: 8),
-                    child: ClipRRect(
-                      borderRadius: BorderRadius.circular(DuvetTokens.radiusField),
-                      child: Image.network(
-                        e.imageUrl!,
-                        width: width - 24,
-                        height: 140,
-                        cacheWidth: ((width - 24) * MediaQuery.devicePixelRatioOf(context)).round(),
-                        fit: BoxFit.cover,
-                        excludeFromSemantics: true,
-                        errorBuilder: (_, _, _) => const SizedBox.shrink(),
+                if (e.thumbnailUrl == null)
+                  text
+                else
+                  // A small picture beside the text, as the desktop's card.
+                  Row(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Expanded(child: text),
+                      const SizedBox(width: 12),
+                      ClipRRect(
+                        borderRadius: BorderRadius.circular(DuvetTokens.radiusField),
+                        child: Image.network(
+                          e.thumbnailUrl!,
+                          width: 64,
+                          height: 64,
+                          cacheWidth: (64 * dpr).round(),
+                          fit: BoxFit.cover,
+                          excludeFromSemantics: true,
+                          errorBuilder: (_, _, _) => const SizedBox.shrink(),
+                        ),
                       ),
-                    ),
+                    ],
                   ),
+                if (media(width - 24) case final m?) Padding(padding: const EdgeInsets.only(top: 8), child: m),
               ],
             ),
           ),
