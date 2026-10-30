@@ -2041,6 +2041,43 @@ void main() {
       expect(repository.unread.value, {'r-general', 'r-new'});
     });
 
+    test('one clears a room read since; a newer message heard keeps a room unread', () async {
+      const older = '018f0000-0000-7000-8000-000000000001';
+      const newer = '018f0000-0000-7000-8000-000000000002';
+      final space = _space(rooms: {'r-general': _room('r-general'), 'r-quiet': _room('r-quiet')});
+      await signIn();
+      repository.handleEvent(
+        _event('READY', {
+          'user': _user(_me, 'gaby'),
+          'sessionToken': 'ws',
+          'unread_rooms': ['r-general', 'r-quiet'],
+        }),
+      );
+      repository.handleEvent(_event('SPACE_CREATE', space));
+      repository.handleEvent(
+        _event('MESSAGE_CREATE', {
+          'id': newer,
+          'room_id': 'r-general',
+          'author_id': _maya,
+          'content': 'still there?',
+          'type': 0,
+          'created_at': _at,
+          'updated_at': _at,
+          'user': _user(_maya, 'maya'),
+        }),
+      );
+      await pumpEventQueue();
+      expect(repository.latest.value['r-general']?.id, newer);
+      // A retry's, read as of before that message: r-quiet was read since.
+      repository.handleEvent(
+        _event('SPACE_CREATE', {
+          ...space,
+          'read_states': {'r-general': state(false, lastMsg: older), 'r-quiet': state(false)},
+        }),
+      );
+      expect(repository.unread.value, {'r-general'});
+    });
+
     test('one without them changes nothing', () async {
       await signIn();
       repository.handleEvent(_event('SPACE_CREATE', _space()));
