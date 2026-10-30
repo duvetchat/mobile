@@ -11,9 +11,16 @@ import 'package:flutter/rendering.dart';
 /// picture at once, so whatever [key] shows can go right after. Nothing
 /// happens with reduced motion, or when [key] isn't on screen in a
 /// [RepaintBoundary]: then it's null, else done once the dust has gone, in
-/// [_cap] at most. The dust follows [key]'s place as its list scrolls, and
-/// goes with it, as when the chat closes.
-Future<void>? disintegrate(BuildContext context, GlobalKey key) {
+/// [_cap] at most. The dust follows [link]'s [CompositedTransformTarget], in
+/// [key]'s place, as its list scrolls, and goes with it, as when the chat
+/// closes. It stays within the list, but for the parts of it [covered] (the
+/// bars messages scroll under).
+Future<void>? disintegrate(
+  BuildContext context,
+  GlobalKey key,
+  LayerLink link, {
+  EdgeInsets covered = EdgeInsets.zero,
+}) {
   if (MediaQuery.disableAnimationsOf(context)) return null;
   final overlay = Overlay.maybeOf(context, rootOverlay: true);
   final boundary = key.currentContext?.findRenderObject();
@@ -21,15 +28,11 @@ Future<void>? disintegrate(BuildContext context, GlobalKey key) {
   if (overlay == null || boundary is! RenderRepaintBoundary || !boundary.hasSize || overlayBox is! RenderBox) {
     return null;
   }
-  // Where [key] is now; null once it's gone.
-  Rect? where() => switch (key.currentContext?.findRenderObject()) {
-    final RenderBox box when box.attached && box.hasSize && overlayBox.attached => MatrixUtils.transformRect(
-      box.getTransformTo(overlayBox),
-      Offset.zero & box.size,
-    ),
-    _ => null,
-  };
-  final rect = where()!;
+  Rect inOverlay(RenderBox box) => MatrixUtils.transformRect(box.getTransformTo(overlayBox), Offset.zero & box.size);
+  final size = boundary.size;
+  // Where the list shows messages: the dust is clipped to it.
+  final list = Scrollable.maybeOf(key.currentContext!)?.context.findRenderObject();
+  final shown = list is RenderBox && list.hasSize ? covered.deflateRect(inOverlay(list)) : inOverlay(overlayBox);
   final scale = MediaQuery.devicePixelRatioOf(context);
   final ui.Image image;
   try {
@@ -40,10 +43,12 @@ Future<void>? disintegrate(BuildContext context, GlobalKey key) {
   final done = Completer<void>();
   late final OverlayEntry entry;
   late final Timer cap;
+  late final Timer gone;
   // Its picture goes with it: disposed as the dust's state is.
   void finish() {
     if (done.isCompleted) return;
     cap.cancel();
+    gone.cancel();
     entry
       ..remove()
       ..dispose();
@@ -51,9 +56,35 @@ Future<void>? disintegrate(BuildContext context, GlobalKey key) {
   }
 
   entry = OverlayEntry(
-    builder: (_) => _Dust(image: image, scale: scale, rect: rect, where: where, onDone: finish),
+    builder: (_) => Positioned.fromRect(
+      rect: shown,
+      child: IgnorePointer(
+        child: ClipRect(
+          child: Align(
+            alignment: Alignment.topLeft,
+            // Moved with its place by the compositor, in the same frame as
+            // the list.
+            child: CompositedTransformFollower(
+              link: link,
+              showWhenUnlinked: false,
+              child: SizedBox.fromSize(
+                size: size,
+                child: _Dust(image: image, scale: scale, onDone: finish),
+              ),
+            ),
+          ),
+        ),
+      ),
+    ),
   );
   overlay.insert(entry);
+  // The chat closed (its page on its way out), or its place gone from the
+  // list: so does the dust.
+  final page = ModalRoute.of(context);
+  gone = Timer.periodic(const Duration(milliseconds: 100), (_) {
+    final place = key.currentContext?.findRenderObject();
+    if (!(page?.isActive ?? true) || link.leader == null || !(place?.attached ?? false)) finish();
+  });
   // Not for ever, should its pixels never be read: else the picture would
   // stay drawn over the app.
   cap = Timer(_cap, finish);
@@ -140,32 +171,19 @@ const _lastDelay = _sweep + 0.12;
 class _Dust extends StatefulWidget {
   final ui.Image image;
   final double scale;
-
-  /// Where the picture was taken, and where it is now: null once it's gone.
-  final Rect rect;
-  final Rect? Function() where;
   final VoidCallback onDone;
-  const _Dust({
-    required this.image,
-    required this.scale,
-    required this.rect,
-    required this.where,
-    required this.onDone,
-  });
+  const _Dust({required this.image, required this.scale, required this.onDone});
 
   @override
   State<_Dust> createState() => _DustState();
 }
 
-class _DustState extends State<_Dust> with TickerProviderStateMixin {
-  // Each frame, where its place is now, the pixels read or not.
-  late final _follow = createTicker((_) => setState(() {}))..start();
+class _DustState extends State<_Dust> with SingleTickerProviderStateMixin {
   late final _controller = AnimationController(vsync: this, duration: _duration)
     ..addStatusListener((s) {
       if (s == AnimationStatus.completed) widget.onDone();
     });
   (List<_Speck>, double)? _found;
-  late Rect _rect = widget.rect;
 
   @override
   void initState() {
@@ -189,31 +207,16 @@ class _DustState extends State<_Dust> with TickerProviderStateMixin {
 
   @override
   void dispose() {
-    _follow.dispose();
     _controller.dispose();
     widget.image.dispose();
     super.dispose();
   }
 
   @override
-  Widget build(BuildContext context) {
-    _follow;
-    if (widget.where() case final now?) {
-      _rect = now;
-    } else {
-      // Its place went, the chat with it: so does the dust, after this frame.
-      WidgetsBinding.instance.addPostFrameCallback((_) => widget.onDone());
-    }
-    return Positioned.fromRect(
-      rect: _rect,
-      child: IgnorePointer(
-        child: switch (_found) {
-          null => RawImage(image: widget.image, scale: widget.scale),
-          (final specks, final side) => CustomPaint(painter: _DustPainter(widget.image, specks, side, _controller)),
-        },
-      ),
-    );
-  }
+  Widget build(BuildContext context) => switch (_found) {
+    null => RawImage(image: widget.image, scale: widget.scale),
+    (final specks, final side) => CustomPaint(painter: _DustPainter(widget.image, specks, side, _controller)),
+  };
 }
 
 class _DustPainter extends CustomPainter {

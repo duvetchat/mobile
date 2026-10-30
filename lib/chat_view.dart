@@ -1037,7 +1037,11 @@ class _ChatViewState extends State<ChatView> {
       final removed = _entries[i];
       // Its place stays, empty, while the dust goes; then the list closes up.
       if (_keys[m.id] case final key?) {
-        if (disintegrate(context, key) case final dust?) {
+        final covered = EdgeInsets.only(
+          top: _topHeight == 0 ? GlassTopBar.heightOf(context) : _topHeight,
+          bottom: _composerHeight,
+        );
+        if (disintegrate(context, key, _linkFor(m.id), covered: covered) case final dust?) {
           setState(() => _vanishing.add(m.id));
           await dust;
           // The dust gone, the messages around ease together.
@@ -1134,6 +1138,10 @@ class _ChatViewState extends State<ChatView> {
   }
 
   GlobalKey _keyFor(String id) => _keys.putIfAbsent(id, GlobalKey.new);
+
+  // Each message's place, for its dust to follow as the list scrolls.
+  final _links = <String, LayerLink>{};
+  LayerLink _linkFor(String id) => _links.putIfAbsent(id, LayerLink.new);
 
   /// Scrolls toward older messages until [find] has a context (its item got
   /// built), or the list runs out. Answers whether it was found.
@@ -2397,10 +2405,13 @@ class _ChatViewState extends State<ChatView> {
                     key: _keyFor(entry.message.id),
                     // Its own layer, for the picture a delete breaks up.
                     child: RepaintBoundary(
-                      child: _Vanish(
-                        hidden: _vanishing.contains(entry.message.id),
-                        closed: _closing.contains(entry.message.id),
-                        child: _bubbleFor(entry, first: first, last: last),
+                      child: CompositedTransformTarget(
+                        link: _linkFor(entry.message.id),
+                        child: _Vanish(
+                          hidden: _vanishing.contains(entry.message.id),
+                          closed: _closing.contains(entry.message.id),
+                          child: _bubbleFor(entry, first: first, last: last),
+                        ),
                       ),
                     ),
                   ),

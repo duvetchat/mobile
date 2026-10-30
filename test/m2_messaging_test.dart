@@ -528,6 +528,34 @@ void main() {
     semantics.dispose();
   });
 
+  testWidgets('a deleted message\'s dust follows its place, inside the list and off its bars', (tester) async {
+    await openMaya(tester);
+    await longPress(tester, 'Yes, way better than the side panels.');
+    await tapLabel(tester, 'Delete');
+    await tester.tap(find.bySemanticsLabel('Delete for everyone').last);
+    await tester.pump(const Duration(milliseconds: 400));
+    final bubble = find.text('Yes, way better than the side panels.');
+    final dust = find.byWidgetPredicate((w) => w.runtimeType.toString() == '_Dust');
+    expect(dust, findsOneWidget);
+    // Moved with the bubble's own place, by the compositor, as the list scrolls.
+    final follower = tester.widget<CompositedTransformFollower>(
+      find.ancestor(of: dust, matching: find.byType(CompositedTransformFollower)),
+    );
+    final target = tester.widget<CompositedTransformTarget>(
+      find.ancestor(of: bubble, matching: find.byType(CompositedTransformTarget)).first,
+    );
+    expect(identical(follower.link, target.link), isTrue);
+    // Clipped to where the list shows messages: not over the top bar or the
+    // composer.
+    final list = tester.getRect(find.ancestor(of: bubble, matching: find.byType(Scrollable)).first);
+    final clip = tester.getRect(find.ancestor(of: dust, matching: find.byType(ClipRect)).first);
+    expect(clip.top, greaterThan(list.top));
+    expect(clip.bottom, lessThan(list.bottom));
+    await tester.pump(const Duration(seconds: 3));
+    await tester.pumpAndSettle();
+    semantics.dispose();
+  });
+
   test('a big message makes no more dust than a small one can', () {
     // A 3x phone's small bubble: specks 3 px wide.
     expect(dustOf(300, 120, 3), (34 * 14, 3.0));
