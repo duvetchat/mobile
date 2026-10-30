@@ -73,6 +73,12 @@ void main() {
         shape(parseInline('see [the notes](https://duvet.chat/notes) or https://duvet.chat.')),
         ('see link(https://duvet.chat/notes, the notes) or link(https://duvet.chat, https://duvet.chat).'),
       );
+      // A balanced `(…)` belongs to the link; a sentence's `)` doesn't.
+      expect(
+        shape(parseInline('(see https://en.wikipedia.org/wiki/Foo_(bar)) and https://x.com/a)')),
+        '(see link(https://en.wikipedia.org/wiki/Foo_(bar), https://en.wikipedia.org/wiki/Foo_(bar))) '
+        'and link(https://x.com/a, https://x.com/a))',
+      );
       // Snake case and mentions stay text.
       expect(shape(parseInline('snake_case_name <@$_maya>')), 'snake_case_name <@$_maya>');
     });

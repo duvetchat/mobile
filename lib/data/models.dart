@@ -413,8 +413,8 @@ class MessageAttachment {
   bool get isVideo => contentType.startsWith('video/');
   bool get isAudio => contentType.startsWith('audio/');
 
-  /// GIFs always animate; other formats may, and play the same way.
-  bool get isGif => contentType == 'image/gif';
+  /// GIFs and APNGs always animate; other formats may, and play the same way.
+  bool get isGif => contentType == 'image/gif' || contentType == 'image/apng';
 
   /// Marked as a spoiler, as the desktop app marks one: its name starts
   /// with `SPOILER_`. It stays covered until tapped.
@@ -438,11 +438,44 @@ class MessageEmbed {
   final String? description;
   final String? url;
   final String? imageUrl;
+  final int? imageWidth;
+  final int? imageHeight;
+
+  /// A small picture beside the text, as the desktop's card shows one.
+  final String? thumbnailUrl;
+
+  /// A video file (video/*) to play, or a player page (text/html) to open.
+  final String? videoUrl;
+  final String? videoContentType;
   final String? provider;
 
-  const MessageEmbed({this.title, this.description, this.url, this.imageUrl, this.provider});
+  const MessageEmbed({
+    this.title,
+    this.description,
+    this.url,
+    this.imageUrl,
+    this.imageWidth,
+    this.imageHeight,
+    this.thumbnailUrl,
+    this.videoUrl,
+    this.videoContentType,
+    this.provider,
+  });
 
-  bool get isEmpty => title == null && description == null && imageUrl == null;
+  bool get isEmpty =>
+      title == null && description == null && imageUrl == null && thumbnailUrl == null && videoUrl == null;
+
+  /// Only a picture, as a GIF link's embed is: shown bare, not on a card.
+  bool get isBareImage => title == null && description == null && imageUrl != null;
+
+  /// The video plays as a file when its page says it is one, or, with no
+  /// type, when its URL looks like one; anything else is a player page.
+  bool get isDirectVideo {
+    if (videoUrl == null) return false;
+    if (videoContentType != null) return videoContentType!.startsWith('video/');
+    final path = Uri.tryParse(videoUrl!)?.path.toLowerCase() ?? '';
+    return path.endsWith('.mp4') || path.endsWith('.webm') || path.endsWith('.mov');
+  }
 }
 
 /// Someone in a space or a conversation.

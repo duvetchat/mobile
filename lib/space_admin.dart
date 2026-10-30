@@ -111,18 +111,22 @@ Future<Uint8List> framedPng(String path, CropRect crop, int width, int height) a
   }
 }
 
-/// [squarePng] in a file to upload, named after the picture, as the desktop
-/// names it; answers its path. Each crop has a folder of its own: a picture
-/// shows by its path, so one saved where the last crop was would show as the
-/// last crop. Tests swap in their own.
+/// [squarePng] in a file to upload, or [framedGif] for a moving GIF, named
+/// after the picture, as the desktop names it; answers its path. Each crop
+/// has a folder of its own: a picture shows by its path, so one saved where
+/// the last crop was would show as the last crop. Tests swap in their own.
 Future<String> Function(String path, CropRect crop, int side) saveSquareImage = (path, crop, side) async {
-  final png = await squarePng(path, crop, side);
+  final moving = (await gifAt(path))?.animated ?? false;
+  // Off the UI thread: every frame is decoded and encoded again.
+  final bytes = moving
+      ? await Isolate.run(() async => framedGif(await File(path).readAsBytes(), crop, side, side))
+      : await squarePng(path, crop, side);
   final name = path.split(Platform.pathSeparator).last;
   final dot = name.lastIndexOf('.');
   final squares = await Directory('${(await getTemporaryDirectory()).path}/square').create(recursive: true);
   final dir = await squares.createTemp();
-  final file = File('${dir.path}/${dot > 0 ? name.substring(0, dot) : 'image'}.png');
-  await file.writeAsBytes(png, flush: true);
+  final file = File('${dir.path}/${dot > 0 ? name.substring(0, dot) : 'image'}.${moving ? 'gif' : 'png'}');
+  await file.writeAsBytes(bytes, flush: true);
   return file.path;
 };
 
@@ -151,10 +155,11 @@ const bannerSize = (width: 600, height: 240);
 /// An avatar's or a Space icon's side, as the desktop crops one.
 const avatarSide = 256;
 
-/// The banner [crop] frames in the moving GIF [gif], every frame of it, as a
-/// GIF: it stays moving, as the desktop keeps it.
-Uint8List bannerGif(Uint8List gif, CropRect crop) {
-  img.Image? banner;
+/// The part of the moving GIF [gif] that [crop] frames, every frame of it,
+/// drawn [width] by [height] pixels, as a GIF: it stays moving, as the
+/// desktop keeps it.
+Uint8List framedGif(Uint8List gif, CropRect crop, int width, int height) {
+  img.Image? moving;
   // Frame by frame: cropped whole, the animation would give every frame the
   // first's palette and time. The first frame holds the others, hence a copy
   // of it alone.
@@ -167,14 +172,14 @@ Uint8List bannerGif(Uint8List gif, CropRect crop) {
         width: crop.w.round(),
         height: crop.h.round(),
       ),
-      width: bannerSize.width,
-      height: bannerSize.height,
+      width: width,
+      height: height,
       interpolation: img.Interpolation.average,
     );
-    banner?.addFrame(framed);
-    banner ??= framed;
+    moving?.addFrame(framed);
+    moving ??= framed;
   }
-  return img.encodeGif(banner!);
+  return img.encodeGif(moving!);
 }
 
 /// The banner [crop] frames in the picture at [path], in a file to upload;
@@ -183,7 +188,9 @@ Future<String> Function(String path, CropRect crop) saveBannerImage = (path, cro
   final moving = (await gifAt(path))?.animated ?? false;
   // Off the UI thread: every frame is decoded and encoded again.
   final bytes = moving
-      ? await Isolate.run(() async => bannerGif(await File(path).readAsBytes(), crop))
+      ? await Isolate.run(
+          () async => framedGif(await File(path).readAsBytes(), crop, bannerSize.width, bannerSize.height),
+        )
       : await framedPng(path, crop, bannerSize.width, bannerSize.height);
   final dir = Directory('${(await getTemporaryDirectory()).path}/banner');
   await dir.create(recursive: true);
@@ -2862,9 +2869,8 @@ class _AssetsPageState extends State<AssetsPage> {
     if (path == null || !mounted) return;
     final kind = _kind;
     final cap = kind == AssetKind.emoji ? emojiCap : stickerCap;
-    // A moving GIF the API takes as it is goes up unchanged, still moving:
-    // cropping makes a still image of it. A still GIF is cropped as any
-    // picture is.
+    // A moving GIF the API takes as it is goes up unchanged; a larger one is
+    // cropped, every frame. A still GIF is cropped as any picture is.
     final gif = await gifAt(path);
     if (!mounted) return;
     // The cropper would close on it without a word.
@@ -2884,7 +2890,7 @@ class _AssetsPageState extends State<AssetsPage> {
             aspect: 1,
             round: false,
             note: gif?.animated ?? false
-                ? 'This GIF is over ${cap.bytes ~/ 1024} KiB or ${cap.side} px, so it goes up still: its animation is lost'
+                ? 'This GIF is over ${cap.bytes ~/ 1024} KiB or ${cap.side} px, so it goes up cropped and resized'
                 : null,
           ),
         ),

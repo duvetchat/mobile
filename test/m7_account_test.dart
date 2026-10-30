@@ -8,7 +8,7 @@ import 'package:duvet/data/emoji_catalog.dart';
 import 'package:duvet/data/models.dart';
 import 'package:duvet/deep_links.dart';
 import 'package:duvet/main.dart';
-import 'package:duvet/space_admin.dart' show bannerGif, saveBannerImage, saveSquareImage;
+import 'package:duvet/space_admin.dart' show framedGif, saveBannerImage, saveSquareImage;
 import 'package:duvet/widgets/chrome.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
@@ -80,9 +80,27 @@ void main() {
   test('a moving GIF banner is cropped frame by frame and keeps moving', () {
     final gif = img.Image(width: 100, height: 100)..frameDuration = 100;
     gif.addFrame(img.Image(width: 100, height: 100)..frameDuration = 100);
-    final banner = img.decodeGif(bannerGif(img.encodeGif(gif), (x: 0, y: 30, w: 100, h: 40)))!;
+    final banner = img.decodeGif(framedGif(img.encodeGif(gif), (x: 0, y: 30, w: 100, h: 40), 600, 240))!;
     expect(banner.numFrames, 2);
     expect((banner.width, banner.height), (600, 240));
+  });
+
+  testWidgets('a moving GIF cropped square keeps moving, as a GIF', (tester) async {
+    final temp = Directory.systemTemp.createTempSync('duvet_temp');
+    addTearDown(() => temp.deleteSync(recursive: true));
+    const pathProvider = MethodChannel('plugins.flutter.io/path_provider');
+    tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(pathProvider, (_) async => temp.path);
+    addTearDown(() => tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(pathProvider, null));
+    final gif = img.Image(width: 100, height: 60)..frameDuration = 100;
+    gif.addFrame(img.Image(width: 100, height: 60)..frameDuration = 100);
+    final path = '${temp.path}${Platform.pathSeparator}dance.gif';
+    final square = await tester.runAsync(() async {
+      await File(path).writeAsBytes(img.encodeGif(gif));
+      final saved = await cropSquare(path, (x: 20, y: 0, w: 60, h: 60), 256);
+      expect(saved, endsWith('dance.gif'));
+      return img.decodeGif(await File(saved).readAsBytes())!;
+    });
+    expect((square!.numFrames, square.width, square.height), (2, 256, 256));
   });
 
   test('a moving GIF banner keeps each frame’s colours and time', () {
@@ -94,7 +112,7 @@ void main() {
     final gif = frame(220, 30, 30, 100)
       ..addFrame(frame(30, 200, 60, 400))
       ..addFrame(frame(40, 80, 230, 700));
-    final banner = img.decodeGif(bannerGif(img.encodeGif(gif), (x: 0, y: 30, w: 100, h: 40)))!;
+    final banner = img.decodeGif(framedGif(img.encodeGif(gif), (x: 0, y: 30, w: 100, h: 40), 600, 240))!;
     expect(
       [for (final f in banner.frames) (f.getPixel(300, 120).r, f.getPixel(300, 120).g, f.getPixel(300, 120).b)],
       [(220, 30, 30), (30, 200, 60), (40, 80, 230)],

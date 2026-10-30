@@ -8,6 +8,7 @@ import 'package:duvet/data/models.dart';
 import 'package:duvet/data/appearance.dart';
 import 'package:duvet/main.dart';
 import 'package:duvet/theme.dart';
+import 'package:duvet/widgets/apng.dart';
 import 'package:duvet/widgets/media.dart';
 import 'package:duvet/widgets/media_actions.dart';
 import 'package:duvet/widgets/message_content.dart';
@@ -19,6 +20,7 @@ import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:forui/forui.dart';
+import 'package:image/image.dart' as img;
 import 'package:image_picker/image_picker.dart';
 
 import 'support/fake_repository.dart';
@@ -100,8 +102,10 @@ class _Gifs implements GifSource {
   @override
   String get attribution => 'GIFs from KLIPY';
 
+  List<Gif> trend = const [party];
+
   @override
-  Future<List<Gif>> trending() async => const [party];
+  Future<List<Gif>> trending() async => trend;
 
   @override
   Future<List<Gif>> search(String query) async {
@@ -169,6 +173,91 @@ void main() {
     attachments: files,
     isVoice: voice,
   );
+
+  test('an APNG decodes to its frames, each at most the box wide, with its delay; a still PNG to none', () {
+    final animated = img.Image(width: 8, height: 4)
+      ..frameDuration = 40
+      ..addFrame(img.Image(width: 8, height: 4)..frameDuration = 0)
+      ..loopCount = 0;
+    final frames = ApngImage.decode(img.PngEncoder().encode(animated), 4)!;
+    expect(frames.length, 2);
+    expect((frames[0].width, frames[0].height), (4, 2));
+    expect(frames[0].rgba.length, 4 * 2 * 4);
+    expect((frames[0].ms, frames[1].ms), (40, 100));
+    expect(ApngImage.decode(img.encodePng(img.Image(width: 2, height: 2)), 4), isNull);
+    expect(const MessageAttachment(id: 'a', filename: 'a.apng', contentType: 'image/apng', url: 'x').isGif, isTrue);
+  });
+
+  testWidgets('an APNG attachment plays: fetched, decoded off the UI thread, its frames turned by a ticker', (
+    tester,
+  ) async {
+    final red = img.Image(width: 4, height: 4)..frameDuration = 50;
+    img.fill(red, color: img.ColorRgb8(255, 0, 0));
+    final blue = img.Image(width: 4, height: 4)..frameDuration = 50;
+    img.fill(blue, color: img.ColorRgb8(0, 0, 255));
+    final bytes = img.PngEncoder().encode(red..addFrame(blue));
+    final fetched = <String>[];
+    ApngImage.fetch = (url, local) async {
+      fetched.add('$url:$local');
+      return bytes;
+    };
+    const a = MessageAttachment(
+      id: 'a',
+      filename: 'wave.apng',
+      contentType: 'image/apng',
+      url: 'https://cdn.invalid/wave.apng',
+      width: 4,
+      height: 4,
+    );
+    // A decoded frame on screen (the still's own RawImage holds no image yet).
+    final frame = find.byWidgetPredicate((w) => w is RawImage && w.image != null);
+    // The fetch and the isolate's decode run in real time, not the test clock.
+    await tester.runAsync(() async {
+      await tester.pumpWidget(
+        MaterialApp(
+          theme: Duvet.material(Brightness.light),
+          home: FTheme(
+            data: Duvet.theme(Brightness.light),
+            child: const Scaffold(body: MessageAttachments(attachments: [a], maxWidth: 200)),
+          ),
+        ),
+      );
+      expect(find.text('GIF'), findsOneWidget);
+      expect(find.byType(ApngImage), findsOneWidget);
+      expect(frame, findsNothing);
+      await Future<void>.delayed(const Duration(seconds: 2));
+    });
+    await tester.pump();
+    expect(fetched, ['https://cdn.invalid/wave.apng:false']);
+    final first = tester.widget<RawImage>(frame).image;
+    await tester.pump(const Duration(milliseconds: 60));
+    expect(tester.widget<RawImage>(frame).image, isNot(same(first)));
+    await tester.pump(const Duration(milliseconds: 60));
+    expect(tester.widget<RawImage>(frame).image, same(first));
+  });
+
+  testWidgets('a WebP is a picture, not a file tile, at its own ratio', (tester) async {
+    const a = MessageAttachment(
+      id: 'w',
+      filename: 'tall.webp',
+      contentType: 'image/webp',
+      url: 'https://cdn.invalid/tall.webp',
+      width: 100,
+      height: 400,
+    );
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: Duvet.material(Brightness.light),
+        home: FTheme(
+          data: Duvet.theme(Brightness.light),
+          child: const Scaffold(body: MessageAttachments(attachments: [a], maxWidth: 200)),
+        ),
+      ),
+    );
+    expect(find.bySemanticsLabel(RegExp('^Photo, tall.webp')), findsOneWidget);
+    // 4:1 tall: 320 high, 80 wide, so nothing of it is cropped.
+    expect(tester.getSize(find.byType(Image)), const Size(80, 320));
+  });
 
   group('links', () {
     test('message links, invites and deep links, as desktop reads them', () {
@@ -352,6 +441,22 @@ void main() {
     expect(gifs.searched, ['Celebrate']);
     await tapLabel(tester, 'GIF, party');
     expect(repository.sent.last.content, _Gifs.party.url);
+    semantics.dispose();
+  });
+
+  testWidgets('GIFs: one the provider sizes 0 wide shows square, not a crash', (tester) async {
+    final gifs = _Gifs()
+      ..trend = const [Gif(id: 'g2', url: 'https://static.klipy.com/flat.gif', preview: 'p', width: 0, height: 150)];
+    GifSource.instance = gifs;
+    final repository = await openMaya(tester);
+    await tapLabel(tester, 'Emoji and stickers');
+    await tester.tap(find.text('GIFs'));
+    await tester.pumpAndSettle();
+    expect(tester.takeException(), isNull);
+    final tile = tester.getSize(find.bySemanticsLabel('GIF'));
+    expect(tile.width, tile.height);
+    await tapLabel(tester, 'GIF');
+    expect(repository.sent.last.content, 'https://static.klipy.com/flat.gif');
     semantics.dispose();
   });
 
