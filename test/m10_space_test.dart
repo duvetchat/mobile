@@ -761,6 +761,34 @@ void main() {
     semantics.dispose();
   });
 
+  testWidgets('leaving an edited role asks first: Discard drops the edit, nothing saved', (tester) async {
+    final repository = await pumpSettings(tester);
+    await tapLabel(tester, RegExp(r'^Roles'));
+    await tapLabel(tester, RegExp(r'^Moderator'));
+    expect(find.text('Edit role'), findsOneWidget);
+    // Untouched, back leaves at once.
+    await tester.binding.handlePopRoute();
+    await tester.pumpAndSettle();
+    expect(find.text('Edit role'), findsNothing);
+
+    await tapLabel(tester, RegExp(r'^Moderator'));
+    await tester.enterText(find.byType(EditableText).first, 'Mods');
+    await tester.pumpAndSettle();
+    await tester.binding.handlePopRoute();
+    await tester.pumpAndSettle();
+    expect(find.text('Unsaved changes'), findsOneWidget);
+    await tapLabel(tester, 'Keep editing');
+    expect(find.text('Edit role'), findsOneWidget);
+
+    await tester.binding.handlePopRoute();
+    await tester.pumpAndSettle();
+    await tapLabel(tester, 'Discard');
+    expect(find.text('Edit role'), findsNothing);
+    expect(repository.admin.where((a) => a.startsWith('role~')), isEmpty);
+    expect(find.text('Moderator'), findsOneWidget);
+    semantics.dispose();
+  });
+
   testWidgets('a role\'s name color can be a gradient: from its color to another, a middle stop optional', (
     tester,
   ) async {
