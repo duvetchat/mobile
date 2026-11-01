@@ -1,3 +1,4 @@
+import 'package:duvet/data/appearance.dart';
 import 'package:duvet/data/models.dart';
 import 'package:duvet/main.dart';
 import 'package:duvet/theme.dart';
@@ -5,6 +6,7 @@ import 'package:duvet/widgets/chrome.dart';
 import 'package:duvet/widgets/duvet_mascot.dart';
 import 'package:duvet/widgets/ghost_art.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter_svg/flutter_svg.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import 'support/fake_repository.dart';
@@ -46,13 +48,39 @@ void main() {
     expect(find.text('Talk with your people.'), findsOneWidget);
   });
 
-  testWidgets('the app icon leads the Chats title, the screen the app opens on, and only there', (tester) async {
+  testWidgets('the app icon leads all four tab titles, hops when tapped, and inverts on dark', (tester) async {
+    String asset() =>
+        ((tester.widget<SvgPicture>(
+                  find.descendant(of: find.byType(AppIcon), matching: find.byType(SvgPicture)),
+                )).bytesLoader
+                as SvgAssetLoader)
+            .assetName;
+
     await pumpApp(tester);
-    expect(find.byType(AppIcon), findsOneWidget);
-    expect(tester.getSize(find.byType(AppIcon)), const Size(32, 32));
-    await tester.tap(find.text('Spaces'));
+    for (final tab in ['Chats', 'Spaces', 'Calls', 'You']) {
+      await tester.tap(find.descendant(of: find.byType(DuvetTabBar), matching: find.text(tab)));
+      await tester.pumpAndSettle();
+      expect(find.byType(AppIcon), findsOneWidget, reason: tab);
+      expect(tester.getSize(find.byType(AppIcon)), const Size(32, 32));
+    }
+    expect(asset(), 'assets/logo/app-icon-rounded.svg');
+    // The hop is one-shot: it settles.
+    await tester.tap(find.byType(AppIcon));
+    // The first frame starts the hop's clock; the next shows it in the air.
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 200));
+    expect(
+      tester.getRect(find.descendant(of: find.byType(AppIcon), matching: find.byType(SvgPicture))).top,
+      lessThan(tester.getRect(find.byType(AppIcon)).top),
+    );
     await tester.pumpAndSettle();
-    expect(find.byType(AppIcon), findsNothing);
+
+    // A fresh app: the one pumped keeps the appearance it started with.
+    await tester.pumpWidget(const SizedBox());
+    final appearance = Appearance(MemoryAppearanceStore())..value = ThemeMode.dark;
+    await tester.pumpWidget(DuvetApp(repository: FakeRepository(), appearance: appearance));
+    await tester.pumpAndSettle();
+    expect(asset(), 'assets/logo/mark-on-light.svg');
   });
 
   testWidgets('a new DM shows the ghost tucked in; a quick line fills the composer without sending', (tester) async {

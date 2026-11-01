@@ -3403,7 +3403,7 @@ class _SpaceStoragePageState extends State<SpaceStoragePage> {
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      Text(formatBytes(s.used), style: DuvetType.title.copyWith(color: colors.foreground)),
+                      Text(formatBytes(s.used), style: DuvetType.titleSans.copyWith(color: colors.foreground)),
                       Text(
                         '${s.files.length} ${s.files.length == 1 ? 'file' : 'files'}',
                         style: DuvetType.caption.copyWith(color: colors.mutedForeground),

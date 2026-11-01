@@ -1,3 +1,5 @@
+import 'dart:math' as math;
+
 import 'package:flutter/material.dart';
 import 'package:flutter_svg/flutter_svg.dart';
 
@@ -45,20 +47,94 @@ const _ghost =
 const _star = 'M0 -5 L1.4 -1.4 L5 0 L1.4 1.4 L0 5 L-1.4 1.4 L-5 0 L-1.4 -1.4 Z';
 
 /// The app icon, as on the home screen: the ghost on its black rounded tile,
-/// with the design's faint edge so the tile holds its shape on near-black.
-class AppIcon extends StatelessWidget {
+/// with the design's faint edge. On the dark theme the black tile sinks into
+/// the background, so it inverts: the brand's ink mark on a light tile.
+///
+/// It hops, a little squash and stretch, when tapped and when it comes into
+/// view (its tab picked, the page over it popped). Never a tilt: the brand
+/// doesn't rotate the logo.
+class AppIcon extends StatefulWidget {
   final double size;
   const AppIcon({required this.size, super.key});
 
   @override
-  Widget build(BuildContext context) => Container(
+  State<AppIcon> createState() => _AppIconState();
+}
+
+class _AppIconState extends State<AppIcon> with SingleTickerProviderStateMixin {
+  late final _hop = AnimationController(vsync: this, duration: const Duration(milliseconds: 560));
+  bool _shown = false;
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    // An IndexedStack's hidden tab reads as invisible; a covered route, as ticker-less.
+    final shown = Visibility.of(context) && TickerMode.valuesOf(context).enabled;
+    if (shown && !_shown) _play();
+    _shown = shown;
+  }
+
+  void _play() {
+    if (!MediaQuery.disableAnimationsOf(context)) _hop.forward(from: 0);
+  }
+
+  @override
+  void dispose() {
+    _hop.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final size = widget.size;
+    final radius = BorderRadius.circular(size * 0.22);
     // In front of the art: an edge only, never a shadow, which would dim it.
-    foregroundDecoration: BoxDecoration(
-      borderRadius: BorderRadius.circular(size * 0.22),
-      border: Border.all(color: const Color(0x14FFFFFF)),
-    ),
-    child: SvgPicture.asset('assets/logo/app-icon-rounded.svg', width: size, height: size, semanticsLabel: 'Duvet'),
-  );
+    Decoration edge(Color color) => BoxDecoration(
+      borderRadius: radius,
+      border: Border.all(color: color),
+    );
+    final icon = Theme.of(context).brightness == Brightness.dark
+        ? Container(
+            width: size,
+            height: size,
+            // The brand's clear space: about a third of the ghost's width all round.
+            padding: EdgeInsets.all(size * 0.2),
+            decoration: BoxDecoration(color: const Color(0xFFF7F6F3), borderRadius: radius),
+            foregroundDecoration: edge(const Color(0x1415172B)),
+            child: SvgPicture.asset('assets/logo/mark-on-light.svg', semanticsLabel: 'Duvet'),
+          )
+        : Container(
+            foregroundDecoration: edge(const Color(0x14FFFFFF)),
+            child: SvgPicture.asset(
+              'assets/logo/app-icon-rounded.svg',
+              width: size,
+              height: size,
+              semanticsLabel: 'Duvet',
+            ),
+          );
+    return GestureDetector(
+      onTap: _play,
+      // A flourish, not an action: screen readers hear the logo, not a button.
+      excludeFromSemantics: true,
+      child: AnimatedBuilder(
+        animation: _hop,
+        builder: (context, child) {
+          // Up and down in the first 70%, stretched; then a squash on landing.
+          const air = 0.7;
+          final t = _hop.value;
+          final lift = t < air ? math.sin(math.pi * t / air) : 0.0;
+          final land = t < air ? 0.0 : math.sin(math.pi * (t - air) / (1 - air));
+          return Transform(
+            alignment: Alignment.bottomCenter,
+            transform: Matrix4.diagonal3Values(1 - 0.05 * lift + 0.1 * land, 1 + 0.08 * lift - 0.12 * land, 1)
+              ..setTranslationRaw(0, -size * 0.22 * lift, 0),
+            child: child,
+          );
+        },
+        child: icon,
+      ),
+    );
+  }
 }
 
 /// The logo's ghost without its square, in the theme's art colors: for where

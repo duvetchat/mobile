@@ -20,6 +20,7 @@ import 'tabs.dart' show LiveIndicator;
 import 'theme.dart';
 import 'widgets/avatar.dart';
 import 'widgets/chrome.dart';
+import 'widgets/ghost_art.dart';
 import 'widgets/glass.dart';
 import 'widgets/rows.dart';
 import 'widgets/unsaved_changes.dart';
@@ -1195,7 +1196,7 @@ class _MyFilesPageState extends State<MyFilesPage> {
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            Text('Delete ${f.name}?', style: DuvetType.title.copyWith(color: context.theme.colors.foreground)),
+            Text('Delete ${f.name}?', style: DuvetType.titleSans.copyWith(color: context.theme.colors.foreground)),
             const SizedBox(height: 12),
             Text(
               'It goes from every message it’s in. This can’t be undone.',
@@ -1454,7 +1455,7 @@ class StorageMeter extends StatelessWidget {
               children: [
                 Text(
                   formatBytes(storage.used),
-                  style: (big ? DuvetType.title : DuvetType.rowTitle).copyWith(color: colors.foreground),
+                  style: (big ? DuvetType.titleSans : DuvetType.rowTitle).copyWith(color: colors.foreground),
                 ),
                 const SizedBox(width: 8),
                 Text(
@@ -1554,7 +1555,7 @@ class BucketMeter extends StatelessWidget {
               children: [
                 Text(
                   formatBytes(bucket.used),
-                  style: (big ? DuvetType.title : DuvetType.rowTitle).copyWith(color: colors.foreground),
+                  style: (big ? DuvetType.titleSans : DuvetType.rowTitle).copyWith(color: colors.foreground),
                 ),
                 const SizedBox(width: 8),
                 // "used · no quota" is longer than a quota's line: it wraps when the space runs out.
@@ -1653,6 +1654,7 @@ class _YouTabState extends State<YouTab> {
             GlassRow(label: label, detail: value, destructive: warn, onPressed: onTap);
         return LargeTitlePage(
           title: 'You',
+          titleLeading: const AppIcon(size: 32),
           titleTrailing: const LiveIndicator(),
           slivers: [
             SliverPadding(

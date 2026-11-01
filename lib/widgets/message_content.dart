@@ -339,7 +339,7 @@ class _MessageTextState extends State<MessageText> {
           MdParagraph(:final inlines) => rich(inlines, base, maxLines: widget.singleLine ? 1 : null),
           MdHeading(:final level, :final inlines) => rich(
             inlines,
-            base.merge(level == 1 ? DuvetType.title : DuvetType.navTitle).copyWith(color: base.color),
+            base.merge(level == 1 ? DuvetType.titleSans : DuvetType.navTitle).copyWith(color: base.color),
           ),
           MdSubtext(:final inlines) => rich(inlines, base.merge(DuvetType.caption).copyWith(color: secondary)),
           MdQuote(:final inlines) => Container(

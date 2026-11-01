@@ -420,7 +420,17 @@ class _LargeTitlePageState extends State<LargeTitlePage> {
                 opacity: _collapsed ? 1 : 0,
                 duration: reduce ? Duration.zero : const Duration(milliseconds: 200),
                 curve: DuvetTokens.decelerate,
-                child: GlassTopBar(title: Text(widget.title)),
+                // The tab's title, collapsed: Inter like the large one.
+                child: GlassTopBar(
+                  title: Text(
+                    widget.title,
+                    style: DuvetType.largeTitle.copyWith(
+                      fontSize: 20,
+                      letterSpacing: 20 * -0.02,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                ),
               ),
             ),
           ),

@@ -319,6 +319,7 @@ class SpacesTab extends StatelessWidget {
         );
         return LargeTitlePage(
           title: 'Spaces',
+          titleLeading: const AppIcon(size: 32),
           titleTrailing: Row(
             mainAxisSize: MainAxisSize.min,
             children: [
@@ -624,6 +625,7 @@ class CallsTab extends StatelessWidget {
     final colors = context.theme.colors;
     return LargeTitlePage(
       title: 'Calls',
+      titleLeading: const AppIcon(size: 32),
       header: Padding(
         padding: const EdgeInsets.fromLTRB(16, 4, 16, 0),
         child: Text(
