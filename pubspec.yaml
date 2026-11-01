@@ -72,6 +72,12 @@ dependencies:
   permission_handler: ^12.0.3
   re_highlight: ^0.0.3
   image: ^4.12.0
+  youtube_player_iframe: ^6.0.2
+  # A playing voice note in Android's media controls (audio_service): needs
+  # MainActivity to be an AudioServiceActivity.
+  audio_service: ^0.18.19
+  # The YouTube dock shows a playing tile's own webview: no reload on the handoff.
+  webview_flutter: ^4.14.1
 
 dev_dependencies:
   flutter_test:

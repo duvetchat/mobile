@@ -16,6 +16,7 @@ import 'spaces.dart';
 import 'theme.dart';
 import 'voice_room.dart';
 import 'widgets/avatar.dart';
+import 'widgets/call_presence.dart';
 import 'widgets/chrome.dart';
 import 'widgets/duvet_mascot.dart';
 import 'widgets/ghost_art.dart';
@@ -29,6 +30,7 @@ class ChatsTab extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final repository = context.repository;
+    final voice = context.voice;
     return ListenableBuilder(
       listenable: Listenable.merge([
         repository.recents,
@@ -40,6 +42,7 @@ class ChatsTab extends StatelessWidget {
         repository.presence,
         repository.friends,
         repository.typingNow,
+        voice,
       ]),
       builder: (context, _) {
         final mentions = repository.mentions.value;
@@ -95,6 +98,32 @@ class ChatsTab extends StatelessWidget {
                     padding: EdgeInsets.fromLTRB(16, 12, 16, 0),
                     child: ConnectionBanner(text: 'Offline', detail: '· showing saved messages'),
                   ),
+                // Calls going on in the user's conversations, as their chat's
+                // CallBanner has them; not the user's own still ringing the
+                // others from another device: nothing to join yet.
+                // Not the call the user is in: the voice bar already shows that one.
+                for (final id in voice.callsInProgress)
+                  if (!callingElsewhere(voice, id) &&
+                      !(voice.call?.conversationId == id && voice.call?.phase != CallPhase.ringing))
+                    Padding(padding: const EdgeInsets.fromLTRB(16, 12, 16, 0), child: _ongoingCall(context, id)),
+                // Friends in voice in a Space the user shares with them, to join.
+                for (final (friend, room, space) in _friendsInVoice(repository, voice))
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(16, 12, 16, 0),
+                    child: CallPresenceCard(
+                      key: ValueKey('friend-${friend.userId}'),
+                      icon: FLucideIcons.volume2,
+                      leading: UserAvatar(name: friend.displayName, url: friend.avatarUrl, size: 40),
+                      title: friend.displayName,
+                      detail: '${room.name} · ${space.name}',
+                      onJoin: voice.canJoin(room)
+                          ? () {
+                              voice.joinRoom(room);
+                              openVoiceRoom(context, room);
+                            }
+                          : null,
+                    ),
+                  ),
               ],
             ),
           ),
@@ -130,6 +159,38 @@ class ChatsTab extends StatelessWidget {
           ],
         );
       },
+    );
+  }
+
+  /// Each friend in a voice room of a Space the user is in, with the room; not
+  /// the room the user is in, which the voice bar shows.
+  static Iterable<(Member, Room, Space)> _friendsInVoice(ChatRepository repository, VoiceController voice) sync* {
+    final friends = {for (final f in repository.friends.value.friends) f.userId: f};
+    if (friends.isEmpty) return;
+    for (final space in repository.spaces.value) {
+      for (final room in space.rooms) {
+        if (room.kind != RoomKind.voice || voice.target?.id == room.id) continue;
+        for (final p in voice.participants(room.id)) {
+          if (friends[p.userId] case final friend?) yield (friend, room, space);
+        }
+      }
+    }
+  }
+
+  static Widget _ongoingCall(BuildContext context, String conversationId) {
+    final repository = context.repository;
+    final voice = context.voice;
+    final summary = repository.conversations.value.where((c) => c.id == conversationId).firstOrNull;
+    final title = summary?.title ?? 'Call';
+    return CallPresenceCard(
+      key: ValueKey('call-$conversationId'),
+      icon: FLucideIcons.phoneCall,
+      leading: summary == null ? null : UserAvatar(name: title, url: summary.avatarUrl, size: 40),
+      title: title,
+      detail: voice.participants(conversationId).isEmpty
+          ? 'Call in progress'
+          : voiceSnippet(repository, voice, conversationId),
+      onJoin: () => callConversation(context, conversationId),
     );
   }
 
@@ -436,6 +497,27 @@ class _SpaceDirectoryState extends State<SpaceDirectory> {
                               padding: const EdgeInsets.fromLTRB(16, 8, 16, 0),
                               child: SpaceBanner(key: ValueKey(banner), url: banner),
                             ),
+                          // Voice going on here, above the rooms, to join; not the
+                          // room the user is in: the voice bar already shows that one.
+                          for (final room in space.rooms)
+                            if (room.kind == RoomKind.voice &&
+                                voice.target?.id != room.id &&
+                                voice.participants(room.id).isNotEmpty)
+                              Padding(
+                                padding: const EdgeInsets.fromLTRB(16, 12, 16, 0),
+                                child: CallPresenceCard(
+                                  key: ValueKey('voice-${room.id}'),
+                                  icon: FLucideIcons.volume2,
+                                  title: room.name,
+                                  detail: voiceSnippet(repository, voice, room.id),
+                                  onJoin: voice.canJoin(room)
+                                      ? () {
+                                          voice.joinRoom(room);
+                                          openVoiceRoom(context, room);
+                                        }
+                                      : null,
+                                ),
+                              ),
                           if (space.sections.isEmpty)
                             const SizedBox(
                               height: 240,

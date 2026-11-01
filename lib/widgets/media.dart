@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:io';
 import 'dart:math' as math;
 
+import 'package:audio_service/audio_service.dart' as svc;
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:forui/forui.dart';
@@ -19,14 +20,27 @@ import 'depth.dart';
 // Playback
 // -----------------------------------------------------------------------------
 
-/// What's playing: one voice note or audio file at a time, app-wide.
+/// What's playing: one voice note or audio file at a time, app-wide. The
+/// playback bar over the tabs shows it while [id] is set.
 @immutable
 class PlaybackState {
   final String? id;
+
+  /// What it is and who sent it, for the playback bar and Android's media
+  /// controls.
+  final String title;
+  final String? artist;
   final bool playing;
   final Duration position;
   final Duration? duration;
-  const PlaybackState({this.id, this.playing = false, this.position = Duration.zero, this.duration});
+  const PlaybackState({
+    this.id,
+    this.title = '',
+    this.artist,
+    this.playing = false,
+    this.position = Duration.zero,
+    this.duration,
+  });
 
   static const idle = PlaybackState();
 }
@@ -37,45 +51,119 @@ abstract class AudioPlayback {
   ValueListenable<PlaybackState> get state;
 
   /// Plays [url] as [id], from where it was paused if it's the same.
-  Future<void> play(String id, String url);
+  /// [title] and [artist] name it in the playback bar and the system's media
+  /// controls, which show [artUrl] (the sender's avatar) as its artwork.
+  Future<void> play(String id, String url, {required String title, String? artist, String? artUrl});
+
+  /// Plays what was paused.
+  Future<void> resume();
   Future<void> pause();
   Future<void> seek(String id, Duration position);
+
+  /// Stops and forgets it: the playback bar and the media notification go.
+  Future<void> stop();
 
   static AudioPlayback instance = JustAudioPlayback();
 }
 
+/// The one player, as Android's media session through audio_service: a voice
+/// note shows in the media notification, quick settings and the phone's own
+/// surfaces (Infinix's Dynamic Bar), with its sender's avatar. main() registers
+/// it; unregistered (in tests, or if that failed) it still plays.
+class VoiceNoteHandler extends svc.BaseAudioHandler with svc.SeekHandler {
+  VoiceNoteHandler._() {
+    player.playbackEventStream.listen((_) => playbackState.add(_session()), onError: (Object _) {});
+    player.durationStream.listen((d) {
+      if (mediaItem.value case final item? when d != null) mediaItem.add(item.copyWith(duration: d));
+    });
+  }
+
+  static final instance = VoiceNoteHandler._();
+
+  final player = ja.AudioPlayer();
+
+  /// Called once it's stopped, from the app or the notification: the app
+  /// forgets the note too.
+  VoidCallback? onStopped;
+
+  /// Plays the last note again: the system's Play once it has ended.
+  Future<void> Function()? onReplay;
+
+  svc.PlaybackState _session() => playbackState.value.copyWith(
+    controls: [if (player.playing) svc.MediaControl.pause else svc.MediaControl.play, svc.MediaControl.stop],
+    systemActions: const {svc.MediaAction.seek},
+    androidCompactActionIndices: const [0, 1],
+    processingState: switch (player.processingState) {
+      ja.ProcessingState.idle => svc.AudioProcessingState.idle,
+      ja.ProcessingState.loading => svc.AudioProcessingState.loading,
+      ja.ProcessingState.buffering => svc.AudioProcessingState.buffering,
+      ja.ProcessingState.ready => svc.AudioProcessingState.ready,
+      ja.ProcessingState.completed => svc.AudioProcessingState.completed,
+    },
+    playing: player.playing,
+    updatePosition: player.position,
+    bufferedPosition: player.bufferedPosition,
+    speed: player.speed,
+  );
+
+  @override
+  Future<void> play() async {
+    // Nothing loaded: its note ended or was stopped, and the system's media
+    // card still offers Play.
+    if (player.processingState == ja.ProcessingState.idle) return onReplay?.call();
+    return player.play();
+  }
+
+  @override
+  Future<void> pause() => player.pause();
+
+  @override
+  Future<void> seek(Duration position) => player.seek(position);
+
+  @override
+  Future<void> stop() async {
+    await player.stop();
+    onStopped?.call();
+    await super.stop();
+  }
+}
+
 class JustAudioPlayback implements AudioPlayback {
-  ja.AudioPlayer? _player;
+  VoiceNoteHandler? _handler;
   final _state = ValueNotifier(PlaybackState.idle);
-  final _subs = <StreamSubscription<Object?>>[];
+  ({String id, String url, String title, String? artist, String? artUrl})? _last;
 
   @override
   ValueListenable<PlaybackState> get state => _state;
 
-  ja.AudioPlayer _ensure() {
-    final existing = _player;
-    if (existing != null) return existing;
-    final player = _player = ja.AudioPlayer();
-    _subs.addAll([
-      player.positionStream.listen((p) => _update(position: p)),
-      player.durationStream.listen((d) => _update(duration: d)),
-      player.playerStateStream.listen((s) {
-        if (s.processingState == ja.ProcessingState.completed) {
-          unawaited(player.pause());
-          unawaited(player.seek(Duration.zero));
-          _update(playing: false, position: Duration.zero);
-        } else {
-          _update(playing: s.playing);
-        }
-      }),
-    ]);
-    return player;
+  VoiceNoteHandler _ensure() {
+    if (_handler case final existing?) return existing;
+    final handler = _handler = VoiceNoteHandler.instance;
+    handler.onStopped = () => _state.value = PlaybackState.idle;
+    handler.onReplay = () async {
+      if (_last case final l?) await play(l.id, l.url, title: l.title, artist: l.artist, artUrl: l.artUrl);
+    };
+    final player = handler.player;
+    player.positionStream.listen((p) => _update(position: p));
+    player.durationStream.listen((d) => _update(duration: d));
+    player.playerStateStream.listen((s) {
+      // A note played to its end is done: the bar and the notification go.
+      if (s.processingState == ja.ProcessingState.completed) {
+        unawaited(handler.stop());
+      } else {
+        _update(playing: s.playing);
+      }
+    });
+    return handler;
   }
 
   void _update({bool? playing, Duration? position, Duration? duration}) {
     final s = _state.value;
+    if (s.id == null) return;
     _state.value = PlaybackState(
       id: s.id,
+      title: s.title,
+      artist: s.artist,
       playing: playing ?? s.playing,
       position: position ?? s.position,
       duration: duration ?? s.duration,
@@ -83,22 +171,33 @@ class JustAudioPlayback implements AudioPlayback {
   }
 
   @override
-  Future<void> play(String id, String url) async {
-    final player = _ensure();
+  Future<void> play(String id, String url, {required String title, String? artist, String? artUrl}) async {
+    final handler = _ensure();
+    _last = (id: id, url: url, title: title, artist: artist, artUrl: artUrl);
     if (_state.value.id != id) {
-      await player.stop();
-      _state.value = PlaybackState(id: id);
-      await player.setUrl(url);
+      await handler.player.stop();
+      _state.value = PlaybackState(id: id, title: title, artist: artist);
+      handler.mediaItem.add(
+        svc.MediaItem(id: id, title: title, artist: artist, artUri: artUrl == null ? null : Uri.tryParse(artUrl)),
+      );
+      await handler.player.setUrl(url);
     }
-    unawaited(player.play());
+    // The player's own play: the handler's would replay a note that's idle.
+    unawaited(handler.player.play());
   }
 
   @override
-  Future<void> pause() async => _player?.pause();
+  Future<void> resume() async => _handler?.play();
+
+  @override
+  Future<void> pause() async => _handler?.pause();
+
+  @override
+  Future<void> stop() async => _handler?.stop();
 
   @override
   Future<void> seek(String id, Duration position) async {
-    if (_state.value.id == id) await _player?.seek(position);
+    if (_state.value.id == id) await _handler?.seek(position);
   }
 }
 
@@ -199,7 +298,16 @@ class VoiceNotePlayer extends StatelessWidget {
   final MessageAttachment attachment;
   final bool mine;
   final String authorName;
-  const VoiceNotePlayer({required this.attachment, required this.mine, required this.authorName, super.key});
+
+  /// The sender's avatar: the note's artwork in the system's media controls.
+  final String? authorAvatarUrl;
+  const VoiceNotePlayer({
+    required this.attachment,
+    required this.mine,
+    required this.authorName,
+    this.authorAvatarUrl,
+    super.key,
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -237,7 +345,15 @@ class VoiceNotePlayer extends StatelessWidget {
                   playing: playing,
                   onAccent: mine,
                   label: playing ? 'Pause' : 'Play voice note',
-                  onPressed: () => playing ? playback.pause() : playback.play(attachment.id, attachment.url),
+                  onPressed: () => playing
+                      ? playback.pause()
+                      : playback.play(
+                          attachment.id,
+                          attachment.url,
+                          title: 'Voice message',
+                          artist: authorName,
+                          artUrl: authorAvatarUrl,
+                        ),
                 ),
                 const SizedBox(width: 10),
                 Expanded(
@@ -312,7 +428,9 @@ class AudioFileTile extends StatelessWidget {
                   playing: playing,
                   onAccent: false,
                   label: playing ? 'Pause' : 'Play ${attachment.displayName}',
-                  onPressed: () => playing ? playback.pause() : playback.play(attachment.id, attachment.url),
+                  onPressed: () => playing
+                      ? playback.pause()
+                      : playback.play(attachment.id, attachment.url, title: attachment.displayName),
                 ),
                 const SizedBox(width: 12),
                 Expanded(
@@ -416,21 +534,68 @@ class _Scrub extends StatelessWidget {
 // Video
 // -----------------------------------------------------------------------------
 
-const _media = Color(0xFF2B2D33);
+/// Behind a video until its poster or first frame shows.
+const videoBackdrop = Color(0xFF2B2D33);
+
+/// The play mark over a video's poster.
+class PlayMark extends StatelessWidget {
+  const PlayMark({super.key});
+
+  @override
+  Widget build(BuildContext context) => Container(
+    width: 48,
+    height: 48,
+    decoration: BoxDecoration(
+      color: const Color(0x8C111113),
+      borderRadius: BorderRadius.circular(DuvetTokens.radiusButton),
+      border: Border.all(color: const Color(0x1FFFFFFF)),
+    ),
+    child: const Icon(FLucideIcons.play, color: Color(0xFFF2F1EE), size: 24),
+  );
+}
 
 /// A video in a message: a poster with a play button; tapping plays it full
-/// screen.
-class VideoTile extends StatelessWidget {
+/// screen. The poster is [poster] (an embed's picture) or else the video's
+/// first frame, loaded paused.
+class VideoTile extends StatefulWidget {
   final MessageAttachment attachment;
   final double width;
-  const VideoTile({required this.attachment, this.width = 248, super.key});
+  final String? poster;
+  const VideoTile({required this.attachment, this.width = 248, this.poster, super.key});
+
+  @override
+  State<VideoTile> createState() => _VideoTileState();
+}
+
+class _VideoTileState extends State<VideoTile> {
+  // Only while on screen: the list drops (and so disposes) a tile scrolled away.
+  late final VideoPlayerController? _frame = widget.poster != null || widget.attachment.local
+      ? null
+      : VideoPage.controllerFor(Uri.parse(widget.attachment.url));
+
+  @override
+  void initState() {
+    super.initState();
+    _frame?.initialize().then((_) {
+      if (mounted) setState(() {});
+    }, onError: (Object _) {});
+  }
+
+  @override
+  void dispose() {
+    _frame?.dispose();
+    super.dispose();
+  }
 
   @override
   Widget build(BuildContext context) {
+    final attachment = widget.attachment;
+    final width = widget.width;
     final ratio = attachment.width == null || attachment.height == null || attachment.height == 0
         ? 248 / 168
         : (attachment.width! / attachment.height!).clamp(0.6, 2.0);
     final height = math.min(width / ratio, 320.0);
+    final frame = _frame?.value;
     void open() => Navigator.of(context, rootNavigator: true).push(
       PageRouteBuilder<void>(
         opaque: false,
@@ -455,22 +620,31 @@ class VideoTile extends StatelessWidget {
         child: Container(
           width: width,
           height: height,
+          clipBehavior: Clip.antiAlias,
           decoration: BoxDecoration(
-            color: _media,
+            color: videoBackdrop,
             borderRadius: BorderRadius.circular(DuvetTokens.radiusButton),
             boxShadow: context.duvet.shadowRest,
           ),
-          child: Center(
-            child: Container(
-              width: 48,
-              height: 48,
-              decoration: BoxDecoration(
-                color: const Color(0x8C111113),
-                borderRadius: BorderRadius.circular(DuvetTokens.radiusButton),
-                border: Border.all(color: const Color(0x1FFFFFFF)),
-              ),
-              child: const Icon(FLucideIcons.play, color: Color(0xFFF2F1EE), size: 24),
-            ),
+          child: Stack(
+            fit: StackFit.expand,
+            children: [
+              if (widget.poster case final poster?)
+                Image.network(
+                  poster,
+                  fit: BoxFit.cover,
+                  cacheWidth: (width * MediaQuery.devicePixelRatioOf(context)).round(),
+                  excludeFromSemantics: true,
+                  errorBuilder: (_, _, _) => const SizedBox.shrink(),
+                )
+              else if (frame != null && frame.isInitialized && !frame.size.isEmpty)
+                FittedBox(
+                  fit: BoxFit.cover,
+                  clipBehavior: Clip.hardEdge,
+                  child: SizedBox.fromSize(size: frame.size, child: VideoPlayer(_frame!)),
+                ),
+              const Center(child: PlayMark()),
+            ],
           ),
         ),
       ),

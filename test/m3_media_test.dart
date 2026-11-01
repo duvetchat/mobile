@@ -37,7 +37,7 @@ class _Playback implements AudioPlayback {
   ValueListenable<PlaybackState> get state => _state;
 
   @override
-  Future<void> play(String id, String url) async {
+  Future<void> play(String id, String url, {required String title, String? artist, String? artUrl}) async {
     played.add((id, url));
     _state.value = PlaybackState(id: id, playing: true, duration: const Duration(seconds: 14));
   }
@@ -47,6 +47,12 @@ class _Playback implements AudioPlayback {
 
   @override
   Future<void> seek(String id, Duration position) async {}
+
+  @override
+  Future<void> resume() async {}
+
+  @override
+  Future<void> stop() async => _state.value = PlaybackState.idle;
 }
 
 class _Recorder implements VoiceRecorder {

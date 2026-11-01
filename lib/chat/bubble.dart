@@ -110,7 +110,8 @@ class _Bubble extends StatelessWidget {
         directory.me != null &&
         (mentionedIn(m.text).contains(directory.me) ||
             (m.reply?.mentionAuthor == true && m.reply?.authorId == directory.me));
-    final textBubble = m.content.isNotEmpty && !isJumboEmoji(m.content);
+    final text = withoutPreviewedLinks(m.content, m.embeds, cards: !lifted);
+    final textBubble = text.isNotEmpty && !isJumboEmoji(text);
     final maxWidth = MediaQuery.sizeOf(context).width * 0.75;
     final secondary = DuvetType.caption.copyWith(color: colors.mutedForeground);
     final faded = entry.delivery != _Delivery.sent;
@@ -139,12 +140,12 @@ class _Bubble extends StatelessWidget {
             onDoubleTap: onDoubleTap,
             child: StickerView(url: m.stickerUrl!, name: stickerName),
           ),
-        if (m.content.isNotEmpty)
-          if (isJumboEmoji(m.content))
+        if (text.isNotEmpty)
+          if (isJumboEmoji(text))
             GestureDetector(
               onDoubleTap: onDoubleTap,
               child: MessageText(
-                content: m.content,
+                content: text,
                 directory: directory,
                 style: DuvetType.body.copyWith(color: colors.foreground),
               ),
@@ -164,7 +165,7 @@ class _Bubble extends StatelessWidget {
                   border: mentionsMe ? Border.all(color: tokens.violetText, width: 1.5) : null,
                 ),
                 child: MessageText(
-                  content: m.content,
+                  content: text,
                   directory: directory,
                   onAccent: mine,
                   style: DuvetType.body.copyWith(color: mine ? colors.primaryForeground : colors.foreground),
@@ -175,7 +176,12 @@ class _Bubble extends StatelessWidget {
               ),
             ),
         if (m.isVoice && m.attachments.isNotEmpty)
-          VoiceNotePlayer(attachment: m.attachments.first, mine: mine, authorName: m.authorName)
+          VoiceNotePlayer(
+            attachment: m.attachments.first,
+            mine: mine,
+            authorName: m.authorName,
+            authorAvatarUrl: m.authorAvatarUrl,
+          )
         else if (m.attachments.isNotEmpty)
           MessageAttachments(attachments: m.attachments, uploadProgress: progress, onDoubleTap: onDoubleTap),
         // Duvet's own links, as cards: a quoted message, an invite.

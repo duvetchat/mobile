@@ -52,6 +52,8 @@ Desktop: `MessageAttachments`, `ImagePreview`, `VoiceNotePlayer`, `AudioFilePlay
 - [x] **Image viewer:** save to gallery, share, swipe down to dismiss.
 - [x] **Upload progress:** show progress per file; an upload that's too large gets a clear error (check desktop's limits).
 - [x] **Link previews:** `MessageLinkEmbed` (a Duvet message link shows the quoted message) and `InviteEmbed` (an invite link shows a Join card).
+- [ ] **YouTube full screen cuts the video:** going full screen (from the tile or the dock) closes the player and opens a new one at the same second, so the video stops and loads again. The dock already avoids this by taking the tile's own webview (`DockedYouTube.session`, a bare `WebViewWidget`); the full-screen route (`openYouTubeFullScreen` in `lib/widgets/youtube_dock.dart`) could take it the same way.
+- [ ] **Media design follow-ups (Design review, 1 Nov 2026):** `VideoTile` clamps its ratio to 0.6–2.0 and has `shadowRest`, while pictures and YouTube keep their own ratio and no shadow; `VoiceBar` is 64pt where the playback bar and the YouTube dock use the tab bar's 56; there are no tokens for a "live" dot (the call banner uses `accentText`, the members sheet a hard-coded green) or for the play mark's overlay colors.
 
 ## M4 · Navigation & search
 
