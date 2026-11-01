@@ -1072,8 +1072,8 @@ class _NoticeState extends State<_Notice> {
   }
 }
 
-/// Above the composer: who's typing, and who's recording a voice message,
-/// as the desktop's typing indicator says it.
+/// Above the composer: the ghost and its typing dots, then who's typing and
+/// who's recording a voice message, as the desktop's typing indicator says it.
 class _TypingLine extends StatelessWidget {
   final List<TypingUser> users;
   const _TypingLine({required this.users});
@@ -1088,7 +1088,25 @@ class _TypingLine extends StatelessWidget {
         padding: const EdgeInsets.only(left: 4, bottom: 8),
         child: Semantics(
           liveRegion: true,
-          child: Text(who, style: DuvetType.caption.copyWith(color: context.theme.colors.mutedForeground)),
+          label: who,
+          excludeSemantics: true,
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const GhostMark(size: 20),
+              const SizedBox(width: 6),
+              TypingDots(color: context.duvet.violetText),
+              const SizedBox(width: 8),
+              Flexible(
+                child: Text(
+                  who,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: DuvetType.caption.copyWith(color: context.theme.colors.mutedForeground),
+                ),
+              ),
+            ],
+          ),
         ),
       ),
     );

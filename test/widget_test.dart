@@ -24,9 +24,17 @@ void main() {
     await tester.pumpAndSettle();
   }
 
+  // Signed out, Welcome comes first; its Sign in opens the form.
+  Future<void> openSignIn(WidgetTester tester) async {
+    expect(find.text('Talk with your people.'), findsOneWidget);
+    await tester.tap(find.text('Sign in'));
+    await tester.pumpAndSettle();
+    expect(find.text('Sign in to Duvet'), findsOneWidget);
+  }
+
   testWidgets('signing in shows the conversations', (tester) async {
     await pumpApp(tester, signedIn: false);
-    expect(find.text('Sign in to Duvet'), findsOneWidget);
+    await openSignIn(tester);
 
     await tester.enterText(find.byType(EditableText).at(0), 'gaby@duvet.chat');
     await tester.enterText(find.byType(EditableText).at(1), 'wrong');
@@ -47,6 +55,7 @@ void main() {
     tester.platformDispatcher.localesTestValue = const [Locale('es', 'ES')];
     addTearDown(tester.platformDispatcher.clearLocalesTestValue);
     await pumpApp(tester, signedIn: false);
+    await openSignIn(tester);
 
     await tester.enterText(find.byType(EditableText).at(0), 'gaby@duvet.chat');
     await tester.enterText(find.byType(EditableText).at(1), 'secret');
@@ -207,7 +216,7 @@ void main() {
     await tester.pumpAndSettle();
     await tester.tap(find.text('Sign out'));
     await tester.pumpAndSettle();
-    expect(find.text('Sign in to Duvet'), findsOneWidget);
+    expect(find.text('Talk with your people.'), findsOneWidget);
   });
 
   test('facehash hashes names as facehash-sv does', () {

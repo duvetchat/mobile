@@ -5,7 +5,8 @@ import 'package:forui/forui.dart';
 import 'account.dart';
 import 'data/scope.dart';
 import 'theme.dart';
-import 'widgets/facehash.dart';
+import 'widgets/chrome.dart';
+import 'widgets/duvet_mascot.dart';
 import 'widgets/rows.dart';
 
 class LoginScreen extends StatefulWidget {
@@ -39,8 +40,11 @@ class _LoginScreenState extends State<LoginScreen> {
       _busy = true;
       _error = null;
     });
+    final navigator = Navigator.of(context);
     try {
       await context.repository.logIn(email, password);
+      // Signed in: the app replaces Welcome underneath; this form goes too.
+      navigator.popUntil((r) => r.isFirst);
     } on DuvetAuthException {
       _fail('That email and password don’t match.');
     } on DuvetApiException catch (e) {
@@ -61,85 +65,103 @@ class _LoginScreenState extends State<LoginScreen> {
 
   void _push(Widget page) => Navigator.of(context).push(MaterialPageRoute<void>(builder: (_) => page));
 
+  // The two forms take each other's place, so Back always lands on Welcome.
+  void _swap(Widget page) => Navigator.of(context).pushReplacement(MaterialPageRoute<void>(builder: (_) => page));
+
   @override
   Widget build(BuildContext context) {
     final colors = context.theme.colors;
     return Scaffold(
       backgroundColor: colors.background,
-      body: SafeArea(
-        child: Center(
-          child: SingleChildScrollView(
-            padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 24),
-            child: ConstrainedBox(
-              constraints: const BoxConstraints(maxWidth: 400),
-              child: AutofillGroup(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.stretch,
-                  children: [
-                    const Center(child: Facehash(name: 'Duvet', size: 72)),
-                    const SizedBox(height: 16),
-                    Semantics(
-                      header: true,
-                      child: Text(
-                        'Sign in to Duvet',
-                        textAlign: TextAlign.center,
-                        style: DuvetType.largeTitle.copyWith(color: colors.foreground),
-                      ),
-                    ),
-                    const SizedBox(height: 32),
-                    DuvetTextField(
-                      label: 'Email',
-                      controller: _email,
-                      keyboardType: TextInputType.emailAddress,
-                      textInputAction: TextInputAction.next,
-                      autofillHints: const [AutofillHints.email],
-                    ),
-                    const SizedBox(height: 16),
-                    DuvetTextField(
-                      label: 'Password',
-                      controller: _password,
-                      obscure: true,
-                      textInputAction: TextInputAction.done,
-                      autofillHints: const [AutofillHints.password],
-                      onSubmitted: (_) => _submit(),
-                    ),
-                    Align(
-                      alignment: Alignment.centerRight,
-                      child: TextAction(
-                        label: 'Forgot password?',
-                        onPressed: () => _push(const ForgotPasswordScreen()),
-                      ),
-                    ),
-                    if (_error case final error?) ...[
-                      const SizedBox(height: 8),
-                      Semantics(
-                        liveRegion: true,
-                        child: Text(error, style: DuvetType.caption.copyWith(color: colors.error)),
-                      ),
-                    ],
-                    const SizedBox(height: 16),
-                    DuvetButton(
-                      label: 'Sign in',
-                      variant: ButtonVariant.primary,
-                      expand: true,
-                      busy: _busy,
-                      onPressed: _submit,
-                    ),
-                    const SizedBox(height: 16),
-                    Wrap(
-                      alignment: WrapAlignment.center,
-                      crossAxisAlignment: WrapCrossAlignment.center,
+      body: Stack(
+        children: [
+          SafeArea(
+            child: Center(
+              child: SingleChildScrollView(
+                padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 24),
+                child: ConstrainedBox(
+                  constraints: const BoxConstraints(maxWidth: 400),
+                  child: AutofillGroup(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
                       children: [
-                        Text('New to Duvet?', style: DuvetType.snippet.copyWith(color: colors.mutedForeground)),
-                        TextAction(label: 'Create an account', onPressed: () => _push(const SignUpScreen())),
+                        const Center(child: DuvetMascot(MascotState.hello, size: 120, excludeFromSemantics: true)),
+                        const SizedBox(height: 16),
+                        Semantics(
+                          header: true,
+                          child: Text(
+                            'Sign in to Duvet',
+                            textAlign: TextAlign.center,
+                            style: DuvetType.largeTitle.copyWith(color: colors.foreground),
+                          ),
+                        ),
+                        const SizedBox(height: 32),
+                        DuvetTextField(
+                          label: 'Email',
+                          controller: _email,
+                          keyboardType: TextInputType.emailAddress,
+                          textInputAction: TextInputAction.next,
+                          autofillHints: const [AutofillHints.email],
+                        ),
+                        const SizedBox(height: 16),
+                        DuvetTextField(
+                          label: 'Password',
+                          controller: _password,
+                          obscure: true,
+                          textInputAction: TextInputAction.done,
+                          autofillHints: const [AutofillHints.password],
+                          onSubmitted: (_) => _submit(),
+                        ),
+                        Align(
+                          alignment: Alignment.centerRight,
+                          child: TextAction(
+                            label: 'Forgot password?',
+                            onPressed: () => _push(const ForgotPasswordScreen()),
+                          ),
+                        ),
+                        if (_error case final error?) ...[
+                          const SizedBox(height: 8),
+                          Semantics(
+                            liveRegion: true,
+                            child: Text(error, style: DuvetType.caption.copyWith(color: colors.error)),
+                          ),
+                        ],
+                        const SizedBox(height: 16),
+                        DuvetButton(
+                          label: 'Sign in',
+                          variant: ButtonVariant.primary,
+                          expand: true,
+                          busy: _busy,
+                          onPressed: _submit,
+                        ),
+                        const SizedBox(height: 16),
+                        Wrap(
+                          alignment: WrapAlignment.center,
+                          crossAxisAlignment: WrapCrossAlignment.center,
+                          children: [
+                            Text('New to Duvet?', style: DuvetType.snippet.copyWith(color: colors.mutedForeground)),
+                            TextAction(label: 'Create an account', onPressed: () => _swap(const SignUpScreen())),
+                          ],
+                        ),
                       ],
                     ),
-                  ],
+                  ),
                 ),
               ),
             ),
           ),
-        ),
+          // Opened from Welcome: the way back to it.
+          if (Navigator.of(context).canPop())
+            Positioned(
+              top: MediaQuery.paddingOf(context).top + 6,
+              left: 8,
+              child: IconAction(
+                icon: FLucideIcons.chevronLeft,
+                label: 'Back',
+                onPressed: () => Navigator.of(context).maybePop(),
+              ),
+            ),
+        ],
       ),
     );
   }

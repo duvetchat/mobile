@@ -122,7 +122,7 @@ void main() {
 
   testWidgets('sign up: fields check themselves; the account verifies by its emailed link', (tester) async {
     final repository = await pumpApp(tester, signedIn: false);
-    await tapLabel(tester, 'Create an account');
+    await tapLabel(tester, 'Create account');
     expect(find.text('Create your account'), findsOneWidget);
     final create = find.bySemanticsLabel('Create account');
     expect(tester.getSemantics(create).getSemanticsData().flagsCollection.isEnabled.toString(), contains('isFalse'));
@@ -149,6 +149,7 @@ void main() {
 
   testWidgets('forgot password sends a link; the link opens the new-password screen', (tester) async {
     final repository = await pumpApp(tester, signedIn: false);
+    await tapLabel(tester, 'Sign in');
     await tapLabel(tester, 'Forgot password?');
     await tester.enterText(find.byType(EditableText), 'alex@example.com');
     await tapLabel(tester, 'Send reset link');

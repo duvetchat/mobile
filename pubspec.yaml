@@ -98,6 +98,9 @@ flutter:
 
   assets:
     - assets/emoji.json
+    - assets/mascot/light/
+    - assets/mascot/dark/
+    - assets/logo/app-icon-rounded.svg
 
   # The Ghost theme's three faces (lib/theme.dart, DuvetType): Fraunces for
   # headers (one variable file, axes set in code), Inter for the interface,

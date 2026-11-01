@@ -13,6 +13,7 @@ import 'data/appearance.dart';
 import 'data/links.dart';
 import 'data/models.dart';
 import 'data/scope.dart';
+import 'login.dart';
 import 'people.dart';
 import 'space_admin.dart' show avatarSide, saveBannerImage, saveSquareImage;
 import 'tabs.dart' show LiveIndicator;
@@ -181,7 +182,11 @@ class _SignUpScreenState extends State<SignUpScreen> {
           crossAxisAlignment: WrapCrossAlignment.center,
           children: [
             Text('Already have an account?', style: DuvetType.snippet.copyWith(color: colors.mutedForeground)),
-            TextAction(label: 'Sign in', onPressed: () => Navigator.of(context).maybePop()),
+            TextAction(
+              label: 'Sign in',
+              onPressed: () =>
+                  Navigator.of(context).pushReplacement(MaterialPageRoute<void>(builder: (_) => const LoginScreen())),
+            ),
           ],
         ),
       ],
