@@ -354,15 +354,42 @@ void main() {
     semantics.dispose();
   });
 
-  testWidgets('Cancel drops the pictures picked: nothing goes up', (tester) async {
+  testWidgets('Cancel asks first, then drops the pictures picked: nothing goes up', (tester) async {
     final repository = await pumpApp(tester);
     await pickable(tester);
     await openYou(tester);
     await tapLabel(tester, 'Edit');
     await cropPicture(tester, 'Change profile photo');
     await tapLabel(tester, 'Cancel');
+    expect(find.text('Unsaved changes'), findsOneWidget);
+    await tapLabel(tester, 'Discard');
     expect(find.text('Edit profile'), findsNothing);
     expect(repository.account, isEmpty);
+    semantics.dispose();
+  });
+
+  testWidgets('leaving an edited profile asks first; Keep editing keeps the edit, unedited leaves at once', (
+    tester,
+  ) async {
+    final repository = await pumpApp(tester);
+    await openYou(tester);
+    await tapLabel(tester, 'Edit');
+    await tapLabel(tester, 'Cancel');
+    expect(find.text('Unsaved changes'), findsNothing);
+    expect(find.text('Edit profile'), findsNothing);
+
+    await tapLabel(tester, 'Edit');
+    await tester.enterText(find.byType(EditableText).first, 'Gabriela');
+    await tester.pumpAndSettle();
+    await tester.binding.handlePopRoute();
+    await tester.pumpAndSettle();
+    expect(find.text('Unsaved changes'), findsOneWidget);
+    await tapLabel(tester, 'Keep editing');
+    expect(find.text('Edit profile'), findsOneWidget);
+    expect(find.text('Gabriela'), findsOneWidget);
+    await tapLabel(tester, 'Save');
+    expect(repository.account, ['alias Gabriela']);
+    expect(find.text('Edit profile'), findsNothing);
     semantics.dispose();
   });
 

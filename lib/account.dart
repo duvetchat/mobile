@@ -22,6 +22,7 @@ import 'widgets/avatar.dart';
 import 'widgets/chrome.dart';
 import 'widgets/glass.dart';
 import 'widgets/rows.dart';
+import 'widgets/unsaved_changes.dart';
 
 void _toast(BuildContext context, String text) {
   if (context.mounted) showFToast(context: context, title: Text(text), duration: const Duration(seconds: 3));
@@ -767,159 +768,167 @@ class _EditProfilePageState extends State<EditProfilePage> {
     if (profile == null) return const SizedBox.shrink();
     // 5:2 across the list's width, inside its padding.
     final bannerHeight = (MediaQuery.sizeOf(context).width - 32) / bannerAspect;
-    return Scaffold(
-      backgroundColor: colors.background,
-      body: Stack(
-        children: [
-          Positioned.fill(
-            child: ListView(
-              padding: EdgeInsets.fromLTRB(16, GlassTopBar.heightOf(context) + 8, 16, padding.bottom + 24),
-              children: [
-                SizedBox(
-                  height: bannerHeight + 48,
-                  child: Stack(
-                    clipBehavior: Clip.none,
-                    children: [
-                      Container(
-                        height: bannerHeight,
-                        decoration: BoxDecoration(
-                          color: colors.secondary,
-                          borderRadius: BorderRadius.circular(DuvetTokens.radiusCard),
-                          image: switch (_banner ?? profile.bannerUrl) {
-                            final b? => DecorationImage(
-                              image: b.startsWith('http') ? NetworkImage(b) : FileImage(File(b)) as ImageProvider,
-                              fit: BoxFit.cover,
-                            ),
-                            null => null,
-                          },
+    final dirty =
+        _avatar != null ||
+        _banner != null ||
+        _alias.text.trim() != (profile.alias ?? '').trim() ||
+        _bio.text.trim() != (profile.bio ?? '').trim();
+    return UnsavedChanges(
+      dirty: dirty,
+      child: Scaffold(
+        backgroundColor: colors.background,
+        body: Stack(
+          children: [
+            Positioned.fill(
+              child: ListView(
+                padding: EdgeInsets.fromLTRB(16, GlassTopBar.heightOf(context) + 8, 16, padding.bottom + 24),
+                children: [
+                  SizedBox(
+                    height: bannerHeight + 48,
+                    child: Stack(
+                      clipBehavior: Clip.none,
+                      children: [
+                        Container(
+                          height: bannerHeight,
+                          decoration: BoxDecoration(
+                            color: colors.secondary,
+                            borderRadius: BorderRadius.circular(DuvetTokens.radiusCard),
+                            image: switch (_banner ?? profile.bannerUrl) {
+                              final b? => DecorationImage(
+                                image: b.startsWith('http') ? NetworkImage(b) : FileImage(File(b)) as ImageProvider,
+                                fit: BoxFit.cover,
+                              ),
+                              null => null,
+                            },
+                          ),
                         ),
-                      ),
-                      Positioned(
-                        right: 12,
-                        top: 12,
-                        child: Semantics(
-                          container: true,
-                          button: true,
-                          label: 'Change banner',
-                          excludeSemantics: true,
-                          onTap: () => _change(ProfileImage.banner),
-                          child: GestureDetector(
+                        Positioned(
+                          right: 12,
+                          top: 12,
+                          child: Semantics(
+                            container: true,
+                            button: true,
+                            label: 'Change banner',
+                            excludeSemantics: true,
                             onTap: () => _change(ProfileImage.banner),
-                            child: GlassSurface(
-                              borderRadius: BorderRadius.circular(DuvetTokens.radiusField),
-                              child: Padding(
-                                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-                                child: Row(
-                                  mainAxisSize: MainAxisSize.min,
-                                  children: [
-                                    Icon(FLucideIcons.image, size: 18, color: colors.foreground),
-                                    const SizedBox(width: 6),
-                                    Text('Banner', style: DuvetType.label.copyWith(color: colors.foreground)),
-                                  ],
+                            child: GestureDetector(
+                              onTap: () => _change(ProfileImage.banner),
+                              child: GlassSurface(
+                                borderRadius: BorderRadius.circular(DuvetTokens.radiusField),
+                                child: Padding(
+                                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                                  child: Row(
+                                    mainAxisSize: MainAxisSize.min,
+                                    children: [
+                                      Icon(FLucideIcons.image, size: 18, color: colors.foreground),
+                                      const SizedBox(width: 6),
+                                      Text('Banner', style: DuvetType.label.copyWith(color: colors.foreground)),
+                                    ],
+                                  ),
                                 ),
                               ),
                             ),
                           ),
                         ),
-                      ),
-                      Positioned(
-                        left: 16,
-                        top: bannerHeight - 40,
-                        child: Semantics(
-                          container: true,
-                          button: true,
-                          label: 'Change profile photo',
-                          excludeSemantics: true,
-                          onTap: () => _change(ProfileImage.avatar),
-                          child: GestureDetector(
+                        Positioned(
+                          left: 16,
+                          top: bannerHeight - 40,
+                          child: Semantics(
+                            container: true,
+                            button: true,
+                            label: 'Change profile photo',
+                            excludeSemantics: true,
                             onTap: () => _change(ProfileImage.avatar),
-                            child: Stack(
-                              clipBehavior: Clip.none,
-                              children: [
-                                DecoratedBox(
-                                  decoration: BoxDecoration(
-                                    shape: BoxShape.circle,
-                                    border: Border.all(color: colors.background, width: 4),
-                                    boxShadow: tokens.shadowRaised,
-                                  ),
-                                  child: _avatar != null
-                                      ? ClipOval(
-                                          child: Image.file(File(_avatar!), width: 88, height: 88, fit: BoxFit.cover),
-                                        )
-                                      : UserAvatar(name: profile.displayName, url: profile.avatarUrl, size: 88),
-                                ),
-                                Positioned(
-                                  right: -2,
-                                  bottom: -2,
-                                  child: Container(
-                                    width: 32,
-                                    height: 32,
+                            child: GestureDetector(
+                              onTap: () => _change(ProfileImage.avatar),
+                              child: Stack(
+                                clipBehavior: Clip.none,
+                                children: [
+                                  DecoratedBox(
                                     decoration: BoxDecoration(
-                                      color: colors.card,
-                                      borderRadius: BorderRadius.circular(DuvetTokens.radiusField),
-                                      boxShadow: tokens.shadowControl,
+                                      shape: BoxShape.circle,
+                                      border: Border.all(color: colors.background, width: 4),
+                                      boxShadow: tokens.shadowRaised,
                                     ),
-                                    child: Icon(FLucideIcons.camera, size: 16, color: colors.foreground),
+                                    child: _avatar != null
+                                        ? ClipOval(
+                                            child: Image.file(File(_avatar!), width: 88, height: 88, fit: BoxFit.cover),
+                                          )
+                                        : UserAvatar(name: profile.displayName, url: profile.avatarUrl, size: 88),
                                   ),
-                                ),
-                              ],
+                                  Positioned(
+                                    right: -2,
+                                    bottom: -2,
+                                    child: Container(
+                                      width: 32,
+                                      height: 32,
+                                      decoration: BoxDecoration(
+                                        color: colors.card,
+                                        borderRadius: BorderRadius.circular(DuvetTokens.radiusField),
+                                        boxShadow: tokens.shadowControl,
+                                      ),
+                                      child: Icon(FLucideIcons.camera, size: 16, color: colors.foreground),
+                                    ),
+                                  ),
+                                ],
+                              ),
                             ),
                           ),
                         ),
-                      ),
-                    ],
+                      ],
+                    ),
                   ),
-                ),
-                UploadNote(_upload),
-                const SizedBox(height: 8),
-                // At most 32 characters, as the API takes; empty, the username shows.
-                DuvetTextField(
-                  label: 'Display name',
-                  controller: _alias,
-                  hint: profile.username,
-                  error: _aliasTooLong ? 'Too long: $_aliasLength of $maxDisplayNameLength characters' : null,
-                ),
-                const SizedBox(height: 16),
-                // As the desktop's About Me: up to 190 characters, an emoji
-                // counting as one; empty clears it.
-                DuvetTextField(
-                  label: 'About me',
-                  controller: _bio,
-                  hint: 'A few words about you',
-                  maxLines: 4,
-                  helper: '$_bioLength of $maxBioLength characters',
-                  error: _bioTooLong ? 'Too long: $_bioLength of $maxBioLength characters' : null,
-                ),
-                const SizedBox(height: 16),
-                Text(
-                  'Username',
-                  style: DuvetType.caption.copyWith(color: colors.foreground, fontWeight: FontWeight.w500),
-                ),
-                const SizedBox(height: 8),
-                Container(
-                  height: 48,
-                  padding: const EdgeInsets.symmetric(horizontal: 16),
-                  alignment: Alignment.centerLeft,
-                  decoration: BoxDecoration(
-                    color: colors.secondary,
-                    borderRadius: BorderRadius.circular(DuvetTokens.radiusField),
+                  UploadNote(_upload),
+                  const SizedBox(height: 8),
+                  // At most 32 characters, as the API takes; empty, the username shows.
+                  DuvetTextField(
+                    label: 'Display name',
+                    controller: _alias,
+                    hint: profile.username,
+                    error: _aliasTooLong ? 'Too long: $_aliasLength of $maxDisplayNameLength characters' : null,
                   ),
-                  child: Text('@${profile.username}', style: DuvetType.body.copyWith(color: colors.mutedForeground)),
-                ),
-              ],
+                  const SizedBox(height: 16),
+                  // As the desktop's About Me: up to 190 characters, an emoji
+                  // counting as one; empty clears it.
+                  DuvetTextField(
+                    label: 'About me',
+                    controller: _bio,
+                    hint: 'A few words about you',
+                    maxLines: 4,
+                    helper: '$_bioLength of $maxBioLength characters',
+                    error: _bioTooLong ? 'Too long: $_bioLength of $maxBioLength characters' : null,
+                  ),
+                  const SizedBox(height: 16),
+                  Text(
+                    'Username',
+                    style: DuvetType.caption.copyWith(color: colors.foreground, fontWeight: FontWeight.w500),
+                  ),
+                  const SizedBox(height: 8),
+                  Container(
+                    height: 48,
+                    padding: const EdgeInsets.symmetric(horizontal: 16),
+                    alignment: Alignment.centerLeft,
+                    decoration: BoxDecoration(
+                      color: colors.secondary,
+                      borderRadius: BorderRadius.circular(DuvetTokens.radiusField),
+                    ),
+                    child: Text('@${profile.username}', style: DuvetType.body.copyWith(color: colors.mutedForeground)),
+                  ),
+                ],
+              ),
             ),
-          ),
-          Positioned(
-            top: 0,
-            left: 0,
-            right: 0,
-            child: GlassTopBar(
-              title: const Text('Edit profile'),
-              leading: TextAction(label: 'Cancel', onPressed: () => Navigator.of(context).maybePop()),
-              actions: [TextAction(label: 'Save', onPressed: _saving || _bioTooLong || _aliasTooLong ? null : _save)],
+            Positioned(
+              top: 0,
+              left: 0,
+              right: 0,
+              child: GlassTopBar(
+                title: const Text('Edit profile'),
+                leading: TextAction(label: 'Cancel', onPressed: () => Navigator.of(context).maybePop()),
+                actions: [TextAction(label: 'Save', onPressed: _saving || _bioTooLong || _aliasTooLong ? null : _save)],
+              ),
             ),
-          ),
-        ],
+          ],
+        ),
       ),
     );
   }

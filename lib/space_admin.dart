@@ -26,6 +26,7 @@ import 'widgets/glass.dart';
 import 'widgets/role_name.dart';
 import 'widgets/rows.dart';
 import 'widgets/scrolling.dart' show CarouselPhysics;
+import 'widgets/unsaved_changes.dart';
 
 /// Picks a Space's banner as it is: resized, Android's picker would make a GIF
 /// a still image. Tests swap in their own.
@@ -746,8 +747,9 @@ class SpaceOverviewPage extends StatefulWidget {
 
 class _SpaceOverviewPageState extends State<SpaceOverviewPage> {
   late final SpaceProfile? _profile = context.repository.spaceProfile(widget.spaceId);
-  late final _name = TextEditingController(text: _profile?.name);
-  late final _about = TextEditingController(text: _profile?.description);
+  late final _name = TextEditingController(text: _profile?.name)..addListener(_changed);
+  late final _about = TextEditingController(text: _profile?.description)..addListener(_changed);
+  void _changed() => setState(() {});
   String? _icon;
 
   /// The new banner, cropped; or [_removeBanner] to take the one there away.
@@ -836,63 +838,73 @@ class _SpaceOverviewPageState extends State<SpaceOverviewPage> {
     // What the banner will be once saved: the new one, none, or as it is.
     final bannerNow = _removeBanner ? null : p?.bannerUrl;
     final hasBanner = _banner != null || bannerNow != null;
-    return AdminPage(
-      title: 'Overview',
-      actions: [TextAction(label: 'Save', onPressed: _saving || p == null ? null : _save)],
-      children: [
-        if (p == null)
-          const ListNote('This Space is gone')
-        else ...[
-          const SizedBox(height: 8),
-          DuvetTextField(label: 'Name', controller: _name),
-          const SizedBox(height: 16),
-          DuvetTextField(label: 'What it’s about', controller: _about, maxLines: 3),
-          const Overline('Pictures'),
-          // The banner as it will look, 5:2.
-          if (_banner case final path?)
-            ExcludeSemantics(
-              child: ClipRRect(
-                borderRadius: BorderRadius.circular(DuvetTokens.radiusCard),
-                child: AspectRatio(
-                  aspectRatio: bannerAspect,
-                  child: Image.file(
-                    File(path),
-                    fit: BoxFit.cover,
-                    errorBuilder: (context, error, stackTrace) => const SizedBox.shrink(),
+    final dirty =
+        p != null &&
+        (_icon != null ||
+            _banner != null ||
+            _removeBanner ||
+            _name.text.trim() != p.name ||
+            _about.text.trim() != (p.description ?? '').trim());
+    return UnsavedChanges(
+      dirty: dirty,
+      child: AdminPage(
+        title: 'Overview',
+        actions: [TextAction(label: 'Save', onPressed: _saving || p == null ? null : _save)],
+        children: [
+          if (p == null)
+            const ListNote('This Space is gone')
+          else ...[
+            const SizedBox(height: 8),
+            DuvetTextField(label: 'Name', controller: _name),
+            const SizedBox(height: 16),
+            DuvetTextField(label: 'What it’s about', controller: _about, maxLines: 3),
+            const Overline('Pictures'),
+            // The banner as it will look, 5:2.
+            if (_banner case final path?)
+              ExcludeSemantics(
+                child: ClipRRect(
+                  borderRadius: BorderRadius.circular(DuvetTokens.radiusCard),
+                  child: AspectRatio(
+                    aspectRatio: bannerAspect,
+                    child: Image.file(
+                      File(path),
+                      fit: BoxFit.cover,
+                      errorBuilder: (context, error, stackTrace) => const SizedBox.shrink(),
+                    ),
                   ),
                 ),
-              ),
-            )
-          else if (bannerNow case final url?)
-            SpaceBanner(url: url),
-          if (hasBanner) const SizedBox(height: 12),
-          AdminPanel(
-            children: [
-              picked('Icon', _icon, () async {
-                final path = await chooseSpaceIcon(context);
-                if (path != null && mounted) setState(() => _icon = path);
-              }),
-              picked('Banner', _banner, _pickBanner, has: hasBanner),
-              if (hasBanner)
-                GlassRow(
-                  icon: FLucideIcons.trash2,
-                  label: 'Remove banner',
-                  destructive: true,
-                  onPressed: () => setState(() {
-                    _banner = null;
-                    _removeBanner = p.bannerUrl != null;
-                  }),
-                ),
-            ],
-          ),
-          UploadNote(_upload),
-          const SizedBox(height: 8),
-          Text(
-            'Everyone in the Space sees the change.',
-            style: DuvetType.caption.copyWith(color: colors.mutedForeground),
-          ),
+              )
+            else if (bannerNow case final url?)
+              SpaceBanner(url: url),
+            if (hasBanner) const SizedBox(height: 12),
+            AdminPanel(
+              children: [
+                picked('Icon', _icon, () async {
+                  final path = await chooseSpaceIcon(context);
+                  if (path != null && mounted) setState(() => _icon = path);
+                }),
+                picked('Banner', _banner, _pickBanner, has: hasBanner),
+                if (hasBanner)
+                  GlassRow(
+                    icon: FLucideIcons.trash2,
+                    label: 'Remove banner',
+                    destructive: true,
+                    onPressed: () => setState(() {
+                      _banner = null;
+                      _removeBanner = p.bannerUrl != null;
+                    }),
+                  ),
+              ],
+            ),
+            UploadNote(_upload),
+            const SizedBox(height: 8),
+            Text(
+              'Everyone in the Space sees the change.',
+              style: DuvetType.caption.copyWith(color: colors.mutedForeground),
+            ),
+          ],
         ],
-      ],
+      ),
     );
   }
 }
@@ -2521,7 +2533,7 @@ class RoleEditorPage extends StatefulWidget {
 }
 
 class _RoleEditorPageState extends State<RoleEditorPage> {
-  late final _name = TextEditingController(text: widget.role.name);
+  late final _name = TextEditingController(text: widget.role.name)..addListener(() => setState(() {}));
   late RoleColors _colors = widget.role.colors;
   late int _perms = widget.role.perms;
   late bool _hoisted = widget.role.hoisted;
@@ -2764,10 +2776,19 @@ class _RoleEditorPageState extends State<RoleEditorPage> {
       ],
     ];
     if (!widget.readOnly) {
-      return AdminPage(
-        title: 'Edit role',
-        actions: [TextAction(label: 'Save', onPressed: _saving ? null : _save)],
-        children: children,
+      final name = _name.text.trim();
+      final dirty =
+          (!r.everyone && name.isNotEmpty && name != r.name) ||
+          _colors != r.colors ||
+          _perms != r.perms ||
+          _hoisted != r.hoisted;
+      return UnsavedChanges(
+        dirty: dirty,
+        child: AdminPage(
+          title: 'Edit role',
+          actions: [TextAction(label: 'Save', onPressed: _saving ? null : _save)],
+          children: children,
+        ),
       );
     }
     return AdminPage(
