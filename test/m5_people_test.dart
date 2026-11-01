@@ -410,6 +410,20 @@ void main() {
     semantics.dispose();
   });
 
+  testWidgets('a profile opened in a Space shows the name in the member\'s top role color', (tester) async {
+    await openWith(
+      tester,
+      'hi',
+      setUp: (r) => r.roleTags[_leo] = const [RoleTag('Plain'), RoleTag('Crew', color: 0xFFE5484D)],
+    );
+    await tapLabel(tester, 'Leo’s profile');
+    final name = find.byWidgetPredicate((w) => w is RoleName && w.name == 'leo' && w.style == DuvetType.title);
+    expect(tester.widget<RoleName>(name).colors, const RoleTag('Crew', color: 0xFFE5484D).colors);
+    final text = tester.widget<Text>(find.descendant(of: name, matching: find.byType(Text)));
+    expect(text.style?.color, readableOn(const Color(0xFFE5484D), FTheme.of(tester.element(name)).colors.background));
+    semantics.dispose();
+  });
+
   testWidgets('friends: requests in and out, accept, decline, cancel, add by username', (tester) async {
     final repository = await pumpApp(
       tester,

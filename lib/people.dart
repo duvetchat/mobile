@@ -12,6 +12,7 @@ import 'widgets/chrome.dart';
 import 'widgets/depth.dart';
 import 'widgets/glass.dart';
 import 'widgets/message_content.dart';
+import 'widgets/role_name.dart';
 import 'widgets/rows.dart';
 
 /// What a presence reads as; nothing when it isn't known.
@@ -146,6 +147,11 @@ class _ProfileState extends State<_Profile> {
         // They asked the user: Accept request, as on the desktop's profile.
         final asking = f.incoming.where((r) => r.person.userId == m.userId).firstOrNull;
         final mutual = repository.spaces.value.where((s) => repository.isMember(s.id, m.userId)).length;
+        // Between the card's sections, as the hairlines elsewhere.
+        final divider = Padding(
+          padding: const EdgeInsets.symmetric(vertical: 16),
+          child: Container(height: 1, color: tokens.hairline),
+        );
         return ListView(
           controller: widget.scroll,
           padding: EdgeInsets.zero,
@@ -211,7 +217,10 @@ class _ProfileState extends State<_Profile> {
                     const SizedBox(height: 16),
                     Semantics(
                       header: true,
-                      child: Text(m.displayName, style: DuvetType.title.copyWith(color: colors.foreground)),
+                      child: switch (nameColorsOf(roles)) {
+                        final c? => RoleName(m.displayName, colors: c, style: DuvetType.title),
+                        null => Text(m.displayName, style: DuvetType.title.copyWith(color: colors.foreground)),
+                      },
                     ),
                     // No handle where only their name is known (a mention of
                     // someone the app hasn't met).
@@ -274,6 +283,7 @@ class _ProfileState extends State<_Profile> {
                     ],
                     const SizedBox(height: 16),
                     Container(
+                      width: double.infinity,
                       padding: const EdgeInsets.all(16),
                       decoration: BoxDecoration(
                         color: colors.card,
@@ -284,7 +294,7 @@ class _ProfileState extends State<_Profile> {
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
                           _Label('About'),
-                          const SizedBox(height: 4),
+                          const SizedBox(height: 8),
                           if (m.bio case final bio?)
                             // With the messages' markdown, as the desktop's About me.
                             MessageText(
@@ -299,14 +309,15 @@ class _ProfileState extends State<_Profile> {
                           else
                             Text('Nothing here yet.', style: DuvetType.body.copyWith(color: colors.mutedForeground)),
                           if (roles.isNotEmpty) ...[
-                            const SizedBox(height: 16),
+                            divider,
                             _Label('Roles in ${spaceName ?? 'this Space'}'),
                             const SizedBox(height: 8),
                             Wrap(spacing: 8, runSpacing: 8, children: [for (final r in roles) RoleChip(role: r)]),
                           ],
                           if (!me && mutual > 0) ...[
-                            const SizedBox(height: 16),
+                            divider,
                             _Label('Mutual Spaces'),
+                            const SizedBox(height: 8),
                             Text('$mutual', style: DuvetType.body.copyWith(color: colors.foreground)),
                           ],
                         ],
