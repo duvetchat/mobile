@@ -378,6 +378,25 @@ void main() {
     await finish(tester, app);
   });
 
+  testWidgets('voice going on in a Space shows above its rooms, to join', (tester) async {
+    final semantics = tester.ensureSemantics();
+    final app = await pumpApp(tester);
+    app.gateway.push(state(FakeRepository.maya, 3));
+    await openLounge(tester);
+    expect(find.text('Live · Maya'), findsOneWidget);
+
+    await tester.tap(find.text('Join'));
+    await settle(tester);
+    expect(app.gateway.types, contains('VOICE_JOIN'));
+    // In that room now: the voice bar has it, not the banner.
+    await tester.tap(find.bySemanticsLabel('Back'));
+    await settle(tester);
+    expect(find.text('lounge · Design Guild'), findsOneWidget);
+    expect(find.byKey(const ValueKey('voice-r-lounge')), findsNothing);
+    semantics.dispose();
+    await finish(tester, app);
+  });
+
   testWidgets('a call going on in a DM: its banner joins it', (tester) async {
     final app = await pumpApp(tester);
     // A new session lists the call: someone else's, going on.

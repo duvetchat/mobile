@@ -1,4 +1,3 @@
-import 'dart:async';
 import 'dart:io';
 import 'dart:math' as math;
 import 'dart:ui' show ImageFilter;
@@ -1149,9 +1148,14 @@ class _YouTubeTile extends StatefulWidget {
   State<_YouTubeTile> createState() => _YouTubeTileState();
 }
 
-class _YouTubeTileState extends State<_YouTubeTile> {
+class _YouTubeTileState extends State<_YouTubeTile> with AutomaticKeepAliveClientMixin {
   YouTubeSession? _session;
   Animation<double>? _route;
+
+  // A video started here goes on as the list scrolls it far away, and is where
+  // it got to when it scrolls back.
+  @override
+  bool get wantKeepAlive => _session != null;
 
   @override
   void didChangeDependencies() {
@@ -1166,6 +1170,7 @@ class _YouTubeTileState extends State<_YouTubeTile> {
     final session = _session;
     if (status != AnimationStatus.reverse || session == null || !session.playing) return;
     setState(() => _session = null);
+    updateKeepAlive();
     dockedYouTube.value = (id: widget.videoId, title: widget.title, seconds: session.seconds, session: session);
   }
 
@@ -1177,6 +1182,7 @@ class _YouTubeTileState extends State<_YouTubeTile> {
       if (on) _fullScreen(session);
     });
     setState(() => _session = session);
+    updateKeepAlive();
   }
 
   // The package's full screen would only fill the tile's overlay: the video
@@ -1184,6 +1190,7 @@ class _YouTubeTileState extends State<_YouTubeTile> {
   Future<void> _fullScreen(YouTubeSession session) async {
     session.controller.exitFullScreen();
     setState(() => _session = null);
+    updateKeepAlive();
     session.close();
     final back = await openYouTubeFullScreen(
       context,
@@ -1191,31 +1198,23 @@ class _YouTubeTileState extends State<_YouTubeTile> {
       seconds: session.seconds,
       ratio: widget.ratio,
     );
-    if (back == null) return;
-    if (mounted) return _play(seconds: back.seconds, autoPlay: back.playing);
-    if (back.playing) {
-      dockedYouTube.value = (id: widget.videoId, title: widget.title, seconds: back.seconds, session: null);
-    }
+    // Its message gone meanwhile: the video goes with it, as in dispose.
+    if (back != null && mounted) _play(seconds: back.seconds, autoPlay: back.playing);
   }
 
   @override
   void dispose() {
     _route?.removeStatusListener(_onRoute);
-    final session = _session;
-    // Still playing as it scrolls far away: on in the dock over the tabs.
-    // After this frame: the tree is locked while it unmounts.
-    if (session != null && session.playing) {
-      // Its player goes with it, still playing: no stop to load again.
-      final video = (id: widget.videoId, title: widget.title, seconds: session.seconds, session: session);
-      scheduleMicrotask(() => dockedYouTube.value = video);
-    } else {
-      session?.close();
-    }
+    // Kept alive while it plays, it only goes here with its message, or with a
+    // chat replaced or closed without the pop _onRoute docks on: the dock
+    // would sit under the next screen, so the video stops.
+    _session?.close();
     super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
+    super.build(context);
     final height = math.min(widget.width / widget.ratio, 320.0);
     final width = math.min(widget.width, height * widget.ratio);
     final playing = _session != null;

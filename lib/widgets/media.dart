@@ -72,7 +72,11 @@ abstract class AudioPlayback {
 /// it; unregistered (in tests, or if that failed) it still plays.
 class VoiceNoteHandler extends svc.BaseAudioHandler with svc.SeekHandler {
   VoiceNoteHandler._() {
+    // A note that fails while it plays goes from the bar and the notification. just_audio 0.10 reports that on
+    // errorStream; stop() is safe to run twice. Not Android's abort (10000000): that's one load giving way to the
+    // next note, which mustn't be stopped.
     player.playbackEventStream.listen((_) => playbackState.add(_session()), onError: (Object _) {});
+    player.errorStream.where((e) => e.code != 10000000).listen((_) => stop());
     player.durationStream.listen((d) {
       if (mediaItem.value case final item? when d != null) mediaItem.add(item.copyWith(duration: d));
     });
@@ -180,7 +184,17 @@ class JustAudioPlayback implements AudioPlayback {
       handler.mediaItem.add(
         svc.MediaItem(id: id, title: title, artist: artist, artUri: artUrl == null ? null : Uri.tryParse(artUrl)),
       );
-      await handler.player.setUrl(url);
+      try {
+        await handler.player.setUrl(url);
+      } on ja.PlayerInterruptedException {
+        // Another note, or Stop, took over while this one loaded.
+        return;
+      } catch (e) {
+        // A note that won't load mustn't stay in the bar and the notification.
+        debugPrint('Voice note $id failed to load: $e');
+        await handler.stop();
+        return;
+      }
     }
     // The player's own play: the handler's would replay a note that's idle.
     unawaited(handler.player.play());
@@ -568,22 +582,32 @@ class VideoTile extends StatefulWidget {
 }
 
 class _VideoTileState extends State<VideoTile> {
+  // Each first frame is a player and a decoder of its own.
+  // shortcut: at most 3 load at once, the rest show the play mark only; upgrade when the API sends a poster for
+  // uploaded videos.
+  static const _maxFrames = 3;
+  static int _frames = 0;
+
   // Only while on screen: the list drops (and so disposes) a tile scrolled away.
-  late final VideoPlayerController? _frame = widget.poster != null || widget.attachment.local
-      ? null
-      : VideoPage.controllerFor(Uri.parse(widget.attachment.url));
+  VideoPlayerController? _frame;
 
   @override
   void initState() {
     super.initState();
-    _frame?.initialize().then((_) {
-      if (mounted) setState(() {});
-    }, onError: (Object _) {});
+    if (widget.poster != null || widget.attachment.local || _frames >= _maxFrames) return;
+    _frames++;
+    _frame = VideoPage.controllerFor(Uri.parse(widget.attachment.url))
+      ..initialize().then((_) {
+        if (mounted) setState(() {});
+      }, onError: (Object _) {});
   }
 
   @override
   void dispose() {
-    _frame?.dispose();
+    if (_frame case final frame?) {
+      _frames--;
+      frame.dispose();
+    }
     super.dispose();
   }
 
