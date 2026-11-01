@@ -157,11 +157,11 @@ class _Bubble extends StatelessWidget {
                 padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
                 constraints: BoxConstraints(maxWidth: maxWidth),
                 decoration: BoxDecoration(
-                  color: mine ? Duvet.accent : colors.card,
+                  color: mine ? Duvet.azure : colors.card,
                   borderRadius: BorderRadius.circular(DuvetTokens.radiusButton),
                   boxShadow: editing ? null : (lifted ? tokens.shadowFloat : tokens.shadowRest),
                   // Mentioning the user: the accent as an outline, never a fill.
-                  border: mentionsMe ? Border.all(color: tokens.accentText, width: 1.5) : null,
+                  border: mentionsMe ? Border.all(color: tokens.violetText, width: 1.5) : null,
                 ),
                 child: MessageText(
                   content: m.content,
@@ -214,7 +214,7 @@ class _Bubble extends StatelessWidget {
         content = Container(
           padding: const EdgeInsets.all(4),
           decoration: BoxDecoration(
-            border: Border.all(color: tokens.accentText, width: 1.5),
+            border: Border.all(color: tokens.violetText, width: 1.5),
             borderRadius: BorderRadius.circular(DuvetTokens.radiusButton),
           ),
           child: content,
@@ -876,14 +876,13 @@ class _Reactions extends StatelessWidget {
           constraints: const BoxConstraints(minWidth: 40),
           padding: const EdgeInsets.symmetric(horizontal: 8),
           decoration: BoxDecoration(
-            color: mine ? tokens.accentTint : colors.card,
+            color: mine ? tokens.selectedFill : colors.card,
             borderRadius: BorderRadius.circular(DuvetTokens.radiusChip),
-            border: mine ? Border.all(color: tokens.accentText) : null,
             boxShadow: mine || pressed ? null : tokens.shadowRest,
           ),
           child: DefaultTextStyle.merge(
             style: DuvetType.caption.copyWith(
-              color: mine ? tokens.accentText : colors.foreground,
+              color: mine ? tokens.violetText : colors.foreground,
               fontWeight: FontWeight.w500,
               height: 1,
             ),

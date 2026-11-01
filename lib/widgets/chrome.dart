@@ -450,7 +450,7 @@ class DuvetTabBar extends StatelessWidget {
                     width: 56,
                     height: 32,
                     child: DecoratedBox(
-                      decoration: BoxDecoration(color: tokens.accentTint, borderRadius: BorderRadius.circular(16)),
+                      decoration: BoxDecoration(color: tokens.azureTint, borderRadius: BorderRadius.circular(16)),
                     ),
                   ),
                   Row(

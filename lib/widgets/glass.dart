@@ -524,7 +524,12 @@ class SheetTitle extends StatelessWidget {
       crossAxisAlignment: CrossAxisAlignment.baseline,
       textBaseline: TextBaseline.alphabetic,
       children: [
-        Semantics(header: true, child: Text(title, style: DuvetType.title)),
+        Flexible(
+          child: Semantics(
+            header: true,
+            child: Text(title, maxLines: 1, overflow: TextOverflow.ellipsis, style: DuvetType.title),
+          ),
+        ),
         if (caption != null) ...[
           const SizedBox(width: 8),
           Flexible(

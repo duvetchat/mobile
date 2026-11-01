@@ -2,48 +2,53 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:forui/forui.dart';
 
-/// Duvet design-system color tokens mapped onto forui's [FColors].
+/// Duvet design-system color tokens mapped onto forui's [FColors]: the Ghost
+/// theme, pastel and celestial in light, near-black (never grey) in dark.
 abstract final class Duvet {
-  static const accent = Color(0xFF2F5FE0);
+  /// Cobalt, for what has to be seen: buttons, Send, unread, the active tab.
+  static const accent = Color(0xFF2F4CFF);
+
+  /// Azure, calm enough for big surfaces: your bubbles.
+  static const azure = Color(0xFF0B6FE8);
 
   static final light = FColors.neutralLight.copyWith(
     brightness: Brightness.light,
     systemOverlayStyle: SystemUiOverlayStyle.dark,
     barrier: const Color(0x80000000),
-    background: const Color(0xFFF7F6F3), // base
-    foreground: const Color(0xFF141416), // ink
+    background: const Color(0xFFF5F7FF), // base
+    foreground: const Color(0xFF15172B), // ink
     primary: accent,
     primaryForeground: const Color(0xFFFFFFFF), // on-accent
-    secondary: const Color(0xFFEFEEEA), // base-sunken
-    secondaryForeground: const Color(0xFF141416),
-    muted: const Color(0xFFEFEEEA),
-    mutedForeground: const Color(0xFF6F6E6E), // ink-secondary
+    secondary: const Color(0xFFEAEFFF), // base-sunken
+    secondaryForeground: const Color(0xFF15172B),
+    muted: const Color(0xFFEAEFFF),
+    mutedForeground: const Color(0xFF5E6380), // ink-secondary
     destructive: const Color(0xFFB0443B),
     destructiveForeground: const Color(0xFFFFFFFF),
     error: const Color(0xFFB0443B),
     errorForeground: const Color(0xFFFFFFFF),
     card: const Color(0xFFFFFFFF), // base-raised
-    border: const Color(0x14141416), // hairline
+    border: const Color(0x1415172B), // hairline
   );
 
   static final dark = FColors.neutralDark.copyWith(
     brightness: Brightness.dark,
     systemOverlayStyle: SystemUiOverlayStyle.light,
     barrier: const Color(0x80000000),
-    background: const Color(0xFF111113),
-    foreground: const Color(0xFFF2F1EE),
+    background: const Color(0xFF07070A),
+    foreground: const Color(0xFFF1F1F6),
     primary: accent,
     primaryForeground: const Color(0xFFFFFFFF),
-    secondary: const Color(0xFF0A0A0B),
-    secondaryForeground: const Color(0xFFF2F1EE),
-    muted: const Color(0xFF0A0A0B),
-    mutedForeground: const Color(0xFF949392),
+    secondary: const Color(0xFF000000),
+    secondaryForeground: const Color(0xFFF1F1F6),
+    muted: const Color(0xFF000000),
+    mutedForeground: const Color(0xFF9396A8),
     destructive: const Color(0xFFE07A70),
     destructiveForeground: const Color(0xFF111113),
     error: const Color(0xFFE07A70),
     errorForeground: const Color(0xFF111113),
-    card: const Color(0xFF1C1C1F),
-    border: const Color(0x14FFFFFF),
+    card: const Color(0xFF111116),
+    border: const Color(0x12FFFFFF),
   );
 
   static DuvetTokens tokens(Brightness brightness) =>
@@ -58,9 +63,9 @@ abstract final class Duvet {
       xs2: DuvetType.overline.copyWith(color: colors.foreground),
       xs: DuvetType.caption.copyWith(color: colors.foreground),
       sm: DuvetType.body.copyWith(color: colors.foreground),
-      md: DuvetType.navTitle.copyWith(color: colors.foreground, fontWeight: FontWeight.w400),
-      lg: DuvetType.title.copyWith(color: colors.foreground, fontWeight: FontWeight.w400),
-      xl3: DuvetType.largeTitle.copyWith(color: colors.foreground, fontWeight: FontWeight.w400),
+      md: DuvetType.navTitle.copyWith(color: colors.foreground),
+      lg: DuvetType.title.copyWith(color: colors.foreground),
+      xl3: DuvetType.largeTitle.copyWith(color: colors.foreground),
     );
     return FThemeData(
       colors: colors,
@@ -93,26 +98,48 @@ abstract final class Duvet {
   }
 }
 
-/// The Duvet type ramp: one humanist sans in three weights. Headlines set at
+/// The Duvet type ramp, three faces with three jobs: Fraunces for headers,
+/// Inter for the interface, Roboto for what people write. Headlines set at
 /// line-height 1.1, every text style at 1.4. Colors come from the caller.
 abstract final class DuvetType {
-  static const family = 'Fira Sans';
+  static const family = 'Inter';
+  static const content = 'Roboto';
+  static const serif = 'Fraunces';
   static const mono = 'Fira Mono';
 
-  static const _headline = TextStyle(fontFamily: family, height: 1.1, fontWeight: FontWeight.w700);
+  // Fraunces is one variable font whose default instance is Black and wonky:
+  // pin the soft Regular cut, at the optical size its size calls for.
+  static TextStyle _headline(
+    double size, {
+    required double opsz,
+    FontWeight weight = FontWeight.w400,
+    double tracking = -0.01,
+  }) => TextStyle(
+    fontFamily: serif,
+    fontSize: size,
+    height: 1.1,
+    letterSpacing: size * tracking,
+    fontWeight: weight,
+    fontVariations: [
+      FontVariation('wght', weight.value.toDouble()),
+      FontVariation('opsz', opsz),
+      const FontVariation('SOFT', 50),
+      const FontVariation('WONK', 0),
+    ],
+  );
   static const _text = TextStyle(fontFamily: family, height: 1.4, leadingDistribution: TextLeadingDistribution.even);
 
   /// Root tab titles: Chats, Spaces, Calls, You.
-  static final largeTitle = _headline.copyWith(fontSize: 32, letterSpacing: -0.32);
+  static final largeTitle = _headline(36, opsz: 144, tracking: -0.02);
 
   /// Sheet titles.
-  static final title = _headline.copyWith(fontSize: 20);
+  static final title = _headline(22, opsz: 72);
 
   /// Inline top-bar titles.
-  static final navTitle = _headline.copyWith(fontSize: 17);
+  static final navTitle = _headline(20, opsz: 36, weight: FontWeight.w500);
 
   /// Message text, the composer.
-  static final body = _text.copyWith(fontSize: 16, fontWeight: FontWeight.w400);
+  static final body = _text.copyWith(fontFamily: content, fontSize: 16, fontWeight: FontWeight.w400);
 
   /// Row names, read.
   static final rowTitle = _text.copyWith(fontSize: 16, fontWeight: FontWeight.w500);
@@ -124,7 +151,7 @@ abstract final class DuvetType {
   static final label = _text.copyWith(fontSize: 16, fontWeight: FontWeight.w500);
 
   /// The last-message preview under a row name.
-  static final snippet = _text.copyWith(fontSize: 15, fontWeight: FontWeight.w400);
+  static final snippet = _text.copyWith(fontFamily: content, fontSize: 15, fontWeight: FontWeight.w400);
 
   /// Timestamps, counts, sender names, reply-strip text.
   static final caption = _text.copyWith(fontSize: 13, fontWeight: FontWeight.w400);
@@ -142,7 +169,7 @@ abstract final class DuvetType {
 /// The Duvet design-system tokens forui has no slot for: Liquid Glass, the
 /// accent as text, shadows, radii and motion.
 class DuvetTokens {
-  /// Liquid Glass fill (78%), always over a backdrop blur.
+  /// Liquid Glass fill (78–80%), always over a backdrop blur.
   final Color glass;
 
   /// The 1px edge that catches the light on glass.
@@ -154,6 +181,18 @@ class DuvetTokens {
 
   /// The pill behind an active item, the highlight behind a selected row.
   final Color accentTint;
+
+  /// The tab bar's pill: azure, calm on the glass.
+  final Color azureTint;
+
+  /// Violet for small accents: @mentions, your reactions, selected chips.
+  final Color violetText;
+
+  /// Selected chips and toggles: a solid violet fill under [violetText], never an outline.
+  final Color selectedFill;
+
+  /// Secondary buttons and unchecked boxes: solid, so they read the same on glass.
+  final Color secondaryFill;
   final Color hairline;
 
   /// Received bubbles and other surfaces at rest.
@@ -180,6 +219,10 @@ class DuvetTokens {
     required this.grabber,
     required this.accentText,
     required this.accentTint,
+    required this.azureTint,
+    required this.violetText,
+    required this.selectedFill,
+    required this.secondaryFill,
     required this.hairline,
     required this.shadowRest,
     required this.shadowFloat,
@@ -190,42 +233,51 @@ class DuvetTokens {
   });
 
   static const light = DuvetTokens._(
-    glass: Color(0xC7F7F6F3),
-    glassEdge: Color(0x0F141416),
-    grabber: Color(0x2E141416),
+    glass: Color(0xC7F5F7FF),
+    glassEdge: Color(0x0F15172B),
+    grabber: Color(0x2E15172B),
     accentText: Duvet.accent,
-    accentTint: Color(0x142F5FE0),
-    hairline: Color(0x14141416),
+    accentTint: Color(0x1A2F4CFF),
+    azureTint: Color(0x1F1C8CFF),
+    violetText: Color(0xFF6A58D6),
+    selectedFill: Color(0xFFF0EDFF),
+    secondaryFill: Color(0xFFE3E9FF),
+    hairline: Color(0x1415172B),
+    // Light shadows carry a little cobalt, so surfaces float on the pastel sky.
     shadowRest: [
-      BoxShadow(color: Color(0x0A141416), blurRadius: 2, offset: Offset(0, 1)),
-      BoxShadow(color: Color(0x0D141416), blurRadius: 12, offset: Offset(0, 4)),
+      BoxShadow(color: Color(0x0A15172B), blurRadius: 2, offset: Offset(0, 1)),
+      BoxShadow(color: Color(0x0F2F4CFF), blurRadius: 12, offset: Offset(0, 4)),
     ],
     shadowFloat: [
-      BoxShadow(color: Color(0x0A141416), blurRadius: 8, offset: Offset(0, 4)),
-      BoxShadow(color: Color(0x1F141416), blurRadius: 56, offset: Offset(0, 24)),
+      BoxShadow(color: Color(0x0A15172B), blurRadius: 8, offset: Offset(0, 4)),
+      BoxShadow(color: Color(0x1F2F4CFF), blurRadius: 56, offset: Offset(0, 24)),
     ],
     shadowControl: [
-      BoxShadow(color: Color(0x0F141416), blurRadius: 2, offset: Offset(0, 1)),
-      BoxShadow(color: Color(0x14141416), blurRadius: 16, offset: Offset(0, 6)),
+      BoxShadow(color: Color(0x0F15172B), blurRadius: 2, offset: Offset(0, 1)),
+      BoxShadow(color: Color(0x142F4CFF), blurRadius: 16, offset: Offset(0, 6)),
     ],
     shadowRaised: [
-      BoxShadow(color: Color(0x0A141416), blurRadius: 4, offset: Offset(0, 2)),
-      BoxShadow(color: Color(0x12141416), blurRadius: 32, offset: Offset(0, 12)),
+      BoxShadow(color: Color(0x0A15172B), blurRadius: 4, offset: Offset(0, 2)),
+      BoxShadow(color: Color(0x142F4CFF), blurRadius: 32, offset: Offset(0, 12)),
     ],
     shadowPressed: [
-      BoxShadow(color: Color(0x24141416), blurRadius: 6, offset: Offset(0, 2)),
-      BoxShadow(color: Color(0x14141416), blurRadius: 2, offset: Offset(0, 1)),
+      BoxShadow(color: Color(0x2415172B), blurRadius: 6, offset: Offset(0, 2)),
+      BoxShadow(color: Color(0x1415172B), blurRadius: 2, offset: Offset(0, 1)),
     ],
-    shadowWell: [BoxShadow(color: Color(0x0F141416), blurRadius: 3, offset: Offset(0, 1))],
+    shadowWell: [BoxShadow(color: Color(0x0F15172B), blurRadius: 3, offset: Offset(0, 1))],
   );
 
   static const dark = DuvetTokens._(
-    glass: Color(0xC71C1C1F),
-    glassEdge: Color(0x1AFFFFFF),
+    glass: Color(0xCC111116),
+    glassEdge: Color(0x14FFFFFF),
     grabber: Color(0x38FFFFFF),
-    accentText: Color(0xFF7FA2FF),
-    accentTint: Color(0x297FA2FF),
-    hairline: Color(0x14FFFFFF),
+    accentText: Color(0xFF8C9BFF),
+    accentTint: Color(0x248C9BFF),
+    azureTint: Color(0x245CB2FF),
+    violetText: Color(0xFFB3A6FF),
+    selectedFill: Color(0xFF231E3D),
+    secondaryFill: Color(0xFF1C1E2E),
+    hairline: Color(0x12FFFFFF),
     shadowRest: [
       BoxShadow(color: Color(0x4D000000), blurRadius: 2, offset: Offset(0, 1)),
       BoxShadow(color: Color(0x40000000), blurRadius: 12, offset: Offset(0, 4)),

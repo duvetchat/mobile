@@ -389,10 +389,7 @@ class _SquareButton extends StatelessWidget {
         builder: (context, pressed) => Container(
           width: 48,
           height: 48,
-          decoration: BoxDecoration(
-            borderRadius: radius,
-            border: Border.all(color: ink),
-          ),
+          decoration: BoxDecoration(color: tokens.secondaryFill, borderRadius: radius),
           child: InsetShadow(
             shadows: pressed ? tokens.shadowPressed : const [],
             borderRadius: radius,
@@ -417,9 +414,8 @@ class SquareCheck extends StatelessWidget {
       width: 24,
       height: 24,
       decoration: BoxDecoration(
-        color: checked ? Duvet.accent : null,
+        color: checked ? Duvet.accent : context.duvet.secondaryFill,
         borderRadius: BorderRadius.circular(DuvetTokens.radiusChip),
-        border: Border.all(color: checked ? Duvet.accent : colors.mutedForeground, width: 1.5),
       ),
       child: checked ? Icon(FLucideIcons.check, size: 16, color: colors.primaryForeground) : null,
     );
@@ -942,9 +938,8 @@ class _NewConversationPageState extends State<NewConversationPage> {
                                 height: 28,
                                 padding: const EdgeInsets.symmetric(horizontal: 4),
                                 decoration: BoxDecoration(
-                                  color: tokens.accentTint,
+                                  color: tokens.selectedFill,
                                   borderRadius: BorderRadius.circular(DuvetTokens.radiusChip),
-                                  border: Border.all(color: tokens.accentText),
                                 ),
                                 child: Row(
                                   mainAxisSize: MainAxisSize.min,

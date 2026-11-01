@@ -99,14 +99,30 @@ flutter:
   assets:
     - assets/emoji.json
 
+  # The Ghost theme's three faces (lib/theme.dart, DuvetType): Fraunces for
+  # headers (one variable file, axes set in code), Inter for the interface,
+  # Roboto for what people write.
   fonts:
-    - family: Fira Sans
+    - family: Fraunces
       fonts:
-        - asset: assets/fonts/FiraSans-Regular.ttf
+        - asset: assets/fonts/Fraunces.ttf
+    - family: Inter
+      fonts:
+        - asset: assets/fonts/Inter-Regular.ttf
           weight: 400
-        - asset: assets/fonts/FiraSans-Medium.ttf
+        - asset: assets/fonts/Inter-Medium.ttf
           weight: 500
-        - asset: assets/fonts/FiraSans-Bold.ttf
+        - asset: assets/fonts/Inter-SemiBold.ttf
+          weight: 600
+        - asset: assets/fonts/Inter-Bold.ttf
+          weight: 700
+    - family: Roboto
+      fonts:
+        - asset: assets/fonts/Roboto-Regular.ttf
+          weight: 400
+        - asset: assets/fonts/Roboto-Medium.ttf
+          weight: 500
+        - asset: assets/fonts/Roboto-Bold.ttf
           weight: 700
     - family: Fira Mono
       fonts:

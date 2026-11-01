@@ -363,9 +363,8 @@ class _Check extends StatelessWidget {
       width: 24,
       height: 24,
       decoration: BoxDecoration(
-        color: on ? Duvet.accent : null,
+        color: on ? Duvet.accent : context.duvet.secondaryFill,
         borderRadius: BorderRadius.circular(DuvetTokens.radiusChip),
-        border: Border.all(color: on ? Duvet.accent : colors.mutedForeground, width: 1.5),
       ),
       child: on ? Icon(FLucideIcons.check, size: 16, color: colors.primaryForeground) : null,
     );
