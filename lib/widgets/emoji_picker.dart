@@ -720,10 +720,10 @@ class _GifTile extends StatelessWidget {
                     padding: const EdgeInsets.symmetric(horizontal: 6),
                     alignment: Alignment.center,
                     decoration: BoxDecoration(
-                      color: const Color(0x8C111113),
+                      color: DuvetTokens.mediaScrim,
                       borderRadius: BorderRadius.circular(DuvetTokens.radiusChip),
                     ),
-                    child: Text('GIF', style: DuvetType.tabLabel.copyWith(color: const Color(0xFFF2F1EE))),
+                    child: Text('GIF', style: DuvetType.tabLabel.copyWith(color: DuvetTokens.mediaInk)),
                   ),
                 ),
               ],

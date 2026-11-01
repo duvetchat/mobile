@@ -491,9 +491,11 @@ class _VoiceBarState extends State<VoiceBar> with _Ticking {
                 child: Pressable(
                   onTap: open,
                   scale: 1,
-                  builder: (context, _) => Padding(
-                    // Two lines (≈41) fit the 56 bar with 6 above and below.
-                    padding: const EdgeInsets.fromLTRB(16, 6, 8, 6),
+                  // The bar's full height, so all of it opens; no vertical padding: two
+                  // lines (≈41) fit the 56 bar up to ~1.38× text.
+                  builder: (context, _) => Container(
+                    height: VoiceBar.height,
+                    padding: const EdgeInsets.fromLTRB(16, 0, 8, 0),
                     child: Row(
                       children: [
                         Icon(

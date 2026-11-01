@@ -5,6 +5,7 @@ import 'package:duvet/theme.dart';
 import 'package:duvet/widgets/chrome.dart';
 import 'package:duvet/widgets/media.dart';
 import 'package:duvet/widgets/message_content.dart';
+import 'package:duvet/widgets/playback_bar.dart';
 import 'package:duvet/widgets/youtube_dock.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -40,6 +41,13 @@ class _FakeController extends PlatformWebViewController {
 
   final _channels = <String, JavaScriptChannelParams>{};
   var loads = 0;
+  final scripts = <String>[];
+
+  /// Whether the last word to the page hid YouTube's controls; null if none did.
+  bool? get bare => switch (scripts.lastWhere((s) => s.contains('duvet-bare'), orElse: () => '')) {
+    '' => null,
+    final s => s.contains("toggle('duvet-bare', true)"),
+  };
 
   /// A message from the page's player, as player.html sends it.
   void send(String event, Object? data) {
@@ -55,10 +63,13 @@ class _FakeController extends PlatformWebViewController {
   @override
   Future<void> loadHtmlString(String html, {String? baseUrl}) async => loads++;
   @override
-  Future<void> runJavaScript(String javaScript) async {}
+  Future<void> runJavaScript(String javaScript) async => scripts.add(javaScript);
   @override
-  Future<Object> runJavaScriptReturningResult(String javaScript) async =>
-      javaScript.contains('getVideoData') ? '{"video_id":"dQw4w9WgXcQ"}' : '0';
+  Future<Object> runJavaScriptReturningResult(String javaScript) async => javaScript.contains('getVideoData')
+      ? '{"video_id":"dQw4w9WgXcQ"}'
+      : javaScript.contains('getDuration')
+      ? '100'
+      : '0';
   @override
   Future<void> setJavaScriptMode(JavaScriptMode javaScriptMode) async {}
   @override
@@ -127,6 +138,14 @@ void main() {
 
   Finder action(String label) => find.byWidgetPredicate((w) => w is IconAction && w.label == label);
 
+  /// Where the player says it got to, of the 100 s video.
+  void at(int seconds) => webViews.controllers.last.send('VideoState', jsonEncode({'currentTime': seconds}));
+
+  /// The dock's progress line.
+  double line(WidgetTester tester) => tester
+      .widget<ProgressLine>(find.descendant(of: find.byType(YouTubeDock), matching: find.byType(ProgressLine)))
+      .progress;
+
   testWidgets('a YouTube video goes full screen, back, to the dock and full screen again on one player and one view', (
     tester,
   ) async {
@@ -180,6 +199,7 @@ void main() {
     playing();
     await tester.pumpAndSettle();
     one('playing in the message');
+    expect(webViews.controllers.last.bare, isNull, reason: "the message shows YouTube's controls");
 
     // The player's own full-screen button, then the route's close.
     webViews.controllers.last.send('FullscreenButtonPressed', 1);
@@ -199,12 +219,25 @@ void main() {
     playing();
     await tester.pumpAndSettle();
     one('back in the message');
+    at(25);
+    await tester.pump();
 
     // The chat closed while it plays: on to the dock.
     tester.state<NavigatorState>(find.byType(Navigator)).pop();
     await tester.pumpAndSettle();
     expect(dockedYouTube.value, isNotNull);
     one('in the dock');
+    expect(webViews.controllers.last.bare, isTrue, reason: "the dock hides YouTube's controls");
+    expect(line(tester), closeTo(.25, .001), reason: 'the dock picks up where the message got to');
+    // And follows it as it plays, or is sought: the player's message, then the line's frame.
+    at(50);
+    await tester.pump();
+    await tester.pump();
+    expect(line(tester), closeTo(.5, .001), reason: 'the line follows the video');
+    at(120);
+    await tester.pump();
+    await tester.pump();
+    expect(line(tester), 0, reason: 'well past the end, as a live stream plays on: no line');
 
     // Full screen from the dock, and back.
     await tester.tap(action('Full screen'));
@@ -212,6 +245,7 @@ void main() {
     playing();
     await tester.pumpAndSettle();
     one('full screen from the dock');
+    expect(webViews.controllers.last.bare, isFalse, reason: "full screen shows YouTube's controls");
     tester.element(find.byType(YouTubeDock, skipOffstage: false)).markNeedsBuild();
     await tester.pump();
     one('the dock rebuilt under full screen');
@@ -220,6 +254,7 @@ void main() {
     await tester.pumpAndSettle();
     expect(find.bySemanticsLabel('Exit full screen'), findsNothing);
     one('back in the dock');
+    expect(webViews.controllers.last.bare, isTrue);
 
     await tester.tap(action('Stop and close'));
     await tester.pumpAndSettle();

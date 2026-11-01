@@ -794,7 +794,7 @@ String _heroTag(MessageAttachment a) => 'attachment:${a.id}:${a.url}';
 
 Widget _image(MessageAttachment a, double width, {BoxFit fit = BoxFit.cover}) {
   final dpr = WidgetsBinding.instance.platformDispatcher.views.first.devicePixelRatio;
-  final cache = (width * dpr).round();
+  final cache = math.max(1, (width * dpr).round());
   Widget broken(BuildContext context, Object _, StackTrace? _) =>
       Center(child: Icon(FLucideIcons.imageOff, color: context.theme.colors.mutedForeground));
   final still = a.local
@@ -1220,7 +1220,7 @@ class _YouTubeTileState extends State<_YouTubeTile> with AutomaticKeepAliveClien
           Image.network(
             poster,
             fit: BoxFit.cover,
-            cacheWidth: (width * MediaQuery.devicePixelRatioOf(context)).round(),
+            cacheWidth: math.max(1, (width * MediaQuery.devicePixelRatioOf(context)).round()),
             excludeFromSemantics: true,
             errorBuilder: (_, _, _) => const SizedBox.shrink(),
           ),
@@ -1689,7 +1689,7 @@ class _ImageViewerState extends State<ImageViewer> with TickerProviderStateMixin
                 child: Opacity(
                   opacity: chrome,
                   child: _DarkGlass(
-                    edge: const Border(bottom: BorderSide(color: Color(0x1FFFFFFF))),
+                    edge: const Border(bottom: BorderSide(color: DuvetTokens.mediaScrimEdge)),
                     child: Padding(
                       padding: EdgeInsets.only(top: padding.top),
                       child: SizedBox(
@@ -1741,7 +1741,7 @@ class _ImageViewerState extends State<ImageViewer> with TickerProviderStateMixin
                   child: Opacity(
                     opacity: chrome,
                     child: _DarkGlass(
-                      edge: const Border(top: BorderSide(color: Color(0x1FFFFFFF))),
+                      edge: const Border(top: BorderSide(color: DuvetTokens.mediaScrimEdge)),
                       child: Padding(
                         padding: EdgeInsets.fromLTRB(16, 8, 16, 8 + padding.bottom),
                         child: Row(
@@ -1799,7 +1799,7 @@ class _DarkGlass extends StatelessWidget {
     child: BackdropFilter(
       filter: glassBackdrop(16),
       child: DecoratedBox(
-        decoration: BoxDecoration(color: const Color(0x8C111113), border: edge),
+        decoration: BoxDecoration(color: DuvetTokens.mediaScrim, border: edge),
         child: child,
       ),
     ),

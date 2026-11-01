@@ -11,6 +11,7 @@ import 'package:youtube_player_iframe/youtube_player_iframe.dart';
 import '../theme.dart';
 import 'chrome.dart';
 import 'media.dart' show videoBackdrop;
+import 'playback_bar.dart' show ProgressLine;
 
 /// A YouTube video handed on from a chat: which, its title, and where it got to.
 /// [session], when a playing tile hands its own player on: the dock shows the
@@ -35,6 +36,7 @@ class YouTubeSession {
   VoidCallback? onFullScreen;
 
   double seconds;
+  bool _bare = false;
   late final StreamSubscription<YoutubeVideoState> _position;
   late final StreamSubscription<YoutubePlayerValue> _state;
 
@@ -61,11 +63,38 @@ class YouTubeSession {
     // the session itself.
     _position = controller.videoStateStream.listen((s) => seconds = s.position.inMilliseconds / 1000);
     _state = controller.stream.listen((value) {
+      if (_bare) _applyBare();
       if (value.playerState != PlayerState.playing || identical(_playing, this)) return;
       _playing?.controller.pauseVideo();
       _playing = this;
     });
   }
+
+  /// Only the video, none of YouTube's own controls: it shows them on every
+  /// play and can't turn them off without loading the page again.
+  set bare(bool on) {
+    _bare = on;
+    _applyBare();
+  }
+
+  // The embed is on our page's origin, so a class on its document hides all
+  // but the video and nothing reloads. Again on each change of the player, as
+  // a new one has no embed until it's ready.
+  void _applyBare() => controller.webViewController.runJavaScript('''
+(function () {
+  try {
+    var d = document.querySelector('iframe').contentDocument;
+    if (!d) return;
+    if (!d.getElementById('duvet-bare')) {
+      var s = d.createElement('style');
+      s.id = 'duvet-bare';
+      s.textContent = 'html.duvet-bare *{visibility:hidden!important} html.duvet-bare video{visibility:visible!important}';
+      d.head.appendChild(s);
+    }
+    d.documentElement.classList.toggle('duvet-bare', $_bare);
+  } catch (e) {}
+})();
+''').ignore();
 
   bool get playing => switch (controller.value.playerState) {
     PlayerState.playing || PlayerState.buffering => true,
@@ -192,7 +221,8 @@ class _YouTubeFullScreenState extends State<_YouTubeFullScreen> {
 }
 
 /// Over the tabs while a YouTube video handed on from a chat plays: a small
-/// live player, its title, play or pause, full screen, and close, which stops it.
+/// live player without YouTube's controls, how far it got, its title, play or
+/// pause, full screen, and close, which stops it.
 class YouTubeDock extends StatefulWidget {
   final DockedYouTube video;
   const YouTubeDock({required this.video, super.key});
@@ -214,7 +244,9 @@ class _YouTubeDockState extends State<YouTubeDock> {
   void initState() {
     super.initState();
     _session = widget.video.session ?? YouTubeSession(widget.video.id, seconds: widget.video.seconds);
-    _session.onFullScreen = _expand;
+    _session
+      ..onFullScreen = _expand
+      ..bare = true;
   }
 
   @override
@@ -226,8 +258,12 @@ class _YouTubeDockState extends State<YouTubeDock> {
   Future<void> _expand() async {
     if (_away) return;
     setState(() => _away = true);
+    // Full screen has YouTube's controls back.
+    _session.bare = false;
     await openYouTubeFullScreen(context, session: _session);
-    if (mounted) setState(() => _away = false);
+    if (!mounted) return;
+    _session.bare = true;
+    setState(() => _away = false);
   }
 
   @override
@@ -239,55 +275,82 @@ class _YouTubeDockState extends State<YouTubeDock> {
       top: false,
       child: SizedBox(
         height: YouTubeDock.height,
-        child: Row(
+        child: Stack(
           children: [
-            const SizedBox(width: 16),
-            ClipRRect(
-              borderRadius: BorderRadius.circular(DuvetTokens.radiusChip),
-              child: SizedBox(
-                width: YouTubeDock._playerHeight * 16 / 9,
-                height: YouTubeDock._playerHeight,
-                child: ColoredBox(
-                  color: videoBackdrop,
-                  // Its buttons drive it; a tap on the tiny page would only
-                  // bring up YouTube's own controls.
-                  child: _away ? null : IgnorePointer(child: YouTubeView(session)),
-                ),
+            // Where the video got to, as on the playback bar; only the line
+            // rebuilds as it plays.
+            Positioned(
+              left: 0,
+              top: 0,
+              right: 0,
+              child: StreamBuilder(
+                stream: session.controller.videoStateStream,
+                builder: (context, _) {
+                  final total = session.controller.metadata.duration.inMilliseconds;
+                  final progress = total == 0 ? 0.0 : session.seconds * 1000 / total;
+                  // shortcut: a live stream's duration is read once and it plays on past it, so
+                  // well past the end shows no line rather than a full one; detect live if needed.
+                  return ProgressLine(progress > 1.05 ? 0 : progress.clamp(0.0, 1.0));
+                },
               ),
             ),
-            const SizedBox(width: 12),
-            Expanded(
-              child: Semantics(
-                container: true,
-                label: '$title, YouTube',
-                excludeSemantics: true,
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      title,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: DuvetType.rowTitle.copyWith(color: colors.foreground),
+            Positioned.fill(
+              child: Row(
+                children: [
+                  const SizedBox(width: 16),
+                  ClipRRect(
+                    borderRadius: BorderRadius.circular(DuvetTokens.radiusChip),
+                    child: SizedBox(
+                      width: YouTubeDock._playerHeight * 16 / 9,
+                      height: YouTubeDock._playerHeight,
+                      child: ColoredBox(
+                        color: videoBackdrop,
+                        // Its buttons drive it; a tap on the tiny page would only reach
+                        // YouTube's own controls, hidden here.
+                        child: _away ? null : IgnorePointer(child: YouTubeView(session)),
+                      ),
                     ),
-                    Text('YouTube', style: DuvetType.caption.copyWith(color: colors.mutedForeground)),
-                  ],
-                ),
+                  ),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: Semantics(
+                      container: true,
+                      label: '$title, YouTube',
+                      excludeSemantics: true,
+                      child: Column(
+                        mainAxisSize: MainAxisSize.min,
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            title,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: DuvetType.rowTitle.copyWith(color: colors.foreground),
+                          ),
+                          Text('YouTube', style: DuvetType.caption.copyWith(color: colors.mutedForeground)),
+                        ],
+                      ),
+                    ),
+                  ),
+                  YoutubeValueBuilder(
+                    controller: session.controller,
+                    buildWhen: (o, n) => o.playerState != n.playerState,
+                    builder: (context, _) => IconAction(
+                      icon: session.playing ? FLucideIcons.pause : FLucideIcons.play,
+                      label: session.playing ? 'Pause' : 'Play',
+                      onPressed: session.playing ? session.controller.pauseVideo : session.controller.playVideo,
+                    ),
+                  ),
+                  IconAction(icon: FLucideIcons.maximize, label: 'Full screen', onPressed: _expand),
+                  IconAction(
+                    icon: FLucideIcons.x,
+                    label: 'Stop and close',
+                    onPressed: () => dockedYouTube.value = null,
+                  ),
+                  const SizedBox(width: 8),
+                ],
               ),
             ),
-            YoutubeValueBuilder(
-              controller: session.controller,
-              buildWhen: (o, n) => o.playerState != n.playerState,
-              builder: (context, _) => IconAction(
-                icon: session.playing ? FLucideIcons.pause : FLucideIcons.play,
-                label: session.playing ? 'Pause' : 'Play',
-                onPressed: session.playing ? session.controller.pauseVideo : session.controller.playVideo,
-              ),
-            ),
-            IconAction(icon: FLucideIcons.maximize, label: 'Full screen', onPressed: _expand),
-            IconAction(icon: FLucideIcons.x, label: 'Stop and close', onPressed: () => dockedYouTube.value = null),
-            const SizedBox(width: 8),
           ],
         ),
       ),

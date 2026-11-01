@@ -990,7 +990,7 @@ class _CropPageState extends State<CropPage> {
 
   @override
   Widget build(BuildContext context) {
-    const ink = Color(0xFFF2F1EE);
+    const ink = DuvetTokens.mediaInk;
     final padding = MediaQuery.paddingOf(context);
     final image = _image;
     return Scaffold(

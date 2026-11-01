@@ -424,6 +424,8 @@ void main() {
     await tester.pumpAndSettle();
     expect(find.descendant(of: bar, matching: find.text('Voice message')), findsOneWidget);
     expect(find.descendant(of: bar, matching: find.text('Maya · 0:00 / 0:14')), findsOneWidget);
+    // Centred in the bar, clear of the progress line along its top.
+    expect(tester.getTopLeft(find.text('Voice message')).dy - tester.getTopLeft(bar).dy, greaterThan(6));
 
     await tapLabel(tester, 'Pause');
     expect(find.bySemanticsLabel('Play'), findsOneWidget);

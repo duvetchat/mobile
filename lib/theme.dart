@@ -323,7 +323,7 @@ class DuvetTokens {
   static const sizeTabBar = 56.0;
 
   // Over video and photos, the same in light and dark: ink for text and icons,
-  // and the play mark's scrim and its edge.
+  // and scrims over media and their edge.
   static const mediaInk = Color(0xFFF2F1EE);
   static const mediaScrim = Color(0x8C111113);
   static const mediaScrimEdge = Color(0x1FFFFFFF);

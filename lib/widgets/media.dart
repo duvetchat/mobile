@@ -614,7 +614,7 @@ class _VideoTileState extends State<VideoTile> {
   @override
   Widget build(BuildContext context) {
     final attachment = widget.attachment;
-    // Sized like a picture: its own ratio, so a tall or wide video isn't cropped; 248×168 until its size is known.
+    // Sized like a picture: its own ratio, so a tall or wide video isn't cropped; a 248:168 box until its size is known.
     final ratio = (attachment.width ?? 0) <= 0 || (attachment.height ?? 0) <= 0
         ? 248 / 168
         : attachment.width! / attachment.height!;
@@ -657,7 +657,7 @@ class _VideoTileState extends State<VideoTile> {
                 Image.network(
                   poster,
                   fit: BoxFit.cover,
-                  cacheWidth: (width * MediaQuery.devicePixelRatioOf(context)).round(),
+                  cacheWidth: math.max(1, (width * MediaQuery.devicePixelRatioOf(context)).round()),
                   excludeFromSemantics: true,
                   errorBuilder: (_, _, _) => const SizedBox.shrink(),
                 )
