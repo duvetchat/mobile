@@ -360,6 +360,23 @@ class FakeRepository implements ChatRepository {
     account.add('${kind.name} $path');
   }
 
+  @override
+  Future<void> removeProfileImage(ProfileImage kind) async {
+    if (pictureRefused != null) throw ActionFailed(pictureRefused!);
+    account.add('remove ${kind.name}');
+    final p = profile.value!;
+    profile.value = Profile(
+      id: p.id,
+      username: p.username,
+      alias: p.alias,
+      avatarUrl: kind == ProfileImage.avatar ? null : p.avatarUrl,
+      bannerUrl: kind == ProfileImage.banner ? null : p.bannerUrl,
+      bio: p.bio,
+      emailVerified: p.emailVerified,
+      status: p.status,
+    );
+  }
+
   /// Held, an upload waits on it, its progress in [lastUpload].
   Completer<void>? holdUploads;
 
@@ -815,7 +832,9 @@ class FakeRepository implements ChatRepository {
                 roomName: w.roomName,
                 name: name ?? w.name,
                 createdAt: w.createdAt,
-                avatarUrl: removeAvatar ? null : (avatarPath == null ? w.avatarUrl : 'https://example.invalid/hook.png'),
+                avatarUrl: removeAvatar
+                    ? null
+                    : (avatarPath == null ? w.avatarUrl : 'https://example.invalid/hook.png'),
               ),
     ];
   }

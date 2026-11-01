@@ -15,7 +15,7 @@ import 'data/models.dart';
 import 'data/scope.dart';
 import 'login.dart';
 import 'people.dart';
-import 'space_admin.dart' show avatarSide, saveBannerImage, saveSquareImage;
+import 'space_admin.dart' show AdminPanel, avatarSide, saveBannerImage, saveSquareImage;
 import 'tabs.dart' show LiveIndicator;
 import 'theme.dart';
 import 'widgets/avatar.dart';
@@ -662,9 +662,11 @@ class _EditProfilePageState extends State<EditProfilePage> {
   bool _saving = false;
 
   // The pictures picked and cropped, in files: they go up on Save, and
-  // Cancel drops them.
+  // Cancel drops them. Or [_removeAvatar] and [_removeBanner] to take the
+  // ones there away.
   String? _avatar;
   String? _banner;
+  bool _removeAvatar = false, _removeBanner = false;
   final _upload = ValueNotifier<double?>(null);
 
   /// The bio's length as the API counts it: code points, so an emoji is one.
@@ -721,7 +723,16 @@ class _EditProfilePageState extends State<EditProfilePage> {
       if (mounted) _toast(context, 'Couldn’t read this picture');
       return;
     }
-    if (mounted) setState(() => kind == ProfileImage.avatar ? _avatar = cropped : _banner = cropped);
+    if (!mounted) return;
+    setState(() {
+      if (kind == ProfileImage.avatar) {
+        _avatar = cropped;
+        _removeAvatar = false;
+      } else {
+        _banner = cropped;
+        _removeBanner = false;
+      }
+    });
   }
 
   Future<void> _save() async {
@@ -733,8 +744,18 @@ class _EditProfilePageState extends State<EditProfilePage> {
     setState(() => _saving = true);
     var failure = 'Couldn’t save your profile';
     try {
-      // The pictures first. Each one up is done with, should what follows
-      // fail and Save be pressed again.
+      // The pictures first, removals then uploads. Each one done is done
+      // with, should what follows fail and Save be pressed again.
+      if (_removeAvatar) {
+        failure = 'Couldn’t remove the photo';
+        await repository.removeProfileImage(ProfileImage.avatar);
+        _removeAvatar = false;
+      }
+      if (_removeBanner) {
+        failure = 'Couldn’t remove the banner';
+        await repository.removeProfileImage(ProfileImage.banner);
+        _removeBanner = false;
+      }
       if (_avatar case final path?) {
         failure = 'Couldn’t change the photo';
         await repository.uploadProfileImage(ProfileImage.avatar, path, onProgress: _progress);
@@ -768,9 +789,14 @@ class _EditProfilePageState extends State<EditProfilePage> {
     if (profile == null) return const SizedBox.shrink();
     // 5:2 across the list's width, inside its padding.
     final bannerHeight = (MediaQuery.sizeOf(context).width - 32) / bannerAspect;
+    // What the pictures will be once saved: the new ones, none, or as they are.
+    final avatarNow = _removeAvatar ? null : profile.avatarUrl;
+    final bannerNow = _removeBanner ? null : profile.bannerUrl;
     final dirty =
         _avatar != null ||
         _banner != null ||
+        _removeAvatar ||
+        _removeBanner ||
         _alias.text.trim() != (profile.alias ?? '').trim() ||
         _bio.text.trim() != (profile.bio ?? '').trim();
     return UnsavedChanges(
@@ -793,7 +819,7 @@ class _EditProfilePageState extends State<EditProfilePage> {
                           decoration: BoxDecoration(
                             color: colors.secondary,
                             borderRadius: BorderRadius.circular(DuvetTokens.radiusCard),
-                            image: switch (_banner ?? profile.bannerUrl) {
+                            image: switch (_banner ?? bannerNow) {
                               final b? => DecorationImage(
                                 image: b.startsWith('http') ? NetworkImage(b) : FileImage(File(b)) as ImageProvider,
                                 fit: BoxFit.cover,
@@ -854,7 +880,7 @@ class _EditProfilePageState extends State<EditProfilePage> {
                                         ? ClipOval(
                                             child: Image.file(File(_avatar!), width: 88, height: 88, fit: BoxFit.cover),
                                           )
-                                        : UserAvatar(name: profile.displayName, url: profile.avatarUrl, size: 88),
+                                        : UserAvatar(name: profile.displayName, url: avatarNow, size: 88),
                                   ),
                                   Positioned(
                                     right: -2,
@@ -878,6 +904,33 @@ class _EditProfilePageState extends State<EditProfilePage> {
                       ],
                     ),
                   ),
+                  if (_avatar != null || avatarNow != null || _banner != null || bannerNow != null) ...[
+                    AdminPanel(
+                      children: [
+                        if (_avatar != null || avatarNow != null)
+                          GlassRow(
+                            icon: FLucideIcons.trash2,
+                            label: 'Remove profile photo',
+                            destructive: true,
+                            onPressed: () => setState(() {
+                              _avatar = null;
+                              _removeAvatar = profile.avatarUrl != null;
+                            }),
+                          ),
+                        if (_banner != null || bannerNow != null)
+                          GlassRow(
+                            icon: FLucideIcons.trash2,
+                            label: 'Remove banner',
+                            destructive: true,
+                            onPressed: () => setState(() {
+                              _banner = null;
+                              _removeBanner = profile.bannerUrl != null;
+                            }),
+                          ),
+                      ],
+                    ),
+                    const SizedBox(height: 8),
+                  ],
                   UploadNote(_upload),
                   const SizedBox(height: 8),
                   // At most 32 characters, as the API takes; empty, the username shows.
