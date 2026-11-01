@@ -281,8 +281,7 @@ class PresenceAvatar extends StatelessWidget {
   /// disturb, a ring offline.
   static Widget dotFor(BuildContext context, Presence presence, double dot) {
     final colors = context.theme.colors;
-    final dark = Theme.of(context).brightness == Brightness.dark;
-    final online = dark ? const Color(0xFF4CC38A) : const Color(0xFF2F9E62);
+    final online = context.duvet.live;
     return Container(
       width: dot,
       height: dot,

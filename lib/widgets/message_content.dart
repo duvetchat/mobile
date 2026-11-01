@@ -9,7 +9,8 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:forui/forui.dart';
 import 'package:url_launcher/url_launcher.dart';
-import 'package:youtube_player_iframe/youtube_player_iframe.dart' show YoutubePlayer, YoutubePlayerController;
+import 'package:youtube_player_iframe/youtube_player_iframe.dart'
+    show PlayerState, YoutubePlayerController, YoutubeValueBuilder;
 
 import '../data/emoji_catalog.dart';
 import '../data/links.dart';
@@ -1152,6 +1153,10 @@ class _YouTubeTileState extends State<_YouTubeTile> with AutomaticKeepAliveClien
   YouTubeSession? _session;
   Animation<double>? _route;
 
+  // Full screen: the view is there meanwhile, and this never takes it back,
+  // even rebuilt under it (the phone turned).
+  bool _away = false;
+
   // A video started here goes on as the list scrolls it far away, and is where
   // it got to when it scrolls back.
   @override
@@ -1164,8 +1169,8 @@ class _YouTubeTileState extends State<_YouTubeTile> with AutomaticKeepAliveClien
     _route = ModalRoute.of(context)?.animation?..addStatusListener(_onRoute);
   }
 
-  // Its chat starting to close: on to the dock now, while the tabs show, so
-  // Android has no moment with the video off screen to pause it in.
+  // Its chat starting to close: its view on to the dock in this frame, so it
+  // is never off screen for Android to pause.
   void _onRoute(AnimationStatus status) {
     final session = _session;
     if (status != AnimationStatus.reverse || session == null || !session.playing) return;
@@ -1174,32 +1179,21 @@ class _YouTubeTileState extends State<_YouTubeTile> with AutomaticKeepAliveClien
     dockedYouTube.value = (id: widget.videoId, title: widget.title, seconds: session.seconds, session: session);
   }
 
-  void _play({double seconds = 0, bool autoPlay = true}) {
+  void _play() {
     // A video starting here takes the dock's place.
     dockedYouTube.value = null;
-    final session = YouTubeSession(widget.videoId, seconds: seconds, autoPlay: autoPlay, fullScreenButton: true);
-    session.controller.setFullScreenListener((on) {
-      if (on) _fullScreen(session);
-    });
+    final session = YouTubeSession(widget.videoId, fullScreenButton: true);
+    session.onFullScreen = () => _fullScreen(session);
     setState(() => _session = session);
     updateKeepAlive();
   }
 
-  // The package's full screen would only fill the tile's overlay: the video
-  // goes to a route of its own instead, and comes back where it got to.
+  // The view goes to a route of its own, and comes back as it is.
   Future<void> _fullScreen(YouTubeSession session) async {
-    session.controller.exitFullScreen();
-    setState(() => _session = null);
-    updateKeepAlive();
-    session.close();
-    final back = await openYouTubeFullScreen(
-      context,
-      id: widget.videoId,
-      seconds: session.seconds,
-      ratio: widget.ratio,
-    );
-    // Its message gone meanwhile: the video goes with it, as in dispose.
-    if (back != null && mounted) _play(seconds: back.seconds, autoPlay: back.playing);
+    if (_away) return;
+    setState(() => _away = true);
+    await openYouTubeFullScreen(context, session: session, ratio: widget.ratio);
+    if (mounted) setState(() => _away = false);
   }
 
   @override
@@ -1217,7 +1211,22 @@ class _YouTubeTileState extends State<_YouTubeTile> with AutomaticKeepAliveClien
     super.build(context);
     final height = math.min(widget.width / widget.ratio, 320.0);
     final width = math.min(widget.width, height * widget.ratio);
-    final playing = _session != null;
+    final session = _session;
+    final playing = session != null;
+    final poster = Stack(
+      fit: StackFit.expand,
+      children: [
+        if (widget.poster case final poster?)
+          Image.network(
+            poster,
+            fit: BoxFit.cover,
+            cacheWidth: (width * MediaQuery.devicePixelRatioOf(context)).round(),
+            excludeFromSemantics: true,
+            errorBuilder: (_, _, _) => const SizedBox.shrink(),
+          ),
+        if (!playing) const Center(child: PlayMark()),
+      ],
+    );
     return Semantics(
       container: true,
       button: !playing,
@@ -1234,38 +1243,39 @@ class _YouTubeTileState extends State<_YouTubeTile> with AutomaticKeepAliveClien
             child: SizedBox(
               width: width,
               height: height,
-              // The player draws in the nearest overlay; one of its own, the tile's
-              // size, keeps it clipped to the tile and under the chat's bars as the
-              // list scrolls.
-              child: playing
-                  ? Overlay.wrap(
-                      child: YoutubePlayer(
-                        controller: _session!.controller,
-                        aspectRatio: widget.ratio,
-                        backgroundColor: videoBackdrop,
-                        autoFullScreen: false,
-                        enableFullScreenOnVerticalDrag: false,
-                        // Taps and scrubbing are the player's; a vertical drag still scrolls.
-                        gestureRecognizers: {
-                          Factory<TapGestureRecognizer>(TapGestureRecognizer.new),
-                          Factory<HorizontalDragGestureRecognizer>(HorizontalDragGestureRecognizer.new),
-                        },
-                      ),
-                    )
-                  : Stack(
-                      fit: StackFit.expand,
-                      children: [
-                        if (widget.poster case final poster?)
-                          Image.network(
-                            poster,
-                            fit: BoxFit.cover,
-                            cacheWidth: (width * MediaQuery.devicePixelRatioOf(context)).round(),
-                            excludeFromSemantics: true,
-                            errorBuilder: (_, _, _) => const SizedBox.shrink(),
-                          ),
-                        const Center(child: PlayMark()),
-                      ],
+              child: Stack(
+                fit: StackFit.expand,
+                children: [
+                  if (session != null && !_away)
+                    YouTubeView(
+                      session,
+                      // Taps and scrubbing are the player's; a vertical drag still scrolls.
+                      gestureRecognizers: {
+                        Factory<TapGestureRecognizer>(TapGestureRecognizer.new),
+                        Factory<HorizontalDragGestureRecognizer>(HorizontalDragGestureRecognizer.new),
+                      },
                     ),
+                  // Over the view, which paints its backdrop until the video
+                  // shows: the poster stays till then, as the package's does.
+                  IgnorePointer(
+                    ignoring: playing,
+                    child: session == null || _away
+                        ? poster
+                        : YoutubeValueBuilder(
+                            controller: session.controller,
+                            buildWhen: (o, n) => o.playerState != n.playerState,
+                            builder: (context, value) => AnimatedOpacity(
+                              duration: DuvetTokens.panelOut,
+                              opacity: switch (value.playerState) {
+                                PlayerState.unknown || PlayerState.unStarted => 1,
+                                _ => 0,
+                              },
+                              child: poster,
+                            ),
+                          ),
+                  ),
+                ],
+              ),
             ),
           ),
         ),
@@ -1341,7 +1351,7 @@ class _ImageViewerState extends State<ImageViewer> with TickerProviderStateMixin
   // either would take a pinch with one finger still.
   bool get _pinching => _fingers.length > 1;
 
-  static const _ink = Color(0xFFF2F1EE);
+  static const _ink = DuvetTokens.mediaInk;
   static const _ground = Color(0xFF0A0A0B);
 
   @override

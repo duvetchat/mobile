@@ -195,6 +195,9 @@ class DuvetTokens {
   final Color secondaryFill;
   final Color hairline;
 
+  /// Green for what is live: a call going on, someone online.
+  final Color live;
+
   /// Received bubbles and other surfaces at rest.
   final List<BoxShadow> shadowRest;
 
@@ -224,6 +227,7 @@ class DuvetTokens {
     required this.selectedFill,
     required this.secondaryFill,
     required this.hairline,
+    required this.live,
     required this.shadowRest,
     required this.shadowFloat,
     required this.shadowControl,
@@ -243,6 +247,7 @@ class DuvetTokens {
     selectedFill: Color(0xFFF0EDFF),
     secondaryFill: Color(0xFFE3E9FF),
     hairline: Color(0x1415172B),
+    live: Color(0xFF2F9E62),
     // Light shadows carry a little cobalt, so surfaces float on the pastel sky.
     shadowRest: [
       BoxShadow(color: Color(0x0A15172B), blurRadius: 2, offset: Offset(0, 1)),
@@ -278,6 +283,7 @@ class DuvetTokens {
     selectedFill: Color(0xFF231E3D),
     secondaryFill: Color(0xFF1C1E2E),
     hairline: Color(0x12FFFFFF),
+    live: Color(0xFF4CC38A),
     shadowRest: [
       BoxShadow(color: Color(0x4D000000), blurRadius: 2, offset: Offset(0, 1)),
       BoxShadow(color: Color(0x40000000), blurRadius: 12, offset: Offset(0, 4)),
@@ -315,6 +321,12 @@ class DuvetTokens {
   static const sizeRowCompact = 44.0;
   static const sizeTopBar = 52.0;
   static const sizeTabBar = 56.0;
+
+  // Over video and photos, the same in light and dark: ink for text and icons,
+  // and the play mark's scrim and its edge.
+  static const mediaInk = Color(0xFFF2F1EE);
+  static const mediaScrim = Color(0x8C111113);
+  static const mediaScrimEdge = Color(0x1FFFFFFF);
 
   // Motion: presses settle in 120ms and release in 150ms; panels spring in
   // with a ~2% overshoot and decelerate out.

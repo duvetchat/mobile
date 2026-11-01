@@ -1,5 +1,7 @@
 import 'dart:async';
 
+import 'package:flutter/foundation.dart' show Factory;
+import 'package:flutter/gestures.dart' show OneSequenceGestureRecognizer;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:forui/forui.dart';
@@ -11,18 +13,27 @@ import 'chrome.dart';
 import 'media.dart' show videoBackdrop;
 
 /// A YouTube video handed on from a chat: which, its title, and where it got to.
-/// [session], when a playing tile hands its own player on: the dock shows it
-/// as it is, so the video doesn't stop to load again.
+/// [session], when a playing tile hands its own player on: the dock shows the
+/// same view, so the video plays on without a pause.
 typedef DockedYouTube = ({String id, String? title, double seconds, YouTubeSession? session});
 
 /// The video in the dock over the tabs, if any. A tile still playing as it
 /// goes (its chat closed, or scrolled far away) puts it there; close clears it.
 final dockedYouTube = ValueNotifier<DockedYouTube?>(null);
 
-/// A YouTube player that keeps where it is, so its video can be handed on
-/// (to full screen, back, or to the dock) and pick up there.
+/// A YouTube player and its one view, handed on whole (to full screen, back,
+/// or to the dock) so the page never loads again.
 class YouTubeSession {
   final YoutubePlayerController controller;
+
+  // Moving the view under this key keeps Android's platform view, and so the
+  // WebView attached: a new one, even for a frame, pauses the video as hidden.
+  final view = GlobalKey();
+
+  /// What the player's own full-screen button does; full screen swaps in its
+  /// close while it shows this.
+  VoidCallback? onFullScreen;
+
   double seconds;
   late final StreamSubscription<YoutubeVideoState> _position;
   late final StreamSubscription<YoutubePlayerValue> _state;
@@ -30,15 +41,24 @@ class YouTubeSession {
   // The one playing: another starting pauses it, so two never play at once.
   static YouTubeSession? _playing;
 
-  YouTubeSession(String id, {this.seconds = 0, bool autoPlay = true, bool fullScreenButton = false})
+  YouTubeSession(String id, {this.seconds = 0, bool fullScreenButton = false})
     : controller = YoutubePlayerController.fromVideoId(
         videoId: id,
-        autoPlay: autoPlay,
+        autoPlay: true,
         startSeconds: seconds,
         params: YoutubePlayerParams(showFullscreenButton: fullScreenButton, strictRelatedVideos: true),
       ) {
-    // shortcut: the player reports its time only while playing, so a seek made
-    // while paused is lost on a handoff; ask controller.currentTime if that matters.
+    controller.initWithParams(params: controller.params);
+    controller.webViewController.setBackgroundColor(videoBackdrop);
+    // The package's full screen only fills the player's box: ours is a route.
+    // Its option is turned off at once, so each tap of the button asks again.
+    controller.setFullScreenListener((on) {
+      if (!on) return;
+      controller.exitFullScreen();
+      onFullScreen?.call();
+    });
+    // Where it got to, for a dock that opens without a session; handoffs move
+    // the session itself.
     _position = controller.videoStateStream.listen((s) => seconds = s.position.inMilliseconds / 1000);
     _state = controller.stream.listen((value) {
       if (value.playerState != PlayerState.playing || identical(_playing, this)) return;
@@ -60,82 +80,95 @@ class YouTubeSession {
   }
 }
 
-/// Plays [id] from [seconds] over everything, black around it, turning with
-/// the phone. Pops with where it got to and whether it was playing.
-Future<({double seconds, bool playing})?> openYouTubeFullScreen(
-  BuildContext context, {
-  required String id,
-  required double seconds,
-  double ratio = 16 / 9,
-}) => Navigator.of(context, rootNavigator: true).push(
-  PageRouteBuilder(
-    transitionDuration: DuvetTokens.panelIn,
-    reverseTransitionDuration: DuvetTokens.panelOut,
-    pageBuilder: (_, _, _) => _YouTubeFullScreen(id: id, seconds: seconds, ratio: ratio),
-    transitionsBuilder: (_, animation, _, child) => FadeTransition(
-      opacity: CurvedAnimation(parent: animation, curve: DuvetTokens.decelerate),
-      child: child,
-    ),
-  ),
-);
+/// The session's view: shown in one place at a time, which takes it from the
+/// last in the same frame.
+class YouTubeView extends StatelessWidget {
+  final YouTubeSession session;
+  final Set<Factory<OneSequenceGestureRecognizer>> gestureRecognizers;
+  const YouTubeView(this.session, {this.gestureRecognizers = const {}, super.key});
+
+  @override
+  Widget build(BuildContext context) => WebViewWidget(
+    key: session.view,
+    controller: session.controller.webViewController,
+    gestureRecognizers: gestureRecognizers,
+  );
+}
+
+/// Shows [session] over everything, black around it, turning with the phone.
+/// The caller stops showing it until this returns; it plays on or stays
+/// paused as it was.
+Future<void> openYouTubeFullScreen(BuildContext context, {required YouTubeSession session, double ratio = 16 / 9}) =>
+    Navigator.of(context, rootNavigator: true).push(
+      PageRouteBuilder<void>(
+        transitionDuration: DuvetTokens.panelIn,
+        reverseTransitionDuration: DuvetTokens.panelOut,
+        pageBuilder: (_, _, _) => _YouTubeFullScreen(session: session, ratio: ratio),
+        transitionsBuilder: (_, animation, _, child) => FadeTransition(
+          opacity: CurvedAnimation(parent: animation, curve: DuvetTokens.decelerate),
+          child: child,
+        ),
+      ),
+    );
 
 class _YouTubeFullScreen extends StatefulWidget {
-  final String id;
-  final double seconds;
+  final YouTubeSession session;
   final double ratio;
-  const _YouTubeFullScreen({required this.id, required this.seconds, required this.ratio});
+  const _YouTubeFullScreen({required this.session, required this.ratio});
 
   @override
   State<_YouTubeFullScreen> createState() => _YouTubeFullScreenState();
 }
 
 class _YouTubeFullScreenState extends State<_YouTubeFullScreen> {
-  late final YouTubeSession _session;
+  VoidCallback? _onFullScreen;
+
+  // Closing: the view goes back to the caller in the frame of the pop.
+  bool _leaving = false;
 
   @override
   void initState() {
     super.initState();
-    _session = YouTubeSession(widget.id, seconds: widget.seconds);
+    // The player's full-screen button closes this rather than opening another.
+    _onFullScreen = widget.session.onFullScreen;
+    widget.session.onFullScreen = _close;
     SystemChrome.setEnabledSystemUIMode(SystemUiMode.immersiveSticky);
   }
 
   @override
   void dispose() {
     SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
-    _session.close();
+    if (!_leaving) widget.session.onFullScreen = _onFullScreen;
     super.dispose();
   }
 
-  void _close() => Navigator.of(context).pop((seconds: _session.seconds, playing: _session.playing));
+  void _close() {
+    if (_leaving) return;
+    widget.session.onFullScreen = _onFullScreen;
+    setState(() => _leaving = true);
+    Navigator.of(context).pop();
+  }
 
   @override
   Widget build(BuildContext context) {
-    const ink = Color(0xFFF2F1EE);
+    const ink = DuvetTokens.mediaInk;
     return PopScope(
-      // Back pops with where the video got to, as the close button does.
+      // Back hands the view back, as the close button does.
       canPop: false,
       onPopInvokedWithResult: (didPop, _) {
-        if (!didPop) _close();
+        if (!didPop) return _close();
+        // Popped from elsewhere: the caller takes the view back all the same.
+        if (!_leaving) {
+          widget.session.onFullScreen = _onFullScreen;
+          setState(() => _leaving = true);
+        }
       },
       child: Scaffold(
         backgroundColor: Colors.black,
         body: Stack(
           children: [
             Center(
-              child: AspectRatio(
-                aspectRatio: widget.ratio,
-                // Its own overlay: the player draws in the nearest one, and the
-                // close button has to stay over it.
-                child: Overlay.wrap(
-                  child: YoutubePlayer(
-                    controller: _session.controller,
-                    aspectRatio: widget.ratio,
-                    backgroundColor: Colors.black,
-                    autoFullScreen: false,
-                    enableFullScreenOnVerticalDrag: false,
-                  ),
-                ),
-              ),
+              child: AspectRatio(aspectRatio: widget.ratio, child: _leaving ? null : YouTubeView(widget.session)),
             ),
             Positioned(
               top: MediaQuery.paddingOf(context).top + 6,
@@ -172,50 +205,29 @@ class YouTubeDock extends StatefulWidget {
 }
 
 class _YouTubeDockState extends State<YouTubeDock> {
-  // None while it plays full screen: one player at a time.
-  YouTubeSession? _session;
+  late final YouTubeSession _session;
 
-  // The tile's own player, still playing: shown as its webview alone, since a
-  // new YoutubePlayer loads the page again.
-  bool _handedOn = false;
+  // Full screen: the view is there meanwhile.
+  bool _away = false;
 
   @override
   void initState() {
     super.initState();
-    _handedOn = widget.video.session != null;
     _session = widget.video.session ?? YouTubeSession(widget.video.id, seconds: widget.video.seconds);
-    // Android pauses a webview's video while it's off screen, between the tile
-    // and the dock; still loaded, it plays on at once when it's back.
-    // shortcut: asked again a moment later, as the first can come before the
-    // view is on screen; listen for the view's attach if this still stutters.
-    if (_handedOn) {
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (mounted) _session?.controller.playVideo();
-      });
-      Future.delayed(const Duration(milliseconds: 400), () {
-        if (mounted) _session?.controller.playVideo();
-      });
-    }
+    _session.onFullScreen = _expand;
   }
 
   @override
   void dispose() {
-    _session?.close();
+    _session.close();
     super.dispose();
   }
 
   Future<void> _expand() async {
-    final session = _session;
-    if (session == null) return;
-    setState(() {
-      _session = null;
-      _handedOn = false;
-    });
-    session.close();
-    final back = await openYouTubeFullScreen(context, id: widget.video.id, seconds: session.seconds);
-    if (back != null && mounted) {
-      setState(() => _session = YouTubeSession(widget.video.id, seconds: back.seconds, autoPlay: back.playing));
-    }
+    if (_away) return;
+    setState(() => _away = true);
+    await openYouTubeFullScreen(context, session: _session);
+    if (mounted) setState(() => _away = false);
   }
 
   @override
@@ -237,22 +249,9 @@ class _YouTubeDockState extends State<YouTubeDock> {
                 height: YouTubeDock._playerHeight,
                 child: ColoredBox(
                   color: videoBackdrop,
-                  // Its own overlay, as in a chat: kept to this box, under the
-                  // routes above the tabs.
-                  child: session == null
-                      ? null
-                      : _handedOn
-                      // Its buttons drive it; a tap on the tiny page would only
-                      // bring up YouTube's own controls.
-                      ? IgnorePointer(child: WebViewWidget(controller: session.controller.webViewController))
-                      : Overlay.wrap(
-                          child: YoutubePlayer(
-                            controller: session.controller,
-                            backgroundColor: videoBackdrop,
-                            autoFullScreen: false,
-                            enableFullScreenOnVerticalDrag: false,
-                          ),
-                        ),
+                  // Its buttons drive it; a tap on the tiny page would only
+                  // bring up YouTube's own controls.
+                  child: _away ? null : IgnorePointer(child: YouTubeView(session)),
                 ),
               ),
             ),
@@ -277,16 +276,15 @@ class _YouTubeDockState extends State<YouTubeDock> {
                 ),
               ),
             ),
-            if (session != null)
-              YoutubeValueBuilder(
-                controller: session.controller,
-                buildWhen: (o, n) => o.playerState != n.playerState,
-                builder: (context, _) => IconAction(
-                  icon: session.playing ? FLucideIcons.pause : FLucideIcons.play,
-                  label: session.playing ? 'Pause' : 'Play',
-                  onPressed: session.playing ? session.controller.pauseVideo : session.controller.playVideo,
-                ),
+            YoutubeValueBuilder(
+              controller: session.controller,
+              buildWhen: (o, n) => o.playerState != n.playerState,
+              builder: (context, _) => IconAction(
+                icon: session.playing ? FLucideIcons.pause : FLucideIcons.play,
+                label: session.playing ? 'Pause' : 'Play',
+                onPressed: session.playing ? session.controller.pauseVideo : session.controller.playVideo,
               ),
+            ),
             IconAction(icon: FLucideIcons.maximize, label: 'Full screen', onPressed: _expand),
             IconAction(icon: FLucideIcons.x, label: 'Stop and close', onPressed: () => dockedYouTube.value = null),
             const SizedBox(width: 8),

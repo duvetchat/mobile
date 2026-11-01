@@ -560,11 +560,11 @@ class PlayMark extends StatelessWidget {
     width: 48,
     height: 48,
     decoration: BoxDecoration(
-      color: const Color(0x8C111113),
+      color: DuvetTokens.mediaScrim,
       borderRadius: BorderRadius.circular(DuvetTokens.radiusButton),
-      border: Border.all(color: const Color(0x1FFFFFFF)),
+      border: Border.all(color: DuvetTokens.mediaScrimEdge),
     ),
-    child: const Icon(FLucideIcons.play, color: Color(0xFFF2F1EE), size: 24),
+    child: const Icon(FLucideIcons.play, color: DuvetTokens.mediaInk, size: 24),
   );
 }
 
@@ -614,11 +614,12 @@ class _VideoTileState extends State<VideoTile> {
   @override
   Widget build(BuildContext context) {
     final attachment = widget.attachment;
-    final width = widget.width;
-    final ratio = attachment.width == null || attachment.height == null || attachment.height == 0
+    // Sized like a picture: its own ratio, so a tall or wide video isn't cropped; 248×168 until its size is known.
+    final ratio = (attachment.width ?? 0) <= 0 || (attachment.height ?? 0) <= 0
         ? 248 / 168
-        : (attachment.width! / attachment.height!).clamp(0.6, 2.0);
-    final height = math.min(width / ratio, 320.0);
+        : attachment.width! / attachment.height!;
+    final height = math.min(widget.width / ratio, 320.0);
+    final width = math.min(widget.width, height * ratio);
     final frame = _frame?.value;
     void open() => Navigator.of(context, rootNavigator: true).push(
       PageRouteBuilder<void>(
@@ -648,7 +649,6 @@ class _VideoTileState extends State<VideoTile> {
           decoration: BoxDecoration(
             color: videoBackdrop,
             borderRadius: BorderRadius.circular(DuvetTokens.radiusButton),
-            boxShadow: context.duvet.shadowRest,
           ),
           child: Stack(
             fit: StackFit.expand,
@@ -722,7 +722,7 @@ class _VideoPageState extends State<VideoPage> {
 
   @override
   Widget build(BuildContext context) {
-    const ink = Color(0xFFF2F1EE);
+    const ink = DuvetTokens.mediaInk;
     final value = _controller.value;
     final duration = value.duration;
     final progress = duration == Duration.zero ? 0.0 : value.position.inMilliseconds / duration.inMilliseconds;

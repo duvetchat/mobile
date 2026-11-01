@@ -433,7 +433,7 @@ class _AnswerButton extends StatelessWidget {
 class VoiceBar extends StatefulWidget {
   const VoiceBar({super.key});
 
-  static const height = 64.0;
+  static const height = DuvetTokens.sizeTabBar;
 
   /// Whether there's something for it to show.
   static bool shows(VoiceController voice) => voice.inVoice;
@@ -492,7 +492,8 @@ class _VoiceBarState extends State<VoiceBar> with _Ticking {
                   onTap: open,
                   scale: 1,
                   builder: (context, _) => Padding(
-                    padding: const EdgeInsets.fromLTRB(16, 8, 8, 8),
+                    // Two lines (≈41) fit the 56 bar with 6 above and below.
+                    padding: const EdgeInsets.fromLTRB(16, 6, 8, 6),
                     child: Row(
                       children: [
                         Icon(
