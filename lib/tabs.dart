@@ -17,6 +17,8 @@ import 'theme.dart';
 import 'voice_room.dart';
 import 'widgets/avatar.dart';
 import 'widgets/chrome.dart';
+import 'widgets/duvet_mascot.dart';
+import 'widgets/ghost_art.dart';
 import 'widgets/rows.dart';
 
 /// The unified inbox: the recent chats, rooms and DMs alike, then the DMs
@@ -53,6 +55,7 @@ class ChatsTab extends StatelessWidget {
         final asking = repository.friends.value.incoming.length;
         return LargeTitlePage(
           title: 'Chats',
+          titleLeading: const AppIcon(size: 32),
           titleTrailing: Row(
             mainAxisSize: MainAxisSize.min,
             children: [
@@ -100,7 +103,7 @@ class ChatsTab extends StatelessWidget {
             if (rows.isEmpty)
               const SliverFillRemaining(
                 hasScrollBody: false,
-                child: EmptyState(icon: FLucideIcons.messageCircle, text: 'No conversations yet'),
+                child: EmptyState(mascot: MascotState.empty, text: 'No conversations yet'),
               )
             else
               SliverPadding(
@@ -269,7 +272,7 @@ class SpacesTab extends StatelessWidget {
                 hasScrollBody: false,
                 child: repository.status.value == LiveStatus.connecting
                     ? const Center(child: FCircularProgress())
-                    : const EmptyState(icon: FLucideIcons.layoutGrid, text: 'You’re not in any spaces'),
+                    : const EmptyState(mascot: MascotState.empty, text: 'You’re not in any spaces'),
               )
             else
               switch (prefs.view) {

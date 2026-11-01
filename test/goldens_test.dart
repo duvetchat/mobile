@@ -192,6 +192,43 @@ void main() {
         }),
       ),
     );
+
+    // The ghost in the screens: Welcome, a tab root's night sky, a new DM.
+    Future<FakeRepository> app(WidgetTester tester, {bool signedIn = true}) async {
+      phone(tester);
+      final repository = FakeRepository(signedIn: signedIn);
+      final appearance = Appearance(MemoryAppearanceStore())
+        ..value = b == Brightness.dark ? ThemeMode.dark : ThemeMode.light;
+      await tester.pumpWidget(DuvetApp(repository: repository, appearance: appearance));
+      await tester.pumpAndSettle();
+      return repository;
+    }
+
+    testWidgets(
+      'welcome, ${b.name}',
+      (tester) => withShadows(() async {
+        await app(tester, signedIn: false);
+        await expectLater(find.byType(DuvetApp), matchesGoldenFile('goldens/welcome_${b.name}.png'));
+      }),
+    );
+
+    testWidgets(
+      'chats, ${b.name}',
+      (tester) => withShadows(() async {
+        await app(tester);
+        await expectLater(find.byType(DuvetApp), matchesGoldenFile('goldens/chats_${b.name}.png'));
+      }),
+    );
+
+    testWidgets(
+      'empty DM, ${b.name}',
+      (tester) => withShadows(() async {
+        await app(tester);
+        await tester.tap(find.text('Leo'));
+        await tester.pumpAndSettle();
+        await expectLater(find.byType(DuvetApp), matchesGoldenFile('goldens/empty_dm_${b.name}.png'));
+      }),
+    );
   }
 }
 

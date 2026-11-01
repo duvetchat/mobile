@@ -3,6 +3,8 @@ import 'package:forui/forui.dart';
 
 import '../theme.dart';
 import 'depth.dart';
+import 'duvet_mascot.dart';
+import 'ghost_art.dart';
 import 'glass.dart';
 
 /// Liquid Glass chrome: the bars (top, tab, composer). The lighter
@@ -310,6 +312,9 @@ class ConnectionBanner extends StatelessWidget {
 class LargeTitlePage extends StatefulWidget {
   final String title;
 
+  /// Before the title: the app icon on Chats, the screen the app opens on.
+  final Widget? titleLeading;
+
   /// Beside the title, e.g. the connecting spinner.
   final Widget? titleTrailing;
 
@@ -321,6 +326,7 @@ class LargeTitlePage extends StatefulWidget {
   const LargeTitlePage({
     required this.title,
     required this.slivers,
+    this.titleLeading,
     this.titleTrailing,
     this.header,
     this.onRefresh,
@@ -365,15 +371,28 @@ class _LargeTitlePageState extends State<LargeTitlePage> {
         SliverPadding(
           padding: EdgeInsets.fromLTRB(16, padding.top + 8, 16, 0),
           sliver: SliverToBoxAdapter(
-            child: Row(
+            child: Stack(
+              clipBehavior: Clip.none,
               children: [
-                Expanded(
-                  child: Semantics(
-                    header: true,
-                    child: Text(widget.title, style: DuvetType.largeTitle.copyWith(color: colors.foreground)),
-                  ),
+                // The night sky beside the title, clear of its buttons (the tab
+                // roots' titles are all one short word); it scrolls away with it.
+                Positioned(
+                  left: widget.titleLeading == null ? 128 : 172,
+                  top: -6,
+                  child: const NightSky.title(width: 120),
                 ),
-                ?widget.titleTrailing,
+                Row(
+                  children: [
+                    if (widget.titleLeading case final leading?) ...[leading, const SizedBox(width: 12)],
+                    Expanded(
+                      child: Semantics(
+                        header: true,
+                        child: Text(widget.title, style: DuvetType.largeTitle.copyWith(color: colors.foreground)),
+                      ),
+                    ),
+                    ?widget.titleTrailing,
+                  ],
+                ),
               ],
             ),
           ),
@@ -496,12 +515,15 @@ class DuvetTabBar extends StatelessWidget {
   }
 }
 
-/// A screen title-less placeholder: an icon and a line, centered.
+/// A screen title-less placeholder: an icon and a line, centered; or the ghost
+/// over a `title`-type heading.
 class EmptyState extends StatelessWidget {
-  final IconData icon;
+  final IconData? icon;
+  final MascotState? mascot;
   final String text;
   final Widget? action;
-  const EmptyState({required this.icon, required this.text, this.action, super.key});
+  const EmptyState({this.icon, this.mascot, required this.text, this.action, super.key})
+    : assert((icon == null) != (mascot == null), 'Give an icon or a mascot');
 
   @override
   Widget build(BuildContext context) {
@@ -512,12 +534,20 @@ class EmptyState extends StatelessWidget {
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            Icon(icon, size: 32, color: colors.mutedForeground),
-            const SizedBox(height: 12),
+            if (mascot case final mascot?)
+              // Shrinks rather than overflows when the keyboard leaves little room.
+              Flexible(
+                child: FittedBox(fit: BoxFit.scaleDown, child: DuvetMascot(mascot, excludeFromSemantics: true)),
+              )
+            else
+              Icon(icon, size: 32, color: colors.mutedForeground),
+            SizedBox(height: mascot == null ? 12 : 16),
             Text(
               text,
               textAlign: TextAlign.center,
-              style: DuvetType.body.copyWith(color: colors.mutedForeground),
+              style: mascot == null
+                  ? DuvetType.body.copyWith(color: colors.mutedForeground)
+                  : DuvetType.title.copyWith(color: colors.foreground),
             ),
             if (action != null) ...[const SizedBox(height: 16), action!],
           ],

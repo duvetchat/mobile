@@ -225,7 +225,7 @@ void main() {
     await settle(tester);
     await settle(tester);
     expect(find.text('Incoming call'), findsNothing);
-    expect(find.text('Sign in to Duvet'), findsOneWidget);
+    expect(find.text('Talk with your people.'), findsOneWidget);
     await finish(tester, app);
   });
 

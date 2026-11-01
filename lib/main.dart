@@ -16,7 +16,7 @@ import 'data/webrtc_engine.dart';
 import 'calls.dart';
 import 'deep_links.dart';
 import 'account.dart';
-import 'login.dart';
+import 'welcome.dart';
 import 'tabs.dart';
 import 'theme.dart';
 import 'widgets/chrome.dart';
@@ -156,7 +156,7 @@ class _SessionGateState extends State<SessionGate> {
         }
         return ValueListenableBuilder<Profile?>(
           valueListenable: repository.profile,
-          builder: (context, profile, _) => profile == null ? const LoginScreen() : const HomeTabs(),
+          builder: (context, profile, _) => profile == null ? const WelcomeScreen() : const HomeTabs(),
         );
       },
     );

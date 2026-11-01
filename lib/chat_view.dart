@@ -33,6 +33,8 @@ import 'voice_room.dart' show openVoiceRoom;
 import 'widgets/avatar.dart';
 import 'widgets/bot_ui.dart';
 import 'widgets/chrome.dart';
+import 'widgets/duvet_mascot.dart';
+import 'widgets/ghost_art.dart';
 import 'widgets/disintegrate.dart';
 import 'widgets/composer_controller.dart';
 import 'widgets/depth.dart';
@@ -2352,20 +2354,42 @@ class _ChatViewState extends State<ChatView> {
     );
   }
 
+  /// A quick first line goes into the composer to edit or send, not straight out.
+  void _startWith(String line) {
+    _composer.value = TextEditingValue(
+      text: line,
+      selection: TextSelection.collapsed(offset: line.length),
+    );
+    _focus.requestFocus();
+  }
+
   Widget _body(BuildContext context) {
-    final colors = context.theme.colors;
     if (_loading && _entries.isEmpty) return const Center(child: FCircularProgress());
     if (_error != null && _entries.isEmpty) {
       return EmptyState(
-        icon: FLucideIcons.cloudOff,
+        mascot: MascotState.oops,
         text: 'Couldn’t load messages',
         action: DuvetButton(label: 'Try again', onPressed: _load),
       );
     }
     if (_entries.isEmpty) {
-      return Center(
-        child: Text('No messages yet. Say hi!', style: DuvetType.body.copyWith(color: colors.mutedForeground)),
-      );
+      // A new DM: the ghost tucked in, and a first line to start with.
+      if (widget.target is ConversationTarget && widget.threadOf == null) {
+        return EmptyState(
+          mascot: MascotState.underDuvet,
+          text: 'Just you and ${widget.title}',
+          action: Wrap(
+            spacing: 8,
+            runSpacing: 8,
+            alignment: WrapAlignment.center,
+            children: [
+              for (final line in const ['Hi!', 'How’s it going?'])
+                DuvetChip(label: line, selected: false, action: true, onTap: () => _startWith(line)),
+            ],
+          ),
+        );
+      }
+      return const EmptyState(mascot: MascotState.empty, text: 'No messages yet. Say hi!');
     }
     final items = _items();
     final count = items.length + (_loadingOlder ? 1 : 0);

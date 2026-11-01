@@ -14,6 +14,7 @@ import 'theme.dart';
 import 'voice_room.dart';
 import 'widgets/avatar.dart';
 import 'widgets/chrome.dart';
+import 'widgets/duvet_mascot.dart';
 import 'widgets/depth.dart';
 import 'widgets/rows.dart';
 
@@ -651,7 +652,7 @@ class CallHistoryList extends StatelessWidget {
         if (calls.isEmpty) {
           return const SliverFillRemaining(
             hasScrollBody: false,
-            child: EmptyState(icon: FLucideIcons.phone, text: 'No calls yet'),
+            child: EmptyState(mascot: MascotState.empty, text: 'No calls yet'),
           );
         }
         return SliverPadding(

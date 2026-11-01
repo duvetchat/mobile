@@ -961,8 +961,7 @@ class TextAction extends StatelessWidget {
   );
 }
 
-/// A chip: 32pt, `radius-chip`, raised; selected, `accent-tint` with an
-/// `accent-text` edge.
+/// A chip: 32pt, `radius-chip`, raised; selected, a solid violet fill.
 class DuvetChip extends StatelessWidget {
   final String label;
   final bool selected;
