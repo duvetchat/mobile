@@ -107,10 +107,12 @@ flutter:
     - assets/mascot/light/
     - assets/mascot/dark/
     - assets/logo/app-icon-rounded.svg
+    - assets/logo/mark-on-light.svg
 
   # The Ghost theme's three faces (lib/theme.dart, DuvetType): Fraunces for
-  # headers (one variable file, axes set in code), Inter for the interface,
-  # Roboto for what people write.
+  # the smaller headers and Space names (one variable file, axes set in code),
+  # Inter for the interface, page titles and numbers, Roboto for what people
+  # write.
   fonts:
     - family: Fraunces
       fonts:

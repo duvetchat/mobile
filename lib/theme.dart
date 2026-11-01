@@ -98,9 +98,11 @@ abstract final class Duvet {
   }
 }
 
-/// The Duvet type ramp, three faces with three jobs: Fraunces for headers,
-/// Inter for the interface, Roboto for what people write. Headlines set at
-/// line-height 1.1, every text style at 1.4. Colors come from the caller.
+/// The Duvet type ramp, three faces with three jobs: Fraunces for the smaller
+/// headers (sheet and top-bar titles, Space names, a Space's monogram), Inter
+/// for the interface, the big page titles and any title that is a number, and
+/// Roboto for what people write. Headlines set at line-height 1.1, every text
+/// style at 1.4. Colors come from the caller.
 abstract final class DuvetType {
   static const family = 'Inter';
   static const content = 'Roboto';
@@ -129,14 +131,34 @@ abstract final class DuvetType {
   );
   static const _text = TextStyle(fontFamily: family, height: 1.4, leadingDistribution: TextLeadingDistribution.even);
 
-  /// Root tab titles: Chats, Spaces, Calls, You.
-  static final largeTitle = _headline(36, opsz: 144, tracking: -0.02);
+  /// Page titles (h1): the tabs' Chats, Spaces, Calls, You. Inter, not
+  /// Fraunces: a serif this big shouts.
+  static final largeTitle = _text.copyWith(
+    fontSize: 36,
+    height: 1.1,
+    letterSpacing: 36 * -0.02,
+    fontWeight: FontWeight.w700,
+  );
 
   /// Sheet titles.
   static final title = _headline(22, opsz: 72);
 
   /// Inline top-bar titles.
   static final navTitle = _headline(20, opsz: 36, weight: FontWeight.w500);
+
+  /// The "duvet" wordmark: the brand sets it in Fraunces Regular, opsz 144,
+  /// tracked -3%.
+  static final wordmark = _headline(68, opsz: 144, tracking: -0.03);
+
+  /// [title]'s size in Inter: for a title that is or holds a number (storage
+  /// used, a file's name), since Fraunces figures look cheap, and for a
+  /// message's top-level heading, an h1 like [largeTitle].
+  static final titleSans = _text.copyWith(
+    fontSize: 22,
+    height: 1.1,
+    letterSpacing: 22 * -0.01,
+    fontWeight: FontWeight.w600,
+  );
 
   /// Message text, the composer.
   static final body = _text.copyWith(fontFamily: content, fontSize: 16, fontWeight: FontWeight.w400);

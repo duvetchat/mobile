@@ -35,14 +35,19 @@ void main() {
     await tester.pumpAndSettle();
   }
 
-  test('the type ramp: Fraunces headlines at 1.1, Inter for the interface, Roboto for messages', () {
-    expect(DuvetType.largeTitle.fontFamily, 'Fraunces');
+  test('the type ramp: Fraunces for smaller headlines, Inter for page titles, numbers and the interface, Roboto for '
+      'messages', () {
+    expect(
+      (DuvetType.largeTitle.fontFamily, DuvetType.title.fontFamily, DuvetType.navTitle.fontFamily),
+      ('Inter', 'Fraunces', 'Fraunces'),
+    );
     expect(
       (DuvetType.largeTitle.fontSize, DuvetType.largeTitle.height, DuvetType.largeTitle.fontWeight),
-      (36, 1.1, FontWeight.w400),
+      (36, 1.1, FontWeight.w700),
     );
+    expect((DuvetType.titleSans.fontFamily, DuvetType.titleSans.fontSize), ('Inter', 22));
     // The variable font defaults to Black and wonky: every headline pins its cut.
-    for (final style in [DuvetType.largeTitle, DuvetType.title, DuvetType.navTitle]) {
+    for (final style in [DuvetType.title, DuvetType.navTitle]) {
       final axes = {for (final v in style.fontVariations!) v.axis: v.value};
       expect(axes['wght'], style.fontWeight!.value);
       expect((axes['SOFT'], axes['WONK']), (50, 0));

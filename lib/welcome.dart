@@ -39,15 +39,7 @@ class WelcomeScreen extends StatelessWidget {
                   const SizedBox(height: 28),
                   Semantics(
                     header: true,
-                    child: Text(
-                      'duvet',
-                      style: DuvetType.largeTitle.copyWith(
-                        fontSize: 68,
-                        letterSpacing: 68 * -0.03,
-                        height: 1,
-                        color: colors.foreground,
-                      ),
-                    ),
+                    child: Text('duvet', style: DuvetType.wordmark.copyWith(height: 1, color: colors.foreground)),
                   ),
                   const SizedBox(height: 14),
                   Text(
