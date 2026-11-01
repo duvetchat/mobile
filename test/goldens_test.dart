@@ -14,6 +14,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:forui/forui.dart';
 
 import 'support/fake_repository.dart';
+import 'support/fonts.dart';
 
 /// The design-system components and screens, drawn in both themes. Update
 /// them with `flutter test --update-goldens test/goldens_test.dart`.
@@ -21,17 +22,10 @@ void main() {
   setUpAll(() async {
     TestWidgetsFlutterBinding.ensureInitialized();
     DeepLinkSource.instance = _NoLinks();
-    // The app's own faces, not the test font's boxes.
-    final sans = FontLoader('Fira Sans');
-    for (final w in ['Regular', 'Medium', 'Bold']) {
-      sans.addFont(rootBundle.load('assets/fonts/FiraSans-$w.ttf'));
-    }
-    await sans.load();
+    await loadAppFonts();
     final icons = FontLoader('packages/forui_lucide/ForuiLucideIcons')
       ..addFont(rootBundle.load('packages/forui_lucide/assets/lucide.ttf'));
     await icons.load();
-    final mono = FontLoader('Fira Mono')..addFont(rootBundle.load('assets/fonts/FiraMono-Regular.ttf'));
-    await mono.load();
     EmojiCatalog.debugUse(await EmojiCatalog.load());
   });
 

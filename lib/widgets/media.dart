@@ -227,7 +227,7 @@ class VoiceNotePlayer extends StatelessWidget {
             width: 260,
             padding: const EdgeInsets.fromLTRB(8, 8, 12, 8),
             decoration: BoxDecoration(
-              color: mine ? Duvet.accent : colors.card,
+              color: mine ? Duvet.azure : colors.card,
               borderRadius: BorderRadius.circular(DuvetTokens.radiusButton),
               boxShadow: tokens.shadowRest,
             ),

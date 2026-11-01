@@ -335,8 +335,8 @@ class _LargeTitlePageState extends State<LargeTitlePage> {
   final _scroll = ScrollController();
   bool _collapsed = false;
 
-  // The large title's height (8 above, 32 × 1.1): past it, the bar shows.
-  static const _titleExtent = 8 + 35.2;
+  // The large title's height (8 above, then size × line height): past it, the bar shows.
+  static final _titleExtent = 8 + DuvetType.largeTitle.fontSize! * DuvetType.largeTitle.height!;
 
   @override
   void initState() {
@@ -450,7 +450,7 @@ class DuvetTabBar extends StatelessWidget {
                     width: 56,
                     height: 32,
                     child: DecoratedBox(
-                      decoration: BoxDecoration(color: tokens.accentTint, borderRadius: BorderRadius.circular(16)),
+                      decoration: BoxDecoration(color: tokens.azureTint, borderRadius: BorderRadius.circular(16)),
                     ),
                   ),
                   Row(

@@ -1781,12 +1781,8 @@ class _ReplyGesturePickerState extends State<_ReplyGesturePicker> with SingleTic
                     height: 104,
                     padding: const EdgeInsets.fromLTRB(8, 12, 8, 10),
                     decoration: BoxDecoration(
-                      color: gesture == widget.value ? colors.card : colors.secondary,
+                      color: gesture == widget.value ? tokens.selectedFill : colors.secondary,
                       borderRadius: radius,
-                      border: Border.all(
-                        color: gesture == widget.value ? tokens.accentText : const Color(0x00000000),
-                        width: 1.5,
-                      ),
                       boxShadow: gesture == widget.value ? tokens.shadowControl : null,
                     ),
                     child: Column(

@@ -599,8 +599,9 @@ class SpaceWideCard extends StatelessWidget {
 
 enum ButtonVariant { primary, secondary, destructive }
 
-/// Duvet's button: 48pt, `radius-button`, `label` type. Secondary (outlined
-/// in `accent-text`) is the default; one Primary (filled) per screen at most.
+/// Duvet's button: 48pt, `radius-button`, `label` type, always a solid fill.
+/// Secondary (cobalt on a pale fill) is the default; one Primary (cobalt) per
+/// screen at most.
 class DuvetButton extends StatelessWidget {
   final String label;
   final IconData? icon;
@@ -629,7 +630,7 @@ class DuvetButton extends StatelessWidget {
     final ink = switch (variant) {
       ButtonVariant.primary => colors.primaryForeground,
       ButtonVariant.secondary => tokens.accentText,
-      ButtonVariant.destructive => colors.destructive,
+      ButtonVariant.destructive => colors.destructiveForeground,
     };
     const radius = BorderRadius.all(Radius.circular(DuvetTokens.radiusButton));
     return Semantics(
@@ -648,10 +649,13 @@ class DuvetButton extends StatelessWidget {
             height: 48,
             padding: const EdgeInsets.symmetric(horizontal: 24),
             decoration: BoxDecoration(
-              color: variant == ButtonVariant.primary ? Duvet.accent : Colors.transparent,
+              color: switch (variant) {
+                ButtonVariant.primary => Duvet.accent,
+                ButtonVariant.secondary => tokens.secondaryFill,
+                ButtonVariant.destructive => colors.destructive,
+              },
               borderRadius: radius,
-              border: variant == ButtonVariant.primary ? null : Border.all(color: ink),
-              boxShadow: variant == ButtonVariant.primary && !pressed ? tokens.shadowControl : null,
+              boxShadow: pressed ? null : tokens.shadowControl,
             ),
             child: InsetShadow(
               shadows: pressed ? tokens.shadowPressed : const [],
@@ -1001,9 +1005,8 @@ class DuvetChip extends StatelessWidget {
           height: 32,
           padding: const EdgeInsets.symmetric(horizontal: 12),
           decoration: BoxDecoration(
-            color: selected ? tokens.accentTint : colors.card,
+            color: selected ? tokens.selectedFill : colors.card,
             borderRadius: BorderRadius.circular(DuvetTokens.radiusChip),
-            border: selected ? Border.all(color: tokens.accentText) : null,
             boxShadow: selected ? null : tokens.shadowRest,
           ),
           child: Row(
@@ -1013,7 +1016,7 @@ class DuvetChip extends StatelessWidget {
               Text(
                 label,
                 style: DuvetType.snippet.copyWith(
-                  color: selected ? tokens.accentText : colors.foreground,
+                  color: selected ? tokens.violetText : colors.foreground,
                   fontWeight: FontWeight.w500,
                 ),
               ),

@@ -750,15 +750,14 @@ class _Chip extends StatelessWidget {
       padding: const EdgeInsets.symmetric(horizontal: 12),
       alignment: Alignment.center,
       decoration: BoxDecoration(
-        color: on ? tokens.accentTint : colors.card,
+        color: on ? tokens.selectedFill : colors.card,
         borderRadius: BorderRadius.circular(DuvetTokens.radiusChip),
-        border: on ? Border.all(color: tokens.accentText) : null,
         boxShadow: on ? null : tokens.shadowRest,
       ),
       child: Text(
         text,
         style: DuvetType.snippet.copyWith(
-          color: on ? tokens.accentText : colors.foreground,
+          color: on ? tokens.violetText : colors.foreground,
           fontWeight: FontWeight.w500,
         ),
       ),

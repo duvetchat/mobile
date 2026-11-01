@@ -192,10 +192,10 @@ class _MessageTextState extends State<MessageText> {
               final onMention? => _tap(() => onMention(userId)),
               null => null,
             },
-            // Accent as text; on the accent bubble, bold ink-on-accent
+            // Violet as text; on your azure bubble, bold ink-on-accent
             // instead, which keeps its contrast.
             style: (style ?? const TextStyle()).copyWith(
-              color: widget.onAccent ? null : tokens.accentText,
+              color: widget.onAccent ? null : tokens.violetText,
               fontWeight: FontWeight.w700,
             ),
           ),

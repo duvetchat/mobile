@@ -251,9 +251,8 @@ class _QuickReactions extends StatelessWidget {
               height: 44,
               alignment: Alignment.center,
               decoration: BoxDecoration(
-                color: on ? tokens.accentTint : (pressed ? colors.secondary : null),
+                color: on ? tokens.selectedFill : (pressed ? colors.secondary : null),
                 borderRadius: BorderRadius.circular(DuvetTokens.radiusField),
-                border: on ? Border.all(color: tokens.accentText) : null,
               ),
               child: child,
             ),
@@ -333,7 +332,7 @@ Future<bool?> _showDeleteSheet(
                 child: Container(
                   padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
                   decoration: BoxDecoration(
-                    color: mine ? Duvet.accent : colors.card,
+                    color: mine ? Duvet.azure : colors.card,
                     borderRadius: BorderRadius.circular(DuvetTokens.radiusButton),
                   ),
                   child: message.content.isEmpty
