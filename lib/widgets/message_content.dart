@@ -22,6 +22,7 @@ import 'depth.dart';
 import 'glass.dart';
 import 'media.dart';
 import 'media_actions.dart';
+import 'role_name.dart';
 
 /// What a bubble needs to show names and custom emoji.
 class MessageDirectory {
@@ -31,9 +32,19 @@ class MessageDirectory {
 
   /// A room the user may see; null for one hidden or gone.
   final Room? Function(String roomId) roomOf;
-  const MessageDirectory({required this.me, required this.nameOf, required this.emojiOf, this.roomOf = _noRoom});
+
+  /// A member's name colors in this Space (see [nameColorsOf]); null outside one or without a colored role.
+  final RoleColors? Function(String userId) nameColorsOf;
+  const MessageDirectory({
+    required this.me,
+    required this.nameOf,
+    required this.emojiOf,
+    this.roomOf = _noRoom,
+    this.nameColorsOf = _noColors,
+  });
 
   static String? _noName(String _) => null;
+  static RoleColors? _noColors(String _) => null;
   static CustomEmoji? _noEmoji(String _) => null;
   static Room? _noRoom(String _) => null;
   static const empty = MessageDirectory(me: null, nameOf: _noName, emojiOf: _noEmoji);
@@ -181,23 +192,40 @@ class _MessageTextState extends State<MessageText> {
     final rooms = <String, Room>{};
     var spoilers = false;
 
+    // A mention in its member's role colors, as their name shows in the
+    // member list; violet without a colored role. On your azure bubble, bold
+    // ink-on-accent instead, which keeps its contrast.
+    InlineSpan mention(String name, String userId, TextStyle? style) {
+      final bold = (style ?? const TextStyle()).copyWith(fontWeight: FontWeight.w700);
+      final role = widget.onAccent ? null : widget.directory.nameColorsOf(userId);
+      final onMention = widget.onMention;
+      if (role case (from: _?, via: _, to: _?)) {
+        // A gradient spans the name, so the name is a box of its own in the line.
+        return WidgetSpan(
+          alignment: PlaceholderAlignment.baseline,
+          baseline: TextBaseline.alphabetic,
+          child: GestureDetector(
+            onTap: onMention == null ? null : () => onMention(userId),
+            child: RoleName(name, colors: role, style: base.merge(bold)),
+          ),
+        );
+      }
+      return TextSpan(
+        text: name,
+        recognizer: onMention == null ? null : _tap(() => onMention(userId)),
+        style: bold.copyWith(color: widget.onAccent ? null : roleColorOn(context, role?.from) ?? tokens.violetText),
+      );
+    }
+
     // Mentions and custom emoji within a text leaf.
     List<InlineSpan> leaf(String text, TextStyle? style) => [
       for (final token in tokenize(text))
         switch (token) {
           TextToken(:final text) => TextSpan(text: text, style: style),
-          MentionToken(:final userId) => TextSpan(
-            text: '@${mentions[userId] = widget.directory.nameOf(userId) ?? 'someone'}',
-            recognizer: switch (widget.onMention) {
-              final onMention? => _tap(() => onMention(userId)),
-              null => null,
-            },
-            // Violet as text; on your azure bubble, bold ink-on-accent
-            // instead, which keeps its contrast.
-            style: (style ?? const TextStyle()).copyWith(
-              color: widget.onAccent ? null : tokens.violetText,
-              fontWeight: FontWeight.w700,
-            ),
+          MentionToken(:final userId) => mention(
+            '@${mentions[userId] = widget.directory.nameOf(userId) ?? 'someone'}',
+            userId,
+            style,
           ),
           RoomToken(:final roomId) => switch (widget.directory.roomOf(roomId)) {
             // Hidden or gone: no name, nothing to open.

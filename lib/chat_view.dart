@@ -305,6 +305,10 @@ class _ChatViewState extends State<ChatView> {
       nameOf: (id) => names[id] ?? _repository.nameOf(id),
       emojiOf: (id) => emojis[id],
       roomOf: (id) => rooms[id],
+      nameColorsOf: switch (widget.target) {
+        RoomTarget(:final spaceId) => (id) => nameColorsOf(_repository.rolesOf(spaceId, id)),
+        ConversationTarget() => (_) => null,
+      },
     );
   }
 

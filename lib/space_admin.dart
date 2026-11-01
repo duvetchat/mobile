@@ -23,6 +23,7 @@ import 'widgets/avatar.dart';
 import 'widgets/chrome.dart';
 import 'widgets/depth.dart' show Pressable;
 import 'widgets/glass.dart';
+import 'widgets/role_name.dart';
 import 'widgets/rows.dart';
 import 'widgets/scrolling.dart' show CarouselPhysics;
 
@@ -1968,10 +1969,6 @@ class _MemberPickerState extends State<_MemberPicker> {
 // Roles
 // -----------------------------------------------------------------------------
 
-/// A role's name color, readable on this theme's background.
-Color? roleColorOn(BuildContext context, int? rgb) =>
-    rgb == null ? null : readableOn(Color(0xFF000000 | rgb), context.theme.colors.background);
-
 /// A reorderable row's trailing edge, ridged like a grip: drag it to move
 /// the row. Down a panel the edges make one ridge.
 class DragEdge extends StatelessWidget {
@@ -2024,39 +2021,6 @@ Widget liftedRow(Widget child, int _, Animation<double> _) => Builder(
     ),
   ),
 );
-
-/// A role's name as members see it: in its color, or across its gradient
-/// left to right, each stop made readable on this theme's background; the
-/// default ink without one. Sized to the name, so a gradient spans the name.
-class RoleName extends StatelessWidget {
-  final String name;
-  final RoleColors colors;
-  final TextStyle style;
-  const RoleName(this.name, {required this.colors, required this.style, super.key});
-
-  @override
-  Widget build(BuildContext context) {
-    final ink = context.theme.colors.foreground;
-    // A gradient only with both ends, as the desktop reads one; the text is
-    // white only under the mask that colors it.
-    final gradient = colors.from != null && colors.to != null;
-    final stops = [colors.from, colors.via, colors.to].nonNulls.map((c) => roleColorOn(context, c)!).toList();
-    final text = Text(
-      name,
-      maxLines: 1,
-      overflow: TextOverflow.ellipsis,
-      style: style.copyWith(
-        color: gradient ? const Color(0xFFFFFFFF) : (colors.from == null ? ink : roleColorOn(context, colors.from)),
-      ),
-    );
-    if (!gradient) return text;
-    return ShaderMask(
-      blendMode: BlendMode.srcIn,
-      shaderCallback: (bounds) => LinearGradient(colors: stops).createShader(bounds),
-      child: text,
-    );
-  }
-}
 
 /// What a role may do, in a few words: its strongest permissions first.
 String rolePowers(SpaceRole r) {

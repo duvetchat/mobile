@@ -1976,6 +1976,8 @@ class DuvetRepository implements ChatRepository {
         RoleTag(
           r.name,
           color: r.colorFrom == null ? null : 0xFF000000 | r.colorFrom!,
+          colorVia: r.colorVia == null ? null : 0xFF000000 | r.colorVia!,
+          colorTo: r.colorTo == null ? null : 0xFF000000 | r.colorTo!,
           id: r.id,
           position: r.position,
           hoisted: r.hoisted,

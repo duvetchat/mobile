@@ -1,12 +1,15 @@
 import 'package:duvet/data/emoji_catalog.dart';
 import 'package:duvet/data/models.dart';
 import 'package:duvet/main.dart';
+import 'package:duvet/theme.dart';
 import 'package:duvet/widgets/chrome.dart';
+import 'package:duvet/widgets/role_name.dart';
 import 'package:duvet/widgets/rows.dart';
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:forui/forui.dart';
 
 import 'support/fake_repository.dart';
 
@@ -353,6 +356,57 @@ void main() {
     await tester.pumpAndSettle();
     expect(find.text('Online'), findsWidgets);
     expect(find.text('Offline'), findsNothing);
+    semantics.dispose();
+  });
+
+  // #154: a role's gradient runs across the name, in the member list and in a mention.
+  const gradient = RoleTag('Designer', color: 0xFF2F9E62, colorVia: 0xFFE5484D, colorTo: 0xFF3E63DD);
+
+  testWidgets('a mention takes its member\'s role colors: a gradient across it, a solid color, or violet', (
+    tester,
+  ) async {
+    await openWith(
+      tester,
+      'ask <@$_maya>, <@$_leo> and <@${FakeRepository.me.id}>',
+      setUp: (r) {
+        r.roleTags[_maya] = const [gradient];
+        r.roleTags[_leo] = const [RoleTag('Crew', color: 0xFFE5484D)];
+      },
+    );
+    final maya = find.widgetWithText(RoleName, '@Maya');
+    expect(tester.widget<RoleName>(maya).colors, gradient.colors);
+    expect(find.descendant(of: maya, matching: find.byType(ShaderMask)), findsOneWidget);
+
+    // The others stay text in the line: Leo in his role's color, made
+    // readable; the user, with no colored role, in violet.
+    final spans = <String, Color?>{};
+    for (final text in tester.widgetList<RichText>(find.byType(RichText))) {
+      text.text.visitChildren((span) {
+        if (span case TextSpan(:final text?, :final style) when text.startsWith('@')) spans[text] = style?.color;
+        return true;
+      });
+    }
+    final context = tester.element(maya);
+    expect(spans['@leo'], readableOn(const Color(0xFFE5484D), FTheme.of(context).colors.background));
+    expect(spans.values.where((c) => c == context.duvet.violetText), hasLength(1));
+
+    // Still a mention: tapped, it opens Maya.
+    await tester.tap(maya);
+    await tester.pump(kDoubleTapTimeout);
+    await tester.pumpAndSettle();
+    expect(find.text('Designer'), findsOneWidget);
+    semantics.dispose();
+  });
+
+  testWidgets('the member list runs a gradient role across the name', (tester) async {
+    await openWith(tester, 'hi', setUp: (r) => r.roleTags[_maya] = const [gradient]);
+    await tester.tap(find.bySemanticsLabel('More'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.bySemanticsLabel('Members'));
+    await tester.pumpAndSettle();
+    final maya = find.widgetWithText(RoleName, 'Maya');
+    expect(tester.widget<RoleName>(maya).colors, gradient.colors);
+    expect(find.descendant(of: maya, matching: find.byType(ShaderMask)), findsOneWidget);
     semantics.dispose();
   });
 

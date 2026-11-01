@@ -1,6 +1,7 @@
 /// What the UI shows, independent of the Duvet client's wire models.
 library;
 
+import 'admin.dart' show RoleColors;
 import 'bots.dart';
 
 export 'admin.dart';
@@ -582,8 +583,12 @@ class FriendRequestItem {
 class RoleTag {
   final String name;
 
-  /// Its color, if it has one (ARGB).
+  /// Its color, if it has one (ARGB): a gradient's first stop.
   final int? color;
+
+  /// A gradient's middle and last stops (ARGB), if it has them.
+  final int? colorVia;
+  final int? colorTo;
   final String id;
 
   /// Its rank: higher is above.
@@ -591,8 +596,22 @@ class RoleTag {
 
   /// Its members show apart in the member list, under its name.
   final bool hoisted;
-  const RoleTag(this.name, {this.color, this.id = '', this.position = 0, this.hoisted = false});
+  const RoleTag(
+    this.name, {
+    this.color,
+    this.colorVia,
+    this.colorTo,
+    this.id = '',
+    this.position = 0,
+    this.hoisted = false,
+  });
+
+  RoleColors get colors => (from: color, via: colorVia, to: colorTo);
 }
+
+/// The colors a member's name shows: their highest role with a color, as the
+/// desktop picks it, from roles highest first as [ChatRepository.rolesOf] gives them.
+RoleColors? nameColorsOf(Iterable<RoleTag> roles) => roles.where((r) => r.color != null).firstOrNull?.colors;
 
 /// One of the user's uploaded files.
 class MyFile {
