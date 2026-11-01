@@ -193,6 +193,10 @@ abstract interface class ChatRepository {
   /// [onProgress] follows the upload (0 to 1).
   Future<void> uploadProfileImage(ProfileImage kind, String path, {void Function(double progress)? onProgress});
 
+  /// Takes the user's avatar or banner away: they show none, as before they
+  /// chose one.
+  Future<void> removeProfileImage(ProfileImage kind);
+
   Future<List<MyFile>> myFiles();
   Future<void> deleteMyFile(String id);
   Future<StorageInfo> storage();

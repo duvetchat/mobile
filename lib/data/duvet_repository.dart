@@ -2299,6 +2299,14 @@ class DuvetRepository implements ChatRepository {
   }
 
   @override
+  Future<void> removeProfileImage(ProfileImage kind) async {
+    final me = await _attempt(
+      (api) => api.updateUser(clearAvatar: kind == ProfileImage.avatar, clearBanner: kind == ProfileImage.banner),
+    );
+    _setProfile(me);
+  }
+
+  @override
   Future<List<MyFile>> myFiles() async => [
     for (final a in await _call((api) => api.getMyAttachments()))
       if (a.deletedAt == null && a.deleted != true)

@@ -368,6 +368,50 @@ void main() {
     semantics.dispose();
   });
 
+  // Signed in with an avatar of their own: after the sign-in, which sets the
+  // profile.
+  Future<FakeRepository> pumpWithAvatar(WidgetTester tester) async {
+    final repository = await pumpApp(tester);
+    repository.profile.value = Profile(
+      id: FakeRepository.me.id,
+      username: 'gaby',
+      alias: 'Gaby',
+      avatarUrl: 'https://example.invalid/me.png',
+    );
+    await tester.pumpAndSettle();
+    return repository;
+  }
+
+  testWidgets('a removed avatar goes on Save, before the rest', (tester) async {
+    final repository = await pumpWithAvatar(tester);
+    await openYou(tester);
+    await tapLabel(tester, 'Edit');
+    expect(find.bySemanticsLabel('Remove banner'), findsNothing);
+    await tapLabel(tester, 'Remove profile photo');
+    expect(find.bySemanticsLabel('Remove profile photo'), findsNothing);
+    expect(repository.account, isEmpty);
+
+    await tapLabel(tester, 'Save');
+    expect(repository.account, ['remove avatar', 'alias Gaby']);
+    expect(repository.profile.value!.avatarUrl, isNull);
+    expect(find.text('Edit profile'), findsNothing);
+    semantics.dispose();
+  });
+
+  testWidgets('a removal Cancel discards takes nothing away', (tester) async {
+    final repository = await pumpWithAvatar(tester);
+    await openYou(tester);
+    await tapLabel(tester, 'Edit');
+    await tapLabel(tester, 'Remove profile photo');
+    await tapLabel(tester, 'Cancel');
+    expect(find.text('Unsaved changes'), findsOneWidget);
+    await tapLabel(tester, 'Discard');
+    expect(find.text('Edit profile'), findsNothing);
+    expect(repository.account, isEmpty);
+    expect(repository.profile.value!.avatarUrl, isNotNull);
+    semantics.dispose();
+  });
+
   testWidgets('leaving an edited profile asks first; Keep editing keeps the edit, unedited leaves at once', (
     tester,
   ) async {
