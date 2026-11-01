@@ -12,6 +12,7 @@ import 'package:duvet/widgets/apng.dart';
 import 'package:duvet/widgets/media.dart';
 import 'package:duvet/widgets/media_actions.dart';
 import 'package:duvet/widgets/message_content.dart';
+import 'package:duvet/widgets/playback_bar.dart';
 import 'package:duvet/widgets/rows.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/gestures.dart';
@@ -32,21 +33,48 @@ const _linked = '5a5a5a5a-0000-4000-8000-000000000003';
 
 class _Playback implements AudioPlayback {
   final played = <(String, String)>[];
+  final calls = <String>[];
   final _state = ValueNotifier(PlaybackState.idle);
   @override
   ValueListenable<PlaybackState> get state => _state;
 
   @override
-  Future<void> play(String id, String url) async {
+  Future<void> play(String id, String url, {required String title, String? artist, String? artUrl}) async {
     played.add((id, url));
-    _state.value = PlaybackState(id: id, playing: true, duration: const Duration(seconds: 14));
+    _state.value = PlaybackState(
+      id: id,
+      title: title,
+      artist: artist,
+      playing: true,
+      duration: const Duration(seconds: 14),
+    );
+  }
+
+  void _playing(bool playing) {
+    final s = _state.value;
+    _state.value = PlaybackState(id: s.id, title: s.title, artist: s.artist, playing: playing, duration: s.duration);
   }
 
   @override
-  Future<void> pause() async => _state.value = PlaybackState(id: _state.value.id, duration: _state.value.duration);
+  Future<void> pause() async {
+    calls.add('pause');
+    _playing(false);
+  }
 
   @override
   Future<void> seek(String id, Duration position) async {}
+
+  @override
+  Future<void> resume() async {
+    calls.add('resume');
+    _playing(true);
+  }
+
+  @override
+  Future<void> stop() async {
+    calls.add('stop');
+    _state.value = PlaybackState.idle;
+  }
 }
 
 class _Recorder implements VoiceRecorder {
@@ -138,11 +166,7 @@ void main() {
     ChatView.debugPickFiles = null;
   });
 
-  Future<FakeRepository> openMaya(
-    WidgetTester tester, {
-    void Function(FakeRepository r)? setUp,
-    ReplyGesture reply = ReplyGesture.swipeLeft,
-  }) async {
+  Future<FakeRepository> pumpApp(WidgetTester tester, {ReplyGesture reply = ReplyGesture.swipeLeft}) async {
     semantics = tester.ensureSemantics();
     tester.view.physicalSize = const Size(390 * 3, 844 * 3);
     tester.view.devicePixelRatio = 3;
@@ -153,6 +177,15 @@ void main() {
     addTearDown(appearance.dispose);
     await tester.pumpWidget(DuvetApp(repository: repository, appearance: appearance));
     await tester.pumpAndSettle();
+    return repository;
+  }
+
+  Future<FakeRepository> openMaya(
+    WidgetTester tester, {
+    void Function(FakeRepository r)? setUp,
+    ReplyGesture reply = ReplyGesture.swipeLeft,
+  }) async {
+    final repository = await pumpApp(tester, reply: reply);
     setUp?.call(repository);
     await tester.tap(find.text('Maya'));
     await tester.pumpAndSettle();
@@ -259,6 +292,46 @@ void main() {
     expect(tester.getSize(find.byType(Image)), const Size(80, 320));
   });
 
+  testWidgets('at most 3 videos load their first frame at once; a tile gone frees its slot', (tester) async {
+    var made = 0;
+    final build = VideoPage.controllerFor;
+    VideoPage.controllerFor = (url) {
+      made++;
+      return build(url);
+    };
+    addTearDown(() => VideoPage.controllerFor = build);
+    Widget tiles(int count) => MaterialApp(
+      theme: Duvet.material(Brightness.light),
+      home: FTheme(
+        data: Duvet.theme(Brightness.light),
+        child: Scaffold(
+          body: SingleChildScrollView(
+            child: Column(
+              children: [
+                for (var i = 0; i < count; i++)
+                  VideoTile(
+                    attachment: MessageAttachment(
+                      id: 'v$i',
+                      filename: 'v$i.mp4',
+                      contentType: 'video/mp4',
+                      url: 'https://x/v$i.mp4',
+                    ),
+                  ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+    await tester.pumpWidget(tiles(5));
+    expect(find.byType(VideoTile), findsNWidgets(5));
+    expect(find.byType(PlayMark), findsNWidgets(5));
+    expect(made, 3);
+    await tester.pumpWidget(tiles(0));
+    await tester.pumpWidget(tiles(5));
+    expect(made, 6);
+  });
+
   group('links', () {
     test('message links, invites and deep links, as desktop reads them', () {
       final room = parseMessageLink('https://duvet.chat/channels/$_space/$_room/$_linked')!;
@@ -341,6 +414,42 @@ void main() {
     expect(playback.played.single, ('att-v', 'https://x/v.webm'));
     expect(find.bySemanticsLabel('Pause'), findsOneWidget);
     semantics.dispose();
+  });
+
+  testWidgets('the playback bar over the tabs: what plays, pause, play, and stop and close', (tester) async {
+    await pumpApp(tester);
+    final bar = find.byType(MediaPlaybackBar);
+    expect(bar, findsNothing);
+    await playback.play('n', 'https://x/n.ogg', title: 'Voice message', artist: 'Maya');
+    await tester.pumpAndSettle();
+    expect(find.descendant(of: bar, matching: find.text('Voice message')), findsOneWidget);
+    expect(find.descendant(of: bar, matching: find.text('Maya · 0:00 / 0:14')), findsOneWidget);
+
+    await tapLabel(tester, 'Pause');
+    expect(find.bySemanticsLabel('Play'), findsOneWidget);
+    await tapLabel(tester, 'Play');
+    expect(find.bySemanticsLabel('Pause'), findsOneWidget);
+    await tapLabel(tester, 'Stop and close');
+    expect(playback.calls, ['pause', 'resume', 'stop']);
+    expect(bar, findsNothing);
+    semantics.dispose();
+  });
+
+  test('a voice note that won\'t load leaves the playback bar', () async {
+    // just_audio's channels, as a phone that can't load the note answers them.
+    const codec = StandardMethodCodec();
+    final messenger = TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
+    messenger.allMessagesHandler = (channel, handler, message) async {
+      if (!channel.startsWith('com.ryanheise.just_audio.')) return handler?.call(message);
+      if (codec.decodeMethodCall(message).method == 'load') {
+        return codec.encodeErrorEnvelope(code: '0', message: 'Source error');
+      }
+      return codec.encodeSuccessEnvelope(<String, Object?>{});
+    };
+    addTearDown(() => messenger.allMessagesHandler = null);
+    final player = JustAudioPlayback();
+    await player.play('n', 'https://x/n.ogg', title: 'Voice message', artist: 'Maya');
+    expect(player.state.value.id, isNull);
   });
 
   testWidgets('voice notes record from the + menu, locked, and send', (tester) async {

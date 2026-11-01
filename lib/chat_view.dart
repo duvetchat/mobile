@@ -2398,9 +2398,15 @@ class _ChatViewState extends State<ChatView> {
     final items = _items();
     final count = items.length + (_loadingOlder ? 1 : 0);
     final top = _topHeight == 0 ? GlassTopBar.heightOf(context) : _topHeight;
+    // Where each message is now: one kept alive off screen (a YouTube video playing) follows it as newer ones come.
+    final indexOf = <Key, int>{
+      for (final (i, item) in items.indexed)
+        if (item case _Message(:final entry)) ?_keys[entry.message.id]: items.length - 1 - i,
+    };
     return ListView.builder(
       controller: _scroll,
       reverse: true,
+      findChildIndexCallback: (key) => indexOf[key],
       // A list with its own controller only scrolls once full: a short chat bounces too.
       physics: const AlwaysScrollableScrollPhysics(),
       keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,

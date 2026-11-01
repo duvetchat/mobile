@@ -78,7 +78,7 @@ void main() {
     // The directory's row says who's in.
     expect(find.text('Maya'), findsOneWidget);
 
-    await tester.tap(find.text('lounge'));
+    await tester.tap(find.text('lounge').last);
     await settle(tester);
     expect(find.text('Join voice'), findsOneWidget);
     expect(find.bySemanticsLabel('Maya, muted'), findsOneWidget);
@@ -357,6 +357,46 @@ void main() {
     await finish(tester, app);
   });
 
+  testWidgets('a friend in voice in a shared Space shows on Chats, to join', (tester) async {
+    final app = await pumpApp(tester);
+    app.repository.friends.value = const Friends(
+      friends: [Member(userId: FakeRepository.maya, username: 'maya', alias: 'Maya')],
+    );
+    app.gateway.push(state(FakeRepository.maya, 3));
+    await tester.pumpAndSettle();
+    expect(find.text('Live · lounge · Design Guild'), findsOneWidget);
+    // Someone who isn't a friend shows no card.
+    app.gateway.push(state(FakeRepository.leo, 4));
+    await tester.pumpAndSettle();
+    expect(find.text('Join'), findsOneWidget);
+
+    await tester.tap(find.text('Join'));
+    await settle(tester);
+    expect(app.gateway.types, contains('VOICE_JOIN'));
+    // In that room now: the voice bar has it, not a card.
+    expect(find.text('Live · lounge · Design Guild'), findsNothing);
+    await finish(tester, app);
+  });
+
+  testWidgets('voice going on in a Space shows above its rooms, to join', (tester) async {
+    final semantics = tester.ensureSemantics();
+    final app = await pumpApp(tester);
+    app.gateway.push(state(FakeRepository.maya, 3));
+    await openLounge(tester);
+    expect(find.text('Live · Maya'), findsOneWidget);
+
+    await tester.tap(find.text('Join'));
+    await settle(tester);
+    expect(app.gateway.types, contains('VOICE_JOIN'));
+    // In that room now: the voice bar has it, not the banner.
+    await tester.tap(find.bySemanticsLabel('Back'));
+    await settle(tester);
+    expect(find.text('lounge · Design Guild'), findsOneWidget);
+    expect(find.byKey(const ValueKey('voice-r-lounge')), findsNothing);
+    semantics.dispose();
+    await finish(tester, app);
+  });
+
   testWidgets('a call going on in a DM: its banner joins it', (tester) async {
     final app = await pumpApp(tester);
     // A new session lists the call: someone else's, going on.
@@ -558,7 +598,7 @@ void main() {
     );
     await settle(tester);
     expect(find.text('Calling Design crew'), findsNothing);
-    await tester.tap(find.text('Design crew'));
+    await tester.tap(find.text('Design crew').last);
     await tester.pumpAndSettle();
     expect(find.text('Call in progress · leo, Maya'), findsOneWidget);
 

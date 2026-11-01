@@ -2,12 +2,14 @@ import 'dart:io';
 import 'dart:math' as math;
 import 'dart:ui' show ImageFilter;
 
+import 'package:flutter/foundation.dart' show Factory;
 import 'package:flutter/gestures.dart';
 import 'package:flutter/semantics.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:forui/forui.dart';
 import 'package:url_launcher/url_launcher.dart';
+import 'package:youtube_player_iframe/youtube_player_iframe.dart' show YoutubePlayer, YoutubePlayerController;
 
 import '../data/emoji_catalog.dart';
 import '../data/links.dart';
@@ -23,6 +25,7 @@ import 'glass.dart';
 import 'media.dart';
 import 'media_actions.dart';
 import 'role_name.dart';
+import 'youtube_dock.dart';
 
 /// What a bubble needs to show names and custom emoji.
 class MessageDirectory {
@@ -997,7 +1000,7 @@ class EmbedCard extends StatelessWidget {
       final ratio = (e.imageWidth ?? 0) > 0 && (e.imageHeight ?? 0) > 0 ? e.imageWidth! / e.imageHeight! : null;
       final height = ratio == null ? 140.0 : math.min(w / ratio, 320.0);
       return ClipRRect(
-        borderRadius: BorderRadius.circular(DuvetTokens.radiusField),
+        borderRadius: BorderRadius.circular(DuvetTokens.radiusButton),
         child: Image.network(
           e.imageUrl!,
           width: ratio == null ? w : math.min(w, height * ratio),
@@ -1010,9 +1013,16 @@ class EmbedCard extends StatelessWidget {
       );
     }
 
-    // Its video as the chat's own play (a file), or its poster with a play
-    // mark that opens the player page (YouTube) in the browser.
+    // A GIF link's animated picture is its preview, though Tenor's names an mp4
+    // too.
+    final gif = e.imageUrl != null && (Uri.tryParse(e.imageUrl!)?.path.toLowerCase().endsWith('.gif') ?? false);
+    final youtube = e.isDirectVideo || e.videoUrl == null ? null : YoutubePlayerController.convertUrlToId(e.videoUrl!);
+
+    // Its video as the chat's own play (a file) on its poster, a YouTube video
+    // played in place, or any other player page's poster with a play mark that
+    // opens it in the browser.
     Widget? media(double w) {
+      if (gif) return picture(w);
       if (e.isDirectVideo) {
         return VideoTile(
           attachment: MessageAttachment(
@@ -1024,32 +1034,22 @@ class EmbedCard extends StatelessWidget {
             height: e.imageHeight,
           ),
           width: w,
+          poster: e.imageUrl,
         );
+      }
+      if (youtube != null) {
+        final ratio = (e.imageWidth ?? 0) > 0 && (e.imageHeight ?? 0) > 0 ? e.imageWidth! / e.imageHeight! : 16 / 9;
+        return _YouTubeTile(videoId: youtube, poster: e.imageUrl, ratio: ratio, width: w, title: e.title);
       }
       if (e.imageUrl == null) return null;
       if (e.videoUrl == null) return picture(w);
-      return Stack(
-        alignment: Alignment.center,
-        children: [
-          picture(w),
-          Container(
-            width: 48,
-            height: 48,
-            decoration: BoxDecoration(
-              color: const Color(0x8C111113),
-              borderRadius: BorderRadius.circular(DuvetTokens.radiusButton),
-              border: Border.all(color: const Color(0x1FFFFFFF)),
-            ),
-            child: const Icon(FLucideIcons.play, color: Color(0xFFF2F1EE), size: 24),
-          ),
-        ],
-      );
+      return Stack(alignment: Alignment.center, children: [picture(w), const PlayMark()]);
     }
 
     if (e.title == null && e.description == null && (e.isBareImage || e.isDirectVideo)) {
       final bare = media(width)!;
-      if (e.isDirectVideo) return bare;
-      final play = e.videoUrl != null && link != null;
+      if ((e.isDirectVideo && !gif) || youtube != null) return bare;
+      final play = !gif && e.videoUrl != null && link != null;
       return Semantics(
         image: !play,
         button: play,
@@ -1126,6 +1126,146 @@ class EmbedCard extends StatelessWidget {
                   ),
                 if (media(width - 24) case final m?) Padding(padding: const EdgeInsets.only(top: 8), child: m),
               ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// A YouTube video in a message: its poster with a play mark until tapped,
+/// then the player in its place, so a scroll past starts no web view.
+class _YouTubeTile extends StatefulWidget {
+  final String videoId;
+  final String? poster;
+  final double ratio;
+  final double width;
+  final String? title;
+  const _YouTubeTile({required this.videoId, required this.ratio, required this.width, this.poster, this.title});
+
+  @override
+  State<_YouTubeTile> createState() => _YouTubeTileState();
+}
+
+class _YouTubeTileState extends State<_YouTubeTile> with AutomaticKeepAliveClientMixin {
+  YouTubeSession? _session;
+  Animation<double>? _route;
+
+  // A video started here goes on as the list scrolls it far away, and is where
+  // it got to when it scrolls back.
+  @override
+  bool get wantKeepAlive => _session != null;
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    _route?.removeStatusListener(_onRoute);
+    _route = ModalRoute.of(context)?.animation?..addStatusListener(_onRoute);
+  }
+
+  // Its chat starting to close: on to the dock now, while the tabs show, so
+  // Android has no moment with the video off screen to pause it in.
+  void _onRoute(AnimationStatus status) {
+    final session = _session;
+    if (status != AnimationStatus.reverse || session == null || !session.playing) return;
+    setState(() => _session = null);
+    updateKeepAlive();
+    dockedYouTube.value = (id: widget.videoId, title: widget.title, seconds: session.seconds, session: session);
+  }
+
+  void _play({double seconds = 0, bool autoPlay = true}) {
+    // A video starting here takes the dock's place.
+    dockedYouTube.value = null;
+    final session = YouTubeSession(widget.videoId, seconds: seconds, autoPlay: autoPlay, fullScreenButton: true);
+    session.controller.setFullScreenListener((on) {
+      if (on) _fullScreen(session);
+    });
+    setState(() => _session = session);
+    updateKeepAlive();
+  }
+
+  // The package's full screen would only fill the tile's overlay: the video
+  // goes to a route of its own instead, and comes back where it got to.
+  Future<void> _fullScreen(YouTubeSession session) async {
+    session.controller.exitFullScreen();
+    setState(() => _session = null);
+    updateKeepAlive();
+    session.close();
+    final back = await openYouTubeFullScreen(
+      context,
+      id: widget.videoId,
+      seconds: session.seconds,
+      ratio: widget.ratio,
+    );
+    // Its message gone meanwhile: the video goes with it, as in dispose.
+    if (back != null && mounted) _play(seconds: back.seconds, autoPlay: back.playing);
+  }
+
+  @override
+  void dispose() {
+    _route?.removeStatusListener(_onRoute);
+    // Kept alive while it plays, it only goes here with its message, or with a
+    // chat replaced or closed without the pop _onRoute docks on: the dock
+    // would sit under the next screen, so the video stops.
+    _session?.close();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    super.build(context);
+    final height = math.min(widget.width / widget.ratio, 320.0);
+    final width = math.min(widget.width, height * widget.ratio);
+    final playing = _session != null;
+    return Semantics(
+      container: true,
+      button: !playing,
+      label: 'YouTube video${widget.title == null ? '' : ', ${widget.title}'}${playing ? '' : '. Play'}',
+      explicitChildNodes: playing,
+      excludeSemantics: !playing,
+      onTap: playing ? null : _play,
+      child: GestureDetector(
+        onTap: playing ? null : _play,
+        child: ClipRRect(
+          borderRadius: BorderRadius.circular(DuvetTokens.radiusButton),
+          child: ColoredBox(
+            color: videoBackdrop,
+            child: SizedBox(
+              width: width,
+              height: height,
+              // The player draws in the nearest overlay; one of its own, the tile's
+              // size, keeps it clipped to the tile and under the chat's bars as the
+              // list scrolls.
+              child: playing
+                  ? Overlay.wrap(
+                      child: YoutubePlayer(
+                        controller: _session!.controller,
+                        aspectRatio: widget.ratio,
+                        backgroundColor: videoBackdrop,
+                        autoFullScreen: false,
+                        enableFullScreenOnVerticalDrag: false,
+                        // Taps and scrubbing are the player's; a vertical drag still scrolls.
+                        gestureRecognizers: {
+                          Factory<TapGestureRecognizer>(TapGestureRecognizer.new),
+                          Factory<HorizontalDragGestureRecognizer>(HorizontalDragGestureRecognizer.new),
+                        },
+                      ),
+                    )
+                  : Stack(
+                      fit: StackFit.expand,
+                      children: [
+                        if (widget.poster case final poster?)
+                          Image.network(
+                            poster,
+                            fit: BoxFit.cover,
+                            cacheWidth: (width * MediaQuery.devicePixelRatioOf(context)).round(),
+                            excludeFromSemantics: true,
+                            errorBuilder: (_, _, _) => const SizedBox.shrink(),
+                          ),
+                        const Center(child: PlayMark()),
+                      ],
+                    ),
             ),
           ),
         ),
