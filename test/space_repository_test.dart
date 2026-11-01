@@ -174,6 +174,20 @@ void main() {
       expect(repository.spaceRoles('s-1').map((r) => r.id), ['role-mod']);
     });
 
+    // #154: the gradient reached no screen, as a role kept only its first stop.
+    test('a role keeps its whole gradient, for names and mentions to show', () async {
+      await signIn();
+      final space = _space(roles: {'role-mod': 0}, mine: ['role-mod']);
+      ((space['roles_permissions'] as Map)['role-mod'] as Map<String, dynamic>).addAll({
+        'color_from': 0x2F9E62,
+        'color_via': 0xE5484D,
+        'color_to': 0x3E63DD,
+      });
+      repository.handleEvent(_event('SPACE_CREATE', space));
+      expect(repository.rolesOf('s-1', _me).single.colors, (from: 0xFF2F9E62, via: 0xFFE5484D, to: 0xFF3E63DD));
+      expect(nameColorsOf(repository.rolesOf('s-1', _me)), (from: 0xFF2F9E62, via: 0xFFE5484D, to: 0xFF3E63DD));
+    });
+
     // The members list names each member's ID, which the API's role routes and
     // events take.
     void members() => routes[('GET', '/api/spaces/s-1/members')] = (_) => [

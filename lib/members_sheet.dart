@@ -187,13 +187,10 @@ class _MembersSheetState extends State<_MembersSheet> {
                           presence: of(members[i]),
                           me: widget.repository.profile.value?.id == members[i].userId,
                           spaceId: spaceId,
-                          roleColor: switch (widget.target) {
-                            RoomTarget(:final spaceId) =>
-                              widget.repository
-                                  .rolesOf(spaceId, members[i].userId)
-                                  .map((r) => r.color)
-                                  .nonNulls
-                                  .firstOrNull,
+                          roleColors: switch (widget.target) {
+                            RoomTarget(:final spaceId) => nameColorsOf(
+                              widget.repository.rolesOf(spaceId, members[i].userId),
+                            ),
                             _ => null,
                           },
                         ),
@@ -218,9 +215,9 @@ class _MemberRow extends StatelessWidget {
   final bool me;
   final String? spaceId;
 
-  /// Their highest colored role's color (ARGB): it tints the name, never fills.
-  final int? roleColor;
-  const _MemberRow({required this.member, required this.presence, required this.me, this.spaceId, this.roleColor});
+  /// Their highest colored role's colors: they tint the name, or run across it as a gradient.
+  final RoleColors? roleColors;
+  const _MemberRow({required this.member, required this.presence, required this.me, this.spaceId, this.roleColors});
 
   @override
   Widget build(BuildContext context) {
@@ -235,7 +232,7 @@ class _MemberRow extends StatelessWidget {
     return Builder(
       builder: (rowContext) => GlassRow(
         label: member.displayName,
-        labelColor: roleColor == null ? null : readableOn(Color(roleColor!), context.theme.colors.card),
+        labelColors: roleColors,
         detail: detail,
         hint: me ? null : 'Double tap for options',
         leading: PresenceAvatar(member: member, presence: presence, size: 48),
