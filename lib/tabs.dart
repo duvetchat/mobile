@@ -18,6 +18,7 @@ import 'voice_room.dart';
 import 'widgets/avatar.dart';
 import 'widgets/chrome.dart';
 import 'widgets/duvet_mascot.dart';
+import 'widgets/ghost_art.dart';
 import 'widgets/rows.dart';
 
 /// The unified inbox: the recent chats, rooms and DMs alike, then the DMs
@@ -54,6 +55,7 @@ class ChatsTab extends StatelessWidget {
         final asking = repository.friends.value.incoming.length;
         return LargeTitlePage(
           title: 'Chats',
+          titleLeading: const AppIcon(size: 32),
           titleTrailing: Row(
             mainAxisSize: MainAxisSize.min,
             children: [

@@ -44,6 +44,23 @@ const _ghost =
 /// Four-pointed star centered on 0,0, five units out.
 const _star = 'M0 -5 L1.4 -1.4 L5 0 L1.4 1.4 L0 5 L-1.4 1.4 L-5 0 L-1.4 -1.4 Z';
 
+/// The app icon, as on the home screen: the ghost on its black rounded tile,
+/// with the design's faint edge so the tile holds its shape on near-black.
+class AppIcon extends StatelessWidget {
+  final double size;
+  const AppIcon({required this.size, super.key});
+
+  @override
+  Widget build(BuildContext context) => Container(
+    // In front of the art: an edge only, never a shadow, which would dim it.
+    foregroundDecoration: BoxDecoration(
+      borderRadius: BorderRadius.circular(size * 0.22),
+      border: Border.all(color: const Color(0x14FFFFFF)),
+    ),
+    child: SvgPicture.asset('assets/logo/app-icon-rounded.svg', width: size, height: size, semanticsLabel: 'Duvet'),
+  );
+}
+
 /// The logo's ghost without its square, in the theme's art colors: for where
 /// the mascot would be too small (it needs 64pt).
 class GhostMark extends StatelessWidget {

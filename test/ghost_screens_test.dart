@@ -46,6 +46,15 @@ void main() {
     expect(find.text('Talk with your people.'), findsOneWidget);
   });
 
+  testWidgets('the app icon leads the Chats title, the screen the app opens on, and only there', (tester) async {
+    await pumpApp(tester);
+    expect(find.byType(AppIcon), findsOneWidget);
+    expect(tester.getSize(find.byType(AppIcon)), const Size(32, 32));
+    await tester.tap(find.text('Spaces'));
+    await tester.pumpAndSettle();
+    expect(find.byType(AppIcon), findsNothing);
+  });
+
   testWidgets('a new DM shows the ghost tucked in; a quick line fills the composer without sending', (tester) async {
     final repository = await pumpApp(tester);
     await tap(tester, 'Leo');

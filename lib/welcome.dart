@@ -1,5 +1,4 @@
 import 'package:flutter/material.dart';
-import 'package:flutter_svg/flutter_svg.dart';
 import 'package:forui/forui.dart';
 
 import 'account.dart';
@@ -31,14 +30,11 @@ class WelcomeScreen extends StatelessWidget {
                   // Where the design sets it: the clouds sit under the line, not the wordmark.
                   const SizedBox(height: 93),
                   DecoratedBox(
-                    // The design's faint edge, so the black tile holds its shape on near-black.
-                    position: DecorationPosition.foreground,
                     decoration: BoxDecoration(
                       borderRadius: BorderRadius.circular(28),
-                      border: Border.all(color: const Color(0x14FFFFFF)),
                       boxShadow: context.duvet.shadowFloat,
                     ),
-                    child: SvgPicture.asset('assets/logo/app-icon-rounded.svg', width: 128, height: 128),
+                    child: const AppIcon(size: 128),
                   ),
                   const SizedBox(height: 28),
                   Semantics(

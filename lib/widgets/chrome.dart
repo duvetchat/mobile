@@ -312,6 +312,9 @@ class ConnectionBanner extends StatelessWidget {
 class LargeTitlePage extends StatefulWidget {
   final String title;
 
+  /// Before the title: the app icon on Chats, the screen the app opens on.
+  final Widget? titleLeading;
+
   /// Beside the title, e.g. the connecting spinner.
   final Widget? titleTrailing;
 
@@ -323,6 +326,7 @@ class LargeTitlePage extends StatefulWidget {
   const LargeTitlePage({
     required this.title,
     required this.slivers,
+    this.titleLeading,
     this.titleTrailing,
     this.header,
     this.onRefresh,
@@ -372,9 +376,14 @@ class _LargeTitlePageState extends State<LargeTitlePage> {
               children: [
                 // The night sky beside the title, clear of its buttons (the tab
                 // roots' titles are all one short word); it scrolls away with it.
-                const Positioned(left: 128, top: -6, child: NightSky.title(width: 120)),
+                Positioned(
+                  left: widget.titleLeading == null ? 128 : 172,
+                  top: -6,
+                  child: const NightSky.title(width: 120),
+                ),
                 Row(
                   children: [
+                    if (widget.titleLeading case final leading?) ...[leading, const SizedBox(width: 12)],
                     Expanded(
                       child: Semantics(
                         header: true,
