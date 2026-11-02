@@ -449,6 +449,7 @@ class FakeRepository implements ChatRepository {
     return SpaceProfile(
       id: space.id,
       name: space.name,
+      iconUrl: space.iconUrl,
       bannerUrl: space.bannerUrl,
       memberCount: everyone.length,
       owner: spaceOwner,
@@ -465,20 +466,25 @@ class FakeRepository implements ChatRepository {
     String? iconPath,
     String? bannerPath,
     bool removeBanner = false,
+    bool removeIcon = false,
     void Function(double progress)? onProgress,
   }) async {
     if (iconPath != null || bannerPath != null) await _upload(onProgress);
     admin.add(
-      'space ${[if (name != null) 'name=$name', if (description != null) 'about=$description', if (iconPath != null) 'icon=$iconPath', if (bannerPath != null) 'banner=$bannerPath', if (removeBanner && bannerPath == null) 'banner=none'].join(' ')}',
+      'space ${[if (name != null) 'name=$name', if (description != null) 'about=$description', if (iconPath != null) 'icon=$iconPath', if (removeIcon && iconPath == null) 'icon=none', if (bannerPath != null) 'banner=$bannerPath', if (removeBanner && bannerPath == null) 'banner=none'].join(' ')}',
     );
-    if (name != null || bannerPath != null || removeBanner) {
+    if (name != null || iconPath != null || bannerPath != null || removeBanner || removeIcon) {
       spaces.value = [
         for (final s in spaces.value)
           s.id == spaceId
               ? Space(
                   id: s.id,
                   name: name ?? s.name,
-                  iconUrl: s.iconUrl,
+                  iconUrl: iconPath != null
+                      ? 'https://example.invalid/icon.png'
+                      : removeIcon
+                      ? null
+                      : s.iconUrl,
                   sections: s.sections,
                   onlineCount: s.onlineCount,
                   // As SPACE_UPDATE brings it: an uploaded banner, or none.

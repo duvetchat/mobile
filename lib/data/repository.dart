@@ -223,6 +223,7 @@ abstract interface class ChatRepository {
     String? iconPath,
     String? bannerPath,
     bool removeBanner = false,
+    bool removeIcon = false,
     void Function(double progress)? onProgress,
   });
 

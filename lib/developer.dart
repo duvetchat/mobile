@@ -14,6 +14,7 @@ import 'theme.dart';
 import 'widgets/avatar.dart';
 import 'widgets/chrome.dart';
 import 'widgets/glass.dart';
+import 'widgets/picture_edit.dart';
 import 'widgets/rows.dart';
 
 // The developer portal, as the desktop's Settings → Developer: teams, their
@@ -505,9 +506,25 @@ class _ApplicationPageState extends State<ApplicationPage> {
     if (mounted) setState(_loadBot);
   }
 
+  /// The picture's or the banner's sheet: a new one goes at once, as the
+  /// bot's other changes do; or the one there goes.
+  Future<void> _editPicture(Member bot, {required bool banner}) async {
+    final has = (banner ? bot.bannerUrl : bot.avatarUrl) != null;
+    final choice = await showPictureSheet(
+      context,
+      title: banner ? 'Banner' : 'Picture',
+      remove: has ? (banner ? 'Remove banner' : 'Remove picture') : null,
+    );
+    if (choice == null || !mounted) return;
+    if (choice != PictureChoice.remove) return _picture(banner: banner, camera: choice == PictureChoice.take);
+    await (banner
+        ? _updateBot('Couldn’t remove its banner', removeBanner: true)
+        : _updateBot('Couldn’t remove its picture', removeAvatar: true));
+  }
+
   /// A new picture or banner, cropped here: the API stores what it's sent, whole.
-  Future<void> _picture({required bool banner}) async {
-    final path = await pickProfilePicture();
+  Future<void> _picture({required bool banner, bool camera = false}) async {
+    final path = await (camera ? takePhoto() : pickProfilePicture());
     if (path == null || !mounted) return;
     final crop = await Navigator.of(context).push<CropRect>(
       MaterialPageRoute(
@@ -634,28 +651,6 @@ class _ApplicationPageState extends State<ApplicationPage> {
                     onPressed: () => _updateBot('Couldn’t remove its display name', clearAlias: true),
                   ),
                 GlassRow(
-                  icon: FLucideIcons.image,
-                  label: bot.avatarUrl == null ? 'Add a picture' : 'Change picture',
-                  onPressed: () => _picture(banner: false),
-                ),
-                if (bot.avatarUrl != null)
-                  GlassRow(
-                    icon: FLucideIcons.imageOff,
-                    label: 'Remove picture',
-                    onPressed: () => _updateBot('Couldn’t remove its picture', removeAvatar: true),
-                  ),
-                GlassRow(
-                  icon: FLucideIcons.panelTop,
-                  label: bot.bannerUrl == null ? 'Add a banner' : 'Change banner',
-                  onPressed: () => _picture(banner: true),
-                ),
-                if (bot.bannerUrl != null)
-                  GlassRow(
-                    icon: FLucideIcons.imageOff,
-                    label: 'Remove banner',
-                    onPressed: () => _updateBot('Couldn’t remove its banner', removeBanner: true),
-                  ),
-                GlassRow(
                   icon: FLucideIcons.link,
                   label: 'Copy invite link',
                   detail: 'Adds the bot to a Space',
@@ -669,22 +664,40 @@ class _ApplicationPageState extends State<ApplicationPage> {
                 ),
                 GlassRow(icon: FLucideIcons.trash2, label: 'Delete bot', destructive: true, onPressed: _deleteBot),
               ];
-              // Apart, as on the team page: a GlassRow among ListRows takes the panel's semantics node.
               return Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
                 children: [
                   AdminPanel(
                     children: [
-                      ListRow(
-                        leading: ExcludeSemantics(
+                      PictureRow(
+                        label: 'Picture',
+                        set: bot.avatarUrl != null,
+                        onPressed: () => _editPicture(bot, banner: false),
+                        thumb: ExcludeSemantics(
                           child: UserAvatar(name: bot.displayName, url: bot.avatarUrl, size: 48),
                         ),
-                        title: bot.displayName,
-                        snippet: '@${bot.username}',
-                        banner: bot.bannerUrl,
+                      ),
+                      PictureRow(
+                        label: 'Banner',
+                        set: bot.bannerUrl != null,
+                        onPressed: () => _editPicture(bot, banner: true),
+                        thumb: PictureThumb(
+                          picture: bot.bannerUrl,
+                          width: 144,
+                          height: 48,
+                          radius: BorderRadius.circular(8),
+                          empty: Icon(FLucideIcons.image, size: 24, color: colors.mutedForeground),
+                        ),
                       ),
                     ],
                   ),
-                  const SizedBox(height: 8),
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(16, 8, 16, 16),
+                    child: Text(
+                      'Shown wherever the bot is added to a Space.',
+                      style: DuvetType.caption.copyWith(color: colors.mutedForeground),
+                    ),
+                  ),
                   AdminPanel(children: rows),
                 ],
               );

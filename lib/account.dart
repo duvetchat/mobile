@@ -16,13 +16,14 @@ import 'data/scope.dart';
 import 'developer.dart' show DeveloperPage;
 import 'login.dart';
 import 'people.dart';
-import 'space_admin.dart' show AdminPanel, avatarSide, saveBannerImage, saveSquareImage;
+import 'space_admin.dart' show avatarSide, saveBannerImage, saveSquareImage;
 import 'tabs.dart' show LiveIndicator;
 import 'theme.dart';
 import 'widgets/avatar.dart';
 import 'widgets/chrome.dart';
 import 'widgets/ghost_art.dart';
 import 'widgets/glass.dart';
+import 'widgets/picture_edit.dart';
 import 'widgets/rows.dart';
 import 'widgets/unsaved_changes.dart';
 
@@ -704,8 +705,30 @@ class _EditProfilePageState extends State<EditProfilePage> {
     if (mounted) _upload.value = p;
   }
 
-  Future<void> _change(ProfileImage kind) async {
-    final path = await pickProfilePicture();
+  /// The photo's or the banner's sheet: a new one, or none.
+  Future<void> _edit(ProfileImage kind, {required bool has}) async {
+    final avatar = kind == ProfileImage.avatar;
+    final choice = await showPictureSheet(
+      context,
+      title: avatar ? 'Profile photo' : 'Banner',
+      remove: has ? (avatar ? 'Remove profile photo' : 'Remove banner') : null,
+    );
+    if (choice == null || !mounted) return;
+    if (choice != PictureChoice.remove) return _change(kind, camera: choice == PictureChoice.take);
+    final profile = context.repository.profile.value;
+    setState(() {
+      if (avatar) {
+        _avatar = null;
+        _removeAvatar = profile?.avatarUrl != null;
+      } else {
+        _banner = null;
+        _removeBanner = profile?.bannerUrl != null;
+      }
+    });
+  }
+
+  Future<void> _change(ProfileImage kind, {bool camera = false}) async {
+    final path = await (camera ? takePhoto() : pickProfilePicture());
     if (path == null || !mounted) return;
     final crop = await Navigator.of(context).push<CropRect>(
       MaterialPageRoute(
@@ -789,17 +812,20 @@ class _EditProfilePageState extends State<EditProfilePage> {
     final tokens = context.duvet;
     final padding = MediaQuery.paddingOf(context);
     if (profile == null) return const SizedBox.shrink();
-    // 5:2 across the list's width, inside its padding.
-    final bannerHeight = (MediaQuery.sizeOf(context).width - 32) / bannerAspect;
+    // The design's 120: a 5:2 banner shows by its middle.
+    const bannerHeight = 120.0;
     // What the pictures will be once saved: the new ones, none, or as they are.
     final avatarNow = _removeAvatar ? null : profile.avatarUrl;
     final bannerNow = _removeBanner ? null : profile.bannerUrl;
+    final banner = _banner ?? bannerNow;
+    final hasAvatar = _avatar != null || avatarNow != null;
+    final alias = _alias.text.trim();
     final dirty =
         _avatar != null ||
         _banner != null ||
         _removeAvatar ||
         _removeBanner ||
-        _alias.text.trim() != (profile.alias ?? '').trim() ||
+        alias != (profile.alias ?? '').trim() ||
         _bio.text.trim() != (profile.bio ?? '').trim();
     return UnsavedChanges(
       dirty: dirty,
@@ -811,47 +837,61 @@ class _EditProfilePageState extends State<EditProfilePage> {
               child: ListView(
                 padding: EdgeInsets.fromLTRB(16, GlassTopBar.heightOf(context) + 8, 16, padding.bottom + 24),
                 children: [
-                  SizedBox(
-                    height: bannerHeight + 48,
+                  // The profile as it will show: banner, photo and names.
+                  Container(
+                    height: bannerHeight + 64,
+                    decoration: BoxDecoration(
+                      color: colors.card,
+                      borderRadius: BorderRadius.circular(DuvetTokens.radiusCard),
+                      boxShadow: tokens.shadowRest,
+                    ),
                     child: Stack(
                       clipBehavior: Clip.none,
                       children: [
-                        Container(
+                        Positioned(
+                          top: 0,
+                          left: 0,
+                          right: 0,
                           height: bannerHeight,
-                          decoration: BoxDecoration(
-                            color: colors.secondary,
-                            borderRadius: BorderRadius.circular(DuvetTokens.radiusCard),
-                            image: switch (_banner ?? bannerNow) {
-                              final b? => DecorationImage(
-                                image: b.startsWith('http') ? NetworkImage(b) : FileImage(File(b)) as ImageProvider,
-                                fit: BoxFit.cover,
-                              ),
-                              null => null,
-                            },
+                          child: DecoratedBox(
+                            decoration: BoxDecoration(
+                              color: colors.secondary,
+                              borderRadius: const BorderRadius.vertical(top: Radius.circular(DuvetTokens.radiusCard)),
+                              image: switch (banner) {
+                                final b? => DecorationImage(
+                                  image: b.startsWith('http') ? NetworkImage(b) : FileImage(File(b)) as ImageProvider,
+                                  fit: BoxFit.cover,
+                                ),
+                                null => null,
+                              },
+                            ),
                           ),
                         ),
                         Positioned(
                           right: 12,
-                          top: 12,
+                          top: bannerHeight - 12 - 44,
                           child: Semantics(
                             container: true,
                             button: true,
                             label: 'Change banner',
                             excludeSemantics: true,
-                            onTap: () => _change(ProfileImage.banner),
+                            onTap: () => _edit(ProfileImage.banner, has: banner != null),
                             child: GestureDetector(
-                              onTap: () => _change(ProfileImage.banner),
+                              onTap: () => _edit(ProfileImage.banner, has: banner != null),
                               child: GlassSurface(
-                                borderRadius: BorderRadius.circular(DuvetTokens.radiusField),
-                                child: Padding(
-                                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-                                  child: Row(
-                                    mainAxisSize: MainAxisSize.min,
-                                    children: [
-                                      Icon(FLucideIcons.image, size: 18, color: colors.foreground),
-                                      const SizedBox(width: 6),
-                                      Text('Banner', style: DuvetType.label.copyWith(color: colors.foreground)),
-                                    ],
+                                borderRadius: BorderRadius.circular(DuvetTokens.radiusButton),
+                                child: SizedBox(
+                                  height: 44,
+                                  child: Padding(
+                                    padding: const EdgeInsets.fromLTRB(12, 0, 16, 0),
+                                    child: Row(
+                                      mainAxisSize: MainAxisSize.min,
+                                      children: [
+                                        Icon(FLucideIcons.image, size: 24, color: colors.foreground),
+                                        const SizedBox(width: 8),
+                                        Text('Banner', style: DuvetType.label.copyWith(color: colors.foreground)),
+                                      ],
+                                    ),
                                   ),
                                 ),
                               ),
@@ -860,23 +900,22 @@ class _EditProfilePageState extends State<EditProfilePage> {
                         ),
                         Positioned(
                           left: 16,
-                          top: bannerHeight - 40,
+                          top: bannerHeight - 48,
                           child: Semantics(
                             container: true,
                             button: true,
                             label: 'Change profile photo',
                             excludeSemantics: true,
-                            onTap: () => _change(ProfileImage.avatar),
+                            onTap: () => _edit(ProfileImage.avatar, has: hasAvatar),
                             child: GestureDetector(
-                              onTap: () => _change(ProfileImage.avatar),
+                              onTap: () => _edit(ProfileImage.avatar, has: hasAvatar),
                               child: Stack(
                                 clipBehavior: Clip.none,
                                 children: [
                                   DecoratedBox(
                                     decoration: BoxDecoration(
                                       shape: BoxShape.circle,
-                                      border: Border.all(color: colors.background, width: 4),
-                                      boxShadow: tokens.shadowRaised,
+                                      border: Border.all(color: colors.card, width: 4),
                                     ),
                                     child: _avatar != null
                                         ? ClipOval(
@@ -885,17 +924,17 @@ class _EditProfilePageState extends State<EditProfilePage> {
                                         : UserAvatar(name: profile.displayName, url: avatarNow, size: 88),
                                   ),
                                   Positioned(
-                                    right: -2,
-                                    bottom: -2,
+                                    right: -8,
+                                    bottom: -8,
                                     child: Container(
-                                      width: 32,
-                                      height: 32,
+                                      width: 40,
+                                      height: 40,
                                       decoration: BoxDecoration(
                                         color: colors.card,
                                         borderRadius: BorderRadius.circular(DuvetTokens.radiusField),
                                         boxShadow: tokens.shadowControl,
                                       ),
-                                      child: Icon(FLucideIcons.camera, size: 16, color: colors.foreground),
+                                      child: Icon(FLucideIcons.camera, size: 24, color: colors.foreground),
                                     ),
                                   ),
                                 ],
@@ -903,38 +942,40 @@ class _EditProfilePageState extends State<EditProfilePage> {
                             ),
                           ),
                         ),
+                        Positioned(
+                          left: 128,
+                          right: 16,
+                          top: bannerHeight + 8,
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(
+                                alias.isEmpty ? profile.username : alias,
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                                style: DuvetType.label.copyWith(color: colors.foreground),
+                              ),
+                              Text(
+                                '@${profile.username}',
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                                style: DuvetType.caption.copyWith(color: colors.mutedForeground),
+                              ),
+                            ],
+                          ),
+                        ),
                       ],
                     ),
                   ),
-                  if (_avatar != null || avatarNow != null || _banner != null || bannerNow != null) ...[
-                    AdminPanel(
-                      children: [
-                        if (_avatar != null || avatarNow != null)
-                          GlassRow(
-                            icon: FLucideIcons.trash2,
-                            label: 'Remove profile photo',
-                            destructive: true,
-                            onPressed: () => setState(() {
-                              _avatar = null;
-                              _removeAvatar = profile.avatarUrl != null;
-                            }),
-                          ),
-                        if (_banner != null || bannerNow != null)
-                          GlassRow(
-                            icon: FLucideIcons.trash2,
-                            label: 'Remove banner',
-                            destructive: true,
-                            onPressed: () => setState(() {
-                              _banner = null;
-                              _removeBanner = profile.bannerUrl != null;
-                            }),
-                          ),
-                      ],
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(16, 8, 16, 0),
+                    child: Text(
+                      'Your photo and banner show on your profile.',
+                      style: DuvetType.caption.copyWith(color: colors.mutedForeground),
                     ),
-                    const SizedBox(height: 8),
-                  ],
+                  ),
                   UploadNote(_upload),
-                  const SizedBox(height: 8),
+                  const SizedBox(height: 24),
                   // At most 32 characters, as the API takes; empty, the username shows.
                   DuvetTextField(
                     label: 'Display name',
@@ -979,7 +1020,12 @@ class _EditProfilePageState extends State<EditProfilePage> {
               child: GlassTopBar(
                 title: const Text('Edit profile'),
                 leading: TextAction(label: 'Cancel', onPressed: () => Navigator.of(context).maybePop()),
-                actions: [TextAction(label: 'Save', onPressed: _saving || _bioTooLong || _aliasTooLong ? null : _save)],
+                actions: [
+                  TextAction(
+                    label: 'Save',
+                    onPressed: _saving || !dirty || _bioTooLong || _aliasTooLong ? null : _save,
+                  ),
+                ],
               ),
             ),
           ],

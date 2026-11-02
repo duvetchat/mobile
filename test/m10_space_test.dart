@@ -12,7 +12,8 @@ import 'package:duvet/space_admin.dart';
 import 'package:duvet/spaces.dart' show pickSpaceIcon;
 import 'package:duvet/theme.dart';
 import 'package:duvet/widgets/chrome.dart';
-import 'package:duvet/widgets/rows.dart' show DuvetChip, SpaceBanner;
+import 'package:duvet/widgets/rows.dart' show DuvetChip;
+import 'package:duvet/widgets/picture_edit.dart' show takePhoto;
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
@@ -229,6 +230,7 @@ void main() {
     expect(find.textContaining('you own it'), findsOneWidget);
     await tapLabel(tester, RegExp(r'^Overview'));
     await tester.enterText(find.byType(EditableText).first, 'Design Guild 2');
+    await tester.pump();
     await tapLabel(tester, 'Save');
     expect(repository.admin, ['space name=Design Guild 2']);
     expect(find.text('Design Guild 2'), findsWidgets);
@@ -246,23 +248,24 @@ void main() {
     final repository = await pumpSettings(tester);
     await tapLabel(tester, RegExp(r'^Overview'));
     // The cropper's spinner never settles: tapped, then waited for.
-    await tester.tap(find.bySemanticsLabel(RegExp(r'^Banner')).last);
+    await tapLabel(tester, RegExp(r'^Banner'));
+    await tester.tap(find.bySemanticsLabel('Choose photo'));
     await useCrop(tester);
     // The 400x200 picture's full width, 5:2: 160 high, from its middle.
     final crop = crops.single;
     for (final (got, want) in [(crop.x, 0.0), (crop.y, 20.0), (crop.w, 400.0), (crop.h, 160.0)]) {
       expect(got, closeTo(want, 0.01));
     }
-    expect(find.bySemanticsLabel(RegExp(r'^Banner, New one chosen')), findsOneWidget);
+    expect(find.bySemanticsLabel(RegExp(r'^Banner, Change or remove')), findsOneWidget);
     await tapLabel(tester, 'Save');
     expect(repository.admin.last, 'space banner=/banners/new.png');
     expect(repository.spaces.value.single.bannerUrl, isNotNull);
 
     await tapLabel(tester, RegExp(r'^Overview'));
-    expect(find.byType(SpaceBanner), findsOneWidget);
+    expect(find.bySemanticsLabel(RegExp(r'^Banner, Change or remove')), findsOneWidget);
+    await tapLabel(tester, RegExp(r'^Banner'));
     await tapLabel(tester, 'Remove banner');
-    expect(find.byType(SpaceBanner), findsNothing);
-    expect(find.bySemanticsLabel('Remove banner'), findsNothing);
+    expect(find.bySemanticsLabel(RegExp(r'^Banner, Not set')), findsOneWidget);
     await tapLabel(tester, 'Save');
     expect(repository.admin.last, 'space banner=none');
     expect(repository.spaces.value.single.bannerUrl, isNull);
@@ -281,12 +284,13 @@ void main() {
     };
     final repository = await pumpSettings(tester);
     await tapLabel(tester, RegExp(r'^Overview'));
-    await tester.tap(find.bySemanticsLabel(RegExp(r'^Icon')).last);
+    await tapLabel(tester, RegExp(r'^Icon'));
+    await tester.tap(find.bySemanticsLabel('Choose photo'));
     await useCrop(tester);
     // A square of the picture's full height, from its middle.
     final (crop, side) = squares.single;
     expect([crop.x, crop.y, crop.w, crop.h, side].map((v) => v.round()), [100, 0, 200, 200, 256]);
-    expect(find.bySemanticsLabel(RegExp(r'^Icon, New one chosen')), findsOneWidget);
+    expect(find.bySemanticsLabel(RegExp(r'^Icon, Change or remove')), findsOneWidget);
 
     repository.holdUploads = Completer();
     await tapLabel(tester, 'Save');
@@ -296,6 +300,21 @@ void main() {
     repository.holdUploads!.complete();
     await tester.pumpAndSettle();
     expect(repository.admin.last, 'space icon=/icons/new.png');
+
+    // Taken with the camera, not the gallery; then taken away.
+    pickSpaceIcon = () async => null;
+    takePhoto = () async => path;
+    await tapLabel(tester, RegExp(r'^Overview'));
+    await tapLabel(tester, RegExp(r'^Icon'));
+    await tester.tap(find.bySemanticsLabel('Take photo'));
+    await useCrop(tester);
+    expect(squares, hasLength(2));
+    await tapLabel(tester, RegExp(r'^Icon'));
+    await tapLabel(tester, 'Remove icon');
+    expect(find.bySemanticsLabel(RegExp(r'^Icon, Not set')), findsOneWidget);
+    await tapLabel(tester, 'Save');
+    expect(repository.admin.last, 'space icon=none');
+    expect(repository.spaces.value.single.iconUrl, isNull);
     semantics.dispose();
   });
 

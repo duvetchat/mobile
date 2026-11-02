@@ -130,7 +130,7 @@ void main() {
     expect(find.textContaining('won’t be shown again'), findsOneWidget);
     await tapLabel(tester, 'Copy token');
     expect(copied, 'bot-token-1');
-    expect(find.text('@helper-bot'), findsOneWidget);
+    expect(find.bySemanticsLabel(RegExp(r'^Username, helper-bot')), findsOneWidget);
 
     await tapLabel(tester, RegExp(r'^Copy invite link'));
     expect(copied, 'https://duvet.chat/invite?bot=b-a-Helper');
@@ -278,18 +278,20 @@ void main() {
     await typeName(tester, 'helper2');
     await tapLabel(tester, 'Save');
     expect(repository.admin.last, 'bot* a-1 username=helper2');
-    expect(find.text('@helper2'), findsOneWidget);
+    expect(find.bySemanticsLabel(RegExp(r'^Username, helper2')), findsOneWidget);
 
     await tapLabel(tester, RegExp(r'^Remove display name'));
     expect(repository.admin.last, 'bot* a-1 noalias');
     expect(find.bySemanticsLabel(RegExp(r'^Remove display name')), findsNothing);
 
-    await tapLabel(tester, RegExp(r'^Remove picture'));
+    await tapLabel(tester, RegExp(r'^Picture'));
+    await tapLabel(tester, 'Remove picture');
     expect(repository.admin.last, 'bot* a-1 noavatar');
-    await tapLabel(tester, RegExp(r'^Remove banner'));
+    await tapLabel(tester, RegExp(r'^Banner'));
+    await tapLabel(tester, 'Remove banner');
     expect(repository.admin.last, 'bot* a-1 nobanner');
-    expect(find.bySemanticsLabel(RegExp(r'^Add a picture')), findsOneWidget);
-    expect(find.bySemanticsLabel(RegExp(r'^Add a banner')), findsOneWidget);
+    expect(find.bySemanticsLabel(RegExp(r'^Picture, Not set')), findsOneWidget);
+    expect(find.bySemanticsLabel(RegExp(r'^Banner, Not set')), findsOneWidget);
 
     // New ones: picked, cropped here, and sent.
     final path = await picture(tester);
@@ -303,17 +305,17 @@ void main() {
       saved.add('banner');
       return '${File(path).parent.path}/banner.png';
     };
-    await reveal(tester, find.bySemanticsLabel(RegExp(r'^Add a picture')).last);
-    await tester.tap(find.bySemanticsLabel(RegExp(r'^Add a picture')).last);
+    await tapLabel(tester, RegExp(r'^Picture'));
+    await tester.tap(find.bySemanticsLabel('Choose photo'));
     await useCrop(tester);
     expect(saved, ['square 256']);
     expect(repository.admin.last, 'bot* a-1 avatar');
-    await reveal(tester, find.bySemanticsLabel(RegExp(r'^Add a banner')).last);
-    await tester.tap(find.bySemanticsLabel(RegExp(r'^Add a banner')).last);
+    await tapLabel(tester, RegExp(r'^Banner'));
+    await tester.tap(find.bySemanticsLabel('Choose photo'));
     await useCrop(tester);
     expect(saved, ['square 256', 'banner']);
     expect(repository.admin.last, 'bot* a-1 banner');
-    expect(find.bySemanticsLabel(RegExp(r'^Change picture')), findsOneWidget);
+    expect(find.bySemanticsLabel(RegExp(r'^Picture, Change or remove')), findsOneWidget);
 
     repository.refusals['updateBot'] = 'That username is taken';
     await tapLabel(tester, RegExp(r'^Username'));

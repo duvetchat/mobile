@@ -2427,12 +2427,14 @@ class DuvetRepository implements ChatRepository {
     String? iconPath,
     String? bannerPath,
     bool removeBanner = false,
+    bool removeIcon = false,
     void Function(double progress)? onProgress,
   }) async {
     final removesBanner = removeBanner && bannerPath == null;
-    // Pictures, or taking the banner away, go as a form, where the API skips
-    // an empty description: one cleared goes first, on its own.
-    final multipart = iconPath != null || bannerPath != null || removesBanner;
+    final removesIcon = removeIcon && iconPath == null;
+    // Pictures, or taking one away, go as a form, where the API skips an
+    // empty description: one cleared goes first, on its own.
+    final multipart = iconPath != null || bannerPath != null || removesBanner || removesIcon;
     final clearsDescription = description != null && description.isEmpty && multipart;
     try {
       if (clearsDescription) await _call((api) => api.updateSpace(spaceId, description: ''));
@@ -2444,6 +2446,7 @@ class DuvetRepository implements ChatRepository {
           icon: iconPath == null ? null : File(iconPath),
           banner: bannerPath == null ? null : File(bannerPath),
           removeBanner: removesBanner,
+          removeIcon: removesIcon,
           // Pictures' alone: taking the banner away goes as a form too, whose
           // few bytes would say "Uploading · 100%" with nothing going up.
           onProgress: iconPath != null || bannerPath != null ? _bytesSent(onProgress) : null,

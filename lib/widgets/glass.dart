@@ -260,6 +260,9 @@ class _GlassMenuTransition extends AnimatedWidget {
 class GlassRow extends StatefulWidget {
   final IconData? icon;
   final Widget? leading;
+
+  /// After the label, at the row's end: a picture's thumbnail, a chevron.
+  final Widget? trailing;
   final String label;
   final String? detail;
   final String? hint;
@@ -280,6 +283,7 @@ class GlassRow extends StatefulWidget {
     required this.onPressed,
     this.icon,
     this.leading,
+    this.trailing,
     this.detail,
     this.hint,
     this.destructive = false,
@@ -374,6 +378,8 @@ class _GlassRowState extends State<GlassRow> {
                     ],
                   ),
                 ),
+                if (widget.trailing case final trailing?)
+                  Padding(padding: const EdgeInsets.only(left: 12), child: trailing),
               ],
             ),
           ),

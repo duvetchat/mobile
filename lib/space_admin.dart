@@ -23,6 +23,7 @@ import 'widgets/avatar.dart';
 import 'widgets/chrome.dart';
 import 'widgets/depth.dart' show Pressable;
 import 'widgets/glass.dart';
+import 'widgets/picture_edit.dart';
 import 'widgets/role_name.dart';
 import 'widgets/rows.dart';
 import 'widgets/scrolling.dart' show CarouselPhysics;
@@ -134,10 +135,11 @@ Future<String> Function(String path, CropRect crop, int side) saveSquareImage = 
   return file.path;
 };
 
-/// Picks a Space's icon and crops it square, as the desktop does; answers the
-/// cropped picture's path, or null when the user backs out.
-Future<String?> chooseSpaceIcon(BuildContext context) async {
-  final path = await pickSpaceIcon();
+/// Picks a Space's icon (or, [camera], takes one) and crops it square, as the
+/// desktop does; answers the cropped picture's path, or null when the user
+/// backs out.
+Future<String?> chooseSpaceIcon(BuildContext context, {bool camera = false}) async {
+  final path = await (camera ? takePhoto() : pickSpaceIcon());
   if (path == null || !context.mounted) return null;
   final crop = await Navigator.of(context).push<CropRect>(
     MaterialPageRoute(fullscreenDialog: true, builder: (_) => CropPage(path: path, aspect: 1, round: false)),
@@ -793,16 +795,46 @@ class _SpaceOverviewPageState extends State<SpaceOverviewPage> {
   late final _name = TextEditingController(text: _profile?.name)..addListener(_changed);
   late final _about = TextEditingController(text: _profile?.description)..addListener(_changed);
   void _changed() => setState(() {});
-  String? _icon;
 
-  /// The new banner, cropped; or [_removeBanner] to take the one there away.
+  /// The new icon and banner, cropped; or [_removeIcon] and [_removeBanner]
+  /// to take the ones there away.
+  String? _icon;
   String? _banner;
+  bool _removeIcon = false;
   bool _removeBanner = false;
   bool _saving = false;
   final _upload = ValueNotifier<double?>(null);
 
-  Future<void> _pickBanner() async {
-    final path = await pickSpaceImage();
+  Future<void> _editIcon({required bool has}) async {
+    final choice = await showPictureSheet(context, title: 'Icon', remove: has ? 'Remove icon' : null);
+    if (choice == null || !mounted) return;
+    if (choice == PictureChoice.remove) {
+      setState(() {
+        _icon = null;
+        _removeIcon = _profile?.iconUrl != null;
+      });
+      return;
+    }
+    final path = await chooseSpaceIcon(context, camera: choice == PictureChoice.take);
+    if (path != null && mounted) {
+      setState(() {
+        _icon = path;
+        _removeIcon = false;
+      });
+    }
+  }
+
+  Future<void> _editBanner({required bool has}) async {
+    final choice = await showPictureSheet(context, title: 'Banner', remove: has ? 'Remove banner' : null);
+    if (choice == null || !mounted) return;
+    if (choice == PictureChoice.remove) {
+      setState(() {
+        _banner = null;
+        _removeBanner = _profile?.bannerUrl != null;
+      });
+      return;
+    }
+    final path = await (choice == PictureChoice.take ? takePhoto() : pickSpaceImage());
     if (path == null || !mounted) return;
     final crop = await Navigator.of(context).push<CropRect>(
       MaterialPageRoute(
@@ -852,6 +884,7 @@ class _SpaceOverviewPageState extends State<SpaceOverviewPage> {
         iconPath: _icon,
         bannerPath: _banner,
         removeBanner: _removeBanner,
+        removeIcon: _removeIcon,
         onProgress: (p) {
           // Left mid-upload, the page is gone, and its note with it.
           if (mounted) _upload.value = p;
@@ -868,23 +901,14 @@ class _SpaceOverviewPageState extends State<SpaceOverviewPage> {
   Widget build(BuildContext context) {
     final colors = context.theme.colors;
     final p = _profile;
-    Widget picked(String label, String? path, VoidCallback onTap, {bool has = false}) => GlassRow(
-      icon: FLucideIcons.image,
-      label: label,
-      detail: path != null
-          ? 'New one chosen'
-          : has
-          ? 'Change'
-          : 'Choose',
-      onPressed: onTap,
-    );
-    // What the banner will be once saved: the new one, none, or as it is.
-    final bannerNow = _removeBanner ? null : p?.bannerUrl;
-    final hasBanner = _banner != null || bannerNow != null;
+    // What the pictures will be once saved: the new ones, none, or as they are.
+    final iconNow = _icon ?? (_removeIcon ? null : p?.iconUrl);
+    final bannerNow = _banner ?? (_removeBanner ? null : p?.bannerUrl);
     final dirty =
         p != null &&
         (_icon != null ||
             _banner != null ||
+            _removeIcon ||
             _removeBanner ||
             _name.text.trim() != p.name ||
             _about.text.trim() != (p.description ?? '').trim());
@@ -892,59 +916,55 @@ class _SpaceOverviewPageState extends State<SpaceOverviewPage> {
       dirty: dirty,
       child: AdminPage(
         title: 'Overview',
-        actions: [TextAction(label: 'Save', onPressed: _saving || p == null ? null : _save)],
+        actions: [TextAction(label: 'Save', onPressed: _saving || !dirty ? null : _save)],
         children: [
           if (p == null)
             const ListNote('This Space is gone')
           else ...[
-            const SizedBox(height: 8),
-            DuvetTextField(label: 'Name', controller: _name),
-            const SizedBox(height: 16),
-            DuvetTextField(label: 'What it’s about', controller: _about, maxLines: 3),
-            const Overline('Pictures'),
-            // The banner as it will look, 5:2.
-            if (_banner case final path?)
-              ExcludeSemantics(
-                child: ClipRRect(
-                  borderRadius: BorderRadius.circular(DuvetTokens.radiusCard),
-                  child: AspectRatio(
-                    aspectRatio: bannerAspect,
-                    child: Image.file(
-                      File(path),
-                      fit: BoxFit.cover,
-                      errorBuilder: (context, error, stackTrace) => const SizedBox.shrink(),
+            const Overline('Appearance'),
+            AdminPanel(
+              children: [
+                PictureRow(
+                  label: 'Icon',
+                  set: iconNow != null,
+                  onPressed: () => _editIcon(has: iconNow != null),
+                  thumb: PictureThumb(
+                    picture: iconNow,
+                    width: 48,
+                    height: 48,
+                    radius: BorderRadius.circular(DuvetTokens.radiusField),
+                    empty: Text(
+                      _name.text.trim().isEmpty ? '' : _name.text.trim().characters.first.toUpperCase(),
+                      style: DuvetType.navTitle.copyWith(color: colors.foreground, fontSize: 20),
                     ),
                   ),
                 ),
-              )
-            else if (bannerNow case final url?)
-              SpaceBanner(url: url),
-            if (hasBanner) const SizedBox(height: 12),
-            AdminPanel(
-              children: [
-                picked('Icon', _icon, () async {
-                  final path = await chooseSpaceIcon(context);
-                  if (path != null && mounted) setState(() => _icon = path);
-                }),
-                picked('Banner', _banner, _pickBanner, has: hasBanner),
-                if (hasBanner)
-                  GlassRow(
-                    icon: FLucideIcons.trash2,
-                    label: 'Remove banner',
-                    destructive: true,
-                    onPressed: () => setState(() {
-                      _banner = null;
-                      _removeBanner = p.bannerUrl != null;
-                    }),
+                PictureRow(
+                  label: 'Banner',
+                  set: bannerNow != null,
+                  onPressed: () => _editBanner(has: bannerNow != null),
+                  thumb: PictureThumb(
+                    picture: bannerNow,
+                    width: 144,
+                    height: 48,
+                    radius: BorderRadius.circular(8),
+                    empty: Icon(FLucideIcons.image, size: 24, color: colors.mutedForeground),
                   ),
+                ),
               ],
             ),
             UploadNote(_upload),
-            const SizedBox(height: 8),
-            Text(
-              'Everyone in the Space sees the change.',
-              style: DuvetType.caption.copyWith(color: colors.mutedForeground),
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 8, 16, 0),
+              child: Text(
+                'Everyone in the Space sees the change.',
+                style: DuvetType.caption.copyWith(color: colors.mutedForeground),
+              ),
             ),
+            const Overline('Details'),
+            DuvetTextField(label: 'Name', controller: _name),
+            const SizedBox(height: 16),
+            DuvetTextField(label: 'What it’s about', controller: _about, maxLines: 3),
           ],
         ],
       ),

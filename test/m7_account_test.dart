@@ -184,6 +184,7 @@ void main() {
     await tapLabel(tester, 'Edit');
     expect(find.text('@gaby'), findsWidgets);
     await tester.enterText(find.byType(EditableText).first, 'Gabriela');
+    await tester.pump();
     await tapLabel(tester, 'Save');
     // The bio wasn't touched: it isn't sent.
     expect(repository.account, ['alias Gabriela']);
@@ -242,6 +243,7 @@ void main() {
     await tapLabel(tester, 'Edit');
     expect(find.text('Night runner 😀'), findsOneWidget);
     await tester.enterText(find.byType(EditableText).at(1), ' ');
+    await tester.pump();
     await tapLabel(tester, 'Save');
     expect(repository.account.last, 'bio ');
     expect(repository.profile.value!.bio, isNull);
@@ -288,7 +290,8 @@ void main() {
     tester.view.viewInsets = const FakeViewPadding(bottom: 300 * 3);
     await tester.pumpAndSettle();
     expect(tester.takeException(), isNull);
-    expect(find.text('Gabriela'), findsOneWidget);
+    // The field, and the card above it showing the name as typed.
+    expect(find.text('Gabriela'), findsNWidgets(2));
     semantics.dispose();
   });
 
@@ -321,10 +324,11 @@ void main() {
     return path;
   }
 
-  // Picks the picture for [label] (Change profile photo, Change banner) and
-  // crops it as it opens.
+  // Picks the picture for [label] (Change profile photo, Change banner) from
+  // its sheet and crops it as it opens.
   Future<void> cropPicture(WidgetTester tester, String label) async {
-    await tester.tap(find.bySemanticsLabel(label));
+    await tapLabel(tester, label);
+    await tester.tap(find.bySemanticsLabel('Choose photo'));
     // The picture decodes on the real clock.
     for (var i = 0; i < 20 && find.byType(InteractiveViewer).evaluate().isEmpty; i++) {
       await tester.runAsync(() => Future<void>.delayed(const Duration(milliseconds: 50)));
@@ -386,9 +390,17 @@ void main() {
     final repository = await pumpWithAvatar(tester);
     await openYou(tester);
     await tapLabel(tester, 'Edit');
+    // No banner: its sheet has none to remove.
+    await tapLabel(tester, 'Change banner');
     expect(find.bySemanticsLabel('Remove banner'), findsNothing);
+    await tester.tapAt(const Offset(20, 20));
+    await tester.pumpAndSettle();
+    await tapLabel(tester, 'Change profile photo');
     await tapLabel(tester, 'Remove profile photo');
+    await tapLabel(tester, 'Change profile photo');
     expect(find.bySemanticsLabel('Remove profile photo'), findsNothing);
+    await tester.tapAt(const Offset(20, 20));
+    await tester.pumpAndSettle();
     expect(repository.account, isEmpty);
 
     await tapLabel(tester, 'Save');
@@ -402,6 +414,7 @@ void main() {
     final repository = await pumpWithAvatar(tester);
     await openYou(tester);
     await tapLabel(tester, 'Edit');
+    await tapLabel(tester, 'Change profile photo');
     await tapLabel(tester, 'Remove profile photo');
     await tapLabel(tester, 'Cancel');
     expect(find.text('Unsaved changes'), findsOneWidget);
@@ -430,7 +443,8 @@ void main() {
     expect(find.text('Unsaved changes'), findsOneWidget);
     await tapLabel(tester, 'Keep editing');
     expect(find.text('Edit profile'), findsOneWidget);
-    expect(find.text('Gabriela'), findsOneWidget);
+    // The field, and the card above it showing the name as typed.
+    expect(find.text('Gabriela'), findsNWidgets(2));
     await tapLabel(tester, 'Save');
     expect(repository.account, ['alias Gabriela']);
     expect(find.text('Edit profile'), findsNothing);
