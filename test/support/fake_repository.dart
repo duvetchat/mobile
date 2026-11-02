@@ -848,6 +848,174 @@ class FakeRepository implements ChatRepository {
   @override
   Future<SpaceStorage> spaceStorage(String spaceId) async => storageOfSpace;
 
+  // The developer portal: teams, their members and apps, by team ID, and the
+  // bots' profiles by user ID. Changes go in [admin].
+  @override
+  final ValueNotifier<List<TeamInvite>> teamInvites = ValueNotifier(const []);
+  List<DevTeam> teamList = [];
+  final teamMemberList = <String, List<Member>>{};
+  final appList = <String, List<DevApp>>{};
+  final botList = <String, Member>{};
+
+  void _dropTeamInvite(String id) => teamInvites.value = teamInvites.value.where((i) => i.id != id).toList();
+
+  @override
+  Future<void> acceptTeamInvite(String inviteId) async {
+    admin.add('team accept $inviteId');
+    _refuse('acceptTeamInvite');
+    _dropTeamInvite(inviteId);
+  }
+
+  @override
+  Future<void> declineTeamInvite(String inviteId) async {
+    admin.add('team decline $inviteId');
+    _dropTeamInvite(inviteId);
+  }
+
+  @override
+  Future<List<DevTeam>> teams() async => [...teamList];
+
+  @override
+  Future<DevTeam> createTeam(String name) async {
+    admin.add('team+ $name');
+    _refuse('createTeam');
+    final team = DevTeam(id: 't-$name', name: name, ownerId: me.id);
+    teamList = [...teamList, team];
+    teamMemberList[team.id] = [everyone.first];
+    return team;
+  }
+
+  @override
+  Future<void> renameTeam(String teamId, String name) async {
+    admin.add('team* $teamId $name');
+    teamList = [for (final t in teamList) t.id == teamId ? DevTeam(id: t.id, name: name, ownerId: t.ownerId) : t];
+  }
+
+  @override
+  Future<void> deleteTeam(String teamId) async {
+    admin.add('team- $teamId');
+    teamList = teamList.where((t) => t.id != teamId).toList();
+  }
+
+  @override
+  Future<List<Member>> teamMembers(String teamId) async => [...?teamMemberList[teamId]];
+
+  @override
+  Future<void> inviteToTeam(String teamId, String email) async {
+    admin.add('team invite $teamId $email');
+    _refuse('inviteToTeam');
+  }
+
+  @override
+  Future<void> removeTeamMember(String teamId, String userId) async {
+    admin.add('team kick $teamId $userId');
+    teamMemberList[teamId]?.removeWhere((m) => m.userId == userId);
+  }
+
+  @override
+  Future<List<DevApp>> applications(String teamId) async => [...?appList[teamId]];
+
+  DevApp _replaceApp(DevApp app) {
+    appList[app.teamId] = [for (final a in appList[app.teamId] ?? <DevApp>[]) a.id == app.id ? app : a];
+    return app;
+  }
+
+  @override
+  Future<DevApp> createApplication(String teamId, String name, {String? description}) async {
+    admin.add('app+ $teamId $name');
+    _refuse('createApplication');
+    final app = DevApp(id: 'a-$name', teamId: teamId, name: name, description: description);
+    appList[teamId] = [...?appList[teamId], app];
+    return app;
+  }
+
+  @override
+  Future<DevApp> updateApplication(DevApp app, {String? name, String? description, bool? public}) async {
+    admin.add(
+      'app* ${app.id} ${[if (name != null) 'name=$name', if (description != null) 'description=$description', if (public != null) 'public=$public'].join(' ')}',
+    );
+    return _replaceApp(
+      DevApp(
+        id: app.id,
+        teamId: app.teamId,
+        name: name ?? app.name,
+        description: description ?? app.description,
+        public: public ?? app.public,
+        botUserId: app.botUserId,
+      ),
+    );
+  }
+
+  @override
+  Future<void> deleteApplication(DevApp app) async {
+    admin.add('app- ${app.id}');
+    appList[app.teamId]?.removeWhere((a) => a.id == app.id);
+  }
+
+  @override
+  Future<String> createBot(DevApp app) async {
+    admin.add('bot+ ${app.id}');
+    _refuse('createBot');
+    final id = 'b-${app.id}';
+    botList[id] = Member(userId: id, username: '${app.name.toLowerCase()}-bot', isBot: true);
+    _replaceApp(
+      DevApp(
+        id: app.id,
+        teamId: app.teamId,
+        name: app.name,
+        description: app.description,
+        public: app.public,
+        botUserId: id,
+      ),
+    );
+    return 'bot-token-1';
+  }
+
+  @override
+  Future<String> resetBotToken(DevApp app) async {
+    admin.add('bot~ ${app.id}');
+    _refuse('resetBotToken');
+    return 'bot-token-2';
+  }
+
+  @override
+  Future<void> deleteBot(DevApp app) async {
+    admin.add('bot- ${app.id}');
+    botList.remove(app.botUserId);
+    _replaceApp(
+      DevApp(id: app.id, teamId: app.teamId, name: app.name, description: app.description, public: app.public),
+    );
+  }
+
+  @override
+  Future<Member> botProfile(String botUserId) async => botList[botUserId]!;
+
+  @override
+  Future<void> updateBot(
+    DevApp app, {
+    String? username,
+    String? alias,
+    bool clearAlias = false,
+    String? avatarPath,
+    String? bannerPath,
+    bool removeAvatar = false,
+    bool removeBanner = false,
+  }) async {
+    admin.add(
+      'bot* ${app.id} ${[if (username != null) 'username=$username', if (alias != null) 'alias=$alias', if (clearAlias) 'noalias', if (avatarPath != null) 'avatar', if (bannerPath != null) 'banner', if (removeAvatar) 'noavatar', if (removeBanner) 'nobanner'].join(' ')}',
+    );
+    _refuse('updateBot');
+    final b = botList[app.botUserId]!;
+    botList[b.userId] = Member(
+      userId: b.userId,
+      username: username ?? b.username,
+      alias: clearAlias ? null : alias ?? b.alias,
+      avatarUrl: removeAvatar ? null : (avatarPath == null ? b.avatarUrl : 'https://example.invalid/bot.png'),
+      bannerUrl: removeBanner ? null : (bannerPath == null ? b.bannerUrl : 'https://example.invalid/bot-banner.png'),
+      isBot: true,
+    );
+  }
+
   List<BotCommand> botCommands = [];
   final interactions = <String>[];
   BotModal? nextModal;

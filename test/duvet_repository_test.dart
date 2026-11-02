@@ -117,6 +117,12 @@ void main() {
   /// While set, holds that answer, as it was when asked.
   Completer<void>? holdAsking;
 
+  /// The team invites to the user, as `GET …/team-invites` answers.
+  late List<Map<String, dynamic>> teamInviting;
+
+  /// While set, holds that answer, as it was when asked.
+  Completer<void>? holdInvites;
+
   /// What a new avatar or banner gets, when not the user.
   http.Response? pictureRefusal;
 
@@ -147,6 +153,7 @@ void main() {
     sessionDead = false;
     expiredToken = null;
     asking = [];
+    teamInviting = [];
     moreSpaceMembers = [];
     mayaInConversation = null;
     friendBanners = false;
@@ -176,6 +183,11 @@ void main() {
       if (request.url.path == '/api/users/@me/friends/requests') {
         final answer = jsonEncode(asking);
         if (holdAsking case final hold?) await hold.future;
+        return http.Response(answer, 200, headers: {'content-type': 'application/json'});
+      }
+      if (request.url.path == '/api/users/@me/team-invites') {
+        final answer = jsonEncode(teamInviting);
+        if (holdInvites case final hold?) await hold.future;
         return http.Response(answer, 200, headers: {'content-type': 'application/json'});
       }
       final json = switch ((request.method, request.url.path)) {
@@ -255,6 +267,8 @@ void main() {
             },
         ],
         ('GET', '/api/users/@me/friends/requests/sent') => <Object>[],
+        ('POST', '/api/users/@me/team-invites/ti-1/accept') => http.Response('', 204),
+        ('POST', '/api/users/@me/teams/t-1/applications/a-1/bot') => {'token': 'bot-token'},
         ('GET', '/api/rooms/r-general/messages') => [roomNewest],
         ('GET', '/api/spaces/s-1/members') => [
           {
@@ -477,6 +491,61 @@ void main() {
     repository.handleEvent(_event('FRIEND_REQUEST_REJECT', {'id': 'q-1'}));
     await pumpEventQueue();
     expect(askingIds(), ['q-2']);
+  });
+
+  test('READY loads the team invites, TEAM_INVITE_CREATE again, and an accepted one goes', () async {
+    Map<String, dynamic> invite(String id, String team) => {
+      'id': id,
+      'team_id': 't-$id',
+      'user_id': _me,
+      'invited_by': _maya,
+      'created_at': _at,
+      'team_name': team,
+      'invited_by_username': 'maya',
+    };
+    List<String> ids() => [for (final i in repository.teamInvites.value) i.id];
+    teamInviting = [invite('ti-1', 'Acme')];
+    await repository.logIn('gaby@duvet.chat', 'secret');
+    repository.handleEvent(_event('READY', {'user': _user(_me, 'gaby'), 'sessionToken': 'ws'}));
+    await pumpEventQueue();
+    expect(ids(), ['ti-1']);
+    expect(repository.teamInvites.value.single.teamName, 'Acme');
+    expect(repository.teamInvites.value.single.invitedBy, 'maya');
+
+    // The same invite twice stays one row: the list is fetched, not added to.
+    teamInviting = [invite('ti-1', 'Acme'), invite('ti-2', 'Globex')];
+    repository.handleEvent(_event('TEAM_INVITE_CREATE', invite('ti-2', 'Globex')));
+    repository.handleEvent(_event('TEAM_INVITE_CREATE', invite('ti-2', 'Globex')));
+    await pumpEventQueue();
+    expect(ids(), ['ti-1', 'ti-2']);
+
+    // A load under way when the user accepts: its answer, from before, still
+    // lists the invite, and doesn't bring it back.
+    final hold = holdInvites = Completer<void>();
+    repository.handleEvent(_event('TEAM_INVITE_CREATE', invite('ti-2', 'Globex')));
+    await pumpEventQueue();
+    holdInvites = null;
+    await repository.acceptTeamInvite('ti-1');
+    expect(ids(), ['ti-2']);
+    hold.complete();
+    await pumpEventQueue();
+    expect(ids(), ['ti-2']);
+
+    // An older load that answers after a newer one is dropped.
+    final older = holdInvites = Completer<void>();
+    repository.handleEvent(_event('TEAM_INVITE_CREATE', invite('ti-2', 'Globex')));
+    await pumpEventQueue();
+    holdInvites = null;
+    teamInviting = [invite('ti-2', 'Globex'), invite('ti-3', 'Initech')];
+    repository.handleEvent(_event('TEAM_INVITE_CREATE', invite('ti-3', 'Initech')));
+    await pumpEventQueue();
+    expect(ids(), ['ti-2', 'ti-3']);
+    older.complete();
+    await pumpEventQueue();
+    expect(ids(), ['ti-2', 'ti-3']);
+
+    // A bot's token is the API's `token`.
+    expect(await repository.createBot(const DevApp(id: 'a-1', teamId: 't-1', name: 'Helper')), 'bot-token');
   });
 
   test('a saved session resumes; a rejected one is forgotten', () async {

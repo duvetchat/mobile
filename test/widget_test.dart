@@ -212,7 +212,7 @@ void main() {
     expect(find.text('@gaby'), findsOneWidget);
 
     // Below the fold, so not built yet: dragged into view.
-    await tester.dragUntilVisible(find.text('Sign out'), find.text('@gaby'), const Offset(0, -200));
+    await tester.scrollUntilVisible(find.text('Sign out'), 200, scrollable: find.byType(Scrollable).last);
     await tester.pumpAndSettle();
     await tester.tap(find.text('Sign out'));
     await tester.pumpAndSettle();

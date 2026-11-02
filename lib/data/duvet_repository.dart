@@ -408,6 +408,8 @@ class DuvetRepository implements ChatRepository {
     _roles.clear();
     _memberRoles.clear();
     friends.value = Friends.none;
+    teamInvites.value = const [];
+    _answeredInvites.clear();
     _conversationMembers.clear();
     _names.clear();
     _authors.clear();
@@ -654,6 +656,7 @@ class DuvetRepository implements ChatRepository {
           // The friends and the requests, as the desktop fetches them on each
           // READY; FRIEND_* events keep them current.
           unawaited(_reloadFriends());
+          unawaited(_reloadTeamInvites());
         }
         // READY again after a drop: chats catch up, and the conversations,
         // whose dates tell the DMs' previews behind.
@@ -921,6 +924,10 @@ class DuvetRepository implements ChatRepository {
           duvet.FriendRequestRejectedEvent() ||
           duvet.FriendRemovedEvent():
         unawaited(_reloadFriends());
+
+      // Reloaded rather than added: the same invite twice stays one row.
+      case duvet.TeamInviteCreatedEvent():
+        unawaited(_reloadTeamInvites());
 
       case duvet.ConversationCreatedEvent() ||
           duvet.ConversationUpdatedEvent() ||
@@ -2898,6 +2905,144 @@ class DuvetRepository implements ChatRepository {
       username: name,
       avatar: avatarPath == null ? null : File(avatarPath),
       removeAvatar: removeAvatar,
+    ),
+  );
+
+  @override
+  final ValueNotifier<List<TeamInvite>> teamInvites = ValueNotifier(const []);
+
+  // A load that answers after a newer one is dropped; one that answers after
+  // the user accepted or declined an invite may still list it, and doesn't.
+  int _invitesVersion = 0;
+  final _answeredInvites = <String>{};
+
+  Future<void> _reloadTeamInvites() async {
+    final api = _api;
+    final version = ++_invitesVersion;
+    try {
+      final list = await _call((api) => api.listMyTeamInvites());
+      if (!identical(api, _api) || version != _invitesVersion) return;
+      teamInvites.value = [
+        for (final i in list)
+          if (!_answeredInvites.contains(i.id))
+            TeamInvite(id: i.id, teamName: i.teamName, invitedBy: i.invitedByUsername),
+      ];
+    } catch (e) {
+      debugPrint('team invites: $e');
+    }
+  }
+
+  void _dropTeamInvite(String id) {
+    _answeredInvites.add(id);
+    teamInvites.value = [
+      for (final i in teamInvites.value)
+        if (i.id != id) i,
+    ];
+  }
+
+  @override
+  Future<void> acceptTeamInvite(String inviteId) async {
+    await _explained((api) => api.acceptTeamInvite(inviteId));
+    _dropTeamInvite(inviteId);
+  }
+
+  @override
+  Future<void> declineTeamInvite(String inviteId) async {
+    await _explained((api) => api.declineTeamInvite(inviteId));
+    _dropTeamInvite(inviteId);
+  }
+
+  DevTeam _team(duvet.Team t) => DevTeam(id: t.id, name: t.name, ownerId: t.ownerId);
+
+  DevApp _app(duvet.Application a) => DevApp(
+    id: a.id,
+    teamId: a.teamId,
+    name: a.name,
+    description: a.description,
+    public: a.public,
+    botUserId: a.botUserId,
+  );
+
+  @override
+  Future<List<DevTeam>> teams() async => [for (final t in await _call((api) => api.listTeams())) _team(t)];
+
+  @override
+  Future<DevTeam> createTeam(String name) async => _team(await _explained((api) => api.createTeam(name)));
+
+  @override
+  Future<void> renameTeam(String teamId, String name) => _explained((api) => api.updateTeam(teamId, name));
+
+  @override
+  Future<void> deleteTeam(String teamId) => _explained((api) => api.deleteTeam(teamId));
+
+  @override
+  Future<List<Member>> teamMembers(String teamId) async => [
+    for (final m in await _call((api) => api.listTeamMembers(teamId)))
+      _person(m.userId, m.username, null, m.avatar, null),
+  ];
+
+  @override
+  Future<void> inviteToTeam(String teamId, String email) => _explained((api) => api.inviteToTeam(teamId, email));
+
+  @override
+  Future<void> removeTeamMember(String teamId, String userId) =>
+      _explained((api) => api.removeTeamMember(teamId, userId));
+
+  @override
+  Future<List<DevApp>> applications(String teamId) async => [
+    for (final a in await _call((api) => api.listApplications(teamId))) _app(a),
+  ];
+
+  @override
+  Future<DevApp> createApplication(String teamId, String name, {String? description}) async =>
+      _app(await _explained((api) => api.createApplication(teamId, name, description: description)));
+
+  @override
+  Future<DevApp> updateApplication(DevApp app, {String? name, String? description, bool? public}) async => _app(
+    await _explained(
+      (api) => api.updateApplication(app.teamId, app.id, name: name, description: description, public: public),
+    ),
+  );
+
+  @override
+  Future<void> deleteApplication(DevApp app) => _explained((api) => api.deleteApplication(app.teamId, app.id));
+
+  @override
+  Future<String> createBot(DevApp app) => _explained((api) => api.createBot(app.teamId, app.id));
+
+  @override
+  Future<String> resetBotToken(DevApp app) => _explained((api) => api.resetBotToken(app.teamId, app.id));
+
+  @override
+  Future<void> deleteBot(DevApp app) => _explained((api) => api.deleteBot(app.teamId, app.id));
+
+  @override
+  Future<Member> botProfile(String botUserId) async {
+    final b = await _call((api) => api.getBotUser(botUserId));
+    return _person(b.id, b.username, b.alias, b.avatar, b.banner);
+  }
+
+  @override
+  Future<void> updateBot(
+    DevApp app, {
+    String? username,
+    String? alias,
+    bool clearAlias = false,
+    String? avatarPath,
+    String? bannerPath,
+    bool removeAvatar = false,
+    bool removeBanner = false,
+  }) => _explained(
+    (api) => api.updateBot(
+      app.teamId,
+      app.id,
+      username: username,
+      alias: alias,
+      clearAlias: clearAlias,
+      avatar: avatarPath == null ? null : File(avatarPath),
+      banner: bannerPath == null ? null : File(bannerPath),
+      removeAvatar: removeAvatar,
+      removeBanner: removeBanner,
     ),
   );
 

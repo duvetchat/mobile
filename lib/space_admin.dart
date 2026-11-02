@@ -147,7 +147,7 @@ Future<String?> chooseSpaceIcon(BuildContext context) async {
     return await saveSquareImage(path, crop, avatarSide);
   } catch (e) {
     debugPrint('icon: $e');
-    if (context.mounted) _toast(context, 'Couldn’t read this picture');
+    if (context.mounted) adminToast(context, 'Couldn’t read this picture');
     return null;
   }
 }
@@ -715,19 +715,62 @@ class _NameSheetState<T> extends State<_NameSheet<T>> {
   );
 }
 
-void _toast(BuildContext context, String message) {
+void adminToast(BuildContext context, String message) {
   if (!context.mounted) return;
   showFToast(context: context, title: Text(message), duration: const Duration(seconds: 3));
 }
 
+/// A secret the server shows once, a webhook's URL or a bot's token, to copy.
+Future<void> showSecretOnce(
+  BuildContext context, {
+  required String title,
+  required String body,
+  required String secret,
+  required String copyLabel,
+}) => showGlassDialogSheet<void>(
+  context,
+  label: title,
+  builder: (context) => Padding(
+    padding: const EdgeInsets.fromLTRB(24, 16, 24, 24),
+    child: Column(
+      mainAxisSize: MainAxisSize.min,
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Text(title, style: DuvetType.title.copyWith(color: context.theme.colors.foreground)),
+        const SizedBox(height: 12),
+        Text(body, style: DuvetType.snippet.copyWith(color: context.theme.colors.mutedForeground)),
+        const SizedBox(height: 16),
+        Container(
+          padding: const EdgeInsets.all(12),
+          decoration: BoxDecoration(
+            color: context.theme.colors.secondary,
+            borderRadius: BorderRadius.circular(DuvetTokens.radiusField),
+          ),
+          child: SelectableText(secret, style: DuvetType.code.copyWith(color: context.theme.colors.foreground)),
+        ),
+        const SizedBox(height: 24),
+        DuvetButton(
+          label: copyLabel,
+          variant: ButtonVariant.primary,
+          expand: true,
+          onPressed: () {
+            Clipboard.setData(ClipboardData(text: secret));
+            Navigator.of(context).pop();
+          },
+        ),
+      ],
+    ),
+  ),
+);
+
 /// Runs a change, saying so if it fails; true when it worked.
-Future<bool> _try(BuildContext context, String failure, Future<void> Function() change) async {
+Future<bool> adminTry(BuildContext context, String failure, Future<void> Function() change) async {
   try {
     await change();
     return true;
   } catch (e) {
     debugPrint('space admin: $e');
-    if (context.mounted) _toast(context, e is ActionFailed ? e.message : failure);
+    if (context.mounted) adminToast(context, e is ActionFailed ? e.message : failure);
     return false;
   }
 }
@@ -773,7 +816,7 @@ class _SpaceOverviewPageState extends State<SpaceOverviewPage> {
       cropped = await saveBannerImage(path, crop);
     } catch (e) {
       debugPrint('banner: $e');
-      if (mounted) _toast(context, 'Couldn’t read this picture');
+      if (mounted) adminToast(context, 'Couldn’t read this picture');
       return;
     }
     if (mounted) {
@@ -799,7 +842,7 @@ class _SpaceOverviewPageState extends State<SpaceOverviewPage> {
     final about = _about.text.trim();
     final navigator = Navigator.of(context);
     setState(() => _saving = true);
-    final ok = await _try(
+    final ok = await adminTry(
       context,
       'Couldn’t save the Space',
       () => context.repository.updateSpace(
@@ -1003,7 +1046,7 @@ class _RoomsAdminPageState extends State<RoomsAdminPage> {
     );
     if (got == null || !mounted) return;
     final (name, parent) = got;
-    await _try(
+    await adminTry(
       context,
       'Couldn’t create ${kind == AdminRoomKind.category ? name : '#$name'}',
       () => context.repository.createRoom(
@@ -1071,11 +1114,11 @@ class _RoomsAdminPageState extends State<RoomsAdminPage> {
       case 'rename':
         final got = await askName<void>(context, title: 'Rename $label', initial: room.name);
         if (got == null || !mounted) return;
-        await _try(context, 'Couldn’t rename $label', () => repository.renameRoom(id, room.id, got.$1));
+        await adminTry(context, 'Couldn’t rename $label', () => repository.renameRoom(id, room.id, got.$1));
       case 'describe':
         final got = await askDescription(context, title: 'What $label is for', initial: room.description ?? '');
         if (got == null || !mounted) return;
-        await _try(
+        await adminTry(
           context,
           'Couldn’t change what $label is for',
           () => repository.setRoomDescription(id, room.id, got),
@@ -1103,7 +1146,7 @@ class _RoomsAdminPageState extends State<RoomsAdminPage> {
           action: 'Delete',
         );
         if (!sure || !mounted) return;
-        await _try(context, 'Couldn’t delete $label', () => repository.deleteRoom(id, room.id));
+        await adminTry(context, 'Couldn’t delete $label', () => repository.deleteRoom(id, room.id));
     }
     if (mounted) setState(() {});
   }
@@ -1151,7 +1194,7 @@ class _RoomsAdminPageState extends State<RoomsAdminPage> {
     final label = moved.kind == AdminRoomKind.category ? moved.name : '#${moved.name}';
     final change = context.repository.moveRoom(widget.spaceId, moved.id, parentId: parent, position: position);
     setState(() {});
-    await _try(context, 'Couldn’t move $label', () => change);
+    await adminTry(context, 'Couldn’t move $label', () => change);
     if (mounted) setState(() {});
   }
 
@@ -1551,7 +1594,7 @@ class _RoomPermissionsPageState extends State<RoomPermissionsPage> {
 
   Future<void> _set(_Target t, int bit, bool? state) async {
     final next = _overwrite(t).withState(bit, state);
-    await _try(
+    await adminTry(
       context,
       'Couldn’t change the permission',
       () => context.repository.setOverwrite(widget.spaceId, widget.room.id, next),
@@ -1617,7 +1660,7 @@ class _RoomPermissionsPageState extends State<RoomPermissionsPage> {
     final before = _targets.indexWhere((x) => x.id == t.id);
     final had = _overwrites.any((o) => o.targetId == t.id);
     if (had &&
-        !await _try(
+        !await adminTry(
           context,
           'Couldn’t remove ${t.name}’s permissions',
           () => context.repository.setOverwrite(
@@ -2271,7 +2314,7 @@ class _RolesPageState extends State<RolesPage> {
       final role = await repository.createRole(widget.spaceId, got.$1);
       if (mounted) await _edit(role);
     } catch (e) {
-      if (mounted) _toast(context, e is ActionFailed ? e.message : 'Couldn’t create the role');
+      if (mounted) adminToast(context, e is ActionFailed ? e.message : 'Couldn’t create the role');
     }
   }
 
@@ -2317,7 +2360,7 @@ class _RolesPageState extends State<RolesPage> {
     final up = to < ranked.indexOf(moved);
     final position = up ? others[to].position : others[to - 1].position;
     if (!_below(position)) {
-      _toast(context, 'Roles can only go below your highest role');
+      adminToast(context, 'Roles can only go below your highest role');
       return;
     }
     HapticFeedback.selectionClick();
@@ -2327,7 +2370,7 @@ class _RolesPageState extends State<RolesPage> {
       return _arrange(([...others]..insert(to, moved)).where(_manages).toList());
     }
     setState(() => _sorting = true);
-    await _try(
+    await adminTry(
       context,
       'Couldn’t move ${moved.name}',
       () => context.repository.moveRole(widget.spaceId, moved.id, position),
@@ -2343,7 +2386,7 @@ class _RolesPageState extends State<RolesPage> {
     final repository = context.repository;
     setState(() => _sorting = true);
     for (final role in order) {
-      final ok = await _try(
+      final ok = await adminTry(
         context,
         'Couldn’t move ${role.name}',
         () => repository.moveRole(widget.spaceId, role.id, 1),
@@ -2550,7 +2593,7 @@ class _RoleEditorPageState extends State<RoleEditorPage> {
     final name = _name.text.trim();
     final navigator = Navigator.of(context);
     setState(() => _saving = true);
-    final ok = await _try(
+    final ok = await adminTry(
       context,
       'Couldn’t save ${r.name}',
       () => context.repository.updateRole(
@@ -2618,7 +2661,7 @@ class _RoleEditorPageState extends State<RoleEditorPage> {
   }
 
   Future<void> _toggle(Member m, bool has, StateSetter setSheet) async {
-    await _try(
+    await adminTry(
       context,
       'Couldn’t change ${m.displayName}’s roles',
       () => context.repository.setRole(widget.spaceId, widget.role.id, m.userId, has: has),
@@ -2635,7 +2678,7 @@ class _RoleEditorPageState extends State<RoleEditorPage> {
     );
     if (!sure || !mounted) return;
     final navigator = Navigator.of(context);
-    if (await _try(
+    if (await adminTry(
       context,
       'Couldn’t delete the role',
       () => context.repository.deleteRole(widget.spaceId, widget.role.id),
@@ -2853,7 +2896,7 @@ class _InvitesAdminPageState extends State<InvitesAdminPage> {
       action: 'Revoke link',
     );
     if (!sure || !mounted) return;
-    await _try(context, 'Couldn’t revoke the link', () => context.repository.revokeInvite(widget.spaceId, i.id));
+    await adminTry(context, 'Couldn’t revoke the link', () => context.repository.revokeInvite(widget.spaceId, i.id));
     if (mounted) _reload();
   }
 
@@ -2959,7 +3002,7 @@ class _AssetsPageState extends State<AssetsPage> {
     if (!mounted) return;
     // The cropper would close on it without a word.
     if (gif != null && !gif.readable) {
-      _toast(context, 'Couldn’t read this GIF');
+      adminToast(context, 'Couldn’t read this GIF');
       return;
     }
     final CropRect? crop;
@@ -2988,7 +3031,7 @@ class _AssetsPageState extends State<AssetsPage> {
       if (mounted) _upload.value = p;
     }
 
-    await _try(context, 'Couldn’t add the $_noun', () async {
+    await adminTry(context, 'Couldn’t add the $_noun', () async {
       if (crop == null) return repository.addAsset(widget.spaceId, kind, got.$1, path, onProgress: progress);
       final square = await saveSquareImage(path, crop, kind == AssetKind.emoji ? emojiSide : stickerSide);
       try {
@@ -3028,7 +3071,11 @@ class _AssetsPageState extends State<AssetsPage> {
       case 'rename':
         final got = await askName<void>(context, title: 'Rename ${a.name}', initial: a.name);
         if (got == null || !mounted) return;
-        await _try(context, 'Couldn’t rename it', () => repository.renameAsset(widget.spaceId, _kind, a.id, got.$1));
+        await adminTry(
+          context,
+          'Couldn’t rename it',
+          () => repository.renameAsset(widget.spaceId, _kind, a.id, got.$1),
+        );
       case 'delete':
         final sure = await confirmDestructive(
           context,
@@ -3037,7 +3084,7 @@ class _AssetsPageState extends State<AssetsPage> {
           action: 'Delete $_noun',
         );
         if (!sure || !mounted) return;
-        await _try(context, 'Couldn’t delete it', () => repository.deleteAsset(widget.spaceId, _kind, a.id));
+        await adminTry(context, 'Couldn’t delete it', () => repository.deleteAsset(widget.spaceId, _kind, a.id));
     }
     if (mounted) _reload();
   }
@@ -3163,43 +3210,12 @@ class _WebhooksPageState extends State<WebhooksPage> {
     _list = context.repository.webhooks(widget.spaceId);
   });
 
-  Future<void> _showOnce(String name, String url) => showGlassDialogSheet<void>(
+  Future<void> _showOnce(String name, String url) => showSecretOnce(
     context,
-    label: '$name’s URL',
-    builder: (context) => Padding(
-      padding: const EdgeInsets.fromLTRB(24, 16, 24, 24),
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          Text('$name’s URL', style: DuvetType.title.copyWith(color: context.theme.colors.foreground)),
-          const SizedBox(height: 12),
-          Text(
-            'Copy it now: it won’t be shown again. Anyone with it can post as $name.',
-            style: DuvetType.snippet.copyWith(color: context.theme.colors.mutedForeground),
-          ),
-          const SizedBox(height: 16),
-          Container(
-            padding: const EdgeInsets.all(12),
-            decoration: BoxDecoration(
-              color: context.theme.colors.secondary,
-              borderRadius: BorderRadius.circular(DuvetTokens.radiusField),
-            ),
-            child: SelectableText(url, style: DuvetType.code.copyWith(color: context.theme.colors.foreground)),
-          ),
-          const SizedBox(height: 24),
-          DuvetButton(
-            label: 'Copy URL',
-            variant: ButtonVariant.primary,
-            expand: true,
-            onPressed: () {
-              Clipboard.setData(ClipboardData(text: url));
-              Navigator.of(context).pop();
-            },
-          ),
-        ],
-      ),
-    ),
+    title: '$name’s URL',
+    body: 'Copy it now: it won’t be shown again. Anyone with it can post as $name.',
+    secret: url,
+    copyLabel: 'Copy URL',
   );
 
   Future<void> _new() async {
@@ -3219,7 +3235,7 @@ class _WebhooksPageState extends State<WebhooksPage> {
       final url = await repository.createWebhook(widget.spaceId, got.$2 ?? rooms.first.id, got.$1);
       if (mounted) await _showOnce(got.$1, url);
     } catch (e) {
-      if (mounted) _toast(context, e is ActionFailed ? e.message : 'Couldn’t create the webhook');
+      if (mounted) adminToast(context, e is ActionFailed ? e.message : 'Couldn’t create the webhook');
     }
     if (mounted) _reload();
   }
@@ -3233,7 +3249,7 @@ class _WebhooksPageState extends State<WebhooksPage> {
     ).push<CropRect>(MaterialPageRoute(fullscreenDialog: true, builder: (_) => CropPage(path: path, aspect: 1)));
     if (crop == null || !mounted) return;
     final repository = context.repository;
-    await _try(context, 'Couldn’t change its picture', () async {
+    await adminTry(context, 'Couldn’t change its picture', () async {
       final square = await saveSquareImage(path, crop, 256);
       try {
         await repository.updateWebhook(widget.spaceId, w, avatarPath: square);
@@ -3287,7 +3303,7 @@ class _WebhooksPageState extends State<WebhooksPage> {
         // The API takes 64 and fails past it.
         final got = await askName<void>(context, title: 'Rename ${w.name}', initial: w.name, maxLength: 64);
         if (got == null || got.$1.trim().isEmpty || !mounted) return;
-        await _try(
+        await adminTry(
           context,
           'Couldn’t rename it',
           () => repository.updateWebhook(widget.spaceId, w, name: got.$1.trim()),
@@ -3295,7 +3311,7 @@ class _WebhooksPageState extends State<WebhooksPage> {
       case 'avatar':
         await _avatar(w);
       case 'noavatar':
-        await _try(
+        await adminTry(
           context,
           'Couldn’t remove its picture',
           () => repository.updateWebhook(widget.spaceId, w, removeAvatar: true),
@@ -3305,7 +3321,7 @@ class _WebhooksPageState extends State<WebhooksPage> {
           final url = await repository.resetWebhook(widget.spaceId, w);
           if (mounted) await _showOnce(w.name, url);
         } catch (e) {
-          if (mounted) _toast(context, e is ActionFailed ? e.message : 'Couldn’t make a new URL');
+          if (mounted) adminToast(context, e is ActionFailed ? e.message : 'Couldn’t make a new URL');
         }
       case 'delete':
         final sure = await confirmDestructive(
@@ -3315,7 +3331,7 @@ class _WebhooksPageState extends State<WebhooksPage> {
           action: 'Delete webhook',
         );
         if (!sure || !mounted) return;
-        await _try(context, 'Couldn’t delete it', () => repository.deleteWebhook(widget.spaceId, w));
+        await adminTry(context, 'Couldn’t delete it', () => repository.deleteWebhook(widget.spaceId, w));
     }
     if (mounted) _reload();
   }

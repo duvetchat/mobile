@@ -13,6 +13,7 @@ import 'data/appearance.dart';
 import 'data/links.dart';
 import 'data/models.dart';
 import 'data/scope.dart';
+import 'developer.dart' show DeveloperPage;
 import 'login.dart';
 import 'people.dart';
 import 'space_admin.dart' show AdminPanel, avatarSide, saveBannerImage, saveSquareImage;
@@ -1637,7 +1638,7 @@ class _YouTabState extends State<YouTab> {
     final colors = context.theme.colors;
     final tokens = context.duvet;
     return ListenableBuilder(
-      listenable: Listenable.merge([repository.profile, repository.friends]),
+      listenable: Listenable.merge([repository.profile, repository.friends, repository.teamInvites]),
       builder: (context, _) {
         final profile = repository.profile.value;
         if (profile == null) return const SizedBox.shrink();
@@ -1742,6 +1743,18 @@ class _YouTabState extends State<YouTab> {
                       },
                     ),
                   ),
+                  const Overline('Developer'),
+                  panel([
+                    row(
+                      'Developer portal',
+                      () => _push(const DeveloperPage()),
+                      value: switch (repository.teamInvites.value.length) {
+                        0 => null,
+                        1 => '1 invite',
+                        final n => '$n invites',
+                      },
+                    ),
+                  ]),
                   const Overline('Account'),
                   panel([
                     row('Change email', () => _push(const ChangeEmailPage())),

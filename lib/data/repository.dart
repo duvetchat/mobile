@@ -295,6 +295,52 @@ abstract interface class ChatRepository {
 
   Future<SpaceStorage> spaceStorage(String spaceId);
 
+  /// The team invites waiting on the user: fetched on READY, and again when
+  /// TEAM_INVITE_CREATE brings one.
+  ValueListenable<List<TeamInvite>> get teamInvites;
+  Future<void> acceptTeamInvite(String inviteId);
+  Future<void> declineTeamInvite(String inviteId);
+
+  /// The developer teams the user is in.
+  Future<List<DevTeam>> teams();
+  Future<DevTeam> createTeam(String name);
+  Future<void> renameTeam(String teamId, String name);
+
+  /// Deletes a team the user owns, with its applications and their bots.
+  Future<void> deleteTeam(String teamId);
+  Future<List<Member>> teamMembers(String teamId);
+
+  /// Invites the person with this [email]: a verified account's, not a bot's.
+  Future<void> inviteToTeam(String teamId, String email);
+  Future<void> removeTeamMember(String teamId, String userId);
+
+  Future<List<DevApp>> applications(String teamId);
+  Future<DevApp> createApplication(String teamId, String name, {String? description});
+  Future<DevApp> updateApplication(DevApp app, {String? name, String? description, bool? public});
+  Future<void> deleteApplication(DevApp app);
+
+  /// Gives [app] a bot, and answers its token: shown once, never again.
+  Future<String> createBot(DevApp app);
+  Future<String> resetBotToken(DevApp app);
+
+  /// Deletes the app's bot, from every Space it is in.
+  Future<void> deleteBot(DevApp app);
+  Future<Member> botProfile(String botUserId);
+
+  /// Changes the app's bot: [clearAlias] takes its display name away, as
+  /// [removeAvatar] and [removeBanner] do its pictures; new ones are files at
+  /// [avatarPath] and [bannerPath].
+  Future<void> updateBot(
+    DevApp app, {
+    String? username,
+    String? alias,
+    bool clearAlias = false,
+    String? avatarPath,
+    String? bannerPath,
+    bool removeAvatar = false,
+    bool removeBanner = false,
+  });
+
   /// The commands of the Space's applications.
   Future<List<BotCommand>> commands(String spaceId);
 

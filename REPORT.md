@@ -28,15 +28,15 @@ _23 October 2026 · Flutter app in `mobile/`, against `duvet_client` 1.0.1 (loca
 | M8 · Voice & calls | 🟡 | voice rooms (who's in, join, mute, deafen, faces talking, sound output), DM and group calls (incoming screen, call screen, Calls tab from this phone's history; no buzz in do not disturb), rejoining after a gateway restart, Android foreground service, iOS background audio. Two reviews' findings fixed: a join made offline waits 3 minutes at most, signing out tells the gateway, voice notes and voice don't share the microphone, and listening without a microphone says it lasts only while the app is open. **Tested against fakes only: not yet on a device** |
 | M9 · Bots | ✅ | message buttons and selects, slash commands with options, bot modals, bot invite cards; bots drawn as rounded squares with a BOT tag |
 | M10 · Space administration | ✅ | overview, rooms (with per-role overwrites), roles (colors, members, permissions), emojis and stickers, invites, webhooks (URL shown once), storage (view only) |
+| M11 · Developer portal | ✅ | teams (members, invites by email, live team invites), applications (name, description, public), bots (token shown once, reset, delete, profile, invite link) |
 | Platform | 🟡 | done: offline cache, connection state, token safety, iOS config, golden tests, CI, release signing config, build settings. Open: push, accessibility pass, Spanish |
 
 ## 2. API coverage
 
 ### REST (`RestMethods`)
 
-The app calls about **100 of 138 methods (~72%)**. What's left is outside a phone's scope or not yet needed:
+The app calls about **115 of 138 methods (~83%)**. What's left is outside a phone's scope or not yet needed:
 
-- teams (8 methods) and applications and bots management (7): developer features;
 - storage bucket management (11): storage is view-only on mobile;
 - bulk attachment deletion (3), `removeBotFromSpace`, renaming a webhook (`updateWebhook`).
 
@@ -44,7 +44,7 @@ The app calls about **100 of 138 methods (~72%)**. What's left is outside a phon
 
 ### Gateway (`GatewayManager`)
 
-The app handles **66 of the 70 event types** the client parses. M8 added the nine voice and call events (`VOICE_STATE_UPDATE`, `VOICE_JOINED`, `CALL_INCOMING`/`ACCEPTED`/`DECLINED`/`ENDED`, the three `WEBRTC_*`) and `VOICE_SESSION_REPLACED`; calls across a user's devices (mobile#16) added `CALL_OUTGOING` and `CALL_ONGOING`, and READY's `ringing`, `answered`, `initiator_name` and `initiator_avatar`. It sends `VOICE_JOIN`, `VOICE_LEAVE`, `VOICE_SYNC`, `WEBRTC_ICE_CANDIDATE`, `WEBRTC_ANSWER` and the five `CALL_*` messages; never `WEBRTC_RENEGOTIATE_OFFER` (the phone adds no tracks mid-call). The four it leaves alone are for what the phone doesn't have: `VOICE_VIDEO_REFUSED` (it sends no video), `USER_ACTIVITY_UPDATE` (it shows no activities), `TEAM_INVITE_CREATE` (no teams) and `STORAGE_TRANSFER_UPDATE` (storage is view-only).
+The app handles **67 of the 70 event types** the client parses. M8 added the nine voice and call events (`VOICE_STATE_UPDATE`, `VOICE_JOINED`, `CALL_INCOMING`/`ACCEPTED`/`DECLINED`/`ENDED`, the three `WEBRTC_*`) and `VOICE_SESSION_REPLACED`; calls across a user's devices (mobile#16) added `CALL_OUTGOING` and `CALL_ONGOING`, and READY's `ringing`, `answered`, `initiator_name` and `initiator_avatar`. It sends `VOICE_JOIN`, `VOICE_LEAVE`, `VOICE_SYNC`, `WEBRTC_ICE_CANDIDATE`, `WEBRTC_ANSWER` and the five `CALL_*` messages; never `WEBRTC_RENEGOTIATE_OFFER` (the phone adds no tracks mid-call). The three it leaves alone are for what the phone doesn't have: `VOICE_VIDEO_REFUSED` (it sends no video), `USER_ACTIVITY_UPDATE` (it shows no activities) and `STORAGE_TRANSFER_UPDATE` (storage is view-only).
 
 ### Changes to `duvet_client` (1.0.1, in its CHANGELOG)
 

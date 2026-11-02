@@ -268,6 +268,41 @@ class SpaceWebhook {
   });
 }
 
+/// A developer team. Its owner is its only admin: the API makes whoever accepts
+/// an invite a member, and has no way to promote one.
+class DevTeam {
+  final String id;
+  final String name;
+  final String ownerId;
+  const DevTeam({required this.id, required this.name, required this.ownerId});
+}
+
+/// An invite to join a team, waiting on the user.
+class TeamInvite {
+  final String id;
+  final String teamName;
+  final String invitedBy;
+  const TeamInvite({required this.id, required this.teamName, required this.invitedBy});
+}
+
+/// A team's application, and its bot when it has one.
+class DevApp {
+  final String id;
+  final String teamId;
+  final String name;
+  final String? description;
+  final bool public;
+  final String? botUserId;
+  const DevApp({
+    required this.id,
+    required this.teamId,
+    required this.name,
+    this.description,
+    this.public = false,
+    this.botUserId,
+  });
+}
+
 /// Where a Space's files are, and how much they take.
 class SpaceStorage {
   final int used;
