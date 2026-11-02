@@ -65,6 +65,9 @@ String? parseInviteCode(String url) {
   return code == null || code.isEmpty || code.contains(RegExp(r'[/?#\\]')) ? null : code;
 }
 
+/// The link that adds a bot to a Space, as the desktop writes it.
+String botInviteLink(String botUserId) => '$duvetDomain/invite?bot=$botUserId';
+
 /// The bot a bot's invite link adds (`duvet.chat/invite?bot=<id>`), or null.
 String? parseBotInvite(String url) {
   final path = _duvetPath(url);
