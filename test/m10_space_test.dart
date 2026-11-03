@@ -780,6 +780,26 @@ void main() {
     semantics.dispose();
   });
 
+  testWidgets('a role\'s Save is greyed out until something changes', (tester) async {
+    final repository = await pumpSettings(tester);
+    await tapLabel(tester, RegExp(r'^Roles'));
+    await tapLabel(tester, RegExp(r'^Moderator'));
+    bool saveEnabled() =>
+        tester.getSemantics(find.bySemanticsLabel('Save').last).flagsCollection.isEnabled.toString().contains('isTrue');
+    expect(saveEnabled(), isFalse);
+
+    await tester.enterText(find.byType(EditableText).first, 'Mods');
+    await tester.pumpAndSettle();
+    expect(saveEnabled(), isTrue);
+
+    // Back to how it was: nothing to save again.
+    await tester.enterText(find.byType(EditableText).first, 'Moderator');
+    await tester.pumpAndSettle();
+    expect(saveEnabled(), isFalse);
+    expect(repository.admin.where((a) => a.startsWith('role~')), isEmpty);
+    semantics.dispose();
+  });
+
   testWidgets('leaving an edited role asks first: Discard drops the edit, nothing saved', (tester) async {
     final repository = await pumpSettings(tester);
     await tapLabel(tester, RegExp(r'^Roles'));

@@ -2849,7 +2849,7 @@ class _RoleEditorPageState extends State<RoleEditorPage> {
         dirty: dirty,
         child: AdminPage(
           title: 'Edit role',
-          actions: [TextAction(label: 'Save', onPressed: _saving ? null : _save)],
+          actions: [TextAction(label: 'Save', onPressed: _saving || !dirty ? null : _save)],
           children: children,
         ),
       );
