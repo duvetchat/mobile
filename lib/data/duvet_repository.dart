@@ -198,6 +198,9 @@ class DuvetRepository implements ChatRepository {
   @override
   final ValueNotifier<Map<String, Presence>> presence = ValueNotifier(const {});
 
+  @override
+  final ValueNotifier<Set<String>> mobileOnly = ValueNotifier(const {});
+
   // Fetched once per session, by space or conversation ID.
   final _spaceMembers = <String, Future<List<Member>>>{};
   final _conversationMembers = <String, List<Member>>{};
@@ -418,6 +421,7 @@ class DuvetRepository implements ChatRepository {
     _stickers.clear();
     _uploadLimit = null;
     presence.value = const {};
+    mobileOnly.value = const {};
     _spaceEntries.clear();
     latest.value = const {};
     unawaited(_recents.close());
@@ -640,6 +644,11 @@ class DuvetRepository implements ChatRepository {
           for (final e in presence.value.entries)
             if (e.key == me) e.key: e.value,
         };
+        // So does whether they're only on mobile, which comes with it; the
+        // user's stays, as their presence does.
+        if (mobileOnly.value.any((id) => id != me)) {
+          mobileOnly.value = {if (me != null && mobileOnly.value.contains(me)) me};
+        }
         _spaceEntries.clear();
         // Profile changes made with no session went unheard: anyone's next
         // one reaches their messages, even with the name and avatar the one
@@ -748,6 +757,9 @@ class DuvetRepository implements ChatRepository {
             _spaceEntries[id]?.remove(spaceId);
           }
         }
+        // And whether those it has connected are only on mobile, as their
+        // status everywhere is now the one it gives; the others keep theirs.
+        _keepPlatforms({for (final id in data.memberStatuses.keys) id: data.memberClientStatus[id]});
         presence.value = next;
         _readStates(data.readStates);
         _publishSpaces();
@@ -885,6 +897,9 @@ class DuvetRepository implements ChatRepository {
 
       case duvet.UserStatusUpdatedEvent(:final data):
         final status = _presence(data.statusId);
+        // With their platforms, where the status holds everywhere: one in a
+        // single Space is a bot's, whose connections all count as a computer's.
+        if (data.spaceId == null) _keepPlatforms({data.userId: data.clientStatus});
         presence.value = switch (data.spaceId) {
           // A bot's in one Space (its shard's there), as the desktop keeps it.
           final spaceId? => {...presence.value, spacePresenceKey(data.userId, _entered(data.userId, spaceId)): status},
@@ -913,6 +928,7 @@ class DuvetRepository implements ChatRepository {
           if (data.user?.isBot ?? false) {
             presence.value = {...presence.value, spacePresenceKey(userId, _entered(userId, data.spaceId)): status};
           } else if (data.statusId != null) {
+            _keepPlatforms({userId: data.clientStatus});
             presence.value = _presentEverywhere(userId, status);
           } else if (!presence.value.containsKey(userId)) {
             presence.value = {...presence.value, userId: status};
@@ -951,7 +967,10 @@ class DuvetRepository implements ChatRepository {
         // The added member's status as they're added, which USER_STATUS_UPDATE
         // carries on.
         if (event case duvet.ConversationMemberAddedEvent(:final data) when data.userId != me) {
-          if (data.statusId case final status?) presence.value = _presentEverywhere(data.userId, _presence(status));
+          if (data.statusId case final status?) {
+            _keepPlatforms({data.userId: data.clientStatus});
+            presence.value = _presentEverywhere(data.userId, _presence(status));
+          }
         }
         unawaited(refreshConversations().catchError((_) {}));
 
@@ -1104,6 +1123,21 @@ class DuvetRepository implements ChatRepository {
       next.remove(spacePresenceKey(userId, spaceId));
     }
     return next;
+  }
+
+  /// Whether each user in [statuses] is connected only from the mobile app
+  /// ([mobileOnly]), by the client status that comes with a status of theirs
+  /// that holds everywhere: null while they're offline, and from a server
+  /// before client statuses.
+  void _keepPlatforms(Map<String, duvet.ClientStatus?> statuses) {
+    final now = mobileOnly.value;
+    final next = {
+      for (final id in now)
+        if (!statuses.containsKey(id)) id,
+      for (final MapEntry(key: id, value: status) in statuses.entries)
+        if (status?.isMobileOnly ?? false) id,
+    };
+    if (!setEquals(next, now)) mobileOnly.value = next;
   }
 
   /// The Spaces each user has an entry of their own in ([spacePresenceKey]):
@@ -1362,7 +1396,15 @@ class DuvetRepository implements ChatRepository {
         for (final m in c.members)
           if (m.statusId case final status? when m.userId != me) m.userId: _presence(status),
     };
-    if (listed.keys.any((id) => !presence.value.containsKey(id))) presence.value = {...listed, ...presence.value};
+    if (listed.keys.any((id) => !presence.value.containsKey(id))) {
+      // And whether they're only on mobile, as the list has them.
+      _keepPlatforms({
+        for (final c in list)
+          for (final m in c.members)
+            if (m.statusId != null && m.userId != me && !presence.value.containsKey(m.userId)) m.userId: m.clientStatus,
+      });
+      presence.value = {...listed, ...presence.value};
+    }
     _fillFriendBanners();
     _saveHome();
     unawaited(_catchUpConversations());
@@ -2038,7 +2080,16 @@ class DuvetRepository implements ChatRepository {
       for (final f in list)
         if (f.statusId case final status?) (f.senderId == me ? f.recipientId : f.senderId): _presence(status),
     };
-    if (listed.keys.any((id) => !presence.value.containsKey(id))) presence.value = {...listed, ...presence.value};
+    if (listed.keys.any((id) => !presence.value.containsKey(id))) {
+      // And whether they're only on mobile, as the list has them.
+      _keepPlatforms({
+        for (final f in list)
+          if ((f.senderId == me ? f.recipientId : f.senderId) case final id
+              when f.statusId != null && !presence.value.containsKey(id))
+            id: f.clientStatus,
+      });
+      presence.value = {...listed, ...presence.value};
+    }
     final loaded = Friends(
       friends: [
         for (final f in list)
@@ -3548,6 +3599,7 @@ class DuvetRepository implements ChatRepository {
     typingNow.dispose();
     _recents.dispose();
     presence.dispose();
+    mobileOnly.dispose();
     collapsedCategories.dispose();
   }
 }
