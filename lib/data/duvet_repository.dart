@@ -537,6 +537,19 @@ class DuvetRepository implements ChatRepository {
   // Gateway
   // ---------------------------------------------------------------------------
 
+  /// What the app tells the gateway it runs on as it identifies, which others
+  /// see in the user's client status: the mobile app on Android and iOS; the
+  /// web in a browser, a phone's included; a computer anywhere else, as the
+  /// desktop app is.
+  @visibleForTesting
+  static duvet.ClientPlatform platformOf({bool web = kIsWeb, TargetPlatform? target}) {
+    if (web) return duvet.ClientPlatform.web;
+    return switch (target ?? defaultTargetPlatform) {
+      TargetPlatform.android || TargetPlatform.iOS => duvet.ClientPlatform.mobile,
+      _ => duvet.ClientPlatform.desktop,
+    };
+  }
+
   void _connectGateway() {
     final gateway = _gateway = duvet.GatewayManager(
       _rest,
@@ -547,6 +560,7 @@ class DuvetRepository implements ChatRepository {
       // as the desktop app's does: the gateway replays what it missed, with
       // no READY (see [handleResume]), when it still keeps the session.
       resume: true,
+      platform: platformOf(),
     );
     _voiceSignaling.attach(gateway);
     // Listen before connecting: READY comes right after IDENTIFY, on a
