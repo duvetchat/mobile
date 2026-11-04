@@ -137,8 +137,14 @@ class SpaceRole {
   final String id;
   final String name;
 
-  /// RGB, or null for the default ink.
+  /// RGB, or null for the default ink: a solid color, or a gradient's
+  /// start.
   final int? color;
+
+  /// A gradient's middle (optional) and end, left to right, in RGB; without
+  /// [colorTo] the color is solid.
+  final int? colorVia;
+  final int? colorTo;
   final int perms;
   final int position;
   final int memberCount;
@@ -152,13 +158,22 @@ class SpaceRole {
     required this.id,
     required this.name,
     this.color,
+    this.colorVia,
+    this.colorTo,
     this.perms = 0,
     this.position = 0,
     this.memberCount = 0,
     this.everyone = false,
     this.hoisted = false,
   });
+
+  /// Its colors as one value, to compare and to save.
+  RoleColors get colors => (from: color, via: colorVia, to: colorTo);
 }
+
+/// A role's color: none (no [from]), solid ([from] alone), or a gradient
+/// from [from] through [via] to [to], always left to right.
+typedef RoleColors = ({int? from, int? via, int? to});
 
 enum AdminRoomKind { text, voice, category }
 
@@ -250,6 +265,41 @@ class SpaceWebhook {
     required this.name,
     required this.createdAt,
     this.avatarUrl,
+  });
+}
+
+/// A developer team. Its owner is its only admin: the API makes whoever accepts
+/// an invite a member, and has no way to promote one.
+class DevTeam {
+  final String id;
+  final String name;
+  final String ownerId;
+  const DevTeam({required this.id, required this.name, required this.ownerId});
+}
+
+/// An invite to join a team, waiting on the user.
+class TeamInvite {
+  final String id;
+  final String teamName;
+  final String invitedBy;
+  const TeamInvite({required this.id, required this.teamName, required this.invitedBy});
+}
+
+/// A team's application, and its bot when it has one.
+class DevApp {
+  final String id;
+  final String teamId;
+  final String name;
+  final String? description;
+  final bool public;
+  final String? botUserId;
+  const DevApp({
+    required this.id,
+    required this.teamId,
+    required this.name,
+    this.description,
+    this.public = false,
+    this.botUserId,
   });
 }
 

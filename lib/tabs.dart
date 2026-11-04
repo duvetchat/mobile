@@ -16,7 +16,10 @@ import 'spaces.dart';
 import 'theme.dart';
 import 'voice_room.dart';
 import 'widgets/avatar.dart';
+import 'widgets/call_presence.dart';
 import 'widgets/chrome.dart';
+import 'widgets/duvet_mascot.dart';
+import 'widgets/ghost_art.dart';
 import 'widgets/rows.dart';
 
 /// The unified inbox: the recent chats, rooms and DMs alike, then the DMs
@@ -27,6 +30,7 @@ class ChatsTab extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final repository = context.repository;
+    final voice = context.voice;
     return ListenableBuilder(
       listenable: Listenable.merge([
         repository.recents,
@@ -36,8 +40,10 @@ class ChatsTab extends StatelessWidget {
         repository.mentions,
         repository.profile,
         repository.presence,
+        repository.mobileOnly,
         repository.friends,
         repository.typingNow,
+        voice,
       ]),
       builder: (context, _) {
         final mentions = repository.mentions.value;
@@ -47,12 +53,14 @@ class ChatsTab extends StatelessWidget {
           repository.spaces.value,
           repository.profile.value?.id,
           repository.presence.value,
+          repository.mobileOnly.value,
         );
         final unread = repository.unread.value;
         // The requests to the user, counted on Friends as on the desktop's.
         final asking = repository.friends.value.incoming.length;
         return LargeTitlePage(
           title: 'Chats',
+          titleLeading: const AppIcon(size: 32),
           titleTrailing: Row(
             mainAxisSize: MainAxisSize.min,
             children: [
@@ -92,6 +100,32 @@ class ChatsTab extends StatelessWidget {
                     padding: EdgeInsets.fromLTRB(16, 12, 16, 0),
                     child: ConnectionBanner(text: 'Offline', detail: '· showing saved messages'),
                   ),
+                // Calls going on in the user's conversations, as their chat's
+                // CallBanner has them; not the user's own still ringing the
+                // others from another device: nothing to join yet.
+                // Not the call the user is in: the voice bar already shows that one.
+                for (final id in voice.callsInProgress)
+                  if (!callingElsewhere(voice, id) &&
+                      !(voice.call?.conversationId == id && voice.call?.phase != CallPhase.ringing))
+                    Padding(padding: const EdgeInsets.fromLTRB(16, 12, 16, 0), child: _ongoingCall(context, id)),
+                // Friends in voice in a Space the user shares with them, to join.
+                for (final (friend, room, space) in _friendsInVoice(repository, voice))
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(16, 12, 16, 0),
+                    child: CallPresenceCard(
+                      key: ValueKey('friend-${friend.userId}'),
+                      icon: FLucideIcons.volume2,
+                      leading: UserAvatar(name: friend.displayName, url: friend.avatarUrl, size: 40),
+                      title: friend.displayName,
+                      detail: '${room.name} · ${space.name}',
+                      onJoin: voice.canJoin(room)
+                          ? () {
+                              voice.joinRoom(room);
+                              openVoiceRoom(context, room);
+                            }
+                          : null,
+                    ),
+                  ),
               ],
             ),
           ),
@@ -100,7 +134,7 @@ class ChatsTab extends StatelessWidget {
             if (rows.isEmpty)
               const SliverFillRemaining(
                 hasScrollBody: false,
-                child: EmptyState(icon: FLucideIcons.messageCircle, text: 'No conversations yet'),
+                child: EmptyState(mascot: MascotState.empty, text: 'No conversations yet'),
               )
             else
               SliverPadding(
@@ -130,12 +164,45 @@ class ChatsTab extends StatelessWidget {
     );
   }
 
+  /// Each friend in a voice room of a Space the user is in, with the room; not
+  /// the room the user is in, which the voice bar shows.
+  static Iterable<(Member, Room, Space)> _friendsInVoice(ChatRepository repository, VoiceController voice) sync* {
+    final friends = {for (final f in repository.friends.value.friends) f.userId: f};
+    if (friends.isEmpty) return;
+    for (final space in repository.spaces.value) {
+      for (final room in space.rooms) {
+        if (room.kind != RoomKind.voice || voice.target?.id == room.id) continue;
+        for (final p in voice.participants(room.id)) {
+          if (friends[p.userId] case final friend?) yield (friend, room, space);
+        }
+      }
+    }
+  }
+
+  static Widget _ongoingCall(BuildContext context, String conversationId) {
+    final repository = context.repository;
+    final voice = context.voice;
+    final summary = repository.conversations.value.where((c) => c.id == conversationId).firstOrNull;
+    final title = summary?.title ?? 'Call';
+    return CallPresenceCard(
+      key: ValueKey('call-$conversationId'),
+      icon: FLucideIcons.phoneCall,
+      leading: summary == null ? null : UserAvatar(name: title, url: summary.avatarUrl, size: 40),
+      title: title,
+      detail: voice.participants(conversationId).isEmpty
+          ? 'Call in progress'
+          : voiceSnippet(repository, voice, conversationId),
+      onJoin: () => callConversation(context, conversationId),
+    );
+  }
+
   static List<_ChatRow> _rows(
     List<RecentChat> recents,
     List<ConversationSummary> conversations,
     List<Space> spaces,
     String? me,
     Map<String, Presence> presence,
+    Set<String> mobileOnly,
   ) {
     final conversationsById = {for (final c in conversations) c.id: c};
     final spacesById = {for (final s in spaces) s.id: s};
@@ -145,6 +212,7 @@ class ChatsTab extends StatelessWidget {
       final id? => PresenceAvatar(
         member: Member(userId: id, username: title, avatarUrl: c!.avatarUrl),
         presence: presence[id],
+        mobileOnly: mobileOnly.contains(id),
         size: 48,
       ),
       null => UserAvatar(name: title, url: c?.avatarUrl, size: 48),
@@ -255,6 +323,7 @@ class SpacesTab extends StatelessWidget {
         );
         return LargeTitlePage(
           title: 'Spaces',
+          titleLeading: const AppIcon(size: 32),
           titleTrailing: Row(
             mainAxisSize: MainAxisSize.min,
             children: [
@@ -269,7 +338,7 @@ class SpacesTab extends StatelessWidget {
                 hasScrollBody: false,
                 child: repository.status.value == LiveStatus.connecting
                     ? const Center(child: FCircularProgress())
-                    : const EmptyState(icon: FLucideIcons.layoutGrid, text: 'You’re not in any spaces'),
+                    : const EmptyState(mascot: MascotState.empty, text: 'You’re not in any spaces'),
               )
             else
               switch (prefs.view) {
@@ -424,6 +493,8 @@ class _SpaceDirectoryState extends State<SpaceDirectory> {
                     ? const EmptyState(icon: FLucideIcons.hash, text: 'No rooms here yet')
                     : ListView(
                         controller: _scroll,
+                        // A list with its own controller only scrolls once full; a short one bounces too.
+                        physics: const AlwaysScrollableScrollPhysics(),
                         padding: EdgeInsets.only(top: barHeight, bottom: MediaQuery.paddingOf(context).bottom + 16),
                         children: [
                           if (space.bannerUrl case final banner?)
@@ -431,12 +502,33 @@ class _SpaceDirectoryState extends State<SpaceDirectory> {
                               padding: const EdgeInsets.fromLTRB(16, 8, 16, 0),
                               child: SpaceBanner(key: ValueKey(banner), url: banner),
                             ),
+                          // Voice going on here, above the rooms, to join; not the
+                          // room the user is in: the voice bar already shows that one.
+                          for (final room in space.rooms)
+                            if (room.kind == RoomKind.voice &&
+                                voice.target?.id != room.id &&
+                                voice.participants(room.id).isNotEmpty)
+                              Padding(
+                                padding: const EdgeInsets.fromLTRB(16, 12, 16, 0),
+                                child: CallPresenceCard(
+                                  key: ValueKey('voice-${room.id}'),
+                                  icon: FLucideIcons.volume2,
+                                  title: room.name,
+                                  detail: voiceSnippet(repository, voice, room.id),
+                                  onJoin: voice.canJoin(room)
+                                      ? () {
+                                          voice.joinRoom(room);
+                                          openVoiceRoom(context, room);
+                                        }
+                                      : null,
+                                ),
+                              ),
                           if (space.sections.isEmpty)
                             const SizedBox(
                               height: 240,
                               child: EmptyState(icon: FLucideIcons.hash, text: 'No rooms here yet'),
                             ),
-                          for (final section in space.sections) ...[
+                          for (final (i, section) in space.sections.indexed) ...[
                             // Outside any category: a plain header. A category
                             // folds away, empty ones too.
                             if (section.id case final id?)
@@ -449,34 +541,42 @@ class _SpaceDirectoryState extends State<SpaceDirectory> {
                               )
                             else if (section.rooms.isNotEmpty)
                               Overline(section.name ?? 'Rooms'),
-                            if (!collapsed.contains(section.id))
-                              for (final room in section.rooms)
-                                switch (room.kind) {
-                                  RoomKind.text => ListRow(
-                                    key: ValueKey(room.id),
-                                    title: room.name,
-                                    hash: true,
-                                    snippet:
-                                        typingSentence(repository.typingNow.value[room.id] ?? const []) ??
-                                        switch (latest[room.id]) {
-                                          final m? =>
-                                            '${m.authorId == me ? 'You' : m.authorName}: ${repository.previewOf(m)}',
-                                          null => null,
-                                        },
-                                    unread: unread.contains(room.id),
-                                    onTap: () => openChat(context, room.target, '# ${room.name}'),
-                                  ),
-                                  // Who's in, the user first when their voice is here (no
-                                  // accent: the tab bar has the screen's).
-                                  RoomKind.voice => ListRow(
-                                    key: ValueKey(room.id),
-                                    leading: Icon(FLucideIcons.volume2, size: 24, color: colors.mutedForeground),
-                                    title: room.name,
-                                    snippet: voiceSnippet(repository, voice, room.id),
-                                    detail: voice.target?.id == room.id ? 'you’re in voice here' : null,
-                                    onTap: () => openVoiceRoom(context, room),
-                                  ),
-                                },
+                            CategoryFold(
+                              key: ValueKey('fold-${section.id ?? i}'),
+                              open: !collapsed.contains(section.id),
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.stretch,
+                                children: [
+                                  for (final room in section.rooms)
+                                    switch (room.kind) {
+                                      RoomKind.text => ListRow(
+                                        key: ValueKey(room.id),
+                                        title: room.name,
+                                        hash: true,
+                                        snippet:
+                                            typingSentence(repository.typingNow.value[room.id] ?? const []) ??
+                                            switch (latest[room.id]) {
+                                              final m? =>
+                                                '${m.authorId == me ? 'You' : m.authorName}: ${repository.previewOf(m)}',
+                                              null => null,
+                                            },
+                                        unread: unread.contains(room.id),
+                                        onTap: () => openChat(context, room.target, '# ${room.name}'),
+                                      ),
+                                      // Who's in, the user first when their voice is here (no
+                                      // accent: the tab bar has the screen's).
+                                      RoomKind.voice => ListRow(
+                                        key: ValueKey(room.id),
+                                        leading: Icon(FLucideIcons.volume2, size: 24, color: colors.mutedForeground),
+                                        title: room.name,
+                                        snippet: voiceSnippet(repository, voice, room.id),
+                                        detail: voice.target?.id == room.id ? 'you’re in voice here' : null,
+                                        onTap: () => openVoiceRoom(context, room),
+                                      ),
+                                    },
+                                ],
+                              ),
+                            ),
                           ],
                         ],
                       ),
@@ -529,6 +629,7 @@ class CallsTab extends StatelessWidget {
     final colors = context.theme.colors;
     return LargeTitlePage(
       title: 'Calls',
+      titleLeading: const AppIcon(size: 32),
       header: Padding(
         padding: const EdgeInsets.fromLTRB(16, 4, 16, 0),
         child: Text(

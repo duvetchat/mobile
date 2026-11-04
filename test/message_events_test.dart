@@ -11,6 +11,8 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
 
+import 'support/eventually.dart';
+
 const _me = '00000000-0000-4000-8000-000000000001';
 const _maya = '00000000-0000-4000-8000-000000000002';
 const _at = '2026-10-23T09:00:00Z';
@@ -123,9 +125,11 @@ Map<String, dynamic> _space() => {
 class _HeldWrites extends MemoryChatCacheStore {
   Completer<void>? hold;
   var listed = 0;
+  var begun = 0;
 
   @override
   Future<void> write(String key, String json) async {
+    begun++;
     await hold?.future;
     data[key] = '';
     await Future<void>.value();
@@ -445,22 +449,23 @@ void main() {
       repository.handleEvent(_event('SPACE_CREATE', _space()));
       // The DM's history, written: her message, and the user's reply to it.
       await repository.messages(_dm);
-      await Future<void>.delayed(const Duration(milliseconds: 700));
-      expect(cache.data.keys, contains('chat_c-1'));
+      await eventually(() => expect(cache.data.keys, contains('chat_c-1')));
       // The room's, where the history names her Nick: not written yet.
       await repository.messages(_room);
 
       repository.handleEvent(renamed());
       await pumpEventQueue();
-      await Future<void>.delayed(const Duration(milliseconds: 700));
 
-      final dm = (await ChatCache(cache).loadPage('c-1'))!;
-      expect(
-        [for (final m in dm) (m.authorName, m.authorAvatarUrl, m.reply?.authorName)],
-        [('Maya O.', avatarUrl, null), ('Gaby', null, 'Maya O.')],
-      );
-      final room = (await ChatCache(cache).loadPage('r-1'))!.single;
-      expect((room.authorName, room.authorAvatarUrl), ('Nick', avatarUrl));
+      // The room's page once written, a moment after.
+      await eventually(() async {
+        final dm = (await ChatCache(cache).loadPage('c-1'))!;
+        expect(
+          [for (final m in dm) (m.authorName, m.authorAvatarUrl, m.reply?.authorName)],
+          [('Maya O.', avatarUrl, null), ('Gaby', null, 'Maya O.')],
+        );
+        final room = (await ChatCache(cache).loadPage('r-1'))!.single;
+        expect((room.authorName, room.authorAvatarUrl), ('Nick', avatarUrl));
+      });
     });
 
     test('signing out while the pages kept change leaves none behind', () async {
@@ -469,7 +474,7 @@ void main() {
       kept.savePage('c-1', [
         ChatMessage(id: '5', authorId: _maya, authorName: 'Maya', content: 'ready?', createdAt: DateTime(2026, 10, 23)),
       ]);
-      await Future<void>.delayed(const Duration(milliseconds: 700));
+      await eventually(() => expect(store.data.keys, contains('chat_c-1')));
       // Her new name, being written when the user signs out.
       final writing = store.hold = Completer<void>();
       unawaited(kept.changeMessages(_maya, (_, m) => m.changedBy(const AuthorChanged(_maya, name: 'Maya O.'))));
@@ -488,7 +493,7 @@ void main() {
       final writing = store.hold = Completer<void>();
       kept.savePage('c-1', [_keptMessage('5', _maya, 'Maya')]);
       // Its write under way when the user signs out.
-      await Future<void>.delayed(const Duration(milliseconds: 700));
+      await eventually(() => expect(store.begun, 1));
       final clearing = kept.clear();
       writing.complete();
       await clearing;
@@ -500,7 +505,7 @@ void main() {
       await listen(_dm);
       // A page kept that names her.
       await repository.messages(_dm);
-      await Future<void>.delayed(const Duration(milliseconds: 700));
+      await eventually(() => expect(cache.data.keys, contains('chat_c-1')));
       for (final update in [
         renamed(),
         // The API sends it once per Space she shares with the user.
@@ -520,7 +525,7 @@ void main() {
       final store = _HeldWrites();
       final kept = ChatCache(store);
       kept.savePage('c-1', [_keptMessage('5', _maya, 'Maya'), _keptMessage('6', _me, 'Gaby')]);
-      await Future<void>.delayed(const Duration(milliseconds: 700));
+      await eventually(() => expect(store.data.keys, contains('chat_c-1')));
       Future<void> rename(String id, String name) =>
           kept.changeMessages(id, (_, m) => m.changedBy(AuthorChanged(id, name: name)));
       // Her first change, being written while more come.
@@ -539,11 +544,11 @@ void main() {
       final store = _HeldWrites();
       final kept = ChatCache(store);
       kept.savePage('c-1', [_keptMessage('5', _maya, 'Maya')]);
-      await Future<void>.delayed(const Duration(milliseconds: 700));
+      await eventually(() => expect(store.data.keys, contains('chat_c-1')));
       // A newer page, being written when her new name comes.
       final writing = store.hold = Completer<void>();
       kept.savePage('c-1', [_keptMessage('5', _maya, 'Maya'), _keptMessage('6', _maya, 'Maya')]);
-      await Future<void>.delayed(const Duration(milliseconds: 700));
+      await eventually(() => expect(store.begun, 2));
       final changing = kept.changeMessages(_maya, (_, m) => m.changedBy(const AuthorChanged(_maya, name: 'Maya O.')));
       await pumpEventQueue();
       writing.complete();
@@ -562,7 +567,7 @@ void main() {
       // Its first write is under way when her new name comes, so the store doesn't list it yet.
       final writing = store.hold = Completer<void>();
       kept.savePage('c-1', [_keptMessage('5', _maya, 'Maya')]);
-      await Future<void>.delayed(const Duration(milliseconds: 700));
+      await eventually(() => expect(store.begun, 1));
       expect(store.data, isEmpty);
       final changing = kept.changeMessages(_maya, (_, m) => m.changedBy(const AuthorChanged(_maya, name: 'Maya O.')));
       await pumpEventQueue();

@@ -202,7 +202,7 @@ void main() {
     await tester.pumpAndSettle();
     await tester.tap(find.text('Design Guild'));
     await tester.pumpAndSettle();
-    await tester.tap(find.text('lounge'));
+    await tester.tap(find.text('lounge').last);
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 500));
     expect(find.bySemanticsLabel('Maya'), findsOneWidget);

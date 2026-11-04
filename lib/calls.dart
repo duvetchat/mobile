@@ -14,6 +14,7 @@ import 'theme.dart';
 import 'voice_room.dart';
 import 'widgets/avatar.dart';
 import 'widgets/chrome.dart';
+import 'widgets/duvet_mascot.dart';
 import 'widgets/depth.dart';
 import 'widgets/rows.dart';
 
@@ -432,7 +433,7 @@ class _AnswerButton extends StatelessWidget {
 class VoiceBar extends StatefulWidget {
   const VoiceBar({super.key});
 
-  static const height = 64.0;
+  static const height = DuvetTokens.sizeTabBar;
 
   /// Whether there's something for it to show.
   static bool shows(VoiceController voice) => voice.inVoice;
@@ -490,8 +491,11 @@ class _VoiceBarState extends State<VoiceBar> with _Ticking {
                 child: Pressable(
                   onTap: open,
                   scale: 1,
-                  builder: (context, _) => Padding(
-                    padding: const EdgeInsets.fromLTRB(16, 8, 8, 8),
+                  // The bar's full height, so all of it opens; no vertical padding: two
+                  // lines (≈41) fit the 56 bar up to ~1.38× text.
+                  builder: (context, _) => Container(
+                    height: VoiceBar.height,
+                    padding: const EdgeInsets.fromLTRB(16, 0, 8, 0),
                     child: Row(
                       children: [
                         Icon(
@@ -651,7 +655,7 @@ class CallHistoryList extends StatelessWidget {
         if (calls.isEmpty) {
           return const SliverFillRemaining(
             hasScrollBody: false,
-            child: EmptyState(icon: FLucideIcons.phone, text: 'No calls yet'),
+            child: EmptyState(mascot: MascotState.empty, text: 'No calls yet'),
           );
         }
         return SliverPadding(

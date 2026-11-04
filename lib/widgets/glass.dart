@@ -4,8 +4,10 @@ import 'dart:ui';
 import 'package:flutter/material.dart';
 import 'package:forui/forui.dart';
 
+import '../data/models.dart' show RoleColors;
 import '../theme.dart';
 import 'avatar.dart';
+import 'role_name.dart';
 
 /// Duvet's Liquid Glass: a 78% glass fill over a backdrop blur, a 1px edge that
 /// catches the light, and a large, weak float shadow. Only for overlays and
@@ -258,6 +260,9 @@ class _GlassMenuTransition extends AnimatedWidget {
 class GlassRow extends StatefulWidget {
   final IconData? icon;
   final Widget? leading;
+
+  /// After the label, at the row's end: a picture's thumbnail, a chevron.
+  final Widget? trailing;
   final String label;
   final String? detail;
   final String? hint;
@@ -265,8 +270,9 @@ class GlassRow extends StatefulWidget {
   final bool selected;
   final VoidCallback onPressed;
 
-  /// The label's color in place of `ink`: a member's role color.
-  final Color? labelColor;
+  /// The label in a member's role colors, a gradient across it if the role
+  /// has one, in place of `ink`.
+  final RoleColors? labelColors;
 
   /// A member's banner, faintly behind the row: see [memberBanner].
   final String? banner;
@@ -277,11 +283,12 @@ class GlassRow extends StatefulWidget {
     required this.onPressed,
     this.icon,
     this.leading,
+    this.trailing,
     this.detail,
     this.hint,
     this.destructive = false,
     this.selected = false,
-    this.labelColor,
+    this.labelColors,
     this.banner,
     this.bannerOffline = false,
     super.key,
@@ -352,12 +359,15 @@ class _GlassRowState extends State<GlassRow> {
                     mainAxisSize: MainAxisSize.min,
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      Text(
-                        widget.label,
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: DuvetType.label.copyWith(color: widget.labelColor ?? ink),
-                      ),
+                      if (widget.labelColors case final role?)
+                        RoleName(widget.label, colors: role, style: DuvetType.label)
+                      else
+                        Text(
+                          widget.label,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: DuvetType.label.copyWith(color: ink),
+                        ),
                       if (widget.detail != null)
                         Text(
                           widget.detail!,
@@ -368,6 +378,8 @@ class _GlassRowState extends State<GlassRow> {
                     ],
                   ),
                 ),
+                if (widget.trailing case final trailing?)
+                  Padding(padding: const EdgeInsets.only(left: 12), child: trailing),
               ],
             ),
           ),
@@ -524,7 +536,12 @@ class SheetTitle extends StatelessWidget {
       crossAxisAlignment: CrossAxisAlignment.baseline,
       textBaseline: TextBaseline.alphabetic,
       children: [
-        Semantics(header: true, child: Text(title, style: DuvetType.title)),
+        Flexible(
+          child: Semantics(
+            header: true,
+            child: Text(title, maxLines: 1, overflow: TextOverflow.ellipsis, style: DuvetType.title),
+          ),
+        ),
         if (caption != null) ...[
           const SizedBox(width: 8),
           Flexible(

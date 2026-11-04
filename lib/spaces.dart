@@ -382,9 +382,10 @@ class _TitleButton extends StatelessWidget {
   }
 }
 
-/// Picks a Space's icon; tests swap in their own.
+/// Picks a Space's icon as it is: resized, Android's picker would make a GIF
+/// a still JPEG. The cropper sizes it. Tests swap in their own.
 Future<String?> Function() pickSpaceIcon = () async =>
-    (await ImagePicker().pickImage(source: ImageSource.gallery, maxWidth: 512, imageQuality: 90))?.path;
+    (await ImagePicker().pickImage(source: ImageSource.gallery))?.path;
 
 /// New Space: a live preview of its card, a name (up to 64 characters), what
 /// it's about (up to 256), and Create.
@@ -603,7 +604,7 @@ class _CreateSpacePageState extends State<CreateSpacePage> {
   }
 
   Future<void> _pickIcon() async {
-    final path = await pickSpaceIcon();
+    final path = await chooseSpaceIcon(context);
     if (path != null && mounted) setState(() => _icon = path);
   }
 }
@@ -895,7 +896,10 @@ Future<void> showSpaceMenu(BuildContext anchor, {required Space space}) async {
         hint: inviteRoom == null ? 'Not allowed in this Space' : null,
       ),
       if (anchor.repository.spaceProfile(space.id)?.helpsRun ?? false)
-        const GlassMenuItem(icon: FLucideIcons.settings, label: 'Space settings', value: 'settings'),
+        const GlassMenuItem(icon: FLucideIcons.settings, label: 'Space settings', value: 'settings')
+      // Any member may see them, as on the desktop; only those who manage them change them.
+      else
+        const GlassMenuItem(icon: FLucideIcons.smile, label: 'Emojis and stickers', value: 'assets'),
       const GlassMenuItem(icon: FLucideIcons.checkCheck, label: 'Mark all as read', value: 'read'),
       // Its owner can't leave it: they delete it.
       if (anchor.repository.spaceProfile(space.id)?.owner ?? false)
@@ -921,6 +925,8 @@ Future<void> showSpaceMenu(BuildContext anchor, {required Space space}) async {
       if (await deleteSpace(anchor, space) && anchor.mounted) Navigator.of(anchor).maybePop();
     case 'settings':
       await Navigator.of(anchor).push(MaterialPageRoute<void>(builder: (_) => SpaceSettingsPage(spaceId: space.id)));
+    case 'assets':
+      await Navigator.of(anchor).push(MaterialPageRoute<void>(builder: (_) => AssetsPage(spaceId: space.id)));
     case 'read':
       repository.markSpaceRead(space.id);
     case 'leave':

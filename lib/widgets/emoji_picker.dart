@@ -212,6 +212,8 @@ class _PickerState extends State<_Picker> {
         Expanded(
           child: CustomScrollView(
             controller: widget.scroll,
+            // Scrolling to look puts the search's keyboard away.
+            keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
             slivers: [
               ...slivers,
               const SliverToBoxAdapter(child: SizedBox(height: 24)),
@@ -349,6 +351,7 @@ class _PickerState extends State<_Picker> {
               ? message('No stickers match “${_search.text.trim()}”')
               : GridView.builder(
                   controller: widget.scroll,
+                  keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
                   padding: const EdgeInsets.fromLTRB(12, 4, 12, 24),
                   gridDelegate: const SliverGridDelegateWithMaxCrossAxisExtent(
                     maxCrossAxisExtent: 112,
@@ -628,6 +631,7 @@ class _GifTabState extends State<_GifTab> {
               }
               return SingleChildScrollView(
                 controller: widget.scroll,
+                keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
                 padding: const EdgeInsets.fromLTRB(16, 4, 16, 8),
                 child: Column(
                   children: [
@@ -691,7 +695,9 @@ class _GifTile extends StatelessWidget {
     child: GestureDetector(
       onTap: onTap,
       child: AspectRatio(
-        aspectRatio: (gif.width / gif.height).clamp(0.5, 2.5),
+        // Its own ratio, as the desktop's grid: a clamp would crop it.
+        // A provider's 0 for a side would make it 0 or infinite: AspectRatio throws.
+        aspectRatio: gif.width > 0 && gif.height > 0 ? gif.width / gif.height : 1,
         child: DecoratedBox(
           decoration: BoxDecoration(borderRadius: BorderRadius.circular(DuvetTokens.radiusField), boxShadow: shadow),
           child: ClipRRect(
@@ -714,10 +720,10 @@ class _GifTile extends StatelessWidget {
                     padding: const EdgeInsets.symmetric(horizontal: 6),
                     alignment: Alignment.center,
                     decoration: BoxDecoration(
-                      color: const Color(0x8C111113),
+                      color: DuvetTokens.mediaScrim,
                       borderRadius: BorderRadius.circular(DuvetTokens.radiusChip),
                     ),
-                    child: Text('GIF', style: DuvetType.tabLabel.copyWith(color: const Color(0xFFF2F1EE))),
+                    child: Text('GIF', style: DuvetType.tabLabel.copyWith(color: DuvetTokens.mediaInk)),
                   ),
                 ),
               ],
@@ -744,15 +750,14 @@ class _Chip extends StatelessWidget {
       padding: const EdgeInsets.symmetric(horizontal: 12),
       alignment: Alignment.center,
       decoration: BoxDecoration(
-        color: on ? tokens.accentTint : colors.card,
+        color: on ? tokens.selectedFill : colors.card,
         borderRadius: BorderRadius.circular(DuvetTokens.radiusChip),
-        border: on ? Border.all(color: tokens.accentText) : null,
         boxShadow: on ? null : tokens.shadowRest,
       ),
       child: Text(
         text,
         style: DuvetType.snippet.copyWith(
-          color: on ? tokens.accentText : colors.foreground,
+          color: on ? tokens.violetText : colors.foreground,
           fontWeight: FontWeight.w500,
         ),
       ),

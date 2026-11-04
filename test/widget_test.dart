@@ -24,9 +24,17 @@ void main() {
     await tester.pumpAndSettle();
   }
 
+  // Signed out, Welcome comes first; its Sign in opens the form.
+  Future<void> openSignIn(WidgetTester tester) async {
+    expect(find.text('Talk with your people.'), findsOneWidget);
+    await tester.tap(find.text('Sign in'));
+    await tester.pumpAndSettle();
+    expect(find.text('Sign in to Duvet'), findsOneWidget);
+  }
+
   testWidgets('signing in shows the conversations', (tester) async {
     await pumpApp(tester, signedIn: false);
-    expect(find.text('Sign in to Duvet'), findsOneWidget);
+    await openSignIn(tester);
 
     await tester.enterText(find.byType(EditableText).at(0), 'gaby@duvet.chat');
     await tester.enterText(find.byType(EditableText).at(1), 'wrong');
@@ -47,6 +55,7 @@ void main() {
     tester.platformDispatcher.localesTestValue = const [Locale('es', 'ES')];
     addTearDown(tester.platformDispatcher.clearLocalesTestValue);
     await pumpApp(tester, signedIn: false);
+    await openSignIn(tester);
 
     await tester.enterText(find.byType(EditableText).at(0), 'gaby@duvet.chat');
     await tester.enterText(find.byType(EditableText).at(1), 'secret');
@@ -82,6 +91,26 @@ void main() {
     await tester.pumpAndSettle();
     expect(inTopBar('Offline'), findsNothing);
     expect(inTopBar('Online'), findsNothing);
+  });
+
+  // #84: someone connected only from the mobile app shows a phone rather than the dot.
+  testWidgets('a DM\'s avatar in the chats list shows a phone while its person is connected only on mobile', (
+    tester,
+  ) async {
+    final repository = await pumpApp(tester);
+    Finder phoneOf(String userId) => find.descendant(
+      of: find.byWidgetPredicate((w) => w is PresenceAvatar && w.member.userId == userId),
+      matching: find.byType(PresencePhone),
+    );
+    expect(phoneOf(FakeRepository.maya), findsNothing);
+
+    repository.mobileOnly.value = {FakeRepository.maya};
+    await tester.pump();
+    expect(phoneOf(FakeRepository.maya), findsOneWidget);
+    // Offline, the ring, as anyone's.
+    repository.presence.value = {FakeRepository.maya: Presence.offline};
+    await tester.pump();
+    expect(phoneOf(FakeRepository.maya), findsNothing);
   });
 
   testWidgets('a chat loads its history and takes live messages', (tester) async {
@@ -202,11 +231,12 @@ void main() {
     await tester.pumpAndSettle();
     expect(find.text('@gaby'), findsOneWidget);
 
-    await tester.ensureVisible(find.text('Sign out'));
+    // Below the fold, so not built yet: dragged into view.
+    await tester.scrollUntilVisible(find.text('Sign out'), 200, scrollable: find.byType(Scrollable).last);
     await tester.pumpAndSettle();
     await tester.tap(find.text('Sign out'));
     await tester.pumpAndSettle();
-    expect(find.text('Sign in to Duvet'), findsOneWidget);
+    expect(find.text('Talk with your people.'), findsOneWidget);
   });
 
   test('facehash hashes names as facehash-sv does', () {

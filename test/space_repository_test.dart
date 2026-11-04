@@ -12,6 +12,8 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
 
+import 'support/eventually.dart';
+
 const _me = '00000000-0000-4000-8000-000000000001';
 const _maya = '00000000-0000-4000-8000-000000000002';
 const _leo = '00000000-0000-4000-8000-000000000003';
@@ -170,6 +172,20 @@ void main() {
       repository.handleEvent(_event('SPACE_CREATE', _space(roles: {'role-mod': Perm.pinMessages}, mine: ['role-mod'])));
       expect(repository.rolesOf('s-1', _me).map((r) => r.name), ['role-mod']);
       expect(repository.spaceRoles('s-1').map((r) => r.id), ['role-mod']);
+    });
+
+    // #154: the gradient reached no screen, as a role kept only its first stop.
+    test('a role keeps its whole gradient, for names and mentions to show', () async {
+      await signIn();
+      final space = _space(roles: {'role-mod': 0}, mine: ['role-mod']);
+      ((space['roles_permissions'] as Map)['role-mod'] as Map<String, dynamic>).addAll({
+        'color_from': 0x2F9E62,
+        'color_via': 0xE5484D,
+        'color_to': 0x3E63DD,
+      });
+      repository.handleEvent(_event('SPACE_CREATE', space));
+      expect(repository.rolesOf('s-1', _me).single.colors, (from: 0xFF2F9E62, via: 0xFFE5484D, to: 0xFF3E63DD));
+      expect(nameColorsOf(repository.rolesOf('s-1', _me)), (from: 0xFF2F9E62, via: 0xFFE5484D, to: 0xFF3E63DD));
     });
 
     // The members list names each member's ID, which the API's role routes and
@@ -602,6 +618,28 @@ void main() {
       expect(listed(), ['r-general', 'r-mods', 'r-voice']);
     });
 
+    test('a room that goes and comes back has only the overwrites it comes with', () async {
+      // The gateway takes a room the user can no longer view away with
+      // ROOM_DELETE, and brings it back with ROOM_CREATE and the overwrites it
+      // has then: one deleted meanwhile never comes as an event.
+      await signIn();
+      repository.handleEvent(
+        _event(
+          'SPACE_CREATE',
+          _space(
+            overwrites: {
+              'r-general': [_overwrite('r-general', 's-1', deny: Perm.sendMessages)],
+            },
+          ),
+        ),
+      );
+      expect(repository.canInRoom('s-1', 'r-general', Perm.sendMessages), isFalse);
+      repository.handleEvent(_event('ROOM_DELETE', {'id': 'r-general', 'space_id': 's-1'}));
+      repository.handleEvent(_event('ROOM_CREATE', _room('r-general')));
+      expect(repository.overwrites('s-1', 'r-general'), isEmpty);
+      expect(repository.canInRoom('s-1', 'r-general', Perm.sendMessages), isTrue);
+    });
+
     test('an overwrite that hides a room takes it away, and one that\'s gone brings it back', () async {
       await signIn();
       repository.handleEvent(_event('SPACE_CREATE', guild()));
@@ -664,6 +702,76 @@ void main() {
       expect(sections(), ['c-staff']);
       expect(listed(), ['r-mods']);
       expect(repository.adminRooms('s-1').map((r) => r.id), ['c-staff', 'r-mods']);
+    });
+
+    test('give the user no other permission in them, as the API has it', () async {
+      await signIn();
+      // The helpers run rooms, pin and invite. @everyone can't see #mods, and
+      // #logs lets the helpers in again.
+      repository.handleEvent(
+        _event(
+          'SPACE_CREATE',
+          _space(
+            rooms: {
+              'r-general': _room('r-general'),
+              'r-mods': _room('r-mods', position: 1),
+              'r-logs': _room('r-logs', position: 2),
+            },
+            roles: {'role-helper': Perm.manageChannels | Perm.pinMessages | Perm.createInvites},
+            mine: ['role-helper'],
+            overwrites: {
+              'r-mods': [_overwrite('r-mods', 's-1', deny: Perm.viewChannels)],
+              'r-logs': [
+                _overwrite('r-logs', 's-1', deny: Perm.viewChannels),
+                _overwrite('r-logs', 'role-helper', allow: Perm.viewChannels),
+              ],
+            },
+          ),
+        ),
+      );
+      for (final bit in [Perm.sendMessages, Perm.manageChannels, Perm.pinMessages, Perm.createInvites]) {
+        expect(repository.canInRoom('s-1', 'r-general', bit), isTrue, reason: 'bit $bit in #general');
+        expect(repository.canInRoom('s-1', 'r-mods', bit), isFalse, reason: 'bit $bit in #mods');
+        expect(repository.canInRoom('s-1', 'r-logs', bit), isTrue, reason: 'bit $bit in #logs');
+      }
+    });
+
+    // Denied ViewChannels by @everyone's overwrite and their own.
+    final hidden = {
+      'r-mods': [
+        _overwrite('r-mods', 's-1', deny: Perm.viewChannels),
+        _overwrite('r-mods', _me, type: 1, deny: Perm.viewChannels),
+      ],
+    };
+
+    test('an Administrator keeps every permission in them', () async {
+      await signIn();
+      repository.handleEvent(
+        _event(
+          'SPACE_CREATE',
+          _space(
+            rooms: {'r-mods': _room('r-mods')},
+            roles: {'role-admin': Perm.administrator},
+            mine: ['role-admin'],
+            overwrites: hidden,
+          ),
+        ),
+      );
+      expect(repository.canInRoom('s-1', 'r-mods', Perm.manageChannels), isTrue);
+      expect(repository.canInRoom('s-1', 'r-mods', Perm.viewChannels), isTrue);
+    });
+
+    test('and so does the Space\'s owner', () async {
+      await signIn();
+      repository.handleEvent(
+        _event('SPACE_CREATE', {
+          ..._space(rooms: {'r-mods': _room('r-mods')}, overwrites: hidden),
+          'space': {'id': 's-1', 'name': 'Duvet Official', 'owner_id': _me, 'created_at': _at, 'updated_at': _at},
+          'owner_id': _me,
+        }),
+      );
+      expect(repository.canInRoom('s-1', 'r-mods', Perm.manageChannels), isTrue);
+      expect(repository.canInRoom('s-1', 'r-mods', Perm.viewChannels), isTrue);
     });
   });
 
@@ -1562,6 +1670,41 @@ void main() {
       expect(requests.last.body, isNot(contains('remove_banner')));
       expect(requests.last.body, contains('name="banner"'));
     });
+
+    test('taking the banner away uploads nothing, so says no upload\'s progress; a new one does', () async {
+      await signIn();
+      repository.handleEvent(_event('SPACE_CREATE', _spaceOf('s-1', 'Duvet Official', banner: banner)));
+      // Each change reaches the API whole, which holds its answer.
+      late Completer<void> sent;
+      late Completer<Object?> answer;
+      routes[('PATCH', '/api/spaces/s-1')] = (_) {
+        sent.complete();
+        return answer.future;
+      };
+      final progress = <double>[];
+
+      sent = Completer();
+      answer = Completer();
+      final removing = repository.updateSpace('s-1', removeBanner: true, onProgress: progress.add);
+      await sent.future;
+      expect(requests.last.body, contains('name="remove_banner"'));
+      expect(progress, isEmpty);
+      answer.complete(updated(null));
+      await removing;
+      expect(progress, isEmpty);
+
+      final dir = Directory.systemTemp.createTempSync('duvet_banners');
+      addTearDown(() => dir.deleteSync(recursive: true));
+      final upload = '${dir.path}/banner.png';
+      File(upload).writeAsBytesSync(const [1, 2, 3]);
+      sent = Completer();
+      answer = Completer();
+      final uploading = repository.updateSpace('s-1', bannerPath: upload, onProgress: progress.add);
+      await sent.future;
+      expect(progress.last, 1);
+      answer.complete(updated(other));
+      await uploading;
+    });
   });
 
   group('room descriptions', () {
@@ -1682,7 +1825,7 @@ void main() {
       repository.setCategoryCollapsed('c-empty', true);
       repository.setCategoryCollapsed('c-empty', false);
       // The cache writes a moment after the changes.
-      await Future<void>.delayed(const Duration(milliseconds: 700));
+      await eventually(() => expect(cache.data.keys, contains('collapsed')));
 
       final next = again();
       addTearDown(next.dispose);
@@ -1706,7 +1849,7 @@ void main() {
       first.handleEvent(_event('SPACE_CREATE', guild()));
       first.setCategoryCollapsed('c-talk', true);
       // The home and the folds write a moment after.
-      await Future<void>.delayed(const Duration(milliseconds: 700));
+      await eventually(() => expect(cache.data.keys, containsAll(['home', 'collapsed'])));
 
       // The server out of reach: the session opens from what's saved.
       routes[('GET', '/api/users/@me')] = (_) => throw const SocketException('no network');
@@ -1739,7 +1882,7 @@ void main() {
     test('signing out forgets them', () async {
       await signIn();
       repository.setCategoryCollapsed('c-talk', true);
-      await Future<void>.delayed(const Duration(milliseconds: 700));
+      await eventually(() => expect(cache.data.keys, contains('collapsed')));
       await repository.logOut();
       expect(repository.collapsedCategories.value, isEmpty);
 
@@ -1801,6 +1944,160 @@ void main() {
       expect(back.bannerUrl, isNull);
       expect(back.sections.single.id, isNull);
       expect(back.rooms.single.description, isNull);
+    });
+  });
+  group('presence', () {
+    const bot = '00000000-0000-4000-8000-000000000009';
+    // [_space] or another Space of the user's, with Maya, Leo and a bot.
+    Map<String, dynamic> withMembers(Map<String, dynamic> space, Map<String, int> statuses) {
+      final id = (space['space'] as Map)['id'] as String;
+      return {
+        ...space,
+        'member_roles': <String, dynamic>{
+          ...space['member_roles'] as Map<String, dynamic>,
+          for (final u in [_maya, _leo, bot]) u: [id],
+        },
+        'member_statuses': statuses,
+      };
+    }
+
+    test('a loaded Space\'s member it doesn\'t list as connected is offline', () async {
+      await signIn();
+      repository.handleEvent(_event('SPACE_CREATE', withMembers(_space(), {_maya: 1})));
+      final presence = repository.presence.value;
+      expect(presenceIn(presence, _maya, spaceId: 's-1'), Presence.online);
+      expect(presenceIn(presence, _leo, spaceId: 's-1'), Presence.offline);
+      expect(presence[_leo], Presence.offline);
+    });
+
+    test('a bot\'s status is its own in each Space', () async {
+      await signIn();
+      repository.handleEvent(_event('SPACE_CREATE', withMembers(_space(), {_maya: 1, bot: 1})));
+      repository.handleEvent(_event('SPACE_CREATE', withMembers(_spaceOf('s-2', 'Two'), {_maya: 1, bot: 1})));
+      // Its shard holding s-2 goes, and it joins a Space no shard holds.
+      repository.handleEvent(_event('USER_STATUS_UPDATE', {'user_id': bot, 'status_id': 0, 'space_id': 's-2'}));
+      repository.handleEvent(
+        _event('SPACE_MEMBER_ADD', {
+          'space_id': 's-3',
+          'user_id': bot,
+          'member_id': 'mem-bot',
+          'status_id': 0,
+          'user': _user(bot, 'helper', bot: true),
+        }),
+      );
+      var presence = repository.presence.value;
+      expect(presenceIn(presence, bot, spaceId: 's-1'), Presence.online);
+      expect(presenceIn(presence, bot, spaceId: 's-2'), Presence.offline);
+      expect(presenceIn(presence, bot, spaceId: 's-3'), Presence.offline);
+      expect(presence[bot], Presence.online);
+
+      // Gone with the Space it left.
+      repository.handleEvent(_event('SPACE_MEMBER_REMOVE', {'space_id': 's-2', 'user_id': bot, 'member_id': 'm'}));
+      expect(repository.presence.value.containsKey(spacePresenceKey(bot, 's-2')), isFalse);
+    });
+
+    test('a bot offline in the first Space to come stays so when the next has it online', () async {
+      await signIn();
+      repository.handleEvent(_event('SPACE_CREATE', withMembers(_spaceOf('s-2', 'Two'), {_maya: 1})));
+      repository.handleEvent(_event('SPACE_CREATE', withMembers(_space(), {_maya: 1, bot: 1})));
+      final presence = repository.presence.value;
+      expect(presenceIn(presence, bot, spaceId: 's-2'), Presence.offline);
+      expect(presenceIn(presence, bot, spaceId: 's-1'), Presence.online);
+    });
+
+    test('a person, the same in every Space, has no entry of their own in any', () async {
+      await signIn();
+      repository.handleEvent(_event('SPACE_CREATE', withMembers(_space(), {_maya: 1})));
+      repository.handleEvent(_event('SPACE_CREATE', withMembers(_spaceOf('s-2', 'Two'), {_maya: 1})));
+      expect(repository.presence.value.keys.where((k) => k.contains(':')), isEmpty);
+      expect(presenceIn(repository.presence.value, _leo, spaceId: 's-2'), Presence.offline);
+    });
+
+    test('someone leaving with no entry of their own there leaves presence alone', () async {
+      await signIn();
+      repository.handleEvent(_event('SPACE_CREATE', withMembers(_space(), {_maya: 1})));
+      var told = 0;
+      void tell() => told++;
+      repository.presence.addListener(tell);
+      addTearDown(() => repository.presence.removeListener(tell));
+      repository.handleEvent(_event('SPACE_MEMBER_REMOVE', {'space_id': 's-1', 'user_id': _maya, 'member_id': 'm'}));
+      expect(told, 0);
+    });
+
+    test('a person\'s update reaches them in every Space', () async {
+      await signIn();
+      repository.handleEvent(_event('SPACE_CREATE', withMembers(_space(), {_maya: 1})));
+      repository.handleEvent(_event('USER_STATUS_UPDATE', {'user_id': _maya, 'status_id': 2}));
+      repository.handleEvent(_event('USER_STATUS_UPDATE', {'user_id': _leo, 'status_id': 1}));
+      final presence = repository.presence.value;
+      expect(presenceIn(presence, _maya, spaceId: 's-1'), Presence.doNotDisturb);
+      expect(presenceIn(presence, _leo, spaceId: 's-1'), Presence.online);
+    });
+  });
+
+  group('read states after READY', () {
+    Map<String, dynamic> state(bool unread, {String? lastMsg}) => {
+      'unread': unread,
+      'last_read': null,
+      'last_msg': lastMsg,
+    };
+
+    test('a later SPACE_CREATE\'s and a ROOM_CREATE\'s mark the rooms as READY\'s would', () async {
+      await signIn();
+      repository.handleEvent(
+        _event('SPACE_CREATE', {
+          ..._space(rooms: {'r-general': _room('r-general'), 'r-quiet': _room('r-quiet')}),
+          'read_states': {'r-general': state(true), 'r-quiet': state(false)},
+        }),
+      );
+      expect(repository.unread.value, {'r-general'});
+      repository.handleEvent(_event('ROOM_CREATE', {..._room('r-new'), 'read_state': state(true)}));
+      expect(repository.unread.value, {'r-general', 'r-new'});
+    });
+
+    test('one clears a room read since; a newer message heard keeps a room unread', () async {
+      const older = '018f0000-0000-7000-8000-000000000001';
+      const newer = '018f0000-0000-7000-8000-000000000002';
+      final space = _space(rooms: {'r-general': _room('r-general'), 'r-quiet': _room('r-quiet')});
+      await signIn();
+      repository.handleEvent(
+        _event('READY', {
+          'user': _user(_me, 'gaby'),
+          'sessionToken': 'ws',
+          'unread_rooms': ['r-general', 'r-quiet'],
+        }),
+      );
+      repository.handleEvent(_event('SPACE_CREATE', space));
+      repository.handleEvent(
+        _event('MESSAGE_CREATE', {
+          'id': newer,
+          'room_id': 'r-general',
+          'author_id': _maya,
+          'content': 'still there?',
+          'type': 0,
+          'created_at': _at,
+          'updated_at': _at,
+          'user': _user(_maya, 'maya'),
+        }),
+      );
+      await pumpEventQueue();
+      expect(repository.latest.value['r-general']?.id, newer);
+      // A retry's, read as of before that message: r-quiet was read since.
+      repository.handleEvent(
+        _event('SPACE_CREATE', {
+          ...space,
+          'read_states': {'r-general': state(false, lastMsg: older), 'r-quiet': state(false)},
+        }),
+      );
+      expect(repository.unread.value, {'r-general'});
+    });
+
+    test('one without them changes nothing', () async {
+      await signIn();
+      repository.handleEvent(_event('SPACE_CREATE', _space()));
+      repository.handleEvent(_event('ROOM_CREATE', {..._room('r-general'), 'read_state': state(true)}));
+      repository.handleEvent(_event('SPACE_CREATE', _space()));
+      expect(repository.unread.value, {'r-general'});
     });
   });
 }

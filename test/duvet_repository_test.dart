@@ -14,6 +14,8 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
 
+import 'support/eventually.dart';
+
 const _me = '00000000-0000-4000-8000-000000000001';
 const _maya = '00000000-0000-4000-8000-000000000002';
 const _leo = '00000000-0000-4000-8000-000000000003';
@@ -107,9 +109,23 @@ void main() {
 
   /// Members of `s-1` besides Maya.
   late List<Map<String, dynamic>> moreSpaceMembers;
+  // Maya's status_id in c-1, as the API gives a conversation's members theirs.
+  int? mayaInConversation;
+  // And her client status there, which the API gives with it.
+  Map<String, int>? mayaPlatformsInConversation;
+  // The friends' client statuses, by user ID, as the friends list gives them.
+  late Map<String, Map<String, int>> friendPlatforms;
+  // An API since api#63 gives the friends list their banners.
+  late bool friendBanners;
 
   /// While set, holds that answer, as it was when asked.
   Completer<void>? holdAsking;
+
+  /// The team invites to the user, as `GET …/team-invites` answers.
+  late List<Map<String, dynamic>> teamInviting;
+
+  /// While set, holds that answer, as it was when asked.
+  Completer<void>? holdInvites;
 
   /// What a new avatar or banner gets, when not the user.
   http.Response? pictureRefusal;
@@ -141,7 +157,12 @@ void main() {
     sessionDead = false;
     expiredToken = null;
     asking = [];
+    teamInviting = [];
     moreSpaceMembers = [];
+    mayaInConversation = null;
+    mayaPlatformsInConversation = null;
+    friendPlatforms = {};
+    friendBanners = false;
     holdAsking = null;
     pictureRefusal = null;
     meUnreachable = false;
@@ -168,6 +189,11 @@ void main() {
       if (request.url.path == '/api/users/@me/friends/requests') {
         final answer = jsonEncode(asking);
         if (holdAsking case final hold?) await hold.future;
+        return http.Response(answer, 200, headers: {'content-type': 'application/json'});
+      }
+      if (request.url.path == '/api/users/@me/team-invites') {
+        final answer = jsonEncode(teamInviting);
+        if (holdInvites case final hold?) await hold.future;
         return http.Response(answer, 200, headers: {'content-type': 'application/json'});
       }
       final json = switch ((request.method, request.url.path)) {
@@ -212,6 +238,8 @@ void main() {
                   'user_id': id,
                   'created_at': _at,
                   'updated_at': _at,
+                  if (id == _maya) 'status_id': ?mayaInConversation,
+                  if (id == _maya) 'client_status': ?mayaPlatformsInConversation,
                   'user': {
                     'id': id,
                     'username': name,
@@ -242,9 +270,13 @@ void main() {
               'recipient_id': id,
               'user_username': name,
               'status_id': status,
+              'client_status': ?friendPlatforms[id],
+              if (friendBanners && name == 'leo') 'user_banner': _banner,
             },
         ],
         ('GET', '/api/users/@me/friends/requests/sent') => <Object>[],
+        ('POST', '/api/users/@me/team-invites/ti-1/accept') => http.Response('', 204),
+        ('POST', '/api/users/@me/teams/t-1/applications/a-1/bot') => {'token': 'bot-token'},
         ('GET', '/api/rooms/r-general/messages') => [roomNewest],
         ('GET', '/api/spaces/s-1/members') => [
           {
@@ -412,6 +444,72 @@ void main() {
     expect(repository.presence.value, {_leo: Presence.online, _maya: Presence.doNotDisturb});
   });
 
+  test('a DM\'s or a group\'s members have their presence, where the gateway hasn\'t told it (#86)', () async {
+    mayaInConversation = 1;
+    await repository.logIn('gaby@duvet.chat', 'secret');
+    await pumpEventQueue();
+    expect(repository.presence.value[_maya], Presence.online);
+    // One added later: as CONVERSATION_MEMBER_ADD has it.
+    repository.handleEvent(
+      _event('CONVERSATION_MEMBER_ADD', {
+        'conversation_id': 'c-1',
+        'user_id': _leo,
+        'member_id': 'm-leo',
+        'status_id': 2,
+      }),
+    );
+    expect(repository.presence.value[_leo], Presence.doNotDisturb);
+  });
+
+  // Who's connected only from the mobile app comes with their presence, from the same places (#84).
+  test('the friends list says who\'s only on mobile, where the gateway hasn\'t told it', () async {
+    friendPlatforms = {
+      _maya: {'mobile': 2},
+    };
+    await repository.logIn('gaby@duvet.chat', 'secret');
+    await repository.loadFriends();
+    expect(repository.mobileOnly.value, {_maya});
+
+    // What the gateway says is newer: a list loaded after doesn't undo it.
+    repository.handleEvent(
+      _event('USER_STATUS_UPDATE', {
+        'user_id': _maya,
+        'status_id': 2,
+        'client_status': {'desktop': 2, 'mobile': 2},
+      }),
+    );
+    expect(repository.mobileOnly.value, isEmpty);
+    await repository.loadFriends();
+    expect(repository.mobileOnly.value, isEmpty);
+  });
+
+  test('a DM\'s or a group\'s members say who\'s only on mobile, where the gateway hasn\'t told it', () async {
+    mayaInConversation = 1;
+    mayaPlatformsInConversation = {'mobile': 1};
+    await repository.logIn('gaby@duvet.chat', 'secret');
+    await pumpEventQueue();
+    expect(repository.mobileOnly.value, {_maya});
+
+    repository.handleEvent(
+      _event('USER_STATUS_UPDATE', {
+        'user_id': _maya,
+        'status_id': 1,
+        'client_status': {'desktop': 1},
+      }),
+    );
+    expect(repository.mobileOnly.value, isEmpty);
+    await repository.refreshConversations();
+    expect(repository.mobileOnly.value, isEmpty);
+  });
+
+  test('friends come with their banner from the friends list (#127)', () async {
+    friendBanners = true;
+    await repository.logIn('gaby@duvet.chat', 'secret');
+    await repository.loadFriends();
+    final leo = repository.friends.value.friends.firstWhere((m) => m.userId == _leo);
+    expect(leo.bannerUrl, endsWith(_banner));
+  });
+
   test('READY loads the friend requests, and FRIEND_* events keep them current', () async {
     List<String> askingIds() => [for (final r in repository.friends.value.incoming) r.id];
     asking = [_asks('q-1', _maya, 'maya')];
@@ -444,6 +542,61 @@ void main() {
     expect(askingIds(), ['q-2']);
   });
 
+  test('READY loads the team invites, TEAM_INVITE_CREATE again, and an accepted one goes', () async {
+    Map<String, dynamic> invite(String id, String team) => {
+      'id': id,
+      'team_id': 't-$id',
+      'user_id': _me,
+      'invited_by': _maya,
+      'created_at': _at,
+      'team_name': team,
+      'invited_by_username': 'maya',
+    };
+    List<String> ids() => [for (final i in repository.teamInvites.value) i.id];
+    teamInviting = [invite('ti-1', 'Acme')];
+    await repository.logIn('gaby@duvet.chat', 'secret');
+    repository.handleEvent(_event('READY', {'user': _user(_me, 'gaby'), 'sessionToken': 'ws'}));
+    await pumpEventQueue();
+    expect(ids(), ['ti-1']);
+    expect(repository.teamInvites.value.single.teamName, 'Acme');
+    expect(repository.teamInvites.value.single.invitedBy, 'maya');
+
+    // The same invite twice stays one row: the list is fetched, not added to.
+    teamInviting = [invite('ti-1', 'Acme'), invite('ti-2', 'Globex')];
+    repository.handleEvent(_event('TEAM_INVITE_CREATE', invite('ti-2', 'Globex')));
+    repository.handleEvent(_event('TEAM_INVITE_CREATE', invite('ti-2', 'Globex')));
+    await pumpEventQueue();
+    expect(ids(), ['ti-1', 'ti-2']);
+
+    // A load under way when the user accepts: its answer, from before, still
+    // lists the invite, and doesn't bring it back.
+    final hold = holdInvites = Completer<void>();
+    repository.handleEvent(_event('TEAM_INVITE_CREATE', invite('ti-2', 'Globex')));
+    await pumpEventQueue();
+    holdInvites = null;
+    await repository.acceptTeamInvite('ti-1');
+    expect(ids(), ['ti-2']);
+    hold.complete();
+    await pumpEventQueue();
+    expect(ids(), ['ti-2']);
+
+    // An older load that answers after a newer one is dropped.
+    final older = holdInvites = Completer<void>();
+    repository.handleEvent(_event('TEAM_INVITE_CREATE', invite('ti-2', 'Globex')));
+    await pumpEventQueue();
+    holdInvites = null;
+    teamInviting = [invite('ti-2', 'Globex'), invite('ti-3', 'Initech')];
+    repository.handleEvent(_event('TEAM_INVITE_CREATE', invite('ti-3', 'Initech')));
+    await pumpEventQueue();
+    expect(ids(), ['ti-2', 'ti-3']);
+    older.complete();
+    await pumpEventQueue();
+    expect(ids(), ['ti-2', 'ti-3']);
+
+    // A bot's token is the API's `token`.
+    expect(await repository.createBot(const DevApp(id: 'a-1', teamId: 't-1', name: 'Helper')), 'bot-token');
+  });
+
   test('a saved session resumes; a rejected one is forgotten', () async {
     await store.write((token: 'access-1', sessionToken: 'refresh-1', refreshedAt: DateTime.now()));
     expect(await repository.restore(), isTrue);
@@ -464,8 +617,7 @@ void main() {
     await repository.logIn('gaby@duvet.chat', 'secret');
     await repository.messages(const ConversationTarget('c-1'));
     // The cache writes a moment after the changes.
-    await Future<void>.delayed(const Duration(milliseconds: 700));
-    expect(cache.data.keys, containsAll(['home', 'chat_c-1']));
+    await eventually(() => expect(cache.data.keys, containsAll(['home', 'chat_c-1'])));
 
     final offline = DuvetRepository(
       store: store,
@@ -798,7 +950,7 @@ void main() {
     test('opened offline after a renewal at launch, it goes on with the renewed tokens', () async {
       // A session that loaded once, which the cache opens offline.
       await repository.logIn('gaby@duvet.chat', 'secret');
-      await Future<void>.delayed(const Duration(milliseconds: 700));
+      await eventually(() => expect(cache.data.keys, contains('home')));
       await store.write((token: 'access-1', sessionToken: 'refresh-1', refreshedAt: null));
       meUnreachable = true;
       final offline = newRepository();
@@ -815,7 +967,7 @@ void main() {
 
     test('opened offline, back in front it tries the server again at once', () async {
       await repository.logIn('gaby@duvet.chat', 'secret');
-      await Future<void>.delayed(const Duration(milliseconds: 700));
+      await eventually(() => expect(cache.data.keys, contains('home')));
       var reachable = false;
       final asked = <String>[];
       final offline = DuvetRepository(
@@ -1329,17 +1481,137 @@ void main() {
 
       // Back after a drop too long to resume, during which Leo went offline.
       repository.handleConnectionState(duvet.GatewayConnectionState.reconnecting);
+      // Everyone's own, not their entries in single Spaces.
+      Map<String, Presence> people() => {
+        for (final e in repository.presence.value.entries)
+          if (!e.key.contains(':')) e.key: e.value,
+      };
       repository.handleEvent(_event('READY', {'user': _user(_me, 'gaby'), 'sessionToken': 'ws2'}));
-      expect(repository.presence.value, {_me: Presence.online});
+      expect(people(), {_me: Presence.online});
       expect(repository.spaces.value.single.onlineCount, 1);
+      // Leo isn't connected: a member it doesn't name is offline (#87).
       repository.handleEvent(_event('SPACE_CREATE', space(statuses: {_maya: 1, _me: 1}, members: members)));
-      expect(repository.presence.value, {_me: Presence.online, _maya: Presence.online});
+      expect(people(), {_me: Presence.online, _maya: Presence.online, _leo: Presence.offline});
       expect(repository.spaces.value.single.onlineCount, 2);
 
-      // The friends list fills in whom the gateway didn't name; what it says
-      // is newer.
+      // The friends list changes none of it: what the gateway says is newer.
       await pumpEventQueue();
-      expect(repository.presence.value, {_me: Presence.online, _maya: Presence.online, _leo: Presence.offline});
+      expect(people(), {_me: Presence.online, _maya: Presence.online, _leo: Presence.offline});
+    });
+
+    // A user's client status: on which platforms they're connected (#84).
+    void statusOf(String userId, int status, [Map<String, int>? platforms]) => repository.handleEvent(
+      _event('USER_STATUS_UPDATE', {'user_id': userId, 'status_id': status, 'client_status': ?platforms}),
+    );
+
+    test('USER_STATUS_UPDATE says who\'s connected only from the mobile app, as it changes', () async {
+      await repository.logIn('gaby@duvet.chat', 'secret');
+      statusOf(_maya, 1, {'mobile': 1});
+      expect(repository.mobileOnly.value, {_maya});
+      // On a computer too, then only there.
+      statusOf(_maya, 1, {'desktop': 1, 'mobile': 1});
+      expect(repository.mobileOnly.value, isEmpty);
+      statusOf(_maya, 1, {'web': 1});
+      expect(repository.mobileOnly.value, isEmpty);
+      // Back on the phone alone, in do not disturb.
+      statusOf(_maya, 2, {'mobile': 2});
+      expect(repository.mobileOnly.value, {_maya});
+      // A status in a single Space (a bot's) isn't theirs everywhere: it
+      // leaves this alone.
+      repository.handleEvent(_event('USER_STATUS_UPDATE', {'user_id': _maya, 'status_id': 0, 'space_id': 's-1'}));
+      expect(repository.mobileOnly.value, {_maya});
+      // Offline: no client status, and nothing to show.
+      statusOf(_maya, 0);
+      expect(repository.mobileOnly.value, isEmpty);
+      // A server from before client statuses gives none.
+      statusOf(_leo, 1);
+      expect(repository.mobileOnly.value, isEmpty);
+    });
+
+    test('SPACE_CREATE says who\'s only on mobile among those it has connected', () async {
+      await repository.logIn('gaby@duvet.chat', 'secret');
+      repository.handleEvent(
+        _event('SPACE_CREATE', {
+          ...space(statuses: {_maya: 1, _leo: 2, _me: 1}, members: [_me, _maya, _leo]),
+          'member_client_status': {
+            _maya: {'mobile': 1},
+            _leo: {'desktop': 2, 'mobile': 2},
+            _me: {'mobile': 1},
+          },
+        }),
+      );
+      expect(repository.mobileOnly.value, {_maya, _me});
+
+      // Another Space's, later: Maya is on a computer too now, and Leo on his
+      // phone alone.
+      repository.handleEvent(
+        _event('SPACE_CREATE', {
+          ...space(statuses: {_maya: 1, _leo: 2}, members: [_me, _maya, _leo]),
+          'space': {'id': 's-2', 'name': 'Two', 'owner_id': _me, 'created_at': _at, 'updated_at': _at},
+          'member_client_status': {
+            _maya: {'desktop': 1, 'mobile': 1},
+            _leo: {'mobile': 2},
+          },
+        }),
+      );
+      // The user, whom this one doesn't have connected, keeps theirs, as their
+      // status everywhere stays.
+      expect(repository.mobileOnly.value, {_leo, _me});
+
+      // A gateway from before client statuses gives none.
+      repository.handleEvent(_event('SPACE_CREATE', space(statuses: {_maya: 1, _leo: 2, _me: 1})));
+      expect(repository.mobileOnly.value, isEmpty);
+    });
+
+    test('someone who joins a Space or a conversation comes with whether they\'re only on mobile', () async {
+      await repository.logIn('gaby@duvet.chat', 'secret');
+      repository.handleEvent(
+        _event('SPACE_MEMBER_ADD', {
+          'member_id': 'm-leo',
+          'space_id': 's-1',
+          'user_id': _leo,
+          'status_id': 1,
+          'client_status': {'mobile': 1},
+        }),
+      );
+      expect(repository.mobileOnly.value, {_leo});
+      repository.handleEvent(
+        _event('CONVERSATION_MEMBER_ADD', {
+          'conversation_id': 'c-1',
+          'user_id': _maya,
+          'member_id': 'm-maya',
+          'status_id': 2,
+          'client_status': {'mobile': 2},
+        }),
+      );
+      expect(repository.mobileOnly.value, {_leo, _maya});
+      // Leo, offline as he's added to the group: none.
+      repository.handleEvent(
+        _event('CONVERSATION_MEMBER_ADD', {
+          'conversation_id': 'c-1',
+          'user_id': _leo,
+          'member_id': 'm-leo',
+          'status_id': 0,
+        }),
+      );
+      expect(repository.mobileOnly.value, {_maya});
+    });
+
+    test('a new session\'s READY forgets who else was only on mobile; signing out forgets it all', () async {
+      await repository.logIn('gaby@duvet.chat', 'secret');
+      repository.handleEvent(_event('READY', {'user': _user(_me, 'gaby'), 'sessionToken': 'ws'}));
+      statusOf(_maya, 1, {'mobile': 1});
+      statusOf(_me, 1, {'mobile': 1});
+      expect(repository.mobileOnly.value, {_maya, _me});
+
+      // Back after a drop too long to resume: the others' come again, as their
+      // presence does; the user's stays, as their own presence does.
+      repository.handleConnectionState(duvet.GatewayConnectionState.reconnecting);
+      repository.handleEvent(_event('READY', {'user': _user(_me, 'gaby'), 'sessionToken': 'ws2'}));
+      expect(repository.mobileOnly.value, {_me});
+
+      await repository.logOut();
+      expect(repository.mobileOnly.value, isEmpty);
     });
 
     test('mentions: counted from READY and MENTION_CREATE, cleared on reading', () async {
@@ -1684,12 +1956,13 @@ void main() {
       addTearDown(() => dir.deleteSync(recursive: true));
       final path = '${dir.path}/me.png';
       File(path).writeAsBytesSync([1, 2, 3]);
-      const crop = (x: 0.0, y: 0.0, w: 1.0, h: 1.0);
-      await repository.uploadProfileImage(ProfileImage.avatar, path, crop);
+      final progress = <double>[];
+      await repository.uploadProfileImage(ProfileImage.avatar, path, onProgress: progress.add);
       expect(repository.profile.value!.avatarUrl, 'https://api.duvet.chat/attachments/$_avatar');
+      expect(progress.last, 1);
       pictureRefusal = http.Response(jsonEncode({'error': 'file is too large'}), 413);
       await expectLater(
-        repository.uploadProfileImage(ProfileImage.banner, path, crop),
+        repository.uploadProfileImage(ProfileImage.banner, path),
         throwsA(isA<ActionFailed>().having((e) => e.message, 'message', 'File is too large')),
       );
     });

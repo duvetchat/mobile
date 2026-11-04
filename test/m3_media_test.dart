@@ -5,18 +5,23 @@ import 'package:duvet/data/emoji_catalog.dart';
 import 'package:duvet/data/gifs.dart';
 import 'package:duvet/data/links.dart';
 import 'package:duvet/data/models.dart';
+import 'package:duvet/data/appearance.dart';
 import 'package:duvet/main.dart';
 import 'package:duvet/theme.dart';
+import 'package:duvet/widgets/apng.dart';
 import 'package:duvet/widgets/media.dart';
 import 'package:duvet/widgets/media_actions.dart';
 import 'package:duvet/widgets/message_content.dart';
+import 'package:duvet/widgets/playback_bar.dart';
 import 'package:duvet/widgets/rows.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:forui/forui.dart';
+import 'package:image/image.dart' as img;
 import 'package:image_picker/image_picker.dart';
 
 import 'support/fake_repository.dart';
@@ -28,21 +33,48 @@ const _linked = '5a5a5a5a-0000-4000-8000-000000000003';
 
 class _Playback implements AudioPlayback {
   final played = <(String, String)>[];
+  final calls = <String>[];
   final _state = ValueNotifier(PlaybackState.idle);
   @override
   ValueListenable<PlaybackState> get state => _state;
 
   @override
-  Future<void> play(String id, String url) async {
+  Future<void> play(String id, String url, {required String title, String? artist, String? artUrl}) async {
     played.add((id, url));
-    _state.value = PlaybackState(id: id, playing: true, duration: const Duration(seconds: 14));
+    _state.value = PlaybackState(
+      id: id,
+      title: title,
+      artist: artist,
+      playing: true,
+      duration: const Duration(seconds: 14),
+    );
+  }
+
+  void _playing(bool playing) {
+    final s = _state.value;
+    _state.value = PlaybackState(id: s.id, title: s.title, artist: s.artist, playing: playing, duration: s.duration);
   }
 
   @override
-  Future<void> pause() async => _state.value = PlaybackState(id: _state.value.id, duration: _state.value.duration);
+  Future<void> pause() async {
+    calls.add('pause');
+    _playing(false);
+  }
 
   @override
   Future<void> seek(String id, Duration position) async {}
+
+  @override
+  Future<void> resume() async {
+    calls.add('resume');
+    _playing(true);
+  }
+
+  @override
+  Future<void> stop() async {
+    calls.add('stop');
+    _state.value = PlaybackState.idle;
+  }
 }
 
 class _Recorder implements VoiceRecorder {
@@ -98,8 +130,10 @@ class _Gifs implements GifSource {
   @override
   String get attribution => 'GIFs from KLIPY';
 
+  List<Gif> trend = const [party];
+
   @override
-  Future<List<Gif>> trending() async => const [party];
+  Future<List<Gif>> trending() async => trend;
 
   @override
   Future<List<Gif>> search(String query) async {
@@ -132,14 +166,26 @@ void main() {
     ChatView.debugPickFiles = null;
   });
 
-  Future<FakeRepository> openMaya(WidgetTester tester, {void Function(FakeRepository r)? setUp}) async {
+  Future<FakeRepository> pumpApp(WidgetTester tester, {ReplyGesture reply = ReplyGesture.swipeLeft}) async {
     semantics = tester.ensureSemantics();
     tester.view.physicalSize = const Size(390 * 3, 844 * 3);
     tester.view.devicePixelRatio = 3;
     addTearDown(tester.view.reset);
     final repository = FakeRepository();
-    await tester.pumpWidget(DuvetApp(repository: repository));
+    final appearance = Appearance(MemoryAppearanceStore()..replyGesture = reply.name);
+    await appearance.load();
+    addTearDown(appearance.dispose);
+    await tester.pumpWidget(DuvetApp(repository: repository, appearance: appearance));
     await tester.pumpAndSettle();
+    return repository;
+  }
+
+  Future<FakeRepository> openMaya(
+    WidgetTester tester, {
+    void Function(FakeRepository r)? setUp,
+    ReplyGesture reply = ReplyGesture.swipeLeft,
+  }) async {
+    final repository = await pumpApp(tester, reply: reply);
     setUp?.call(repository);
     await tester.tap(find.text('Maya'));
     await tester.pumpAndSettle();
@@ -160,6 +206,131 @@ void main() {
     attachments: files,
     isVoice: voice,
   );
+
+  test('an APNG decodes to its frames, each at most the box wide, with its delay; a still PNG to none', () {
+    final animated = img.Image(width: 8, height: 4)
+      ..frameDuration = 40
+      ..addFrame(img.Image(width: 8, height: 4)..frameDuration = 0)
+      ..loopCount = 0;
+    final frames = ApngImage.decode(img.PngEncoder().encode(animated), 4)!;
+    expect(frames.length, 2);
+    expect((frames[0].width, frames[0].height), (4, 2));
+    expect(frames[0].rgba.length, 4 * 2 * 4);
+    expect((frames[0].ms, frames[1].ms), (40, 100));
+    expect(ApngImage.decode(img.encodePng(img.Image(width: 2, height: 2)), 4), isNull);
+    expect(const MessageAttachment(id: 'a', filename: 'a.apng', contentType: 'image/apng', url: 'x').isGif, isTrue);
+  });
+
+  testWidgets('an APNG attachment plays: fetched, decoded off the UI thread, its frames turned by a ticker', (
+    tester,
+  ) async {
+    final red = img.Image(width: 4, height: 4)..frameDuration = 50;
+    img.fill(red, color: img.ColorRgb8(255, 0, 0));
+    final blue = img.Image(width: 4, height: 4)..frameDuration = 50;
+    img.fill(blue, color: img.ColorRgb8(0, 0, 255));
+    final bytes = img.PngEncoder().encode(red..addFrame(blue));
+    final fetched = <String>[];
+    ApngImage.fetch = (url, local) async {
+      fetched.add('$url:$local');
+      return bytes;
+    };
+    const a = MessageAttachment(
+      id: 'a',
+      filename: 'wave.apng',
+      contentType: 'image/apng',
+      url: 'https://cdn.invalid/wave.apng',
+      width: 4,
+      height: 4,
+    );
+    // A decoded frame on screen (the still's own RawImage holds no image yet).
+    final frame = find.byWidgetPredicate((w) => w is RawImage && w.image != null);
+    // The fetch and the isolate's decode run in real time, not the test clock.
+    await tester.runAsync(() async {
+      await tester.pumpWidget(
+        MaterialApp(
+          theme: Duvet.material(Brightness.light),
+          home: FTheme(
+            data: Duvet.theme(Brightness.light),
+            child: const Scaffold(body: MessageAttachments(attachments: [a], maxWidth: 200)),
+          ),
+        ),
+      );
+      expect(find.text('GIF'), findsOneWidget);
+      expect(find.byType(ApngImage), findsOneWidget);
+      expect(frame, findsNothing);
+      await Future<void>.delayed(const Duration(seconds: 2));
+    });
+    await tester.pump();
+    expect(fetched, ['https://cdn.invalid/wave.apng:false']);
+    final first = tester.widget<RawImage>(frame).image;
+    await tester.pump(const Duration(milliseconds: 60));
+    expect(tester.widget<RawImage>(frame).image, isNot(same(first)));
+    await tester.pump(const Duration(milliseconds: 60));
+    expect(tester.widget<RawImage>(frame).image, same(first));
+  });
+
+  testWidgets('a WebP is a picture, not a file tile, at its own ratio', (tester) async {
+    const a = MessageAttachment(
+      id: 'w',
+      filename: 'tall.webp',
+      contentType: 'image/webp',
+      url: 'https://cdn.invalid/tall.webp',
+      width: 100,
+      height: 400,
+    );
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: Duvet.material(Brightness.light),
+        home: FTheme(
+          data: Duvet.theme(Brightness.light),
+          child: const Scaffold(body: MessageAttachments(attachments: [a], maxWidth: 200)),
+        ),
+      ),
+    );
+    expect(find.bySemanticsLabel(RegExp('^Photo, tall.webp')), findsOneWidget);
+    // 4:1 tall: 320 high, 80 wide, so nothing of it is cropped.
+    expect(tester.getSize(find.byType(Image)), const Size(80, 320));
+  });
+
+  testWidgets('at most 3 videos load their first frame at once; a tile gone frees its slot', (tester) async {
+    var made = 0;
+    final build = VideoPage.controllerFor;
+    VideoPage.controllerFor = (url) {
+      made++;
+      return build(url);
+    };
+    addTearDown(() => VideoPage.controllerFor = build);
+    Widget tiles(int count) => MaterialApp(
+      theme: Duvet.material(Brightness.light),
+      home: FTheme(
+        data: Duvet.theme(Brightness.light),
+        child: Scaffold(
+          body: SingleChildScrollView(
+            child: Column(
+              children: [
+                for (var i = 0; i < count; i++)
+                  VideoTile(
+                    attachment: MessageAttachment(
+                      id: 'v$i',
+                      filename: 'v$i.mp4',
+                      contentType: 'video/mp4',
+                      url: 'https://x/v$i.mp4',
+                    ),
+                  ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+    await tester.pumpWidget(tiles(5));
+    expect(find.byType(VideoTile), findsNWidgets(5));
+    expect(find.byType(PlayMark), findsNWidgets(5));
+    expect(made, 3);
+    await tester.pumpWidget(tiles(0));
+    await tester.pumpWidget(tiles(5));
+    expect(made, 6);
+  });
 
   group('links', () {
     test('message links, invites and deep links, as desktop reads them', () {
@@ -243,6 +414,44 @@ void main() {
     expect(playback.played.single, ('att-v', 'https://x/v.webm'));
     expect(find.bySemanticsLabel('Pause'), findsOneWidget);
     semantics.dispose();
+  });
+
+  testWidgets('the playback bar over the tabs: what plays, pause, play, and stop and close', (tester) async {
+    await pumpApp(tester);
+    final bar = find.byType(MediaPlaybackBar);
+    expect(bar, findsNothing);
+    await playback.play('n', 'https://x/n.ogg', title: 'Voice message', artist: 'Maya');
+    await tester.pumpAndSettle();
+    expect(find.descendant(of: bar, matching: find.text('Voice message')), findsOneWidget);
+    expect(find.descendant(of: bar, matching: find.text('Maya · 0:00 / 0:14')), findsOneWidget);
+    // Centred in the bar, clear of the progress line along its top.
+    expect(tester.getTopLeft(find.text('Voice message')).dy - tester.getTopLeft(bar).dy, greaterThan(6));
+
+    await tapLabel(tester, 'Pause');
+    expect(find.bySemanticsLabel('Play'), findsOneWidget);
+    await tapLabel(tester, 'Play');
+    expect(find.bySemanticsLabel('Pause'), findsOneWidget);
+    await tapLabel(tester, 'Stop and close');
+    expect(playback.calls, ['pause', 'resume', 'stop']);
+    expect(bar, findsNothing);
+    semantics.dispose();
+  });
+
+  test('a voice note that won\'t load leaves the playback bar', () async {
+    // just_audio's channels, as a phone that can't load the note answers them.
+    const codec = StandardMethodCodec();
+    final messenger = TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
+    messenger.allMessagesHandler = (channel, handler, message) async {
+      if (!channel.startsWith('com.ryanheise.just_audio.')) return handler?.call(message);
+      if (codec.decodeMethodCall(message).method == 'load') {
+        return codec.encodeErrorEnvelope(code: '0', message: 'Source error');
+      }
+      return codec.encodeSuccessEnvelope(<String, Object?>{});
+    };
+    addTearDown(() => messenger.allMessagesHandler = null);
+    final player = JustAudioPlayback();
+    await player.play('n', 'https://x/n.ogg', title: 'Voice message', artist: 'Maya');
+    expect(player.state.value.id, isNull);
   });
 
   testWidgets('voice notes record from the + menu, locked, and send', (tester) async {
@@ -346,6 +555,22 @@ void main() {
     semantics.dispose();
   });
 
+  testWidgets('GIFs: one the provider sizes 0 wide shows square, not a crash', (tester) async {
+    final gifs = _Gifs()
+      ..trend = const [Gif(id: 'g2', url: 'https://static.klipy.com/flat.gif', preview: 'p', width: 0, height: 150)];
+    GifSource.instance = gifs;
+    final repository = await openMaya(tester);
+    await tapLabel(tester, 'Emoji and stickers');
+    await tester.tap(find.text('GIFs'));
+    await tester.pumpAndSettle();
+    expect(tester.takeException(), isNull);
+    final tile = tester.getSize(find.bySemanticsLabel('GIF'));
+    expect(tile.width, tile.height);
+    await tapLabel(tester, 'GIF');
+    expect(repository.sent.last.content, 'https://static.klipy.com/flat.gif');
+    semantics.dispose();
+  });
+
   testWidgets('GIFs: typing searches once it pauses, and a topic drops the search that waited', (tester) async {
     final gifs = _Gifs();
     GifSource.instance = gifs;
@@ -371,7 +596,7 @@ void main() {
   });
 
   testWidgets('a picture alone: a long press opens its actions, a double tap replies, a tap opens it', (tester) async {
-    final repository = await openMaya(tester);
+    final repository = await openMaya(tester, reply: ReplyGesture.doubleTap);
     repository.push(
       'c-maya',
       MessageCreated(
@@ -382,11 +607,11 @@ void main() {
     );
     await tester.pumpAndSettle();
     final photo = find.bySemanticsLabel('Photo, room.jpg');
-    const viewer = 'Swipe down to close · pinch to zoom';
+    final viewer = find.byType(ImageViewer);
 
     await tester.longPress(photo);
     await tester.pumpAndSettle();
-    expect(find.text(viewer), findsNothing, reason: 'a long press is the message\'s');
+    expect(viewer, findsNothing, reason: 'a long press is the message\'s');
     await tapLabel(tester, 'Reply');
     expect(find.textContaining('Replying to Maya'), findsOneWidget);
     await tapLabel(tester, 'Cancel reply');
@@ -397,12 +622,12 @@ void main() {
     await tester.tap(photo);
     await tester.pumpAndSettle();
     expect(find.textContaining('Replying to Maya'), findsOneWidget);
-    expect(find.text(viewer), findsNothing);
+    expect(viewer, findsNothing);
 
     await tester.tap(photo);
     await tester.pump(kDoubleTapTimeout);
     await tester.pumpAndSettle();
-    expect(find.text(viewer), findsOneWidget);
+    expect(viewer, findsOneWidget);
     semantics.dispose();
   });
 
@@ -420,15 +645,237 @@ void main() {
     await tester.tap(find.bySemanticsLabel('Photo, room.jpg'));
     await tester.pump(kDoubleTapTimeout);
     await tester.pumpAndSettle();
-    expect(find.text('Swipe down to close · pinch to zoom'), findsOneWidget);
+    expect(find.byType(ImageViewer), findsOneWidget);
     await tapLabel(tester, 'Save');
     await tapLabel(tester, 'Share');
     expect(actions.calls, ['save room.jpg', 'share room.jpg']);
 
     await tester.drag(find.byType(PageView), const Offset(0, 300));
     await tester.pumpAndSettle();
-    expect(find.text('Swipe down to close · pinch to zoom'), findsNothing);
+    expect(find.byType(ImageViewer), findsNothing);
     semantics.dispose();
+  });
+
+  testWidgets('the image viewer zooms on a pinch anywhere; zoomed, a drag pans and doesn\'t close', (tester) async {
+    final repository = await openMaya(tester);
+    repository.push(
+      'c-maya',
+      MessageCreated(
+        withFiles('p', const [
+          MessageAttachment(id: 'ph', filename: 'room.jpg', contentType: 'image/jpeg', url: 'https://x/room.jpg'),
+        ]),
+      ),
+    );
+    await tester.pumpAndSettle();
+    await tester.tap(find.bySemanticsLabel('Photo, room.jpg'));
+    await tester.pump(kDoubleTapTimeout);
+    await tester.pumpAndSettle();
+
+    // Away from the photo, in the empty part of the screen.
+    final page = tester.getRect(find.byType(PageView));
+    final at = Offset(page.center.dx, page.top + page.height * 0.3);
+    // How far the photo is zoomed: its width on the screen against the page's.
+    double zoom() =>
+        tester.getRect(find.descendant(of: find.byType(ImageViewer), matching: find.byType(Hero))).width / page.width;
+    Future<void> doubleTap() async {
+      await tester.tapAt(at);
+      await tester.pump(const Duration(milliseconds: 50));
+      await tester.tapAt(at);
+      await tester.pumpAndSettle();
+    }
+
+    // One finger held still and the other moving, as a thumb pinches: up and
+    // down the swipe that closes the viewer mustn't take it, and sideways the
+    // swipe to the next photo mustn't.
+    for (final way in const [Offset(0, 5), Offset(5, 0)]) {
+      final a = await tester.startGesture(at);
+      await tester.pump(const Duration(milliseconds: 40));
+      final b = await tester.startGesture(at + way * 8);
+      for (var i = 0; i < 10; i++) {
+        await b.moveBy(way);
+        await tester.pump();
+      }
+      await a.up();
+      await b.up();
+      await tester.pumpAndSettle();
+      expect(find.byType(ImageViewer), findsOneWidget);
+      expect(zoom(), greaterThan(1.2), reason: 'pinched along $way');
+      await doubleTap();
+      expect(zoom(), 1);
+    }
+
+    // The first finger drifts far enough to start the swipe before the second
+    // lands, as a sloppy pinch does: it still zooms.
+    final first = await tester.startGesture(at);
+    for (var i = 0; i < 3; i++) {
+      await first.moveBy(const Offset(0, 10));
+      await tester.pump();
+    }
+    final second = await tester.startGesture(at + const Offset(0, 80));
+    await tester.pump();
+    for (var i = 0; i < 10; i++) {
+      await second.moveBy(const Offset(0, 8));
+      await tester.pump();
+    }
+    await first.up();
+    await second.up();
+    await tester.pumpAndSettle();
+    expect(find.byType(ImageViewer), findsOneWidget);
+    expect(zoom(), greaterThan(1.2), reason: 'a pinch after the swipe began');
+    await doubleTap();
+    expect(zoom(), 1);
+
+    // Both fingers moving, staggered, then zoomed: a drag pans and doesn't close.
+    final a = await tester.startGesture(at - const Offset(0, 20));
+    await a.moveBy(const Offset(0, 12));
+    await tester.pump(const Duration(milliseconds: 40));
+    final b = await tester.startGesture(at + const Offset(0, 20));
+    for (var i = 0; i < 10; i++) {
+      await a.moveBy(const Offset(0, -10));
+      await b.moveBy(const Offset(0, 10));
+      await tester.pump();
+    }
+    await a.up();
+    await b.up();
+    await tester.pumpAndSettle();
+    expect(zoom(), greaterThan(1));
+    await tester.drag(find.byType(PageView), const Offset(0, 300));
+    await tester.pumpAndSettle();
+    expect(find.byType(ImageViewer), findsOneWidget);
+
+    // Pinched past 5×, it settles back to 5×.
+    final c = await tester.startGesture(at - const Offset(0, 10));
+    final d = await tester.startGesture(at + const Offset(0, 10));
+    for (var i = 0; i < 20; i++) {
+      await c.moveBy(const Offset(0, -15));
+      await d.moveBy(const Offset(0, 15));
+      await tester.pump();
+    }
+    await c.up();
+    await d.up();
+    await tester.pumpAndSettle();
+    expect(zoom(), moreOrLessEquals(5));
+
+    // A double tap zooms back out, another in to 2.5×, and a third out again.
+    await doubleTap();
+    expect(zoom(), 1);
+    await doubleTap();
+    expect(zoom(), moreOrLessEquals(2.5));
+    await doubleTap();
+
+    // Let go short of closing, it springs back.
+    await tester.drag(find.byType(PageView), const Offset(30, 60));
+    await tester.pumpAndSettle();
+    expect(find.byType(ImageViewer), findsOneWidget);
+    expect(tester.getRect(find.byType(PageView)), page);
+    await tester.drag(find.byType(PageView), const Offset(0, 300));
+    await tester.pumpAndSettle();
+    expect(find.byType(ImageViewer), findsNothing);
+    semantics.dispose();
+  });
+
+  testWidgets('swiping the photo: a quick flick closes, a second finger doesn\'t throw it, and it buzzes', (
+    tester,
+  ) async {
+    final repository = await openMaya(tester);
+    repository.push(
+      'c-maya',
+      MessageCreated(
+        withFiles('p', const [
+          MessageAttachment(id: 'ph', filename: 'room.jpg', contentType: 'image/jpeg', url: 'https://x/room.jpg'),
+        ]),
+      ),
+    );
+    await tester.pumpAndSettle();
+    final buzzes = <String>[];
+    tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(SystemChannels.platform, (call) async {
+      if (call.method == 'HapticFeedback.vibrate') buzzes.add(call.arguments as String);
+      return null;
+    });
+    addTearDown(() => tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(SystemChannels.platform, null));
+    Future<void> open() async {
+      await tester.tap(find.bySemanticsLabel('Photo, room.jpg'));
+      await tester.pump(kDoubleTapTimeout);
+      await tester.pumpAndSettle();
+    }
+
+    // Picked up, then a second finger lands far away and moves: the photo
+    // isn't thrown to it, it goes back, as that's a pinch now.
+    await open();
+    final start = tester.getCenter(find.byType(PageView));
+    final a = await tester.startGesture(start);
+    for (var i = 0; i < 5; i++) {
+      await a.moveBy(const Offset(0, 10));
+      await tester.pump();
+    }
+    expect(buzzes, ['HapticFeedbackType.mediumImpact']);
+    final b = await tester.startGesture(start + const Offset(150, 250));
+    await tester.pump();
+    await b.moveBy(const Offset(0, 5));
+    await tester.pump();
+    await b.up();
+    await a.up();
+    await tester.pumpAndSettle();
+    expect(find.byType(ImageViewer), findsOneWidget);
+    expect(tester.getCenter(find.byType(PageView)), start);
+
+    // Past the point where letting go closes it: a click, and it closes.
+    final c = await tester.startGesture(start);
+    for (var i = 0; i < 18; i++) {
+      await c.moveBy(const Offset(0, 10));
+      await tester.pump();
+    }
+    expect(buzzes.last, 'HapticFeedbackType.selectionClick');
+    await c.up();
+    await tester.pumpAndSettle();
+    expect(find.byType(ImageViewer), findsNothing);
+
+    // Dragged down, then flicked back up: it goes back, it doesn't close.
+    await open();
+    final back = await tester.startGesture(start);
+    for (var i = 0; i < 10; i++) {
+      await back.moveBy(const Offset(0, 10), timeStamp: Duration(milliseconds: 100 * i));
+      await tester.pump();
+    }
+    await back.moveBy(const Offset(0, -40), timeStamp: const Duration(milliseconds: 1010));
+    await back.moveBy(const Offset(0, -40), timeStamp: const Duration(milliseconds: 1020));
+    await back.up(timeStamp: const Duration(milliseconds: 1025));
+    await tester.pumpAndSettle();
+    expect(find.byType(ImageViewer), findsOneWidget);
+
+    // Past where letting go closes it, then the system cancels the touch (the
+    // notification shade): it goes back.
+    final held = await tester.startGesture(start);
+    for (var i = 0; i < 18; i++) {
+      await held.moveBy(const Offset(0, 10));
+      await tester.pump();
+    }
+    await held.cancel();
+    await tester.pumpAndSettle();
+    expect(find.byType(ImageViewer), findsOneWidget);
+    expect(tester.getCenter(find.byType(PageView)), start);
+
+    // A quick flick, its first move already past the viewer's own pan slop.
+    await open();
+    final flick = await tester.startGesture(start);
+    await flick.moveBy(const Offset(0, 60), timeStamp: const Duration(milliseconds: 16));
+    await flick.moveBy(const Offset(0, 40), timeStamp: const Duration(milliseconds: 32));
+    await flick.up(timeStamp: const Duration(milliseconds: 40));
+    await tester.pumpAndSettle();
+    expect(find.byType(ImageViewer), findsNothing);
+    semantics.dispose();
+  });
+
+  test('a zoomed photo stops at its edges, and is centred where it\'s narrower than the screen', () {
+    const view = Size(400, 800);
+    // A wide photo, letterboxed: 400×200 in the middle of the screen.
+    const photo = Rect.fromLTWH(0, 300, 400, 200);
+    final kept = clampToPhoto(2, const Offset(500, -2000), view, photo);
+    // 800×400 at 2×: its left edge stays at the screen's, and it's centred up and down.
+    expect(kept.dx, 0);
+    expect(kept.dy, (800 - 400) / 2 - 300 * 2);
+    // 1000 high at 5×: its top stays at the screen's.
+    expect(clampToPhoto(5, Offset.zero, view, photo).dy, -300 * 5);
   });
 
   testWidgets('uploads show their progress and can be cancelled; large files are refused', (tester) async {

@@ -1,6 +1,7 @@
 /// What the UI shows, independent of the Duvet client's wire models.
 library;
 
+import 'admin.dart' show RoleColors;
 import 'bots.dart';
 
 export 'admin.dart';
@@ -413,8 +414,8 @@ class MessageAttachment {
   bool get isVideo => contentType.startsWith('video/');
   bool get isAudio => contentType.startsWith('audio/');
 
-  /// GIFs always animate; other formats may, and play the same way.
-  bool get isGif => contentType == 'image/gif';
+  /// GIFs and APNGs always animate; other formats may, and play the same way.
+  bool get isGif => contentType == 'image/gif' || contentType == 'image/apng';
 
   /// Marked as a spoiler, as the desktop app marks one: its name starts
   /// with `SPOILER_`. It stays covered until tapped.
@@ -438,11 +439,44 @@ class MessageEmbed {
   final String? description;
   final String? url;
   final String? imageUrl;
+  final int? imageWidth;
+  final int? imageHeight;
+
+  /// A small picture beside the text, as the desktop's card shows one.
+  final String? thumbnailUrl;
+
+  /// A video file (video/*) to play, or a player page (text/html) to open.
+  final String? videoUrl;
+  final String? videoContentType;
   final String? provider;
 
-  const MessageEmbed({this.title, this.description, this.url, this.imageUrl, this.provider});
+  const MessageEmbed({
+    this.title,
+    this.description,
+    this.url,
+    this.imageUrl,
+    this.imageWidth,
+    this.imageHeight,
+    this.thumbnailUrl,
+    this.videoUrl,
+    this.videoContentType,
+    this.provider,
+  });
 
-  bool get isEmpty => title == null && description == null && imageUrl == null;
+  bool get isEmpty =>
+      title == null && description == null && imageUrl == null && thumbnailUrl == null && videoUrl == null;
+
+  /// Only a picture, as a GIF link's embed is: shown bare, not on a card.
+  bool get isBareImage => title == null && description == null && imageUrl != null;
+
+  /// The video plays as a file when its page says it is one, or, with no
+  /// type, when its URL looks like one; anything else is a player page.
+  bool get isDirectVideo {
+    if (videoUrl == null) return false;
+    if (videoContentType != null) return videoContentType!.startsWith('video/');
+    final path = Uri.tryParse(videoUrl!)?.path.toLowerCase() ?? '';
+    return path.endsWith('.mp4') || path.endsWith('.webm') || path.endsWith('.mov');
+  }
 }
 
 /// Someone in a space or a conversation.
@@ -472,7 +506,7 @@ class Member {
 
 enum Presence { online, doNotDisturb, offline }
 
-/// The key [ChatRepository.presence] keeps a bot's presence in the Space
+/// The key [ChatRepository.presence] keeps a member's presence in the Space
 /// [spaceId] under, as the desktop keys it: `userId:spaceId`.
 String spacePresenceKey(String userId, String spaceId) => '$userId:$spaceId';
 
@@ -549,8 +583,12 @@ class FriendRequestItem {
 class RoleTag {
   final String name;
 
-  /// Its color, if it has one (ARGB).
+  /// Its color, if it has one (ARGB): a gradient's first stop.
   final int? color;
+
+  /// A gradient's middle and last stops (ARGB), if it has them.
+  final int? colorVia;
+  final int? colorTo;
   final String id;
 
   /// Its rank: higher is above.
@@ -558,8 +596,22 @@ class RoleTag {
 
   /// Its members show apart in the member list, under its name.
   final bool hoisted;
-  const RoleTag(this.name, {this.color, this.id = '', this.position = 0, this.hoisted = false});
+  const RoleTag(
+    this.name, {
+    this.color,
+    this.colorVia,
+    this.colorTo,
+    this.id = '',
+    this.position = 0,
+    this.hoisted = false,
+  });
+
+  RoleColors get colors => (from: color, via: colorVia, to: colorTo);
 }
+
+/// The colors a member's name shows: their highest role with a color, as the
+/// desktop picks it, from roles highest first as [ChatRepository.rolesOf] gives them.
+RoleColors? nameColorsOf(Iterable<RoleTag> roles) => roles.where((r) => r.color != null).firstOrNull?.colors;
 
 /// One of the user's uploaded files.
 class MyFile {

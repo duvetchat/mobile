@@ -52,6 +52,10 @@ Desktop: `MessageAttachments`, `ImagePreview`, `VoiceNotePlayer`, `AudioFilePlay
 - [x] **Image viewer:** save to gallery, share, swipe down to dismiss.
 - [x] **Upload progress:** show progress per file; an upload that's too large gets a clear error (check desktop's limits).
 - [x] **Link previews:** `MessageLinkEmbed` (a Duvet message link shows the quoted message) and `InviteEmbed` (an invite link shows a Join card).
+- [x] **YouTube full screen cuts the video:** going full screen (from the tile or the dock) closes the player and opens a new one at the same second, so the video stops and loads again. The dock avoids the reload by taking the tile's own webview (`DockedYouTube.session`, a bare `WebViewWidget`); the full-screen route (`openYouTubeFullScreen` in `lib/widgets/youtube_dock.dart`) could take it the same way. The dock handoff still cuts the sound for a moment (checked on a device, 1 Nov 2026): the tile's `YoutubePlayer` and the dock's `WebViewWidget` are different widgets, so Android's platform view is torn down and made again, and the WebView, briefly detached, pauses as a hidden page; `YouTubeDock` plays it again after. Moving one `WebViewWidget` under a `GlobalKey` within the same frame would keep it attached.
+  _Fixed: a session has one `WebViewWidget` under a `GlobalKey` (`YouTubeView`), moved between the tile, full screen and the dock within a frame, so the page neither reloads nor pauses. Checked on a device._
+- [x] **Media design follow-ups (Design review, 1 Nov 2026):** `VideoTile` clamps its ratio to 0.6–2.0 and has `shadowRest`, while pictures and YouTube keep their own ratio and no shadow; `VoiceBar` is 64pt where the playback bar and the YouTube dock use the tab bar's 56; there are no tokens for a "live" dot (the call banner uses `accentText`, the members sheet a hard-coded green) or for the play mark's overlay colors.
+  _Fixed: `VideoTile` is sized like a picture with no shadow, `VoiceBar` is the tab bar's 56, and `DuvetTokens` has `live` and the media overlay colors (`mediaInk`, `mediaScrim`, `mediaScrimEdge`)._
 
 ## M4 · Navigation & search
 
@@ -76,7 +80,7 @@ Desktop: `FriendsView`, `MemberProfileCard`, `MemberProfilePopover`, `DMSidebar`
 - [x] **New conversation:** pick people, then `createDM` / `createGroup`.
 - [x] **Group DMs:** rename (`updateConversation`), add and remove members, leave.
 - [x] **Presence from the start:** parse `SPACE_CREATE.member_statuses` in `duvet-client`, publish 1.0.1, then seed `presence` from it. Space cards then show "N online".
-  _Done in `duvet-client` 1.0.1 (also a `count` on `getMessages`), used through a `dependency_overrides` path. Publishing 1.0.1 to pub.dev and dropping the override is left to you._
+  _Done in `duvet-client` 1.0.1 (also a `count` on `getMessages`), now from pub.dev (duvet_client 2.0.0)._
 
 ## M6 · Spaces & invites
 
@@ -96,7 +100,7 @@ Desktop: `UserSettings`, the `(auth)` routes, `UserStatusBar`.
   _The API emails links, not the 6-digit codes the layout draws: the links (`/verify`, `/reset-password`, `/change-email`) open the app, and can be pasted._
 - [x] **Password:** forgot and reset (`forgotPassword`, `resetPassword`).
 - [x] **Edit profile:** alias and bio (`updateUser`); avatar and banner with a cropper (`uploadProfileImage`, as `ImageCropModal`).
-  _Alias, avatar and banner are done (a pure-Dart cropper; the server crops). The bio is an "About me" field with a counter, as desktop's `UserSettings`: 190 characters counted as code points, so an emoji is one, trimmed, and empty clears it. It goes only when changed (`updateUser(custom:)`, duvet-client). The page no longer breaks when the keyboard opens (its fields were made again on every padding change: a `LateInitializationError`)._
+  _Alias, avatar and banner are done (a pure-Dart cropper; the phone uploads only the part picked). The bio is an "About me" field with a counter, as desktop's `UserSettings`: 190 characters counted as code points, so an emoji is one, trimmed, and empty clears it. It goes only when changed (`updateUser(custom:)`, duvet-client). The page no longer breaks when the keyboard opens (its fields were made again on every padding change: a `LateInitializationError`)._
 - [x] **Status:** online or do not disturb. `updateUser` has no status field, so check how desktop's `UserStatusBar` sets it and add the call to `duvet_client` if it's missing.
   _A Status control on the You tab, Online or Do not disturb (`setStatus`, duvet-client: `PUT /api/users/@me/status`). The user's own status comes from READY and from USER_STATUS_UPDATE about them, so a change on another device shows. Do not disturb was already drawn wherever presence shows (the dot with a bar, "Do not disturb"). The app makes no sounds or alerts of its own for messages and mentions yet, so there's nothing to silence. M8's incoming call must show without ringing in do not disturb (`Profile.status`), as desktop's `callRings` does._
 - [x] **Change email:** `changeEmail` / `sendChangeEmail`.
@@ -130,11 +134,12 @@ Desktop: `MessageComponents`, `ComponentSelect`, `InteractionModal`, `CommandOpt
 Desktop: `ServerSettings`, `ChannelSettings`, `BucketFilesDialog`, `StorageTransferCard`.
 
 - [x] **Space settings:** name, icon and banner (`updateSpace`). _In the Space menu for those who help run it; rows show only for what the user may change._
-- [x] **Rooms:** create, rename, reorder, delete; permission overwrites. Events `ROOM_OVERWRITE_*`. _Reorder by dragging a room's ridged edge (or a long press); a category is one panel that drags with its rooms, and **Move to…** changes a room's category (first in one, as the desktop drops a room in; after the rooms outside any when it leaves). Only the rooms the user may manage (ManageChannels in the room, overwrites included) move or open their options, and Create room needs it in the Space. Moves send the API's insert-before position (`updateRoom`), show at once and follow `ROOM_REORDER`. Overwrites per role: Deny, As the role says, Allow._
+- [x] **Rooms:** create, rename, reorder, delete; permission overwrites. Events `ROOM_OVERWRITE_*`. _Reorder by dragging a room's ridged edge (or a long press); a category is one panel that drags with its rooms, and **Move to…** changes a room's category (first in one, as the desktop drops a room in; after the rooms outside any when it leaves). Only the rooms the user may manage (ManageChannels in the room, overwrites included) move or open their options, and Create room needs it in the Space. Moves send the API's insert-before position (`updateRoom`), show at once and follow `ROOM_REORDER`. Overwrites per role, and per member ([#20](https://github.com/duvetchat/mobile/issues/20)): a card each in a carousel (swipe, or tap a chip or a peeking card), every room permission (Video and Manage the room among them; ManageRoles has no say in a room), Deny, Role default (Their roles), Allow. Add member picks from the Space's members, searched on the device; Remove gives a member's back to their roles._
 - [x] **Roles:** create, edit and assign. Events `ROLE_*`, `MEMBER_ROLE_*`; role colors on names in the member list. _Colors are adjusted to 4.5:1 on both themes (tested)._
-- [x] **Emojis and stickers:** upload, rename, delete (`createEmoji` … `deleteSticker`).
+- [x] **Role order, gradients ([#20](https://github.com/duvetchat/mobile/issues/20)):** _Drag a role by its ridged edge (or a long press), as rooms move; @everyone stays last, and roles at or above the user's highest are locked (the owner moves any). A move sends the position of the role it lands by (`updateRole(position:)`), shows at once and follows `ROLE_UPDATE`. **Admins first** puts Administrator roles on top, then those that manage part of the Space, each tier in its order. Names show in their color or gradient; the color sheet sets Default, Solid, or a Gradient from Start through an optional Middle to End (`color_from`/`color_via`/`color_to`), and saving a color sends all three so a gradient's stops clear. Names and webhook names stop at the API's 64._
+- [x] **Emojis and stickers:** upload, rename, delete (`createEmoji` … `deleteSticker`). _Any member sees them, read-only, as on the desktop ([#20](https://github.com/duvetchat/mobile/issues/20)): from the Space menu when they run nothing, else a row in Space settings._
 - [x] **Invites:** list and revoke (`listSpaceInvites`, `revokeInvite`).
-- [x] **Webhooks:** list, create, reset the token, delete. _The URL is shown once, to copy._
+- [x] **Webhooks:** list, create, reset the token, delete, rename, and a picture or none ([#20](https://github.com/duvetchat/mobile/issues/20)). _The URL is shown once, to copy. A picture is cropped round, 256 px; its past messages keep theirs. No gateway event says a webhook changed, so the list loads again after each change._
 - [x] **Storage:** space attachments and buckets (view-only on mobile is probably enough). _View-only._
 
 ## Platform & quality
@@ -153,7 +158,7 @@ Desktop: `ServerSettings`, `ChannelSettings`, `BucketFilesDialog`, `StorageTrans
 - [x] **Golden tests:** for the design-system components (rows, cards, glass, bubbles) in both themes.
   _`test/goldens_test.dart`, with Fira Sans, the Lucide icons and real soft shadows; update with `flutter test --update-goldens test/goldens_test.dart`._
 - [x] **CI:** `flutter analyze` + `flutter test` + a release APK on each PR (desktop and api already have `.github/`).
-  _`.github/workflows/ci.yml`: checks out `duvetchat/duvet-client` beside the app for the path override, and signs with the release key when the `ANDROID_KEYSTORE_BASE64` / `ANDROID_STORE_PASSWORD` / `ANDROID_KEY_PASSWORD` secrets are set. Not run yet: there's no remote here._
+  _`.github/workflows/ci.yml`: signs with the release key when the `ANDROID_KEYSTORE_BASE64` / `ANDROID_STORE_PASSWORD` / `ANDROID_KEY_PASSWORD` secrets are set. Not run yet: there's no remote here._
 - [x] **Release signing:** a real keystore instead of the debug key; application ID `chat.duvet` instead of `com.example.duvet`.
   _Application ID and bundle IDs are `chat.duvet` (a new install: the old debug app's session doesn't carry over). Release builds sign with `android/key.properties` (template: `key.properties.example`), else the debug key. Making the keystore is yours: see **Needs you**. A debug build installs and runs on the phone as `chat.duvet` (23 Oct 2026); a release build hasn't been made yet._
 - [x] **Build settings:** move this machine's Gradle tuning to `~/.gradle/gradle.properties` and restore the repository defaults.
@@ -200,5 +205,8 @@ Things this machine or this repository can't finish: each needs a decision, a cr
 - **iOS:** [#70](https://github.com/duvetchat/mobile/issues/70)
 - **A release build on a device:** [#71](https://github.com/duvetchat/mobile/issues/71)
 - **Voice and calls on the phone (M8):** [#72](https://github.com/duvetchat/mobile/issues/72)
+- **Role positions with gaps (API):** a deleted role's position stays empty, but a move is clamped to the number of roles less one, so a role can't be sent to a gapped position past it. Mobile lays the user's roles out again instead (each sent to the bottom, one request a role), which closes the gaps; compacting on delete, or clamping to the highest position, would make one request enough. A bulk reorder endpoint would make **Admins first** atomic.
+- **Gradient names outside Space settings:** member lists and chat names show a gradient role's first color only (`RoleTag` carries one color). Desktop draws the gradient on names; mobile could with the same `RoleName`.
+- **Member search (API):** the overwrite member picker filters the members the app has; a Space past one page of members needs `MembersQuery` to search.
 - **Goldens:** recorded on Linux, where they pass: `538d2c1` re-recorded the `chat` ones (light and dark) with the Call button in a DM's top bar. On Windows the 4 goldens fail on glyph edges, so regenerate them on Linux only (`flutter test --update-goldens test/goldens_test.dart`).
 

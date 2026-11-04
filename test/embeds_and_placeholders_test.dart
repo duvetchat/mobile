@@ -9,11 +9,11 @@ import 'package:duvet/widgets/facehash.dart';
 import 'package:duvet/widgets/message_content.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
-import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:forui/forui.dart';
 
 import 'support/fake_repository.dart';
+import 'support/fonts.dart';
 
 /// An HTTP client whose requests never answer: images stay loading.
 class _NeverAnswers implements HttpClient {
@@ -27,14 +27,7 @@ class _NeverAnswers implements HttpClient {
 /// Found on the phone: embed titles cut short, and images blank while they
 /// load.
 void main() {
-  setUpAll(() async {
-    // The app's own face, so lines wrap where they do on a phone.
-    final sans = FontLoader('Fira Sans');
-    for (final w in ['Regular', 'Medium', 'Bold']) {
-      sans.addFont(rootBundle.load('assets/fonts/FiraSans-$w.ttf'));
-    }
-    await sans.load();
-  });
+  setUpAll(loadAppFonts);
 
   Widget themed(Widget child) => MaterialApp(
     theme: Duvet.material(Brightness.light),
@@ -80,6 +73,39 @@ void main() {
     );
     final paragraph = tester.renderObject<RenderParagraph>(find.text(title));
     expect(paragraph.didExceedMaxLines, isFalse);
+  });
+
+  testWidgets('a GIF link\'s embed is its picture alone, at its own ratio; a card keeps its thumbnail small', (
+    tester,
+  ) async {
+    await tester.pumpWidget(
+      themed(
+        const EmbedCard(
+          embed: MessageEmbed(
+            url: 'https://example.invalid/wave.gif',
+            imageUrl: 'https://example.invalid/wave.gif',
+            imageWidth: 400,
+            imageHeight: 200,
+          ),
+        ),
+      ),
+    );
+    expect(find.byType(Container), findsNothing);
+    expect(tester.getSize(find.byType(Image)), const Size(260, 130));
+
+    await tester.pumpWidget(
+      themed(
+        const EmbedCard(
+          embed: MessageEmbed(
+            title: 'A page',
+            url: 'javascript:alert(1)',
+            thumbnailUrl: 'https://example.invalid/logo.png',
+          ),
+        ),
+      ),
+    );
+    expect(tester.getSize(find.byType(Image)), const Size(64, 64));
+    expect(tester.widget<GestureDetector>(find.byType(GestureDetector)).onTap, isNull);
   });
 
   testWidgets('a sticker is a base-sunken square until it loads', (tester) async {

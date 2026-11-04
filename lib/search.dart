@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
 import 'package:forui/forui.dart';
@@ -220,6 +221,7 @@ class _InChatSearchState extends State<InChatSearch> {
         children: [
           Positioned.fill(
             child: ListView(
+              keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
               padding: EdgeInsets.only(top: padding.top + 108, bottom: padding.bottom + 72),
               children: [
                 if (_loading && hits == null)
@@ -388,15 +390,14 @@ class _Toggle extends StatelessWidget {
           padding: const EdgeInsets.symmetric(horizontal: 12),
           alignment: Alignment.center,
           decoration: BoxDecoration(
-            color: on ? tokens.accentTint : colors.card,
+            color: on ? tokens.selectedFill : colors.card,
             borderRadius: BorderRadius.circular(DuvetTokens.radiusChip),
-            border: on ? Border.all(color: tokens.accentText) : null,
             boxShadow: on ? null : tokens.shadowRest,
           ),
           child: Text(
             label,
             style: DuvetType.snippet.copyWith(
-              color: on ? tokens.accentText : colors.foreground,
+              color: on ? tokens.violetText : colors.foreground,
               fontWeight: FontWeight.w500,
             ),
           ),
@@ -593,6 +594,11 @@ class _GlobalSearchState extends State<GlobalSearch> {
       ],
     ];
 
+    // Above the keyboard, which is always up while it shows: rows under it
+    // would count as on screen, and never scroll into view.
+    final field = this.context.findRenderObject() as RenderBox?;
+    final top = field == null || !field.attached ? 0.0 : field.localToGlobal(Offset(0, field.size.height)).dy + 8;
+    final room = screen.height - MediaQuery.viewInsetsOf(context).bottom - top - 16;
     return CompositedTransformFollower(
       link: _link,
       targetAnchor: Alignment.bottomLeft,
@@ -607,7 +613,7 @@ class _GlobalSearchState extends State<GlobalSearch> {
             child: SizedBox(
               width: screen.width - 32,
               child: ConstrainedBox(
-                constraints: BoxConstraints(maxHeight: screen.height * 0.7),
+                constraints: BoxConstraints(maxHeight: math.max(120, math.min(screen.height * 0.7, room))),
                 child: Semantics(
                   label: 'Search results',
                   explicitChildNodes: true,
@@ -669,6 +675,8 @@ class _GlobalSearchState extends State<GlobalSearch> {
                                 )
                               : ListView(
                                   shrinkWrap: true,
+                                  // A drag through the results puts the keyboard away; they stay open.
+                                  keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
                                   padding: const EdgeInsets.only(bottom: 8),
                                   children: results,
                                 ),

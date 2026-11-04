@@ -3,8 +3,9 @@ part of '../chat_view.dart';
 /// One message: the sender's name over a run's first bubble, the reply it
 /// quotes, the bubble, its reactions, and the time under a run's last one.
 ///
-/// Double-tap replies (the bubble does the press), and so does a swipe toward
-/// the start; a long press opens its actions.
+/// The reply gesture the user picked in Appearance replies: a swipe left or
+/// right, or a double tap (the bubble does the press); a long press opens its
+/// actions.
 class _Bubble extends StatelessWidget {
   final _Entry entry;
   final bool mine;
@@ -109,17 +110,19 @@ class _Bubble extends StatelessWidget {
         directory.me != null &&
         (mentionedIn(m.text).contains(directory.me) ||
             (m.reply?.mentionAuthor == true && m.reply?.authorId == directory.me));
-    final textBubble = m.content.isNotEmpty && !isJumboEmoji(m.content);
+    final text = withoutPreviewedLinks(m.content, m.embeds, cards: !lifted);
+    final textBubble = text.isNotEmpty && !isJumboEmoji(text);
     final maxWidth = MediaQuery.sizeOf(context).width * 0.75;
     final secondary = DuvetType.caption.copyWith(color: colors.mutedForeground);
     final faded = entry.delivery != _Delivery.sent;
 
-    // Double-tap a text bubble (which does the press), a sticker, a big emoji
-    // or a picture to reply; files, videos and voice keep their single taps at
-    // once. A long press anywhere is the bubble's. A bot's answer to the user
-    // alone takes no reply.
+    // With double tap picked, double-tap a text bubble (which does the press),
+    // a sticker, a big emoji or a picture to reply; files, videos and voice
+    // keep their single taps at once. A long press anywhere is the bubble's. A
+    // bot's answer to the user alone takes no reply.
     final repliable = entry.delivery == _Delivery.sent && !m.isEphemeral;
-    final onDoubleTap = repliable && !lifted ? onReply : null;
+    final gesture = AppearanceScope.maybeOf(context)?.replyGesture ?? ReplyGesture.swipeLeft;
+    final onDoubleTap = repliable && !lifted && gesture == ReplyGesture.doubleTap ? onReply : null;
     // The message's own actions for screen readers. A text bubble offers them
     // with its text's (its mentions, links, spoilers), so all of it is one
     // stop: two nodes with actions don't merge. They anchor where a long
@@ -137,12 +140,12 @@ class _Bubble extends StatelessWidget {
             onDoubleTap: onDoubleTap,
             child: StickerView(url: m.stickerUrl!, name: stickerName),
           ),
-        if (m.content.isNotEmpty)
-          if (isJumboEmoji(m.content))
+        if (text.isNotEmpty)
+          if (isJumboEmoji(text))
             GestureDetector(
               onDoubleTap: onDoubleTap,
               child: MessageText(
-                content: m.content,
+                content: text,
                 directory: directory,
                 style: DuvetType.body.copyWith(color: colors.foreground),
               ),
@@ -155,14 +158,14 @@ class _Bubble extends StatelessWidget {
                 padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
                 constraints: BoxConstraints(maxWidth: maxWidth),
                 decoration: BoxDecoration(
-                  color: mine ? Duvet.accent : colors.card,
+                  color: mine ? Duvet.azure : colors.card,
                   borderRadius: BorderRadius.circular(DuvetTokens.radiusButton),
                   boxShadow: editing ? null : (lifted ? tokens.shadowFloat : tokens.shadowRest),
                   // Mentioning the user: the accent as an outline, never a fill.
-                  border: mentionsMe ? Border.all(color: tokens.accentText, width: 1.5) : null,
+                  border: mentionsMe ? Border.all(color: tokens.violetText, width: 1.5) : null,
                 ),
                 child: MessageText(
-                  content: m.content,
+                  content: text,
                   directory: directory,
                   onAccent: mine,
                   style: DuvetType.body.copyWith(color: mine ? colors.primaryForeground : colors.foreground),
@@ -173,7 +176,12 @@ class _Bubble extends StatelessWidget {
               ),
             ),
         if (m.isVoice && m.attachments.isNotEmpty)
-          VoiceNotePlayer(attachment: m.attachments.first, mine: mine, authorName: m.authorName)
+          VoiceNotePlayer(
+            attachment: m.attachments.first,
+            mine: mine,
+            authorName: m.authorName,
+            authorAvatarUrl: m.authorAvatarUrl,
+          )
         else if (m.attachments.isNotEmpty)
           MessageAttachments(attachments: m.attachments, uploadProgress: progress, onDoubleTap: onDoubleTap),
         // Duvet's own links, as cards: a quoted message, an invite.
@@ -212,7 +220,7 @@ class _Bubble extends StatelessWidget {
         content = Container(
           padding: const EdgeInsets.all(4),
           decoration: BoxDecoration(
-            border: Border.all(color: tokens.accentText, width: 1.5),
+            border: Border.all(color: tokens.violetText, width: 1.5),
             borderRadius: BorderRadius.circular(DuvetTokens.radiusButton),
           ),
           child: content,
@@ -322,12 +330,14 @@ class _Bubble extends StatelessWidget {
     // 4pt between bubbles of a run, 12pt between runs (less the highlight's
     // own 4pt).
     final gap = EdgeInsets.only(top: firstOfRun ? 8 : 0);
-    final onSwipe = repliable ? onReply : null;
+    final onSwipe = repliable && gesture != ReplyGesture.doubleTap ? onReply : null;
+    final left = gesture != ReplyGesture.swipeRight;
     if (mine) {
       return Padding(
         padding: gap,
         child: _SwipeToReply(
           onReply: onSwipe,
+          left: left,
           child: Align(alignment: Alignment.centerRight, child: highlighted),
         ),
       );
@@ -336,6 +346,7 @@ class _Bubble extends StatelessWidget {
       padding: gap,
       child: _SwipeToReply(
         onReply: onSwipe,
+        left: left,
         child: Row(
           crossAxisAlignment: CrossAxisAlignment.end,
           children: [
@@ -382,15 +393,18 @@ class _Bubble extends StatelessWidget {
   static String _time(DateTime t) => '${t.hour.toString().padLeft(2, '0')}:${t.minute.toString().padLeft(2, '0')}';
 }
 
-/// Swiping a message toward the start (left, left to right) replies to it, as
-/// in WhatsApp: the message follows the finger, the reply icon grows in behind
-/// it at the end, a tick says a release will reply, and it slides back.
-/// Scrollers and sliders inside the message keep their own horizontal drags.
+/// Swiping a message [left] (as in WhatsApp) or right replies to it: the
+/// message follows the finger, the reply icon grows in behind it on the side
+/// it leaves, a tick says a release will reply, and it slides back. Scrollers
+/// and sliders inside the message keep their own horizontal drags.
 class _SwipeToReply extends StatefulWidget {
   /// Null while the message can't be replied to: no swipe.
   final VoidCallback? onReply;
+
+  /// The way the user picked, on screen whatever the text direction.
+  final bool left;
   final Widget child;
-  const _SwipeToReply({required this.onReply, required this.child});
+  const _SwipeToReply({required this.onReply, required this.left, required this.child});
 
   @override
   State<_SwipeToReply> createState() => _SwipeToReplyState();
@@ -413,8 +427,7 @@ class _SwipeToReplyState extends State<_SwipeToReply> with SingleTickerProviderS
   }
 
   void _drag(DragUpdateDetails d) {
-    final toStart = Directionality.of(context) == TextDirection.rtl ? d.delta.dx : -d.delta.dx;
-    _travel = math.max(0, _travel + toStart);
+    _travel = math.max(0, _travel + (widget.left ? -d.delta.dx : d.delta.dx));
     final wasArmed = _armed;
     _shift.value = _travel <= _threshold ? _travel : _threshold + (_travel - _threshold) / 5;
     if (_armed && !wasArmed) HapticFeedback.selectionClick();
@@ -434,7 +447,7 @@ class _SwipeToReplyState extends State<_SwipeToReply> with SingleTickerProviderS
   Widget build(BuildContext context) {
     final colors = context.theme.colors;
     final accent = context.duvet.accentText;
-    final rtl = Directionality.of(context) == TextDirection.rtl;
+    final left = widget.left;
     // The same tree whether or not it can be replied to, so a message being
     // sent isn't mounted again once it is.
     final enabled = widget.onReply != null;
@@ -450,11 +463,11 @@ class _SwipeToReplyState extends State<_SwipeToReply> with SingleTickerProviderS
         builder: (context, child) {
           final shown = (_shift.value / _threshold).clamp(0.0, 1.0);
           return Stack(
-            alignment: AlignmentDirectional.centerEnd,
+            alignment: left ? Alignment.centerRight : Alignment.centerLeft,
             children: [
               if (shown > 0)
                 Padding(
-                  padding: const EdgeInsetsDirectional.only(end: 12),
+                  padding: left ? const EdgeInsets.only(right: 12) : const EdgeInsets.only(left: 12),
                   child: Opacity(
                     opacity: shown,
                     child: Transform.scale(
@@ -468,7 +481,7 @@ class _SwipeToReplyState extends State<_SwipeToReply> with SingleTickerProviderS
                     ),
                   ),
                 ),
-              Transform.translate(offset: Offset(rtl ? _shift.value : -_shift.value, 0), child: child),
+              Transform.translate(offset: Offset(left ? -_shift.value : _shift.value, 0), child: child),
             ],
           );
         },
@@ -869,14 +882,13 @@ class _Reactions extends StatelessWidget {
           constraints: const BoxConstraints(minWidth: 40),
           padding: const EdgeInsets.symmetric(horizontal: 8),
           decoration: BoxDecoration(
-            color: mine ? tokens.accentTint : colors.card,
+            color: mine ? tokens.selectedFill : colors.card,
             borderRadius: BorderRadius.circular(DuvetTokens.radiusChip),
-            border: mine ? Border.all(color: tokens.accentText) : null,
             boxShadow: mine || pressed ? null : tokens.shadowRest,
           ),
           child: DefaultTextStyle.merge(
             style: DuvetType.caption.copyWith(
-              color: mine ? tokens.accentText : colors.foreground,
+              color: mine ? tokens.violetText : colors.foreground,
               fontWeight: FontWeight.w500,
               height: 1,
             ),
@@ -1066,8 +1078,8 @@ class _NoticeState extends State<_Notice> {
   }
 }
 
-/// Above the composer: who's typing, and who's recording a voice message,
-/// as the desktop's typing indicator says it.
+/// Above the composer: the ghost and its typing dots, then who's typing and
+/// who's recording a voice message, as the desktop's typing indicator says it.
 class _TypingLine extends StatelessWidget {
   final List<TypingUser> users;
   const _TypingLine({required this.users});
@@ -1082,7 +1094,25 @@ class _TypingLine extends StatelessWidget {
         padding: const EdgeInsets.only(left: 4, bottom: 8),
         child: Semantics(
           liveRegion: true,
-          child: Text(who, style: DuvetType.caption.copyWith(color: context.theme.colors.mutedForeground)),
+          label: who,
+          excludeSemantics: true,
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const GhostMark(size: 20),
+              const SizedBox(width: 6),
+              TypingDots(color: context.duvet.violetText),
+              const SizedBox(width: 8),
+              Flexible(
+                child: Text(
+                  who,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: DuvetType.caption.copyWith(color: context.theme.colors.mutedForeground),
+                ),
+              ),
+            ],
+          ),
         ),
       ),
     );

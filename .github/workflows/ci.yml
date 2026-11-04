@@ -1,6 +1,4 @@
 # Analyze, test and build a release APK on every pull request into dev, as api and desktop do.
-# The app uses duvet_client from a checkout beside it (pubspec.yaml's dependency_overrides) until
-# 1.0.1 is on pub.dev, so the job checks out duvetchat/duvet-client next to this repository.
 name: CI
 
 on:
@@ -25,10 +23,6 @@ jobs:
       - uses: actions/checkout@v7
         with:
           path: mobile
-      - uses: actions/checkout@v7
-        with:
-          repository: duvetchat/duvet-client
-          path: duvet-client
       # Gradle's downloads (its distribution, the Android plugin, the dependencies) cached, keyed by the Gradle
       # files: building the APK fetched them all every run. A pull request restores what a run on dev saved.
       # Only on GitHub's runners: the organisation's own keeps ~/.gradle and the Flutter SDK between jobs, and

@@ -2,23 +2,31 @@ import 'dart:io';
 import 'dart:math' as math;
 import 'dart:ui' show ImageFilter;
 
+import 'package:flutter/foundation.dart' show Factory;
 import 'package:flutter/gestures.dart';
 import 'package:flutter/semantics.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:forui/forui.dart';
 import 'package:url_launcher/url_launcher.dart';
+import 'package:youtube_player_iframe/youtube_player_iframe.dart'
+    show PlayerState, YoutubePlayerController, YoutubeValueBuilder;
 
 import '../data/emoji_catalog.dart';
+import '../data/links.dart';
 import '../data/markdown.dart';
+import '../deep_links.dart';
 import '../data/message_tokens.dart';
 import '../data/models.dart';
 import '../theme.dart';
+import 'apng.dart';
 import 'code_highlight.dart';
 import 'depth.dart';
 import 'glass.dart';
 import 'media.dart';
 import 'media_actions.dart';
+import 'role_name.dart';
+import 'youtube_dock.dart';
 
 /// What a bubble needs to show names and custom emoji.
 class MessageDirectory {
@@ -28,9 +36,19 @@ class MessageDirectory {
 
   /// A room the user may see; null for one hidden or gone.
   final Room? Function(String roomId) roomOf;
-  const MessageDirectory({required this.me, required this.nameOf, required this.emojiOf, this.roomOf = _noRoom});
+
+  /// A member's name colors in this Space (see [nameColorsOf]); null outside one or without a colored role.
+  final RoleColors? Function(String userId) nameColorsOf;
+  const MessageDirectory({
+    required this.me,
+    required this.nameOf,
+    required this.emojiOf,
+    this.roomOf = _noRoom,
+    this.nameColorsOf = _noColors,
+  });
 
   static String? _noName(String _) => null;
+  static RoleColors? _noColors(String _) => null;
   static CustomEmoji? _noEmoji(String _) => null;
   static Room? _noRoom(String _) => null;
   static const empty = MessageDirectory(me: null, nameOf: _noName, emojiOf: _noEmoji);
@@ -76,7 +94,14 @@ class MessageText extends StatefulWidget {
 
   /// Opens a link; tests replace it.
   @visibleForTesting
-  static Future<bool> Function(Uri uri) openLink = (uri) => launchUrl(uri, mode: LaunchMode.externalApplication);
+  static Future<bool> Function(Uri uri) openLink = (uri) async {
+    // Duvet's own (an invite, a message): the app opens it, not the browser.
+    if (parseDeepLink(uri.toString()) != null) {
+      DeepLinkSource.tapped.add(uri);
+      return true;
+    }
+    return launchUrl(uri, mode: LaunchMode.externalApplication);
+  };
 
   /// Opens a link outside the app, as a tapped link in a message does.
   static Future<bool> launch(Uri uri) => openLink(uri);
@@ -171,23 +196,40 @@ class _MessageTextState extends State<MessageText> {
     final rooms = <String, Room>{};
     var spoilers = false;
 
+    // A mention in its member's role colors, as their name shows in the
+    // member list; violet without a colored role. On your azure bubble, bold
+    // ink-on-accent instead, which keeps its contrast.
+    InlineSpan mention(String name, String userId, TextStyle? style) {
+      final bold = (style ?? const TextStyle()).copyWith(fontWeight: FontWeight.w700);
+      final role = widget.onAccent ? null : widget.directory.nameColorsOf(userId);
+      final onMention = widget.onMention;
+      if (role case (from: _?, via: _, to: _?)) {
+        // A gradient spans the name, so the name is a box of its own in the line.
+        return WidgetSpan(
+          alignment: PlaceholderAlignment.baseline,
+          baseline: TextBaseline.alphabetic,
+          child: GestureDetector(
+            onTap: onMention == null ? null : () => onMention(userId),
+            child: RoleName(name, colors: role, style: base.merge(bold)),
+          ),
+        );
+      }
+      return TextSpan(
+        text: name,
+        recognizer: onMention == null ? null : _tap(() => onMention(userId)),
+        style: bold.copyWith(color: widget.onAccent ? null : roleColorOn(context, role?.from) ?? tokens.violetText),
+      );
+    }
+
     // Mentions and custom emoji within a text leaf.
     List<InlineSpan> leaf(String text, TextStyle? style) => [
       for (final token in tokenize(text))
         switch (token) {
           TextToken(:final text) => TextSpan(text: text, style: style),
-          MentionToken(:final userId) => TextSpan(
-            text: '@${mentions[userId] = widget.directory.nameOf(userId) ?? 'someone'}',
-            recognizer: switch (widget.onMention) {
-              final onMention? => _tap(() => onMention(userId)),
-              null => null,
-            },
-            // Accent as text; on the accent bubble, bold ink-on-accent
-            // instead, which keeps its contrast.
-            style: (style ?? const TextStyle()).copyWith(
-              color: widget.onAccent ? null : tokens.accentText,
-              fontWeight: FontWeight.w700,
-            ),
+          MentionToken(:final userId) => mention(
+            '@${mentions[userId] = widget.directory.nameOf(userId) ?? 'someone'}',
+            userId,
+            style,
           ),
           RoomToken(:final roomId) => switch (widget.directory.roomOf(roomId)) {
             // Hidden or gone: no name, nothing to open.
@@ -297,7 +339,7 @@ class _MessageTextState extends State<MessageText> {
           MdParagraph(:final inlines) => rich(inlines, base, maxLines: widget.singleLine ? 1 : null),
           MdHeading(:final level, :final inlines) => rich(
             inlines,
-            base.merge(level == 1 ? DuvetType.title : DuvetType.navTitle).copyWith(color: base.color),
+            base.merge(level == 1 ? DuvetType.titleSans : DuvetType.navTitle).copyWith(color: base.color),
           ),
           MdSubtext(:final inlines) => rich(inlines, base.merge(DuvetType.caption).copyWith(color: secondary)),
           MdQuote(:final inlines) => Container(
@@ -653,9 +695,9 @@ class _PictureState extends State<_Picture> {
   Widget build(BuildContext context) {
     final a = widget.attachment;
     final colors = context.theme.colors;
-    final ratio = widget.square || a.width == null || a.height == null || a.height == 0
-        ? 1.0
-        : (a.width! / a.height!).clamp(0.5, 2.5);
+    // Its own ratio, so the box fits the whole picture (the desktop's
+    // object-contain): a clamp here would crop tall and wide ones.
+    final ratio = widget.square || (a.width ?? 0) <= 0 || (a.height ?? 0) <= 0 ? 1.0 : a.width! / a.height!;
     final height = math.min(widget.width / ratio, 320.0);
     final width = widget.square ? widget.width : math.min(widget.width, height * ratio);
     final still = MediaQuery.disableAnimationsOf(context) && !_playing;
@@ -729,29 +771,33 @@ class _PictureState extends State<_Picture> {
     );
   }
 
-  void _open(BuildContext context) => Navigator.of(context).push(
-    PageRouteBuilder<void>(
-      opaque: false,
-      barrierColor: Colors.black,
-      transitionDuration: DuvetTokens.panelIn,
-      reverseTransitionDuration: DuvetTokens.panelOut,
-      pageBuilder: (_, _, _) => ImageViewer(gallery: widget.gallery, initial: widget.index),
-      transitionsBuilder: (_, animation, _, child) => FadeTransition(
-        opacity: CurvedAnimation(parent: animation, curve: DuvetTokens.decelerate),
-        child: child,
+  void _open(BuildContext context) {
+    // Out of the composer: or closing the viewer hands it the keyboard back.
+    FocusManager.instance.primaryFocus?.unfocus();
+    Navigator.of(context).push(
+      PageRouteBuilder<void>(
+        opaque: false,
+        barrierColor: Colors.black,
+        transitionDuration: DuvetTokens.panelIn,
+        reverseTransitionDuration: DuvetTokens.panelOut,
+        pageBuilder: (_, _, _) => ImageViewer(gallery: widget.gallery, initial: widget.index),
+        transitionsBuilder: (_, animation, _, child) => FadeTransition(
+          opacity: CurvedAnimation(parent: animation, curve: DuvetTokens.decelerate),
+          child: child,
+        ),
       ),
-    ),
-  );
+    );
+  }
 }
 
 String _heroTag(MessageAttachment a) => 'attachment:${a.id}:${a.url}';
 
 Widget _image(MessageAttachment a, double width, {BoxFit fit = BoxFit.cover}) {
   final dpr = WidgetsBinding.instance.platformDispatcher.views.first.devicePixelRatio;
-  final cache = (width * dpr).round();
+  final cache = math.max(1, (width * dpr).round());
   Widget broken(BuildContext context, Object _, StackTrace? _) =>
       Center(child: Icon(FLucideIcons.imageOff, color: context.theme.colors.mutedForeground));
-  return a.local
+  final still = a.local
       ? Image.file(File(a.url), fit: fit, cacheWidth: fit == BoxFit.cover ? cache : null, errorBuilder: broken)
       : Image.network(
           a.url,
@@ -764,6 +810,10 @@ Widget _image(MessageAttachment a, double width, {BoxFit fit = BoxFit.cover}) {
             child: child,
           ),
         );
+  // Flutter plays GIFs and WebPs itself, APNGs not: apng.dart does.
+  return a.contentType == 'image/apng'
+      ? ApngImage(url: a.url, local: a.local, width: width, fit: fit, placeholder: still)
+      : still;
 }
 
 class _Badge extends StatelessWidget {
@@ -939,13 +989,108 @@ class EmbedCard extends StatelessWidget {
   Widget build(BuildContext context) {
     final colors = context.theme.colors;
     final e = embed;
+    // Only a web link opens (the desktop's webEmbed): any other scheme, or a
+    // malformed one, is nothing to tap.
+    final uri = e.url == null ? null : Uri.tryParse(e.url!);
+    final link = uri != null && (uri.scheme == 'http' || uri.scheme == 'https') ? uri : null;
+    final dpr = MediaQuery.devicePixelRatioOf(context);
+
+    // The picture at its own ratio when known (so nothing is cropped), else
+    // a banner; a GIF link's embed is only this, bare, up to the card's width.
+    Widget picture(double w) {
+      final ratio = (e.imageWidth ?? 0) > 0 && (e.imageHeight ?? 0) > 0 ? e.imageWidth! / e.imageHeight! : null;
+      final height = ratio == null ? 140.0 : math.min(w / ratio, 320.0);
+      return ClipRRect(
+        borderRadius: BorderRadius.circular(DuvetTokens.radiusButton),
+        child: Image.network(
+          e.imageUrl!,
+          width: ratio == null ? w : math.min(w, height * ratio),
+          height: height,
+          cacheWidth: (w * dpr).round(),
+          fit: ratio == null ? BoxFit.cover : BoxFit.contain,
+          excludeFromSemantics: true,
+          errorBuilder: (_, _, _) => const SizedBox.shrink(),
+        ),
+      );
+    }
+
+    // A GIF link's animated picture is its preview, though Tenor's names an mp4
+    // too.
+    final gif = e.imageUrl != null && (Uri.tryParse(e.imageUrl!)?.path.toLowerCase().endsWith('.gif') ?? false);
+    final youtube = e.isDirectVideo || e.videoUrl == null ? null : YoutubePlayerController.convertUrlToId(e.videoUrl!);
+
+    // Its video as the chat's own play (a file) on its poster, a YouTube video
+    // played in place, or any other player page's poster with a play mark that
+    // opens it in the browser.
+    Widget? media(double w) {
+      if (gif) return picture(w);
+      if (e.isDirectVideo) {
+        return VideoTile(
+          attachment: MessageAttachment(
+            id: e.videoUrl!,
+            filename: e.title ?? 'Video',
+            contentType: e.videoContentType ?? 'video/mp4',
+            url: e.videoUrl!,
+            width: e.imageWidth,
+            height: e.imageHeight,
+          ),
+          width: w,
+          poster: e.imageUrl,
+        );
+      }
+      if (youtube != null) {
+        final ratio = (e.imageWidth ?? 0) > 0 && (e.imageHeight ?? 0) > 0 ? e.imageWidth! / e.imageHeight! : 16 / 9;
+        return _YouTubeTile(videoId: youtube, poster: e.imageUrl, ratio: ratio, width: w, title: e.title);
+      }
+      if (e.imageUrl == null) return null;
+      if (e.videoUrl == null) return picture(w);
+      return Stack(alignment: Alignment.center, children: [picture(w), const PlayMark()]);
+    }
+
+    if (e.title == null && e.description == null && (e.isBareImage || e.isDirectVideo)) {
+      final bare = media(width)!;
+      if ((e.isDirectVideo && !gif) || youtube != null) return bare;
+      final play = !gif && e.videoUrl != null && link != null;
+      return Semantics(
+        image: !play,
+        button: play,
+        label: play ? 'Video preview. Play' : 'Image preview',
+        child: GestureDetector(onTap: play ? () => MessageText.openLink(link) : null, child: bare),
+      );
+    }
+
+    final text = Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        if (e.provider != null) Text(e.provider!, style: DuvetType.caption.copyWith(color: colors.mutedForeground)),
+        // Four lines here hold what the desktop's two do in its wider
+        // card: a GitHub run's title with its result at the end.
+        if (e.title != null)
+          Text(
+            e.title!,
+            maxLines: 4,
+            overflow: TextOverflow.ellipsis,
+            style: DuvetType.rowTitle.copyWith(color: colors.foreground),
+          ),
+        if (e.description != null)
+          Padding(
+            padding: const EdgeInsets.only(top: 4),
+            child: Text(
+              e.description!,
+              maxLines: 4,
+              overflow: TextOverflow.ellipsis,
+              style: DuvetType.snippet.copyWith(color: colors.mutedForeground),
+            ),
+          ),
+      ],
+    );
     return Semantics(
       container: true,
-      button: e.url != null,
-      hint: e.url != null ? 'Double tap to open' : null,
+      button: link != null,
+      hint: link != null ? 'Double tap to open' : null,
       child: Builder(
         builder: (context) => GestureDetector(
-          onTap: e.url == null ? null : () => MessageText.openLink(Uri.parse(e.url!)),
+          onTap: link == null ? null : () => MessageText.openLink(link),
           child: Container(
             width: width,
             padding: const EdgeInsets.all(12),
@@ -957,44 +1102,180 @@ class EmbedCard extends StatelessWidget {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                if (e.provider != null)
-                  Text(e.provider!, style: DuvetType.caption.copyWith(color: colors.mutedForeground)),
-                // Four lines here hold what the desktop's two do in its wider
-                // card: a GitHub run's title with its result at the end.
-                if (e.title != null)
-                  Text(
-                    e.title!,
-                    maxLines: 4,
-                    overflow: TextOverflow.ellipsis,
-                    style: DuvetType.rowTitle.copyWith(color: colors.foreground),
-                  ),
-                if (e.description != null)
-                  Padding(
-                    padding: const EdgeInsets.only(top: 4),
-                    child: Text(
-                      e.description!,
-                      maxLines: 4,
-                      overflow: TextOverflow.ellipsis,
-                      style: DuvetType.snippet.copyWith(color: colors.mutedForeground),
-                    ),
-                  ),
-                if (e.imageUrl != null)
-                  Padding(
-                    padding: const EdgeInsets.only(top: 8),
-                    child: ClipRRect(
-                      borderRadius: BorderRadius.circular(DuvetTokens.radiusField),
-                      child: Image.network(
-                        e.imageUrl!,
-                        width: width - 24,
-                        height: 140,
-                        cacheWidth: ((width - 24) * MediaQuery.devicePixelRatioOf(context)).round(),
-                        fit: BoxFit.cover,
-                        excludeFromSemantics: true,
-                        errorBuilder: (_, _, _) => const SizedBox.shrink(),
+                if (e.thumbnailUrl == null)
+                  text
+                else
+                  // A small picture beside the text, as the desktop's card.
+                  Row(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Expanded(child: text),
+                      const SizedBox(width: 12),
+                      ClipRRect(
+                        borderRadius: BorderRadius.circular(DuvetTokens.radiusField),
+                        child: Image.network(
+                          e.thumbnailUrl!,
+                          width: 64,
+                          height: 64,
+                          cacheWidth: (64 * dpr).round(),
+                          fit: BoxFit.cover,
+                          excludeFromSemantics: true,
+                          errorBuilder: (_, _, _) => const SizedBox.shrink(),
+                        ),
                       ),
-                    ),
+                    ],
                   ),
+                if (media(width - 24) case final m?) Padding(padding: const EdgeInsets.only(top: 8), child: m),
               ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// A YouTube video in a message: its poster with a play mark until tapped,
+/// then the player in its place, so a scroll past starts no web view.
+class _YouTubeTile extends StatefulWidget {
+  final String videoId;
+  final String? poster;
+  final double ratio;
+  final double width;
+  final String? title;
+  const _YouTubeTile({required this.videoId, required this.ratio, required this.width, this.poster, this.title});
+
+  @override
+  State<_YouTubeTile> createState() => _YouTubeTileState();
+}
+
+class _YouTubeTileState extends State<_YouTubeTile> with AutomaticKeepAliveClientMixin {
+  YouTubeSession? _session;
+  Animation<double>? _route;
+
+  // Full screen: the view is there meanwhile, and this never takes it back,
+  // even rebuilt under it (the phone turned).
+  bool _away = false;
+
+  // A video started here goes on as the list scrolls it far away, and is where
+  // it got to when it scrolls back.
+  @override
+  bool get wantKeepAlive => _session != null;
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    _route?.removeStatusListener(_onRoute);
+    _route = ModalRoute.of(context)?.animation?..addStatusListener(_onRoute);
+  }
+
+  // Its chat starting to close: its view on to the dock in this frame, so it
+  // is never off screen for Android to pause.
+  void _onRoute(AnimationStatus status) {
+    final session = _session;
+    if (status != AnimationStatus.reverse || session == null || !session.playing) return;
+    setState(() => _session = null);
+    updateKeepAlive();
+    dockedYouTube.value = (id: widget.videoId, title: widget.title, seconds: session.seconds, session: session);
+  }
+
+  void _play() {
+    // A video starting here takes the dock's place.
+    dockedYouTube.value = null;
+    final session = YouTubeSession(widget.videoId, fullScreenButton: true);
+    session.onFullScreen = () => _fullScreen(session);
+    setState(() => _session = session);
+    updateKeepAlive();
+  }
+
+  // The view goes to a route of its own, and comes back as it is.
+  Future<void> _fullScreen(YouTubeSession session) async {
+    if (_away) return;
+    setState(() => _away = true);
+    await openYouTubeFullScreen(context, session: session, ratio: widget.ratio);
+    if (mounted) setState(() => _away = false);
+  }
+
+  @override
+  void dispose() {
+    _route?.removeStatusListener(_onRoute);
+    // Kept alive while it plays, it only goes here with its message, or with a
+    // chat replaced or closed without the pop _onRoute docks on: the dock
+    // would sit under the next screen, so the video stops.
+    _session?.close();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    super.build(context);
+    final height = math.min(widget.width / widget.ratio, 320.0);
+    final width = math.min(widget.width, height * widget.ratio);
+    final session = _session;
+    final playing = session != null;
+    final poster = Stack(
+      fit: StackFit.expand,
+      children: [
+        if (widget.poster case final poster?)
+          Image.network(
+            poster,
+            fit: BoxFit.cover,
+            cacheWidth: math.max(1, (width * MediaQuery.devicePixelRatioOf(context)).round()),
+            excludeFromSemantics: true,
+            errorBuilder: (_, _, _) => const SizedBox.shrink(),
+          ),
+        if (!playing) const Center(child: PlayMark()),
+      ],
+    );
+    return Semantics(
+      container: true,
+      button: !playing,
+      label: 'YouTube video${widget.title == null ? '' : ', ${widget.title}'}${playing ? '' : '. Play'}',
+      explicitChildNodes: playing,
+      excludeSemantics: !playing,
+      onTap: playing ? null : _play,
+      child: GestureDetector(
+        onTap: playing ? null : _play,
+        child: ClipRRect(
+          borderRadius: BorderRadius.circular(DuvetTokens.radiusButton),
+          child: ColoredBox(
+            color: videoBackdrop,
+            child: SizedBox(
+              width: width,
+              height: height,
+              child: Stack(
+                fit: StackFit.expand,
+                children: [
+                  if (session != null && !_away)
+                    YouTubeView(
+                      session,
+                      // Taps and scrubbing are the player's; a vertical drag still scrolls.
+                      gestureRecognizers: {
+                        Factory<TapGestureRecognizer>(TapGestureRecognizer.new),
+                        Factory<HorizontalDragGestureRecognizer>(HorizontalDragGestureRecognizer.new),
+                      },
+                    ),
+                  // Over the view, which paints its backdrop until the video
+                  // shows: the poster stays till then, as the package's does.
+                  IgnorePointer(
+                    ignoring: playing,
+                    child: session == null || _away
+                        ? poster
+                        : YoutubeValueBuilder(
+                            controller: session.controller,
+                            buildWhen: (o, n) => o.playerState != n.playerState,
+                            builder: (context, value) => AnimatedOpacity(
+                              duration: DuvetTokens.panelOut,
+                              opacity: switch (value.playerState) {
+                                PlayerState.unknown || PlayerState.unStarted => 1,
+                                _ => 0,
+                              },
+                              child: poster,
+                            ),
+                          ),
+                  ),
+                ],
+              ),
             ),
           ),
         ),
@@ -1013,18 +1294,255 @@ class ImageViewer extends StatefulWidget {
   State<ImageViewer> createState() => _ImageViewerState();
 }
 
-class _ImageViewerState extends State<ImageViewer> {
+/// Where the photo, at [photo] in [view] before any zoom, goes once scaled by
+/// [scale] and moved by [pan]: moved back so it stops at its edges. It covers
+/// the view on an axis it's larger than, and is centred on one it's smaller
+/// than.
+Offset clampToPhoto(double scale, Offset pan, Size view, Rect photo) {
+  double axis(double t, double start, double extent, double view) => extent * scale <= view
+      ? (view - extent * scale) / 2 - start * scale
+      : t.clamp(view - (start + extent) * scale, -start * scale);
+  return Offset(axis(pan.dx, photo.left, photo.width, view.width), axis(pan.dy, photo.top, photo.height, view.height));
+}
+
+class _ImageViewerState extends State<ImageViewer> with TickerProviderStateMixin {
   late final _pages = PageController(initialPage: widget.initial);
   late int _index = widget.initial;
-  double _drag = 0;
 
-  static const _ink = Color(0xFFF2F1EE);
+  // The zoom of the photo shown: paging stops while it's zoomed, so the others
+  // are always at their size.
+  double _scale = 1;
+  Offset _pan = Offset.zero;
+  // Zoomed in, a finger pans the photo: swiping to page or to close waits
+  // until it's back at its size.
+  bool get _zoomed => _scale > 1.01;
+  Size _view = Size.zero;
+  Offset _tapAt = Offset.zero;
+  // The pinch, or the pan while zoomed, as it began: since the fingers down
+  // last changed. Taken from the fingers themselves, not from a recognizer:
+  // the swipe or the page may have won the first finger before the second
+  // landed.
+  double _startScale = 1;
+  Offset _startPan = Offset.zero;
+  Offset _startFocal = Offset.zero;
+  double _startSpan = 0;
+  Offset _focal = Offset.zero;
+  bool _moved = false;
+  VelocityTracker? _speed;
+  late final _zoomMotion = AnimationController(vsync: this, duration: DuvetTokens.panelIn);
+  Animation<double>? _scaleTo;
+  Animation<Offset>? _panTo;
+  static const _maxScale = 5.0;
+
+  // The swipe to close: the photo follows the finger, and springs back when
+  // let go short of closing.
+  Offset _drag = Offset.zero;
+  bool _swiping = false;
+  // The fingers down, where they are, and the one the swipe follows: a drag
+  // reports whichever finger landed last, so a second one would throw the
+  // photo to it.
+  final _fingers = <int, Offset>{};
+  int? _finger;
+  static const _closeAt = 120.0;
+  late final _back = AnimationController(vsync: this, duration: DuvetTokens.panelOut);
+  Animation<Offset>? _dragBack;
+
+  // Two fingers down is a pinch: swiping to page or to close steps aside, as
+  // either would take a pinch with one finger still.
+  bool get _pinching => _fingers.length > 1;
+
+  static const _ink = DuvetTokens.mediaInk;
   static const _ground = Color(0xFF0A0A0B);
+
+  @override
+  void initState() {
+    super.initState();
+    _zoomMotion.addListener(
+      () => setState(() {
+        _scale = _scaleTo!.value;
+        _pan = _panTo!.value;
+      }),
+    );
+    _back.addListener(() => setState(() => _drag = _dragBack!.value));
+  }
 
   @override
   void dispose() {
     _pages.dispose();
+    _zoomMotion.dispose();
+    _back.dispose();
     super.dispose();
+  }
+
+  /// Where the photo shown sits in the view at its size.
+  Rect get _photo {
+    final a = widget.gallery[_index];
+    final whole = Offset.zero & _view;
+    // shortcut: a photo of unknown size takes the whole view, so panning can reach past its edges.
+    if (a.width == null || a.height == null || a.width == 0 || a.height == 0) return whole;
+    final size = Size(a.width!.toDouble(), a.height!.toDouble());
+    final fitted = applyBoxFit(BoxFit.contain, size, _view).destination;
+    // A photo smaller than the screen shows at its own size: it isn't scaled up.
+    return Alignment.center.inscribe(fitted.width > size.width ? size : fitted, whole);
+  }
+
+  // Eases the zoom to [scale] and [pan], as Duvet's panels settle.
+  void _settle(double scale, Offset pan) {
+    _zoomMotion.stop();
+    if (MediaQuery.disableAnimationsOf(context)) {
+      setState(() {
+        _scale = scale;
+        _pan = pan;
+      });
+      return;
+    }
+    final curve = CurvedAnimation(parent: _zoomMotion, curve: DuvetTokens.decelerate);
+    _scaleTo = Tween(begin: _scale, end: scale).animate(curve);
+    _panTo = Tween(begin: _pan, end: pan).animate(curve);
+    _zoomMotion.forward(from: 0);
+  }
+
+  // Double-tap: zoom in where tapped, or back out.
+  void _toggleZoom() {
+    const scale = 2.5;
+    _settle(_zoomed ? 1 : scale, _zoomed ? Offset.zero : clampToPhoto(scale, _tapAt * (1 - scale), _view, _photo));
+  }
+
+  Offset get _fingersFocal => _fingers.values.reduce((a, b) => a + b) / _fingers.length.toDouble();
+
+  // The fingers' mean distance from their focal point: 0 for one finger.
+  double get _fingersSpan {
+    final focal = _fingersFocal;
+    return _fingers.values.map((p) => (p - focal).distance).reduce((a, b) => a + b) / _fingers.length;
+  }
+
+  // From here on, the photo moves from where it is under the fingers down now.
+  void _rebase() {
+    _startScale = _scale;
+    _startPan = _pan;
+    _startFocal = _focal = _fingersFocal;
+    _startSpan = _fingersSpan;
+    _speed = VelocityTracker.withKind(PointerDeviceKind.touch);
+  }
+
+  // The photo's point under the fingers stays under them. Past 1× or 5×, or
+  // past an edge, it gives a little, and settles back when let go.
+  void _pinchMove(Duration at) {
+    // Moved during a double-tap's zoom: it stops where it is. A tap doesn't stop it.
+    if (_zoomMotion.isAnimating) {
+      _zoomMotion.stop();
+      _rebase();
+    }
+    _moved = true;
+    final focal = _fingersFocal;
+    final span = _fingersSpan;
+    final raw = _startSpan > 0 && span > 0 ? _startScale * span / _startSpan : _startScale;
+    final scale = raw < 1
+        ? 1 - (1 - raw) / 3
+        : raw > _maxScale
+        ? _maxScale + (raw - _maxScale) / 3
+        : raw;
+    final pan = focal - (_startFocal - _startPan) * (scale / _startScale);
+    final kept = clampToPhoto(scale, pan, _view, _photo);
+    _speed?.addPosition(at, focal);
+    setState(() {
+      _focal = focal;
+      _scale = scale;
+      _pan = kept + (pan - kept) / 3;
+    });
+  }
+
+  // The last finger up: back within 1× to 5× about the fingers, and a flick
+  // carries on a little.
+  void _pinchEnd() {
+    if (!_moved) return;
+    _moved = false;
+    final scale = _scale.clamp(1.0, _maxScale);
+    // Barely zoomed is a brush, not a zoom: it'd leave swiping to close off.
+    if (scale < 1.1) return _settle(1, Offset.zero);
+    final flung = _speed?.getVelocity().pixelsPerSecond ?? Offset.zero;
+    final pan = _focal - (_focal - _pan) * (scale / _scale) + flung * 0.15;
+    _settle(scale, clampToPhoto(scale, pan, _view, _photo));
+  }
+
+  void _dragStart(DragStartDetails _) {
+    // Two fingers down is a pinch, not a swipe.
+    if (_fingers.length != 1) return;
+    _back.stop();
+    _swiping = true;
+    _finger = _fingers.keys.single;
+    // Picked up, as a long-pressed message is.
+    HapticFeedback.mediumImpact();
+  }
+
+  void _follow(Offset by) {
+    final closing = _drag.dy.abs() > _closeAt;
+    setState(() => _drag += by);
+    // Letting go now closes it, or no longer does: as swipe-to-reply arms.
+    if ((_drag.dy.abs() > _closeAt) != closing) HapticFeedback.selectionClick();
+  }
+
+  void _press(PointerDownEvent e) {
+    setState(() => _fingers[e.pointer] = e.position);
+    // A second finger mid-swipe: the photo goes back, and the two pinch.
+    if (_pinching && _swiping) {
+      _swiping = false;
+      _finger = null;
+      _springBack();
+    }
+    _rebase();
+  }
+
+  void _move(PointerMoveEvent e) {
+    if (!_fingers.containsKey(e.pointer)) return;
+    _fingers[e.pointer] = e.position;
+    if (e.pointer == _finger) return _follow(e.delta);
+    // At its size, one finger swipes to page or to close: it doesn't move the photo.
+    if (_pinching || (_zoomed && !_swiping)) _pinchMove(e.timeStamp);
+  }
+
+  void _lift(PointerEvent e) {
+    setState(() => _fingers.remove(e.pointer));
+    if (e.pointer == _finger) {
+      _finger = null;
+      // The system took the touch (the notification shade, a call): the drag
+      // reports it as a release, so it's caught here, and it goes back.
+      if (e is PointerCancelEvent && _swiping) {
+        _swiping = false;
+        _springBack();
+      }
+    }
+    if (_fingers.isEmpty) return _pinchEnd();
+    // The fingers left carry on from where the photo is.
+    _rebase();
+  }
+
+  // [d] is null when the drag was cancelled (a system cancel is caught in
+  // _lift, as the drag reports it as a release): then it always goes back.
+  void _dragEnd(DragEndDetails? d) {
+    if (!_swiping) return;
+    _swiping = false;
+    _finger = null;
+    final speed = d?.primaryVelocity ?? 0;
+    // A flick back toward where it started doesn't close it.
+    final flung = speed.abs() > 800 && speed.sign == _drag.dy.sign;
+    if (d != null && (_drag.dy.abs() > _closeAt || flung)) {
+      Navigator.of(context).pop();
+      return;
+    }
+    _springBack();
+  }
+
+  void _springBack() {
+    if (MediaQuery.disableAnimationsOf(context)) {
+      setState(() => _drag = Offset.zero);
+      return;
+    }
+    _dragBack = Tween(
+      begin: _drag,
+      end: Offset.zero,
+    ).animate(CurvedAnimation(parent: _back, curve: DuvetTokens.overshoot));
+    _back.forward(from: 0);
   }
 
   void _toast(String text) {
@@ -1052,7 +1570,21 @@ class _ImageViewerState extends State<ImageViewer> {
   Widget build(BuildContext context) {
     final current = widget.gallery[_index];
     final padding = MediaQuery.paddingOf(context);
-    final fade = (1 - _drag.abs() / 400).clamp(0.3, 1.0);
+    final view = MediaQuery.sizeOf(context);
+    if (view != _view) {
+      // Turned while zoomed: the photo comes back within its edges.
+      if (!_view.isEmpty && _zoomed) {
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (mounted) setState(() => _pan = clampToPhoto(_scale, _pan, _view, _photo));
+        });
+      }
+      _view = view;
+    }
+    final fade = (1 - _drag.dy.abs() / 400).clamp(0.3, 1.0);
+    // Shrinks as it goes, to three quarters at a screen's height away.
+    final shrink = _view.height == 0 ? 1.0 : 1 - (_drag.dy.abs() / _view.height).clamp(0.0, 1.0) * 0.25;
+    // The bars give the photo the screen while it's dragged.
+    final chrome = (fade - 0.3) / 0.7;
     Widget action(IconData icon, String label, VoidCallback onTap) => Expanded(
       child: Semantics(
         button: true,
@@ -1087,39 +1619,66 @@ class _ImageViewerState extends State<ImageViewer> {
           backgroundColor: _ground.withValues(alpha: fade),
           body: Stack(
             children: [
-              // Swipe down (or up) to close.
-              GestureDetector(
-                onVerticalDragUpdate: (d) => setState(() => _drag += d.delta.dy),
-                onVerticalDragEnd: (_) {
-                  if (_drag.abs() > 120) {
-                    Navigator.of(context).pop();
-                  } else {
-                    setState(() => _drag = 0);
-                  }
-                },
-                child: Transform.translate(
-                  offset: Offset(0, _drag),
-                  child: PageView.builder(
-                    controller: _pages,
-                    itemCount: widget.gallery.length,
-                    onPageChanged: (i) => setState(() => _index = i),
-                    itemBuilder: (context, i) {
-                      final a = widget.gallery[i];
-                      return Semantics(
-                        image: true,
-                        label: '${a.isGif ? 'GIF' : 'Photo'}, ${a.displayName}, ${i + 1} of ${widget.gallery.length}',
-                        excludeSemantics: true,
-                        child: InteractiveViewer(
-                          maxScale: 5,
-                          child: Center(
-                            child: Hero(
-                              tag: _heroTag(a),
-                              child: _image(a, MediaQuery.sizeOf(context).width, fit: BoxFit.contain),
+              // Swipe down (or up) to close: started up or down, the photo then
+              // follows its finger either way, on the screen as it moves.
+              Listener(
+                onPointerDown: _press,
+                onPointerMove: _move,
+                onPointerUp: _lift,
+                onPointerCancel: _lift,
+                child: GestureDetector(
+                  onDoubleTapDown: (d) => _tapAt = d.localPosition,
+                  onDoubleTap: _toggleZoom,
+                  child: Transform.translate(
+                    offset: _drag,
+                    child: Transform.scale(
+                      scale: shrink,
+                      child: PageView.builder(
+                        controller: _pages,
+                        physics: _zoomed || _pinching ? const NeverScrollableScrollPhysics() : null,
+                        itemCount: widget.gallery.length,
+                        onPageChanged: (i) => setState(() => _index = i),
+                        itemBuilder: (context, i) {
+                          final a = widget.gallery[i];
+                          return Semantics(
+                            image: true,
+                            label:
+                                '${a.isGif ? 'GIF' : 'Photo'}, ${a.displayName}, ${i + 1} of ${widget.gallery.length}',
+                            excludeSemantics: true,
+                            child: RawGestureDetector(
+                              gestures: {
+                                if (!_zoomed && !_pinching)
+                                  _OneFingerDrag: GestureRecognizerFactoryWithHandlers<_OneFingerDrag>(
+                                    _OneFingerDrag.new,
+                                    (r) => r
+                                      ..gestureSettings = MediaQuery.gestureSettingsOf(context)
+                                      ..onStart = _dragStart
+                                      ..onEnd = _dragEnd
+                                      ..onCancel = (() => _dragEnd(null)),
+                                  ),
+                              },
+                              // The whole screen takes a pinch, not only the photo: a
+                              // wide one leaves most of it empty.
+                              child: ColoredBox(
+                                color: Colors.transparent,
+                                child: Transform(
+                                  transform: i == _index
+                                      ? (Matrix4.diagonal3Values(_scale, _scale, 1)
+                                          ..setTranslationRaw(_pan.dx, _pan.dy, 0))
+                                      : Matrix4.identity(),
+                                  child: Center(
+                                    child: Hero(
+                                      tag: _heroTag(a),
+                                      child: _image(a, MediaQuery.sizeOf(context).width, fit: BoxFit.contain),
+                                    ),
+                                  ),
+                                ),
+                              ),
                             ),
-                          ),
-                        ),
-                      );
-                    },
+                          );
+                        },
+                      ),
+                    ),
                   ),
                 ),
               ),
@@ -1127,45 +1686,48 @@ class _ImageViewerState extends State<ImageViewer> {
                 top: 0,
                 left: 0,
                 right: 0,
-                child: _DarkGlass(
-                  edge: const Border(bottom: BorderSide(color: Color(0x1FFFFFFF))),
-                  child: Padding(
-                    padding: EdgeInsets.only(top: padding.top),
-                    child: SizedBox(
-                      height: DuvetTokens.sizeTopBar,
-                      child: Row(
-                        children: [
-                          const SizedBox(width: 8),
-                          Semantics(
-                            button: true,
-                            label: 'Close',
-                            excludeSemantics: true,
-                            onTap: () => Navigator.of(context).pop(),
-                            child: GestureDetector(
+                child: Opacity(
+                  opacity: chrome,
+                  child: _DarkGlass(
+                    edge: const Border(bottom: BorderSide(color: DuvetTokens.mediaScrimEdge)),
+                    child: Padding(
+                      padding: EdgeInsets.only(top: padding.top),
+                      child: SizedBox(
+                        height: DuvetTokens.sizeTopBar,
+                        child: Row(
+                          children: [
+                            const SizedBox(width: 8),
+                            Semantics(
+                              button: true,
+                              label: 'Close',
+                              excludeSemantics: true,
                               onTap: () => Navigator.of(context).pop(),
-                              child: const SizedBox.square(dimension: 40, child: Icon(FLucideIcons.x, color: _ink)),
+                              child: GestureDetector(
+                                onTap: () => Navigator.of(context).pop(),
+                                child: const SizedBox.square(dimension: 40, child: Icon(FLucideIcons.x, color: _ink)),
+                              ),
                             ),
-                          ),
-                          Expanded(
-                            child: Column(
-                              mainAxisAlignment: MainAxisAlignment.center,
-                              children: [
-                                Text(
-                                  current.displayName,
-                                  maxLines: 1,
-                                  overflow: TextOverflow.ellipsis,
-                                  style: DuvetType.rowTitle.copyWith(color: _ink),
-                                ),
-                                if (widget.gallery.length > 1)
+                            Expanded(
+                              child: Column(
+                                mainAxisAlignment: MainAxisAlignment.center,
+                                children: [
                                   Text(
-                                    '${_index + 1} of ${widget.gallery.length}',
-                                    style: DuvetType.caption.copyWith(color: const Color(0xFF949392)),
+                                    current.displayName,
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis,
+                                    style: DuvetType.rowTitle.copyWith(color: _ink),
                                   ),
-                              ],
+                                  if (widget.gallery.length > 1)
+                                    Text(
+                                      '${_index + 1} of ${widget.gallery.length}',
+                                      style: DuvetType.caption.copyWith(color: const Color(0xFF949392)),
+                                    ),
+                                ],
+                              ),
                             ),
-                          ),
-                          const SizedBox(width: 48),
-                        ],
+                            const SizedBox(width: 48),
+                          ],
+                        ),
                       ),
                     ),
                   ),
@@ -1176,32 +1738,24 @@ class _ImageViewerState extends State<ImageViewer> {
                   left: 0,
                   right: 0,
                   bottom: 0,
-                  child: Column(
-                    children: [
-                      Padding(
-                        padding: const EdgeInsets.only(bottom: 12),
-                        child: Text(
-                          'Swipe down to close · pinch to zoom',
-                          style: DuvetType.caption.copyWith(color: const Color(0xFF949392)),
+                  child: Opacity(
+                    opacity: chrome,
+                    child: _DarkGlass(
+                      edge: const Border(top: BorderSide(color: DuvetTokens.mediaScrimEdge)),
+                      child: Padding(
+                        padding: EdgeInsets.fromLTRB(16, 8, 16, 8 + padding.bottom),
+                        child: Row(
+                          children: [
+                            action(FLucideIcons.download, 'Save', () => _save(current)),
+                            action(FLucideIcons.share2, 'Share', () => _share(current)),
+                            action(FLucideIcons.link, 'Copy link', () async {
+                              await Clipboard.setData(ClipboardData(text: current.url));
+                              _toast('Link copied');
+                            }),
+                          ],
                         ),
                       ),
-                      _DarkGlass(
-                        edge: const Border(top: BorderSide(color: Color(0x1FFFFFFF))),
-                        child: Padding(
-                          padding: EdgeInsets.fromLTRB(16, 8, 16, 8 + padding.bottom),
-                          child: Row(
-                            children: [
-                              action(FLucideIcons.download, 'Save', () => _save(current)),
-                              action(FLucideIcons.share2, 'Share', () => _share(current)),
-                              action(FLucideIcons.link, 'Copy link', () async {
-                                await Clipboard.setData(ClipboardData(text: current.url));
-                                _toast('Link copied');
-                              }),
-                            ],
-                          ),
-                        ),
-                      ),
-                    ],
+                    ),
                   ),
                 ),
             ],
@@ -1209,6 +1763,28 @@ class _ImageViewerState extends State<ImageViewer> {
         ),
       ),
     );
+  }
+}
+
+/// A swipe that steps aside as soon as a second finger lands, before it has
+/// started: that's a pinch, though one finger held still makes it look like a
+/// drag. Once under way, it keeps the first finger, and the viewer springs the
+/// photo back and pinches with both.
+class _OneFingerDrag extends VerticalDragGestureRecognizer {
+  final _pointers = <int>{};
+
+  @override
+  void addAllowedPointer(PointerDownEvent event) {
+    super.addAllowedPointer(event);
+    _pointers.add(event.pointer);
+    // Only the open arenas reject: a started swipe's first finger is already won.
+    if (_pointers.length > 1) resolve(GestureDisposition.rejected);
+  }
+
+  @override
+  void didStopTrackingLastPointer(int pointer) {
+    _pointers.clear();
+    super.didStopTrackingLastPointer(pointer);
   }
 }
 
@@ -1223,7 +1799,7 @@ class _DarkGlass extends StatelessWidget {
     child: BackdropFilter(
       filter: glassBackdrop(16),
       child: DecoratedBox(
-        decoration: BoxDecoration(color: const Color(0x8C111113), border: edge),
+        decoration: BoxDecoration(color: DuvetTokens.mediaScrim, border: edge),
         child: child,
       ),
     ),

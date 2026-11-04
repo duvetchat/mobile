@@ -803,9 +803,7 @@ void main() {
     GifSource.instance = _Gifs();
     final repository = await openGeneral(tester);
     Future<void> replyToLeo() async {
-      await tester.tap(find.text('Pushed the new type ramp'));
-      await tester.pump(const Duration(milliseconds: 50));
-      await tester.tap(find.text('Pushed the new type ramp'));
+      await tester.drag(find.text('Pushed the new type ramp'), const Offset(-120, 0));
       await tester.pumpAndSettle();
       expect(find.text('Replying to Leo — Pushed the new type ramp'), findsOneWidget);
     }

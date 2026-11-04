@@ -14,6 +14,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:forui/forui.dart';
 
 import 'support/fake_repository.dart';
+import 'support/fonts.dart';
 
 /// The design-system components and screens, drawn in both themes. Update
 /// them with `flutter test --update-goldens test/goldens_test.dart`.
@@ -21,17 +22,10 @@ void main() {
   setUpAll(() async {
     TestWidgetsFlutterBinding.ensureInitialized();
     DeepLinkSource.instance = _NoLinks();
-    // The app's own faces, not the test font's boxes.
-    final sans = FontLoader('Fira Sans');
-    for (final w in ['Regular', 'Medium', 'Bold']) {
-      sans.addFont(rootBundle.load('assets/fonts/FiraSans-$w.ttf'));
-    }
-    await sans.load();
+    await loadAppFonts();
     final icons = FontLoader('packages/forui_lucide/ForuiLucideIcons')
       ..addFont(rootBundle.load('packages/forui_lucide/assets/lucide.ttf'));
     await icons.load();
-    final mono = FontLoader('Fira Mono')..addFont(rootBundle.load('assets/fonts/FiraMono-Regular.ttf'));
-    await mono.load();
     EmojiCatalog.debugUse(await EmojiCatalog.load());
   });
 
@@ -197,6 +191,43 @@ void main() {
           await expectLater(find.byType(DuvetApp), matchesGoldenFile('goldens/chat_${b.name}.png'));
         }),
       ),
+    );
+
+    // The ghost in the screens: Welcome, a tab root's night sky, a new DM.
+    Future<FakeRepository> app(WidgetTester tester, {bool signedIn = true}) async {
+      phone(tester);
+      final repository = FakeRepository(signedIn: signedIn);
+      final appearance = Appearance(MemoryAppearanceStore())
+        ..value = b == Brightness.dark ? ThemeMode.dark : ThemeMode.light;
+      await tester.pumpWidget(DuvetApp(repository: repository, appearance: appearance));
+      await tester.pumpAndSettle();
+      return repository;
+    }
+
+    testWidgets(
+      'welcome, ${b.name}',
+      (tester) => withShadows(() async {
+        await app(tester, signedIn: false);
+        await expectLater(find.byType(DuvetApp), matchesGoldenFile('goldens/welcome_${b.name}.png'));
+      }),
+    );
+
+    testWidgets(
+      'chats, ${b.name}',
+      (tester) => withShadows(() async {
+        await app(tester);
+        await expectLater(find.byType(DuvetApp), matchesGoldenFile('goldens/chats_${b.name}.png'));
+      }),
+    );
+
+    testWidgets(
+      'empty DM, ${b.name}',
+      (tester) => withShadows(() async {
+        await app(tester);
+        await tester.tap(find.text('Leo'));
+        await tester.pumpAndSettle();
+        await expectLater(find.byType(DuvetApp), matchesGoldenFile('goldens/empty_dm_${b.name}.png'));
+      }),
     );
   }
 }

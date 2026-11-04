@@ -14,6 +14,7 @@ import 'package:file_picker/file_picker.dart';
 import 'package:image_picker/image_picker.dart';
 
 import 'calls.dart';
+import 'data/appearance.dart' show AppearanceScope, ReplyGesture;
 import 'data/emoji_catalog.dart';
 import 'data/links.dart';
 import 'data/message_tokens.dart';
@@ -32,6 +33,8 @@ import 'voice_room.dart' show openVoiceRoom;
 import 'widgets/avatar.dart';
 import 'widgets/bot_ui.dart';
 import 'widgets/chrome.dart';
+import 'widgets/duvet_mascot.dart';
+import 'widgets/ghost_art.dart';
 import 'widgets/disintegrate.dart';
 import 'widgets/composer_controller.dart';
 import 'widgets/depth.dart';
@@ -302,6 +305,10 @@ class _ChatViewState extends State<ChatView> {
       nameOf: (id) => names[id] ?? _repository.nameOf(id),
       emojiOf: (id) => emojis[id],
       roomOf: (id) => rooms[id],
+      nameColorsOf: switch (widget.target) {
+        RoomTarget(:final spaceId) => (id) => nameColorsOf(_repository.rolesOf(spaceId, id)),
+        ConversationTarget() => (_) => null,
+      },
     );
   }
 
@@ -1036,7 +1043,11 @@ class _ChatViewState extends State<ChatView> {
       final removed = _entries[i];
       // Its place stays, empty, while the dust goes; then the list closes up.
       if (_keys[m.id] case final key?) {
-        if (disintegrate(context, key) case final dust?) {
+        final covered = EdgeInsets.only(
+          top: _topHeight == 0 ? GlassTopBar.heightOf(context) : _topHeight,
+          bottom: _composerHeight,
+        );
+        if (disintegrate(context, key, _linkFor(m.id), covered: covered) case final dust?) {
           setState(() => _vanishing.add(m.id));
           await dust;
           // The dust gone, the messages around ease together.
@@ -1133,6 +1144,10 @@ class _ChatViewState extends State<ChatView> {
   }
 
   GlobalKey _keyFor(String id) => _keys.putIfAbsent(id, GlobalKey.new);
+
+  // Each message's place, for its dust to follow as the list scrolls.
+  final _links = <String, LayerLink>{};
+  LayerLink _linkFor(String id) => _links.putIfAbsent(id, LayerLink.new);
 
   /// Scrolls toward older messages until [find] has a context (its item got
   /// built), or the list runs out. Answers whether it was found.
@@ -1290,6 +1305,7 @@ class _ChatViewState extends State<ChatView> {
     'wav' => 'audio/wav',
     'gif' => 'image/gif',
     'png' => 'image/png',
+    'apng' => 'image/apng',
     'webp' => 'image/webp',
     'jpg' || 'jpeg' => 'image/jpeg',
     'heic' => 'image/heic',
@@ -2207,70 +2223,83 @@ class _ChatViewState extends State<ChatView> {
               child: GlassChrome(
                 top: false,
                 hairline: _underComposer,
+                // The tray runs edge to edge, its files scrolling to the
+                // screen's edges; the rest sits 16 in.
                 child: Padding(
-                  padding: EdgeInsets.fromLTRB(16, 8, 16, 8 + MediaQuery.paddingOf(context).bottom),
+                  padding: EdgeInsets.fromLTRB(0, 8, 0, 8 + MediaQuery.paddingOf(context).bottom),
                   child: Column(
                     mainAxisSize: MainAxisSize.min,
                     children: [
-                      _TypingLine(
-                        users: [
-                          for (final MapEntry(key: id, value: t) in _typing.entries)
-                            TypingUser(userId: id, name: t.name, recording: t.recording),
-                        ],
+                      Padding(
+                        padding: const EdgeInsets.symmetric(horizontal: 16),
+                        child: _TypingLine(
+                          users: [
+                            for (final MapEntry(key: id, value: t) in _typing.entries)
+                              TypingUser(userId: id, name: t.name, recording: t.recording),
+                          ],
+                        ),
                       ),
                       if (_files.isNotEmpty && _editing == null)
                         _AttachmentTray(files: _files, onRemove: (f) => setState(() => _files.remove(f))),
-                      _ComposerStrip(
-                        reply: _replyTo,
-                        editing: _editing != null,
-                        onClose: () {
-                          if (_editing != null) {
-                            setState(_stopEditing);
-                          } else {
-                            _cancelReply();
-                          }
-                        },
-                      ),
-                      if (_recording && !_recordLocked) const _RecordingHint(),
-                      // The field stays while recording, unseen: a held Send
-                      // keeps its gesture until it's released.
-                      Stack(
-                        children: [
-                          Visibility(
-                            visible: !_recording,
-                            maintainState: true,
-                            maintainAnimation: true,
-                            maintainSize: true,
-                            maintainInteractivity: true,
-                            maintainSemantics: false,
-                            child: _ComposerField(
-                              controller: _composer,
-                              focusNode: _focus,
-                              hint: widget.threadOf != null
-                                  ? 'Reply in thread'
-                                  : 'Message ${widget.title.replaceFirst('# ', '#')}',
-                              canSend: _canSend,
+                      Padding(
+                        padding: const EdgeInsets.symmetric(horizontal: 16),
+                        child: Column(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            _ComposerStrip(
+                              reply: _replyTo,
                               editing: _editing != null,
-                              onAttach: _openAttachMenu,
-                              onEmoji: _openPicker,
-                              onSend: _send,
-                              onHoldStart: () => _startRecording(locked: false),
-                              onHoldMove: _onHoldMove,
-                              onHoldEnd: _onHoldEnd,
+                              onClose: () {
+                                if (_editing != null) {
+                                  setState(_stopEditing);
+                                } else {
+                                  _cancelReply();
+                                }
+                              },
                             ),
-                          ),
-                          if (_recording)
-                            Positioned.fill(
-                              child: _RecordingField(
-                                elapsed: _recorded,
-                                levels: _levels,
-                                locked: _recordLocked,
-                                slide: _recordSlide,
-                                onCancel: () => _stopRecording(send: false),
-                                onSend: () => _stopRecording(send: true),
-                              ),
+                            if (_recording && !_recordLocked) const _RecordingHint(),
+                            // The field stays while recording, unseen: a held Send
+                            // keeps its gesture until it's released.
+                            Stack(
+                              children: [
+                                Visibility(
+                                  visible: !_recording,
+                                  maintainState: true,
+                                  maintainAnimation: true,
+                                  maintainSize: true,
+                                  maintainInteractivity: true,
+                                  maintainSemantics: false,
+                                  child: _ComposerField(
+                                    controller: _composer,
+                                    focusNode: _focus,
+                                    hint: widget.threadOf != null
+                                        ? 'Reply in thread'
+                                        : 'Message ${widget.title.replaceFirst('# ', '#')}',
+                                    canSend: _canSend,
+                                    editing: _editing != null,
+                                    onAttach: _openAttachMenu,
+                                    onEmoji: _openPicker,
+                                    onSend: _send,
+                                    onHoldStart: () => _startRecording(locked: false),
+                                    onHoldMove: _onHoldMove,
+                                    onHoldEnd: _onHoldEnd,
+                                  ),
+                                ),
+                                if (_recording)
+                                  Positioned.fill(
+                                    child: _RecordingField(
+                                      elapsed: _recorded,
+                                      levels: _levels,
+                                      locked: _recordLocked,
+                                      slide: _recordSlide,
+                                      onCancel: () => _stopRecording(send: false),
+                                      onSend: () => _stopRecording(send: true),
+                                    ),
+                                  ),
+                              ],
                             ),
-                        ],
+                          ],
+                        ),
                       ),
                     ],
                   ),
@@ -2329,27 +2358,58 @@ class _ChatViewState extends State<ChatView> {
     );
   }
 
+  /// A quick first line goes into the composer to edit or send, not straight out.
+  void _startWith(String line) {
+    _composer.value = TextEditingValue(
+      text: line,
+      selection: TextSelection.collapsed(offset: line.length),
+    );
+    _focus.requestFocus();
+  }
+
   Widget _body(BuildContext context) {
-    final colors = context.theme.colors;
     if (_loading && _entries.isEmpty) return const Center(child: FCircularProgress());
     if (_error != null && _entries.isEmpty) {
       return EmptyState(
-        icon: FLucideIcons.cloudOff,
+        mascot: MascotState.oops,
         text: 'Couldn’t load messages',
         action: DuvetButton(label: 'Try again', onPressed: _load),
       );
     }
     if (_entries.isEmpty) {
-      return Center(
-        child: Text('No messages yet. Say hi!', style: DuvetType.body.copyWith(color: colors.mutedForeground)),
-      );
+      // A new DM: the ghost tucked in, and a first line to start with.
+      if (widget.target is ConversationTarget && widget.threadOf == null) {
+        return EmptyState(
+          mascot: MascotState.underDuvet,
+          text: 'Just you and ${widget.title}',
+          action: Wrap(
+            spacing: 8,
+            runSpacing: 8,
+            alignment: WrapAlignment.center,
+            children: [
+              for (final line in const ['Hi!', 'How’s it going?'])
+                DuvetChip(label: line, selected: false, action: true, onTap: () => _startWith(line)),
+            ],
+          ),
+        );
+      }
+      return const EmptyState(mascot: MascotState.empty, text: 'No messages yet. Say hi!');
     }
     final items = _items();
     final count = items.length + (_loadingOlder ? 1 : 0);
     final top = _topHeight == 0 ? GlassTopBar.heightOf(context) : _topHeight;
+    // Where each message is now: one kept alive off screen (a YouTube video playing) follows it as newer ones come.
+    final indexOf = <Key, int>{
+      for (final (i, item) in items.indexed)
+        if (item case _Message(:final entry)) ?_keys[entry.message.id]: items.length - 1 - i,
+    };
     return ListView.builder(
       controller: _scroll,
       reverse: true,
+      findChildIndexCallback: (key) => indexOf[key],
+      // A list with its own controller only scrolls once full: a short chat bounces too.
+      physics: const AlwaysScrollableScrollPhysics(),
+      keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
       padding: EdgeInsets.fromLTRB(16, top + 8, 16, _composerHeight + 8),
       itemCount: count,
       itemBuilder: (context, index) {
@@ -2379,10 +2439,13 @@ class _ChatViewState extends State<ChatView> {
                     key: _keyFor(entry.message.id),
                     // Its own layer, for the picture a delete breaks up.
                     child: RepaintBoundary(
-                      child: _Vanish(
-                        hidden: _vanishing.contains(entry.message.id),
-                        closed: _closing.contains(entry.message.id),
-                        child: _bubbleFor(entry, first: first, last: last),
+                      child: CompositedTransformTarget(
+                        link: _linkFor(entry.message.id),
+                        child: _Vanish(
+                          hidden: _vanishing.contains(entry.message.id),
+                          closed: _closing.contains(entry.message.id),
+                          child: _bubbleFor(entry, first: first, last: last),
+                        ),
                       ),
                     ),
                   ),

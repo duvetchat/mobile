@@ -11,8 +11,16 @@ import 'package:flutter/rendering.dart';
 /// picture at once, so whatever [key] shows can go right after. Nothing
 /// happens with reduced motion, or when [key] isn't on screen in a
 /// [RepaintBoundary]: then it's null, else done once the dust has gone, in
-/// [_cap] at most.
-Future<void>? disintegrate(BuildContext context, GlobalKey key) {
+/// [_cap] at most. The dust follows [link]'s [CompositedTransformTarget], in
+/// [key]'s place, as its list scrolls, and goes with it, as when the chat
+/// closes. It stays within the list, but for the parts of it [covered] (the
+/// bars messages scroll under).
+Future<void>? disintegrate(
+  BuildContext context,
+  GlobalKey key,
+  LayerLink link, {
+  EdgeInsets covered = EdgeInsets.zero,
+}) {
   if (MediaQuery.disableAnimationsOf(context)) return null;
   final overlay = Overlay.maybeOf(context, rootOverlay: true);
   final boundary = key.currentContext?.findRenderObject();
@@ -20,7 +28,11 @@ Future<void>? disintegrate(BuildContext context, GlobalKey key) {
   if (overlay == null || boundary is! RenderRepaintBoundary || !boundary.hasSize || overlayBox is! RenderBox) {
     return null;
   }
-  final rect = MatrixUtils.transformRect(boundary.getTransformTo(overlayBox), Offset.zero & boundary.size);
+  Rect inOverlay(RenderBox box) => MatrixUtils.transformRect(box.getTransformTo(overlayBox), Offset.zero & box.size);
+  final size = boundary.size;
+  // Where the list shows messages: the dust is clipped to it.
+  final list = Scrollable.maybeOf(key.currentContext!)?.context.findRenderObject();
+  final shown = list is RenderBox && list.hasSize ? covered.deflateRect(inOverlay(list)) : inOverlay(overlayBox);
   final scale = MediaQuery.devicePixelRatioOf(context);
   final ui.Image image;
   try {
@@ -31,10 +43,12 @@ Future<void>? disintegrate(BuildContext context, GlobalKey key) {
   final done = Completer<void>();
   late final OverlayEntry entry;
   late final Timer cap;
+  late final Timer gone;
   // Its picture goes with it: disposed as the dust's state is.
   void finish() {
     if (done.isCompleted) return;
     cap.cancel();
+    gone.cancel();
     entry
       ..remove()
       ..dispose();
@@ -43,13 +57,34 @@ Future<void>? disintegrate(BuildContext context, GlobalKey key) {
 
   entry = OverlayEntry(
     builder: (_) => Positioned.fromRect(
-      rect: rect,
+      rect: shown,
       child: IgnorePointer(
-        child: _Dust(image: image, scale: scale, onDone: finish),
+        child: ClipRect(
+          child: Align(
+            alignment: Alignment.topLeft,
+            // Moved with its place by the compositor, in the same frame as
+            // the list.
+            child: CompositedTransformFollower(
+              link: link,
+              showWhenUnlinked: false,
+              child: SizedBox.fromSize(
+                size: size,
+                child: _Dust(image: image, scale: scale, onDone: finish),
+              ),
+            ),
+          ),
+        ),
       ),
     ),
   );
   overlay.insert(entry);
+  // The chat closed (its page on its way out), or its place gone from the
+  // list: so does the dust.
+  final page = ModalRoute.of(context);
+  gone = Timer.periodic(const Duration(milliseconds: 100), (_) {
+    final place = key.currentContext?.findRenderObject();
+    if (!(page?.isActive ?? true) || link.leader == null || !(place?.attached ?? false)) finish();
+  });
   // Not for ever, should its pixels never be read: else the picture would
   // stay drawn over the app.
   cap = Timer(_cap, finish);
@@ -77,15 +112,24 @@ class _Speck {
 /// few enough to draw every frame.
 const _size = 3.0;
 
+/// The most specks a picture makes: a bigger one makes bigger specks, as
+/// many squares a frame are too many to draw, and to work out first.
+const _maxSpecks = 2500;
+
 /// How long the sweep takes to cross, as a share of the whole.
 const _sweep = 0.45;
 
 /// The latest a speck sets off; each then takes the rest of the time.
 const _lastDelay = _sweep + 0.12;
 
-List<_Speck> _specks(ByteData rgba, int width, int height, double scale) {
+/// The specks of a picture [width] by [height] pixels, and their side in
+/// logical pixels.
+(List<_Speck>, double) _specks(ByteData rgba, int width, int height, double scale) {
   final random = Random();
-  final step = max(1, (_size * scale).round());
+  var step = max(max(1, (_size * scale).round()), sqrt(width * height / _maxSpecks).floor());
+  while ((width / step).ceil() * (height / step).ceil() > _maxSpecks) {
+    step++;
+  }
   final logicalWidth = width / scale;
   final specks = <_Speck>[];
   for (var y = 0; y < height; y += step) {
@@ -107,7 +151,20 @@ List<_Speck> _specks(ByteData rgba, int width, int height, double scale) {
       );
     }
   }
-  return specks;
+  return (specks, step / scale);
+}
+
+/// How many specks a fully opaque picture [width] by [height] pixels makes,
+/// and their side.
+@visibleForTesting
+(int, double) dustOf(int width, int height, double scale) {
+  final (specks, side) = _specks(
+    ByteData(width * height * 4)..buffer.asUint8List().fillRange(0, width * height * 4, 255),
+    width,
+    height,
+    scale,
+  );
+  return (specks.length, side);
 }
 
 /// The picture as it was until its pixels are read, then its specks.
@@ -126,7 +183,7 @@ class _DustState extends State<_Dust> with SingleTickerProviderStateMixin {
     ..addStatusListener((s) {
       if (s == AnimationStatus.completed) widget.onDone();
     });
-  List<_Speck>? _found;
+  (List<_Speck>, double)? _found;
 
   @override
   void initState() {
@@ -141,7 +198,10 @@ class _DustState extends State<_Dust> with SingleTickerProviderStateMixin {
       bytes = await image.toByteData();
     } catch (_) {}
     if (!mounted) return;
-    setState(() => _found = bytes == null ? const [] : _specks(bytes, image.width, image.height, widget.scale));
+    setState(
+      () =>
+          _found = bytes == null ? (const <_Speck>[], _size) : _specks(bytes, image.width, image.height, widget.scale),
+    );
     _controller.forward();
   }
 
@@ -155,15 +215,16 @@ class _DustState extends State<_Dust> with SingleTickerProviderStateMixin {
   @override
   Widget build(BuildContext context) => switch (_found) {
     null => RawImage(image: widget.image, scale: widget.scale),
-    final specks => CustomPaint(painter: _DustPainter(widget.image, specks, _controller)),
+    (final specks, final side) => CustomPaint(painter: _DustPainter(widget.image, specks, side, _controller)),
   };
 }
 
 class _DustPainter extends CustomPainter {
   final ui.Image image;
   final List<_Speck> specks;
+  final double speck;
   final Animation<double> t;
-  _DustPainter(this.image, this.specks, this.t) : super(repaint: t);
+  _DustPainter(this.image, this.specks, this.speck, this.t) : super(repaint: t);
 
   @override
   void paint(Canvas canvas, Size size) {
@@ -187,7 +248,7 @@ class _DustPainter extends CustomPainter {
       final p = ((t.value - s.delay) / (1 - _lastDelay)).clamp(0.0, 1.0);
       if (p <= 0 || p >= 1) continue;
       final eased = Curves.easeOutCubic.transform(p);
-      final side = _size * (1 - p * 0.6);
+      final side = speck * (1 - p * 0.6);
       paint.color = s.color.withValues(alpha: s.color.a * (1 - p));
       canvas.drawRect(s.origin + s.drift * eased & Size(side, side), paint);
     }

@@ -175,6 +175,21 @@ class _BotComponentsState extends State<BotComponents> {
                 ),
               );
       case ComponentKind.mediaGallery:
+        // One picture shows whole, at its own ratio (the desktop's
+        // object-contain); several are square thumbnails.
+        if (c.galleryUrls.length == 1) {
+          return ClipRRect(
+            borderRadius: BorderRadius.circular(DuvetTokens.radiusField),
+            child: Image.network(
+              c.galleryUrls.single,
+              width: 268,
+              // Decoded at its shown width: a big GIF's every frame at full size runs the phone out of memory.
+              cacheWidth: (268 * MediaQuery.devicePixelRatioOf(context)).round(),
+              fit: BoxFit.contain,
+              errorBuilder: (_, _, _) => const SizedBox.square(dimension: 128),
+            ),
+          );
+        }
         return Wrap(
           spacing: 4,
           runSpacing: 4,
@@ -223,7 +238,10 @@ class _BotButton extends StatelessWidget {
       onPressed: c.disabled
           ? null
           : link
-          ? (c.url == null ? null : () => MessageText.launch(Uri.parse(c.url!)))
+          ? switch (Uri.tryParse(c.url ?? '')) {
+              final u? when u.scheme == 'http' || u.scheme == 'https' => () => MessageText.launch(u),
+              _ => null,
+            }
           : onPressed,
     );
   }
@@ -345,9 +363,8 @@ class _Check extends StatelessWidget {
       width: 24,
       height: 24,
       decoration: BoxDecoration(
-        color: on ? Duvet.accent : null,
+        color: on ? Duvet.accent : context.duvet.secondaryFill,
         borderRadius: BorderRadius.circular(DuvetTokens.radiusChip),
-        border: Border.all(color: on ? Duvet.accent : colors.mutedForeground, width: 1.5),
       ),
       child: on ? Icon(FLucideIcons.check, size: 16, color: colors.primaryForeground) : null,
     );

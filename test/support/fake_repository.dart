@@ -354,9 +354,37 @@ class FakeRepository implements ChatRepository {
   }
 
   @override
-  Future<void> uploadProfileImage(ProfileImage kind, String path, CropRect crop) async {
+  Future<void> uploadProfileImage(ProfileImage kind, String path, {void Function(double progress)? onProgress}) async {
+    await _upload(onProgress);
     if (pictureRefused != null) throw ActionFailed(pictureRefused!);
-    account.add('${kind.name} $path ${crop.w.round()}x${crop.h.round()}');
+    account.add('${kind.name} $path');
+  }
+
+  @override
+  Future<void> removeProfileImage(ProfileImage kind) async {
+    if (pictureRefused != null) throw ActionFailed(pictureRefused!);
+    account.add('remove ${kind.name}');
+    final p = profile.value!;
+    profile.value = Profile(
+      id: p.id,
+      username: p.username,
+      alias: p.alias,
+      avatarUrl: kind == ProfileImage.avatar ? null : p.avatarUrl,
+      bannerUrl: kind == ProfileImage.banner ? null : p.bannerUrl,
+      bio: p.bio,
+      emailVerified: p.emailVerified,
+      status: p.status,
+    );
+  }
+
+  /// Held, an upload waits on it, its progress in [lastUpload].
+  Completer<void>? holdUploads;
+
+  Future<void> _upload(void Function(double progress)? onProgress) async {
+    if (onProgress == null) return;
+    onProgress(0);
+    lastUpload = onProgress;
+    await holdUploads?.future;
   }
 
   @override
@@ -421,6 +449,7 @@ class FakeRepository implements ChatRepository {
     return SpaceProfile(
       id: space.id,
       name: space.name,
+      iconUrl: space.iconUrl,
       bannerUrl: space.bannerUrl,
       memberCount: everyone.length,
       owner: spaceOwner,
@@ -437,18 +466,25 @@ class FakeRepository implements ChatRepository {
     String? iconPath,
     String? bannerPath,
     bool removeBanner = false,
+    bool removeIcon = false,
+    void Function(double progress)? onProgress,
   }) async {
+    if (iconPath != null || bannerPath != null) await _upload(onProgress);
     admin.add(
-      'space ${[if (name != null) 'name=$name', if (description != null) 'about=$description', if (iconPath != null) 'icon=$iconPath', if (bannerPath != null) 'banner=$bannerPath', if (removeBanner && bannerPath == null) 'banner=none'].join(' ')}',
+      'space ${[if (name != null) 'name=$name', if (description != null) 'about=$description', if (iconPath != null) 'icon=$iconPath', if (removeIcon && iconPath == null) 'icon=none', if (bannerPath != null) 'banner=$bannerPath', if (removeBanner && bannerPath == null) 'banner=none'].join(' ')}',
     );
-    if (name != null || bannerPath != null || removeBanner) {
+    if (name != null || iconPath != null || bannerPath != null || removeBanner || removeIcon) {
       spaces.value = [
         for (final s in spaces.value)
           s.id == spaceId
               ? Space(
                   id: s.id,
                   name: name ?? s.name,
-                  iconUrl: s.iconUrl,
+                  iconUrl: iconPath != null
+                      ? 'https://example.invalid/icon.png'
+                      : removeIcon
+                      ? null
+                      : s.iconUrl,
                   sections: s.sections,
                   onlineCount: s.onlineCount,
                   // As SPACE_UPDATE brings it: an uploaded banner, or none.
@@ -620,6 +656,8 @@ class FakeRepository implements ChatRepository {
         id: r.id,
         name: r.name,
         color: r.color,
+        colorVia: r.colorVia,
+        colorTo: r.colorTo,
         perms: r.perms,
         position: r.position,
         everyone: r.everyone,
@@ -642,13 +680,18 @@ class FakeRepository implements ChatRepository {
     String spaceId,
     String roleId, {
     String? name,
-    int? color,
-    bool clearColor = false,
+    RoleColors? colors,
     int? perms,
     bool? hoisted,
   }) async {
+    String hex(int c) => c.toRadixString(16);
     admin.add(
-      'role~ $roleId ${[if (name != null) 'name=$name', if (color != null) 'color=${color.toRadixString(16)}', if (clearColor) 'nocolor', if (perms != null) 'perms=$perms', if (hoisted != null) 'hoisted=$hoisted'].join(' ')}',
+      'role~ $roleId ${[
+        if (name != null) 'name=$name',
+        if (colors != null) colors.from == null ? 'nocolor' : 'color=${[colors.from, colors.via, colors.to].nonNulls.map(hex).join('..')}',
+        if (perms != null) 'perms=$perms',
+        if (hoisted != null) 'hoisted=$hoisted',
+      ].join(' ')}',
     );
     roles(spaceId);
     final list = roleList[spaceId]!;
@@ -657,12 +700,45 @@ class FakeRepository implements ChatRepository {
     list[i] = SpaceRole(
       id: r.id,
       name: name ?? r.name,
-      color: clearColor ? null : (color ?? r.color),
+      color: colors == null ? r.color : colors.from,
+      colorVia: colors == null ? r.colorVia : colors.via,
+      colorTo: colors == null ? r.colorTo : colors.to,
       perms: perms ?? r.perms,
       position: r.position,
       everyone: r.everyone,
       hoisted: hoisted ?? r.hoisted,
     );
+  }
+
+  @override
+  Future<void> moveRole(String spaceId, String roleId, int position) async {
+    admin.add('role^ $roleId $position');
+    roles(spaceId);
+    final list = roleList[spaceId]!;
+    final from = list.firstWhere((r) => r.id == roleId).position;
+    // As the API: clamped above @everyone, the roles between shifted one place.
+    final to = position.clamp(1, list.length - 1);
+    SpaceRole at(SpaceRole r, int position) => SpaceRole(
+      id: r.id,
+      name: r.name,
+      color: r.color,
+      colorVia: r.colorVia,
+      colorTo: r.colorTo,
+      perms: r.perms,
+      position: position,
+      everyone: r.everyone,
+      hoisted: r.hoisted,
+    );
+    for (final (i, r) in list.indexed) {
+      if (r.id == roleId) {
+        list[i] = at(r, to);
+      } else if (!r.everyone && to > from && r.position > from && r.position <= to) {
+        list[i] = at(r, r.position - 1);
+      } else if (!r.everyone && to < from && r.position >= to && r.position < from) {
+        list[i] = at(r, r.position + 1);
+      }
+    }
+    list.sort((a, b) => a.everyone != b.everyone ? (a.everyone ? 1 : -1) : b.position.compareTo(a.position));
   }
 
   @override
@@ -694,7 +770,14 @@ class FakeRepository implements ChatRepository {
   Future<List<SpaceAsset>> assets(String spaceId, AssetKind kind) async => [...assetList[kind]!];
 
   @override
-  Future<void> addAsset(String spaceId, AssetKind kind, String name, String path) async {
+  Future<void> addAsset(
+    String spaceId,
+    AssetKind kind,
+    String name,
+    String path, {
+    void Function(double progress)? onProgress,
+  }) async {
+    await _upload(onProgress);
     admin.add('${kind.name}+ $name $path');
     assetList[kind]!.add(SpaceAsset(id: '${kind.name}-$name', name: name, url: 'https://x/$name.png'));
   }
@@ -735,6 +818,34 @@ class FakeRepository implements ChatRepository {
   }
 
   @override
+  Future<void> updateWebhook(
+    String spaceId,
+    SpaceWebhook webhook, {
+    String? name,
+    String? avatarPath,
+    bool removeAvatar = false,
+  }) async {
+    admin.add(
+      'hook* ${webhook.id} ${[if (name != null) 'name=$name', if (avatarPath != null) 'avatar', if (removeAvatar) 'noavatar'].join(' ')}',
+    );
+    webhookList = [
+      for (final w in webhookList)
+        w.id != webhook.id
+            ? w
+            : SpaceWebhook(
+                id: w.id,
+                roomId: w.roomId,
+                roomName: w.roomName,
+                name: name ?? w.name,
+                createdAt: w.createdAt,
+                avatarUrl: removeAvatar
+                    ? null
+                    : (avatarPath == null ? w.avatarUrl : 'https://example.invalid/hook.png'),
+              ),
+    ];
+  }
+
+  @override
   Future<void> deleteWebhook(String spaceId, SpaceWebhook webhook) async {
     admin.add('hook- ${webhook.id}');
     webhookList = webhookList.where((w) => w.id != webhook.id).toList();
@@ -742,6 +853,174 @@ class FakeRepository implements ChatRepository {
 
   @override
   Future<SpaceStorage> spaceStorage(String spaceId) async => storageOfSpace;
+
+  // The developer portal: teams, their members and apps, by team ID, and the
+  // bots' profiles by user ID. Changes go in [admin].
+  @override
+  final ValueNotifier<List<TeamInvite>> teamInvites = ValueNotifier(const []);
+  List<DevTeam> teamList = [];
+  final teamMemberList = <String, List<Member>>{};
+  final appList = <String, List<DevApp>>{};
+  final botList = <String, Member>{};
+
+  void _dropTeamInvite(String id) => teamInvites.value = teamInvites.value.where((i) => i.id != id).toList();
+
+  @override
+  Future<void> acceptTeamInvite(String inviteId) async {
+    admin.add('team accept $inviteId');
+    _refuse('acceptTeamInvite');
+    _dropTeamInvite(inviteId);
+  }
+
+  @override
+  Future<void> declineTeamInvite(String inviteId) async {
+    admin.add('team decline $inviteId');
+    _dropTeamInvite(inviteId);
+  }
+
+  @override
+  Future<List<DevTeam>> teams() async => [...teamList];
+
+  @override
+  Future<DevTeam> createTeam(String name) async {
+    admin.add('team+ $name');
+    _refuse('createTeam');
+    final team = DevTeam(id: 't-$name', name: name, ownerId: me.id);
+    teamList = [...teamList, team];
+    teamMemberList[team.id] = [everyone.first];
+    return team;
+  }
+
+  @override
+  Future<void> renameTeam(String teamId, String name) async {
+    admin.add('team* $teamId $name');
+    teamList = [for (final t in teamList) t.id == teamId ? DevTeam(id: t.id, name: name, ownerId: t.ownerId) : t];
+  }
+
+  @override
+  Future<void> deleteTeam(String teamId) async {
+    admin.add('team- $teamId');
+    teamList = teamList.where((t) => t.id != teamId).toList();
+  }
+
+  @override
+  Future<List<Member>> teamMembers(String teamId) async => [...?teamMemberList[teamId]];
+
+  @override
+  Future<void> inviteToTeam(String teamId, String email) async {
+    admin.add('team invite $teamId $email');
+    _refuse('inviteToTeam');
+  }
+
+  @override
+  Future<void> removeTeamMember(String teamId, String userId) async {
+    admin.add('team kick $teamId $userId');
+    teamMemberList[teamId]?.removeWhere((m) => m.userId == userId);
+  }
+
+  @override
+  Future<List<DevApp>> applications(String teamId) async => [...?appList[teamId]];
+
+  DevApp _replaceApp(DevApp app) {
+    appList[app.teamId] = [for (final a in appList[app.teamId] ?? <DevApp>[]) a.id == app.id ? app : a];
+    return app;
+  }
+
+  @override
+  Future<DevApp> createApplication(String teamId, String name, {String? description}) async {
+    admin.add('app+ $teamId $name');
+    _refuse('createApplication');
+    final app = DevApp(id: 'a-$name', teamId: teamId, name: name, description: description);
+    appList[teamId] = [...?appList[teamId], app];
+    return app;
+  }
+
+  @override
+  Future<DevApp> updateApplication(DevApp app, {String? name, String? description, bool? public}) async {
+    admin.add(
+      'app* ${app.id} ${[if (name != null) 'name=$name', if (description != null) 'description=$description', if (public != null) 'public=$public'].join(' ')}',
+    );
+    return _replaceApp(
+      DevApp(
+        id: app.id,
+        teamId: app.teamId,
+        name: name ?? app.name,
+        description: description ?? app.description,
+        public: public ?? app.public,
+        botUserId: app.botUserId,
+      ),
+    );
+  }
+
+  @override
+  Future<void> deleteApplication(DevApp app) async {
+    admin.add('app- ${app.id}');
+    appList[app.teamId]?.removeWhere((a) => a.id == app.id);
+  }
+
+  @override
+  Future<String> createBot(DevApp app) async {
+    admin.add('bot+ ${app.id}');
+    _refuse('createBot');
+    final id = 'b-${app.id}';
+    botList[id] = Member(userId: id, username: '${app.name.toLowerCase()}-bot', isBot: true);
+    _replaceApp(
+      DevApp(
+        id: app.id,
+        teamId: app.teamId,
+        name: app.name,
+        description: app.description,
+        public: app.public,
+        botUserId: id,
+      ),
+    );
+    return 'bot-token-1';
+  }
+
+  @override
+  Future<String> resetBotToken(DevApp app) async {
+    admin.add('bot~ ${app.id}');
+    _refuse('resetBotToken');
+    return 'bot-token-2';
+  }
+
+  @override
+  Future<void> deleteBot(DevApp app) async {
+    admin.add('bot- ${app.id}');
+    botList.remove(app.botUserId);
+    _replaceApp(
+      DevApp(id: app.id, teamId: app.teamId, name: app.name, description: app.description, public: app.public),
+    );
+  }
+
+  @override
+  Future<Member> botProfile(String botUserId) async => botList[botUserId]!;
+
+  @override
+  Future<void> updateBot(
+    DevApp app, {
+    String? username,
+    String? alias,
+    bool clearAlias = false,
+    String? avatarPath,
+    String? bannerPath,
+    bool removeAvatar = false,
+    bool removeBanner = false,
+  }) async {
+    admin.add(
+      'bot* ${app.id} ${[if (username != null) 'username=$username', if (alias != null) 'alias=$alias', if (clearAlias) 'noalias', if (avatarPath != null) 'avatar', if (bannerPath != null) 'banner', if (removeAvatar) 'noavatar', if (removeBanner) 'nobanner'].join(' ')}',
+    );
+    _refuse('updateBot');
+    final b = botList[app.botUserId]!;
+    botList[b.userId] = Member(
+      userId: b.userId,
+      username: username ?? b.username,
+      alias: clearAlias ? null : alias ?? b.alias,
+      avatarUrl: removeAvatar ? null : (avatarPath == null ? b.avatarUrl : 'https://example.invalid/bot.png'),
+      bannerUrl: removeBanner ? null : (bannerPath == null ? b.bannerUrl : 'https://example.invalid/bot-banner.png'),
+      isBot: true,
+    );
+  }
 
   List<BotCommand> botCommands = [];
   final interactions = <String>[];
@@ -834,6 +1113,8 @@ class FakeRepository implements ChatRepository {
   final directMessagesOpened = <String>[];
   @override
   final ValueNotifier<Map<String, Presence>> presence = ValueNotifier({maya: Presence.online});
+  @override
+  final ValueNotifier<Set<String>> mobileOnly = ValueNotifier(const {});
   final reads = <(ChatTarget, String)>[];
 
   /// Completes sends when set; otherwise they answer at once.
@@ -1142,5 +1423,6 @@ class FakeRepository implements ChatRepository {
     _typing.close();
     recentChats.dispose();
     presence.dispose();
+    mobileOnly.dispose();
   }
 }

@@ -35,13 +35,28 @@ void main() {
     await tester.pumpAndSettle();
   }
 
-  test('the type ramp is Fira Sans, headlines at 1.1 and text at 1.4', () {
-    expect(DuvetType.largeTitle.fontFamily, 'Fira Sans');
+  test('the type ramp: Fraunces for smaller headlines, Inter for page titles, numbers and the interface, Roboto for '
+      'messages', () {
+    expect(
+      (DuvetType.largeTitle.fontFamily, DuvetType.title.fontFamily, DuvetType.navTitle.fontFamily),
+      ('Inter', 'Fraunces', 'Fraunces'),
+    );
     expect(
       (DuvetType.largeTitle.fontSize, DuvetType.largeTitle.height, DuvetType.largeTitle.fontWeight),
-      (32, 1.1, FontWeight.w700),
+      (36, 1.1, FontWeight.w700),
     );
-    expect((DuvetType.navTitle.fontSize, DuvetType.title.fontSize), (17, 20));
+    expect((DuvetType.titleSans.fontFamily, DuvetType.titleSans.fontSize), ('Inter', 22));
+    // The variable font defaults to Black and wonky: every headline pins its cut.
+    for (final style in [DuvetType.title, DuvetType.navTitle]) {
+      final axes = {for (final v in style.fontVariations!) v.axis: v.value};
+      expect(axes['wght'], style.fontWeight!.value);
+      expect((axes['SOFT'], axes['WONK']), (50, 0));
+    }
+    expect((DuvetType.navTitle.fontSize, DuvetType.title.fontSize), (20, 22));
+    expect(
+      (DuvetType.body.fontFamily, DuvetType.snippet.fontFamily, DuvetType.label.fontFamily),
+      ('Roboto', 'Roboto', 'Inter'),
+    );
     expect((DuvetType.body.fontSize, DuvetType.body.height, DuvetType.body.fontWeight), (16, 1.4, FontWeight.w400));
     expect(DuvetType.rowTitle.fontWeight, FontWeight.w500);
     expect(DuvetType.rowTitleUnread.fontWeight, FontWeight.w700);
@@ -49,7 +64,7 @@ void main() {
     expect((DuvetType.overline.fontSize, DuvetType.tabLabel.fontSize), (12, 11));
     // forui's own widgets read the same face.
     final theme = Duvet.theme(Brightness.light);
-    expect(theme.typography.body.fontFamily, 'Fira Sans');
+    expect(theme.typography.body.fontFamily, 'Inter');
     expect(theme.typography.body.sm.fontSize, 16);
   });
 

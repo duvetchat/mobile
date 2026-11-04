@@ -468,7 +468,8 @@ class _AttachmentTray extends StatelessWidget {
       height: 84,
       child: ListView(
         scrollDirection: Axis.horizontal,
-        padding: const EdgeInsets.only(bottom: 8),
+        // Edge to edge, 16 in as the composer is.
+        padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
         children: [
           for (final f in files)
             // The thumbnail sits bottom-left; the remove button's whole 40px
@@ -499,7 +500,7 @@ class _AttachmentTray extends StatelessWidget {
                       ),
                     ),
                   ),
-                  if (f.contentType == 'image/gif')
+                  if (f.contentType == 'image/gif' || f.contentType == 'image/apng')
                     const Positioned(
                       left: 4,
                       bottom: 4,
@@ -549,7 +550,7 @@ class _AttachmentTray extends StatelessWidget {
     );
   }
 
-  static String _kind(String type) => type == 'image/gif'
+  static String _kind(String type) => type == 'image/gif' || type == 'image/apng'
       ? 'GIF'
       : type.startsWith('image/')
       ? 'Photo'

@@ -1,12 +1,16 @@
 import 'package:duvet/data/emoji_catalog.dart';
 import 'package:duvet/data/models.dart';
 import 'package:duvet/main.dart';
+import 'package:duvet/members_sheet.dart';
+import 'package:duvet/theme.dart';
 import 'package:duvet/widgets/chrome.dart';
+import 'package:duvet/widgets/role_name.dart';
 import 'package:duvet/widgets/rows.dart';
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:forui/forui.dart';
 
 import 'support/fake_repository.dart';
 
@@ -353,6 +357,166 @@ void main() {
     await tester.pumpAndSettle();
     expect(find.text('Online'), findsWidgets);
     expect(find.text('Offline'), findsNothing);
+    semantics.dispose();
+  });
+
+  // #84: someone connected only from the mobile app shows a phone rather than the dot.
+  testWidgets('a phone for someone only on mobile: in their status\'s color while connected, the ring offline', (
+    tester,
+  ) async {
+    const sam = Member(userId: 'u-sam', username: 'sam');
+    Future<void> show(Presence? presence, {bool mobileOnly = true}) => tester.pumpWidget(
+      MaterialApp(
+        theme: Duvet.material(Brightness.light),
+        home: FTheme(
+          data: Duvet.theme(Brightness.light),
+          child: Center(
+            child: PresenceAvatar(member: sam, presence: presence, mobileOnly: mobileOnly, size: 48),
+          ),
+        ),
+      ),
+    );
+    final live = Duvet.tokens(Brightness.light).live;
+    final busy = Duvet.theme(Brightness.light).colors.destructive;
+    final phone = find.byType(PresencePhone);
+    // What it's filled with, and the bars drawn on it.
+    Iterable<Color?> fills() => tester
+        .widgetList<DecoratedBox>(find.descendant(of: phone, matching: find.byType(DecoratedBox)))
+        .map((b) => (b.decoration as BoxDecoration).color);
+    Iterable<Color> bars() => tester
+        .widgetList<ColoredBox>(find.descendant(of: phone, matching: find.byType(ColoredBox)))
+        .map((b) => b.color);
+
+    await show(Presence.online);
+    expect(phone, findsOneWidget);
+    final size = tester.getSize(phone);
+    expect(size.width, 48 * 0.32, reason: 'as wide as the dot');
+    expect(size.height, size.width * 1.5, reason: 'and standing, as a phone does');
+    expect(fills(), contains(live));
+    expect(bars(), isEmpty);
+
+    // Do not disturb: red, and the dot's bar across its screen, so shape still tells it apart.
+    await show(Presence.doNotDisturb);
+    expect(fills(), contains(busy));
+    expect(fills(), isNot(contains(live)));
+    expect(bars(), [busy]);
+
+    // Offline, the ring, as anyone's; on a computer too, the dot; not reported, nothing.
+    for (final (presence, mobileOnly) in [(Presence.offline, true), (Presence.online, false), (null, true)]) {
+      await show(presence, mobileOnly: mobileOnly);
+      expect(phone, findsNothing, reason: '$presence, mobile only: $mobileOnly');
+    }
+  });
+
+  testWidgets('someone only on mobile shows a phone in the friends list, their profile and the members sheet', (
+    tester,
+  ) async {
+    await pumpApp(
+      tester,
+      setUp: (r) {
+        r.friendsOnServer = const Friends(
+          friends: [Member(userId: _maya, username: 'maya', alias: 'Maya')],
+        );
+        // The user is online too, but not only on mobile.
+        r.presence.value = {_maya: Presence.online, FakeRepository.me.id: Presence.online};
+        r.mobileOnly.value = {_maya};
+      },
+    );
+    Finder phoneOf(String userId) => find.descendant(
+      of: find.byWidgetPredicate((w) => w is PresenceAvatar && w.member.userId == userId),
+      matching: find.byType(PresencePhone),
+    );
+    // The profile's, beside the status's name.
+    final inProfile = find.byWidgetPredicate((w) => w is PresencePhone && w.width == 10);
+
+    await tester.tap(find.bySemanticsLabel('Friends').hitTestable().first);
+    await tester.pumpAndSettle();
+    expect(phoneOf(_maya), findsOneWidget);
+    await tester.tap(find.text('Maya').last);
+    await tester.pumpAndSettle();
+    expect(inProfile, findsOneWidget);
+    await tester.binding.handlePopRoute();
+    await tester.pumpAndSettle();
+    await tester.binding.handlePopRoute();
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.descendant(of: find.byType(DuvetTabBar), matching: find.text('Spaces')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Design Guild'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('# general'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.bySemanticsLabel('More'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.bySemanticsLabel('Members'));
+    await tester.pumpAndSettle();
+    expect(phoneOf(_maya), findsOneWidget);
+    expect(phoneOf(FakeRepository.me.id), findsNothing);
+    semantics.dispose();
+  });
+
+  // #154: a role's gradient runs across the name, in the member list and in a mention.
+  const gradient = RoleTag('Designer', color: 0xFF2F9E62, colorVia: 0xFFE5484D, colorTo: 0xFF3E63DD);
+
+  testWidgets('a mention takes its member\'s role colors: a gradient across it, a solid color, or violet', (
+    tester,
+  ) async {
+    await openWith(
+      tester,
+      'ask <@$_maya>, <@$_leo> and <@${FakeRepository.me.id}>',
+      setUp: (r) {
+        r.roleTags[_maya] = const [gradient];
+        r.roleTags[_leo] = const [RoleTag('Crew', color: 0xFFE5484D)];
+      },
+    );
+    final maya = find.widgetWithText(RoleName, '@Maya');
+    expect(tester.widget<RoleName>(maya).colors, gradient.colors);
+    expect(find.descendant(of: maya, matching: find.byType(ShaderMask)), findsOneWidget);
+
+    // The others stay text in the line: Leo in his role's color, made
+    // readable; the user, with no colored role, in violet.
+    final spans = <String, Color?>{};
+    for (final text in tester.widgetList<RichText>(find.byType(RichText))) {
+      text.text.visitChildren((span) {
+        if (span case TextSpan(:final text?, :final style) when text.startsWith('@')) spans[text] = style?.color;
+        return true;
+      });
+    }
+    final context = tester.element(maya);
+    expect(spans['@leo'], readableOn(const Color(0xFFE5484D), FTheme.of(context).colors.background));
+    expect(spans.values.where((c) => c == context.duvet.violetText), hasLength(1));
+
+    // Still a mention: tapped, it opens Maya.
+    await tester.tap(maya);
+    await tester.pump(kDoubleTapTimeout);
+    await tester.pumpAndSettle();
+    expect(find.text('Designer'), findsOneWidget);
+    semantics.dispose();
+  });
+
+  testWidgets('the member list runs a gradient role across the name', (tester) async {
+    await openWith(tester, 'hi', setUp: (r) => r.roleTags[_maya] = const [gradient]);
+    await tester.tap(find.bySemanticsLabel('More'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.bySemanticsLabel('Members'));
+    await tester.pumpAndSettle();
+    final maya = find.widgetWithText(RoleName, 'Maya');
+    expect(tester.widget<RoleName>(maya).colors, gradient.colors);
+    expect(find.descendant(of: maya, matching: find.byType(ShaderMask)), findsOneWidget);
+    semantics.dispose();
+  });
+
+  testWidgets('a profile opened in a Space shows the name in the member\'s top role color', (tester) async {
+    await openWith(
+      tester,
+      'hi',
+      setUp: (r) => r.roleTags[_leo] = const [RoleTag('Plain'), RoleTag('Crew', color: 0xFFE5484D)],
+    );
+    await tapLabel(tester, 'Leo’s profile');
+    final name = find.byWidgetPredicate((w) => w is RoleName && w.name == 'leo' && w.style == DuvetType.title);
+    expect(tester.widget<RoleName>(name).colors, const RoleTag('Crew', color: 0xFFE5484D).colors);
+    final text = tester.widget<Text>(find.descendant(of: name, matching: find.byType(Text)));
+    expect(text.style?.color, readableOn(const Color(0xFFE5484D), FTheme.of(tester.element(name)).colors.background));
     semantics.dispose();
   });
 

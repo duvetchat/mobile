@@ -24,6 +24,56 @@ List<String> duvetLinksIn(String content) {
   ].take(3).toList();
 }
 
+/// [content] without the links its previews stand in for: one whose embed is
+/// only a picture, a GIF or a video, and, with [cards], an invite shown as
+/// its card. A link goes only alone on its line or at either end of it, so
+/// the words around it stay; a code block keeps its links.
+String withoutPreviewedLinks(String content, List<MessageEmbed> embeds, {bool cards = true}) {
+  final bare = [
+    for (final e in embeds)
+      if (e.title == null && e.description == null && (e.imageUrl != null || e.videoUrl != null)) e,
+  ];
+  final invites = {
+    if (cards)
+      for (final url in duvetLinksIn(content))
+        if (parseInviteCode(url) != null || parseBotInvite(url) != null) url,
+  };
+  if (bare.isEmpty && invites.isEmpty) return content;
+  final links = RegExp(r'''(?:https?|duvet)://\S+''').allMatches(content).length;
+  bool previewed(String word) =>
+      invites.contains(word.replaceFirst(RegExp(r'[.,;:!?]+$'), '')) ||
+      (word.startsWith(RegExp('https?://')) &&
+          (bare.any((e) => e.url == word) ||
+              // Tenor's embed names no link: the only link and the only embed go together.
+              (links == 1 && embeds.length == 1 && bare.length == 1 && bare.single.url == null)));
+
+  var fenced = false;
+  var changed = false;
+  final lines = <String>[];
+  for (final line in content.split('\n')) {
+    final fences = '```'.allMatches(line).length;
+    if (fences.isOdd) fenced = !fenced;
+    if (fenced || fences > 0) {
+      lines.add(line);
+      continue;
+    }
+    var kept = line;
+    if (RegExp(r'^\s*(\S+)\s*').firstMatch(kept) case final first? when previewed(first[1]!)) {
+      kept = kept.substring(first.end);
+    }
+    if (RegExp(r'\s*(\S+)\s*$').firstMatch(kept) case final last? when previewed(last[1]!)) {
+      kept = kept.substring(0, last.start);
+    }
+    if (kept == line) {
+      lines.add(line);
+    } else {
+      changed = true;
+      if (kept.trim().isNotEmpty) lines.add(kept);
+    }
+  }
+  return changed ? lines.join('\n').trim() : content;
+}
+
 /// The chat a message link points into.
 ChatTarget targetOf(MessageLink link) => link.conversationId != null
     ? ConversationTarget(link.conversationId!)
@@ -133,12 +183,26 @@ class _MessageLinkCardState extends State<MessageLinkCard> {
                         ],
                       ),
                       const SizedBox(height: 4),
-                      Text(
-                        m.content.isEmpty ? repository.previewOf(m) : repository.previewOf(m),
-                        maxLines: 2,
-                        overflow: TextOverflow.ellipsis,
-                        style: DuvetType.snippet.copyWith(color: colors.foreground),
-                      ),
+                      if (m.content.isEmpty)
+                        Text(
+                          repository.previewOf(m),
+                          maxLines: 2,
+                          overflow: TextOverflow.ellipsis,
+                          style: DuvetType.snippet.copyWith(color: colors.foreground),
+                        )
+                      else
+                        // Its markdown as the chat shows it, cut off past a few lines.
+                        ConstrainedBox(
+                          constraints: const BoxConstraints(maxHeight: 120),
+                          child: SingleChildScrollView(
+                            physics: const NeverScrollableScrollPhysics(),
+                            child: MessageText(
+                              content: m.content,
+                              directory: widget.directory,
+                              style: DuvetType.snippet.copyWith(color: colors.foreground),
+                            ),
+                          ),
+                        ),
                       const SizedBox(height: 8),
                       Row(
                         children: [

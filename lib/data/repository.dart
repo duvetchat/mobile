@@ -189,8 +189,13 @@ abstract interface class ChatRepository {
   /// [Presence.doNotDisturb]: what others see while they're connected.
   Future<void> setStatus(Presence status);
 
-  /// A new avatar or banner: [crop] of the picture at [path].
-  Future<void> uploadProfileImage(ProfileImage kind, String path, CropRect crop);
+  /// A new avatar or banner: the picture at [path], cropped already.
+  /// [onProgress] follows the upload (0 to 1).
+  Future<void> uploadProfileImage(ProfileImage kind, String path, {void Function(double progress)? onProgress});
+
+  /// Takes the user's avatar or banner away: they show none, as before they
+  /// chose one.
+  Future<void> removeProfileImage(ProfileImage kind);
 
   Future<List<MyFile>> myFiles();
   Future<void> deleteMyFile(String id);
@@ -209,7 +214,8 @@ abstract interface class ChatRepository {
   bool canInRoom(String spaceId, String roomId, int bit);
 
   /// Changes the Space; [removeBanner] takes its banner away, as no
-  /// [bannerPath] can.
+  /// [bannerPath] can. With pictures, [onProgress] follows their upload (0 to
+  /// 1).
   Future<void> updateSpace(
     String spaceId, {
     String? name,
@@ -217,6 +223,8 @@ abstract interface class ChatRepository {
     String? iconPath,
     String? bannerPath,
     bool removeBanner = false,
+    bool removeIcon = false,
+    void Function(double progress)? onProgress,
   });
 
   /// Rooms and categories, by position.
@@ -241,15 +249,14 @@ abstract interface class ChatRepository {
   /// Roles, highest first, @everyone last.
   List<SpaceRole> roles(String spaceId);
   Future<SpaceRole> createRole(String spaceId, String name);
-  Future<void> updateRole(
-    String spaceId,
-    String roleId, {
-    String? name,
-    int? color,
-    bool clearColor = false,
-    int? perms,
-    bool? hoisted,
-  });
+
+  /// Changes what's given. [colors] replaces all of the role's colors: a
+  /// stop left null is cleared.
+  Future<void> updateRole(String spaceId, String roleId, {String? name, RoleColors? colors, int? perms, bool? hoisted});
+
+  /// Moves a role to [position] (higher is above; @everyone is 0, and stays
+  /// there), the roles between shifting one place to make room.
+  Future<void> moveRole(String spaceId, String roleId, int position);
   Future<void> deleteRole(String spaceId, String roleId);
   List<String> roleMembers(String spaceId, String roleId);
   Future<void> setRole(String spaceId, String roleId, String userId, {required bool has});
@@ -258,7 +265,15 @@ abstract interface class ChatRepository {
   Future<void> revokeInvite(String spaceId, String inviteId);
 
   Future<List<SpaceAsset>> assets(String spaceId, AssetKind kind);
-  Future<void> addAsset(String spaceId, AssetKind kind, String name, String path);
+
+  /// [onProgress] follows the picture's upload (0 to 1).
+  Future<void> addAsset(
+    String spaceId,
+    AssetKind kind,
+    String name,
+    String path, {
+    void Function(double progress)? onProgress,
+  });
   Future<void> renameAsset(String spaceId, AssetKind kind, String id, String name);
   Future<void> deleteAsset(String spaceId, AssetKind kind, String id);
 
@@ -269,7 +284,63 @@ abstract interface class ChatRepository {
   Future<String> resetWebhook(String spaceId, SpaceWebhook webhook);
   Future<void> deleteWebhook(String spaceId, SpaceWebhook webhook);
 
+  /// Renames a webhook, or changes its picture: a file at [avatarPath], or
+  /// none with [removeAvatar]. Its past messages keep the one they had.
+  Future<void> updateWebhook(
+    String spaceId,
+    SpaceWebhook webhook, {
+    String? name,
+    String? avatarPath,
+    bool removeAvatar = false,
+  });
+
   Future<SpaceStorage> spaceStorage(String spaceId);
+
+  /// The team invites waiting on the user: fetched on READY, and again when
+  /// TEAM_INVITE_CREATE brings one.
+  ValueListenable<List<TeamInvite>> get teamInvites;
+  Future<void> acceptTeamInvite(String inviteId);
+  Future<void> declineTeamInvite(String inviteId);
+
+  /// The developer teams the user is in.
+  Future<List<DevTeam>> teams();
+  Future<DevTeam> createTeam(String name);
+  Future<void> renameTeam(String teamId, String name);
+
+  /// Deletes a team the user owns, with its applications and their bots.
+  Future<void> deleteTeam(String teamId);
+  Future<List<Member>> teamMembers(String teamId);
+
+  /// Invites the person with this [email]: a verified account's, not a bot's.
+  Future<void> inviteToTeam(String teamId, String email);
+  Future<void> removeTeamMember(String teamId, String userId);
+
+  Future<List<DevApp>> applications(String teamId);
+  Future<DevApp> createApplication(String teamId, String name, {String? description});
+  Future<DevApp> updateApplication(DevApp app, {String? name, String? description, bool? public});
+  Future<void> deleteApplication(DevApp app);
+
+  /// Gives [app] a bot, and answers its token: shown once, never again.
+  Future<String> createBot(DevApp app);
+  Future<String> resetBotToken(DevApp app);
+
+  /// Deletes the app's bot, from every Space it is in.
+  Future<void> deleteBot(DevApp app);
+  Future<Member> botProfile(String botUserId);
+
+  /// Changes the app's bot: [clearAlias] takes its display name away, as
+  /// [removeAvatar] and [removeBanner] do its pictures; new ones are files at
+  /// [avatarPath] and [bannerPath].
+  Future<void> updateBot(
+    DevApp app, {
+    String? username,
+    String? alias,
+    bool clearAlias = false,
+    String? avatarPath,
+    String? bannerPath,
+    bool removeAvatar = false,
+    bool removeBanner = false,
+  });
 
   /// The commands of the Space's applications.
   Future<List<BotCommand>> commands(String spaceId);
@@ -350,9 +421,18 @@ abstract interface class ChatRepository {
   String? emojiNameOf(String emojiId);
 
   /// Who's online, by user ID, as the gateway reports it; someone missing
-  /// hasn't been reported this session. A bot's status in one Space, which
-  /// comes first there ([presenceIn]), is kept under [spacePresenceKey] too.
+  /// hasn't been reported this session. A member's status in one Space (a
+  /// bot's is its shard's there), which comes first there ([presenceIn]), is
+  /// kept under [spacePresenceKey] too.
   ValueListenable<Map<String, Presence>> get presence;
+
+  /// Who's connected only from the mobile app, by user ID, as the client
+  /// status that comes with each presence says: they show a phone rather
+  /// than the dot while they're connected. Where [presence] fills someone in
+  /// from a list, this does too. It has nobody's per Space: a person's
+  /// platforms are the same in every Space, and a bot's connections all count
+  /// as a computer's.
+  ValueListenable<Set<String>> get mobileOnly;
 
   /// The emoji the chat can use beyond Unicode's: its space's. None in DMs.
   Future<List<CustomEmoji>> customEmojis(ChatTarget target);

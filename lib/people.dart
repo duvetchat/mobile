@@ -12,6 +12,7 @@ import 'widgets/chrome.dart';
 import 'widgets/depth.dart';
 import 'widgets/glass.dart';
 import 'widgets/message_content.dart';
+import 'widgets/role_name.dart';
 import 'widgets/rows.dart';
 
 /// What a presence reads as; nothing when it isn't known.
@@ -137,7 +138,7 @@ class _ProfileState extends State<_Profile> {
     final roles = widget.spaceId == null ? const <RoleTag>[] : repository.rolesOf(widget.spaceId!, m.userId);
     final spaceName = repository.spaces.value.where((s) => s.id == widget.spaceId).firstOrNull?.name;
     return ListenableBuilder(
-      listenable: Listenable.merge([repository.presence, repository.friends]),
+      listenable: Listenable.merge([repository.presence, repository.mobileOnly, repository.friends]),
       builder: (context, _) {
         final presence = presenceIn(repository.presence.value, m.userId, spaceId: widget.spaceId);
         final f = repository.friends.value;
@@ -146,13 +147,19 @@ class _ProfileState extends State<_Profile> {
         // They asked the user: Accept request, as on the desktop's profile.
         final asking = f.incoming.where((r) => r.person.userId == m.userId).firstOrNull;
         final mutual = repository.spaces.value.where((s) => repository.isMember(s.id, m.userId)).length;
+        // Between the card's sections, as the hairlines elsewhere.
+        final divider = Padding(
+          padding: const EdgeInsets.symmetric(vertical: 16),
+          child: Container(height: 1, color: tokens.hairline),
+        );
         return ListView(
           controller: widget.scroll,
           padding: EdgeInsets.zero,
           children: [
-            // Their banner, or a soft block until they set one.
-            SizedBox(
-              height: 120,
+            // Their banner, 5:2 as it's cropped, or a soft block until they
+            // set one.
+            AspectRatio(
+              aspectRatio: bannerAspect,
               child: m.bannerUrl == null
                   ? ColoredBox(color: colors.secondary)
                   : Image.network(
@@ -195,7 +202,12 @@ class _ProfileState extends State<_Profile> {
                               child: Row(
                                 mainAxisSize: MainAxisSize.min,
                                 children: [
-                                  PresenceAvatar.dotFor(context, presence, 10),
+                                  PresenceAvatar.dotFor(
+                                    context,
+                                    presence,
+                                    10,
+                                    mobileOnly: repository.mobileOnly.value.contains(m.userId),
+                                  ),
                                   const SizedBox(width: 6),
                                   Text(
                                     presenceText(presence),
@@ -210,7 +222,10 @@ class _ProfileState extends State<_Profile> {
                     const SizedBox(height: 16),
                     Semantics(
                       header: true,
-                      child: Text(m.displayName, style: DuvetType.title.copyWith(color: colors.foreground)),
+                      child: switch (nameColorsOf(roles)) {
+                        final c? => RoleName(m.displayName, colors: c, style: DuvetType.title),
+                        null => Text(m.displayName, style: DuvetType.title.copyWith(color: colors.foreground)),
+                      },
                     ),
                     // No handle where only their name is known (a mention of
                     // someone the app hasn't met).
@@ -273,6 +288,7 @@ class _ProfileState extends State<_Profile> {
                     ],
                     const SizedBox(height: 16),
                     Container(
+                      width: double.infinity,
                       padding: const EdgeInsets.all(16),
                       decoration: BoxDecoration(
                         color: colors.card,
@@ -283,7 +299,7 @@ class _ProfileState extends State<_Profile> {
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
                           _Label('About'),
-                          const SizedBox(height: 4),
+                          const SizedBox(height: 8),
                           if (m.bio case final bio?)
                             // With the messages' markdown, as the desktop's About me.
                             MessageText(
@@ -298,14 +314,15 @@ class _ProfileState extends State<_Profile> {
                           else
                             Text('Nothing here yet.', style: DuvetType.body.copyWith(color: colors.mutedForeground)),
                           if (roles.isNotEmpty) ...[
-                            const SizedBox(height: 16),
+                            divider,
                             _Label('Roles in ${spaceName ?? 'this Space'}'),
                             const SizedBox(height: 8),
                             Wrap(spacing: 8, runSpacing: 8, children: [for (final r in roles) RoleChip(role: r)]),
                           ],
                           if (!me && mutual > 0) ...[
-                            const SizedBox(height: 16),
+                            divider,
                             _Label('Mutual Spaces'),
+                            const SizedBox(height: 8),
                             Text('$mutual', style: DuvetType.body.copyWith(color: colors.foreground)),
                           ],
                         ],
@@ -388,10 +405,7 @@ class _SquareButton extends StatelessWidget {
         builder: (context, pressed) => Container(
           width: 48,
           height: 48,
-          decoration: BoxDecoration(
-            borderRadius: radius,
-            border: Border.all(color: ink),
-          ),
+          decoration: BoxDecoration(color: tokens.secondaryFill, borderRadius: radius),
           child: InsetShadow(
             shadows: pressed ? tokens.shadowPressed : const [],
             borderRadius: radius,
@@ -416,9 +430,8 @@ class SquareCheck extends StatelessWidget {
       width: 24,
       height: 24,
       decoration: BoxDecoration(
-        color: checked ? Duvet.accent : null,
+        color: checked ? Duvet.accent : context.duvet.secondaryFill,
         borderRadius: BorderRadius.circular(DuvetTokens.radiusChip),
-        border: Border.all(color: checked ? Duvet.accent : colors.mutedForeground, width: 1.5),
       ),
       child: checked ? Icon(FLucideIcons.check, size: 16, color: colors.primaryForeground) : null,
     );
@@ -576,7 +589,7 @@ class _FriendsPageState extends State<FriendsPage> {
     return Scaffold(
       backgroundColor: colors.background,
       body: ListenableBuilder(
-        listenable: Listenable.merge([repository.friends, repository.presence]),
+        listenable: Listenable.merge([repository.friends, repository.presence, repository.mobileOnly]),
         builder: (context, _) {
           final f = repository.friends.value;
           final presence = repository.presence.value;
@@ -584,7 +597,12 @@ class _FriendsPageState extends State<FriendsPage> {
           final online = f.friends.where((m) => !away(m)).toList();
           final offline = f.friends.where(away).toList();
           Widget friendRow(Member m) => ListRow(
-            leading: PresenceAvatar(member: m, presence: presence[m.userId], size: 48),
+            leading: PresenceAvatar(
+              member: m,
+              presence: presence[m.userId],
+              mobileOnly: repository.mobileOnly.value.contains(m.userId),
+              size: 48,
+            ),
             title: m.displayName,
             snippet: '@${m.username}',
             banner: m.bannerUrl,
@@ -596,6 +614,7 @@ class _FriendsPageState extends State<FriendsPage> {
             children: [
               Positioned.fill(
                 child: ListView(
+                  keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
                   padding: EdgeInsets.only(top: GlassTopBar.heightOf(context) + 8, bottom: padding.bottom + 24),
                   children: [
                     Padding(
@@ -623,10 +642,12 @@ class _FriendsPageState extends State<FriendsPage> {
                           child: Text(_addError!, style: DuvetType.caption.copyWith(color: colors.destructive)),
                         ),
                       ),
+                    // Edge to edge: the tabs scroll to the screen's edge, 16 in at rest.
                     Padding(
-                      padding: const EdgeInsets.fromLTRB(16, 8, 16, 0),
+                      padding: const EdgeInsets.only(top: 8),
                       child: SingleChildScrollView(
                         scrollDirection: Axis.horizontal,
+                        padding: const EdgeInsets.symmetric(horizontal: 16),
                         child: Row(
                           children: [
                             for (final (t, label) in [
@@ -634,6 +655,7 @@ class _FriendsPageState extends State<FriendsPage> {
                               (_FriendsTab.pending, 'Pending ${f.incoming.length}'),
                               (_FriendsTab.sent, 'Sent ${f.outgoing.length}'),
                             ]) ...[
+                              if (t != _FriendsTab.all) const SizedBox(width: 24),
                               Semantics(
                                 button: true,
                                 selected: _tab == t,
@@ -654,7 +676,6 @@ class _FriendsPageState extends State<FriendsPage> {
                                   ),
                                 ),
                               ),
-                              const SizedBox(width: 24),
                             ],
                           ],
                         ),
@@ -903,6 +924,7 @@ class _NewConversationPageState extends State<NewConversationPage> {
         children: [
           Positioned.fill(
             child: ListView(
+              keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
               padding: EdgeInsets.only(top: GlassTopBar.heightOf(context) + 8, bottom: padding.bottom + 96),
               children: [
                 Padding(
@@ -937,9 +959,8 @@ class _NewConversationPageState extends State<NewConversationPage> {
                                 height: 28,
                                 padding: const EdgeInsets.symmetric(horizontal: 4),
                                 decoration: BoxDecoration(
-                                  color: tokens.accentTint,
+                                  color: tokens.selectedFill,
                                   borderRadius: BorderRadius.circular(DuvetTokens.radiusChip),
-                                  border: Border.all(color: tokens.accentText),
                                 ),
                                 child: Row(
                                   mainAxisSize: MainAxisSize.min,

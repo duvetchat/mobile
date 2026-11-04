@@ -13,7 +13,9 @@ import 'package:duvet/data/models.dart';
 import 'package:duvet/data/recent_chats.dart';
 import 'package:duvet/data/session_store.dart';
 import 'package:duvet/data/voice.dart';
+import 'package:duvet_client/duvet.dart' as duvet;
 import 'package:duvet_client/http/router.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
@@ -231,6 +233,42 @@ void main() {
     await Future<void>.delayed(const Duration(milliseconds: 100));
     expect(caughtUp, 0);
     expect(requests, hasLength(fetched));
+  });
+
+  // Others see a phone for someone whose every connection says it's the mobile app (#84).
+  test('each identify says the app runs on mobile, a resume\'s too', () async {
+    await signIn();
+    expect(gateway.identified.single, containsPair('platform', 'mobile'));
+
+    await gateway.drop();
+    await _until(() => gateway.identified.length == 2 && repository.status.value == LiveStatus.online);
+    expect(gateway.identified.last, containsPair('session_token', 'gw-1'));
+    expect(gateway.identified.last, containsPair('platform', 'mobile'));
+  });
+
+  test('on a computer, the identify says desktop', () async {
+    debugDefaultTargetPlatformOverride = TargetPlatform.windows;
+    addTearDown(() => debugDefaultTargetPlatformOverride = null);
+    await signIn();
+    expect(gateway.identified.single, containsPair('platform', 'desktop'));
+  });
+
+  test('what the app says it runs on: mobile on Android and iOS, web in a browser, desktop anywhere else', () {
+    expect(
+      {for (final target in TargetPlatform.values) target: DuvetRepository.platformOf(target: target)},
+      {
+        TargetPlatform.android: duvet.ClientPlatform.mobile,
+        TargetPlatform.iOS: duvet.ClientPlatform.mobile,
+        TargetPlatform.windows: duvet.ClientPlatform.desktop,
+        TargetPlatform.macOS: duvet.ClientPlatform.desktop,
+        TargetPlatform.linux: duvet.ClientPlatform.desktop,
+        TargetPlatform.fuchsia: duvet.ClientPlatform.desktop,
+      },
+    );
+    // A browser on a phone too: it isn't the mobile app.
+    for (final target in TargetPlatform.values) {
+      expect(DuvetRepository.platformOf(web: true, target: target), duvet.ClientPlatform.web, reason: '$target');
+    }
   });
 
   test('a session the gateway can\'t resume gets READY, after which chats catch up', () async {

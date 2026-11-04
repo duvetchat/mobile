@@ -1,11 +1,15 @@
 import 'dart:async';
 import 'dart:io';
+import 'dart:isolate';
+import 'dart:math' show max, min;
 import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
+import 'package:flutter/rendering.dart' show RenderAbstractViewport, ViewportOffset;
 import 'package:flutter/semantics.dart';
 import 'package:flutter/services.dart';
 import 'package:forui/forui.dart';
+import 'package:image/image.dart' as img;
 import 'package:image_picker/image_picker.dart';
 import 'package:path_provider/path_provider.dart';
 
@@ -17,12 +21,18 @@ import 'spaces.dart' show deleteSpace, inviteRoomOf, pickSpaceIcon, showInviteSh
 import 'theme.dart';
 import 'widgets/avatar.dart';
 import 'widgets/chrome.dart';
+import 'widgets/depth.dart' show Pressable;
 import 'widgets/glass.dart';
+import 'widgets/picture_edit.dart';
+import 'widgets/role_name.dart';
 import 'widgets/rows.dart';
+import 'widgets/scrolling.dart' show CarouselPhysics;
+import 'widgets/unsaved_changes.dart';
 
-/// Picks a Space's banner; tests swap in their own.
+/// Picks a Space's banner as it is: resized, Android's picker would make a GIF
+/// a still image. Tests swap in their own.
 Future<String?> Function() pickSpaceImage = () async =>
-    (await ImagePicker().pickImage(source: ImageSource.gallery, maxWidth: 1024, imageQuality: 90))?.path;
+    (await ImagePicker().pickImage(source: ImageSource.gallery))?.path;
 
 /// Picks an emoji's or a sticker's picture as it is: resized, Android's picker
 /// would make a GIF a still image. Tests swap in their own.
@@ -106,31 +116,92 @@ Future<Uint8List> framedPng(String path, CropRect crop, int width, int height) a
   }
 }
 
-/// [squarePng] in a file to upload, named after the picture, as the desktop
-/// names it; answers its path. Tests swap in their own.
+/// [squarePng] in a file to upload, or [framedGif] for a moving GIF, named
+/// after the picture, as the desktop names it; answers its path. Each crop
+/// has a folder of its own: a picture shows by its path, so one saved where
+/// the last crop was would show as the last crop. Tests swap in their own.
 Future<String> Function(String path, CropRect crop, int side) saveSquareImage = (path, crop, side) async {
-  final png = await squarePng(path, crop, side);
+  final moving = (await gifAt(path))?.animated ?? false;
+  // Off the UI thread: every frame is decoded and encoded again.
+  final bytes = moving
+      ? await Isolate.run(() async => framedGif(await File(path).readAsBytes(), crop, side, side))
+      : await squarePng(path, crop, side);
   final name = path.split(Platform.pathSeparator).last;
   final dot = name.lastIndexOf('.');
-  final dir = Directory('${(await getTemporaryDirectory()).path}/square');
-  await dir.create(recursive: true);
-  final file = File('${dir.path}/${dot > 0 ? name.substring(0, dot) : 'image'}.png');
-  await file.writeAsBytes(png, flush: true);
+  final squares = await Directory('${(await getTemporaryDirectory()).path}/square').create(recursive: true);
+  final dir = await squares.createTemp();
+  final file = File('${dir.path}/${dot > 0 ? name.substring(0, dot) : 'image'}.${moving ? 'gif' : 'png'}');
+  await file.writeAsBytes(bytes, flush: true);
   return file.path;
 };
 
-/// A Space banner's frame, as the desktop crops one: 5:2, 600 by 240.
-const spaceBannerAspect = 5 / 2;
-const spaceBannerSize = (width: 600, height: 240);
+/// Picks a Space's icon (or, [camera], takes one) and crops it square, as the
+/// desktop does; answers the cropped picture's path, or null when the user
+/// backs out.
+Future<String?> chooseSpaceIcon(BuildContext context, {bool camera = false}) async {
+  final path = await (camera ? takePhoto() : pickSpaceIcon());
+  if (path == null || !context.mounted) return null;
+  final crop = await Navigator.of(context).push<CropRect>(
+    MaterialPageRoute(fullscreenDialog: true, builder: (_) => CropPage(path: path, aspect: 1, round: false)),
+  );
+  if (crop == null || !context.mounted) return null;
+  try {
+    return await saveSquareImage(path, crop, avatarSide);
+  } catch (e) {
+    debugPrint('icon: $e');
+    if (context.mounted) adminToast(context, 'Couldn’t read this picture');
+    return null;
+  }
+}
+
+/// A banner's pixels, a Space's or a profile's, as the desktop crops one: 5:2
+/// ([bannerAspect]).
+const bannerSize = (width: 600, height: 240);
+
+/// An avatar's or a Space icon's side, as the desktop crops one.
+const avatarSide = 256;
+
+/// The part of the moving GIF [gif] that [crop] frames, every frame of it,
+/// drawn [width] by [height] pixels, as a GIF: it stays moving, as the
+/// desktop keeps it.
+Uint8List framedGif(Uint8List gif, CropRect crop, int width, int height) {
+  img.Image? moving;
+  // Frame by frame: cropped whole, the animation would give every frame the
+  // first's palette and time. The first frame holds the others, hence a copy
+  // of it alone.
+  for (final frame in img.decodeGif(gif)!.frames) {
+    final framed = img.copyResize(
+      img.copyCrop(
+        img.Image.from(frame, noAnimation: true),
+        x: crop.x.round(),
+        y: crop.y.round(),
+        width: crop.w.round(),
+        height: crop.h.round(),
+      ),
+      width: width,
+      height: height,
+      interpolation: img.Interpolation.average,
+    );
+    moving?.addFrame(framed);
+    moving ??= framed;
+  }
+  return img.encodeGif(moving!);
+}
 
 /// The banner [crop] frames in the picture at [path], in a file to upload;
 /// answers its path. Tests swap in their own.
 Future<String> Function(String path, CropRect crop) saveBannerImage = (path, crop) async {
-  final png = await framedPng(path, crop, spaceBannerSize.width, spaceBannerSize.height);
+  final moving = (await gifAt(path))?.animated ?? false;
+  // Off the UI thread: every frame is decoded and encoded again.
+  final bytes = moving
+      ? await Isolate.run(
+          () async => framedGif(await File(path).readAsBytes(), crop, bannerSize.width, bannerSize.height),
+        )
+      : await framedPng(path, crop, bannerSize.width, bannerSize.height);
   final dir = Directory('${(await getTemporaryDirectory()).path}/banner');
   await dir.create(recursive: true);
-  final file = File('${dir.path}/banner-${DateTime.now().microsecondsSinceEpoch}.png');
-  await file.writeAsBytes(png, flush: true);
+  final file = File('${dir.path}/banner-${DateTime.now().microsecondsSinceEpoch}.${moving ? 'gif' : 'png'}');
+  await file.writeAsBytes(bytes, flush: true);
   return file.path;
 };
 
@@ -167,12 +238,11 @@ class _SpaceSettingsPageState extends State<SpaceSettingsPage> {
     if (profile.can(Perm.manageInvites)) {
       repository.spaceInvites(id).then((l) => mounted ? setState(() => _invites = l.length) : null, onError: ignore);
     }
-    if (profile.can(Perm.manageEmojis) || profile.can(Perm.manageStickers)) {
-      (
-        repository.assets(id, AssetKind.emoji),
-        repository.assets(id, AssetKind.sticker),
-      ).wait.then((l) => mounted ? setState(() => _assets = (l.$1.length, l.$2.length)) : null, onError: ignore);
-    }
+    // Any member's to see.
+    (
+      repository.assets(id, AssetKind.emoji),
+      repository.assets(id, AssetKind.sticker),
+    ).wait.then((l) => mounted ? setState(() => _assets = (l.$1.length, l.$2.length)) : null, onError: ignore);
     if (profile.can(Perm.manageWebhooks)) {
       repository.webhooks(id).then((l) => mounted ? setState(() => _webhooks = l.length) : null, onError: ignore);
     }
@@ -221,13 +291,13 @@ class _SpaceSettingsPageState extends State<SpaceSettingsPage> {
                   detail: '$rooms',
                   onPressed: () => _open(RoomsAdminPage(spaceId: id)),
                 ),
-              if (profile.can(Perm.manageEmojis) || profile.can(Perm.manageStickers))
-                GlassRow(
-                  icon: FLucideIcons.smile,
-                  label: 'Emojis and stickers',
-                  detail: _assets == null ? null : '${_assets!.$1} · ${_assets!.$2}',
-                  onPressed: () => _open(AssetsPage(spaceId: id)),
-                ),
+              // Any member's to see; changed by those who manage them.
+              GlassRow(
+                icon: FLucideIcons.smile,
+                label: 'Emojis and stickers',
+                detail: _assets == null ? null : '${_assets!.$1} · ${_assets!.$2}',
+                onPressed: () => _open(AssetsPage(spaceId: id)),
+              ),
             ],
           ),
           (
@@ -434,12 +504,14 @@ class AdminPanel extends StatelessWidget {
   );
 }
 
-/// Asks before something that can't be undone.
+/// Asks before something that can't be undone, or ([destructive] false)
+/// that changes things for everyone.
 Future<bool> confirmDestructive(
   BuildContext context, {
   required String title,
   required String body,
   required String action,
+  bool destructive = true,
 }) async =>
     await showGlassDialogSheet<bool>(
       context,
@@ -456,7 +528,7 @@ Future<bool> confirmDestructive(
             const SizedBox(height: 24),
             DuvetButton(
               label: action,
-              variant: ButtonVariant.destructive,
+              variant: destructive ? ButtonVariant.destructive : ButtonVariant.primary,
               expand: true,
               onPressed: () => Navigator.of(context).pop(true),
             ),
@@ -477,11 +549,19 @@ Future<(String, T?)?> askName<T>(
   String action = 'Save',
   Map<T, String> choices = const {},
   T? choice,
+  int? maxLength,
 }) => showGlassDialogSheet<(String, T?)>(
   context,
   label: title,
-  builder: (context) =>
-      _NameSheet<T>(title: title, initial: initial, label: label, action: action, choices: choices, choice: choice),
+  builder: (context) => _NameSheet<T>(
+    title: title,
+    initial: initial,
+    label: label,
+    action: action,
+    choices: choices,
+    choice: choice,
+    maxLength: maxLength,
+  ),
 );
 
 /// The most a room's description takes, as the API stores it.
@@ -573,6 +653,7 @@ class _NameSheet<T> extends StatefulWidget {
   final String action;
   final Map<T, String> choices;
   final T? choice;
+  final int? maxLength;
   const _NameSheet({
     required this.title,
     required this.initial,
@@ -580,6 +661,7 @@ class _NameSheet<T> extends StatefulWidget {
     required this.action,
     required this.choices,
     required this.choice,
+    this.maxLength,
   });
 
   @override
@@ -611,7 +693,7 @@ class _NameSheetState<T> extends State<_NameSheet<T>> {
       children: [
         Text(widget.title, style: DuvetType.title.copyWith(color: context.theme.colors.foreground)),
         const SizedBox(height: 16),
-        DuvetTextField(label: widget.label, controller: _name, autofocus: true),
+        DuvetTextField(label: widget.label, controller: _name, autofocus: true, maxLength: widget.maxLength),
         if (widget.choices.isNotEmpty) ...[
           const SizedBox(height: 16),
           Wrap(
@@ -635,19 +717,62 @@ class _NameSheetState<T> extends State<_NameSheet<T>> {
   );
 }
 
-void _toast(BuildContext context, String message) {
+void adminToast(BuildContext context, String message) {
   if (!context.mounted) return;
   showFToast(context: context, title: Text(message), duration: const Duration(seconds: 3));
 }
 
+/// A secret the server shows once, a webhook's URL or a bot's token, to copy.
+Future<void> showSecretOnce(
+  BuildContext context, {
+  required String title,
+  required String body,
+  required String secret,
+  required String copyLabel,
+}) => showGlassDialogSheet<void>(
+  context,
+  label: title,
+  builder: (context) => Padding(
+    padding: const EdgeInsets.fromLTRB(24, 16, 24, 24),
+    child: Column(
+      mainAxisSize: MainAxisSize.min,
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Text(title, style: DuvetType.title.copyWith(color: context.theme.colors.foreground)),
+        const SizedBox(height: 12),
+        Text(body, style: DuvetType.snippet.copyWith(color: context.theme.colors.mutedForeground)),
+        const SizedBox(height: 16),
+        Container(
+          padding: const EdgeInsets.all(12),
+          decoration: BoxDecoration(
+            color: context.theme.colors.secondary,
+            borderRadius: BorderRadius.circular(DuvetTokens.radiusField),
+          ),
+          child: SelectableText(secret, style: DuvetType.code.copyWith(color: context.theme.colors.foreground)),
+        ),
+        const SizedBox(height: 24),
+        DuvetButton(
+          label: copyLabel,
+          variant: ButtonVariant.primary,
+          expand: true,
+          onPressed: () {
+            Clipboard.setData(ClipboardData(text: secret));
+            Navigator.of(context).pop();
+          },
+        ),
+      ],
+    ),
+  ),
+);
+
 /// Runs a change, saying so if it fails; true when it worked.
-Future<bool> _try(BuildContext context, String failure, Future<void> Function() change) async {
+Future<bool> adminTry(BuildContext context, String failure, Future<void> Function() change) async {
   try {
     await change();
     return true;
   } catch (e) {
     debugPrint('space admin: $e');
-    if (context.mounted) _toast(context, e is ActionFailed ? e.message : failure);
+    if (context.mounted) adminToast(context, e is ActionFailed ? e.message : failure);
     return false;
   }
 }
@@ -667,22 +792,54 @@ class SpaceOverviewPage extends StatefulWidget {
 
 class _SpaceOverviewPageState extends State<SpaceOverviewPage> {
   late final SpaceProfile? _profile = context.repository.spaceProfile(widget.spaceId);
-  late final _name = TextEditingController(text: _profile?.name);
-  late final _about = TextEditingController(text: _profile?.description);
-  String? _icon;
+  late final _name = TextEditingController(text: _profile?.name)..addListener(_changed);
+  late final _about = TextEditingController(text: _profile?.description)..addListener(_changed);
+  void _changed() => setState(() {});
 
-  /// The new banner, cropped; or [_removeBanner] to take the one there away.
+  /// The new icon and banner, cropped; or [_removeIcon] and [_removeBanner]
+  /// to take the ones there away.
+  String? _icon;
   String? _banner;
+  bool _removeIcon = false;
   bool _removeBanner = false;
   bool _saving = false;
+  final _upload = ValueNotifier<double?>(null);
 
-  Future<void> _pickBanner() async {
-    final path = await pickSpaceImage();
+  Future<void> _editIcon({required bool has}) async {
+    final choice = await showPictureSheet(context, title: 'Icon', remove: has ? 'Remove icon' : null);
+    if (choice == null || !mounted) return;
+    if (choice == PictureChoice.remove) {
+      setState(() {
+        _icon = null;
+        _removeIcon = _profile?.iconUrl != null;
+      });
+      return;
+    }
+    final path = await chooseSpaceIcon(context, camera: choice == PictureChoice.take);
+    if (path != null && mounted) {
+      setState(() {
+        _icon = path;
+        _removeIcon = false;
+      });
+    }
+  }
+
+  Future<void> _editBanner({required bool has}) async {
+    final choice = await showPictureSheet(context, title: 'Banner', remove: has ? 'Remove banner' : null);
+    if (choice == null || !mounted) return;
+    if (choice == PictureChoice.remove) {
+      setState(() {
+        _banner = null;
+        _removeBanner = _profile?.bannerUrl != null;
+      });
+      return;
+    }
+    final path = await (choice == PictureChoice.take ? takePhoto() : pickSpaceImage());
     if (path == null || !mounted) return;
     final crop = await Navigator.of(context).push<CropRect>(
       MaterialPageRoute(
         fullscreenDialog: true,
-        builder: (_) => CropPage(path: path, aspect: spaceBannerAspect, round: false),
+        builder: (_) => CropPage(path: path, aspect: bannerAspect, round: false),
       ),
     );
     if (crop == null || !mounted) return;
@@ -691,7 +848,7 @@ class _SpaceOverviewPageState extends State<SpaceOverviewPage> {
       cropped = await saveBannerImage(path, crop);
     } catch (e) {
       debugPrint('banner: $e');
-      if (mounted) _toast(context, 'Couldn’t read this picture');
+      if (mounted) adminToast(context, 'Couldn’t read this picture');
       return;
     }
     if (mounted) {
@@ -706,6 +863,7 @@ class _SpaceOverviewPageState extends State<SpaceOverviewPage> {
   void dispose() {
     _name.dispose();
     _about.dispose();
+    _upload.dispose();
     super.dispose();
   }
 
@@ -716,7 +874,7 @@ class _SpaceOverviewPageState extends State<SpaceOverviewPage> {
     final about = _about.text.trim();
     final navigator = Navigator.of(context);
     setState(() => _saving = true);
-    final ok = await _try(
+    final ok = await adminTry(
       context,
       'Couldn’t save the Space',
       () => context.repository.updateSpace(
@@ -726,9 +884,15 @@ class _SpaceOverviewPageState extends State<SpaceOverviewPage> {
         iconPath: _icon,
         bannerPath: _banner,
         removeBanner: _removeBanner,
+        removeIcon: _removeIcon,
+        onProgress: (p) {
+          // Left mid-upload, the page is gone, and its note with it.
+          if (mounted) _upload.value = p;
+        },
       ),
     );
     if (!mounted) return;
+    _upload.value = null;
     setState(() => _saving = false);
     if (ok) navigator.pop();
   }
@@ -737,75 +901,73 @@ class _SpaceOverviewPageState extends State<SpaceOverviewPage> {
   Widget build(BuildContext context) {
     final colors = context.theme.colors;
     final p = _profile;
-    Widget picked(String label, String? path, VoidCallback onTap, {bool has = false}) => GlassRow(
-      icon: FLucideIcons.image,
-      label: label,
-      detail: path != null
-          ? 'New one chosen'
-          : has
-          ? 'Change'
-          : 'Choose',
-      onPressed: onTap,
-    );
-    // What the banner will be once saved: the new one, none, or as it is.
-    final bannerNow = _removeBanner ? null : p?.bannerUrl;
-    final hasBanner = _banner != null || bannerNow != null;
-    return AdminPage(
-      title: 'Overview',
-      actions: [TextAction(label: 'Save', onPressed: _saving || p == null ? null : _save)],
-      children: [
-        if (p == null)
-          const ListNote('This Space is gone')
-        else ...[
-          const SizedBox(height: 8),
-          DuvetTextField(label: 'Name', controller: _name),
-          const SizedBox(height: 16),
-          DuvetTextField(label: 'What it’s about', controller: _about, maxLines: 3),
-          const Overline('Pictures'),
-          // The banner as it will look, 5:2.
-          if (_banner case final path?)
-            ExcludeSemantics(
-              child: ClipRRect(
-                borderRadius: BorderRadius.circular(DuvetTokens.radiusCard),
-                child: AspectRatio(
-                  aspectRatio: spaceBannerAspect,
-                  child: Image.file(
-                    File(path),
-                    fit: BoxFit.cover,
-                    errorBuilder: (context, error, stackTrace) => const SizedBox.shrink(),
+    // What the pictures will be once saved: the new ones, none, or as they are.
+    final iconNow = _icon ?? (_removeIcon ? null : p?.iconUrl);
+    final bannerNow = _banner ?? (_removeBanner ? null : p?.bannerUrl);
+    final dirty =
+        p != null &&
+        (_icon != null ||
+            _banner != null ||
+            _removeIcon ||
+            _removeBanner ||
+            _name.text.trim() != p.name ||
+            _about.text.trim() != (p.description ?? '').trim());
+    return UnsavedChanges(
+      dirty: dirty,
+      child: AdminPage(
+        title: 'Overview',
+        actions: [TextAction(label: 'Save', onPressed: _saving || !dirty ? null : _save)],
+        children: [
+          if (p == null)
+            const ListNote('This Space is gone')
+          else ...[
+            const Overline('Appearance'),
+            AdminPanel(
+              children: [
+                PictureRow(
+                  label: 'Icon',
+                  set: iconNow != null,
+                  onPressed: () => _editIcon(has: iconNow != null),
+                  thumb: PictureThumb(
+                    picture: iconNow,
+                    width: 48,
+                    height: 48,
+                    radius: BorderRadius.circular(DuvetTokens.radiusField),
+                    empty: Text(
+                      _name.text.trim().isEmpty ? '' : _name.text.trim().characters.first.toUpperCase(),
+                      style: DuvetType.navTitle.copyWith(color: colors.foreground, fontSize: 20),
+                    ),
                   ),
                 ),
-              ),
-            )
-          else if (bannerNow case final url?)
-            SpaceBanner(url: url),
-          if (hasBanner) const SizedBox(height: 12),
-          AdminPanel(
-            children: [
-              picked('Icon', _icon, () async {
-                final path = await pickSpaceIcon();
-                if (path != null && mounted) setState(() => _icon = path);
-              }),
-              picked('Banner', _banner, _pickBanner, has: hasBanner),
-              if (hasBanner)
-                GlassRow(
-                  icon: FLucideIcons.trash2,
-                  label: 'Remove banner',
-                  destructive: true,
-                  onPressed: () => setState(() {
-                    _banner = null;
-                    _removeBanner = p.bannerUrl != null;
-                  }),
+                PictureRow(
+                  label: 'Banner',
+                  set: bannerNow != null,
+                  onPressed: () => _editBanner(has: bannerNow != null),
+                  thumb: PictureThumb(
+                    picture: bannerNow,
+                    width: 144,
+                    height: 48,
+                    radius: BorderRadius.circular(8),
+                    empty: Icon(FLucideIcons.image, size: 24, color: colors.mutedForeground),
+                  ),
                 ),
-            ],
-          ),
-          const SizedBox(height: 8),
-          Text(
-            'Everyone in the Space sees the change.',
-            style: DuvetType.caption.copyWith(color: colors.mutedForeground),
-          ),
+              ],
+            ),
+            UploadNote(_upload),
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 8, 16, 0),
+              child: Text(
+                'Everyone in the Space sees the change.',
+                style: DuvetType.caption.copyWith(color: colors.mutedForeground),
+              ),
+            ),
+            const Overline('Details'),
+            DuvetTextField(label: 'Name', controller: _name),
+            const SizedBox(height: 16),
+            DuvetTextField(label: 'What it’s about', controller: _about, maxLines: 3),
+          ],
         ],
-      ],
+      ),
     );
   }
 }
@@ -826,6 +988,46 @@ class RoomsAdminPage extends StatefulWidget {
 
 class _RoomsAdminPageState extends State<RoomsAdminPage> {
   List<AdminRoom> get _all => context.repository.adminRooms(widget.spaceId);
+
+  /// The room a drag holds, by ID from the drag's start: the page rebuilds
+  /// on every room event, so by the drop another room may be at its index.
+  String? _held;
+  int? _heldFrom;
+
+  /// The rooms a held room is among, by category ('' for those in none),
+  /// until the finger lifts: the page scrolls no further than shows them
+  /// ([_HeldRoomsPhysics]). Null while no room is held.
+  String? _heldAmong;
+  final _roomLists = <String, GlobalKey>{};
+
+  void _hold(List<AdminRoom> list, int i) {
+    _held = list[i].id;
+    _heldFrom = i;
+  }
+
+  /// How far the page may scroll while a room is held: from where the start
+  /// of its rooms shows to where their end does.
+  (double, double)? _heldRange() {
+    final box = _roomLists[_heldAmong]?.currentContext?.findRenderObject();
+    if (box is! RenderBox || !box.attached) return null;
+    final viewport = RenderAbstractViewport.maybeOf(box);
+    if (viewport == null) return null;
+    final start = viewport.getOffsetToReveal(box, 0).offset;
+    final end = viewport.getOffsetToReveal(box, 1).offset;
+    return (min(start, end), max(start, end));
+  }
+
+  /// The room to move in [list] as it is now: the held one, null when it
+  /// went meanwhile, or else the one at [from]. A drop names the index its
+  /// drag began at; a screen reader's move names its own room's. So a room
+  /// held by a drag that was cancelled (a system gesture, the list changing),
+  /// which ends with no drop, only counts at that index, where it still is
+  /// unless the list changed.
+  AdminRoom? _heldIn(List<AdminRoom> list, int from) {
+    final held = from == _heldFrom ? _held : null;
+    _held = _heldFrom = null;
+    return held == null ? list[from] : list.where((r) => r.id == held).firstOrNull;
+  }
 
   /// What to make, then its name and, for a room, its category.
   Future<void> _create() async {
@@ -864,7 +1066,7 @@ class _RoomsAdminPageState extends State<RoomsAdminPage> {
     );
     if (got == null || !mounted) return;
     final (name, parent) = got;
-    await _try(
+    await adminTry(
       context,
       'Couldn’t create ${kind == AdminRoomKind.category ? name : '#$name'}',
       () => context.repository.createRoom(
@@ -932,11 +1134,11 @@ class _RoomsAdminPageState extends State<RoomsAdminPage> {
       case 'rename':
         final got = await askName<void>(context, title: 'Rename $label', initial: room.name);
         if (got == null || !mounted) return;
-        await _try(context, 'Couldn’t rename $label', () => repository.renameRoom(id, room.id, got.$1));
+        await adminTry(context, 'Couldn’t rename $label', () => repository.renameRoom(id, room.id, got.$1));
       case 'describe':
         final got = await askDescription(context, title: 'What $label is for', initial: room.description ?? '');
         if (got == null || !mounted) return;
-        await _try(
+        await adminTry(
           context,
           'Couldn’t change what $label is for',
           () => repository.setRoomDescription(id, room.id, got),
@@ -964,7 +1166,7 @@ class _RoomsAdminPageState extends State<RoomsAdminPage> {
           action: 'Delete',
         );
         if (!sure || !mounted) return;
-        await _try(context, 'Couldn’t delete $label', () => repository.deleteRoom(id, room.id));
+        await adminTry(context, 'Couldn’t delete $label', () => repository.deleteRoom(id, room.id));
     }
     if (mounted) setState(() {});
   }
@@ -1012,7 +1214,7 @@ class _RoomsAdminPageState extends State<RoomsAdminPage> {
     final label = moved.kind == AdminRoomKind.category ? moved.name : '#${moved.name}';
     final change = context.repository.moveRoom(widget.spaceId, moved.id, parentId: parent, position: position);
     setState(() {});
-    await _try(context, 'Couldn’t move $label', () => change);
+    await adminTry(context, 'Couldn’t move $label', () => change);
     if (mounted) setState(() {});
   }
 
@@ -1064,31 +1266,7 @@ class _RoomsAdminPageState extends State<RoomsAdminPage> {
     final makes = repository.spaceProfile(widget.spaceId)?.can(Perm.manageChannels) ?? false;
     // The trailing edge, ridged like a grip: drag it to move the row, in the
     // list it's nearest to. Down a panel the edges make one ridge.
-    Widget grip(int index) => ReorderableDragStartListener(
-      index: index,
-      child: ExcludeSemantics(
-        child: Container(
-          width: 32,
-          decoration: BoxDecoration(
-            color: colors.secondary,
-            border: Border(left: BorderSide(color: tokens.hairline)),
-          ),
-          alignment: Alignment.center,
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              for (var i = 0; i < 3; i++)
-                Container(
-                  width: 14,
-                  height: 2,
-                  margin: const EdgeInsets.symmetric(vertical: 2),
-                  decoration: BoxDecoration(color: colors.mutedForeground, borderRadius: BorderRadius.circular(1)),
-                ),
-            ],
-          ),
-        ),
-      ),
-    );
+    Widget grip(int index) => DragEdge(index: index);
     // A plain row on its panel, with its edge to drag by when it may move.
     Widget row(Widget body, int index, {double indent = 0, bool moves = true}) => IntrinsicHeight(
       child: Row(
@@ -1117,34 +1295,24 @@ class _RoomsAdminPageState extends State<RoomsAdminPage> {
       child: child,
     );
     // A room off its panel while held: raised on its own.
-    Widget liftRow(Widget child, int _, Animation<double> _) => Transform.scale(
-      scale: 1.02,
-      child: Container(
-        clipBehavior: Clip.antiAlias,
-        decoration: BoxDecoration(
-          color: colors.card,
-          borderRadius: BorderRadius.circular(DuvetTokens.radiusField),
-          boxShadow: tokens.shadowRaised,
-        ),
-        child: Material(type: MaterialType.transparency, child: child),
-      ),
-    );
+    const liftRow = liftedRow;
     // A category's panel is its own surface: only lifted a little.
     Widget liftPanel(Widget child, int _, Animation<double> _) => Material(
       type: MaterialType.transparency,
       child: Transform.scale(scale: 1.02, child: child),
     );
 
-    // One place's rooms, to reorder there.
-    Widget rooms(List<AdminRoom> list, String? parent) => ReorderableListView.builder(
-      shrinkWrap: true,
-      physics: const NeverScrollableScrollPhysics(),
-      padding: EdgeInsets.zero,
-      buildDefaultDragHandles: false,
+    Widget roomList(List<AdminRoom> list, String? parent) => SliverReorderableList(
       itemCount: list.length,
+      onReorderStart: (i) {
+        _hold(list, i);
+        _heldAmong = parent ?? '';
+      },
       onReorderItem: (from, to) {
-        if (!manages(list[from])) return _cantMove(list[from]);
-        if (from != to) _move(list[from], [...list]..removeAt(from), to, parent: parent);
+        final held = _heldIn(list, from);
+        if (held == null) return;
+        if (!manages(held)) return _cantMove(held);
+        if (list.indexOf(held) != to) _move(held, [...list]..remove(held), to, parent: parent);
       },
       proxyDecorator: liftRow,
       itemBuilder: (context, i) {
@@ -1177,6 +1345,17 @@ class _RoomsAdminPageState extends State<RoomsAdminPage> {
             ? ReorderableDelayedDragStartListener(key: ValueKey(r.id), index: i, child: body)
             : KeyedSubtree(key: ValueKey(r.id), child: body);
       },
+    );
+
+    // One place's rooms, to reorder there. In a viewport that doesn't
+    // scroll, not a list of its own: a drag scrolls the nearest Scrollable,
+    // the page's, so a room goes past the screen's edge in one drag. A node
+    // of their own, as a list's is: else a category's moves would be offered
+    // again around each of its rooms.
+    Widget rooms(List<AdminRoom> list, String? parent) => Semantics(
+      key: _roomLists.putIfAbsent(parent ?? '', GlobalKey.new),
+      container: true,
+      child: ShrinkWrappingViewport(offset: ViewportOffset.zero(), slivers: [roomList(list, parent)]),
     );
 
     // A category and its rooms, on one panel: they move together.
@@ -1263,23 +1442,56 @@ class _RoomsAdminPageState extends State<RoomsAdminPage> {
           : null,
       list: (padding) => all.isEmpty
           ? ListView(padding: padding, children: const [ListNote('No rooms yet')])
-          : ReorderableListView.builder(
-              padding: padding,
-              buildDefaultDragHandles: false,
-              header: loose.isEmpty ? null : panel(rooms(loose, null)),
-              itemCount: categories.length,
-              itemBuilder: (context, i) => block(i),
-              onReorderItem: (from, to) {
-                if (!manages(categories[from])) return _cantMove(categories[from]);
-                if (from != to) _move(categories[from], [...categories]..removeAt(from), to);
-              },
-              proxyDecorator: liftPanel,
+          : Listener(
+              // The finger lifted or taken: no room held any more.
+              onPointerUp: (_) => _heldAmong = null,
+              onPointerCancel: (_) => _heldAmong = null,
+              child: ReorderableListView.builder(
+                physics: _HeldRoomsPhysics(() => _heldAmong == null ? null : _heldRange()),
+                padding: padding,
+                buildDefaultDragHandles: false,
+                header: loose.isEmpty ? null : panel(rooms(loose, null)),
+                itemCount: categories.length,
+                itemBuilder: (context, i) => block(i),
+                onReorderStart: (i) => _hold(categories, i),
+                onReorderItem: (from, to) {
+                  final held = _heldIn(categories, from);
+                  if (held == null) return;
+                  if (!manages(held)) return _cantMove(held);
+                  if (categories.indexOf(held) != to) _move(held, [...categories]..remove(held), to);
+                },
+                proxyDecorator: liftPanel,
+              ),
             ),
     );
   }
 }
 
-/// What each role may do in one room: allowed, denied, or as the role says.
+/// While a room is held, the page scrolls no further than shows the rooms
+/// it's among ([range]): the drag's autoscroll would carry it on, and their
+/// list, once scrolled off and dropped, would take the drag with it.
+class _HeldRoomsPhysics extends ScrollPhysics {
+  final (double, double)? Function() range;
+  const _HeldRoomsPhysics(this.range, {super.parent});
+
+  @override
+  _HeldRoomsPhysics applyTo(ScrollPhysics? ancestor) => _HeldRoomsPhysics(range, parent: buildParent(ancestor));
+
+  @override
+  double applyBoundaryConditions(ScrollMetrics position, double value) {
+    if (range() case (final start, final end)?) {
+      // Not past it, nor further away when it's already off.
+      final last = max(end, position.pixels);
+      final first = min(start, position.pixels);
+      if (value > last) return value - last;
+      if (value < first) return value - first;
+    }
+    return super.applyBoundaryConditions(position, value);
+  }
+}
+
+/// What each role, and each member given their own, may do in one room:
+/// allowed, denied, or as their roles say. A card each, swiped between.
 class RoomPermissionsPage extends StatefulWidget {
   final String spaceId;
   final AdminRoom room;
@@ -1289,28 +1501,120 @@ class RoomPermissionsPage extends StatefulWidget {
   State<RoomPermissionsPage> createState() => _RoomPermissionsPageState();
 }
 
-class _RoomPermissionsPageState extends State<RoomPermissionsPage> {
-  late final List<SpaceRole> _roles = context.repository.roles(widget.spaceId);
-  late String _role = _roles.last.id;
+/// Whose permissions a card sets: a role (type 0) or a member (type 1).
+typedef _Target = ({String id, int type, String name, RoleColors? colors, String? avatarUrl});
 
-  // What can differ by room.
-  static const _bits = <PermissionInfo>[
-    (bit: Perm.viewChannels, label: 'See the room', description: 'And read its messages'),
-    (bit: Perm.sendMessages, label: 'Send messages', description: 'Write here'),
-    (bit: Perm.manageMessages, label: 'Delete others’ messages', description: 'Here'),
-    (bit: Perm.pinMessages, label: 'Pin messages', description: 'Here'),
-    (bit: Perm.createInvites, label: 'Invite people', description: 'Links to this room'),
-    (bit: Perm.joinVoice, label: 'Join voice', description: 'If it’s a voice room'),
-    (bit: Perm.speakInVoice, label: 'Speak', description: 'If it’s a voice room'),
+class _RoomPermissionsPageState extends State<RoomPermissionsPage> {
+  // Every room permission, as the desktop groups them; ManageRoles has no
+  // say in a room. An overwrite keeps any bit not shown: an edit changes
+  // only the bit it sets.
+  static const _groups = <(String, List<PermissionInfo>)>[
+    (
+      'General',
+      [
+        (bit: Perm.viewChannels, label: 'See the room', description: 'And read its messages'),
+        (bit: Perm.manageChannels, label: 'Manage the room', description: 'Its name, what it’s for, and these'),
+        (bit: Perm.createInvites, label: 'Invite people', description: 'Links to this room'),
+      ],
+    ),
+    (
+      'Messages',
+      [
+        (bit: Perm.sendMessages, label: 'Send messages', description: 'Write here'),
+        (bit: Perm.manageMessages, label: 'Delete others’ messages', description: 'Here'),
+        (bit: Perm.pinMessages, label: 'Pin messages', description: 'Here'),
+      ],
+    ),
+    (
+      'Voice',
+      [
+        (bit: Perm.joinVoice, label: 'Join voice', description: 'If it’s a voice room'),
+        (bit: Perm.speakInVoice, label: 'Speak', description: 'If it’s a voice room'),
+        (bit: Perm.video, label: 'Video', description: 'Camera and screen, if it’s a voice room'),
+      ],
+    ),
   ];
 
-  RoomOverwrite get _overwrite =>
-      context.repository.overwrites(widget.spaceId, widget.room.id).where((o) => o.targetId == _role).firstOrNull ??
-      RoomOverwrite(targetId: _role);
+  // Members given a card on this visit; they keep it once something is set.
+  final _added = <String>[];
+  List<Member>? _members;
+  Future<List<Member>>? _loadingMembers;
 
-  Future<void> _set(int bit, bool? state) async {
-    final next = _overwrite.withState(bit, state);
-    await _try(
+  // A chip's page on its way: the pages passed on the way neither click nor
+  // move the selection.
+  bool _jumping = false;
+
+  // The card shown, by whose it is: @everyone's at first.
+  late String _shown = widget.spaceId;
+  late final _pages = PageController(initialPage: _targets.indexWhere((t) => t.id == _shown), viewportFraction: 0.86);
+  final _chips = <String, GlobalKey>{};
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    if (_loadingMembers != null) return;
+    _loadMembers();
+    // @everyone's chip is the last role's: in view from the start.
+    WidgetsBinding.instance.addPostFrameCallback((_) => _bringChip(Duration.zero));
+  }
+
+  // The Space's members, to name and picture members' cards and to add one;
+  // asked again when the picker opens after a failure.
+  void _loadMembers() {
+    final repository = context.repository;
+    final text = repository.adminRooms(widget.spaceId).where((r) => r.kind == AdminRoomKind.text).firstOrNull?.id;
+    final load = repository.members(RoomTarget(spaceId: widget.spaceId, roomId: text ?? widget.room.id));
+    _loadingMembers = load;
+    load.then(
+      (m) {
+        if (mounted) setState(() => _members = m);
+      },
+      onError: (Object e) {
+        debugPrint('room permissions: members: $e');
+        if (mounted && _loadingMembers == load) _loadingMembers = null;
+      },
+    );
+  }
+
+  @override
+  void dispose() {
+    _pages.dispose();
+    super.dispose();
+  }
+
+  Duration get _motion => MediaQuery.disableAnimationsOf(context) ? Duration.zero : DuvetTokens.dropdownIn;
+
+  List<RoomOverwrite> get _overwrites => context.repository.overwrites(widget.spaceId, widget.room.id);
+
+  /// The roles, highest first, then the members with their own.
+  List<_Target> get _targets {
+    final repository = context.repository;
+    final known = {for (final m in _members ?? const <Member>[]) m.userId: m};
+    final memberIds = {
+      for (final o in _overwrites)
+        if (o.targetType == 1) o.targetId,
+      ..._added,
+    };
+    return [
+      for (final r in repository.roles(widget.spaceId))
+        (id: r.id, type: 0, name: r.name, colors: r.colors, avatarUrl: null),
+      for (final id in memberIds)
+        (
+          id: id,
+          type: 1,
+          name: known[id]?.displayName ?? repository.nameOf(id) ?? 'Member',
+          colors: null,
+          avatarUrl: known[id]?.avatarUrl,
+        ),
+    ];
+  }
+
+  RoomOverwrite _overwrite(_Target t) =>
+      _overwrites.where((o) => o.targetId == t.id).firstOrNull ?? RoomOverwrite(targetId: t.id, targetType: t.type);
+
+  Future<void> _set(_Target t, int bit, bool? state) async {
+    final next = _overwrite(t).withState(bit, state);
+    await adminTry(
       context,
       'Couldn’t change the permission',
       () => context.repository.setOverwrite(widget.spaceId, widget.room.id, next),
@@ -1318,69 +1622,698 @@ class _RoomPermissionsPageState extends State<RoomPermissionsPage> {
     if (mounted) setState(() {});
   }
 
-  @override
-  Widget build(BuildContext context) {
+  /// Turns to [index]'s card from a chip or a peeking card: one click, the
+  /// selection there at once.
+  Future<void> _pick(int index) async {
+    final targets = _targets;
+    HapticFeedback.selectionClick();
+    setState(() => _shown = targets[index].id);
+    _bringChip(_motion);
+    if (_motion == Duration.zero) return _pages.jumpToPage(index);
+    _jumping = true;
+    await _pages.animateToPage(index, duration: _motion, curve: DuvetTokens.decelerate);
+    _jumping = false;
+  }
+
+  void _bringChip(Duration duration) {
+    if (_chips[_shown]?.currentContext case final chip? when mounted) {
+      Scrollable.ensureVisible(chip, alignment: 0.5, duration: duration, curve: DuvetTokens.decelerate);
+    }
+  }
+
+  void _turned(List<_Target> targets, int index) {
+    if (_jumping) return;
+    HapticFeedback.selectionClick();
+    setState(() => _shown = targets[index].id);
+    _bringChip(_motion);
+  }
+
+  /// A member to give their own permissions here: theirs and no one's else.
+  Future<void> _addMember(List<_Target> targets) async {
+    final taken = {for (final t in targets) t.id};
+    if (_loadingMembers == null) _loadMembers();
+    final picked = await showGlassSheet<Member>(
+      context,
+      label: 'Add a member',
+      initialSize: 0.75,
+      builder: (context, scroll) => _MemberPicker(
+        spaceId: widget.spaceId,
+        members: _loadingMembers!,
+        loaded: _members,
+        taken: taken,
+        scroll: scroll,
+      ),
+    );
+    if (picked == null || !mounted) return;
+    setState(() {
+      _added.add(picked.userId);
+      _shown = picked.userId;
+    });
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) _pick(_targets.indexWhere((t) => t.id == picked.userId));
+    });
+  }
+
+  /// A member's own permissions here, gone: their roles say again.
+  Future<void> _removeMember(_Target t) async {
+    // Its place now: the card before it is shown after.
+    final before = _targets.indexWhere((x) => x.id == t.id);
+    final had = _overwrites.any((o) => o.targetId == t.id);
+    if (had &&
+        !await adminTry(
+          context,
+          'Couldn’t remove ${t.name}’s permissions',
+          () => context.repository.setOverwrite(
+            widget.spaceId,
+            widget.room.id,
+            RoomOverwrite(targetId: t.id, targetType: 1),
+          ),
+        )) {
+      return;
+    }
+    if (!mounted) return;
+    setState(() {
+      _added.remove(t.id);
+      final left = _targets;
+      _shown = left[(before - 1).clamp(0, left.length - 1)].id;
+    });
+  }
+
+  Widget _header(BuildContext context, _Target t) {
     final colors = context.theme.colors;
-    final overwrite = _overwrite;
-    return AdminPage(
-      title: '#${widget.room.name}',
-      children: [
-        const Overline('For'),
-        Wrap(
-          spacing: 8,
-          runSpacing: 8,
-          children: [
-            for (final r in _roles)
-              DuvetChip(label: r.name, selected: r.id == _role, onTap: () => setState(() => _role = r.id)),
-          ],
-        ),
-        const Overline('In this room'),
-        AdminPanel(
-          children: [
-            for (final p in _bits)
-              Padding(
-                padding: const EdgeInsets.fromLTRB(12, 12, 12, 12),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(p.label, style: DuvetType.rowTitle.copyWith(color: colors.foreground)),
-                    Text(p.description, style: DuvetType.caption.copyWith(color: colors.mutedForeground)),
-                    const SizedBox(height: 8),
-                    Semantics(
-                      container: true,
-                      label: p.label,
-                      explicitChildNodes: true,
-                      child: Wrap(
-                        spacing: 8,
-                        children: [
-                          for (final (state, label) in [(false, 'Deny'), (null, 'As the role says'), (true, 'Allow')])
-                            DuvetChip(
-                              label: label,
-                              selected: overwrite.stateOf(p.bit) == state,
-                              onTap: () => _set(p.bit, state),
-                            ),
-                        ],
-                      ),
+    final title = DuvetType.rowTitleUnread.copyWith(color: colors.foreground);
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(12, 14, 8, 4),
+      child: Row(
+        children: [
+          if (t.type == 1) ...[UserAvatar(name: t.name, url: t.avatarUrl, size: 24), const SizedBox(width: 8)],
+          Expanded(
+            child: Align(
+              alignment: AlignmentDirectional.centerStart,
+              child: t.type == 0
+                  ? RoleName(t.name, colors: t.colors!, style: title)
+                  : Text(t.name, maxLines: 1, overflow: TextOverflow.ellipsis, style: title),
+            ),
+          ),
+          if (t.type == 1)
+            Semantics(
+              container: true,
+              button: true,
+              label: 'Remove ${t.name}’s own permissions',
+              excludeSemantics: true,
+              onTap: () => _removeMember(t),
+              child: GestureDetector(
+                behavior: HitTestBehavior.opaque,
+                onTap: () => _removeMember(t),
+                child: ConstrainedBox(
+                  constraints: const BoxConstraints(minWidth: 44, minHeight: 44),
+                  child: Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 8),
+                    child: Center(
+                      widthFactor: 1,
+                      child: Text('Remove', style: DuvetType.label.copyWith(fontSize: 15, color: colors.destructive)),
                     ),
-                  ],
+                  ),
                 ),
               ),
+            ),
+        ],
+      ),
+    );
+  }
+
+  Widget _page(BuildContext context, List<_Target> targets, int index, EdgeInsets padding) {
+    final colors = context.theme.colors;
+    final t = targets[index];
+    final overwrite = _overwrite(t);
+    final card = ListView(
+      // A card scrolls on its own, and bounces even when it fits.
+      physics: const AlwaysScrollableScrollPhysics(),
+      padding: EdgeInsets.fromLTRB(6, 0, 6, padding.bottom),
+      children: [
+        AdminPanel(
+          children: [
+            _header(context, t),
+            if (t.type == 1)
+              Padding(
+                padding: const EdgeInsets.fromLTRB(12, 0, 12, 4),
+                child: Text(
+                  'Theirs alone, over what their roles say',
+                  style: DuvetType.caption.copyWith(color: colors.mutedForeground),
+                ),
+              ),
+            for (final (group, perms) in _groups) ...[
+              Padding(
+                padding: const EdgeInsets.fromLTRB(12, 14, 12, 0),
+                child: Semantics(
+                  header: true,
+                  child: Text(group.toUpperCase(), style: DuvetType.overline.copyWith(color: colors.mutedForeground)),
+                ),
+              ),
+              for (final p in perms)
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(12, 10, 12, 10),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      Text(p.label, style: DuvetType.rowTitle.copyWith(color: colors.foreground)),
+                      Text(p.description, style: DuvetType.caption.copyWith(color: colors.mutedForeground)),
+                      const SizedBox(height: 8),
+                      Segmented<bool?>(
+                        label: p.label,
+                        value: overwrite.stateOf(p.bit),
+                        options: {false: 'Deny', null: t.type == 1 ? 'Their roles' : 'Role default', true: 'Allow'},
+                        onChanged: (state) => _set(t, p.bit, state),
+                      ),
+                    ],
+                  ),
+                ),
+            ],
+            const SizedBox(height: 6),
           ],
         ),
       ],
     );
+    // The cards beside the one shown sit back a little and dim, following the
+    // finger; tapped, one turns to the front. Screen readers have the chips.
+    // The tree stays the same whichever card is shown, so turning the page
+    // mid-swipe doesn't build both cards again; and the card is veiled, not
+    // faded, so a swipe moves its drawing instead of redrawing it each frame.
+    final shown = t.id == _shown;
+    final veil = colors.background;
+    return GestureDetector(
+      behavior: HitTestBehavior.opaque,
+      onTap: shown ? null : () => _pick(index),
+      child: ExcludeSemantics(
+        excluding: !shown,
+        child: IgnorePointer(
+          ignoring: !shown,
+          child: AnimatedBuilder(
+            animation: _pages,
+            child: RepaintBoundary(child: card),
+            builder: (context, child) {
+              final page = _pages.hasClients && _pages.position.haveDimensions ? _pages.page! : index.toDouble();
+              final away = (page - index).abs().clamp(0.0, 1.0);
+              return Transform.scale(
+                scale: 1 - 0.05 * away,
+                alignment: Alignment.topCenter,
+                child: Stack(
+                  children: [
+                    child!,
+                    Positioned.fill(
+                      child: IgnorePointer(
+                        child: ColoredBox(color: veil.withValues(alpha: 0.45 * away)),
+                      ),
+                    ),
+                  ],
+                ),
+              );
+            },
+          ),
+        ),
+      ),
+    );
   }
+
+  // Where the cards are: a dot each, the one shown long; past ten, a count.
+  Widget _dots(BuildContext context, List<_Target> targets) {
+    final colors = context.theme.colors;
+    final accent = context.duvet.accentText;
+    final index = targets.indexWhere((t) => t.id == _shown);
+    if (targets.length > 10) {
+      return Text(
+        '${index + 1} of ${targets.length}',
+        style: DuvetType.caption.copyWith(color: colors.mutedForeground),
+      );
+    }
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        for (var i = 0; i < targets.length; i++)
+          AnimatedContainer(
+            duration: _motion == Duration.zero ? Duration.zero : DuvetTokens.pressOut,
+            curve: DuvetTokens.decelerate,
+            margin: const EdgeInsets.only(left: 4),
+            width: i == index ? 16 : 6,
+            height: 6,
+            decoration: BoxDecoration(
+              color: i == index ? accent : colors.mutedForeground.withValues(alpha: 0.4),
+              borderRadius: BorderRadius.circular(3),
+            ),
+          ),
+      ],
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) =>
+      ValueListenableBuilder(valueListenable: context.repository.spaces, builder: (context, _, _) => _build(context));
+
+  Widget _build(BuildContext context) {
+    final colors = context.theme.colors;
+    final targets = _targets;
+    // A role or member gone while here: the card next to where it was.
+    if (!targets.any((t) => t.id == _shown)) _shown = targets.last.id;
+    // Roles come and go and move as others change them: the page follows the
+    // card shown, or the one on screen would be another's, and inert.
+    final at = targets.indexWhere((t) => t.id == _shown);
+    if (!_jumping && _pages.hasClients && _pages.position.haveDimensions && _pages.page?.round() != at) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted && !_jumping && _pages.hasClients) _pages.jumpToPage(at);
+      });
+    }
+    return AdminPage(
+      title: '#${widget.room.name}',
+      list: (padding) {
+        // Headers, chips and cards line up: the cards' edge is where the overlines' text starts.
+        final inset = padding.left + 16;
+        return Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            SizedBox(height: padding.top),
+            Padding(
+              padding: EdgeInsets.symmetric(horizontal: padding.left),
+              child: const Overline('For'),
+            ),
+            // One row of roles and members however many, edge to edge, the
+            // one shown brought to the middle; adding a member at its end.
+            SingleChildScrollView(
+              scrollDirection: Axis.horizontal,
+              padding: EdgeInsets.symmetric(horizontal: inset),
+              child: Row(
+                children: [
+                  for (final (i, t) in targets.indexed)
+                    Padding(
+                      key: _chips.putIfAbsent(t.id, GlobalKey.new),
+                      padding: const EdgeInsetsDirectional.only(end: 8),
+                      child: DuvetChip(
+                        label: t.name,
+                        selected: t.id == _shown,
+                        leading: t.type == 1 ? UserAvatar(name: t.name, url: t.avatarUrl, size: 18) : null,
+                        onTap: () => _pick(i),
+                      ),
+                    ),
+                  DuvetChip(
+                    label: 'Add member',
+                    selected: false,
+                    action: true,
+                    leading: Icon(FLucideIcons.userPlus, size: 16, color: colors.foreground),
+                    onTap: () => _addMember(targets),
+                  ),
+                ],
+              ),
+            ),
+            Padding(
+              padding: EdgeInsets.only(left: padding.left),
+              child: Row(
+                crossAxisAlignment: CrossAxisAlignment.end,
+                children: [
+                  const Expanded(child: Overline('In this room')),
+                  ExcludeSemantics(
+                    child: Padding(padding: EdgeInsets.fromLTRB(0, 0, inset, 10), child: _dots(context, targets)),
+                  ),
+                ],
+              ),
+            ),
+            Expanded(
+              child: PageView.builder(
+                controller: _pages,
+                physics: const CarouselPhysics(),
+                itemCount: targets.length,
+                onPageChanged: (i) => _turned(targets, i),
+                itemBuilder: (context, i) => _page(context, targets, i, padding),
+              ),
+            ),
+          ],
+        );
+      },
+    );
+  }
+}
+
+/// The Space's members, searched by name, to give one their own permissions
+/// in a room; those with theirs already aren't offered. Answers the one picked.
+class _MemberPicker extends StatefulWidget {
+  /// Whose members they are: a bot's status here comes first.
+  final String spaceId;
+  final Future<List<Member>> members;
+
+  /// The members already had: shown at once, no spinner first.
+  final List<Member>? loaded;
+  final Set<String> taken;
+  final ScrollController scroll;
+  const _MemberPicker({
+    required this.spaceId,
+    required this.members,
+    required this.loaded,
+    required this.taken,
+    required this.scroll,
+  });
+
+  @override
+  State<_MemberPicker> createState() => _MemberPickerState();
+}
+
+class _MemberPickerState extends State<_MemberPicker> {
+  final _search = TextEditingController();
+
+  @override
+  void dispose() {
+    _search.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) => FutureBuilder(
+    future: widget.members,
+    initialData: widget.loaded,
+    builder: (context, snapshot) {
+      final colors = context.theme.colors;
+      final repository = context.repository;
+      final query = _search.text.trim().toLowerCase();
+      final offered = [
+        for (final m in snapshot.data ?? const <Member>[])
+          if (!widget.taken.contains(m.userId) &&
+              (query.isEmpty ||
+                  m.displayName.toLowerCase().contains(query) ||
+                  m.username.toLowerCase().contains(query)))
+            m,
+      ];
+      return ListView(
+        controller: widget.scroll,
+        // Scrolling the members puts the search's keyboard away.
+        keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
+        padding: EdgeInsets.only(bottom: 24 + MediaQuery.paddingOf(context).bottom),
+        children: [
+          const SheetTitle(title: 'Add a member', caption: 'Their own permissions here, over their roles'),
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
+            child: DuvetTextField(label: 'Search', controller: _search, onChanged: (_) => setState(() {})),
+          ),
+          if (snapshot.hasError)
+            const ListNote('Couldn’t load the members. Close this and try again.')
+          else if (!snapshot.hasData)
+            const Padding(
+              padding: EdgeInsets.all(24),
+              child: Center(child: FCircularProgress()),
+            )
+          else if (offered.isEmpty)
+            Padding(
+              padding: const EdgeInsets.all(24),
+              child: Text(
+                query.isEmpty ? 'Everyone has theirs already' : 'No one by that name',
+                textAlign: TextAlign.center,
+                style: DuvetType.snippet.copyWith(color: colors.mutedForeground),
+              ),
+            )
+          else
+            for (final m in offered)
+              PersonRow(
+                member: m,
+                presence: presenceIn(repository.presence.value, m.userId, spaceId: widget.spaceId),
+                username: false,
+                onTap: () => Navigator.of(context).pop(m),
+              ),
+        ],
+      );
+    },
+  );
 }
 
 // -----------------------------------------------------------------------------
 // Roles
 // -----------------------------------------------------------------------------
 
-/// A role's name color, readable on this theme's background.
-Color? roleColorOn(BuildContext context, int? rgb) =>
-    rgb == null ? null : readableOn(Color(0xFF000000 | rgb), context.theme.colors.background);
+/// A reorderable row's trailing edge, ridged like a grip: drag it to move
+/// the row. Down a panel the edges make one ridge.
+class DragEdge extends StatelessWidget {
+  final int index;
+  const DragEdge({required this.index, super.key});
 
-/// The Space's roles, highest first; @everyone last.
+  @override
+  Widget build(BuildContext context) {
+    final colors = context.theme.colors;
+    return ReorderableDragStartListener(
+      index: index,
+      child: ExcludeSemantics(
+        child: Container(
+          width: 32,
+          decoration: BoxDecoration(
+            color: colors.secondary,
+            border: BorderDirectional(start: BorderSide(color: context.duvet.hairline)),
+          ),
+          alignment: Alignment.center,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              for (var i = 0; i < 3; i++)
+                Container(
+                  width: 14,
+                  height: 2,
+                  margin: const EdgeInsets.symmetric(vertical: 2),
+                  decoration: BoxDecoration(color: colors.mutedForeground, borderRadius: BorderRadius.circular(1)),
+                ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// A reorderable row off its panel while held: raised on its own.
+Widget liftedRow(Widget child, int _, Animation<double> _) => Builder(
+  builder: (context) => Transform.scale(
+    scale: 1.02,
+    child: Container(
+      clipBehavior: Clip.antiAlias,
+      decoration: BoxDecoration(
+        color: context.theme.colors.card,
+        borderRadius: BorderRadius.circular(DuvetTokens.radiusField),
+        boxShadow: context.duvet.shadowRaised,
+      ),
+      child: Material(type: MaterialType.transparency, child: child),
+    ),
+  ),
+);
+
+/// What a role may do, in a few words: its strongest permissions first.
+String rolePowers(SpaceRole r) {
+  if (Perm.has(r.perms, Perm.administrator)) return 'Administrator';
+  final names = [
+    for (final (_, perms) in permissionGroups)
+      for (final p in perms)
+        if (r.perms & p.bit == p.bit) p.label,
+  ];
+  return switch (names.length) {
+    0 => 'No permissions',
+    1 || 2 => names.join(', '),
+    final n => '${names.take(2).join(', ')} and ${n - 2} more',
+  };
+}
+
+/// How much a role manages, for Admins first: Administrator, then any part
+/// of the Space, then nothing.
+int _adminRank(SpaceRole r) => Perm.has(r.perms, Perm.administrator)
+    ? 0
+    : r.perms & Perm.anyAdmin != 0
+    ? 1
+    : 2;
+
+/// A role's colors read aloud: "default", "#30A46C", or a gradient's stops.
+String describeRoleColors(RoleColors c) {
+  String hex(int rgb) => '#${rgb.toRadixString(16).padLeft(6, '0').toUpperCase()}';
+  if (c.from == null) return 'default';
+  if (c.to == null) return hex(c.from!);
+  return 'gradient, ${[c.from, c.via, c.to].nonNulls.map(hex).join(' to ')}';
+}
+
+/// A role's colors on a small rounded swatch, left to right: the picker's
+/// own preview, never a role's fill elsewhere. The default ink without one.
+class RoleSwatch extends StatelessWidget {
+  final RoleColors colors;
+  final double width;
+  final double height;
+  const RoleSwatch({required this.colors, this.width = 20, this.height = 20, super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    final stops = [colors.from, colors.via, colors.to].nonNulls.map((c) => roleColorOn(context, c)!).toList();
+    return Container(
+      width: width,
+      height: height,
+      decoration: BoxDecoration(
+        color: stops.isEmpty ? context.theme.colors.foreground : stops.first,
+        gradient: colors.from != null && colors.to != null ? LinearGradient(colors: stops) : null,
+        borderRadius: BorderRadius.circular(6),
+      ),
+    );
+  }
+}
+
+enum _ColorKind { none, solid, gradient }
+
+enum _Stop { start, middle, end }
+
+/// The name's color: none, one of the swatches, or a gradient across two or
+/// three of them, previewed on the name as members will see it. A color set
+/// on the desktop outside the swatches stays offered. Answers on Done.
+class _RoleColorSheet extends StatefulWidget {
+  final String name;
+  final RoleColors initial;
+  final ScrollController scroll;
+  const _RoleColorSheet({required this.name, required this.initial, required this.scroll});
+
+  @override
+  State<_RoleColorSheet> createState() => _RoleColorSheetState();
+}
+
+class _RoleColorSheetState extends State<_RoleColorSheet> {
+  late RoleColors _c = widget.initial;
+  late _ColorKind _kind = _c.from == null
+      ? _ColorKind.none
+      : _c.to == null
+      ? _ColorKind.solid
+      : _ColorKind.gradient;
+  _Stop _stop = _Stop.start;
+
+  // The swatches, and any color the role has beyond them.
+  late final _swatches = [
+    ...roleSwatches,
+    for (final c in [widget.initial.from, widget.initial.via, widget.initial.to].nonNulls)
+      if (!roleSwatches.contains(c)) c,
+  ];
+
+  void _kindTo(_ColorKind kind) => setState(() {
+    _kind = kind;
+    _stop = _Stop.start;
+    final first = _c.from ?? roleSwatches[3];
+    _c = switch (kind) {
+      _ColorKind.none => (from: null, via: null, to: null),
+      _ColorKind.solid => (from: first, via: null, to: null),
+      // A gradient starts from the color there was, to the next swatch along.
+      _ColorKind.gradient => (
+        from: first,
+        via: _c.via,
+        to: _c.to ?? roleSwatches[(roleSwatches.indexOf(first) + 2) % roleSwatches.length],
+      ),
+    };
+  });
+
+  void _pick(int? rgb) => setState(() {
+    HapticFeedback.selectionClick();
+    _c = switch ((_kind, _stop)) {
+      (_ColorKind.gradient, _Stop.middle) => (from: _c.from, via: rgb, to: _c.to),
+      (_ColorKind.gradient, _Stop.end) => (from: _c.from, via: _c.via, to: rgb),
+      (_ColorKind.gradient, _) => (from: rgb, via: _c.via, to: _c.to),
+      _ => (from: rgb, via: null, to: null),
+    };
+  });
+
+  int? get _current => switch ((_kind, _stop)) {
+    (_ColorKind.gradient, _Stop.middle) => _c.via,
+    (_ColorKind.gradient, _Stop.end) => _c.to,
+    _ => _c.from,
+  };
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = context.theme.colors;
+    final accent = context.duvet.accentText;
+    // The middle stop alone may be left out.
+    final none = _kind == _ColorKind.gradient && _stop == _Stop.middle;
+    return ListView(
+      controller: widget.scroll,
+      padding: EdgeInsets.only(bottom: 24 + MediaQuery.paddingOf(context).bottom),
+      children: [
+        const SheetTitle(title: 'Name color', caption: 'Names only, never fills'),
+        // The name as members will see it.
+        Padding(
+          padding: const EdgeInsets.fromLTRB(16, 4, 16, 16),
+          child: Container(
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 18),
+            decoration: BoxDecoration(
+              color: colors.background,
+              borderRadius: BorderRadius.circular(DuvetTokens.radiusField),
+            ),
+            alignment: Alignment.center,
+            child: Semantics(
+              label: 'Preview: ${widget.name}, ${describeRoleColors(_c)}',
+              excludeSemantics: true,
+              child: RoleName(widget.name, colors: _c, style: DuvetType.title),
+            ),
+          ),
+        ),
+        Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 16),
+          child: Segmented<_ColorKind>(
+            label: 'Color',
+            value: _kind,
+            options: const {_ColorKind.none: 'Default', _ColorKind.solid: 'Solid', _ColorKind.gradient: 'Gradient'},
+            onChanged: _kindTo,
+          ),
+        ),
+        if (_kind == _ColorKind.gradient) ...[
+          const SizedBox(height: 12),
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 16),
+            child: Segmented<_Stop>(
+              label: 'Which stop',
+              value: _stop,
+              options: const {_Stop.start: 'Start', _Stop.middle: 'Middle', _Stop.end: 'End'},
+              onChanged: (stop) => setState(() => _stop = stop),
+            ),
+          ),
+        ],
+        if (_kind != _ColorKind.none)
+          Padding(
+            padding: const EdgeInsets.all(16),
+            child: Wrap(
+              spacing: 12,
+              runSpacing: 12,
+              children: [
+                for (final rgb in [if (none) null, ..._swatches])
+                  Semantics(
+                    container: true,
+                    button: true,
+                    selected: _current == rgb,
+                    label: rgb == null ? 'No middle' : describeRoleColors((from: rgb, via: null, to: null)),
+                    excludeSemantics: true,
+                    onTap: () => _pick(rgb),
+                    child: GestureDetector(
+                      onTap: () => _pick(rgb),
+                      child: AnimatedContainer(
+                        duration: MediaQuery.disableAnimationsOf(context) ? Duration.zero : DuvetTokens.pressOut,
+                        width: 44,
+                        height: 44,
+                        decoration: BoxDecoration(
+                          color: rgb == null ? colors.secondary : roleColorOn(context, rgb),
+                          borderRadius: BorderRadius.circular(DuvetTokens.radiusField),
+                          border: _current == rgb ? Border.all(color: accent, width: 3) : null,
+                        ),
+                        child: rgb == null ? Icon(FLucideIcons.ban, size: 18, color: colors.mutedForeground) : null,
+                      ),
+                    ),
+                  ),
+              ],
+            ),
+          ),
+        Padding(
+          padding: const EdgeInsets.fromLTRB(16, 8, 16, 0),
+          child: DuvetButton(
+            label: 'Done',
+            variant: ButtonVariant.primary,
+            expand: true,
+            onPressed: () => Navigator.of(context).pop(_c),
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+/// The Space's roles, highest first, to reorder by dragging their edge as
+/// rooms are; @everyone last, where it stays.
 class RolesPage extends StatefulWidget {
   final String spaceId;
   const RolesPage({required this.spaceId, super.key});
@@ -1390,50 +2323,259 @@ class RolesPage extends StatefulWidget {
 }
 
 class _RolesPageState extends State<RolesPage> {
+  bool _sorting = false;
+
   Future<void> _create() async {
-    final got = await askName<void>(context, title: 'New role', action: 'Create');
+    // The API takes 64 and fails past it.
+    final got = await askName<void>(context, title: 'New role', action: 'Create', maxLength: 64);
     if (got == null || !mounted) return;
     final repository = context.repository;
     try {
       final role = await repository.createRole(widget.spaceId, got.$1);
       if (mounted) await _edit(role);
     } catch (e) {
-      if (mounted) _toast(context, e is ActionFailed ? e.message : 'Couldn’t create the role');
+      if (mounted) adminToast(context, e is ActionFailed ? e.message : 'Couldn’t create the role');
     }
   }
 
   Future<void> _edit(SpaceRole role) async {
+    // @everyone too, at 0: below the user's highest role, or theirs to look at.
+    final readOnly = !_below(role.position);
     await Navigator.of(context).push(
       MaterialPageRoute<void>(
-        builder: (_) => RoleEditorPage(spaceId: widget.spaceId, role: role),
+        builder: (_) => RoleEditorPage(spaceId: widget.spaceId, role: role, readOnly: readOnly),
       ),
     );
     if (mounted) setState(() {});
   }
 
+  /// Whether the user may move or change [r]: as the API checks it, a role
+  /// below their highest one, unless they own the Space (Administrator
+  /// doesn't get past it).
+  bool _manages(SpaceRole r) => !r.everyone && _below(r.position);
+
+  /// Whether a role may sit at [position]: below the user's highest role,
+  /// with ManageRoles; anywhere for the Space's owner.
+  bool _below(int position) {
+    final repository = context.repository;
+    final profile = repository.spaceProfile(widget.spaceId);
+    if (profile == null) return false;
+    if (profile.owner) return true;
+    if (!profile.can(Perm.manageRoles)) return false;
+    final me = repository.profile.value?.id;
+    final highest = me == null ? 0 : repository.rolesOf(widget.spaceId, me).firstOrNull?.position ?? 0;
+    return position < highest;
+  }
+
+  // A screen reader's move of a role the user may not move.
+  void _cantMove(SpaceRole r) =>
+      SemanticsService.sendAnnouncement(View.of(context), 'You can’t move ${r.name}', Directionality.of(context));
+
+  /// Moves [moved] to [to] among the others above @everyone (0 at the top):
+  /// to the position of the role it lands above, going up, or of the one it
+  /// lands below, going down, as the API shifts those between. Positions can
+  /// have gaps (a deleted role's stays empty), so never counted from indexes.
+  Future<void> _move(List<SpaceRole> ranked, SpaceRole moved, int to) async {
+    final others = [...ranked]..remove(moved);
+    final up = to < ranked.indexOf(moved);
+    final position = up ? others[to].position : others[to - 1].position;
+    if (!_below(position)) {
+      adminToast(context, 'Roles can only go below your highest role');
+      return;
+    }
+    HapticFeedback.selectionClick();
+    // The API clamps a position to the number of roles less one: one in a
+    // gap past that can't be sent, so the user's roles are laid out again.
+    if (position > context.repository.roles(widget.spaceId).length - 1) {
+      return _arrange(([...others]..insert(to, moved)).where(_manages).toList());
+    }
+    setState(() => _sorting = true);
+    await adminTry(
+      context,
+      'Couldn’t move ${moved.name}',
+      () => context.repository.moveRole(widget.spaceId, moved.id, position),
+    );
+    if (mounted) setState(() => _sorting = false);
+  }
+
+  /// Lays the user's roles out in [order], top first: each sent to the
+  /// bottom (position 1, always the user's to send), so those sent before
+  /// rise one place each time. Right whatever gaps the positions have, which
+  /// it closes; one request a role, one after another.
+  Future<void> _arrange(List<SpaceRole> order) async {
+    final repository = context.repository;
+    setState(() => _sorting = true);
+    for (final role in order) {
+      final ok = await adminTry(
+        context,
+        'Couldn’t move ${role.name}',
+        () => repository.moveRole(widget.spaceId, role.id, 1),
+      );
+      if (!ok || !mounted) break;
+    }
+    if (mounted) setState(() => _sorting = false);
+  }
+
+  /// The roles the user manages, admins first, each tier in its order.
+  Future<void> _adminsFirst() async {
+    final sure = await confirmDestructive(
+      context,
+      title: 'Put admin roles first?',
+      body:
+          'Roles with Administrator go to the top, then those that manage part of the Space. The rest keep their order below them. Everyone sees the new order.',
+      action: 'Reorder',
+      destructive: false,
+    );
+    if (!sure || !mounted) return;
+    // A stable sort: each tier keeps its order.
+    final mine = context.repository.roles(widget.spaceId).where(_manages).toList();
+    await _arrange([...mine]..sort((a, b) => _adminRank(a).compareTo(_adminRank(b))));
+  }
+
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context) =>
+      ValueListenableBuilder(valueListenable: context.repository.spaces, builder: (context, _, _) => _build(context));
+
+  Widget _build(BuildContext context) {
     final colors = context.theme.colors;
-    final roles = context.repository.roles(widget.spaceId);
+    final tokens = context.duvet;
+    final repository = context.repository;
+    final roles = repository.roles(widget.spaceId);
+    final ranked = roles.where((r) => !r.everyone).toList();
+    final everyone = roles.where((r) => r.everyone).firstOrNull;
+    final mine = ranked.where(_manages).toList();
+    final unsorted = [
+      for (var i = 1; i < mine.length; i++)
+        if (_adminRank(mine[i]) < _adminRank(mine[i - 1])) i,
+    ].isNotEmpty;
+
+    // The trailing edge, ridged like a grip, as the rooms' is.
+    Widget grip(int index) => DragEdge(index: index);
+    // Above the user's highest role: theirs to see, not to move or change.
+    Widget locked() => ExcludeSemantics(
+      child: SizedBox(width: 32, child: Icon(FLucideIcons.lock, size: 14, color: colors.mutedForeground)),
+    );
+
+    Widget row(SpaceRole r, {int? index}) {
+      final moves = index != null && _manages(r);
+      final members = r.everyone
+          ? 'Everyone in the Space'
+          : '${r.memberCount} ${r.memberCount == 1 ? 'member' : 'members'}';
+      final body = Semantics(
+        button: true,
+        label: [
+          r.name,
+          if (r.hoisted) 'shown separately',
+          members,
+          rolePowers(r),
+          if (moves && ranked.length > 1) 'Double tap to edit, or use actions to move it',
+        ].join(', '),
+        excludeSemantics: true,
+        onTap: () => _edit(r),
+        // Pressed, the row's `base-sunken` highlight, as every row's.
+        child: Pressable(
+          onTap: () => _edit(r),
+          scale: 1,
+          builder: (context, pressed) => AnimatedContainer(
+            duration: pressed ? DuvetTokens.pressIn : DuvetTokens.pressOut,
+            color: pressed ? colors.secondary : colors.card,
+            padding: const EdgeInsets.fromLTRB(16, 12, 12, 12),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  children: [
+                    Flexible(
+                      child: RoleName(r.name, colors: r.colors, style: DuvetType.rowTitleUnread),
+                    ),
+                    if (r.hoisted) ...[
+                      const SizedBox(width: 8),
+                      Icon(FLucideIcons.layers, size: 14, color: colors.mutedForeground),
+                    ],
+                  ],
+                ),
+                const SizedBox(height: 2),
+                Text(
+                  '$members · ${rolePowers(r)}',
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: DuvetType.caption.copyWith(color: colors.mutedForeground),
+                ),
+              ],
+            ),
+          ),
+        ),
+      );
+      return IntrinsicHeight(
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Expanded(child: body),
+            if (moves) grip(index) else if (!r.everyone) locked(),
+          ],
+        ),
+      );
+    }
+
+    Widget panel(Widget child) => Container(
+      clipBehavior: Clip.antiAlias,
+      decoration: BoxDecoration(
+        color: colors.card,
+        borderRadius: BorderRadius.circular(DuvetTokens.radiusCard),
+        boxShadow: tokens.shadowRaised,
+      ),
+      child: child,
+    );
+
     return AdminPage(
       title: 'Roles',
-      actions: [IconAction(icon: FLucideIcons.plus, label: 'New role', onPressed: _create)],
-      children: [
-        for (final r in roles)
-          ListRow(
-            leading: ExcludeSemantics(
-              child: Icon(
-                FLucideIcons.shield,
-                size: 24,
-                color: roleColorOn(context, r.color) ?? colors.mutedForeground,
-              ),
-            ),
-            title: r.name,
-            snippet: r.everyone
-                ? 'Everyone in the Space'
-                : '${r.memberCount} ${r.memberCount == 1 ? 'member' : 'members'}',
-            onTap: () => _edit(r),
+      actions: [
+        if (unsorted)
+          IconAction(
+            icon: FLucideIcons.arrowUpWideNarrow,
+            label: 'Admins first',
+            onPressed: _sorting ? null : _adminsFirst,
           ),
+        IconAction(icon: FLucideIcons.plus, label: 'New role', onPressed: _create),
+      ],
+      children: [
+        if (ranked.isNotEmpty) ...[
+          panel(
+            ReorderableListView.builder(
+              shrinkWrap: true,
+              physics: const NeverScrollableScrollPhysics(),
+              padding: EdgeInsets.zero,
+              buildDefaultDragHandles: false,
+              itemCount: ranked.length,
+              onReorderItem: (from, to) {
+                // One change at a time: a move made from a list still moving would land wrong.
+                if (_sorting) return;
+                if (!_manages(ranked[from])) return _cantMove(ranked[from]);
+                if (from != to) _move(ranked, ranked[from], to);
+              },
+              // A role off its panel while held: raised on its own.
+              proxyDecorator: liftedRow,
+              itemBuilder: (context, i) {
+                final r = ranked[i];
+                return _manages(r)
+                    ? ReorderableDelayedDragStartListener(
+                        key: ValueKey(r.id),
+                        index: i,
+                        child: row(r, index: i),
+                      )
+                    : KeyedSubtree(key: ValueKey(r.id), child: row(r));
+              },
+            ),
+          ),
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 8, 16, 0),
+            child: Text(
+              _sorting ? 'Reordering…' : 'Higher roles outrank those below them. Drag a role by its edge to move it.',
+              style: DuvetType.caption.copyWith(color: colors.mutedForeground),
+            ),
+          ),
+        ],
+        if (everyone != null) ...[const SizedBox(height: 16), panel(row(everyone))],
       ],
     );
   }
@@ -1443,15 +2585,19 @@ class _RolesPageState extends State<RolesPage> {
 class RoleEditorPage extends StatefulWidget {
   final String spaceId;
   final SpaceRole role;
-  const RoleEditorPage({required this.spaceId, required this.role, super.key});
+
+  /// At or above the user's highest role: shown, not changed, as the API
+  /// refuses it.
+  final bool readOnly;
+  const RoleEditorPage({required this.spaceId, required this.role, this.readOnly = false, super.key});
 
   @override
   State<RoleEditorPage> createState() => _RoleEditorPageState();
 }
 
 class _RoleEditorPageState extends State<RoleEditorPage> {
-  late final _name = TextEditingController(text: widget.role.name);
-  late int? _color = widget.role.color;
+  late final _name = TextEditingController(text: widget.role.name)..addListener(() => setState(() {}));
+  late RoleColors _colors = widget.role.colors;
   late int _perms = widget.role.perms;
   late bool _hoisted = widget.role.hoisted;
   bool _saving = false;
@@ -1467,15 +2613,14 @@ class _RoleEditorPageState extends State<RoleEditorPage> {
     final name = _name.text.trim();
     final navigator = Navigator.of(context);
     setState(() => _saving = true);
-    final ok = await _try(
+    final ok = await adminTry(
       context,
       'Couldn’t save ${r.name}',
       () => context.repository.updateRole(
         widget.spaceId,
         r.id,
         name: r.everyone || name.isEmpty || name == r.name ? null : name,
-        color: _color != r.color ? _color : null,
-        clearColor: _color == null && r.color != null,
+        colors: _colors != r.colors ? _colors : null,
         perms: _perms != r.perms ? _perms : null,
         hoisted: _hoisted != r.hoisted ? _hoisted : null,
       ),
@@ -1486,48 +2631,17 @@ class _RoleEditorPageState extends State<RoleEditorPage> {
   }
 
   Future<void> _pickColor() async {
-    final colors = context.theme.colors;
-    final picked = await showGlassSheet<int>(
+    final picked = await showGlassSheet<RoleColors>(
       context,
       label: 'Name color',
-      builder: (context, scroll) => ListView(
-        controller: scroll,
-        children: [
-          const SheetTitle(title: 'Name color', caption: 'Names only, never fills'),
-          Padding(
-            padding: const EdgeInsets.all(16),
-            child: Wrap(
-              spacing: 12,
-              runSpacing: 12,
-              children: [
-                for (final rgb in [-1, ...roleSwatches])
-                  Semantics(
-                    container: true,
-                    button: true,
-                    selected: (_color ?? -1) == rgb,
-                    label: rgb == -1 ? 'Default' : '#${rgb.toRadixString(16).padLeft(6, '0').toUpperCase()}',
-                    excludeSemantics: true,
-                    onTap: () => Navigator.of(context).pop(rgb),
-                    child: GestureDetector(
-                      onTap: () => Navigator.of(context).pop(rgb),
-                      child: Container(
-                        width: 44,
-                        height: 44,
-                        decoration: BoxDecoration(
-                          color: rgb == -1 ? colors.foreground : roleColorOn(context, rgb),
-                          borderRadius: BorderRadius.circular(DuvetTokens.radiusField),
-                          border: (_color ?? -1) == rgb ? Border.all(color: context.duvet.accentText, width: 3) : null,
-                        ),
-                      ),
-                    ),
-                  ),
-              ],
-            ),
-          ),
-        ],
+      initialSize: 0.7,
+      builder: (context, scroll) => _RoleColorSheet(
+        name: _name.text.trim().isEmpty ? widget.role.name : _name.text.trim(),
+        initial: _colors,
+        scroll: scroll,
       ),
     );
-    if (picked != null && mounted) setState(() => _color = picked == -1 ? null : picked);
+    if (picked != null && mounted) setState(() => _colors = picked);
   }
 
   Future<void> _members() async {
@@ -1567,7 +2681,7 @@ class _RoleEditorPageState extends State<RoleEditorPage> {
   }
 
   Future<void> _toggle(Member m, bool has, StateSetter setSheet) async {
-    await _try(
+    await adminTry(
       context,
       'Couldn’t change ${m.displayName}’s roles',
       () => context.repository.setRole(widget.spaceId, widget.role.id, m.userId, has: has),
@@ -1584,7 +2698,7 @@ class _RoleEditorPageState extends State<RoleEditorPage> {
     );
     if (!sure || !mounted) return;
     final navigator = Navigator.of(context);
-    if (await _try(
+    if (await adminTry(
       context,
       'Couldn’t delete the role',
       () => context.repository.deleteRole(widget.spaceId, widget.role.id),
@@ -1599,143 +2713,160 @@ class _RoleEditorPageState extends State<RoleEditorPage> {
     final r = widget.role;
     final holders = context.repository.roleMembers(widget.spaceId, r.id);
     final admin = Perm.has(_perms, Perm.administrator);
-    return AdminPage(
-      title: 'Edit role',
-      actions: [TextAction(label: 'Save', onPressed: _saving ? null : _save)],
-      children: [
-        const SizedBox(height: 8),
-        Row(
-          crossAxisAlignment: CrossAxisAlignment.end,
-          children: [
-            Expanded(
-              child: r.everyone
-                  ? Text(r.name, style: DuvetType.title.copyWith(color: colors.foreground))
-                  : DuvetTextField(label: 'Role name', controller: _name),
+    final children = <Widget>[
+      const SizedBox(height: 8),
+      Row(
+        crossAxisAlignment: CrossAxisAlignment.end,
+        children: [
+          Expanded(
+            child: r.everyone
+                ? Text(r.name, style: DuvetType.title.copyWith(color: colors.foreground))
+                // The API takes 64 and fails past it.
+                : DuvetTextField(label: 'Role name', controller: _name, maxLength: 64),
+          ),
+          const SizedBox(width: 12),
+          Semantics(
+            container: true,
+            button: true,
+            label: 'Name color: ${describeRoleColors(_colors)}',
+            excludeSemantics: true,
+            onTap: _pickColor,
+            child: GestureDetector(
+              onTap: _pickColor,
+              child: Container(
+                width: 96,
+                height: 48,
+                padding: const EdgeInsets.symmetric(horizontal: 12),
+                decoration: BoxDecoration(
+                  color: colors.card,
+                  borderRadius: BorderRadius.circular(DuvetTokens.radiusField),
+                  border: Border.all(color: context.duvet.hairline),
+                ),
+                child: Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    RoleSwatch(colors: _colors, width: 28, height: 20),
+                    Icon(FLucideIcons.chevronDown, size: 16, color: colors.mutedForeground),
+                  ],
+                ),
+              ),
             ),
-            const SizedBox(width: 12),
+          ),
+        ],
+      ),
+      if (!r.everyone) ...[
+        const SizedBox(height: 16),
+        AdminPanel(
+          children: [
+            GlassRow(
+              icon: FLucideIcons.users,
+              label: '${holders.length} ${holders.length == 1 ? 'member' : 'members'}',
+              detail: 'Manage',
+              onPressed: _members,
+            ),
+          ],
+        ),
+        const SizedBox(height: 12),
+        AdminPanel(
+          children: [
+            // As the desktop's "Display role members separately".
             Semantics(
               container: true,
-              button: true,
-              label:
-                  'Name color: ${_color == null ? 'default' : '#${_color!.toRadixString(16).padLeft(6, '0').toUpperCase()}'}',
-              excludeSemantics: true,
-              onTap: _pickColor,
-              child: GestureDetector(
-                onTap: _pickColor,
-                child: Container(
-                  width: 96,
-                  height: 48,
-                  padding: const EdgeInsets.symmetric(horizontal: 12),
-                  decoration: BoxDecoration(
-                    color: colors.card,
-                    borderRadius: BorderRadius.circular(DuvetTokens.radiusField),
-                    border: Border.all(color: context.duvet.hairline),
-                  ),
-                  child: Row(
-                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                    children: [
-                      Container(
-                        width: 20,
-                        height: 20,
-                        decoration: BoxDecoration(
-                          color: roleColorOn(context, _color) ?? colors.foreground,
-                          borderRadius: BorderRadius.circular(6),
-                        ),
+              child: Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                child: Row(
+                  children: [
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text('Show members separately', style: DuvetType.rowTitle.copyWith(color: colors.foreground)),
+                          Text(
+                            'In the member list, those online show under this role’s name',
+                            style: DuvetType.caption.copyWith(color: colors.mutedForeground),
+                          ),
+                        ],
                       ),
-                      Icon(FLucideIcons.chevronDown, size: 16, color: colors.mutedForeground),
-                    ],
-                  ),
+                    ),
+                    const SizedBox(width: 12),
+                    DuvetSwitch(
+                      label: 'Show members separately',
+                      value: _hoisted,
+                      onChanged: (on) => setState(() => _hoisted = on),
+                    ),
+                  ],
                 ),
               ),
             ),
           ],
         ),
-        if (!r.everyone) ...[
-          const SizedBox(height: 16),
-          AdminPanel(
-            children: [
-              GlassRow(
-                icon: FLucideIcons.users,
-                label: '${holders.length} ${holders.length == 1 ? 'member' : 'members'}',
-                detail: 'Manage',
-                onPressed: _members,
-              ),
-            ],
-          ),
-          const SizedBox(height: 12),
-          AdminPanel(
-            children: [
-              // As the desktop's "Display role members separately".
-              Semantics(
-                container: true,
-                child: Padding(
-                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-                  child: Row(
-                    children: [
-                      Expanded(
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Text(
-                              'Show members separately',
-                              style: DuvetType.rowTitle.copyWith(color: colors.foreground),
-                            ),
-                            Text(
-                              'In the member list, those online show under this role’s name',
-                              style: DuvetType.caption.copyWith(color: colors.mutedForeground),
-                            ),
-                          ],
-                        ),
+      ],
+      for (final (group, perms) in permissionGroups) ...[
+        Overline(group),
+        AdminPanel(
+          children: [
+            for (final p in perms)
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                child: Row(
+                  children: [
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(p.label, style: DuvetType.rowTitle.copyWith(color: colors.foreground)),
+                          Text(p.description, style: DuvetType.caption.copyWith(color: colors.mutedForeground)),
+                        ],
                       ),
-                      const SizedBox(width: 12),
-                      DuvetSwitch(
-                        label: 'Show members separately',
-                        value: _hoisted,
-                        onChanged: (on) => setState(() => _hoisted = on),
-                      ),
-                    ],
-                  ),
+                    ),
+                    const SizedBox(width: 12),
+                    DuvetSwitch(
+                      label: p.label,
+                      value: _perms & p.bit != 0 || (admin && p.bit != Perm.administrator),
+                      onChanged: admin && p.bit != Perm.administrator
+                          ? null
+                          : (on) => setState(() => _perms = on ? _perms | p.bit : _perms & ~p.bit),
+                    ),
+                  ],
                 ),
               ),
-            ],
+          ],
+        ),
+      ],
+      if (!r.everyone && !widget.readOnly) ...[
+        const SizedBox(height: 24),
+        DuvetButton(label: 'Delete role', variant: ButtonVariant.destructive, expand: true, onPressed: _delete),
+      ],
+    ];
+    if (!widget.readOnly) {
+      final name = _name.text.trim();
+      final dirty =
+          (!r.everyone && name.isNotEmpty && name != r.name) ||
+          _colors != r.colors ||
+          _perms != r.perms ||
+          _hoisted != r.hoisted;
+      return UnsavedChanges(
+        dirty: dirty,
+        child: AdminPage(
+          title: 'Edit role',
+          actions: [TextAction(label: 'Save', onPressed: _saving ? null : _save)],
+          children: children,
+        ),
+      );
+    }
+    return AdminPage(
+      title: r.name,
+      children: [
+        Padding(
+          padding: const EdgeInsets.fromLTRB(4, 8, 4, 0),
+          child: Text(
+            'It’s at or above your highest role, so only those above it change it.',
+            style: DuvetType.caption.copyWith(color: colors.mutedForeground),
           ),
-        ],
-        for (final (group, perms) in permissionGroups) ...[
-          Overline(group),
-          AdminPanel(
-            children: [
-              for (final p in perms)
-                Padding(
-                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-                  child: Row(
-                    children: [
-                      Expanded(
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Text(p.label, style: DuvetType.rowTitle.copyWith(color: colors.foreground)),
-                            Text(p.description, style: DuvetType.caption.copyWith(color: colors.mutedForeground)),
-                          ],
-                        ),
-                      ),
-                      const SizedBox(width: 12),
-                      DuvetSwitch(
-                        label: p.label,
-                        value: _perms & p.bit != 0 || (admin && p.bit != Perm.administrator),
-                        onChanged: admin && p.bit != Perm.administrator
-                            ? null
-                            : (on) => setState(() => _perms = on ? _perms | p.bit : _perms & ~p.bit),
-                      ),
-                    ],
-                  ),
-                ),
-            ],
-          ),
-        ],
-        if (!r.everyone) ...[
-          const SizedBox(height: 24),
-          DuvetButton(label: 'Delete role', variant: ButtonVariant.destructive, expand: true, onPressed: _delete),
-        ],
+        ),
+        IgnorePointer(
+          child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: children),
+        ),
       ],
     );
   }
@@ -1785,7 +2916,7 @@ class _InvitesAdminPageState extends State<InvitesAdminPage> {
       action: 'Revoke link',
     );
     if (!sure || !mounted) return;
-    await _try(context, 'Couldn’t revoke the link', () => context.repository.revokeInvite(widget.spaceId, i.id));
+    await adminTry(context, 'Couldn’t revoke the link', () => context.repository.revokeInvite(widget.spaceId, i.id));
     if (mounted) _reload();
   }
 
@@ -1848,10 +2979,19 @@ class _AssetsPageState extends State<AssetsPage> {
   late AssetKind _kind = _may(AssetKind.emoji) || !_may(AssetKind.sticker) ? AssetKind.emoji : AssetKind.sticker;
   late Future<List<SpaceAsset>> _list;
 
+  // The picture going up: its sheet is gone, and the list waits for it.
+  final _upload = ValueNotifier<double?>(null);
+
   @override
   void didChangeDependencies() {
     super.didChangeDependencies();
     _list = context.repository.assets(widget.spaceId, _kind);
+  }
+
+  @override
+  void dispose() {
+    _upload.dispose();
+    super.dispose();
   }
 
   /// Each kind takes its own permission, as in the API and the desktop's
@@ -1876,14 +3016,13 @@ class _AssetsPageState extends State<AssetsPage> {
     if (path == null || !mounted) return;
     final kind = _kind;
     final cap = kind == AssetKind.emoji ? emojiCap : stickerCap;
-    // A moving GIF the API takes as it is goes up unchanged, still moving:
-    // cropping makes a still image of it. A still GIF is cropped as any
-    // picture is.
+    // A moving GIF the API takes as it is goes up unchanged; a larger one is
+    // cropped, every frame. A still GIF is cropped as any picture is.
     final gif = await gifAt(path);
     if (!mounted) return;
     // The cropper would close on it without a word.
     if (gif != null && !gif.readable) {
-      _toast(context, 'Couldn’t read this GIF');
+      adminToast(context, 'Couldn’t read this GIF');
       return;
     }
     final CropRect? crop;
@@ -1898,7 +3037,7 @@ class _AssetsPageState extends State<AssetsPage> {
             aspect: 1,
             round: false,
             note: gif?.animated ?? false
-                ? 'This GIF is over ${cap.bytes ~/ 1024} KiB or ${cap.side} px, so it goes up still: its animation is lost'
+                ? 'This GIF is over ${cap.bytes ~/ 1024} KiB or ${cap.side} px, so it goes up cropped and resized'
                 : null,
           ),
         ),
@@ -1908,17 +3047,24 @@ class _AssetsPageState extends State<AssetsPage> {
     final got = await askName<void>(context, title: 'Name the $_noun', action: 'Add');
     if (got == null || !mounted) return;
     final repository = context.repository;
-    await _try(context, 'Couldn’t add the $_noun', () async {
-      if (crop == null) return repository.addAsset(widget.spaceId, kind, got.$1, path);
+    void progress(double p) {
+      if (mounted) _upload.value = p;
+    }
+
+    await adminTry(context, 'Couldn’t add the $_noun', () async {
+      if (crop == null) return repository.addAsset(widget.spaceId, kind, got.$1, path, onProgress: progress);
       final square = await saveSquareImage(path, crop, kind == AssetKind.emoji ? emojiSide : stickerSide);
       try {
-        await repository.addAsset(widget.spaceId, kind, got.$1, square);
+        await repository.addAsset(widget.spaceId, kind, got.$1, square, onProgress: progress);
       } finally {
         // Best effort: the list needn't wait for it.
         unawaited(File(square).delete().then((_) {}, onError: (Object e) => debugPrint('square image: $e')));
       }
     });
-    if (mounted) _reload();
+    if (mounted) {
+      _upload.value = null;
+      _reload();
+    }
   }
 
   Future<void> _options(SpaceAsset a) async {
@@ -1945,7 +3091,11 @@ class _AssetsPageState extends State<AssetsPage> {
       case 'rename':
         final got = await askName<void>(context, title: 'Rename ${a.name}', initial: a.name);
         if (got == null || !mounted) return;
-        await _try(context, 'Couldn’t rename it', () => repository.renameAsset(widget.spaceId, _kind, a.id, got.$1));
+        await adminTry(
+          context,
+          'Couldn’t rename it',
+          () => repository.renameAsset(widget.spaceId, _kind, a.id, got.$1),
+        );
       case 'delete':
         final sure = await confirmDestructive(
           context,
@@ -1954,7 +3104,7 @@ class _AssetsPageState extends State<AssetsPage> {
           action: 'Delete $_noun',
         );
         if (!sure || !mounted) return;
-        await _try(context, 'Couldn’t delete it', () => repository.deleteAsset(widget.spaceId, _kind, a.id));
+        await adminTry(context, 'Couldn’t delete it', () => repository.deleteAsset(widget.spaceId, _kind, a.id));
     }
     if (mounted) _reload();
   }
@@ -1986,6 +3136,15 @@ class _AssetsPageState extends State<AssetsPage> {
                   ),
               ],
             ),
+            UploadNote(_upload),
+            if (!may)
+              Padding(
+                padding: const EdgeInsets.fromLTRB(4, 12, 4, 0),
+                child: Text(
+                  'Anyone here may use them. Those who manage ${_noun}s add and change them.',
+                  style: DuvetType.caption.copyWith(color: colors.mutedForeground),
+                ),
+              ),
             const SizedBox(height: 16),
             if (snapshot.hasError)
               const ListNote('Couldn’t load them')
@@ -2071,43 +3230,12 @@ class _WebhooksPageState extends State<WebhooksPage> {
     _list = context.repository.webhooks(widget.spaceId);
   });
 
-  Future<void> _showOnce(String name, String url) => showGlassDialogSheet<void>(
+  Future<void> _showOnce(String name, String url) => showSecretOnce(
     context,
-    label: '$name’s URL',
-    builder: (context) => Padding(
-      padding: const EdgeInsets.fromLTRB(24, 16, 24, 24),
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          Text('$name’s URL', style: DuvetType.title.copyWith(color: context.theme.colors.foreground)),
-          const SizedBox(height: 12),
-          Text(
-            'Copy it now: it won’t be shown again. Anyone with it can post as $name.',
-            style: DuvetType.snippet.copyWith(color: context.theme.colors.mutedForeground),
-          ),
-          const SizedBox(height: 16),
-          Container(
-            padding: const EdgeInsets.all(12),
-            decoration: BoxDecoration(
-              color: context.theme.colors.secondary,
-              borderRadius: BorderRadius.circular(DuvetTokens.radiusField),
-            ),
-            child: SelectableText(url, style: DuvetType.code.copyWith(color: context.theme.colors.foreground)),
-          ),
-          const SizedBox(height: 24),
-          DuvetButton(
-            label: 'Copy URL',
-            variant: ButtonVariant.primary,
-            expand: true,
-            onPressed: () {
-              Clipboard.setData(ClipboardData(text: url));
-              Navigator.of(context).pop();
-            },
-          ),
-        ],
-      ),
-    ),
+    title: '$name’s URL',
+    body: 'Copy it now: it won’t be shown again. Anyone with it can post as $name.',
+    secret: url,
+    copyLabel: 'Copy URL',
   );
 
   Future<void> _new() async {
@@ -2118,6 +3246,7 @@ class _WebhooksPageState extends State<WebhooksPage> {
       context,
       title: 'New webhook',
       action: 'Create',
+      maxLength: 64,
       choices: {for (final r in rooms) r.id: '#${r.name}'},
       choice: rooms.first.id,
     );
@@ -2126,9 +3255,29 @@ class _WebhooksPageState extends State<WebhooksPage> {
       final url = await repository.createWebhook(widget.spaceId, got.$2 ?? rooms.first.id, got.$1);
       if (mounted) await _showOnce(got.$1, url);
     } catch (e) {
-      if (mounted) _toast(context, e is ActionFailed ? e.message : 'Couldn’t create the webhook');
+      if (mounted) adminToast(context, e is ActionFailed ? e.message : 'Couldn’t create the webhook');
     }
     if (mounted) _reload();
+  }
+
+  /// A picture for [w], cropped round as it shows by its messages.
+  Future<void> _avatar(SpaceWebhook w) async {
+    final path = await pickSpaceIcon();
+    if (path == null || !mounted) return;
+    final crop = await Navigator.of(
+      context,
+    ).push<CropRect>(MaterialPageRoute(fullscreenDialog: true, builder: (_) => CropPage(path: path, aspect: 1)));
+    if (crop == null || !mounted) return;
+    final repository = context.repository;
+    await adminTry(context, 'Couldn’t change its picture', () async {
+      final square = await saveSquareImage(path, crop, 256);
+      try {
+        await repository.updateWebhook(widget.spaceId, w, avatarPath: square);
+      } finally {
+        // Best effort: the list needn't wait for it.
+        unawaited(File(square).delete().then((_) {}, onError: (Object e) => debugPrint('square image: $e')));
+      }
+    });
   }
 
   Future<void> _options(SpaceWebhook w) async {
@@ -2139,6 +3288,19 @@ class _WebhooksPageState extends State<WebhooksPage> {
         controller: scroll,
         children: [
           SheetTitle(title: w.name, caption: '#${w.roomName}'),
+          GlassRow(icon: FLucideIcons.pencil, label: 'Rename', onPressed: () => Navigator.of(context).pop('rename')),
+          GlassRow(
+            icon: FLucideIcons.image,
+            label: w.avatarUrl == null ? 'Add a picture' : 'Change picture',
+            detail: 'Its past messages keep theirs',
+            onPressed: () => Navigator.of(context).pop('avatar'),
+          ),
+          if (w.avatarUrl != null)
+            GlassRow(
+              icon: FLucideIcons.imageOff,
+              label: 'Remove picture',
+              onPressed: () => Navigator.of(context).pop('noavatar'),
+            ),
           GlassRow(
             icon: FLucideIcons.refreshCw,
             label: 'New URL',
@@ -2157,12 +3319,29 @@ class _WebhooksPageState extends State<WebhooksPage> {
     if (!mounted) return;
     final repository = context.repository;
     switch (picked) {
+      case 'rename':
+        // The API takes 64 and fails past it.
+        final got = await askName<void>(context, title: 'Rename ${w.name}', initial: w.name, maxLength: 64);
+        if (got == null || got.$1.trim().isEmpty || !mounted) return;
+        await adminTry(
+          context,
+          'Couldn’t rename it',
+          () => repository.updateWebhook(widget.spaceId, w, name: got.$1.trim()),
+        );
+      case 'avatar':
+        await _avatar(w);
+      case 'noavatar':
+        await adminTry(
+          context,
+          'Couldn’t remove its picture',
+          () => repository.updateWebhook(widget.spaceId, w, removeAvatar: true),
+        );
       case 'reset':
         try {
           final url = await repository.resetWebhook(widget.spaceId, w);
           if (mounted) await _showOnce(w.name, url);
         } catch (e) {
-          if (mounted) _toast(context, e is ActionFailed ? e.message : 'Couldn’t make a new URL');
+          if (mounted) adminToast(context, e is ActionFailed ? e.message : 'Couldn’t make a new URL');
         }
       case 'delete':
         final sure = await confirmDestructive(
@@ -2172,7 +3351,7 @@ class _WebhooksPageState extends State<WebhooksPage> {
           action: 'Delete webhook',
         );
         if (!sure || !mounted) return;
-        await _try(context, 'Couldn’t delete it', () => repository.deleteWebhook(widget.spaceId, w));
+        await adminTry(context, 'Couldn’t delete it', () => repository.deleteWebhook(widget.spaceId, w));
     }
     if (mounted) _reload();
   }
@@ -2260,7 +3439,7 @@ class _SpaceStoragePageState extends State<SpaceStoragePage> {
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      Text(formatBytes(s.used), style: DuvetType.title.copyWith(color: colors.foreground)),
+                      Text(formatBytes(s.used), style: DuvetType.titleSans.copyWith(color: colors.foreground)),
                       Text(
                         '${s.files.length} ${s.files.length == 1 ? 'file' : 'files'}',
                         style: DuvetType.caption.copyWith(color: colors.mutedForeground),
