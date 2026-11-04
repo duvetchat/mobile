@@ -111,6 +111,10 @@ void main() {
   late List<Map<String, dynamic>> moreSpaceMembers;
   // Maya's status_id in c-1, as the API gives a conversation's members theirs.
   int? mayaInConversation;
+  // And her client status there, which the API gives with it.
+  Map<String, int>? mayaPlatformsInConversation;
+  // The friends' client statuses, by user ID, as the friends list gives them.
+  late Map<String, Map<String, int>> friendPlatforms;
   // An API since api#63 gives the friends list their banners.
   late bool friendBanners;
 
@@ -156,6 +160,8 @@ void main() {
     teamInviting = [];
     moreSpaceMembers = [];
     mayaInConversation = null;
+    mayaPlatformsInConversation = null;
+    friendPlatforms = {};
     friendBanners = false;
     holdAsking = null;
     pictureRefusal = null;
@@ -233,6 +239,7 @@ void main() {
                   'created_at': _at,
                   'updated_at': _at,
                   if (id == _maya) 'status_id': ?mayaInConversation,
+                  if (id == _maya) 'client_status': ?mayaPlatformsInConversation,
                   'user': {
                     'id': id,
                     'username': name,
@@ -263,6 +270,7 @@ void main() {
               'recipient_id': id,
               'user_username': name,
               'status_id': status,
+              'client_status': ?friendPlatforms[id],
               if (friendBanners && name == 'leo') 'user_banner': _banner,
             },
         ],
@@ -451,6 +459,47 @@ void main() {
       }),
     );
     expect(repository.presence.value[_leo], Presence.doNotDisturb);
+  });
+
+  // Who's connected only from the mobile app comes with their presence, from the same places (#84).
+  test('the friends list says who\'s only on mobile, where the gateway hasn\'t told it', () async {
+    friendPlatforms = {
+      _maya: {'mobile': 2},
+    };
+    await repository.logIn('gaby@duvet.chat', 'secret');
+    await repository.loadFriends();
+    expect(repository.mobileOnly.value, {_maya});
+
+    // What the gateway says is newer: a list loaded after doesn't undo it.
+    repository.handleEvent(
+      _event('USER_STATUS_UPDATE', {
+        'user_id': _maya,
+        'status_id': 2,
+        'client_status': {'desktop': 2, 'mobile': 2},
+      }),
+    );
+    expect(repository.mobileOnly.value, isEmpty);
+    await repository.loadFriends();
+    expect(repository.mobileOnly.value, isEmpty);
+  });
+
+  test('a DM\'s or a group\'s members say who\'s only on mobile, where the gateway hasn\'t told it', () async {
+    mayaInConversation = 1;
+    mayaPlatformsInConversation = {'mobile': 1};
+    await repository.logIn('gaby@duvet.chat', 'secret');
+    await pumpEventQueue();
+    expect(repository.mobileOnly.value, {_maya});
+
+    repository.handleEvent(
+      _event('USER_STATUS_UPDATE', {
+        'user_id': _maya,
+        'status_id': 1,
+        'client_status': {'desktop': 1},
+      }),
+    );
+    expect(repository.mobileOnly.value, isEmpty);
+    await repository.refreshConversations();
+    expect(repository.mobileOnly.value, isEmpty);
   });
 
   test('friends come with their banner from the friends list (#127)', () async {
@@ -1448,6 +1497,121 @@ void main() {
       // The friends list changes none of it: what the gateway says is newer.
       await pumpEventQueue();
       expect(people(), {_me: Presence.online, _maya: Presence.online, _leo: Presence.offline});
+    });
+
+    // A user's client status: on which platforms they're connected (#84).
+    void statusOf(String userId, int status, [Map<String, int>? platforms]) => repository.handleEvent(
+      _event('USER_STATUS_UPDATE', {'user_id': userId, 'status_id': status, 'client_status': ?platforms}),
+    );
+
+    test('USER_STATUS_UPDATE says who\'s connected only from the mobile app, as it changes', () async {
+      await repository.logIn('gaby@duvet.chat', 'secret');
+      statusOf(_maya, 1, {'mobile': 1});
+      expect(repository.mobileOnly.value, {_maya});
+      // On a computer too, then only there.
+      statusOf(_maya, 1, {'desktop': 1, 'mobile': 1});
+      expect(repository.mobileOnly.value, isEmpty);
+      statusOf(_maya, 1, {'web': 1});
+      expect(repository.mobileOnly.value, isEmpty);
+      // Back on the phone alone, in do not disturb.
+      statusOf(_maya, 2, {'mobile': 2});
+      expect(repository.mobileOnly.value, {_maya});
+      // A status in a single Space (a bot's) isn't theirs everywhere: it
+      // leaves this alone.
+      repository.handleEvent(_event('USER_STATUS_UPDATE', {'user_id': _maya, 'status_id': 0, 'space_id': 's-1'}));
+      expect(repository.mobileOnly.value, {_maya});
+      // Offline: no client status, and nothing to show.
+      statusOf(_maya, 0);
+      expect(repository.mobileOnly.value, isEmpty);
+      // A server from before client statuses gives none.
+      statusOf(_leo, 1);
+      expect(repository.mobileOnly.value, isEmpty);
+    });
+
+    test('SPACE_CREATE says who\'s only on mobile among those it has connected', () async {
+      await repository.logIn('gaby@duvet.chat', 'secret');
+      repository.handleEvent(
+        _event('SPACE_CREATE', {
+          ...space(statuses: {_maya: 1, _leo: 2, _me: 1}, members: [_me, _maya, _leo]),
+          'member_client_status': {
+            _maya: {'mobile': 1},
+            _leo: {'desktop': 2, 'mobile': 2},
+            _me: {'mobile': 1},
+          },
+        }),
+      );
+      expect(repository.mobileOnly.value, {_maya, _me});
+
+      // Another Space's, later: Maya is on a computer too now, and Leo on his
+      // phone alone.
+      repository.handleEvent(
+        _event('SPACE_CREATE', {
+          ...space(statuses: {_maya: 1, _leo: 2}, members: [_me, _maya, _leo]),
+          'space': {'id': 's-2', 'name': 'Two', 'owner_id': _me, 'created_at': _at, 'updated_at': _at},
+          'member_client_status': {
+            _maya: {'desktop': 1, 'mobile': 1},
+            _leo: {'mobile': 2},
+          },
+        }),
+      );
+      // The user, whom this one doesn't have connected, keeps theirs, as their
+      // status everywhere stays.
+      expect(repository.mobileOnly.value, {_leo, _me});
+
+      // A gateway from before client statuses gives none.
+      repository.handleEvent(_event('SPACE_CREATE', space(statuses: {_maya: 1, _leo: 2, _me: 1})));
+      expect(repository.mobileOnly.value, isEmpty);
+    });
+
+    test('someone who joins a Space or a conversation comes with whether they\'re only on mobile', () async {
+      await repository.logIn('gaby@duvet.chat', 'secret');
+      repository.handleEvent(
+        _event('SPACE_MEMBER_ADD', {
+          'member_id': 'm-leo',
+          'space_id': 's-1',
+          'user_id': _leo,
+          'status_id': 1,
+          'client_status': {'mobile': 1},
+        }),
+      );
+      expect(repository.mobileOnly.value, {_leo});
+      repository.handleEvent(
+        _event('CONVERSATION_MEMBER_ADD', {
+          'conversation_id': 'c-1',
+          'user_id': _maya,
+          'member_id': 'm-maya',
+          'status_id': 2,
+          'client_status': {'mobile': 2},
+        }),
+      );
+      expect(repository.mobileOnly.value, {_leo, _maya});
+      // Leo, offline as he's added to the group: none.
+      repository.handleEvent(
+        _event('CONVERSATION_MEMBER_ADD', {
+          'conversation_id': 'c-1',
+          'user_id': _leo,
+          'member_id': 'm-leo',
+          'status_id': 0,
+        }),
+      );
+      expect(repository.mobileOnly.value, {_maya});
+    });
+
+    test('a new session\'s READY forgets who else was only on mobile; signing out forgets it all', () async {
+      await repository.logIn('gaby@duvet.chat', 'secret');
+      repository.handleEvent(_event('READY', {'user': _user(_me, 'gaby'), 'sessionToken': 'ws'}));
+      statusOf(_maya, 1, {'mobile': 1});
+      statusOf(_me, 1, {'mobile': 1});
+      expect(repository.mobileOnly.value, {_maya, _me});
+
+      // Back after a drop too long to resume: the others' come again, as their
+      // presence does; the user's stays, as their own presence does.
+      repository.handleConnectionState(duvet.GatewayConnectionState.reconnecting);
+      repository.handleEvent(_event('READY', {'user': _user(_me, 'gaby'), 'sessionToken': 'ws2'}));
+      expect(repository.mobileOnly.value, {_me});
+
+      await repository.logOut();
+      expect(repository.mobileOnly.value, isEmpty);
     });
 
     test('mentions: counted from READY and MENTION_CREATE, cleared on reading', () async {

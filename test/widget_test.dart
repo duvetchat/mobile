@@ -93,6 +93,26 @@ void main() {
     expect(inTopBar('Online'), findsNothing);
   });
 
+  // #84: someone connected only from the mobile app shows a phone rather than the dot.
+  testWidgets('a DM\'s avatar in the chats list shows a phone while its person is connected only on mobile', (
+    tester,
+  ) async {
+    final repository = await pumpApp(tester);
+    Finder phoneOf(String userId) => find.descendant(
+      of: find.byWidgetPredicate((w) => w is PresenceAvatar && w.member.userId == userId),
+      matching: find.byType(PresencePhone),
+    );
+    expect(phoneOf(FakeRepository.maya), findsNothing);
+
+    repository.mobileOnly.value = {FakeRepository.maya};
+    await tester.pump();
+    expect(phoneOf(FakeRepository.maya), findsOneWidget);
+    // Offline, the ring, as anyone's.
+    repository.presence.value = {FakeRepository.maya: Presence.offline};
+    await tester.pump();
+    expect(phoneOf(FakeRepository.maya), findsNothing);
+  });
+
   testWidgets('a chat loads its history and takes live messages', (tester) async {
     final repository = await pumpApp(tester);
     final unreadTitle = tester.widget<Text>(find.text('Maya'));

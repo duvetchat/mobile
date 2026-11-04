@@ -1,6 +1,7 @@
 import 'package:duvet/data/emoji_catalog.dart';
 import 'package:duvet/data/models.dart';
 import 'package:duvet/main.dart';
+import 'package:duvet/members_sheet.dart';
 import 'package:duvet/theme.dart';
 import 'package:duvet/widgets/chrome.dart';
 import 'package:duvet/widgets/role_name.dart';
@@ -356,6 +357,101 @@ void main() {
     await tester.pumpAndSettle();
     expect(find.text('Online'), findsWidgets);
     expect(find.text('Offline'), findsNothing);
+    semantics.dispose();
+  });
+
+  // #84: someone connected only from the mobile app shows a phone rather than the dot.
+  testWidgets('a phone for someone only on mobile: in their status\'s color while connected, the ring offline', (
+    tester,
+  ) async {
+    const sam = Member(userId: 'u-sam', username: 'sam');
+    Future<void> show(Presence? presence, {bool mobileOnly = true}) => tester.pumpWidget(
+      MaterialApp(
+        theme: Duvet.material(Brightness.light),
+        home: FTheme(
+          data: Duvet.theme(Brightness.light),
+          child: Center(
+            child: PresenceAvatar(member: sam, presence: presence, mobileOnly: mobileOnly, size: 48),
+          ),
+        ),
+      ),
+    );
+    final live = Duvet.tokens(Brightness.light).live;
+    final busy = Duvet.theme(Brightness.light).colors.destructive;
+    final phone = find.byType(PresencePhone);
+    // What it's filled with, and the bars drawn on it.
+    Iterable<Color?> fills() => tester
+        .widgetList<DecoratedBox>(find.descendant(of: phone, matching: find.byType(DecoratedBox)))
+        .map((b) => (b.decoration as BoxDecoration).color);
+    Iterable<Color> bars() => tester
+        .widgetList<ColoredBox>(find.descendant(of: phone, matching: find.byType(ColoredBox)))
+        .map((b) => b.color);
+
+    await show(Presence.online);
+    expect(phone, findsOneWidget);
+    final size = tester.getSize(phone);
+    expect(size.width, 48 * 0.32, reason: 'as wide as the dot');
+    expect(size.height, size.width * 1.5, reason: 'and standing, as a phone does');
+    expect(fills(), contains(live));
+    expect(bars(), isEmpty);
+
+    // Do not disturb: red, and the dot's bar across its screen, so shape still tells it apart.
+    await show(Presence.doNotDisturb);
+    expect(fills(), contains(busy));
+    expect(fills(), isNot(contains(live)));
+    expect(bars(), [busy]);
+
+    // Offline, the ring, as anyone's; on a computer too, the dot; not reported, nothing.
+    for (final (presence, mobileOnly) in [(Presence.offline, true), (Presence.online, false), (null, true)]) {
+      await show(presence, mobileOnly: mobileOnly);
+      expect(phone, findsNothing, reason: '$presence, mobile only: $mobileOnly');
+    }
+  });
+
+  testWidgets('someone only on mobile shows a phone in the friends list, their profile and the members sheet', (
+    tester,
+  ) async {
+    await pumpApp(
+      tester,
+      setUp: (r) {
+        r.friendsOnServer = const Friends(
+          friends: [Member(userId: _maya, username: 'maya', alias: 'Maya')],
+        );
+        // The user is online too, but not only on mobile.
+        r.presence.value = {_maya: Presence.online, FakeRepository.me.id: Presence.online};
+        r.mobileOnly.value = {_maya};
+      },
+    );
+    Finder phoneOf(String userId) => find.descendant(
+      of: find.byWidgetPredicate((w) => w is PresenceAvatar && w.member.userId == userId),
+      matching: find.byType(PresencePhone),
+    );
+    // The profile's, beside the status's name.
+    final inProfile = find.byWidgetPredicate((w) => w is PresencePhone && w.width == 10);
+
+    await tester.tap(find.bySemanticsLabel('Friends').hitTestable().first);
+    await tester.pumpAndSettle();
+    expect(phoneOf(_maya), findsOneWidget);
+    await tester.tap(find.text('Maya').last);
+    await tester.pumpAndSettle();
+    expect(inProfile, findsOneWidget);
+    await tester.binding.handlePopRoute();
+    await tester.pumpAndSettle();
+    await tester.binding.handlePopRoute();
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.descendant(of: find.byType(DuvetTabBar), matching: find.text('Spaces')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Design Guild'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('# general'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.bySemanticsLabel('More'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.bySemanticsLabel('Members'));
+    await tester.pumpAndSettle();
+    expect(phoneOf(_maya), findsOneWidget);
+    expect(phoneOf(FakeRepository.me.id), findsNothing);
     semantics.dispose();
   });
 

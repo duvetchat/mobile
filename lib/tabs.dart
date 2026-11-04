@@ -40,6 +40,7 @@ class ChatsTab extends StatelessWidget {
         repository.mentions,
         repository.profile,
         repository.presence,
+        repository.mobileOnly,
         repository.friends,
         repository.typingNow,
         voice,
@@ -52,6 +53,7 @@ class ChatsTab extends StatelessWidget {
           repository.spaces.value,
           repository.profile.value?.id,
           repository.presence.value,
+          repository.mobileOnly.value,
         );
         final unread = repository.unread.value;
         // The requests to the user, counted on Friends as on the desktop's.
@@ -200,6 +202,7 @@ class ChatsTab extends StatelessWidget {
     List<Space> spaces,
     String? me,
     Map<String, Presence> presence,
+    Set<String> mobileOnly,
   ) {
     final conversationsById = {for (final c in conversations) c.id: c};
     final spacesById = {for (final s in spaces) s.id: s};
@@ -209,6 +212,7 @@ class ChatsTab extends StatelessWidget {
       final id? => PresenceAvatar(
         member: Member(userId: id, username: title, avatarUrl: c!.avatarUrl),
         presence: presence[id],
+        mobileOnly: mobileOnly.contains(id),
         size: 48,
       ),
       null => UserAvatar(name: title, url: c?.avatarUrl, size: 48),

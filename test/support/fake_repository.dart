@@ -1113,6 +1113,8 @@ class FakeRepository implements ChatRepository {
   final directMessagesOpened = <String>[];
   @override
   final ValueNotifier<Map<String, Presence>> presence = ValueNotifier({maya: Presence.online});
+  @override
+  final ValueNotifier<Set<String>> mobileOnly = ValueNotifier(const {});
   final reads = <(ChatTarget, String)>[];
 
   /// Completes sends when set; otherwise they answer at once.
@@ -1421,5 +1423,6 @@ class FakeRepository implements ChatRepository {
     _typing.close();
     recentChats.dispose();
     presence.dispose();
+    mobileOnly.dispose();
   }
 }

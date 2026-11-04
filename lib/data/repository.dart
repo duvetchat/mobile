@@ -426,6 +426,14 @@ abstract interface class ChatRepository {
   /// kept under [spacePresenceKey] too.
   ValueListenable<Map<String, Presence>> get presence;
 
+  /// Who's connected only from the mobile app, by user ID, as the client
+  /// status that comes with each presence says: they show a phone rather
+  /// than the dot while they're connected. Where [presence] fills someone in
+  /// from a list, this does too. It has nobody's per Space: a person's
+  /// platforms are the same in every Space, and a bot's connections all count
+  /// as a computer's.
+  ValueListenable<Set<String>> get mobileOnly;
+
   /// The emoji the chat can use beyond Unicode's: its space's. None in DMs.
   Future<List<CustomEmoji>> customEmojis(ChatTarget target);
 
