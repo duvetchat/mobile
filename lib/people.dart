@@ -138,7 +138,7 @@ class _ProfileState extends State<_Profile> {
     final roles = widget.spaceId == null ? const <RoleTag>[] : repository.rolesOf(widget.spaceId!, m.userId);
     final spaceName = repository.spaces.value.where((s) => s.id == widget.spaceId).firstOrNull?.name;
     return ListenableBuilder(
-      listenable: Listenable.merge([repository.presence, repository.friends]),
+      listenable: Listenable.merge([repository.presence, repository.mobileOnly, repository.friends]),
       builder: (context, _) {
         final presence = presenceIn(repository.presence.value, m.userId, spaceId: widget.spaceId);
         final f = repository.friends.value;
@@ -202,7 +202,12 @@ class _ProfileState extends State<_Profile> {
                               child: Row(
                                 mainAxisSize: MainAxisSize.min,
                                 children: [
-                                  PresenceAvatar.dotFor(context, presence, 10),
+                                  PresenceAvatar.dotFor(
+                                    context,
+                                    presence,
+                                    10,
+                                    mobileOnly: repository.mobileOnly.value.contains(m.userId),
+                                  ),
                                   const SizedBox(width: 6),
                                   Text(
                                     presenceText(presence),
@@ -584,7 +589,7 @@ class _FriendsPageState extends State<FriendsPage> {
     return Scaffold(
       backgroundColor: colors.background,
       body: ListenableBuilder(
-        listenable: Listenable.merge([repository.friends, repository.presence]),
+        listenable: Listenable.merge([repository.friends, repository.presence, repository.mobileOnly]),
         builder: (context, _) {
           final f = repository.friends.value;
           final presence = repository.presence.value;
@@ -592,7 +597,12 @@ class _FriendsPageState extends State<FriendsPage> {
           final online = f.friends.where((m) => !away(m)).toList();
           final offline = f.friends.where(away).toList();
           Widget friendRow(Member m) => ListRow(
-            leading: PresenceAvatar(member: m, presence: presence[m.userId], size: 48),
+            leading: PresenceAvatar(
+              member: m,
+              presence: presence[m.userId],
+              mobileOnly: repository.mobileOnly.value.contains(m.userId),
+              size: 48,
+            ),
             title: m.displayName,
             snippet: '@${m.username}',
             banner: m.bannerUrl,

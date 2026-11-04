@@ -76,9 +76,14 @@ class _MembersSheetState extends State<_MembersSheet> {
         return ListenableBuilder(
           // Presence, and roles: a role hoisted or taken while it's open
           // regroups it.
-          listenable: Listenable.merge([widget.repository.presence, widget.repository.spaces]),
+          listenable: Listenable.merge([
+            widget.repository.presence,
+            widget.repository.mobileOnly,
+            widget.repository.spaces,
+          ]),
           builder: (context, _) {
             final presence = widget.repository.presence.value;
+            final mobileOnly = widget.repository.mobileOnly.value;
             final q = _search.text.trim().toLowerCase();
             final shown = q.isEmpty
                 ? all
@@ -185,6 +190,7 @@ class _MembersSheetState extends State<_MembersSheet> {
                         itemBuilder: (context, i) => _MemberRow(
                           member: members[i],
                           presence: of(members[i]),
+                          mobileOnly: mobileOnly.contains(members[i].userId),
                           me: widget.repository.profile.value?.id == members[i].userId,
                           spaceId: spaceId,
                           roleColors: switch (widget.target) {
@@ -212,12 +218,20 @@ class _MembersSheetState extends State<_MembersSheet> {
 class _MemberRow extends StatelessWidget {
   final Member member;
   final Presence? presence;
+  final bool mobileOnly;
   final bool me;
   final String? spaceId;
 
   /// Their highest colored role's colors: they tint the name, or run across it as a gradient.
   final RoleColors? roleColors;
-  const _MemberRow({required this.member, required this.presence, required this.me, this.spaceId, this.roleColors});
+  const _MemberRow({
+    required this.member,
+    required this.presence,
+    required this.mobileOnly,
+    required this.me,
+    this.spaceId,
+    this.roleColors,
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -235,7 +249,7 @@ class _MemberRow extends StatelessWidget {
         labelColors: roleColors,
         detail: detail,
         hint: me ? null : 'Double tap for options',
-        leading: PresenceAvatar(member: member, presence: presence, size: 48),
+        leading: PresenceAvatar(member: member, presence: presence, mobileOnly: mobileOnly, size: 48),
         banner: member.bannerUrl,
         bannerOffline: isOffline(presence),
         // Their profile over this sheet; it closes only for what's picked there.
@@ -249,13 +263,23 @@ class _MemberRow extends StatelessWidget {
 }
 
 /// A member's avatar with their presence: a filled dot when online, a dot with
-/// a bar for do not disturb, a ring when offline. Shape tells them apart, not
-/// color alone. Not reported: no status at all.
+/// a bar for do not disturb, a ring when offline; while connected only from
+/// the mobile app ([mobileOnly]), a phone in place of the dot. Shape tells
+/// them apart, not color alone. Not reported: no status at all.
 class PresenceAvatar extends StatelessWidget {
   final Member member;
   final Presence? presence;
+
+  /// They're connected only from the mobile app ([ChatRepository.mobileOnly]).
+  final bool mobileOnly;
   final double size;
-  const PresenceAvatar({required this.member, required this.presence, this.size = 40, super.key});
+  const PresenceAvatar({
+    required this.member,
+    required this.presence,
+    this.mobileOnly = false,
+    this.size = 40,
+    super.key,
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -271,15 +295,18 @@ class PresenceAvatar extends StatelessWidget {
               child: UserAvatar(name: member.displayName, url: member.avatarUrl, size: size),
             ),
           ),
-          if (presence case final presence?) Positioned(right: -1, bottom: -1, child: dotFor(context, presence, dot)),
+          if (presence case final presence?)
+            Positioned(right: -1, bottom: -1, child: dotFor(context, presence, dot, mobileOnly: mobileOnly)),
         ],
       ),
     );
   }
 
   /// Presence by shape: a filled dot online, a dot with a bar for do not
-  /// disturb, a ring offline.
-  static Widget dotFor(BuildContext context, Presence presence, double dot) {
+  /// disturb, a ring offline. Connected only from the mobile app
+  /// ([mobileOnly]), a [PresencePhone] instead; offline, the ring all the same.
+  static Widget dotFor(BuildContext context, Presence presence, double dot, {bool mobileOnly = false}) {
+    if (mobileOnly && presence != Presence.offline) return PresencePhone(presence: presence, width: dot);
     final colors = context.theme.colors;
     final online = context.duvet.live;
     return Container(
@@ -304,6 +331,48 @@ class PresenceAvatar extends StatelessWidget {
           ),
         ),
       },
+    );
+  }
+}
+
+/// The presence of someone connected only from the mobile app: a phone in
+/// their status's color, as wide as the dot ([width]) and half as tall
+/// again, cut out of what's behind it as the dot is, its screen the
+/// cut-out's color. Do not disturb puts the dot's bar across the screen, so
+/// shape still tells it from online.
+class PresencePhone extends StatelessWidget {
+  final Presence presence;
+  final double width;
+  const PresencePhone({required this.presence, required this.width, super.key})
+    : assert(presence != Presence.offline, 'offline shows the ring');
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = context.theme.colors;
+    final busy = presence == Presence.doNotDisturb;
+    final color = busy ? colors.destructive : context.duvet.live;
+    // The phone, inside the cut-out's 2pt.
+    final body = width - 4;
+    return Container(
+      width: width,
+      height: width * 1.5,
+      padding: const EdgeInsets.all(2),
+      decoration: BoxDecoration(color: colors.card, borderRadius: BorderRadius.circular(width * 0.3)),
+      child: DecoratedBox(
+        decoration: BoxDecoration(color: color, borderRadius: BorderRadius.circular(body * 0.25)),
+        child: Padding(
+          // Its screen, with a deeper edge below it than above.
+          padding: EdgeInsets.fromLTRB(body * 0.18, body * 0.2, body * 0.18, body * 0.45),
+          child: DecoratedBox(
+            decoration: BoxDecoration(color: colors.card, borderRadius: BorderRadius.circular(body * 0.08)),
+            child: busy
+                ? Center(
+                    child: Container(width: body * 0.4, height: 2, color: color),
+                  )
+                : null,
+          ),
+        ),
+      ),
     );
   }
 }
