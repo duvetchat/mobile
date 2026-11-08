@@ -16,7 +16,7 @@ import 'data/scope.dart';
 import 'developer.dart' show DeveloperPage;
 import 'login.dart';
 import 'people.dart';
-import 'space_admin.dart' show avatarSide, saveBannerImage, saveSquareImage;
+import 'space_admin.dart' show avatarSide, confirmDestructive, saveBannerImage, saveSquareImage;
 import 'tabs.dart' show LiveIndicator;
 import 'theme.dart';
 import 'widgets/avatar.dart';
@@ -1659,6 +1659,14 @@ class _YouTabState extends State<YouTab> {
   // The emailed link opens the reset page, as Forgot password's does.
   Future<void> _sendResetPassword() async {
     if (_sendingReset) return;
+    final sure = await confirmDestructive(
+      context,
+      title: 'Reset your password?',
+      body: 'We’ll email you a link to set a new one. Your password stays as it is until you do.',
+      action: 'Send link',
+      destructive: false,
+    );
+    if (!sure || !mounted) return;
     setState(() => _sendingReset = true);
     try {
       await context.repository.sendResetPasswordEmail();
