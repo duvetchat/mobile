@@ -2586,6 +2586,9 @@ class DuvetRepository implements ChatRepository {
   Future<void> sendVerificationEmail() => _call((api) => api.sendVerificationEmail());
 
   @override
+  Future<void> sendResetPasswordEmail() => _call((api) => api.sendResetPasswordEmail());
+
+  @override
   Future<void> verifyEmail(String token) async {
     await _anonymous((api) => api.verifyEmail(token));
     if (_api != null) _setProfile(await _call((api) => api.me()));

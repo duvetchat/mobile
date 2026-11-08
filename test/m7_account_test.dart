@@ -264,6 +264,34 @@ void main() {
     semantics.dispose();
   });
 
+  testWidgets('You: reset password emails a link, and says why when refused', (tester) async {
+    final repository = await pumpApp(tester);
+    await openYou(tester);
+    await Scrollable.ensureVisible(tester.element(find.text('Reset password')), alignment: 0.5);
+    await tester.pumpAndSettle();
+    // It asks first: Cancel sends nothing.
+    await tapLabel(tester, 'Reset password');
+    expect(find.text('Reset your password?'), findsOneWidget);
+    await tapLabel(tester, 'Cancel');
+    expect(repository.account, isEmpty);
+
+    await tapLabel(tester, 'Reset password');
+    await tapLabel(tester, 'Send link');
+    expect(repository.account, ['send reset password']);
+    expect(find.text('We emailed you a link to set a new password'), findsOneWidget);
+    await tester.pump(const Duration(seconds: 4));
+    await tester.pumpAndSettle();
+
+    repository.resetPasswordRefused = 'Too many emails, try again later';
+    await tapLabel(tester, 'Reset password');
+    await tapLabel(tester, 'Send link');
+    expect(repository.account, ['send reset password'], reason: 'nothing sent');
+    expect(find.text('Too many emails, try again later'), findsOneWidget);
+    await tester.pump(const Duration(seconds: 4));
+    await tester.pumpAndSettle();
+    semantics.dispose();
+  });
+
   testWidgets('You: your bubbles take a swatch; a pale one gets dark ink', (tester) async {
     await pumpApp(tester);
     await openYou(tester);

@@ -331,6 +331,15 @@ class FakeRepository implements ChatRepository {
   @override
   Future<void> sendVerificationEmail() async => account.add('send verification');
 
+  /// What [sendResetPasswordEmail] fails with, when set.
+  String? resetPasswordRefused;
+
+  @override
+  Future<void> sendResetPasswordEmail() async {
+    if (resetPasswordRefused != null) throw ActionFailed(resetPasswordRefused!);
+    account.add('send reset password');
+  }
+
   @override
   Future<void> verifyEmail(String token) async {
     account.add('verify $token');

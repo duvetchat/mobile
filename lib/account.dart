@@ -16,7 +16,7 @@ import 'data/scope.dart';
 import 'developer.dart' show DeveloperPage;
 import 'login.dart';
 import 'people.dart';
-import 'space_admin.dart' show avatarSide, saveBannerImage, saveSquareImage;
+import 'space_admin.dart' show avatarSide, confirmDestructive, saveBannerImage, saveSquareImage;
 import 'tabs.dart' show LiveIndicator;
 import 'theme.dart';
 import 'widgets/avatar.dart';
@@ -1682,6 +1682,31 @@ class _YouTabState extends State<YouTab> {
   // The status chosen while the server takes it: shown meanwhile.
   Presence? _choosing;
 
+  // A reset link on its way: a second tap doesn't send another.
+  bool _sendingReset = false;
+
+  // The emailed link opens the reset page, as Forgot password's does.
+  Future<void> _sendResetPassword() async {
+    if (_sendingReset) return;
+    final sure = await confirmDestructive(
+      context,
+      title: 'Reset your password?',
+      body: 'We’ll email you a link to set a new one. Your password stays as it is until you do.',
+      action: 'Send link',
+      destructive: false,
+    );
+    if (!sure || !mounted) return;
+    setState(() => _sendingReset = true);
+    try {
+      await context.repository.sendResetPasswordEmail();
+      if (mounted) _toast(context, 'We emailed you a link to set a new password');
+    } catch (e) {
+      if (mounted) _toast(context, e is ActionFailed ? e.message : 'Couldn’t send the link');
+    } finally {
+      if (mounted) setState(() => _sendingReset = false);
+    }
+  }
+
   @override
   void didChangeDependencies() {
     super.didChangeDependencies();
@@ -1854,6 +1879,7 @@ class _YouTabState extends State<YouTab> {
                     const Overline('Account'),
                     panel([
                       row('Change email', () => _push(const ChangeEmailPage())),
+                      row('Reset password', _sendResetPassword, value: _sendingReset ? 'Sending…' : null),
                       row('Sign out', repository.logOut, warn: true),
                     ]),
                   ],
