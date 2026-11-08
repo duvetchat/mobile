@@ -64,6 +64,42 @@ duvet.GatewayEventPayload _event(String type, Map<String, dynamic> data) => duve
   'd': {'type': type, 'data': data},
 }).d!;
 
+/// A command with a group of subcommands, as the API lists it.
+const _command = <String, dynamic>{
+  'id': 'cmd-1',
+  'type': 1,
+  'application_id': 'a-1',
+  'name': 'perms',
+  'description': 'Permissions',
+  'version': '1',
+  'options': [
+    {
+      'type': 2,
+      'name': 'user',
+      'description': 'A user\'s',
+      'options': [
+        {
+          'type': 1,
+          'name': 'get',
+          'description': 'Show them',
+          'options': [
+            {
+              'type': 3,
+              'name': 'id',
+              'description': 'Whose',
+              'required': true,
+              'max_length': 40,
+              'choices': [
+                {'name': 'Me', 'value': 'me'},
+              ],
+            },
+          ],
+        },
+      ],
+    },
+  ],
+};
+
 void main() {
   late List<http.Request> requests;
   late MockClient client;
@@ -277,6 +313,10 @@ void main() {
         ('GET', '/api/users/@me/friends/requests/sent') => <Object>[],
         ('POST', '/api/users/@me/team-invites/ti-1/accept') => http.Response('', 204),
         ('POST', '/api/users/@me/teams/t-1/applications/a-1/bot') => {'token': 'bot-token'},
+        ('GET', '/api/users/@me/teams/t-1/applications/a-1/commands') => [_command],
+        ('POST' || 'PATCH', _) when request.url.path.startsWith('/api/users/@me/teams/t-1/applications/a-1/commands') =>
+          {..._command, ...jsonDecode(request.body) as Map<String, dynamic>, 'id': 'cmd-1'},
+        ('DELETE', '/api/users/@me/teams/t-1/applications/a-1/commands/cmd-1') => http.Response('', 204),
         ('GET', '/api/rooms/r-general/messages') => [roomNewest],
         ('GET', '/api/spaces/s-1/members') => [
           {
@@ -595,6 +635,69 @@ void main() {
 
     // A bot's token is the API's `token`.
     expect(await repository.createBot(const DevApp(id: 'a-1', teamId: 't-1', name: 'Helper')), 'bot-token');
+  });
+
+  test('an application\'s commands: subcommands kept both ways; saved new or changed; deleted', () async {
+    const app = DevApp(id: 'a-1', teamId: 't-1', name: 'Helper');
+    await repository.logIn('gaby@duvet.chat', 'secret');
+    final listed = await repository.appCommands(app);
+    final user = listed.single.options.single;
+    expect((user.type, user.name), (OptionKind.subcommandGroup, 'user'));
+    final get = user.options.single.options.single;
+    expect((get.name, get.required, get.maxLength, get.choices.single.value), ('id', true, 40, 'me'));
+
+    requests.clear();
+    final created = await repository.saveAppCommand(
+      app,
+      BotCommand(
+        id: '',
+        applicationId: 'a-1',
+        appName: 'Helper',
+        name: 'poll',
+        description: 'Vote',
+        options: [
+          const BotCommandOption(type: OptionKind.room, name: 'where', description: 'Room', roomTypes: [1]),
+        ],
+      ),
+    );
+    expect(created.id, 'cmd-1');
+    expect(
+      (requests.single.method, requests.single.url.path),
+      ('POST', '/api/users/@me/teams/t-1/applications/a-1/commands'),
+    );
+    expect(jsonDecode(requests.single.body), {
+      'type': 1,
+      'name': 'poll',
+      'description': 'Vote',
+      'options': [
+        {
+          'type': 7,
+          'name': 'where',
+          'description': 'Room',
+          'room_types': [1],
+        },
+      ],
+    });
+
+    // A command read back goes back as it came.
+    requests.clear();
+    await repository.saveAppCommand(app, listed.single);
+    expect(
+      (requests.single.method, requests.single.url.path),
+      ('PATCH', '/api/users/@me/teams/t-1/applications/a-1/commands/cmd-1'),
+    );
+    expect(jsonDecode(requests.single.body), {
+      'name': 'perms',
+      'description': 'Permissions',
+      'options': _command['options'],
+    });
+
+    requests.clear();
+    await repository.deleteAppCommand(app, 'cmd-1');
+    expect(
+      (requests.single.method, requests.single.url.path),
+      ('DELETE', '/api/users/@me/teams/t-1/applications/a-1/commands/cmd-1'),
+    );
   });
 
   test('a saved session resumes; a rejected one is forgotten', () async {

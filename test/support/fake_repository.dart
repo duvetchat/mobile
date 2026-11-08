@@ -755,6 +755,12 @@ class FakeRepository implements ChatRepository {
     admin.add('${has ? 'give' : 'take'} $roleId ${nameOf(userId)}');
     final holders = roleHolders[roleId] ??= {};
     has ? holders.add(userId) : holders.remove(userId);
+    // As the real one: their roles change, and the Space's listeners hear.
+    final role = roles(spaceId).where((r) => r.id == roleId).firstOrNull;
+    final tags = [...?roleTags[userId]]..removeWhere((t) => t.id == roleId);
+    if (has && role != null) tags.add(RoleTag(role.name, color: role.color, id: role.id, position: role.position));
+    roleTags[userId] = tags..sort((a, b) => b.position.compareTo(a.position));
+    spaces.value = [...spaces.value];
   }
 
   @override
@@ -958,6 +964,40 @@ class FakeRepository implements ChatRepository {
     appList[app.teamId]?.removeWhere((a) => a.id == app.id);
   }
 
+  /// Each application's commands, by its ID.
+  final appCommandList = <String, List<BotCommand>>{};
+  int _commandIds = 0;
+
+  @override
+  Future<List<BotCommand>> appCommands(DevApp app) async =>
+      [...?appCommandList[app.id]]..sort((a, b) => a.name.compareTo(b.name));
+
+  @override
+  Future<BotCommand> saveAppCommand(DevApp app, BotCommand command) async {
+    _refuse('saveAppCommand');
+    final saved = BotCommand(
+      id: command.id.isEmpty ? 'cmd-${++_commandIds}' : command.id,
+      applicationId: app.id,
+      appName: app.name,
+      name: command.name,
+      description: command.description,
+      options: command.options,
+    );
+    admin.add('${command.id.isEmpty ? 'command+' : 'command'} ${saved.name}');
+    final list = appCommandList[app.id] ??= [];
+    list
+      ..removeWhere((c) => c.id == saved.id)
+      ..add(saved);
+    return saved;
+  }
+
+  @override
+  Future<void> deleteAppCommand(DevApp app, String commandId) async {
+    _refuse('deleteAppCommand');
+    admin.add('command- $commandId');
+    appCommandList[app.id]?.removeWhere((c) => c.id == commandId);
+  }
+
   @override
   Future<String> createBot(DevApp app) async {
     admin.add('bot+ ${app.id}');
@@ -1038,6 +1078,7 @@ class FakeRepository implements ChatRepository {
     UiComponent component, {
     List<String>? values,
   }) async {
+    _refuse('useComponent');
     interactions.add('component ${component.customId}${values == null ? '' : ' ${values.join(',')}'}');
     final modal = nextModal;
     nextModal = null;
@@ -1068,6 +1109,17 @@ class FakeRepository implements ChatRepository {
   Future<void> addBot(String spaceId, String botId) async {
     _refuse('addBot');
     botsAdded.add((spaceId, botId));
+  }
+
+  final botsRemoved = <(String, String)>[];
+
+  @override
+  Future<void> removeBot(String spaceId, String botId) async {
+    _refuse('removeBot');
+    botsRemoved.add((spaceId, botId));
+    // The gateway's SPACE_MEMBER_REMOVE that follows.
+    spaceMembers[spaceId]?.remove(botId);
+    spaces.value = [...spaces.value];
   }
 
   @override
@@ -1368,8 +1420,13 @@ class FakeRepository implements ChatRepository {
   final extraRoomMembers = <Member>[];
 
   @override
-  Future<List<Member>> members(ChatTarget target, {bool refresh = false}) async =>
-      target is RoomTarget ? [...everyone, ...extraRoomMembers] : everyone.where((m) => m.userId != leo).toList();
+  Future<List<Member>> members(ChatTarget target, {bool refresh = false}) async {
+    if (target is! RoomTarget) return everyone.where((m) => m.userId != leo).toList();
+    final list = [...everyone, ...extraRoomMembers];
+    // As the real one: a list loaded tells who's in the Space.
+    (spaceMembers[target.spaceId] ??= {}).addAll(list.map((m) => m.userId));
+    return list;
+  }
 
   @override
   String? nameOf(String userId) => everyone.where((m) => m.userId == userId).firstOrNull?.displayName;

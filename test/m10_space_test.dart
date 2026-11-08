@@ -12,6 +12,7 @@ import 'package:duvet/space_admin.dart';
 import 'package:duvet/spaces.dart' show pickSpaceIcon;
 import 'package:duvet/theme.dart';
 import 'package:duvet/widgets/chrome.dart';
+import 'package:duvet/widgets/glass.dart' show GlassRow;
 import 'package:duvet/widgets/rows.dart' show DuvetChip;
 import 'package:duvet/widgets/picture_edit.dart' show takePhoto;
 import 'package:flutter/material.dart';
@@ -222,6 +223,57 @@ void main() {
     expect(find.bySemanticsLabel(RegExp(r'^Invites')), findsOneWidget);
     expect(find.bySemanticsLabel(RegExp(r'^Rooms')), findsNothing);
     expect(find.bySemanticsLabel(RegExp(r'^Webhooks')), findsNothing);
+    semantics.dispose();
+  });
+
+  testWidgets('members: below Roles; a member\'s roles change; a bot is removed; no kick or ban', (tester) async {
+    const helper = Member(userId: 'u-helper', username: 'helper', alias: 'Helper', isBot: true);
+    final repository = await pumpSettings(tester, setUp: (r) => r.extraRoomMembers.add(helper));
+    final rows = [for (final w in tester.widgetList<GlassRow>(find.byType(GlassRow))) w.label];
+    expect(rows.indexOf('Members'), rows.indexOf('Roles') + 1);
+    await tapLabel(tester, RegExp(r'^Members'));
+    expect(find.text('Helper'), findsOneWidget);
+    expect(find.textContaining('No roles'), findsWidgets);
+
+    await tester.enterText(find.byType(EditableText).first, 'may');
+    await tester.pumpAndSettle();
+    expect(find.text('Helper'), findsNothing);
+    await tester.tap(find.text('Maya'));
+    await tester.pumpAndSettle();
+    expect(find.text(FakeRepository.maya), findsOneWidget, reason: 'the ID shows');
+    expect(find.bySemanticsLabel('Remove from Space'), findsNothing, reason: 'Maya is no bot');
+    expect(find.bySemanticsLabel(RegExp('Kick|Ban')), findsNothing);
+    await tapLabel(tester, 'Moderator');
+    expect(repository.admin, ['give role-mod Maya']);
+    await tapLabel(tester, 'Back');
+    expect(find.textContaining('Moderator'), findsOneWidget, reason: 'her row shows the role');
+
+    await tester.enterText(find.byType(EditableText).first, '');
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Helper'));
+    await tester.pumpAndSettle();
+    await tapLabel(tester, 'Remove from Space');
+    await tapLabel(tester, 'Remove from Space');
+    expect(repository.botsRemoved, [('s-guild', 'u-helper')]);
+    expect(find.text('Members'), findsWidgets, reason: 'back on the list');
+    expect(find.text('Helper'), findsNothing);
+    semantics.dispose();
+  });
+
+  testWidgets('members: without Manage roles, roles show but don\'t change', (tester) async {
+    final repository = await pumpSettings(
+      tester,
+      setUp: (r) => r
+        ..spaceOwner = false
+        ..spacePerms = Perm.manageBots,
+    );
+    expect(find.bySemanticsLabel(RegExp(r'^Roles')), findsNothing);
+    await tapLabel(tester, RegExp(r'^Members'));
+    await tester.tap(find.text('Maya'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.bySemanticsLabel('Moderator').last);
+    await tester.pumpAndSettle();
+    expect(repository.admin, isEmpty);
     semantics.dispose();
   });
 
@@ -777,6 +829,26 @@ void main() {
     await tapLabel(tester, 'Delete role');
     expect(repository.admin.last, 'role- role-Hosts');
     expect(find.text('Hosts'), findsNothing);
+    semantics.dispose();
+  });
+
+  testWidgets('a role\'s Save is greyed out until something changes', (tester) async {
+    final repository = await pumpSettings(tester);
+    await tapLabel(tester, RegExp(r'^Roles'));
+    await tapLabel(tester, RegExp(r'^Moderator'));
+    bool saveEnabled() =>
+        tester.getSemantics(find.bySemanticsLabel('Save').last).flagsCollection.isEnabled.toString().contains('isTrue');
+    expect(saveEnabled(), isFalse);
+
+    await tester.enterText(find.byType(EditableText).first, 'Mods');
+    await tester.pumpAndSettle();
+    expect(saveEnabled(), isTrue);
+
+    // Back to how it was: nothing to save again.
+    await tester.enterText(find.byType(EditableText).first, 'Moderator');
+    await tester.pumpAndSettle();
+    expect(saveEnabled(), isFalse);
+    expect(repository.admin.where((a) => a.startsWith('role~')), isEmpty);
     semantics.dispose();
   });
 

@@ -320,6 +320,15 @@ abstract interface class ChatRepository {
   Future<DevApp> updateApplication(DevApp app, {String? name, String? description, bool? public});
   Future<void> deleteApplication(DevApp app);
 
+  /// An application's slash commands, by name.
+  Future<List<BotCommand>> appCommands(DevApp app);
+
+  /// Registers [command] when its id is empty, else replaces its name,
+  /// description and options; answers it as saved. Refusals carry the API's
+  /// reason (a name it doesn't take, an option's rules).
+  Future<BotCommand> saveAppCommand(DevApp app, BotCommand command);
+  Future<void> deleteAppCommand(DevApp app, String commandId);
+
   /// Gives [app] a bot, and answers its token: shown once, never again.
   Future<String> createBot(DevApp app);
   Future<String> resetBotToken(DevApp app);
@@ -359,6 +368,10 @@ abstract interface class ChatRepository {
   /// A bot, for its invite card.
   Future<BotInfo> bot(String userId);
   Future<void> addBot(String spaceId, String botId);
+
+  /// Takes a bot out of a Space; the gateway's member removal drops it from
+  /// the members list.
+  Future<void> removeBot(String spaceId, String botId);
 
   /// The Space's roles, highest first, but the one everyone has: for role
   /// selects and options.

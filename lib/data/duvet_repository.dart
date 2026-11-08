@@ -3182,26 +3182,81 @@ class DuvetRepository implements ChatRepository {
             appName: apps[c.applicationId] ?? 'Bot',
             name: c.name,
             description: c.description,
-            options: [
-              for (final o in c.options)
-                BotCommandOption(
-                  type: o.type,
-                  name: o.name,
-                  description: o.description,
-                  required: o.required,
-                  choices: [
-                    for (final ch in o.choices ?? const <duvet.CommandChoice>[]) (name: ch.name, value: ch.value),
-                  ],
-                  minValue: o.minValue,
-                  maxValue: o.maxValue,
-                  minLength: o.minLength,
-                  maxLength: o.maxLength,
-                  roomTypes: [for (final t in o.roomTypes ?? const <duvet.RoomType>[]) t.value],
-                ),
-            ],
+            options: [for (final o in c.options) _optionOf(o)],
           ),
     ]..sort((a, b) => a.name.compareTo(b.name));
   }
+
+  static BotCommandOption _optionOf(duvet.CommandOption o) => BotCommandOption(
+    type: o.type,
+    name: o.name,
+    description: o.description,
+    required: o.required,
+    choices: [for (final ch in o.choices ?? const <duvet.CommandChoice>[]) (name: ch.name, value: ch.value)],
+    minValue: o.minValue,
+    maxValue: o.maxValue,
+    minLength: o.minLength,
+    maxLength: o.maxLength,
+    roomTypes: [for (final t in o.roomTypes ?? const <duvet.RoomType>[]) t.value],
+    options: [for (final s in o.options ?? const <duvet.CommandOption>[]) _optionOf(s)],
+  );
+
+  // What's empty goes as null, which the API's omitempty leaves out.
+  static duvet.CommandOption _wireOption(BotCommandOption o) => duvet.CommandOption(
+    type: o.type,
+    name: o.name,
+    description: o.description,
+    required: o.required,
+    choices: o.choices.isEmpty ? null : [for (final c in o.choices) duvet.CommandChoice(name: c.name, value: c.value)],
+    options: o.options.isEmpty ? null : [for (final s in o.options) _wireOption(s)],
+    minValue: o.minValue,
+    maxValue: o.maxValue,
+    minLength: o.minLength,
+    maxLength: o.maxLength,
+    roomTypes: o.roomTypes.isEmpty ? null : [for (final t in o.roomTypes) duvet.RoomType.fromInt(t)],
+  );
+
+  BotCommand _appCommand(DevApp app, duvet.ApplicationCommand c) => BotCommand(
+    id: c.id,
+    applicationId: app.id,
+    appName: app.name,
+    name: c.name,
+    description: c.description,
+    options: [for (final o in c.options) _optionOf(o)],
+  );
+
+  @override
+  Future<List<BotCommand>> appCommands(DevApp app) async =>
+      [for (final c in await _call((api) => api.listCommands(app.teamId, app.id))) _appCommand(app, c)]
+        ..sort((a, b) => a.name.compareTo(b.name));
+
+  @override
+  Future<BotCommand> saveAppCommand(DevApp app, BotCommand command) async {
+    final options = [for (final o in command.options) _wireOption(o)];
+    return _appCommand(
+      app,
+      await _explained(
+        (api) => command.id.isEmpty
+            ? api.createCommand(
+                app.teamId,
+                app.id,
+                duvet.NewCommand(name: command.name, description: command.description, options: options),
+              )
+            : api.updateCommand(
+                app.teamId,
+                app.id,
+                command.id,
+                name: command.name,
+                description: command.description,
+                options: options,
+              ),
+      ),
+    );
+  }
+
+  @override
+  Future<void> deleteAppCommand(DevApp app, String commandId) =>
+      _explained((api) => api.deleteCommand(app.teamId, app.id, commandId));
 
   BotModal? _modalOf(duvet.InteractionReply reply, String roomId, String? messageId) => reply.isModal
       ? BotModal.fromJson(reply.modal!, applicationId: reply.applicationId!, roomId: roomId, messageId: messageId)
@@ -3214,7 +3269,7 @@ class DuvetRepository implements ChatRepository {
     UiComponent component, {
     List<String>? values,
   }) async {
-    final reply = await _call(
+    final reply = await _interaction(
       (api) => api.useComponent(
         target.roomId,
         messageId,
@@ -3227,7 +3282,7 @@ class DuvetRepository implements ChatRepository {
   @override
   Future<BotModal?> useCommand(RoomTarget target, BotCommand command, Map<String, Object> options) async {
     final types = {for (final o in command.options) o.name: o.type};
-    final reply = await _call(
+    final reply = await _interaction(
       (api) => api.useCommand(
         target.roomId,
         command.applicationId,
@@ -3244,9 +3299,23 @@ class DuvetRepository implements ChatRepository {
   }
 
   @override
-  Future<void> submitModal(BotModal modal, List<Map<String, dynamic>> components) => _call(
+  Future<void> submitModal(BotModal modal, List<Map<String, dynamic>> components) => _interaction(
     (api) => api.submitModal(modal.roomId, modal.applicationId, modal.customId, components, messageId: modal.messageId),
   );
+
+  /// A command, a component or a modal sent to a bot, failing with the
+  /// desktop's texts: a 504 is the API giving up waiting on the bot.
+  Future<T> _interaction<T>(Future<T> Function(duvet.RestClient api) request) async {
+    try {
+      return await _call(request);
+    } catch (e) {
+      throw ActionFailed(
+        e is duvet.DuvetApiException && e.statusCode == 504
+            ? 'The application did not respond'
+            : 'This interaction failed',
+      );
+    }
+  }
 
   @override
   Future<BotInfo> bot(String userId) async {
@@ -3272,6 +3341,9 @@ class DuvetRepository implements ChatRepository {
 
   @override
   Future<void> addBot(String spaceId, String botId) => _explained((api) => api.addBotToSpace(spaceId, botId));
+
+  @override
+  Future<void> removeBot(String spaceId, String botId) => _explained((api) => api.removeBotFromSpace(spaceId, botId));
 
   @override
   List<({String id, String name})> spaceRoles(String spaceId) => [

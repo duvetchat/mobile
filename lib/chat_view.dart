@@ -1586,7 +1586,7 @@ class _ChatViewState extends State<ChatView> {
     if (id == null) return;
     _openProfile(
       _members.where((x) => x.userId == id).firstOrNull ??
-          Member(userId: id, username: m.authorName, avatarUrl: m.authorAvatarUrl),
+          Member(userId: id, username: m.authorName, avatarUrl: m.authorAvatarUrl, isBot: m.fromBot && !m.fromWebhook),
     );
   }
 
@@ -1880,8 +1880,8 @@ class _ChatViewState extends State<ChatView> {
       final modal = await _repository.useComponent(target, m.id, component, values: values);
       // The button is done once the bot answers; its modal is on its own.
       unawaited(_openModal(modal, m.authorName));
-    } catch (_) {
-      _toast('${m.authorName} didn’t answer. Try again.');
+    } catch (e) {
+      _toast(e is ActionFailed ? e.message : 'This interaction failed');
     }
   }
 
@@ -1898,8 +1898,8 @@ class _ChatViewState extends State<ChatView> {
     try {
       final modal = await _repository.useCommand(target, command, options);
       await _openModal(modal, command.appName);
-    } catch (_) {
-      _toast('${command.appName} didn’t answer /${command.name}. Try again.');
+    } catch (e) {
+      _toast(e is ActionFailed ? e.message : 'This interaction failed');
     }
   }
 

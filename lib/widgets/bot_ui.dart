@@ -447,8 +447,8 @@ class _ModalState extends State<_Modal> {
     try {
       await context.repository.submitModal(widget.modal, answers.components!);
       navigator.pop();
-    } catch (_) {
-      if (mounted) setState(() => _failure = 'The bot didn’t answer. Try again.');
+    } catch (e) {
+      if (mounted) setState(() => _failure = e is ActionFailed ? e.message : 'This interaction failed');
     } finally {
       if (mounted) setState(() => _sending = false);
     }
