@@ -185,7 +185,12 @@ class _ChatViewState extends State<ChatView> {
     EmojiCatalog.load().then((c) {
       if (mounted) setState(() => _catalog = c);
     }, onError: (Object e) => debugPrint('emoji: $e'));
-    _lifecycle = AppLifecycleListener(onResume: _readIfSeen, onStateChange: (_) => _reportScreen());
+    _lifecycle = AppLifecycleListener(
+      onResume: _readIfSeen,
+      onStateChange: (_) {
+        if (_events != null) _reportScreen(opened: false);
+      },
+    );
   }
 
   @override
@@ -219,8 +224,8 @@ class _ChatViewState extends State<ChatView> {
 
   // On top with the app in front, the chat is on screen: its mentions show no
   // notice at the top. A sheet over it takes the top too: one shows then.
-  void _reportScreen({bool gone = false}) => !gone && _onTop && _inFront
-      ? _repository.chatShown(widget.target, threadOf: widget.threadOf)
+  void _reportScreen({bool gone = false, bool opened = true}) => !gone && _onTop && _inFront
+      ? _repository.chatShown(widget.target, threadOf: widget.threadOf, opened: opened)
       : _repository.chatHidden(widget.target, threadOf: widget.threadOf);
 
   // Once built: being shown takes the chat's notices away, which rebuilds

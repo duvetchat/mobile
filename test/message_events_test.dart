@@ -688,6 +688,14 @@ void main() {
         repository.chatShown(_room);
         expect(shown(), isEmpty);
 
+        // Back from the background, a notice that came meanwhile stays.
+        repository.chatHidden(_room);
+        repository.handleEvent(_event('MESSAGE_CREATE', _roomMessage('8', 'while away')));
+        mention('8');
+        repository.chatShown(_room, opened: false);
+        expect(shown(), ['8']);
+        repository.chatHidden(_room);
+
         // The DM opened over the room: the room, under it, says it's hidden.
         repository.chatShown(_dm);
         repository.chatHidden(_room);
@@ -695,7 +703,7 @@ void main() {
         repository.handleEvent(
           _event('DM_MENTION_CREATE', {'message_id': '40', 'conversation_id': 'c-1', 'author_id': _maya}),
         );
-        expect(shown(), isEmpty);
+        expect(shown(), ['8']);
       },
     );
 

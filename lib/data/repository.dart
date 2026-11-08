@@ -405,7 +405,8 @@ abstract interface class ChatRepository {
 
   /// The notices of mentions of the user in chats that aren't on screen, the
   /// newest first, a few at most, each for a few seconds. None in do not
-  /// disturb; a message deleted takes its notice away.
+  /// disturb; a message deleted takes its notice away, and opening its chat
+  /// ([chatShown]) does too.
   ValueListenable<List<MentionNotice>> get mentionNotices;
 
   /// Takes a message's notice away: it was opened, or swiped off.
@@ -413,8 +414,10 @@ abstract interface class ChatRepository {
 
   /// The chat on screen ([threadOf]: a thread of it, showing the replies to
   /// that message), whose mentions show no notice: a chat's screen says so
-  /// while it's on top, then [chatHidden].
-  void chatShown(ChatTarget target, {String? threadOf});
+  /// while it's on top with the app in front, then [chatHidden]. A chat
+  /// [opened] (not a thread, nor only back from the background) takes its
+  /// notices away.
+  void chatShown(ChatTarget target, {String? threadOf, bool opened = true});
 
   /// The chat stopped being on screen; nothing changes when another is on
   /// screen by now.

@@ -1170,10 +1170,10 @@ class DuvetRepository implements ChatRepository {
   final _noticeTimers = <String, Timer>{};
 
   @override
-  void chatShown(ChatTarget target, {String? threadOf}) {
+  void chatShown(ChatTarget target, {String? threadOf, bool opened = true}) {
     _onScreen = (chatId: target.id, threadOf: threadOf);
     // The chat itself is here now: its notices would only open it again.
-    if (threadOf == null) {
+    if (opened && threadOf == null) {
       for (final notice in [...mentionNotices.value.where((n) => n.target == target)]) {
         dismissMentionNotice(notice.messageId);
       }
