@@ -110,6 +110,10 @@ class ChatMessage {
 
   final List<MessageAttachment> attachments;
 
+  /// Its files deleted since it was sent: placeholders, apart from
+  /// [attachments] so nothing loads, renews or opens them.
+  final List<MessageAttachment> deletedAttachments;
+
   /// The sticker it is, if it's one: a sticker message has no text.
   final String? stickerUrl;
 
@@ -167,6 +171,7 @@ class ChatMessage {
     this.isNotice = false,
     this.call,
     this.attachments = const [],
+    this.deletedAttachments = const [],
     this.stickerUrl,
     this.embeds = const [],
     this.reply,
@@ -215,6 +220,7 @@ class ChatMessage {
     isNotice: isNotice,
     call: call,
     attachments: attachments,
+    deletedAttachments: deletedAttachments,
     stickerUrl: stickerUrl,
     embeds: embeds,
     reply: reply ?? this.reply,
@@ -249,6 +255,7 @@ class ChatMessage {
     isNotice: isNotice,
     call: call,
     attachments: attachments,
+    deletedAttachments: deletedAttachments,
     stickerUrl: update.stickerUrl,
     embeds: update.embeds,
     reply: reply,
@@ -289,6 +296,7 @@ class ChatMessage {
       isNotice: isNotice,
       call: call,
       attachments: attachments,
+      deletedAttachments: deletedAttachments,
       stickerUrl: stickerUrl,
       embeds: embeds,
       reply: quote ?? reply,
@@ -322,6 +330,7 @@ class ChatMessage {
       isNotice: isNotice,
       call: call,
       attachments: [for (final a in attachments) a.id == attachmentId ? a.withUrl(url) : a],
+      deletedAttachments: deletedAttachments,
       stickerUrl: stickerUrl,
       embeds: embeds,
       reply: reply,

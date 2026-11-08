@@ -3949,6 +3949,7 @@ class DuvetRepository implements ChatRepository {
     isLoading: m.flags & duvet.MessageFlag.loading != 0,
     isComponentsV2: m.flags & duvet.MessageFlag.isComponentsV2 != 0,
     attachments: _attachments(m.attachments),
+    deletedAttachments: _attachments(m.attachments, deleted: true),
     stickerUrl: m.stickerAttachmentId == null ? null : attachmentUrl(m.stickerAttachmentId!),
     embeds: _embeds(m.embeds),
     reply: _reply(m.referencedMessage, m.refMessageId),
@@ -3983,6 +3984,7 @@ class DuvetRepository implements ChatRepository {
     pinned: m.pinnedAt != null,
     fromBot: m.user?.isBot ?? false,
     attachments: _attachments(m.attachments),
+    deletedAttachments: _attachments(m.attachments, deleted: true),
     stickerUrl: m.stickerAttachmentId == null ? null : attachmentUrl(m.stickerAttachmentId!),
     embeds: _embeds(m.embeds),
     reply: _reply(m.referencedMessage, null),
@@ -4007,9 +4009,10 @@ class DuvetRepository implements ChatRepository {
       if (r.users.isNotEmpty) Reaction(emoji: r.emojiName, emojiId: r.emojiId, users: {...r.users}),
   ];
 
-  List<MessageAttachment> _attachments(List<duvet.Attachment>? list) => [
+  // Those still there, or with [deleted] those deleted since.
+  List<MessageAttachment> _attachments(List<duvet.Attachment>? list, {bool deleted = false}) => [
     for (final a in list ?? const <duvet.Attachment>[])
-      if (a.deletedAt == null && a.deleted != true)
+      if ((a.deletedAt != null || a.deleted == true) == deleted)
         MessageAttachment(
           id: a.id,
           filename: a.filename,

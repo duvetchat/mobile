@@ -424,6 +424,46 @@ void main() {
     });
   });
 
+  testWidgets('a deleted file, or voice note, leaves a placeholder where it was', (tester) async {
+    final repository = await openMaya(tester);
+    MessageAttachment file(String id, String name, String type) =>
+        MessageAttachment(id: id, filename: name, contentType: type, url: 'https://example.invalid/$id');
+    repository.push(
+      'c-maya',
+      MessageCreated(
+        ChatMessage(
+          id: 'gone',
+          authorId: _maya,
+          authorName: 'Maya',
+          content: 'the plan',
+          createdAt: DateTime(2026, 10, 23, 10),
+          attachments: [file('kept', 'kept.pdf', 'application/pdf')],
+          deletedAttachments: [file('d', 'plan.pdf', 'application/pdf')],
+        ),
+      ),
+    );
+    repository.push(
+      'c-maya',
+      MessageCreated(
+        ChatMessage(
+          id: 'gone-voice',
+          authorId: _maya,
+          authorName: 'Maya',
+          content: '',
+          createdAt: DateTime(2026, 10, 23, 10, 1),
+          isVoice: true,
+          deletedAttachments: [file('v', 'voice-note.ogg', 'audio/ogg')],
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+    expect(find.bySemanticsLabel('Attachment deleted'), findsOneWidget);
+    expect(find.bySemanticsLabel(RegExp(r'^PDF, kept\.pdf')), findsOneWidget);
+    expect(find.bySemanticsLabel(RegExp(r'plan\.pdf')), findsNothing);
+    expect(find.bySemanticsLabel('Voice note deleted'), findsOneWidget);
+    semantics.dispose();
+  });
+
   testWidgets('spoiler videos, audio and files stay covered until tapped, as pictures do', (tester) async {
     final repository = await openMaya(tester);
     MessageAttachment file(String id, String name, String type) =>

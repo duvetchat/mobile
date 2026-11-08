@@ -435,18 +435,9 @@ Map<String, Object?> messageToJson(ChatMessage m) => {
   if (m.isComponentsV2) 'isComponentsV2': true,
   if (m.rawComponents.isNotEmpty) 'components': m.rawComponents,
   'stickerUrl': m.stickerUrl,
-  'attachments': [
-    for (final a in m.attachments)
-      {
-        'id': a.id,
-        'filename': a.filename,
-        'contentType': a.contentType,
-        'url': a.url,
-        'width': a.width,
-        'height': a.height,
-        'sizeBytes': a.sizeBytes,
-      },
-  ],
+  'attachments': [for (final a in m.attachments) _attachmentToJson(a)],
+  if (m.deletedAttachments.isNotEmpty)
+    'deletedAttachments': [for (final a in m.deletedAttachments) _attachmentToJson(a)],
   'embeds': [
     for (final e in m.embeds)
       {
@@ -481,6 +472,26 @@ Map<String, Object?> messageToJson(ChatMessage m) => {
   ],
 };
 
+Map<String, Object?> _attachmentToJson(MessageAttachment a) => {
+  'id': a.id,
+  'filename': a.filename,
+  'contentType': a.contentType,
+  'url': a.url,
+  'width': a.width,
+  'height': a.height,
+  'sizeBytes': a.sizeBytes,
+};
+
+MessageAttachment _attachmentFromJson(Map a) => MessageAttachment(
+  id: a['id'] as String,
+  filename: a['filename'] as String,
+  contentType: a['contentType'] as String,
+  url: a['url'] as String,
+  width: a['width'] as int?,
+  height: a['height'] as int?,
+  sizeBytes: a['sizeBytes'] as int? ?? 0,
+);
+
 ChatMessage messageFromJson(Map<String, Object?> j) => ChatMessage(
   id: j['id']! as String,
   authorId: j['authorId'] as String?,
@@ -507,18 +518,8 @@ ChatMessage messageFromJson(Map<String, Object?> j) => ChatMessage(
       if (c is Map<String, dynamic>) c,
   ],
   stickerUrl: j['stickerUrl'] as String?,
-  attachments: [
-    for (final a in j['attachments'] as List? ?? const [])
-      MessageAttachment(
-        id: (a as Map)['id'] as String,
-        filename: a['filename'] as String,
-        contentType: a['contentType'] as String,
-        url: a['url'] as String,
-        width: a['width'] as int?,
-        height: a['height'] as int?,
-        sizeBytes: a['sizeBytes'] as int? ?? 0,
-      ),
-  ],
+  attachments: [for (final a in j['attachments'] as List? ?? const []) _attachmentFromJson(a as Map)],
+  deletedAttachments: [for (final a in j['deletedAttachments'] as List? ?? const []) _attachmentFromJson(a as Map)],
   embeds: [
     for (final e in j['embeds'] as List? ?? const [])
       MessageEmbed(

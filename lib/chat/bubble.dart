@@ -184,6 +184,7 @@ class _Bubble extends StatelessWidget {
           )
         else if (m.attachments.isNotEmpty)
           MessageAttachments(attachments: m.attachments, uploadProgress: progress, onDoubleTap: onDoubleTap),
+        for (final a in m.deletedAttachments) DeletedAttachment(attachment: a, voice: m.isVoice, maxWidth: maxWidth),
         // Duvet's own links, as cards: a quoted message, an invite.
         if (!lifted)
           for (final url in duvetLinksIn(m.content))
