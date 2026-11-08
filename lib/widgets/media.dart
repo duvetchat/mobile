@@ -680,19 +680,7 @@ class _VideoTileState extends State<VideoTile> {
     final height = math.min(widget.width / ratio, 320.0);
     final width = math.min(widget.width, height * ratio);
     final frame = _frame?.value;
-    void open() => Navigator.of(context, rootNavigator: true).push(
-      PageRouteBuilder<void>(
-        opaque: false,
-        barrierColor: Colors.black,
-        transitionDuration: DuvetTokens.panelIn,
-        reverseTransitionDuration: DuvetTokens.panelOut,
-        pageBuilder: (_, _, _) => VideoPage(attachment: attachment),
-        transitionsBuilder: (_, animation, _, child) => FadeTransition(
-          opacity: CurvedAnimation(parent: animation, curve: DuvetTokens.decelerate),
-          child: child,
-        ),
-      ),
-    );
+    void open() => openVideo(context, attachment);
     return Semantics(
       container: true,
       button: true,
@@ -734,6 +722,21 @@ class _VideoTileState extends State<VideoTile> {
     );
   }
 }
+
+/// Plays [attachment] full screen ([VideoPage]).
+void openVideo(BuildContext context, MessageAttachment attachment) => Navigator.of(context, rootNavigator: true).push(
+  PageRouteBuilder<void>(
+    opaque: false,
+    barrierColor: Colors.black,
+    transitionDuration: DuvetTokens.panelIn,
+    reverseTransitionDuration: DuvetTokens.panelOut,
+    pageBuilder: (_, _, _) => VideoPage(attachment: attachment),
+    transitionsBuilder: (_, animation, _, child) => FadeTransition(
+      opacity: CurvedAnimation(parent: animation, curve: DuvetTokens.decelerate),
+      child: child,
+    ),
+  ),
+);
 
 /// A video, full screen on near-black: play and pause, a scrub bar, the time;
 /// swipe down or Close to leave.

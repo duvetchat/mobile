@@ -76,7 +76,10 @@ class UiComponent {
   final UiComponent? input;
   final String? content;
   final String? mediaUrl;
-  final List<String> galleryUrls;
+
+  /// A gallery's items: each one's link and its `content_type` (a `video/*`
+  /// one is a video).
+  final List<({String url, String? contentType})> gallery;
   final String? description;
   final bool? required;
   final int? minLength;
@@ -107,7 +110,7 @@ class UiComponent {
     this.input,
     this.content,
     this.mediaUrl,
-    this.galleryUrls = const [],
+    this.gallery = const [],
     this.description,
     this.required,
     this.minLength,
@@ -159,7 +162,11 @@ class UiComponent {
       },
       content: j['content'] as String?,
       mediaUrl: webUrl((j['media'] as Map?)?['url']) ?? webUrl((j['file'] as Map?)?['url']),
-      galleryUrls: [for (final i in j['items'] as List? ?? const []) ?webUrl(((i as Map?)?['media'] as Map?)?['url'])],
+      gallery: [
+        for (final i in j['items'] as List? ?? const [])
+          if (i case {'media': final Map m} when webUrl(m['url']) != null)
+            (url: m['url'] as String, contentType: m['content_type'] as String?),
+      ],
       description: j['description'] as String?,
       required: j['required'] as bool?,
       minLength: j['min_length'] as int?,

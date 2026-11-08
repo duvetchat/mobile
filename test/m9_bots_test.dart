@@ -7,6 +7,7 @@ import 'package:duvet/data/models.dart';
 import 'package:duvet/deep_links.dart';
 import 'package:duvet/main.dart';
 import 'package:duvet/widgets/chrome.dart';
+import 'package:duvet/widgets/media.dart';
 import 'package:duvet/widgets/rows.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
@@ -223,6 +224,49 @@ void main() {
     await tapLabel(tester, 'Pick a genre');
     await tapLabel(tester, 'Fantasy');
     expect(repository.interactions.last, 'component genre fantasy');
+    semantics.dispose();
+  });
+
+  const videoUrl = 'https://api.duvet.chat/api/proxy/video?exp=1&sig=abc&url=https%3A%2F%2Fcdn.example%2Fclip.mp4';
+  const pictureUrl = 'https://cdn.example/cat.png';
+  List<Map<String, Object?>> gallery() => [
+    {
+      'type': 12,
+      'items': [
+        {
+          'media': {'url': pictureUrl, 'content_type': 'image/png'},
+        },
+        {
+          'media': {'url': videoUrl, 'content_type': 'video/mp4'},
+        },
+        {
+          'media': {'url': 'javascript:alert(1)'},
+        },
+      ],
+    },
+  ];
+
+  test('a gallery keeps each item\'s content type (#176)', () {
+    final items = componentsFromJson(gallery()).single.gallery;
+    expect(items, [(url: pictureUrl, contentType: 'image/png'), (url: videoUrl, contentType: 'video/mp4')]);
+  });
+
+  testWidgets('a gallery\'s video item is a play tile, not a picture (#176)', (tester) async {
+    final message = ChatMessage(
+      id: 'clips',
+      authorId: _ballot,
+      authorName: 'Ballot',
+      fromBot: true,
+      content: '',
+      createdAt: DateTime(2026, 10, 23, 9),
+      components: componentsFromJson(gallery()),
+    );
+    await pumpGeneral(tester, history: [message]);
+    bool network(Widget w, String url) => w is Image && w.image is NetworkImage && (w.image as NetworkImage).url == url;
+    expect(find.byWidgetPredicate((w) => network(w, pictureUrl)), findsOneWidget);
+    expect(find.byWidgetPredicate((w) => network(w, videoUrl)), findsNothing);
+    expect(find.byType(PlayMark), findsOneWidget);
+    expect(find.bySemanticsLabel('Video'), findsOneWidget);
     semantics.dispose();
   });
 
