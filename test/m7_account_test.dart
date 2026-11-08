@@ -234,7 +234,8 @@ void main() {
     );
     await pumpApp(tester);
     await openYou(tester);
-    await tester.ensureVisible(find.text('Code theme'));
+    // Centered: aligned to the top, the row would sit under the collapsed title bar.
+    await Scrollable.ensureVisible(tester.element(find.text('Code theme')), alignment: 0.5);
     await tester.pumpAndSettle();
     await tapLabel(tester, 'Code theme, GitHub');
 

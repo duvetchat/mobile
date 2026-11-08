@@ -1707,121 +1707,128 @@ class _YouTabState extends State<YouTab> {
           slivers: [
             SliverPadding(
               padding: const EdgeInsets.fromLTRB(16, 16, 16, 0),
-              sliver: SliverList.list(
-                children: [
-                  Container(
-                    padding: const EdgeInsets.all(16),
-                    decoration: BoxDecoration(
-                      color: colors.card,
-                      borderRadius: BorderRadius.circular(DuvetTokens.radiusCard),
-                      boxShadow: tokens.shadowRaised,
-                    ),
-                    child: Row(
-                      children: [
-                        ExcludeSemantics(
-                          child: UserAvatar(name: profile.displayName, url: profile.avatarUrl, size: 56),
-                        ),
-                        const SizedBox(width: 12),
-                        Expanded(
-                          child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              Text(
-                                profile.displayName,
-                                maxLines: 1,
-                                overflow: TextOverflow.ellipsis,
-                                style: DuvetType.rowTitleUnread.copyWith(fontSize: 17, color: colors.foreground),
-                              ),
-                              Text(
-                                '@${profile.username}',
-                                style: DuvetType.caption.copyWith(color: colors.mutedForeground),
-                              ),
-                            ],
-                          ),
-                        ),
-                        DuvetButton(label: 'Edit', onPressed: () => _push(const EditProfilePage())),
-                      ],
-                    ),
-                  ),
-                  if (!profile.emailVerified) ...[
-                    const SizedBox(height: 16),
-                    panel([row('Verify your email', () => _push(const VerifyEmailPage()), value: 'Not verified yet')]),
-                  ],
-                  const SizedBox(height: 16),
-                  panel([
-                    row(
-                      'Friends',
-                      () => _push(const FriendsPage()),
-                      value: repository.friends.value.incoming.isEmpty
-                          ? null
-                          : '${repository.friends.value.incoming.length} waiting',
-                    ),
-                  ]),
-                  // What others see while you're connected.
-                  const Overline('Status'),
-                  Segmented<Presence>(
-                    label: 'Status',
-                    value: _choosing ?? profile.status,
-                    options: const {Presence.online: 'Online', Presence.doNotDisturb: 'Do not disturb'},
-                    onChanged: _setStatus,
-                  ),
-                  const Overline('Appearance'),
-                  Segmented<ThemeMode>(
-                    label: 'Appearance',
-                    value: appearance.value,
-                    options: const {ThemeMode.system: 'System', ThemeMode.light: 'Light', ThemeMode.dark: 'Dark'},
-                    onChanged: appearance.set,
-                  ),
-                  const SizedBox(height: 12),
-                  panel([
-                    row(
-                      'Code theme',
-                      () => showGlassDialogSheet<void>(
-                        context,
-                        label: 'Code theme',
-                        builder: (_) => const _CodeThemeSheet(),
+              // Built whole, not lazily: a short page, and every row (Storage,
+              // the Developer portal) exists for finders and screen readers alike.
+              sliver: SliverToBoxAdapter(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    Container(
+                      padding: const EdgeInsets.all(16),
+                      decoration: BoxDecoration(
+                        color: colors.card,
+                        borderRadius: BorderRadius.circular(DuvetTokens.radiusCard),
+                        boxShadow: tokens.shadowRaised,
                       ),
-                      value: appearance.codeTheme == null ? 'GitHub' : 'Custom',
+                      child: Row(
+                        children: [
+                          ExcludeSemantics(
+                            child: UserAvatar(name: profile.displayName, url: profile.avatarUrl, size: 56),
+                          ),
+                          const SizedBox(width: 12),
+                          Expanded(
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Text(
+                                  profile.displayName,
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                  style: DuvetType.rowTitleUnread.copyWith(fontSize: 17, color: colors.foreground),
+                                ),
+                                Text(
+                                  '@${profile.username}',
+                                  style: DuvetType.caption.copyWith(color: colors.mutedForeground),
+                                ),
+                              ],
+                            ),
+                          ),
+                          DuvetButton(label: 'Edit', onPressed: () => _push(const EditProfilePage())),
+                        ],
+                      ),
                     ),
-                  ]),
-                  const Overline('Reply to a message'),
-                  _ReplyGesturePicker(value: appearance.replyGesture, onChanged: appearance.setReplyGesture),
-                  const Overline('Your bubbles'),
-                  _BubbleColorPicker(value: appearance.bubbleColor, onChanged: appearance.setBubbleColor),
-                  const Overline('Storage'),
-                  Semantics(
-                    container: true,
-                    button: true,
-                    label: 'My files',
-                    onTap: () => _push(const MyFilesPage()),
-                    child: GestureDetector(
+                    if (!profile.emailVerified) ...[
+                      const SizedBox(height: 16),
+                      panel([
+                        row('Verify your email', () => _push(const VerifyEmailPage()), value: 'Not verified yet'),
+                      ]),
+                    ],
+                    const SizedBox(height: 16),
+                    panel([
+                      row(
+                        'Friends',
+                        () => _push(const FriendsPage()),
+                        value: repository.friends.value.incoming.isEmpty
+                            ? null
+                            : '${repository.friends.value.incoming.length} waiting',
+                      ),
+                    ]),
+                    // What others see while you're connected.
+                    const Overline('Status'),
+                    Segmented<Presence>(
+                      label: 'Status',
+                      value: _choosing ?? profile.status,
+                      options: const {Presence.online: 'Online', Presence.doNotDisturb: 'Do not disturb'},
+                      onChanged: _setStatus,
+                    ),
+                    const Overline('Appearance'),
+                    Segmented<ThemeMode>(
+                      label: 'Appearance',
+                      value: appearance.value,
+                      options: const {ThemeMode.system: 'System', ThemeMode.light: 'Light', ThemeMode.dark: 'Dark'},
+                      onChanged: appearance.set,
+                    ),
+                    const SizedBox(height: 12),
+                    panel([
+                      row(
+                        'Code theme',
+                        () => showGlassDialogSheet<void>(
+                          context,
+                          label: 'Code theme',
+                          builder: (_) => const _CodeThemeSheet(),
+                        ),
+                        value: appearance.codeTheme == null ? 'GitHub' : 'Custom',
+                      ),
+                    ]),
+                    const Overline('Reply to a message'),
+                    _ReplyGesturePicker(value: appearance.replyGesture, onChanged: appearance.setReplyGesture),
+                    const Overline('Your bubbles'),
+                    _BubbleColorPicker(value: appearance.bubbleColor, onChanged: appearance.setBubbleColor),
+                    const Overline('Storage'),
+                    Semantics(
+                      container: true,
+                      button: true,
+                      label: 'My files',
                       onTap: () => _push(const MyFilesPage()),
-                      // Where the uploads go: the user's own bucket while one is active.
-                      child: switch (_storage) {
-                        null => panel([row('My files', () => _push(const MyFilesPage()))]),
-                        StorageInfo(:final activeBucket?) => BucketMeter(bucket: activeBucket),
-                        final storage => StorageMeter(storage: storage, images: 0, files: storage.used, voice: 0),
-                      },
+                      child: GestureDetector(
+                        onTap: () => _push(const MyFilesPage()),
+                        // Where the uploads go: the user's own bucket while one is active.
+                        child: switch (_storage) {
+                          null => panel([row('My files', () => _push(const MyFilesPage()))]),
+                          StorageInfo(:final activeBucket?) => BucketMeter(bucket: activeBucket),
+                          final storage => StorageMeter(storage: storage, images: 0, files: storage.used, voice: 0),
+                        },
+                      ),
                     ),
-                  ),
-                  const Overline('Developer'),
-                  panel([
-                    row(
-                      'Developer portal',
-                      () => _push(const DeveloperPage()),
-                      value: switch (repository.teamInvites.value.length) {
-                        0 => null,
-                        1 => '1 invite',
-                        final n => '$n invites',
-                      },
-                    ),
-                  ]),
-                  const Overline('Account'),
-                  panel([
-                    row('Change email', () => _push(const ChangeEmailPage())),
-                    row('Sign out', repository.logOut, warn: true),
-                  ]),
-                ],
+                    const Overline('Developer'),
+                    panel([
+                      row(
+                        'Developer portal',
+                        () => _push(const DeveloperPage()),
+                        value: switch (repository.teamInvites.value.length) {
+                          0 => null,
+                          1 => '1 invite',
+                          final n => '$n invites',
+                        },
+                      ),
+                    ]),
+                    const Overline('Account'),
+                    panel([
+                      row('Change email', () => _push(const ChangeEmailPage())),
+                      row('Sign out', repository.logOut, warn: true),
+                    ]),
+                  ],
+                ),
               ),
             ),
           ],
