@@ -1095,7 +1095,7 @@ class EmbedCard extends StatelessWidget {
     final footer = [
       ?e.footer,
       if (e.timestamp case final t?)
-        '${MaterialLocalizations.of(context).formatShortDate(t)}, '
+        '${MaterialLocalizations.of(context).formatCompactDate(t)}, '
             '${MaterialLocalizations.of(context).formatTimeOfDay(TimeOfDay.fromDateTime(t))}',
     ].join(' • ');
     final text = Column(
