@@ -15,6 +15,7 @@ import 'package:image_picker/image_picker.dart';
 
 import 'calls.dart';
 import 'data/appearance.dart' show AppearanceScope, ReplyGesture;
+import 'data/call_notices.dart';
 import 'data/emoji_catalog.dart';
 import 'data/links.dart';
 import 'data/message_tokens.dart';
@@ -1769,7 +1770,7 @@ class _ChatViewState extends State<ChatView> {
     ConversationTarget() => false,
   };
 
-  /// Who may delete a pin notice, as the desktop has it: ManageMessages in a
+  /// Who may delete a notice, as the desktop has it: ManageMessages in a
   /// room; in a conversation, either of a DM's two, or a group's owner.
   bool get _canDeleteNotices => switch (widget.target) {
     RoomTarget() => _canDeleteOthers,
@@ -1781,7 +1782,7 @@ class _ChatViewState extends State<ChatView> {
     },
   };
 
-  /// A pin notice held: Delete, the one thing to do with it.
+  /// A notice held: Delete, the one thing to do with it.
   Future<void> _noticeActions(BuildContext anchor, ChatMessage m) async {
     final picked = await showGlassMenu(
       anchor,
@@ -1792,7 +1793,7 @@ class _ChatViewState extends State<ChatView> {
     final sure = await confirmDestructive(
       context,
       title: 'Delete this notice?',
-      body: 'The message stays pinned.',
+      body: m.call != null ? 'It goes for everyone in the conversation.' : 'The message stays pinned.',
       action: 'Delete',
     );
     if (!sure || !mounted) return;
@@ -2425,16 +2426,22 @@ class _ChatViewState extends State<ChatView> {
           _Replies(:final count) => _NewMessagesDivider(text: count == 1 ? '1 reply' : '$count replies', quiet: true),
           _Message(:final entry, :final first, :final last) =>
             entry.message.isNotice
-                ? _Notice(
-                    who: entry.message.authorName,
-                    where: widget.target is RoomTarget ? 'room' : 'conversation',
-                    onJump: switch (entry.message.reply?.messageId) {
-                      final id? => () => _jumpTo(id),
-                      null => null,
-                    },
-                    onPins: _openPins,
-                    onHold: _canDeleteNotices ? (anchor) => _noticeActions(anchor, entry.message) : null,
-                  )
+                ? switch (callNoticeLine(entry.message, _me)) {
+                    final line? => _CallNoticeRow(
+                      line: line,
+                      onHold: _canDeleteNotices ? (anchor) => _noticeActions(anchor, entry.message) : null,
+                    ),
+                    null => _Notice(
+                      who: entry.message.authorName,
+                      where: widget.target is RoomTarget ? 'room' : 'conversation',
+                      onJump: switch (entry.message.reply?.messageId) {
+                        final id? => () => _jumpTo(id),
+                        null => null,
+                      },
+                      onPins: _openPins,
+                      onHold: _canDeleteNotices ? (anchor) => _noticeActions(anchor, entry.message) : null,
+                    ),
+                  }
                 : KeyedSubtree(
                     key: _keyFor(entry.message.id),
                     // Its own layer, for the picture a delete breaks up.

@@ -399,6 +399,12 @@ Map<String, Object?> messageToJson(ChatMessage m) => {
   'createdAt': m.createdAt.toUtc().toIso8601String(),
   'edited': m.edited,
   'isNotice': m.isNotice,
+  if (m.call case final c?)
+    'call': {
+      'participants': c.participants,
+      'startedAt': c.startedAt.toUtc().toIso8601String(),
+      'endedAt': c.endedAt.toUtc().toIso8601String(),
+    },
   'isVoice': m.isVoice,
   'pinned': m.pinned,
   'fromBot': m.fromBot,
@@ -463,6 +469,7 @@ ChatMessage messageFromJson(Map<String, Object?> j) => ChatMessage(
   createdAt: DateTime.parse(j['createdAt']! as String).toLocal(),
   edited: j['edited'] as bool? ?? false,
   isNotice: j['isNotice'] as bool? ?? false,
+  call: _callFromJson(j['call']),
   isVoice: j['isVoice'] as bool? ?? false,
   pinned: j['pinned'] as bool? ?? false,
   fromBot: j['fromBot'] as bool? ?? false,
@@ -526,3 +533,18 @@ ChatMessage messageFromJson(Map<String, Object?> j) => ChatMessage(
       ),
   ],
 );
+
+CallNotice? _callFromJson(Object? j) {
+  if (j is! Map<String, Object?>) return null;
+  final startedAt = DateTime.tryParse(j['startedAt'] as String? ?? '');
+  final endedAt = DateTime.tryParse(j['endedAt'] as String? ?? '');
+  if (startedAt == null || endedAt == null) return null;
+  return CallNotice(
+    participants: [
+      for (final id in j['participants'] as List? ?? const [])
+        if (id is String) id,
+    ],
+    startedAt: startedAt.toLocal(),
+    endedAt: endedAt.toLocal(),
+  );
+}

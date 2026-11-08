@@ -1078,6 +1078,64 @@ class _NoticeState extends State<_Notice> {
   }
 }
 
+/// A call notice, as the desktop's: who called and how long the call lasted,
+/// or that the reader missed it, by a phone that's red then. Held, its
+/// options ([onHold]; null for those who may not delete it).
+class _CallNoticeRow extends StatelessWidget {
+  final CallNoticeLine line;
+  final ValueChanged<BuildContext>? onHold;
+  const _CallNoticeRow({required this.line, this.onHold});
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = context.theme.colors;
+    return Builder(
+      builder: (anchor) => Semantics(
+        container: true,
+        label: '${line.before}${line.name}${line.after}',
+        excludeSemantics: true,
+        customSemanticsActions: {
+          if (onHold case final onHold?) const CustomSemanticsAction(label: 'Options'): () => onHold(anchor),
+        },
+        child: GestureDetector(
+          onLongPress: onHold == null ? null : () => onHold!(anchor),
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(16, 12, 16, 0),
+            child: Row(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                Icon(
+                  line.missed ? FLucideIcons.phoneMissed : FLucideIcons.phone,
+                  size: 14,
+                  color: line.missed ? colors.destructive : colors.mutedForeground,
+                ),
+                const SizedBox(width: 6),
+                Flexible(
+                  child: Text.rich(
+                    TextSpan(
+                      children: [
+                        if (line.before.isNotEmpty) TextSpan(text: line.before),
+                        if (line.name.isNotEmpty)
+                          TextSpan(
+                            text: line.name,
+                            style: TextStyle(color: colors.foreground, fontWeight: FontWeight.w500),
+                          ),
+                        if (line.after.isNotEmpty) TextSpan(text: line.after),
+                      ],
+                    ),
+                    textAlign: TextAlign.center,
+                    style: DuvetType.caption.copyWith(color: colors.mutedForeground),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
 /// Above the composer: the ghost and its typing dots, then who's typing and
 /// who's recording a voice message, as the desktop's typing indicator says it.
 class _TypingLine extends StatelessWidget {

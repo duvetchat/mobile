@@ -805,6 +805,53 @@ void main() {
     expect(repository.unread.value, isNot(contains('c-1')));
   });
 
+  test('a call notice leaves the conversation read for whoever saw the call, unread for the rest (#158)', () async {
+    await repository.logIn('gaby@duvet.chat', 'secret');
+    repository.handleEvent(_event('READY', {'user': _user(_me, 'gaby'), 'sessionToken': 'ws'}));
+    // What READY fetches, before the test ends.
+    await pumpEventQueue();
+    Map<String, dynamic> notice(String id, List<String> participants) => {
+      ..._dm(id, _maya, ''),
+      'content': null,
+      'type': 3,
+      'call': {'participants': participants, 'started_at': '2026-10-23T09:00:00Z', 'ended_at': '2026-10-23T09:05:30Z'},
+    };
+
+    // Maya's call nobody answered: missed.
+    repository.handleEvent(_event('DM_MESSAGE_CREATE', notice('10', [_maya])));
+    expect(repository.unread.value, contains('c-1'));
+    final missed = repository.latest.value['c-1']!;
+    expect(missed.isNotice, isTrue);
+    expect(missed.call!.duration, const Duration(minutes: 5, seconds: 30));
+    expect(repository.previewOf(missed), 'started a call. No one answered.');
+
+    // One the user was in: read up to it.
+    repository.handleEvent(_event('DM_MESSAGE_CREATE', notice('11', [_maya, _me])));
+    expect(repository.unread.value, isNot(contains('c-1')));
+    expect(repository.previewOf(repository.latest.value['c-1']!), 'started a call that lasted 5 minutes');
+
+    // One they declined from another device: read too, and the answer is used up.
+    repository.handleEvent(_event('CALL_DECLINED', {'conversation_id': 'c-1', 'user_id': _me}));
+    repository.handleEvent(_event('DM_MESSAGE_CREATE', notice('12', [_maya])));
+    expect(repository.unread.value, isNot(contains('c-1')));
+    repository.handleEvent(_event('DM_MESSAGE_CREATE', notice('13', [_maya])));
+    expect(repository.unread.value, contains('c-1'));
+    repository.markRead(const ConversationTarget('c-1'), '13');
+
+    // An answer to an earlier call doesn't count for a new one that rings them.
+    repository.handleEvent(_event('CALL_ACCEPTED', {'conversation_id': 'c-1', 'user_id': _me}));
+    repository.handleEvent(
+      _event('CALL_INCOMING', {'conversation_id': 'c-1', 'initiator_id': _maya, 'initiator_name': 'maya'}),
+    );
+    repository.handleEvent(_event('DM_MESSAGE_CREATE', notice('14', [_maya])));
+    expect(repository.unread.value, contains('c-1'));
+
+    // A call the user saw, posted after a newer message they haven't read, leaves it unread.
+    repository.handleEvent(_event('DM_MESSAGE_CREATE', _dm('20', _maya, 'later')));
+    repository.handleEvent(_event('DM_MESSAGE_CREATE', notice('15', [_maya, _me])));
+    expect(repository.unread.value, contains('c-1'));
+  });
+
   test('who\'s typing, outside the open chat: 6 seconds after each says so, or until their message (#92)', () {
     fakeAsync((async) {
       // Made in the fake clock's zone, so its timers run on that clock.

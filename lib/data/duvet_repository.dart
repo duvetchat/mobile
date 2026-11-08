@@ -10,6 +10,7 @@ import 'package:http/http.dart' as http;
 
 import 'links.dart' show duvetDomain;
 import 'cache.dart';
+import 'call_notices.dart';
 import 'message_tokens.dart';
 import 'models.dart';
 import 'recent_chats.dart';
@@ -865,10 +866,14 @@ class DuvetRepository implements ChatRepository {
       case duvet.DMMessageCreatedEvent(:final data):
         final id = data.conversationId;
         if (id == null) break;
-        if (data.authorId != me) _markUnread(id);
+        final message = _directMessage(data);
+        if (message.call case final call?) {
+          _readCallNotice(id, message.id, call, me);
+        } else if (data.authorId != me) {
+          _markUnread(id);
+        }
         final known = conversations.value.where((c) => c.id == id).firstOrNull;
         if (known == null) unawaited(refreshConversations().catchError((_) {}));
-        final message = _directMessage(data);
         _recents.conversationMessage(id, message, title: known?.title);
         _setLatest(id, message);
         _messageEvents.add((id, MessageCreated(message)));
@@ -877,6 +882,14 @@ class DuvetRepository implements ChatRepository {
       case duvet.DMMessageDeletedEvent(:final data):
         _recents.deleted(data.conversationId, data.id);
         _messageEvents.add((data.conversationId, MessageDeleted(data.id)));
+
+      // The calls the user answered from one of their devices, whose notices
+      // leave the conversation read for them, as the API does. A new call
+      // ringing them there is one they haven't answered yet.
+      case duvet.CallAcceptedEvent(:final data) || duvet.CallDeclinedEvent(:final data) when data.userId == me:
+        _callAnswers.add(data.conversationId);
+      case duvet.CallIncomingPayloadEvent(:final data):
+        _callAnswers.remove(data.conversationId);
 
       case duvet.MessagePinUpdatedEvent(:final data):
         _messageEvents.add((data.roomId, MessagePinned(data.id, pinned: data.pinnedAt != null)));
@@ -1172,6 +1185,26 @@ class DuvetRepository implements ChatRepository {
 
   void _markUnread(String id) {
     if (!unread.value.contains(id)) unread.value = {...unread.value, id};
+  }
+
+  // The conversations whose call the user answered from one of their devices
+  // (CALL_ACCEPTED or CALL_DECLINED with their own ID); the call's notice
+  // uses the answer up.
+  final _callAnswers = <String>{};
+
+  /// A call notice came: one the user saw ([callNoticeSeen]) leaves the
+  /// conversation read, as the API leaves it read up to the notice, unless a
+  /// newer message is known; one they missed is news like any message.
+  void _readCallNotice(String conversationId, String noticeId, CallNotice call, String? me) {
+    final answered = _callAnswers.remove(conversationId);
+    if (me == null || !callNoticeSeen(call, me, answered: answered)) {
+      _markUnread(conversationId);
+      return;
+    }
+    final newest = latest.value[conversationId]?.id;
+    if (newest != null && newest != noticeId && newest.compareTo(noticeId) > 0) return;
+    if (unread.value.contains(conversationId)) unread.value = {...unread.value}..remove(conversationId);
+    if (mentions.value.containsKey(conversationId)) mentions.value = {...mentions.value}..remove(conversationId);
   }
 
   void _publishSpaces() {
@@ -3578,7 +3611,15 @@ class DuvetRepository implements ChatRepository {
     createdAt: m.createdAt.toLocal(),
     edited: m.updatedAt.difference(m.createdAt) > const Duration(seconds: 1),
     nonce: m.nonce,
-    isNotice: m.type == duvet.MessageType.pinNotice,
+    isNotice: m.type == duvet.MessageType.pinNotice || m.call != null,
+    call: switch (m.call) {
+      final c? => CallNotice(
+        participants: c.participants,
+        startedAt: c.startedAt.toLocal(),
+        endedAt: c.endedAt.toLocal(),
+      ),
+      null => null,
+    },
     isVoice: m.type == duvet.MessageType.voice,
     pinned: m.pinnedAt != null,
     fromBot: m.user?.isBot ?? false,

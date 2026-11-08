@@ -104,6 +104,10 @@ class ChatMessage {
   /// Pins and other notices: no author bubble.
   final bool isNotice;
 
+  /// A call notice's call (an [isNotice] the API posts once a call in a
+  /// conversation ends); null on any other message.
+  final CallNotice? call;
+
   final List<MessageAttachment> attachments;
 
   /// The sticker it is, if it's one: a sticker message has no text.
@@ -161,6 +165,7 @@ class ChatMessage {
     this.edited = false,
     this.nonce,
     this.isNotice = false,
+    this.call,
     this.attachments = const [],
     this.stickerUrl,
     this.embeds = const [],
@@ -208,6 +213,7 @@ class ChatMessage {
     edited: edited ?? this.edited,
     nonce: nonce ?? this.nonce,
     isNotice: isNotice,
+    call: call,
     attachments: attachments,
     stickerUrl: stickerUrl,
     embeds: embeds,
@@ -241,6 +247,7 @@ class ChatMessage {
     edited: update.edited,
     nonce: nonce,
     isNotice: isNotice,
+    call: call,
     attachments: attachments,
     stickerUrl: update.stickerUrl,
     embeds: update.embeds,
@@ -280,6 +287,7 @@ class ChatMessage {
       edited: edited,
       nonce: nonce,
       isNotice: isNotice,
+      call: call,
       attachments: attachments,
       stickerUrl: stickerUrl,
       embeds: embeds,
@@ -318,6 +326,20 @@ class ChatMessage {
     }
     return copyWith(reactions: list);
   }
+}
+
+/// What a call notice says about its call: who was in it, by user ID, its
+/// caller first, then each member who joined its voice; and when it started
+/// ringing and when it ended. The caller alone is a call nobody else got
+/// into.
+class CallNotice {
+  final List<String> participants;
+  final DateTime startedAt;
+  final DateTime endedAt;
+  const CallNotice({required this.participants, required this.startedAt, required this.endedAt});
+
+  /// How long the call lasted, ringing included.
+  Duration get duration => endedAt.difference(startedAt);
 }
 
 /// What a reply shows of the message it answers.

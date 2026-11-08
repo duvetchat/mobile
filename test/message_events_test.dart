@@ -718,6 +718,26 @@ void main() {
     expect(messageFromJson(jsonDecode(jsonEncode(messageToJson(m))) as Map<String, Object?>).webhookId, 'w-1');
   });
 
+  test('the offline cache keeps a call notice\'s call (#158)', () {
+    final m = ChatMessage(
+      id: 'n-1',
+      authorId: _maya,
+      authorName: 'Maya',
+      content: '',
+      createdAt: DateTime(2026, 10, 23, 9, 5),
+      isNotice: true,
+      call: CallNotice(
+        participants: const [_maya, _me],
+        startedAt: DateTime(2026, 10, 23, 9),
+        endedAt: DateTime(2026, 10, 23, 9, 5),
+      ),
+    );
+    final back = messageFromJson(jsonDecode(jsonEncode(messageToJson(m))) as Map<String, Object?>);
+    expect(back.isNotice, isTrue);
+    expect(back.call!.participants, [_maya, _me]);
+    expect(back.call!.duration, const Duration(minutes: 5));
+  });
+
   test('a command\'s room option keeps the room types it takes', () async {
     await repository.logIn('gaby@duvet.chat', 'secret');
     final go = (await repository.commands('s-1')).single;
