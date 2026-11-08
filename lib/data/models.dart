@@ -306,6 +306,39 @@ class ChatMessage {
     );
   }
 
+  /// This message with its file [attachmentId] at [url], a new link to it.
+  /// Itself when it has no such file, or has it there already.
+  ChatMessage withAttachmentLink(String attachmentId, String url) {
+    if (!attachments.any((a) => a.id == attachmentId && a.url != url)) return this;
+    return ChatMessage(
+      id: id,
+      authorId: authorId,
+      authorName: authorName,
+      authorAvatarUrl: authorAvatarUrl,
+      content: content,
+      createdAt: createdAt,
+      edited: edited,
+      nonce: nonce,
+      isNotice: isNotice,
+      call: call,
+      attachments: [for (final a in attachments) a.id == attachmentId ? a.withUrl(url) : a],
+      stickerUrl: stickerUrl,
+      embeds: embeds,
+      reply: reply,
+      reactions: reactions,
+      isVoice: isVoice,
+      pinned: pinned,
+      components: components,
+      rawComponents: rawComponents,
+      fromBot: fromBot,
+      fromWebhook: fromWebhook,
+      webhookId: webhookId,
+      isEphemeral: isEphemeral,
+      isLoading: isLoading,
+      isComponentsV2: isComponentsV2,
+    );
+  }
+
   /// With [userId]'s reaction [emoji] added or taken away.
   ChatMessage reacted(String emoji, String userId, {required bool add, String? emojiId}) {
     final list = [...reactions];
@@ -431,6 +464,40 @@ class MessageAttachment {
     this.sizeBytes = 0,
     this.local = false,
   });
+
+  /// When its link stops working: the `exp` of a link the API signed (for 24
+  /// hours). Null for one that doesn't expire: a file still on this device,
+  /// a link preview's video.
+  DateTime? get linkExpires {
+    if (local) return null;
+    final query = Uri.tryParse(url)?.queryParameters;
+    final exp = int.tryParse(query?['exp'] ?? '');
+    if (exp == null || query?['sig'] == null) return null;
+    return DateTime.fromMillisecondsSinceEpoch(exp * 1000, isUtc: true);
+  }
+
+  /// How long before its link expires a file gets a new one, before it
+  /// loads, as the desktop's voice notes do.
+  static const renewBefore = Duration(minutes: 30);
+
+  /// Whether its link expires within [renewBefore] of [now]: it's renewed
+  /// before it loads.
+  bool linkDueAt(DateTime now) => switch (linkExpires) {
+    final at? => at.difference(now) < renewBefore,
+    null => false,
+  };
+
+  /// The same file, at [url].
+  MessageAttachment withUrl(String url) => MessageAttachment(
+    id: id,
+    filename: filename,
+    contentType: contentType,
+    url: url,
+    width: width,
+    height: height,
+    sizeBytes: sizeBytes,
+    local: local,
+  );
 
   bool get isImage => contentType.startsWith('image/');
   bool get isVideo => contentType.startsWith('video/');
@@ -782,6 +849,14 @@ final class AuthorChanged extends MessageEvent {
   const AuthorChanged(this.userId, {required this.name, this.avatarUrl});
 }
 
+/// A file's link expired, or was about to, and the API signed it again: the
+/// messages with the file [attachmentId] load it from [url] now.
+final class AttachmentRenewed extends MessageEvent {
+  final String attachmentId;
+  final String url;
+  const AttachmentRenewed(this.attachmentId, this.url);
+}
+
 /// Someone reacted to a message, or took a reaction back. The gateway doesn't
 /// say in which chat: a chat applies it if it has the message.
 final class ReactionChanged extends MessageEvent {
@@ -796,6 +871,36 @@ final class ReactionChanged extends MessageEvent {
     required this.emoji,
     required this.added,
     this.emojiId,
+  });
+}
+
+/// A notice at the top of the app that someone mentioned the user in a chat
+/// that isn't on screen: who, where, and what they wrote. Tapping it opens
+/// the message.
+class MentionNotice {
+  final String messageId;
+  final ChatTarget target;
+
+  /// The chat's title, as its screen has it: `# general`, a person's name.
+  final String title;
+  final String authorName;
+  final String? authorAvatarUrl;
+
+  /// Where, after the author: "in #general · Design Guild", "in Weekend" (a
+  /// group), "in a direct message".
+  final String where;
+
+  /// The message on one line, as a chat's preview has it.
+  final String text;
+
+  const MentionNotice({
+    required this.messageId,
+    required this.target,
+    required this.title,
+    required this.authorName,
+    required this.where,
+    required this.text,
+    this.authorAvatarUrl,
   });
 }
 
@@ -920,6 +1025,9 @@ class Space {
   /// Its banner, or null: atop its directory, as the desktop's sidebar has it.
   final String? bannerUrl;
 
+  /// Its owner's user ID, for the crown; null from a cache that predates it.
+  final String? ownerId;
+
   const Space({
     required this.id,
     required this.name,
@@ -927,6 +1035,7 @@ class Space {
     this.sections = const [],
     this.onlineCount,
     this.bannerUrl,
+    this.ownerId,
   });
 
   Iterable<Room> get rooms => sections.expand((s) => s.rooms);
