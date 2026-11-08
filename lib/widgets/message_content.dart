@@ -1071,7 +1071,7 @@ class EmbedCard extends StatelessWidget {
       return Stack(alignment: Alignment.center, children: [picture(w), const PlayMark()]);
     }
 
-    if (e.title == null && e.description == null && (e.isBareImage || e.isDirectVideo)) {
+    if (e.isWordless && (e.imageUrl != null || e.isDirectVideo)) {
       final bare = media(width)!;
       if ((e.isDirectVideo && !gif) || youtube != null) return bare;
       final play = !gif && e.videoUrl != null && link != null;
@@ -1083,10 +1083,54 @@ class EmbedCard extends StatelessWidget {
       );
     }
 
+    final muted = DuvetType.caption.copyWith(color: colors.mutedForeground);
+    final authorLink = switch (e.authorUrl) {
+      final u? => switch (Uri.tryParse(u)) {
+        final uri? when uri.scheme == 'http' || uri.scheme == 'https' => uri,
+        _ => null,
+      },
+      null => null,
+    };
+    // Its footer and its date, as the desktop's "FxTwitter • 10/21/26, 3:02 AM".
+    final footer = [
+      ?e.footer,
+      if (e.timestamp case final t?)
+        '${MaterialLocalizations.of(context).formatShortDate(t)}, '
+            '${MaterialLocalizations.of(context).formatTimeOfDay(TimeOfDay.fromDateTime(t))}',
+    ].join(' • ');
     final text = Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        if (e.provider != null) Text(e.provider!, style: DuvetType.caption.copyWith(color: colors.mutedForeground)),
+        if (e.provider != null) Text(e.provider!, style: muted),
+        if (e.authorName != null)
+          GestureDetector(
+            onTap: authorLink == null ? null : () => MessageText.openLink(authorLink),
+            child: Padding(
+              padding: const EdgeInsets.only(bottom: 2),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  if (e.authorIconUrl != null) ...[
+                    ClipOval(
+                      child: Image.network(
+                        e.authorIconUrl!,
+                        width: 16,
+                        height: 16,
+                        cacheWidth: (16 * dpr).round(),
+                        fit: BoxFit.cover,
+                        excludeFromSemantics: true,
+                        errorBuilder: (_, _, _) => const SizedBox.shrink(),
+                      ),
+                    ),
+                    const SizedBox(width: 6),
+                  ],
+                  Flexible(
+                    child: Text(e.authorName!, maxLines: 1, overflow: TextOverflow.ellipsis, style: muted),
+                  ),
+                ],
+              ),
+            ),
+          ),
         // Four lines here hold what the desktop's two do in its wider
         // card: a GitHub run's title with its result at the end.
         if (e.title != null)
@@ -1106,8 +1150,55 @@ class EmbedCard extends StatelessWidget {
               style: DuvetType.snippet.copyWith(color: colors.mutedForeground),
             ),
           ),
+        if (e.fields.isNotEmpty)
+          Padding(
+            padding: const EdgeInsets.only(top: 6),
+            child: Wrap(
+              spacing: 16,
+              runSpacing: 6,
+              children: [
+                for (final f in e.fields)
+                  // A field not inline takes its own line.
+                  SizedBox(
+                    width: f.inline ? null : double.infinity,
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Text(
+                          f.name.toUpperCase(),
+                          style: DuvetType.tabLabel.copyWith(
+                            color: colors.mutedForeground,
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
+                        Text(f.value, style: DuvetType.snippet.copyWith(color: colors.foreground)),
+                      ],
+                    ),
+                  ),
+              ],
+            ),
+          ),
+        if (footer.isNotEmpty)
+          Padding(
+            padding: const EdgeInsets.only(top: 6),
+            child: Text(footer, style: DuvetType.tabLabel.copyWith(color: colors.mutedForeground)),
+          ),
       ],
     );
+    // Its color as a stripe down the left side: a gradient top to bottom when
+    // it has more than one, as the desktop's border.
+    final stripe = switch (e.colors) {
+      [] => null,
+      [final c] => BoxDecoration(color: Color(0xFF000000 | c)),
+      final cs => BoxDecoration(
+        gradient: LinearGradient(
+          begin: Alignment.topCenter,
+          end: Alignment.bottomCenter,
+          colors: [for (final c in cs) Color(0xFF000000 | c)],
+        ),
+      ),
+    };
     return Semantics(
       container: true,
       button: link != null,
@@ -1117,39 +1208,48 @@ class EmbedCard extends StatelessWidget {
           onTap: link == null ? null : () => MessageText.openLink(link),
           child: Container(
             width: width,
-            padding: const EdgeInsets.all(12),
+            clipBehavior: stripe == null ? Clip.none : Clip.antiAlias,
             decoration: BoxDecoration(
               color: colors.card,
               borderRadius: BorderRadius.circular(DuvetTokens.radiusButton),
               boxShadow: context.duvet.shadowRest,
             ),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
+            child: Stack(
               children: [
-                if (e.thumbnailUrl == null)
-                  text
-                else
-                  // A small picture beside the text, as the desktop's card.
-                  Row(
+                Padding(
+                  padding: const EdgeInsets.all(12),
+                  child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      Expanded(child: text),
-                      const SizedBox(width: 12),
-                      ClipRRect(
-                        borderRadius: BorderRadius.circular(DuvetTokens.radiusField),
-                        child: Image.network(
-                          e.thumbnailUrl!,
-                          width: 64,
-                          height: 64,
-                          cacheWidth: (64 * dpr).round(),
-                          fit: BoxFit.cover,
-                          excludeFromSemantics: true,
-                          errorBuilder: (_, _, _) => const SizedBox.shrink(),
+                      if (e.thumbnailUrl == null)
+                        text
+                      else
+                        // A small picture beside the text, as the desktop's card.
+                        Row(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Expanded(child: text),
+                            const SizedBox(width: 12),
+                            ClipRRect(
+                              borderRadius: BorderRadius.circular(DuvetTokens.radiusField),
+                              child: Image.network(
+                                e.thumbnailUrl!,
+                                width: 64,
+                                height: 64,
+                                cacheWidth: (64 * dpr).round(),
+                                fit: BoxFit.cover,
+                                excludeFromSemantics: true,
+                                errorBuilder: (_, _, _) => const SizedBox.shrink(),
+                              ),
+                            ),
+                          ],
                         ),
-                      ),
+                      if (media(width - 24) case final m?) Padding(padding: const EdgeInsets.only(top: 8), child: m),
                     ],
                   ),
-                if (media(width - 24) case final m?) Padding(padding: const EdgeInsets.only(top: 8), child: m),
+                ),
+                if (stripe != null)
+                  Positioned(left: 0, top: 0, bottom: 0, width: 4, child: DecoratedBox(decoration: stripe)),
               ],
             ),
           ),

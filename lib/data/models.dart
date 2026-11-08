@@ -549,6 +549,23 @@ class MessageEmbed {
   final String? videoContentType;
   final String? provider;
 
+  /// Its stripe down the left side, as `0xRRGGBB`: one color, or a gradient
+  /// from [colors]' first, through the middle one when there are three, to
+  /// its last. Empty for none.
+  final List<int> colors;
+
+  /// Above the title: who it's from, their icon and their link.
+  final String? authorName;
+  final String? authorUrl;
+  final String? authorIconUrl;
+
+  /// Name and value pairs; an inline one shares its line with the next.
+  final List<({String name, String value, bool inline})> fields;
+
+  /// Under the rest: its footer, then its date.
+  final String? footer;
+  final DateTime? timestamp;
+
   const MessageEmbed({
     this.title,
     this.description,
@@ -560,13 +577,22 @@ class MessageEmbed {
     this.videoUrl,
     this.videoContentType,
     this.provider,
+    this.colors = const [],
+    this.authorName,
+    this.authorUrl,
+    this.authorIconUrl,
+    this.fields = const [],
+    this.footer,
+    this.timestamp,
   });
 
-  bool get isEmpty =>
-      title == null && description == null && imageUrl == null && thumbnailUrl == null && videoUrl == null;
+  /// Nothing but a picture, a video or a provider: no words of its own.
+  bool get isWordless => title == null && description == null && authorName == null && fields.isEmpty && footer == null;
+
+  bool get isEmpty => isWordless && imageUrl == null && thumbnailUrl == null && videoUrl == null;
 
   /// Only a picture, as a GIF link's embed is: shown bare, not on a card.
-  bool get isBareImage => title == null && description == null && imageUrl != null;
+  bool get isBareImage => isWordless && imageUrl != null;
 
   /// The video plays as a file when its page says it is one, or, with no
   /// type, when its URL looks like one; anything else is a player page.

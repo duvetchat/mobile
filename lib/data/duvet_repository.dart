@@ -4032,7 +4032,7 @@ class DuvetRepository implements ChatRepository {
   static List<MessageEmbed> _embeds(List<duvet.Embed>? list) => [
     for (final e in list ?? const <duvet.Embed>[])
       MessageEmbed(
-        title: e.title ?? e.author?.name,
+        title: e.title,
         description: e.description,
         url: e.url,
         imageUrl: e.image?.url,
@@ -4042,6 +4042,20 @@ class DuvetRepository implements ChatRepository {
         videoUrl: e.video?.url,
         videoContentType: e.video?.contentType,
         provider: e.provider,
+        colors: [
+          if (e.color case duvet.EmbedColor(colorFrom: final from?, :final colorVia, :final colorTo)) ...[
+            from,
+            if (colorTo != null) ...[?colorVia, colorTo],
+          ],
+        ],
+        authorName: e.author?.name,
+        authorUrl: e.author?.url,
+        authorIconUrl: e.author?.iconUrl,
+        fields: [
+          for (final f in e.fields ?? const <duvet.EmbedField>[]) (name: f.name, value: f.value, inline: f.inline),
+        ],
+        footer: e.footer?.text,
+        timestamp: DateTime.tryParse(e.timestamp ?? '')?.toLocal(),
       ),
   ]..removeWhere((e) => e.isEmpty);
 

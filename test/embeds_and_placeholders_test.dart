@@ -75,6 +75,43 @@ void main() {
     expect(paragraph.didExceedMaxLines, isFalse);
   });
 
+  testWidgets('a bot\'s embed shows its author, fields, footer and date, under its colors\' stripe', (tester) async {
+    await loading(() async {
+      await tester.pumpWidget(
+        themed(
+          EmbedCard(
+            embed: MessageEmbed(
+              title: 'Deploy finished',
+              authorName: 'CI',
+              authorIconUrl: 'https://example.invalid/ci.png',
+              fields: const [
+                (name: 'Branch', value: 'dev', inline: true),
+                (name: 'Took', value: '2m', inline: true),
+                (name: 'Log', value: 'all green', inline: false),
+              ],
+              footer: 'GitHub',
+              timestamp: DateTime(2026, 10, 21, 3, 2),
+              colors: const [0x22C55E, 0x3B82F6],
+            ),
+          ),
+        ),
+      );
+      expect(find.text('CI'), findsOneWidget);
+      expect(find.text('BRANCH'), findsOneWidget);
+      expect(find.text('all green'), findsOneWidget);
+      expect(find.textContaining('GitHub • '), findsOneWidget);
+      // The two inline fields share a line; the other takes its own.
+      expect(tester.getTopLeft(find.text('TOOK')).dy, tester.getTopLeft(find.text('BRANCH')).dy);
+      expect(tester.getTopLeft(find.text('LOG')).dy, greaterThan(tester.getTopLeft(find.text('BRANCH')).dy));
+      final stripe = tester.widget<DecoratedBox>(
+        find.byWidgetPredicate(
+          (w) => w is DecoratedBox && w.decoration is BoxDecoration && (w.decoration as BoxDecoration).gradient != null,
+        ),
+      );
+      expect((stripe.decoration as BoxDecoration).gradient!.colors, const [Color(0xFF22C55E), Color(0xFF3B82F6)]);
+    });
+  });
+
   testWidgets('a GIF link\'s embed is its picture alone, at its own ratio; a card keeps its thumbnail small', (
     tester,
   ) async {

@@ -460,6 +460,16 @@ Map<String, Object?> messageToJson(ChatMessage m) => {
         'videoUrl': e.videoUrl,
         'videoContentType': e.videoContentType,
         'provider': e.provider,
+        if (e.colors.isNotEmpty) 'colors': e.colors,
+        'authorName': ?e.authorName,
+        'authorUrl': ?e.authorUrl,
+        'authorIconUrl': ?e.authorIconUrl,
+        if (e.fields.isNotEmpty)
+          'fields': [
+            for (final f in e.fields) {'name': f.name, 'value': f.value, 'inline': f.inline},
+          ],
+        'footer': ?e.footer,
+        'timestamp': ?e.timestamp?.toUtc().toIso8601String(),
       },
   ],
   if (m.reply case final r?)
@@ -532,6 +542,19 @@ ChatMessage messageFromJson(Map<String, Object?> j) => ChatMessage(
         videoUrl: e['videoUrl'] as String?,
         videoContentType: e['videoContentType'] as String?,
         provider: e['provider'] as String?,
+        colors: [for (final c in e['colors'] as List? ?? const []) c as int],
+        authorName: e['authorName'] as String?,
+        authorUrl: e['authorUrl'] as String?,
+        authorIconUrl: e['authorIconUrl'] as String?,
+        fields: [
+          for (final f in e['fields'] as List? ?? const [])
+            (name: (f as Map)['name'] as String, value: f['value'] as String, inline: f['inline'] as bool? ?? false),
+        ],
+        footer: e['footer'] as String?,
+        timestamp: switch (e['timestamp']) {
+          final String t => DateTime.tryParse(t)?.toLocal(),
+          _ => null,
+        },
       ),
   ],
   reply: switch (j['reply']) {
