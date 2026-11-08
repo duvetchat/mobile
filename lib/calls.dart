@@ -475,6 +475,11 @@ class _VoiceBarState extends State<VoiceBar> with _Ticking {
         open = () => openCall(context, call.conversationId);
     }
     final isCall = target is! RoomVoice;
+    // The bar ticks each second, so it follows the ping without listening to it.
+    final ping = target != null && voice.link == VoiceLink.connected ? voice.ping.value : null;
+    final caption = ping == null ? status : '$status · $ping ms';
+    // Desktop's red from 250 ms.
+    final poor = ping != null && ping >= 250;
     return GlassChrome(
       top: false,
       child: SizedBox(
@@ -485,7 +490,7 @@ class _VoiceBarState extends State<VoiceBar> with _Ticking {
               child: Semantics(
                 container: true,
                 button: true,
-                label: '${isCall ? 'Call with' : 'Voice in'} $title, $status. Open',
+                label: '${isCall ? 'Call with' : 'Voice in'} $title, $caption. Open',
                 excludeSemantics: true,
                 onTap: open,
                 child: Pressable(
@@ -516,9 +521,11 @@ class _VoiceBarState extends State<VoiceBar> with _Ticking {
                                 style: DuvetType.rowTitle.copyWith(color: colors.foreground),
                               ),
                               Text(
-                                status,
+                                caption,
                                 maxLines: 1,
-                                style: DuvetType.caption.copyWith(color: colors.mutedForeground),
+                                style: DuvetType.caption.copyWith(
+                                  color: poor ? colors.destructive : colors.mutedForeground,
+                                ),
                               ),
                             ],
                           ),
