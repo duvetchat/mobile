@@ -677,6 +677,28 @@ void main() {
       expect(shown(), ['11']);
     });
 
+    test(
+      'opening a chat takes its notices away; one below the chat on screen going hidden leaves that on screen',
+      () async {
+        repository.handleEvent(_event('MESSAGE_CREATE', _roomMessage('7', 'look')));
+        mention('7');
+        expect(shown(), ['7']);
+        repository.chatShown(_room, threadOf: '7');
+        expect(shown(), ['7']);
+        repository.chatShown(_room);
+        expect(shown(), isEmpty);
+
+        // The DM opened over the room: the room, under it, says it's hidden.
+        repository.chatShown(_dm);
+        repository.chatHidden(_room);
+        repository.handleEvent(_event('DM_MESSAGE_CREATE', _dmMessage('40', 'hi')));
+        repository.handleEvent(
+          _event('DM_MENTION_CREATE', {'message_id': '40', 'conversation_id': 'c-1', 'author_id': _maya}),
+        );
+        expect(shown(), isEmpty);
+      },
+    );
+
     test('a deleted message takes its notice away, and one deleted while it was fetched never shows', () async {
       repository.handleEvent(_event('MESSAGE_CREATE', _roomMessage('7', 'oops')));
       mention('7');

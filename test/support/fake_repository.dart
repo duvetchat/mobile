@@ -81,7 +81,10 @@ class FakeRepository implements ChatRepository {
   ({String chatId, String? threadOf})? onScreen;
 
   @override
-  void chatShown(ChatTarget target, {String? threadOf}) => onScreen = (chatId: target.id, threadOf: threadOf);
+  void chatShown(ChatTarget target, {String? threadOf}) {
+    onScreen = (chatId: target.id, threadOf: threadOf);
+    if (threadOf == null) mentionNotices.value = [...mentionNotices.value.where((n) => n.target != target)];
+  }
 
   @override
   void chatHidden(ChatTarget target, {String? threadOf}) {

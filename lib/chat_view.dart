@@ -185,7 +185,7 @@ class _ChatViewState extends State<ChatView> {
     EmojiCatalog.load().then((c) {
       if (mounted) setState(() => _catalog = c);
     }, onError: (Object e) => debugPrint('emoji: $e'));
-    _lifecycle = AppLifecycleListener(onResume: _readIfSeen);
+    _lifecycle = AppLifecycleListener(onResume: _readIfSeen, onStateChange: (_) => _reportScreen());
   }
 
   @override
@@ -197,11 +197,11 @@ class _ChatViewState extends State<ChatView> {
     if (onTop != _onTop) {
       _onTop = onTop;
       if (onTop) WidgetsBinding.instance.addPostFrameCallback((_) => _readIfSeen());
-      if (_events != null) _onScreen(onTop);
+      if (_events != null) _reportScreenAfterBuild();
     }
     if (_events != null) return;
     _repository = context.repository;
-    _onScreen(_onTop);
+    _reportScreenAfterBuild();
     // Listen before loading, so nothing sent meanwhile is missed.
     _events = _repository.messageEvents(widget.target).listen(_onEvent);
     _typingSub = _repository.typing(widget.target).listen(_onTyping);
@@ -217,14 +217,21 @@ class _ChatViewState extends State<ChatView> {
     _loadDirectory();
   }
 
-  // On top, the chat is on screen: its mentions show no notice at the top.
-  void _onScreen(bool onScreen) => onScreen
+  // On top with the app in front, the chat is on screen: its mentions show no
+  // notice at the top. A sheet over it takes the top too: one shows then.
+  void _reportScreen({bool gone = false}) => !gone && _onTop && _inFront
       ? _repository.chatShown(widget.target, threadOf: widget.threadOf)
       : _repository.chatHidden(widget.target, threadOf: widget.threadOf);
 
+  // Once built: being shown takes the chat's notices away, which rebuilds
+  // them.
+  void _reportScreenAfterBuild() => WidgetsBinding.instance.addPostFrameCallback((_) {
+    if (mounted) _reportScreen();
+  });
+
   @override
   void dispose() {
-    if (_events != null) _onScreen(false);
+    if (_events != null) _reportScreen(gone: true);
     _saveDraft();
     _voice?.removeListener(_onVoice);
     _recordTick?.cancel();

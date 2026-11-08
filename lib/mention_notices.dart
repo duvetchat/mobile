@@ -79,7 +79,6 @@ class _Notice extends StatelessWidget {
       button: true,
       liveRegion: true,
       label: '${notice.authorName} mentioned you ${notice.where}: ${notice.text}',
-      hint: 'Double tap to open',
       excludeSemantics: true,
       onTap: onOpen,
       onDismiss: onDismiss,

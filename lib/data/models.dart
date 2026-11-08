@@ -808,7 +808,6 @@ class MentionNotice {
 
   /// The chat's title, as its screen has it: `# general`, a person's name.
   final String title;
-  final String? authorId;
   final String authorName;
   final String? authorAvatarUrl;
 
@@ -826,7 +825,6 @@ class MentionNotice {
     required this.authorName,
     required this.where,
     required this.text,
-    this.authorId,
     this.authorAvatarUrl,
   });
 }

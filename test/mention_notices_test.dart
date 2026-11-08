@@ -12,7 +12,6 @@ const _notice = MentionNotice(
   messageId: 'm3',
   target: _general,
   title: '# general',
-  authorId: FakeRepository.leo,
   authorName: 'Leo',
   where: 'in #general · Design Guild',
   text: 'Pushed the new type ramp',
@@ -63,6 +62,17 @@ void main() {
     semantics.dispose();
   });
 
+  testWidgets('touches around it reach the screen under it', (tester) async {
+    final repository = await pumpApp(tester);
+    repository.mentionNotices.value = [_notice];
+    await tester.pumpAndSettle();
+    await openMaya(tester);
+    expect(tester.widget<ChatView>(find.byType(ChatView)).target, const ConversationTarget('c-maya'));
+    // Another chat's notice stays.
+    expect(card(), findsOneWidget);
+    semantics.dispose();
+  });
+
   testWidgets('a swipe up takes it away', (tester) async {
     final repository = await pumpApp(tester);
     repository.mentionNotices.value = [_notice];
@@ -79,6 +89,18 @@ void main() {
     expect(repository.onScreen, isNull);
     await openMaya(tester);
     expect(repository.onScreen, (chatId: 'c-maya', threadOf: null));
+    // Not with the app in the background.
+    void lifecycle(List<AppLifecycleState> states) {
+      for (final state in states) {
+        tester.binding.handleAppLifecycleStateChanged(state);
+      }
+    }
+
+    lifecycle([AppLifecycleState.inactive, AppLifecycleState.hidden, AppLifecycleState.paused]);
+    expect(repository.onScreen, isNull);
+    lifecycle([AppLifecycleState.hidden, AppLifecycleState.inactive, AppLifecycleState.resumed]);
+    expect(repository.onScreen, (chatId: 'c-maya', threadOf: null));
+
     await tester.tap(find.bySemanticsLabel('Back').last);
     await tester.pumpAndSettle();
     expect(repository.onScreen, isNull);
