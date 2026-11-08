@@ -84,19 +84,22 @@ class _MembersSheetState extends State<_MembersSheet> {
           builder: (context, _) {
             final presence = widget.repository.presence.value;
             final mobileOnly = widget.repository.mobileOnly.value;
-            final q = _search.text.trim().toLowerCase();
-            final shown = q.isEmpty
-                ? all
-                : all
-                      .where((m) => m.displayName.toLowerCase().contains(q) || m.username.toLowerCase().contains(q))
-                      .toList();
-            // Not reported isn't offline: those go under Members, with no
-            // status shown.
-            // In a Space, a bot's there comes first.
             final spaceId = switch (widget.target) {
               RoomTarget(:final spaceId) => spaceId,
               ConversationTarget() => null,
             };
+            final q = _search.text.trim().toLowerCase();
+            // Without those the gateway says left since the list came (a bot
+            // removed, say).
+            final shown = all
+                .where((m) => spaceId == null || widget.repository.isMember(spaceId, m.userId))
+                .where(
+                  (m) => q.isEmpty || m.displayName.toLowerCase().contains(q) || m.username.toLowerCase().contains(q),
+                )
+                .toList();
+            // Not reported isn't offline: those go under Members, with no
+            // status shown.
+            // In a Space, a bot's there comes first.
             Presence? of(Member m) => presenceIn(presence, m.userId, spaceId: spaceId);
             bool away(Member m) => of(m) == null || of(m) == Presence.offline;
             final rest = [

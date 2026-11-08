@@ -226,6 +226,50 @@ void main() {
     semantics.dispose();
   });
 
+  testWidgets('a bot\'s profile removes it from the Space, after asking, for those who manage bots', (tester) async {
+    final repository = await pumpGeneral(tester, history: [poll()]);
+    await tapLabel(tester, 'Ballot, bot,’s profile');
+    await tapLabel(tester, 'Remove from Space');
+    expect(find.text('Remove Ballot from Design Guild?'), findsOneWidget);
+    expect(repository.botsRemoved, isEmpty);
+    await tapLabel(tester, 'Remove from Space');
+    expect(repository.botsRemoved, [('s-guild', _ballot)]);
+    expect(find.bySemanticsLabel('Remove from Space'), findsNothing);
+    semantics.dispose();
+  });
+
+  testWidgets('a bot removed from the members list leaves it', (tester) async {
+    final repository = await pumpGeneral(tester);
+    repository.extraRoomMembers.add(const Member(userId: _ballot, username: 'ballot', alias: 'Ballot', isBot: true));
+    await tapLabel(tester, 'More');
+    await tapLabel(tester, 'Members');
+    await tester.tap(find.text('Ballot').last);
+    await tester.pumpAndSettle();
+    await tapLabel(tester, 'Remove from Space');
+    await tapLabel(tester, 'Remove from Space');
+    expect(repository.botsRemoved, [('s-guild', _ballot)]);
+    expect(find.text('Ballot'), findsNothing);
+    semantics.dispose();
+  });
+
+  testWidgets('without Manage bots, a bot\'s profile has no Remove from Space', (tester) async {
+    final repository = await pumpGeneral(tester, history: [poll()]);
+    repository
+      ..spaceOwner = false
+      ..spacePerms = Perm.all & ~Perm.manageBots & ~Perm.administrator;
+    await tapLabel(tester, 'Ballot, bot,’s profile');
+    expect(find.bySemanticsLabel('Remove from Space'), findsNothing);
+    semantics.dispose();
+  });
+
+  testWidgets('a failed interaction says the desktop\'s text', (tester) async {
+    final repository = await pumpGeneral(tester, history: [poll()]);
+    repository.refusals['useComponent'] = 'The application did not respond';
+    await tapLabel(tester, 'Dune');
+    expect(find.text('The application did not respond'), findsOneWidget);
+    semantics.dispose();
+  });
+
   testWidgets('a button that opens a modal: a glass sheet that checks, then submits', (tester) async {
     final repository = await pumpGeneral(tester, history: [poll()]);
     repository.nextModal = _meetup();

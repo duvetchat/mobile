@@ -1378,6 +1378,41 @@ void main() {
         () => repository.addBot('s-1', 'b-1'),
         reason: 'this bot is private — only team members can add it',
       );
+      await refuses(
+        'DELETE',
+        '/api/spaces/s-1/bots/b-1',
+        () => repository.removeBot('s-1', 'b-1'),
+        reason: 'you need the manage bots permission',
+      );
+    });
+
+    test('removing a bot from a Space', () async {
+      await signIn();
+      var removed = false;
+      routes[('DELETE', '/api/spaces/s-1/bots/b-1')] = (_) {
+        removed = true;
+        return http.Response('', 204);
+      };
+      await repository.removeBot('s-1', 'b-1');
+      expect(removed, isTrue);
+    });
+
+    test('an interaction fails with the desktop\'s texts', () async {
+      await signIn();
+      final modal = BotModal.fromJson(
+        {'custom_id': 'meetup', 'title': 'Plan a meetup', 'components': const []},
+        applicationId: 'app-ballot',
+        roomId: 'r-general',
+      );
+      for (final (status, text) in [(504, 'The application did not respond'), (500, 'This interaction failed')]) {
+        routes[('POST', '/api/interactions')] = (_) =>
+            http.Response(jsonEncode({'error': 'nope'}), status, headers: {'content-type': 'application/json'});
+        await expectLater(
+          repository.submitModal(modal, const []),
+          throwsA(isA<ActionFailed>().having((e) => e.message, 'message', text)),
+          reason: '$status',
+        );
+      }
     });
 
     test('a room\'s description', () async {
