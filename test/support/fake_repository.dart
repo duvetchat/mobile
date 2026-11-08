@@ -755,6 +755,12 @@ class FakeRepository implements ChatRepository {
     admin.add('${has ? 'give' : 'take'} $roleId ${nameOf(userId)}');
     final holders = roleHolders[roleId] ??= {};
     has ? holders.add(userId) : holders.remove(userId);
+    // As the real one: their roles change, and the Space's listeners hear.
+    final role = roles(spaceId).where((r) => r.id == roleId).firstOrNull;
+    final tags = [...?roleTags[userId]]..removeWhere((t) => t.id == roleId);
+    if (has && role != null) tags.add(RoleTag(role.name, color: role.color, id: role.id, position: role.position));
+    roleTags[userId] = tags..sort((a, b) => b.position.compareTo(a.position));
+    spaces.value = [...spaces.value];
   }
 
   @override

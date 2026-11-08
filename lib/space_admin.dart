@@ -15,8 +15,9 @@ import 'package:path_provider/path_provider.dart';
 
 import 'account.dart' show CropPage, formatBytes;
 import 'data/models.dart';
+import 'data/repository.dart' show ChatRepository;
 import 'data/scope.dart';
-import 'people.dart' show PersonRow;
+import 'people.dart' show PersonRow, removeBotAsking;
 import 'spaces.dart' show deleteSpace, inviteRoomOf, pickSpaceIcon, showInviteSheet;
 import 'theme.dart';
 import 'widgets/avatar.dart';
@@ -309,6 +310,13 @@ class _SpaceSettingsPageState extends State<SpaceSettingsPage> {
                   label: 'Roles',
                   detail: '$roles',
                   onPressed: () => _open(RolesPage(spaceId: id)),
+                ),
+              if (profile.can(Perm.manageRoles) || profile.can(Perm.manageBots))
+                GlassRow(
+                  icon: FLucideIcons.users,
+                  label: 'Members',
+                  detail: '${profile.memberCount}',
+                  onPressed: () => _open(MembersAdminPage(spaceId: id)),
                 ),
               if (profile.can(Perm.manageInvites))
                 GlassRow(
@@ -2356,16 +2364,7 @@ class _RolesPageState extends State<RolesPage> {
 
   /// Whether a role may sit at [position]: below the user's highest role,
   /// with ManageRoles; anywhere for the Space's owner.
-  bool _below(int position) {
-    final repository = context.repository;
-    final profile = repository.spaceProfile(widget.spaceId);
-    if (profile == null) return false;
-    if (profile.owner) return true;
-    if (!profile.can(Perm.manageRoles)) return false;
-    final me = repository.profile.value?.id;
-    final highest = me == null ? 0 : repository.rolesOf(widget.spaceId, me).firstOrNull?.position ?? 0;
-    return position < highest;
-  }
+  bool _below(int position) => managesRoleAt(context.repository, widget.spaceId, position);
 
   // A screen reader's move of a role the user may not move.
   void _cantMove(SpaceRole r) =>
@@ -2959,6 +2958,232 @@ class _InvitesAdminPageState extends State<InvitesAdminPage> {
       );
     },
   );
+}
+
+// -----------------------------------------------------------------------------
+// Members
+// -----------------------------------------------------------------------------
+
+/// Whether the user may give, take, move or change a role at [position]:
+/// as the API checks it, one below their highest role, with ManageRoles;
+/// any for the Space's owner (Administrator doesn't get past it).
+bool managesRoleAt(ChatRepository repository, String spaceId, int position) {
+  final profile = repository.spaceProfile(spaceId);
+  if (profile == null) return false;
+  if (profile.owner) return true;
+  if (!profile.can(Perm.manageRoles)) return false;
+  final me = repository.profile.value?.id;
+  final highest = me == null ? 0 : repository.rolesOf(spaceId, me).firstOrNull?.position ?? 0;
+  return position < highest;
+}
+
+/// A Space's members, as the desktop's Members tab lists them: searchable by
+/// name, username or ID, each with their roles. One opens to change their
+/// roles, and a bot's to remove it. Kicking and banning come here once the
+/// API has them (#39).
+class MembersAdminPage extends StatefulWidget {
+  final String spaceId;
+  const MembersAdminPage({required this.spaceId, super.key});
+
+  @override
+  State<MembersAdminPage> createState() => _MembersAdminPageState();
+}
+
+class _MembersAdminPageState extends State<MembersAdminPage> {
+  late Future<List<Member>> _members;
+  final _search = TextEditingController();
+
+  @override
+  void initState() {
+    super.initState();
+    _search.addListener(() => setState(() {}));
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    final repository = context.repository;
+    _members = repository.members(
+      RoomTarget(
+        spaceId: widget.spaceId,
+        roomId: repository.adminRooms(widget.spaceId).where((r) => r.kind == AdminRoomKind.text).firstOrNull?.id ?? '',
+      ),
+    );
+  }
+
+  @override
+  void dispose() {
+    _search.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final repository = context.repository;
+    return FutureBuilder(
+      future: _members,
+      builder: (context, snapshot) => ValueListenableBuilder(
+        // Roles given or taken, and members leaving (a bot removed).
+        valueListenable: repository.spaces,
+        builder: (context, _, _) {
+          final all = snapshot.data;
+          final q = _search.text.trim().toLowerCase();
+          final shown = [
+            for (final m in all ?? const <Member>[])
+              if (repository.isMember(widget.spaceId, m.userId) &&
+                  (q.isEmpty ||
+                      m.displayName.toLowerCase().contains(q) ||
+                      m.username.toLowerCase().contains(q) ||
+                      m.userId.contains(q)))
+                m,
+          ]..sort((a, b) => a.displayName.toLowerCase().compareTo(b.displayName.toLowerCase()));
+          return AdminPage(
+            title: 'Members',
+            children: [
+              SearchField(controller: _search, hint: 'Search by name or ID'),
+              const SizedBox(height: 8),
+              if (snapshot.hasError)
+                const ListNote('Couldn’t load the members')
+              else if (all == null)
+                const Padding(
+                  padding: EdgeInsets.all(24),
+                  child: Center(child: FCircularProgress()),
+                )
+              else if (shown.isEmpty)
+                ListNote(q.isEmpty ? 'No members' : 'No one matches')
+              else
+                for (final m in shown)
+                  ListRow(
+                    leading: ExcludeSemantics(
+                      child: UserAvatar(name: m.displayName, url: m.avatarUrl, size: 40),
+                    ),
+                    title: m.displayName,
+                    snippet: [
+                      if (m.username.isNotEmpty) '@${m.username}',
+                      if (m.isBot) 'bot',
+                      switch (repository.rolesOf(widget.spaceId, m.userId)) {
+                        [] => 'No roles',
+                        final roles => roles.map((r) => r.name).join(', '),
+                      },
+                    ].join(' · '),
+                    onTap: () => Navigator.of(context).push(
+                      MaterialPageRoute<void>(
+                        builder: (_) => MemberAdminPage(spaceId: widget.spaceId, member: m),
+                      ),
+                    ),
+                  ),
+            ],
+          );
+        },
+      ),
+    );
+  }
+}
+
+/// One member, in Space settings: their ID, their roles (those the user
+/// manages can be given and taken) and, for a bot, Remove from Space.
+class MemberAdminPage extends StatelessWidget {
+  final String spaceId;
+  final Member member;
+  const MemberAdminPage({required this.spaceId, required this.member, super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    final repository = context.repository;
+    final colors = context.theme.colors;
+    final m = member;
+    return ValueListenableBuilder(
+      valueListenable: repository.spaces,
+      builder: (context, spaces, _) {
+        final profile = repository.spaceProfile(spaceId);
+        final spaceName = spaces.where((s) => s.id == spaceId).firstOrNull?.name ?? 'this Space';
+        final has = {for (final r in repository.rolesOf(spaceId, m.userId)) r.id};
+        final roles = repository.roles(spaceId).where((r) => !r.everyone).toList();
+        return AdminPage(
+          title: m.displayName,
+          backLabel: 'Back to Members',
+          children: [
+            Row(
+              children: [
+                ExcludeSemantics(
+                  child: UserAvatar(name: m.displayName, url: m.avatarUrl, size: 56),
+                ),
+                const SizedBox(width: 16),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(m.displayName, style: DuvetType.title.copyWith(color: colors.foreground)),
+                      if (m.username.isNotEmpty || m.isBot)
+                        Text(
+                          [if (m.username.isNotEmpty) '@${m.username}', if (m.isBot) 'bot'].join(' · '),
+                          style: DuvetType.caption.copyWith(color: colors.mutedForeground),
+                        ),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+            const Overline('User ID'),
+            AdminPanel(
+              children: [
+                ListRow(
+                  title: m.userId,
+                  detail: 'Double tap to copy',
+                  onTap: () {
+                    Clipboard.setData(ClipboardData(text: m.userId));
+                    adminToast(context, 'ID copied');
+                  },
+                ),
+              ],
+            ),
+            const Overline('Roles'),
+            AdminPanel(
+              children: [
+                if (roles.isEmpty) const ListNote('This Space has no roles yet'),
+                for (final r in roles)
+                  Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                    child: Row(
+                      children: [
+                        Expanded(
+                          child: RoleName(r.name, colors: r.colors, style: DuvetType.rowTitle),
+                        ),
+                        const SizedBox(width: 12),
+                        DuvetSwitch(
+                          label: r.name,
+                          value: has.contains(r.id),
+                          onChanged: managesRoleAt(repository, spaceId, r.position)
+                              ? (on) => adminTry(
+                                  context,
+                                  'Couldn’t change ${m.displayName}’s roles',
+                                  () => repository.setRole(spaceId, r.id, m.userId, has: on),
+                                )
+                              : null,
+                        ),
+                      ],
+                    ),
+                  ),
+              ],
+            ),
+            if (m.isBot && (profile?.can(Perm.manageBots) ?? false)) ...[
+              const SizedBox(height: 32),
+              DuvetButton(
+                label: 'Remove from Space',
+                icon: FLucideIcons.userMinus,
+                variant: ButtonVariant.destructive,
+                expand: true,
+                onPressed: () async {
+                  final navigator = Navigator.of(context);
+                  if (await removeBotAsking(context, spaceId: spaceId, bot: m, spaceName: spaceName)) navigator.pop();
+                },
+              ),
+            ],
+          ],
+        );
+      },
+    );
+  }
 }
 
 // -----------------------------------------------------------------------------

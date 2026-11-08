@@ -24,6 +24,37 @@ String presenceText(Presence? p) => switch (p) {
   null => '',
 };
 
+/// Asks, then takes [bot] out of the Space; true once it's gone. Says the
+/// API's reason when it refuses, as adding a bot does.
+Future<bool> removeBotAsking(
+  BuildContext context, {
+  required String spaceId,
+  required Member bot,
+  required String spaceName,
+}) async {
+  final name = bot.displayName;
+  final sure = await confirmDestructive(
+    context,
+    title: 'Remove $name from $spaceName?',
+    body: 'It leaves the Space and loses its roles. It can be added again later.',
+    action: 'Remove from Space',
+  );
+  if (!sure || !context.mounted) return false;
+  try {
+    await context.repository.removeBot(spaceId, bot.userId);
+    return true;
+  } catch (e) {
+    if (context.mounted) {
+      showFToast(
+        context: context,
+        title: Text(e is ActionFailed ? e.message : 'Couldn’t remove $name'),
+        duration: const Duration(seconds: 3),
+      );
+    }
+    return false;
+  }
+}
+
 /// Someone's profile, in a glass sheet: banner, avatar, presence, name, what
 /// they wrote, their roles in the Space; Message, Mention, Add friend.
 /// Answers Mention or Message when the caller handles them.
@@ -60,29 +91,9 @@ class _ProfileState extends State<_Profile> {
     context.repository.loadFriends().catchError((Object e) => debugPrint('friends: $e'));
   }
 
-  // The API's reason when it refuses, as adding a bot shows it.
   Future<void> _removeBot(String spaceId, String spaceName) async {
-    final name = widget.member.displayName;
-    final sure = await confirmDestructive(
-      context,
-      title: 'Remove $name from $spaceName?',
-      body: 'It leaves the Space and loses its roles. It can be added again later.',
-      action: 'Remove from Space',
-    );
-    if (!sure || !mounted) return;
     final navigator = Navigator.of(context);
-    try {
-      await context.repository.removeBot(spaceId, widget.member.userId);
-      navigator.pop();
-    } catch (e) {
-      if (mounted) {
-        showFToast(
-          context: context,
-          title: Text(e is ActionFailed ? e.message : 'Couldn’t remove $name'),
-          duration: const Duration(seconds: 3),
-        );
-      }
-    }
+    if (await removeBotAsking(context, spaceId: spaceId, bot: widget.member, spaceName: spaceName)) navigator.pop();
   }
 
   Future<void> _message() async {

@@ -40,7 +40,8 @@ abstract final class Perm {
       manageStickers |
       manageWebhooks |
       manageAttachments |
-      manageBuckets;
+      manageBuckets |
+      manageBots;
 
   static bool has(int perms, int bit) => perms & administrator != 0 || perms & bit == bit;
 }
