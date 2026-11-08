@@ -110,25 +110,68 @@ void main() {
     semantics.dispose();
   });
 
-  testWidgets('in-chat search finds, counts, and jumps; a room can widen to its Space', (tester) async {
-    final repository = await pumpApp(tester, setUp: twoRooms);
+  testWidgets('in-chat search covers the Space, takes the desktop\'s filters, counts all, pages, and jumps', (
+    tester,
+  ) async {
+    final repository = await pumpApp(
+      tester,
+      setUp: (r) {
+        twoRooms(r);
+        r.history['r-crit']!.add(
+          FakeRepository.message('c2', author: FakeRepository.leo, name: 'Leo', text: 'ramp v2'),
+        );
+        r.searchPageSize = 1;
+      },
+    );
     await openGeneral(tester);
     await tapLabel(tester, 'Search');
     await tester.enterText(find.byType(EditableText), 'ramp');
     await tester.pump(const Duration(milliseconds: 350));
     await tester.pumpAndSettle();
-    expect(repository.searches.last.roomId, 'r-general');
-    expect(find.text('1 result in #general'), findsOneWidget);
-    expect(find.bySemanticsLabel(RegExp(r'^Leo, .*Pushed the new type ramp')), findsOneWidget);
-
-    await tapLabel(tester, 'Search all of Design Guild');
-    expect(repository.searches.last.roomId, isNull);
+    // The whole Space, not just the room: two in all, a page of one.
     expect(repository.searches.last.spaceId, 's-guild');
+    expect(repository.searches.last.roomIds, isEmpty);
+    expect(find.text('2 results in Design Guild'), findsOneWidget);
+    expect(find.bySemanticsLabel(RegExp(r'^Leo in ')), findsOneWidget);
 
+    await tester.tap(find.text('More results'));
+    await tester.pumpAndSettle();
+    expect(repository.searches.last.cursor, isNotNull);
+    expect(find.bySemanticsLabel(RegExp(r'^Leo in general, .*Pushed the new type ramp')), findsOneWidget);
+    expect(find.bySemanticsLabel(RegExp(r'^Leo in crit, .*ramp v2')), findsOneWidget);
+    expect(find.text('More results'), findsNothing);
+    repository.searchPageSize = 25;
+
+    // A filter from its chip; the rooms and members it takes come as a list.
+    // Typed: in the test font, the chip row runs past `in:`.
+    await tester.enterText(find.byType(EditableText), 'ramp in:');
+    await tester.pump();
+    expect(find.bySemanticsLabel('# crit'), findsOneWidget);
+    await tapLabel(tester, '# general');
+    await tapLabel(tester, 'from:');
+    await tapLabel(tester, 'leo, @leo');
+    expect(tester.widget<EditableText>(find.byType(EditableText)).controller.text, 'ramp in:general from:leo ');
+    await tester.pump(const Duration(milliseconds: 350));
+    await tester.pumpAndSettle();
+    expect(repository.searches.last.roomIds, ['r-general']);
+    expect(repository.searches.last.authorIds, [FakeRepository.leo]);
+    expect(find.text('1 result in Design Guild'), findsOneWidget);
+
+    await tester.enterText(find.byType(EditableText), 'from:nobody');
+    await tester.pump(const Duration(milliseconds: 350));
+    await tester.pumpAndSettle();
+    expect(find.text('No member is called nobody'), findsOneWidget);
+
+    // Pinned is a toggle.
+    await tester.enterText(find.byType(EditableText), 'ramp');
+    await tester.pump(const Duration(milliseconds: 350));
+    await tester.pumpAndSettle();
     await tapLabel(tester, 'Pinned');
     expect(repository.searches.last.pinned, isTrue);
+    await tapLabel(tester, 'Pinned');
+    expect(repository.searches.last.pinned, isNull);
 
-    await tapLabel(tester, RegExp(r'^Leo'));
+    await tapLabel(tester, RegExp(r'^Leo in general'));
     expect(find.byType(EditableText), findsOneWidget); // back in the chat
     await tester.pump(const Duration(seconds: 1));
     semantics.dispose();

@@ -166,23 +166,30 @@ class FakeRepository implements ChatRepository {
   final pinChanges = <(String, bool)>[];
   final threads = <String, List<ChatMessage>>{};
 
+  /// How many hits a page of [search] holds; the API's is 25.
+  int searchPageSize = 25;
+
   @override
-  Future<List<SearchHit>> search(SearchQuery query) async {
+  Future<SearchPage> search(SearchQuery query) async {
     searches.add(query);
     final q = query.text.toLowerCase();
-    return [
+    final all = [
       for (final MapEntry(:key, :value) in history.entries)
         if ((query.conversationId == null || query.conversationId == key) &&
-            (query.roomId == null || query.roomId == key) &&
+            (query.roomIds.isEmpty || query.roomIds.contains(key)) &&
             (query.spaceId == null || key.startsWith('r-')) &&
             !(query.spaceId == null && query.conversationId == null))
           for (final m in value.reversed)
-            if (m.content.toLowerCase().contains(q))
+            if (m.content.toLowerCase().contains(q) &&
+                (query.authorIds.isEmpty || query.authorIds.contains(m.authorId)) &&
+                (query.pinned == null || m.pinned == query.pinned))
               SearchHit(
                 target: key.startsWith('c-') ? ConversationTarget(key) : RoomTarget(spaceId: 's-guild', roomId: key),
                 message: m,
               ),
     ];
+    final from = query.cursor == null ? 0 : all.indexWhere((h) => h.message.id == query.cursor) + 1;
+    return (hits: all.skip(from).take(searchPageSize).toList(), total: all.length);
   }
 
   @override

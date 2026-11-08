@@ -119,8 +119,8 @@ abstract interface class ChatRepository {
   /// The largest file the user may upload, in bytes; null when unknown.
   Future<int?> uploadLimit();
 
-  /// Messages matching [query], the newest first.
-  Future<List<SearchHit>> search(SearchQuery query);
+  /// A page of the messages matching [query], the newest first.
+  Future<SearchPage> search(SearchQuery query);
 
   /// The chat's pinned messages, the last pinned first.
   Future<List<ChatMessage>> pins(ChatTarget target);

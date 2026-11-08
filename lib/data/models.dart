@@ -768,27 +768,68 @@ class SearchHit {
   const SearchHit({required this.target, required this.message});
 }
 
-/// What a message search looks for, where.
+/// What a message search looks for, where: the desktop's filters.
 class SearchQuery {
   final String text;
 
-  /// In a Space (its rooms, or just [roomId]), or in a conversation.
+  /// In a Space (its rooms, or just [roomIds]), or in a conversation.
   final String? spaceId;
-  final String? roomId;
   final String? conversationId;
-  final bool hasFile;
-  final bool pinned;
-  final String? authorId;
+  final List<String> roomIds;
+  final List<String> authorIds;
+  final List<String> mentionIds;
+
+  /// `link`, `embed`, `file`, `image`, `video`, `sound` or `sticker`.
+  final List<String> has;
+  final bool? pinned;
+  final DateTime? before;
+  final DateTime? after;
+
+  /// The last message of the page before: the next page starts after it.
+  final String? cursor;
   const SearchQuery(
     this.text, {
     this.spaceId,
-    this.roomId,
     this.conversationId,
-    this.hasFile = false,
-    this.pinned = false,
-    this.authorId,
+    this.roomIds = const [],
+    this.authorIds = const [],
+    this.mentionIds = const [],
+    this.has = const [],
+    this.pinned,
+    this.before,
+    this.after,
+    this.cursor,
   });
+
+  /// Nothing to look for: the API refuses it.
+  bool get isEmpty =>
+      text.isEmpty &&
+      roomIds.isEmpty &&
+      authorIds.isEmpty &&
+      mentionIds.isEmpty &&
+      has.isEmpty &&
+      pinned == null &&
+      before == null &&
+      after == null;
+
+  /// The same search, from the page after [cursor].
+  SearchQuery from(String cursor) => SearchQuery(
+    text,
+    spaceId: spaceId,
+    conversationId: conversationId,
+    roomIds: roomIds,
+    authorIds: authorIds,
+    mentionIds: mentionIds,
+    has: has,
+    pinned: pinned,
+    before: before,
+    after: after,
+    cursor: cursor,
+  );
 }
+
+/// A page of a message search, and how many it found in all (up to 1000).
+typedef SearchPage = ({List<SearchHit> hits, int total});
 
 /// A file the server refused as too large (HTTP 413).
 class UploadTooLarge implements Exception {

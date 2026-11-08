@@ -124,9 +124,164 @@ class SearchResultRow extends StatelessWidget {
   }
 }
 
-/// Searching one chat: a field and filters in the top bar, results by day,
-/// and how many under them; a room can widen to its whole Space. Answers the
-/// result picked.
+// ---------------------------------------------------------------------------
+// The desktop's search syntax (MessageSearch.svelte): words, and filters such
+// as `from:maya in:general has:image during:2026-11-08`.
+// ---------------------------------------------------------------------------
+
+const searchHas = ['link', 'embed', 'file', 'image', 'video', 'sound', 'sticker'];
+final _filterWord = RegExp(r'^(from|mentions|in|has|pinned|before|after|during):(.*)$', caseSensitive: false);
+
+/// A room's name as `in:`'s value: lower case, without spaces.
+String roomSlug(String name) => name.toLowerCase().replaceAll(RegExp(r'\s+'), '-');
+
+String _isoDay(DateTime d) => '${d.year}-${d.month.toString().padLeft(2, '0')}-${d.day.toString().padLeft(2, '0')}';
+
+// A local day, `YYYY-MM-DD`, or null.
+DateTime? _parseDay(String value) {
+  final m = RegExp(r'^(\d{4})-(\d{1,2})-(\d{1,2})$').firstMatch(value);
+  if (m == null) return null;
+  final month = int.parse(m[2]!);
+  final d = DateTime(int.parse(m[1]!), month, int.parse(m[3]!));
+  return d.month == month ? d : null;
+}
+
+/// [input] as a search in [spaceId] or [conversationId]. `from:` and
+/// `mentions:` name one of [members], `in:` one of [rooms]; as on the desktop,
+/// `after:` leaves its day out and `during:` is that day. A leading `@` or `#`
+/// is fine. Throws a [FormatException] saying what's wrong.
+SearchQuery parseSearch(
+  String input, {
+  required List<Member> members,
+  List<Room> rooms = const [],
+  String? spaceId,
+  String? conversationId,
+  DateTime? now,
+}) {
+  final words = <String>[];
+  final roomIds = <String>[], authorIds = <String>[], mentionIds = <String>[], has = <String>[];
+  bool? pinned;
+  DateTime? before, after;
+  for (final part in input.split(RegExp(r'\s+')).where((p) => p.isNotEmpty)) {
+    final m = _filterWord.firstMatch(part);
+    if (m == null) {
+      words.add(part);
+      continue;
+    }
+    final key = m[1]!.toLowerCase();
+    final named = m[2]!.replaceFirst(RegExp(r'^[@#]'), '');
+    final value = named.toLowerCase();
+    if (value.isEmpty) continue;
+    switch (key) {
+      case 'from' || 'mentions':
+        final member =
+            members.where((u) => u.username.toLowerCase() == value).firstOrNull ??
+            members.where((u) => u.displayName.toLowerCase() == value).firstOrNull;
+        if (member == null) throw FormatException('No member is called $named');
+        (key == 'from' ? authorIds : mentionIds).add(member.userId);
+      case 'in':
+        final room = rooms.where((r) => roomSlug(r.name) == value).firstOrNull;
+        if (room == null) throw FormatException('No room is called $named');
+        roomIds.add(room.id);
+      case 'has':
+        if (!searchHas.contains(value)) throw FormatException('has: takes ${searchHas.join(', ')}');
+        has.add(value);
+      case 'pinned':
+        if (value != 'true' && value != 'false') throw const FormatException('pinned: takes true or false');
+        pinned = value == 'true';
+      default:
+        final day = _parseDay(value);
+        if (day == null) throw FormatException('$key: takes a date like ${_isoDay(now ?? DateTime.now())}');
+        final next = DateTime(day.year, day.month, day.day + 1);
+        // Dates narrow each other: the latest start and the earliest end win, so
+        // `after:` one day and `during:` an earlier one find nothing.
+        final (start, end) = switch (key) {
+          'before' => (null, day),
+          'after' => (next, null),
+          _ => (day, next),
+        };
+        if (start != null && (after == null || start.isAfter(after))) after = start;
+        if (end != null && (before == null || end.isBefore(before))) before = end;
+    }
+  }
+  return SearchQuery(
+    words.join(' '),
+    spaceId: spaceId,
+    conversationId: conversationId,
+    roomIds: roomIds,
+    authorIds: authorIds,
+    mentionIds: mentionIds,
+    has: has,
+    pinned: pinned,
+    before: before,
+    after: after,
+  );
+}
+
+/// What to put in place of the word being typed, [token].
+typedef SearchSuggestion = ({String label, String? detail, String insert, Member? member, Room? room});
+
+/// The desktop's suggestions for [token]: the filters, then the members, the
+/// rooms or the values a filter takes. `pinned:` is left to a toggle, though
+/// [parseSearch] still reads it.
+List<SearchSuggestion> searchSuggestions(
+  String token, {
+  required List<Member> members,
+  List<Room> rooms = const [],
+  bool inSpace = false,
+  DateTime? now,
+}) {
+  final today = _isoDay(now ?? DateTime.now());
+  final m = RegExp(r'^(\w+):(\S*)$').firstMatch(token);
+  if (m == null) {
+    final typed = token.toLowerCase();
+    return [
+      for (final (key, detail) in [
+        ('from', 'Messages by a member'),
+        ('mentions', 'Messages that mention a member'),
+        if (inSpace) ('in', 'Messages in a room'),
+        ('has', 'link, embed, file, image, video, sound or sticker'),
+        ('before', 'Messages before a date, like $today'),
+        ('after', 'Messages after a date'),
+        ('during', 'Messages on a date'),
+      ])
+        if (key.startsWith(typed)) (label: '$key:', detail: detail, insert: '$key:', member: null, room: null),
+    ];
+  }
+  final key = m[1]!.toLowerCase();
+  final value = m[2]!.replaceFirst(RegExp(r'^[@#]'), '').toLowerCase();
+  return switch (key) {
+    'from' || 'mentions' => [
+      for (final u
+          in members
+              .where((u) => u.username.toLowerCase().startsWith(value) || u.displayName.toLowerCase().startsWith(value))
+              .take(8))
+        (
+          label: u.displayName,
+          detail: u.displayName == u.username ? null : u.username,
+          insert: '$key:${u.username} ',
+          member: u,
+          room: null,
+        ),
+    ],
+    'in' => [
+      for (final r in rooms.where((r) => roomSlug(r.name).startsWith(value)).take(8))
+        (label: '#${r.name}', detail: null, insert: 'in:${roomSlug(r.name)} ', member: null, room: r),
+    ],
+    'has' => [
+      for (final v in searchHas)
+        if (v.startsWith(value)) (label: v, detail: null, insert: 'has:$v ', member: null, room: null),
+    ],
+    'before' || 'after' || 'during' when today.startsWith(value) => [
+      (label: today, detail: 'Today', insert: '$key:$today ', member: null, room: null),
+    ],
+    _ => const [],
+  };
+}
+
+/// Searching a Space, or a conversation: a field with the desktop's filters
+/// and their suggestions in the top bar, results by day, how many in all, and
+/// more pages. Answers the result picked.
 class InChatSearch extends StatefulWidget {
   final ChatTarget target;
   final String title;
@@ -138,13 +293,18 @@ class InChatSearch extends StatefulWidget {
 
 class _InChatSearchState extends State<InChatSearch> {
   final _query = TextEditingController();
+  final _focus = FocusNode();
   Timer? _debounce;
-  bool _hasFile = false;
-  bool _pinned = false;
-  bool _wholeSpace = false;
+  bool _pinnedOnly = false;
+  List<Member> _members = const [];
+  SearchQuery? _shown;
   List<SearchHit>? _hits;
+  int _total = 0;
+  String? _failure;
   bool _loading = false;
   int _request = 0;
+
+  bool _askedMembers = false;
 
   @override
   void initState() {
@@ -153,43 +313,154 @@ class _InChatSearchState extends State<InChatSearch> {
   }
 
   @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    if (_askedMembers) return;
+    _askedMembers = true;
+    // Whom from: and mentions: name; a search typed before they come runs again.
+    context.repository.members(widget.target).then((m) {
+      if (!mounted) return;
+      setState(() => _members = m);
+      if (_query.text.trim().isNotEmpty) _run();
+    }, onError: (_) {});
+  }
+
+  @override
   void dispose() {
     _debounce?.cancel();
     _query.dispose();
+    _focus.dispose();
     super.dispose();
   }
 
+  String _lastText = '';
+
   void _changed() {
+    setState(() {}); // the suggestions follow the caret
+    if (_query.text == _lastText) return;
+    _lastText = _query.text;
     _debounce?.cancel();
     _debounce = Timer(const Duration(milliseconds: 300), _run);
   }
 
-  Future<void> _run() async {
-    final text = _query.text.trim();
-    if (text.isEmpty && !_hasFile && !_pinned) {
-      setState(() => _hits = null);
-      return;
+  String? get _spaceId => switch (widget.target) {
+    RoomTarget(:final spaceId) => spaceId,
+    _ => null,
+  };
+
+  // The text rooms one can see: what in: names.
+  List<Room> get _rooms {
+    final spaceId = _spaceId;
+    if (spaceId == null) return const [];
+    final repository = context.repository;
+    return [
+      for (final r in repository.spaces.value.where((s) => s.id == spaceId).expand((s) => s.rooms))
+        if (r.kind == RoomKind.text && repository.canInRoom(spaceId, r.id, Perm.viewChannels)) r,
+    ];
+  }
+
+  Future<void> _run({bool more = false}) async {
+    final SearchQuery query;
+    if (more) {
+      final last = _hits?.lastOrNull;
+      if (_shown == null || last == null) return;
+      query = _shown!.from(last.message.id);
+    } else {
+      final target = widget.target;
+      try {
+        query = parseSearch(
+          // The Pinned toggle, as the desktop's `pinned:true`.
+          _pinnedOnly ? '${_query.text} pinned:true' : _query.text,
+          members: _members,
+          rooms: _rooms,
+          spaceId: _spaceId,
+          conversationId: target is ConversationTarget ? target.conversationId : null,
+        );
+      } on FormatException catch (e) {
+        ++_request;
+        setState(() {
+          _shown = null;
+          _hits = const [];
+          _total = 0;
+          _failure = e.message;
+          _loading = false;
+        });
+        return;
+      }
+      if (query.isEmpty) {
+        ++_request;
+        setState(() {
+          _shown = null;
+          _hits = null;
+          _failure = null;
+          _loading = false;
+        });
+        return;
+      }
     }
     final request = ++_request;
-    setState(() => _loading = true);
-    final target = widget.target;
+    setState(() {
+      _loading = true;
+      _failure = null;
+      if (!more) _shown = query;
+    });
     try {
-      final hits = await context.repository.search(
-        SearchQuery(
-          text,
-          spaceId: target is RoomTarget ? target.spaceId : null,
-          roomId: target is RoomTarget && !_wholeSpace ? target.roomId : null,
-          conversationId: target is ConversationTarget ? target.conversationId : null,
-          hasFile: _hasFile,
-          pinned: _pinned,
-        ),
-      );
-      if (mounted && request == _request) setState(() => _hits = hits);
+      final page = await context.repository.search(query);
+      if (!mounted || request != _request) return;
+      setState(() {
+        _hits = more ? [...?_hits, ...page.hits] : page.hits;
+        _total = page.total;
+      });
     } catch (_) {
-      if (mounted && request == _request) setState(() => _hits = const []);
+      if (!mounted || request != _request) return;
+      setState(() {
+        if (!more) _hits = const [];
+        _failure = 'The search failed';
+      });
     } finally {
       if (mounted && request == _request) setState(() => _loading = false);
     }
+  }
+
+  // The word the caret is in: where it starts, and its text up to the caret.
+  ({int start, String value}) get _token {
+    final text = _query.text;
+    final at = _query.selection.isValid ? _query.selection.baseOffset.clamp(0, text.length) : text.length;
+    final before = text.substring(0, at);
+    final start = before.lastIndexOf(RegExp(r'\s')) + 1;
+    return (start: start, value: before.substring(start));
+  }
+
+  // Puts [s] in place of the word the caret is in, as the desktop does. A
+  // date filter asks for its day with a date picker.
+  Future<void> _apply(SearchSuggestion s) async {
+    if (const ['before:', 'after:', 'during:'].contains(s.insert)) {
+      final now = DateTime.now();
+      final day = await showDatePicker(
+        context: context,
+        initialDate: now,
+        firstDate: DateTime(2020),
+        lastDate: now,
+        helpText: switch (s.insert) {
+          'before:' => 'Messages before',
+          'after:' => 'Messages after',
+          _ => 'Messages on',
+        },
+      );
+      if (day == null || !mounted) return;
+      s = (label: s.label, detail: null, insert: '${s.insert}${_isoDay(day)} ', member: null, room: null);
+    }
+    final text = _query.text;
+    final token = _token;
+    final end = token.start + token.value.length;
+    var rest = text.substring(end).replaceFirst(RegExp(r'^\S*'), '');
+    if (s.insert.endsWith(' ')) rest = rest.replaceFirst(RegExp(r'^ '), '');
+    final at = token.start + s.insert.length;
+    _query.value = TextEditingValue(
+      text: text.substring(0, token.start) + s.insert + rest,
+      selection: TextSelection.collapsed(offset: at),
+    );
+    _focus.requestFocus();
   }
 
   String? get _spaceName => switch (widget.target) {
@@ -209,7 +480,13 @@ class _InChatSearchState extends State<InChatSearch> {
     final tokens = context.duvet;
     final padding = MediaQuery.paddingOf(context);
     final hits = _hits;
-    final where = _wholeSpace ? (_spaceName ?? 'this Space') : widget.title.replaceFirst('# ', '#');
+    final inSpace = _spaceId != null;
+    final where = inSpace ? (_spaceName ?? 'this Space') : widget.title;
+    final suggestions = searchSuggestions(_token.value, members: _members, rooms: _rooms, inSpace: inSpace);
+    // Members and rooms come as a list under the bar, over the results: chips are for the short values.
+    final listed = suggestions.where((s) => s.member != null || s.room != null).toList();
+    final words = _shown?.text ?? '';
+    final count = _total >= 1000 ? '1,000+ results' : (_total == 1 ? '1 result' : '$_total results');
     // By day, the newest first.
     final groups = <String, List<SearchHit>>{};
     for (final h in hits ?? const <SearchHit>[]) {
@@ -224,24 +501,44 @@ class _InChatSearchState extends State<InChatSearch> {
               keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
               padding: EdgeInsets.only(top: padding.top + 108, bottom: padding.bottom + 72),
               children: [
-                if (_loading && hits == null)
+                if (listed.isNotEmpty)
+                  for (final s in listed)
+                    if (s.member case final m?)
+                      ListRow(
+                        leading: UserAvatar(name: m.displayName, url: m.avatarUrl, size: 40),
+                        title: m.displayName,
+                        snippet: '@${m.username}',
+                        onTap: () => _apply(s),
+                      )
+                    else
+                      ListRow(title: s.room!.name, hash: true, onTap: () => _apply(s))
+                else if (_loading && (hits == null || hits.isEmpty))
                   const Padding(
                     padding: EdgeInsets.all(24),
                     child: Center(child: FCircularProgress()),
                   )
                 else if (hits != null && hits.isEmpty)
-                  ListNote('Nothing found in $where')
-                else
+                  ListNote(_failure ?? 'Nothing found in $where')
+                else ...[
                   for (final MapEntry(key: day, value: list) in groups.entries) ...[
                     Overline(day),
                     for (final h in list)
                       SearchResultRow(
                         message: h.message,
-                        query: _query.text,
-                        where: _wholeSpace ? _roomName(h.target) : null,
+                        query: words,
+                        where: inSpace ? _roomName(h.target) : null,
                         onTap: () => Navigator.of(context).pop(h),
                       ),
                   ],
+                  if (hits != null && _failure != null) ListNote(_failure!),
+                  if (hits != null && hits.length < _total)
+                    Padding(
+                      padding: const EdgeInsets.all(16),
+                      child: _loading
+                          ? const Center(child: FCircularProgress())
+                          : FButton(onPress: () => _run(more: true), child: const Text('More results')),
+                    ),
+                ],
               ],
             ),
           ),
@@ -259,8 +556,9 @@ class _InChatSearchState extends State<InChatSearch> {
                         Expanded(
                           child: SearchField(
                             controller: _query,
+                            focusNode: _focus,
                             autofocus: true,
-                            hint: 'Search ${widget.title.replaceFirst('# ', '')}',
+                            hint: 'Search ${inSpace ? where : widget.title.replaceFirst('# ', '')}',
                           ),
                         ),
                         Semantics(
@@ -279,33 +577,38 @@ class _InChatSearchState extends State<InChatSearch> {
                       ],
                     ),
                     const SizedBox(height: 8),
-                    Row(
-                      children: [
-                        _Toggle(
-                          label: 'Has file',
-                          on: _hasFile,
-                          onTap: () {
-                            setState(() => _hasFile = !_hasFile);
-                            _run();
-                          },
-                        ),
-                        const SizedBox(width: 8),
-                        _Toggle(
-                          label: 'Pinned',
-                          on: _pinned,
-                          onTap: () {
-                            setState(() => _pinned = !_pinned);
-                            _run();
-                          },
-                        ),
-                      ],
+                    // The desktop's suggestions, as chips: a tap puts one in place of the word typed.
+                    SizedBox(
+                      height: 32,
+                      child: ListView(
+                        scrollDirection: Axis.horizontal,
+                        children: [
+                          Padding(
+                            padding: const EdgeInsets.only(right: 8),
+                            child: _Chip(
+                              label: 'Pinned',
+                              on: _pinnedOnly,
+                              onTap: () {
+                                setState(() => _pinnedOnly = !_pinnedOnly);
+                                _run();
+                              },
+                            ),
+                          ),
+                          for (final s in suggestions)
+                            if (listed.isEmpty)
+                              Padding(
+                                padding: const EdgeInsets.only(right: 8),
+                                child: _Chip(label: s.label, hint: s.detail, onTap: () => _apply(s)),
+                              ),
+                        ],
+                      ),
                     ),
                   ],
                 ),
               ),
             ),
           ),
-          if (hits != null)
+          if (hits != null && hits.isNotEmpty)
             Positioned(
               left: 0,
               right: 0,
@@ -313,43 +616,15 @@ class _InChatSearchState extends State<InChatSearch> {
               child: GlassChrome(
                 top: false,
                 child: Padding(
-                  padding: EdgeInsets.fromLTRB(16, 4, 16, 4 + padding.bottom),
-                  child: Row(
-                    children: [
-                      Expanded(
-                        child: Semantics(
-                          liveRegion: true,
-                          child: Text(
-                            '${hits.length == 1 ? '1 result' : '${hits.length} results'} in $where',
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis,
-                            style: DuvetType.caption.copyWith(color: colors.mutedForeground),
-                          ),
-                        ),
-                      ),
-                      if (widget.target is RoomTarget && !_wholeSpace && _spaceName != null)
-                        Semantics(
-                          button: true,
-                          label: 'Search all of $_spaceName',
-                          excludeSemantics: true,
-                          onTap: _widen,
-                          child: GestureDetector(
-                            onTap: _widen,
-                            child: SizedBox(
-                              height: 40,
-                              child: Center(
-                                child: Text(
-                                  'Search all of $_spaceName',
-                                  style: DuvetType.caption.copyWith(
-                                    color: tokens.accentText,
-                                    fontWeight: FontWeight.w500,
-                                  ),
-                                ),
-                              ),
-                            ),
-                          ),
-                        ),
-                    ],
+                  padding: EdgeInsets.fromLTRB(16, 12, 16, 12 + padding.bottom),
+                  child: Semantics(
+                    liveRegion: true,
+                    child: Text(
+                      '$count in $where',
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: DuvetType.caption.copyWith(color: colors.mutedForeground),
+                    ),
                   ),
                 ),
               ),
@@ -358,19 +633,16 @@ class _InChatSearchState extends State<InChatSearch> {
       ),
     );
   }
-
-  void _widen() {
-    setState(() => _wholeSpace = true);
-    _run();
-  }
 }
 
-/// A filter chip that turns on and off.
-class _Toggle extends StatelessWidget {
+/// A suggestion chip, or with [on] a toggle; [hint] says what it does, for a
+/// screen reader.
+class _Chip extends StatelessWidget {
   final String label;
-  final bool on;
+  final String? hint;
+  final bool? on;
   final VoidCallback onTap;
-  const _Toggle({required this.label, required this.on, required this.onTap});
+  const _Chip({required this.label, required this.onTap, this.hint, this.on});
 
   @override
   Widget build(BuildContext context) {
@@ -381,6 +653,7 @@ class _Toggle extends StatelessWidget {
       button: true,
       toggled: on,
       label: label,
+      hint: hint,
       excludeSemantics: true,
       onTap: onTap,
       child: GestureDetector(
@@ -390,14 +663,14 @@ class _Toggle extends StatelessWidget {
           padding: const EdgeInsets.symmetric(horizontal: 12),
           alignment: Alignment.center,
           decoration: BoxDecoration(
-            color: on ? tokens.selectedFill : colors.card,
+            color: on == true ? tokens.selectedFill : colors.card,
             borderRadius: BorderRadius.circular(DuvetTokens.radiusChip),
-            boxShadow: on ? null : tokens.shadowRest,
+            boxShadow: on == true ? null : tokens.shadowRest,
           ),
           child: Text(
             label,
             style: DuvetType.snippet.copyWith(
-              color: on ? tokens.violetText : colors.foreground,
+              color: on == true ? tokens.violetText : colors.foreground,
               fontWeight: FontWeight.w500,
             ),
           ),
@@ -472,7 +745,9 @@ class _GlobalSearchState extends State<GlobalSearch> {
       for (final c in repository.conversations.value.take(5)) SearchQuery(text, conversationId: c.id),
     ];
     final found = <SearchHit>[];
-    await Future.wait([for (final q in queries) repository.search(q).then(found.addAll, onError: (_) {})]);
+    await Future.wait([
+      for (final q in queries) repository.search(q).then((p) => found.addAll(p.hits), onError: (_) {}),
+    ]);
     found.sort((a, b) => b.message.createdAt.compareTo(a.message.createdAt));
     if (mounted && request == _request) {
       setState(() {
