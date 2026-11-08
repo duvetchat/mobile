@@ -2066,29 +2066,38 @@ class DuvetRepository implements ChatRepository {
   );
 
   @override
-  Future<List<SearchHit>> search(SearchQuery q) async {
+  Future<SearchPage> search(SearchQuery q) async {
     final params = duvet.MessageSearch(
       query: q.text,
-      roomIds: [?q.roomId],
-      has: q.hasFile ? const ['file'] : const [],
-      pinned: q.pinned ? true : null,
-      authorIds: [?q.authorId],
+      roomIds: q.roomIds,
+      authorIds: q.authorIds,
+      mentions: q.mentionIds,
+      has: q.has,
+      pinned: q.pinned,
+      before: q.before,
+      after: q.after,
+      cursor: q.cursor,
     );
     if (q.conversationId case final id?) {
       final page = await _call((api) => api.searchConversationMessages(id, params));
-      return [for (final m in page.messages) SearchHit(target: ConversationTarget(id), message: _directMessage(m))];
+      return (
+        hits: [for (final m in page.messages) SearchHit(target: ConversationTarget(id), message: _directMessage(m))],
+        total: page.totalResults,
+      );
     }
     final spaceId = q.spaceId;
-    if (spaceId == null) return const [];
+    if (spaceId == null) return (hits: const <SearchHit>[], total: 0);
     final page = await _call((api) => api.searchSpaceMessages(spaceId, params));
-    return [
-      for (final m in page.messages)
-        if (m.deletedAt == null)
+    return (
+      hits: [
+        for (final m in page.messages)
           SearchHit(
             target: RoomTarget(spaceId: spaceId, roomId: m.roomId),
             message: _roomMessage(m),
           ),
-    ];
+      ],
+      total: page.totalResults,
+    );
   }
 
   @override
