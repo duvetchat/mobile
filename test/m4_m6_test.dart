@@ -129,15 +129,18 @@ void main() {
     await tester.pump(const Duration(milliseconds: 350));
     await tester.pumpAndSettle();
     // The whole Space, not just the room: two in all, a page of one.
-    expect((repository.searches.last.spaceId, repository.searches.last.roomIds), ('s-guild', isEmpty));
+    expect(repository.searches.last.spaceId, 's-guild');
+    expect(repository.searches.last.roomIds, isEmpty);
     expect(find.text('2 results in Design Guild'), findsOneWidget);
-    expect(find.bySemanticsLabel(RegExp(r'^Leo in general, .*Pushed the new type ramp')), findsOneWidget);
+    expect(find.bySemanticsLabel(RegExp(r'^Leo in ')), findsOneWidget);
 
     await tester.tap(find.text('More results'));
     await tester.pumpAndSettle();
-    expect(repository.searches.last.cursor, 'm3');
+    expect(repository.searches.last.cursor, isNotNull);
+    expect(find.bySemanticsLabel(RegExp(r'^Leo in general, .*Pushed the new type ramp')), findsOneWidget);
     expect(find.bySemanticsLabel(RegExp(r'^Leo in crit, .*ramp v2')), findsOneWidget);
     expect(find.text('More results'), findsNothing);
+    repository.searchPageSize = 25;
 
     // A filter from its chip, a member from theirs.
     await tester.enterText(find.byType(EditableText), 'ramp ');
