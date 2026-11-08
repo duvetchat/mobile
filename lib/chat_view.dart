@@ -2328,7 +2328,12 @@ class _ChatViewState extends State<ChatView> {
                         ),
                       ),
                       if (_files.isNotEmpty && _editing == null)
-                        _AttachmentTray(files: _files, onRemove: (f) => setState(() => _files.remove(f))),
+                        _AttachmentTray(
+                          files: _files,
+                          onRemove: (f) => setState(() => _files.remove(f)),
+                          onToggleSpoiler: (f) =>
+                              setState(() => _files[_files.indexOf(f)] = f.withSpoiler(!f.isSpoiler)),
+                        ),
                       Padding(
                         padding: const EdgeInsets.symmetric(horizontal: 16),
                         child: Column(
