@@ -48,6 +48,11 @@ void main() {
     expect(parse('after:2026-11-08').after, DateTime(2026, 11, 9));
     final during = parse('during:2026-12-31');
     expect((during.after, during.before), (DateTime(2026, 12, 31), DateTime(2027, 1, 1)));
+    // Several dates narrow each other, in any order.
+    final both = parse('after:2026-11-07 during:2026-11-06');
+    expect((both.after, both.before), (DateTime(2026, 11, 8), DateTime(2026, 11, 7)));
+    final within = parse('before:2026-11-30 during:2026-11-10 after:2026-11-01');
+    expect((within.after, within.before), (DateTime(2026, 11, 10), DateTime(2026, 11, 11)));
   });
 
   test('suggestions: the filters, then members, rooms and values', () {

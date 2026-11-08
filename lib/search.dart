@@ -193,15 +193,15 @@ SearchQuery parseSearch(
         final day = _parseDay(value);
         if (day == null) throw FormatException('$key: takes a date like ${_isoDay(now ?? DateTime.now())}');
         final next = DateTime(day.year, day.month, day.day + 1);
-        switch (key) {
-          case 'before':
-            before = day;
-          case 'after':
-            after = next;
-          default:
-            after = day;
-            before = next;
-        }
+        // Dates narrow each other: the latest start and the earliest end win, so
+        // `after:` one day and `during:` an earlier one find nothing.
+        final (start, end) = switch (key) {
+          'before' => (null, day),
+          'after' => (next, null),
+          _ => (day, next),
+        };
+        if (start != null && (after == null || start.isAfter(after))) after = start;
+        if (end != null && (before == null || end.isBefore(before))) before = end;
     }
   }
   return SearchQuery(
