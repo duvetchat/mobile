@@ -1183,6 +1183,7 @@ class DuvetRepository implements ChatRepository {
           name: space.name,
           iconUrl: avatarUrl(space.icon),
           bannerUrl: avatarUrl(space.banner),
+          ownerId: space.ownerId,
           sections: _sections(space.id, _visibleRooms(space.id, rooms.values)),
           onlineCount: switch (_spaceMemberIds[space.id]) {
             final ids? when ids.isNotEmpty =>

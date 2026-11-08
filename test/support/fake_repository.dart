@@ -487,6 +487,7 @@ class FakeRepository implements ChatRepository {
                       : s.iconUrl,
                   sections: s.sections,
                   onlineCount: s.onlineCount,
+                  ownerId: s.ownerId,
                   // As SPACE_UPDATE brings it: an uploaded banner, or none.
                   bannerUrl: bannerPath != null
                       ? 'https://example.invalid/banner.png'
@@ -524,6 +525,7 @@ class FakeRepository implements ChatRepository {
               iconUrl: s.iconUrl,
               onlineCount: s.onlineCount,
               bannerUrl: s.bannerUrl,
+              ownerId: s.ownerId,
               sections: [
                 for (final section in s.sections)
                   RoomSection(
@@ -1187,6 +1189,7 @@ class FakeRepository implements ChatRepository {
         id: 's-guild',
         name: 'Design Guild',
         onlineCount: 1,
+        ownerId: maya,
         sections: [
           RoomSection(
             name: null,

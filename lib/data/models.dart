@@ -898,6 +898,9 @@ class Space {
   /// Its banner, or null: atop its directory, as the desktop's sidebar has it.
   final String? bannerUrl;
 
+  /// Its owner's user ID, for the crown; null from a cache that predates it.
+  final String? ownerId;
+
   const Space({
     required this.id,
     required this.name,
@@ -905,6 +908,7 @@ class Space {
     this.sections = const [],
     this.onlineCount,
     this.bannerUrl,
+    this.ownerId,
   });
 
   Iterable<Room> get rooms => sections.expand((s) => s.rooms);
