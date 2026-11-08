@@ -188,6 +188,9 @@ class _ProfileState extends State<_Profile> {
             (!me ||
                 repository.roles(spaceId).any((r) => !r.everyone && managesRoleAt(repository, spaceId, r.position)));
         final held = {for (final r in roles) r.id};
+        final spaceRoles = assignsRoles
+            ? repository.roles(spaceId).where((r) => !r.everyone).toList()
+            : const <SpaceRole>[];
         final presence = presenceIn(repository.presence.value, m.userId, spaceId: widget.spaceId);
         final f = repository.friends.value;
         final isFriend = f.friends.any((x) => x.userId == m.userId);
@@ -371,9 +374,9 @@ class _ProfileState extends State<_Profile> {
                               children: [
                                 if (!assignsRoles)
                                   for (final r in roles) RoleChip(role: r)
-                                else
+                                else ...[
                                   // As the desktop: every role, colored if held, a tap gives or takes it.
-                                  for (final r in repository.roles(spaceId).where((r) => !r.everyone))
+                                  for (final r in spaceRoles)
                                     RoleChip(
                                       role: RoleTag(r.name, color: r.color, id: r.id),
                                       held: held.contains(r.id),
@@ -390,6 +393,10 @@ class _ProfileState extends State<_Profile> {
                                             )
                                           : null,
                                     ),
+                                  // Held but not in the Space's list (yet): it still shows, unchangeable here.
+                                  for (final r in roles)
+                                    if (!spaceRoles.any((s) => s.id == r.id)) RoleChip(role: r),
+                                ],
                               ],
                             ),
                           ],
