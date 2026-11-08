@@ -74,6 +74,10 @@ abstract interface class VoicePeer {
   /// and the microphone's ([AudioLevels.local]).
   Future<AudioLevels> audioLevels();
 
+  /// The connection's round trip to the gateway, from the selected ICE
+  /// candidate pair; null until it is measured.
+  Future<Duration?> roundTrip();
+
   Future<void> close();
 }
 

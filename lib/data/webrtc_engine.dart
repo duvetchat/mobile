@@ -368,6 +368,21 @@ class _Peer implements VoicePeer {
     return (local: local, remote: remote);
   }
 
+  @override
+  Future<Duration?> roundTrip() async {
+    final reports = await _pc.getStats();
+    final pairs = {
+      for (final r in reports)
+        if (r.type == 'candidate-pair') r.id: r.values,
+    };
+    final selected = reports.where((r) => r.type == 'transport').firstOrNull?.values['selectedCandidatePairId'];
+    // Not every platform names the selected pair: the nominated one that works is it.
+    final pair =
+        pairs[selected] ?? pairs.values.where((v) => v['nominated'] == true && v['state'] == 'succeeded').firstOrNull;
+    final seconds = (pair?['currentRoundTripTime'] as num?)?.toDouble();
+    return seconds == null ? null : Duration(microseconds: (seconds * 1e6).round());
+  }
+
   // The average level since the last read: the square root of the energy
   // over the time (both totals grow as audio comes), else the instant level.
   double? _level(String key, Map<dynamic, dynamic> v) {

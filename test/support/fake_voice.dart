@@ -216,6 +216,16 @@ class FakePeer implements VoicePeer {
     return levels;
   }
 
+  /// What WebRTC's stats say the round trip is, and how many times they were asked.
+  Duration? rtt;
+  int pings = 0;
+
+  @override
+  Future<Duration?> roundTrip() async {
+    pings++;
+    return rtt;
+  }
+
   @override
   Future<void> close() async => closed = true;
 }

@@ -720,6 +720,31 @@ void main() {
     expect(peer.reads, 5);
   });
 
+  _voice('the ping is measured every 3 s while in voice, and stops after leave', (async, h) {
+    h.voice.joinRoom(_lounge);
+    async.flushMicrotasks();
+    final peer = h.engine.peer..rtt = const Duration(milliseconds: 42);
+    async.elapse(const Duration(seconds: 6));
+    // Not before the connection is up.
+    expect(peer.pings, 0);
+    expect(h.voice.ping.value, isNull);
+
+    peer.stateHandler!(PeerState.connected);
+    async.flushMicrotasks();
+    expect(h.voice.ping.value, 42);
+
+    peer.rtt = const Duration(milliseconds: 310);
+    async.elapse(const Duration(seconds: 3));
+    expect(h.voice.ping.value, 310);
+    expect(peer.pings, 2);
+
+    h.voice.leave();
+    async.flushMicrotasks();
+    expect(h.voice.ping.value, isNull);
+    async.elapse(const Duration(seconds: 9));
+    expect(peer.pings, 2);
+  });
+
   _voice('the faces\' mouths follow the voices\' levels', (async, h) {
     h.voice.joinRoom(_lounge);
     async.flushMicrotasks();

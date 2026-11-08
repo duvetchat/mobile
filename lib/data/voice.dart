@@ -160,6 +160,7 @@ class VoiceController extends ChangeNotifier {
     this.joinTimeout = const Duration(seconds: 15),
     this.rejoinWindow = const Duration(minutes: 3),
     this.levelInterval = const Duration(milliseconds: 200),
+    this.pingInterval = const Duration(seconds: 3),
     DateTime Function()? clock,
     @visibleForTesting bool Function()? inFront,
   }) : _repository = repository,
@@ -202,6 +203,9 @@ class VoiceController extends ChangeNotifier {
   /// How often the voices' levels are read, for the faces' mouths.
   final Duration levelInterval;
 
+  /// How often the connection's round trip is measured, as desktop's status bar does.
+  final Duration pingInterval;
+
   /// The calls this device saw.
   final CallHistory history;
 
@@ -226,6 +230,10 @@ class VoiceController extends ChangeNotifier {
   /// cost a call into the platform each time.
   ValueNotifier<Map<String, double>> get levels => _levels;
   final _levels = _Levels();
+
+  /// The voice connection's round trip in milliseconds, measured every
+  /// [pingInterval] while connected; null out of voice and until measured.
+  final ping = ValueNotifier<int?>(null);
 
   /// Conversations with a call going on.
   Set<String> get callsInProgress => _calls;
@@ -345,6 +353,7 @@ class VoiceController extends ChangeNotifier {
   Timer? _joinTimer;
   Timer? _levelTimer;
   bool _readingLevels = false;
+  Timer? _pingTimer;
 
   // READY's STUN and TURN servers (the TURN credentials are the account's);
   // STUN alone until the first READY.
@@ -665,6 +674,7 @@ class VoiceController extends ChangeNotifier {
         }
         _setLink(VoiceLink.connected);
         _startLevels();
+        _startPing();
       case PeerState.disconnected:
         _setLink(VoiceLink.reconnecting);
       case PeerState.failed:
@@ -1371,6 +1381,25 @@ class VoiceController extends ChangeNotifier {
     }
   }
 
+  void _startPing() {
+    if (_pingTimer != null) return;
+    unawaited(_readPing());
+    _pingTimer = Timer.periodic(pingInterval, (_) {
+      if (_inFront()) unawaited(_readPing());
+    });
+  }
+
+  Future<void> _readPing() async {
+    final peer = _peer;
+    if (peer == null) return;
+    try {
+      final rtt = await peer.roundTrip();
+      if (identical(_peer, peer) && rtt != null) ping.value = rtt.inMilliseconds;
+    } catch (e) {
+      debugPrint('voice: ping: $e');
+    }
+  }
+
   // ---------------------------------------------------------------------------
   // Leaving
   // ---------------------------------------------------------------------------
@@ -1393,6 +1422,8 @@ class VoiceController extends ChangeNotifier {
     _waitTimer = null;
     _levelTimer?.cancel();
     _levelTimer = null;
+    _pingTimer?.cancel();
+    _pingTimer = null;
     _negotiationReady = false;
     _remoteSet = false;
     _pendingCandidates.clear();
@@ -1411,6 +1442,7 @@ class VoiceController extends ChangeNotifier {
       unawaited(_engine.letSleep());
     }
     levels.value = const {};
+    ping.value = null;
   }
 
   void _notice(String text) {
@@ -1458,6 +1490,7 @@ class VoiceController extends ChangeNotifier {
     _repository.spaces.removeListener(_checkSpeak);
     unawaited(_notices.close());
     levels.dispose();
+    ping.dispose();
     history.dispose();
     super.dispose();
   }
