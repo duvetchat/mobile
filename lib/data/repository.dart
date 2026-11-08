@@ -400,8 +400,9 @@ abstract interface class ChatRepository {
   /// [MessageAttachment.renewBefore] left (or one renewed here since), else a
   /// new one the API signs, which the messages with the file then carry
   /// ([AttachmentRenewed]), the pages kept for offline included. [refused]:
-  /// its link failed to load, so a new one even if it hasn't expired. Its
-  /// own when the API can't sign one.
+  /// its link, the one [attachment] has, failed to load, so a new one even if
+  /// it hasn't expired, but not within a minute of the last one
+  /// signed. Its own when the API can't sign one.
   Future<String> attachmentLink(MessageAttachment attachment, {bool refused = false});
 
   /// The messages after [messageId], the oldest first: what was missed while

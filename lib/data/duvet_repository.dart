@@ -390,7 +390,7 @@ class DuvetRepository implements ChatRepository {
     drafts.clear();
     _ephemeral.clear();
     _links.clear();
-    _askedAt.clear();
+    _signedAt.clear();
     _renewing.clear();
     _linksSession++;
     mentions.value = const {};
@@ -1669,18 +1669,18 @@ class DuvetRepository implements ChatRepository {
   };
 
   // The links the API signed again this session, by attachment ID, when it
-  // was last asked for each, and those it's signing: a file asked for twice
-  // at once is signed once.
+  // signed each, and those it's signing: a file asked for twice at once is
+  // signed once.
   final _links = <String, String>{};
-  final _askedAt = <String, DateTime>{};
+  final _signedAt = <String, DateTime>{};
   final _renewing = <String, Future<String>>{};
   // Counts the sessions: a renewal that ends after the one it began in is
   // kept nowhere.
   var _linksSession = 0;
 
-  /// How long after the API was asked for a file's link it isn't asked
-  /// again: a link that fails for another reason (a file that won't decode,
-  /// a storage's own refusal) mustn't spend the API's 64 a minute.
+  /// How long after the API signed a file's link it isn't asked again: a
+  /// link that fails for another reason (a file that won't decode, a
+  /// storage's own refusal) mustn't spend the API's 64 a minute.
   static const resignCooldown = Duration(minutes: 1);
 
   @override
@@ -1698,16 +1698,20 @@ class DuvetRepository implements ChatRepository {
     final due = attachment.withUrl(known).linkDueAt(now);
     // [attachment] has the link that failed: a newer one may not have.
     if (!due && (!refused || known != attachment.url)) return known;
-    if (!_renewing.containsKey(attachment.id)) {
-      if (_askedAt[attachment.id] case final at? when now.difference(at) < resignCooldown) return known;
-      _askedAt[attachment.id] = now;
+    final signedAt = _signedAt[attachment.id];
+    if (!_renewing.containsKey(attachment.id) && signedAt != null && now.difference(signedAt) < resignCooldown) {
+      return known;
     }
     try {
-      // A block: whenComplete would wait for the future remove() answers,
-      // which is this one.
-      return await (_renewing[attachment.id] ??= _renew(attachment.id).whenComplete(() {
-        _renewing.remove(attachment.id);
-      }));
+      return await (_renewing[attachment.id] ??= () {
+        final renewing = _renew(attachment.id);
+        // A block: whenComplete would wait for the future remove() answers,
+        // which is this one. One of a session since ended leaves the next's.
+        renewing.whenComplete(() {
+          if (identical(_renewing[attachment.id], renewing)) _renewing.remove(attachment.id);
+        }).ignore();
+        return renewing;
+      }());
     } catch (e) {
       // Not found, or offline: its link is all there is.
       debugPrint('attachment link: $e');
@@ -1722,6 +1726,7 @@ class DuvetRepository implements ChatRepository {
     final url = _absolute(await _call((api) => api.resignAttachment(attachmentId)), attachmentId);
     if (session != _linksSession) return url;
     _links[attachmentId] = url;
+    _signedAt[attachmentId] = clock.now();
     _messageEvents.add((_anyChat, AttachmentRenewed(attachmentId, url)));
     unawaited(_cache.changeMessages(attachmentId, (_, m) => m.withAttachmentLink(attachmentId, url)));
     return url;
