@@ -515,6 +515,12 @@ class _ChatViewState extends State<ChatView> {
     if (event case ReactionChanged(:final messageId) when !_entries.any((e) => e.message.id == messageId)) return;
     // A profile change that shows nothing new on the messages here.
     if (event is AuthorChanged && _entries.every((e) => identical(e.message.changedBy(event), e.message))) return;
+    if (event case AttachmentRenewed(
+      :final attachmentId,
+      :final url,
+    ) when _entries.every((e) => identical(e.message.withAttachmentLink(attachmentId, url), e.message))) {
+      return;
+    }
     // A thread takes the replies to its messages, and its own sends.
     if (widget.threadOf != null) {
       if (event case MessageCreated(
@@ -564,6 +570,13 @@ class _ChatViewState extends State<ChatView> {
           for (var i = 0; i < _entries.length; i++) {
             final m = _entries[i].message;
             final changed = m.changedBy(event);
+            if (!identical(changed, m)) _entries[i] = (message: changed, delivery: _entries[i].delivery);
+          }
+        // A file's new link, once its old one expired.
+        case AttachmentRenewed(:final attachmentId, :final url):
+          for (var i = 0; i < _entries.length; i++) {
+            final m = _entries[i].message;
+            final changed = m.withAttachmentLink(attachmentId, url);
             if (!identical(changed, m)) _entries[i] = (message: changed, delivery: _entries[i].delivery);
           }
       }
@@ -806,17 +819,35 @@ class _ChatViewState extends State<ChatView> {
     }
   }
 
-  /// Stops an upload: the message goes, its files back to the tray.
+  /// Stops an upload: the message goes, its files back to the tray. Its text
+  /// and reply come back too while the composer has neither, as the desktop
+  /// does; what the user wrote or picked since stays.
   void _cancelUpload(_Entry entry) {
     final nonce = entry.message.nonce;
     if (nonce == null) return;
     _cancels[nonce]?.complete();
     final outgoing = _outgoing.remove(nonce);
+    final restore = outgoing != null && _editing == null;
+    final empty = _composer.text.trim().isEmpty && _replyTo == null;
+    // A reply whose message was deleted meanwhile can't be sent again.
+    final reply = entry.message.reply;
     setState(() {
       _entries.remove(entry);
       _progress.remove(nonce);
-      if (outgoing != null && _editing == null) _files.addAll(outgoing.files.take(maxFiles - _files.length));
+      if (restore) {
+        _files.addAll(outgoing.files.take(maxFiles - _files.length));
+        if (empty && reply != null && !reply.deleted) _replyTo = reply;
+      }
     });
+    if (restore && empty && outgoing.content.isNotEmpty) {
+      final directory = _directory;
+      _composer.setEncoded(
+        outgoing.content,
+        nameOf: directory.nameOf,
+        emojiNameOf: (id) => directory.emojiOf(id)?.name,
+        roomNameOf: (id) => directory.roomOf(id)?.name,
+      );
+    }
     _announce('Upload cancelled');
   }
 
@@ -2366,7 +2397,11 @@ class _ChatViewState extends State<ChatView> {
       onOpenReactors: (r) => _openReactors(m, r),
       onLongPress: pinned ? null : (anchor) => _messageActions(anchor, entry),
       progress: m.nonce == null ? null : _progress[m.nonce],
-      onCancelUpload: entry.delivery == _Delivery.sending ? () => _cancelUpload(entry) : null,
+      // Once every byte is up the API may post the message whatever comes
+      // next, so there's nothing left to cancel: it shows as being sent.
+      onCancelUpload: entry.delivery == _Delivery.sending && (_progress[m.nonce] ?? 0) < 1
+          ? () => _cancelUpload(entry)
+          : null,
       tooLarge: m.nonce != null && _tooLarge.contains(m.nonce),
       onOpenLink: _openLink,
       onOpenSpace: _openSpace,

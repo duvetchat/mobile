@@ -3,6 +3,7 @@ import 'dart:io';
 import 'dart:math' as math;
 
 import 'package:audio_service/audio_service.dart' as svc;
+import 'package:clock/clock.dart' as time show clock;
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:forui/forui.dart';
@@ -14,6 +15,7 @@ import 'package:video_player/video_player.dart';
 import '../data/models.dart';
 import '../data/ogg.dart';
 import '../theme.dart';
+import 'attachment_link.dart';
 import 'depth.dart';
 
 // -----------------------------------------------------------------------------
@@ -53,7 +55,9 @@ abstract class AudioPlayback {
   /// Plays [url] as [id], from where it was paused if it's the same.
   /// [title] and [artist] name it in the playback bar and the system's media
   /// controls, which show [artUrl] (the sender's avatar) as its artwork.
-  Future<void> play(String id, String url, {required String title, String? artist, String? artUrl});
+  /// [link], when given, answers the link to load instead, a new one when
+  /// [url] is about to expire, and is asked once more when it fails to load.
+  Future<void> play(String id, String url, {required String title, String? artist, String? artUrl, LinkSource? link});
 
   /// Plays what was paused.
   Future<void> resume();
@@ -135,7 +139,7 @@ class VoiceNoteHandler extends svc.BaseAudioHandler with svc.SeekHandler {
 class JustAudioPlayback implements AudioPlayback {
   VoiceNoteHandler? _handler;
   final _state = ValueNotifier(PlaybackState.idle);
-  ({String id, String url, String title, String? artist, String? artUrl})? _last;
+  ({String id, String url, String title, String? artist, String? artUrl, LinkSource? link})? _last;
 
   @override
   ValueListenable<PlaybackState> get state => _state;
@@ -145,7 +149,9 @@ class JustAudioPlayback implements AudioPlayback {
     final handler = _handler = VoiceNoteHandler.instance;
     handler.onStopped = () => _state.value = PlaybackState.idle;
     handler.onReplay = () async {
-      if (_last case final l?) await play(l.id, l.url, title: l.title, artist: l.artist, artUrl: l.artUrl);
+      if (_last case final l?) {
+        await play(l.id, l.url, title: l.title, artist: l.artist, artUrl: l.artUrl, link: l.link);
+      }
     };
     final player = handler.player;
     player.positionStream.listen((p) => _update(position: p));
@@ -175,25 +181,45 @@ class JustAudioPlayback implements AudioPlayback {
   }
 
   @override
-  Future<void> play(String id, String url, {required String title, String? artist, String? artUrl}) async {
+  Future<void> play(
+    String id,
+    String url, {
+    required String title,
+    String? artist,
+    String? artUrl,
+    LinkSource? link,
+  }) async {
     final handler = _ensure();
-    _last = (id: id, url: url, title: title, artist: artist, artUrl: artUrl);
+    _last = (id: id, url: url, title: title, artist: artist, artUrl: artUrl, link: link);
     if (_state.value.id != id) {
       await handler.player.stop();
       _state.value = PlaybackState(id: id, title: title, artist: artist);
       handler.mediaItem.add(
         svc.MediaItem(id: id, title: title, artist: artist, artUri: artUrl == null ? null : Uri.tryParse(artUrl)),
       );
-      try {
-        await handler.player.setUrl(url);
-      } on ja.PlayerInterruptedException {
-        // Another note, or Stop, took over while this one loaded.
-        return;
-      } catch (e) {
-        // A note that won't load mustn't stay in the bar and the notification.
-        debugPrint('Voice note $id failed to load: $e');
-        await handler.stop();
-        return;
+      // Its link, renewed first when it's about to expire, and once more when
+      // it won't load: an expired link is refused.
+      String? failed;
+      for (var refused = false; ; refused = true) {
+        final source = link == null ? url : await link(failed: failed);
+        // Another note, or Stop, took over while its link came.
+        if (_state.value.id != id) return;
+        try {
+          await handler.player.setUrl(source);
+          break;
+        } on ja.PlayerInterruptedException {
+          // Another note, or Stop, took over while this one loaded.
+          return;
+        } catch (e) {
+          if (link != null && !refused) {
+            failed = source;
+            continue;
+          }
+          // A note that won't load mustn't stay in the bar and the notification.
+          debugPrint('Voice note $id failed to load: $e');
+          await handler.stop();
+          return;
+        }
       }
     }
     // The player's own play: the handler's would replay a note that's idle.
@@ -367,6 +393,7 @@ class VoiceNotePlayer extends StatelessWidget {
                           title: 'Voice message',
                           artist: authorName,
                           artUrl: authorAvatarUrl,
+                          link: linkSource(context, attachment),
                         ),
                 ),
                 const SizedBox(width: 10),
@@ -444,7 +471,12 @@ class AudioFileTile extends StatelessWidget {
                   label: playing ? 'Pause' : 'Play ${attachment.displayName}',
                   onPressed: () => playing
                       ? playback.pause()
-                      : playback.play(attachment.id, attachment.url, title: attachment.displayName),
+                      : playback.play(
+                          attachment.id,
+                          attachment.url,
+                          title: attachment.displayName,
+                          link: linkSource(context, attachment),
+                        ),
                 ),
                 const SizedBox(width: 12),
                 Expanded(
@@ -590,24 +622,48 @@ class _VideoTileState extends State<VideoTile> {
 
   // Only while on screen: the list drops (and so disposes) a tile scrolled away.
   VideoPlayerController? _frame;
+  bool _counted = false;
 
   @override
   void initState() {
     super.initState();
     if (widget.poster != null || widget.attachment.local || _frames >= _maxFrames) return;
     _frames++;
-    _frame = VideoPage.controllerFor(Uri.parse(widget.attachment.url))
-      ..initialize().then((_) {
+    _counted = true;
+    final a = widget.attachment;
+    final link = linkSource(context, a);
+    // Its link renewed first when it's about to expire.
+    if (a.linkDueAt(time.clock.now())) {
+      link().then((url) => _load(url, link));
+    } else {
+      _load(a.url, link);
+    }
+  }
+
+  // Loads the first frame from [url]; once more from a new link when it
+  // won't, as an expired link is refused.
+  void _load(String url, LinkSource link, {bool retry = true}) {
+    if (!mounted) return;
+    final frame = _frame = VideoPage.controllerFor(Uri.parse(url));
+    frame.initialize().then(
+      (_) {
         if (mounted) setState(() {});
-      }, onError: (Object _) {});
+      },
+      onError: (Object _) async {
+        if (!retry || !mounted || widget.attachment.linkExpires == null) return;
+        final next = await link(failed: url);
+        if (!mounted || !identical(_frame, frame)) return;
+        _frame = null;
+        await frame.dispose();
+        _load(next, link, retry: false);
+      },
+    );
   }
 
   @override
   void dispose() {
-    if (_frame case final frame?) {
-      _frames--;
-      frame.dispose();
-    }
+    if (_counted) _frames--;
+    _frame?.dispose();
     super.dispose();
   }
 
@@ -691,20 +747,44 @@ class VideoPage extends StatefulWidget {
 }
 
 class _VideoPageState extends State<VideoPage> {
-  late final VideoPlayerController _controller = VideoPage.controllerFor(Uri.parse(widget.attachment.url));
+  // Null until its link is there: a new one, when its own is about to expire.
+  VideoPlayerController? _player;
   Object? _error;
   double _drag = 0;
 
   @override
   void initState() {
     super.initState();
-    _controller.addListener(_changed);
-    _controller.initialize().then(
+    final a = widget.attachment;
+    final link = linkSource(context, a);
+    if (a.linkDueAt(time.clock.now())) {
+      link().then((url) => _load(url, link));
+    } else {
+      _load(a.url, link);
+    }
+  }
+
+  // Plays it from [url]; once more from a new link when it won't load, as an
+  // expired link is refused.
+  void _load(String url, LinkSource link, {bool retry = true}) {
+    if (!mounted) return;
+    final player = _player = VideoPage.controllerFor(Uri.parse(url))..addListener(_changed);
+    player.initialize().then(
       (_) {
-        if (mounted) _controller.play();
+        if (mounted && identical(_player, player)) player.play();
       },
-      onError: (Object e) {
-        if (mounted) setState(() => _error = e);
+      onError: (Object e) async {
+        if (!mounted || !identical(_player, player)) return;
+        if (!retry || widget.attachment.linkExpires == null) {
+          setState(() => _error = e);
+          return;
+        }
+        final next = await link(failed: url);
+        if (!mounted || !identical(_player, player)) return;
+        player.removeListener(_changed);
+        _player = null;
+        await player.dispose();
+        _load(next, link, retry: false);
       },
     );
   }
@@ -715,15 +795,16 @@ class _VideoPageState extends State<VideoPage> {
 
   @override
   void dispose() {
-    _controller.removeListener(_changed);
-    _controller.dispose();
+    _player?.removeListener(_changed);
+    _player?.dispose();
     super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
     const ink = DuvetTokens.mediaInk;
-    final value = _controller.value;
+    final controller = _player;
+    final value = controller?.value ?? const VideoPlayerValue.uninitialized();
     final duration = value.duration;
     final progress = duration == Duration.zero ? 0.0 : value.position.inMilliseconds / duration.inMilliseconds;
     return Semantics(
@@ -750,10 +831,10 @@ class _VideoPageState extends State<VideoPage> {
                   child: Center(
                     child: _error != null
                         ? Text('Couldn’t play this video', style: DuvetType.body.copyWith(color: ink))
-                        : value.isInitialized
+                        : value.isInitialized && controller != null
                         ? GestureDetector(
-                            onTap: () => value.isPlaying ? _controller.pause() : _controller.play(),
-                            child: AspectRatio(aspectRatio: value.aspectRatio, child: VideoPlayer(_controller)),
+                            onTap: () => value.isPlaying ? controller.pause() : controller.play(),
+                            child: AspectRatio(aspectRatio: value.aspectRatio, child: VideoPlayer(controller)),
                           )
                         : const CircularProgressIndicator(color: ink),
                   ),
@@ -773,7 +854,7 @@ class _VideoPageState extends State<VideoPage> {
                   ),
                 ),
               ),
-              if (value.isInitialized)
+              if (value.isInitialized && controller != null)
                 Positioned(
                   left: 16,
                   right: 16,
@@ -784,9 +865,9 @@ class _VideoPageState extends State<VideoPage> {
                         button: true,
                         label: value.isPlaying ? 'Pause' : 'Play',
                         excludeSemantics: true,
-                        onTap: () => value.isPlaying ? _controller.pause() : _controller.play(),
+                        onTap: () => value.isPlaying ? controller.pause() : controller.play(),
                         child: GestureDetector(
-                          onTap: () => value.isPlaying ? _controller.pause() : _controller.play(),
+                          onTap: () => value.isPlaying ? controller.pause() : controller.play(),
                           child: SizedBox.square(
                             dimension: 40,
                             child: Icon(value.isPlaying ? FLucideIcons.pause : FLucideIcons.play, color: ink),
@@ -799,7 +880,7 @@ class _VideoPageState extends State<VideoPage> {
                           progress: progress.clamp(0, 1),
                           track: const Color(0x3DFFFFFF),
                           fill: ink,
-                          onSeek: (f) => _controller.seekTo(duration * f),
+                          onSeek: (f) => controller.seekTo(duration * f),
                         ),
                       ),
                       const SizedBox(width: 12),

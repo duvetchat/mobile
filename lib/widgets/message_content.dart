@@ -20,6 +20,7 @@ import '../data/message_tokens.dart';
 import '../data/models.dart';
 import '../theme.dart';
 import 'apng.dart';
+import 'attachment_link.dart';
 import 'code_highlight.dart';
 import 'depth.dart';
 import 'glass.dart';
@@ -797,23 +798,37 @@ Widget _image(MessageAttachment a, double width, {BoxFit fit = BoxFit.cover}) {
   final cache = math.max(1, (width * dpr).round());
   Widget broken(BuildContext context, Object _, StackTrace? _) =>
       Center(child: Icon(FLucideIcons.imageOff, color: context.theme.colors.mutedForeground));
-  final still = a.local
-      ? Image.file(File(a.url), fit: fit, cacheWidth: fit == BoxFit.cover ? cache : null, errorBuilder: broken)
-      : Image.network(
-          a.url,
-          fit: fit,
-          cacheWidth: fit == BoxFit.cover ? cache : null,
-          errorBuilder: broken,
-          frameBuilder: (context, child, frame, sync) => AnimatedOpacity(
-            opacity: frame == null && !sync ? 0 : 1,
-            duration: const Duration(milliseconds: 200),
-            child: child,
-          ),
-        );
   // Flutter plays GIFs and WebPs itself, APNGs not: apng.dart does.
-  return a.contentType == 'image/apng'
-      ? ApngImage(url: a.url, local: a.local, width: width, fit: fit, placeholder: still)
+  Widget played(String url, Widget still) => a.contentType == 'image/apng'
+      ? ApngImage(key: ValueKey(url), url: url, local: a.local, width: width, fit: fit, placeholder: still)
       : still;
+  if (a.local) {
+    return played(
+      a.url,
+      Image.file(File(a.url), fit: fit, cacheWidth: fit == BoxFit.cover ? cache : null, errorBuilder: broken),
+    );
+  }
+  return AttachmentLinkBuilder(
+    attachment: a,
+    builder: (context, url, refused) => played(
+      url,
+      Image.network(
+        url,
+        fit: fit,
+        cacheWidth: fit == BoxFit.cover ? cache : null,
+        errorBuilder: (context, error, stack) {
+          // Its link expired: the API refuses it.
+          if (error is NetworkImageLoadException && error.statusCode == 403) refused();
+          return broken(context, error, stack);
+        },
+        frameBuilder: (context, child, frame, sync) => AnimatedOpacity(
+          opacity: frame == null && !sync ? 0 : 1,
+          duration: const Duration(milliseconds: 200),
+          child: child,
+        ),
+      ),
+    ),
+  );
 }
 
 class _Badge extends StatelessWidget {
@@ -914,6 +929,7 @@ class _FileTile extends StatelessWidget {
 }
 
 Future<void> _fileMenu(BuildContext anchor, MessageAttachment a) async {
+  final link = linkSource(anchor, a);
   final picked = await showGlassMenu(
     anchor,
     label: 'File options',
@@ -926,11 +942,11 @@ Future<void> _fileMenu(BuildContext anchor, MessageAttachment a) async {
   try {
     switch (picked) {
       case 'open':
-        await MediaActions.instance.open(a.url);
+        await MediaActions.instance.open(await link());
       case 'share':
-        await MediaActions.instance.share(a.url, a.displayName, a.contentType);
+        await MediaActions.instance.share(await link(), a.displayName, a.contentType);
       case 'copy':
-        await Clipboard.setData(ClipboardData(text: a.url));
+        await Clipboard.setData(ClipboardData(text: await link()));
     }
   } catch (_) {
     if (anchor.mounted) {
@@ -1550,8 +1566,9 @@ class _ImageViewerState extends State<ImageViewer> with TickerProviderStateMixin
   }
 
   Future<void> _save(MessageAttachment a) async {
+    final link = linkSource(context, a);
     try {
-      final saved = await MediaActions.instance.saveToGallery(a.url, a.displayName);
+      final saved = await MediaActions.instance.saveToGallery(await link(), a.displayName);
       _toast(saved ? 'Saved to your photos' : 'Duvet can’t save to your photos');
     } catch (_) {
       _toast('Couldn’t save the photo');
@@ -1559,8 +1576,9 @@ class _ImageViewerState extends State<ImageViewer> with TickerProviderStateMixin
   }
 
   Future<void> _share(MessageAttachment a) async {
+    final link = linkSource(context, a);
     try {
-      await MediaActions.instance.share(a.url, a.displayName, a.contentType);
+      await MediaActions.instance.share(await link(), a.displayName, a.contentType);
     } catch (_) {
       _toast('Couldn’t share the photo');
     }
@@ -1749,7 +1767,8 @@ class _ImageViewerState extends State<ImageViewer> with TickerProviderStateMixin
                             action(FLucideIcons.download, 'Save', () => _save(current)),
                             action(FLucideIcons.share2, 'Share', () => _share(current)),
                             action(FLucideIcons.link, 'Copy link', () async {
-                              await Clipboard.setData(ClipboardData(text: current.url));
+                              final link = linkSource(context, current);
+                              await Clipboard.setData(ClipboardData(text: await link()));
                               _toast('Link copied');
                             }),
                           ],

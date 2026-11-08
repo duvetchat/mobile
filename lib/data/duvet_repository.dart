@@ -389,6 +389,10 @@ class DuvetRepository implements ChatRepository {
     _lastRead.clear();
     drafts.clear();
     _ephemeral.clear();
+    _links.clear();
+    _signedAt.clear();
+    _renewing.clear();
+    _linksSession++;
     mentions.value = const {};
     _forgetMentionNotices();
     _voiceSignaling.detach();
@@ -1822,6 +1826,70 @@ class DuvetRepository implements ChatRepository {
       (api) => api.getDirectMessageById(conversationId, messageId),
     ).then(_directMessage),
   };
+
+  // The links the API signed again this session, by attachment ID, when it
+  // signed each, and those it's signing: a file asked for twice at once is
+  // signed once.
+  final _links = <String, String>{};
+  final _signedAt = <String, DateTime>{};
+  final _renewing = <String, Future<String>>{};
+  // Counts the sessions: a renewal that ends after the one it began in is
+  // kept nowhere.
+  var _linksSession = 0;
+
+  /// How long after the API signed a file's link it isn't asked again: a
+  /// link that fails for another reason (a file that won't decode, a
+  /// storage's own refusal) mustn't spend the API's 64 a minute.
+  static const resignCooldown = Duration(minutes: 1);
+
+  @override
+  Future<String> attachmentLink(MessageAttachment attachment, {bool refused = false}) async {
+    final own = attachment.linkExpires;
+    if (own == null) return attachment.url;
+    // A copy of the message older than one renewed here (a gallery opened
+    // before, a bot's answer kept aside) has the old link.
+    final renewed = _links[attachment.id];
+    final known = switch (renewed) {
+      final url? when attachment.withUrl(url).linkExpires?.isAfter(own) ?? false => url,
+      _ => attachment.url,
+    };
+    final now = clock.now();
+    final due = attachment.withUrl(known).linkDueAt(now);
+    // [attachment] has the link that failed: a newer one may not have.
+    if (!due && (!refused || known != attachment.url)) return known;
+    final signedAt = _signedAt[attachment.id];
+    if (!_renewing.containsKey(attachment.id) && signedAt != null && now.difference(signedAt) < resignCooldown) {
+      return known;
+    }
+    try {
+      return await (_renewing[attachment.id] ??= () {
+        final renewing = _renew(attachment.id);
+        // A block: whenComplete would wait for the future remove() answers,
+        // which is this one. One of a session since ended leaves the next's.
+        renewing.whenComplete(() {
+          if (identical(_renewing[attachment.id], renewing)) _renewing.remove(attachment.id);
+        }).ignore();
+        return renewing;
+      }());
+    } catch (e) {
+      // Not found, or offline: its link is all there is.
+      debugPrint('attachment link: $e');
+      return known;
+    }
+  }
+
+  // Asks the API to sign [attachmentId]'s link again; the messages here with
+  // the file load it from the new one, as do the pages kept for offline.
+  Future<String> _renew(String attachmentId) async {
+    final session = _linksSession;
+    final url = _absolute(await _call((api) => api.resignAttachment(attachmentId)), attachmentId);
+    if (session != _linksSession) return url;
+    _links[attachmentId] = url;
+    _signedAt[attachmentId] = clock.now();
+    _messageEvents.add((_anyChat, AttachmentRenewed(attachmentId, url)));
+    unawaited(_cache.changeMessages(attachmentId, (_, m) => m.withAttachmentLink(attachmentId, url)));
+    return url;
+  }
 
   @override
   Future<ChatMessage> edit(ChatTarget target, String messageId, String content) => switch (target) {
@@ -3814,16 +3882,20 @@ class DuvetRepository implements ChatRepository {
           id: a.id,
           filename: a.filename,
           contentType: a.contentType,
-          url: switch (a.url) {
-            final url? when url.startsWith('http') => url,
-            final url? when url.startsWith('/') => 'https://${_router.api}$url',
-            _ => attachmentUrl(a.id),
-          },
+          url: _absolute(a.url, a.id),
           width: a.width,
           height: a.height,
           sizeBytes: a.sizeBytes,
         ),
   ];
+
+  // An attachment's link as the API gives it, a path on its host most often,
+  // made whole.
+  String _absolute(String? url, String attachmentId) => switch (url) {
+    final url? when url.startsWith('http') => url,
+    final url? when url.startsWith('/') => 'https://${_router.api}$url',
+    _ => attachmentUrl(attachmentId),
+  };
 
   static List<MessageEmbed> _embeds(List<duvet.Embed>? list) => [
     for (final e in list ?? const <duvet.Embed>[])

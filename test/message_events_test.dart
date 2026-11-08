@@ -143,6 +143,21 @@ class _HeldWrites extends MemoryChatCacheStore {
   }
 }
 
+/// When the links the API signs again expire: 2100.
+const _renewedExp = 4102444800;
+const _renewed = 'https://api.duvet.chat/attachments/a-9?sig=new&exp=$_renewedExp';
+
+/// The picture [id], its link signed until [left] from now; an unsigned link
+/// with no [left].
+MessageAttachment _signed(String id, [Duration? left]) => MessageAttachment(
+  id: id,
+  filename: 'cat.png',
+  contentType: 'image/png',
+  url: left == null
+      ? 'https://api.duvet.chat/attachments/$id'
+      : 'https://api.duvet.chat/attachments/$id?sig=old&exp=${DateTime.now().add(left).millisecondsSinceEpoch ~/ 1000}',
+);
+
 /// A message of [authorId]'s as a page kept has it.
 ChatMessage _keptMessage(String id, String authorId, String name) =>
     ChatMessage(id: id, authorId: authorId, authorName: name, content: id, createdAt: DateTime(2026, 10, 23));
@@ -241,6 +256,9 @@ void main() {
         ('GET', '/api/rooms/r-1/messages/8') => _roomMessage('8', 'fetched'),
         ('GET', '/api/rooms/r-1/messages/9') => _roomMessage('9', 'soon gone'),
         ('GET', '/api/users/@me/conversations/c-1/messages/31') => _dmMessage('31', 'fetched in the DM'),
+        // A file's link signed again, outside /api; a-gone's message is gone.
+        ('POST', '/attachments/a-9/resign') => {'url': '/attachments/a-9?sig=new&exp=$_renewedExp'},
+        ('POST', '/attachments/a-gone/resign') => http.Response(jsonEncode({'error': 'attachment not found'}), 404),
         _ => null,
       };
       if (json is http.Response) return json;
@@ -748,6 +766,93 @@ void main() {
         (_dm, 'in a direct message', 'Maya', 'fetched in the DM'),
       );
     });
+  });
+
+  // A file's link expires a day after the API signed it; it signs it again
+  // (#182).
+  group('file links', () {
+    Iterable<http.Request> resigns() => requests.where((r) => r.url.path.endsWith('/resign'));
+
+    test('one about to expire is signed again, once for two asking at once, and its messages load it from the new '
+        'one, the pages kept for offline too', () async {
+      final events = await listen(_dm);
+      final file = _signed('a-9', const Duration(minutes: 10));
+      ChatCache(cache).savePage('c-1', [
+        ChatMessage(
+          id: '5',
+          authorId: _maya,
+          authorName: 'Maya',
+          content: '',
+          createdAt: DateTime(2026, 10, 23),
+          attachments: [file],
+        ),
+      ]);
+      await eventually(() => expect(cache.data.keys, contains('chat_c-1')));
+
+      expect(await Future.wait([repository.attachmentLink(file), repository.attachmentLink(file)]), [
+        _renewed,
+        _renewed,
+      ]);
+      expect([for (final r in resigns()) (r.method, r.url.path)], [('POST', '/attachments/a-9/resign')]);
+      await pumpEventQueue();
+      final renewed = events.whereType<AttachmentRenewed>().single;
+      expect((renewed.attachmentId, renewed.url), ('a-9', _renewed));
+      await eventually(() async {
+        expect((await ChatCache(cache).loadPage('c-1'))!.single.attachments.single.url, _renewed);
+      });
+
+      // A copy of the message from before (a gallery open since) gets the new
+      // one, with no new request.
+      expect(await repository.attachmentLink(file), _renewed);
+      expect(resigns(), hasLength(1));
+
+      // The new one failing too (a file that won't decode, say) isn't signed
+      // again within the minute: it would spend the API's 64 a minute.
+      expect(await repository.attachmentLink(file.withUrl(_renewed), refused: true), _renewed);
+      expect(resigns(), hasLength(1));
+    });
+
+    test('one with time left is its own, unless it failed to load', () async {
+      await listen(_dm);
+      final file = _signed('a-9', const Duration(hours: 5));
+      expect(await repository.attachmentLink(file), file.url);
+      expect(resigns(), isEmpty);
+      expect(await repository.attachmentLink(file, refused: true), _renewed);
+      expect(resigns(), hasLength(1));
+    });
+
+    test('one the API won\'t sign again, and one that doesn\'t expire, are their own', () async {
+      final events = await listen(_dm);
+      final gone = _signed('a-gone', const Duration(minutes: 1));
+      expect(await repository.attachmentLink(gone), gone.url);
+      final unsigned = _signed('a-9');
+      expect(await repository.attachmentLink(unsigned, refused: true), unsigned.url);
+      expect(resigns(), hasLength(1));
+      await pumpEventQueue();
+      expect(events.whereType<AttachmentRenewed>(), isEmpty);
+    });
+  });
+
+  test('a file\'s link expires at its exp, and a message takes a new one for its file alone', () {
+    final file = _signed('a-9', const Duration(minutes: 10));
+    final now = DateTime.now();
+    expect(file.linkDueAt(now), isTrue);
+    expect(file.linkDueAt(now.subtract(const Duration(minutes: 30))), isFalse);
+    expect(_signed('a-9').linkExpires, isNull);
+    expect(file.withUrl(_renewed).linkExpires, DateTime.fromMillisecondsSinceEpoch(_renewedExp * 1000, isUtc: true));
+
+    final m = ChatMessage(
+      id: '5',
+      authorId: _maya,
+      authorName: 'Maya',
+      content: '',
+      createdAt: now,
+      attachments: [file, _signed('a-2', const Duration(minutes: 10))],
+    );
+    expect(identical(m.withAttachmentLink('a-3', _renewed), m), isTrue);
+    final changed = m.withAttachmentLink('a-9', _renewed);
+    expect([for (final a in changed.attachments) a.url], [_renewed, m.attachments.last.url]);
+    expect(identical(changed.withAttachmentLink('a-9', _renewed), changed), isTrue);
   });
 
   group('bots\' answers', () {

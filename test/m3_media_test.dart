@@ -5,10 +5,12 @@ import 'package:duvet/data/emoji_catalog.dart';
 import 'package:duvet/data/gifs.dart';
 import 'package:duvet/data/links.dart';
 import 'package:duvet/data/models.dart';
+import 'package:duvet/data/scope.dart';
 import 'package:duvet/data/appearance.dart';
 import 'package:duvet/main.dart';
 import 'package:duvet/theme.dart';
 import 'package:duvet/widgets/apng.dart';
+import 'package:duvet/widgets/attachment_link.dart';
 import 'package:duvet/widgets/media.dart';
 import 'package:duvet/widgets/media_actions.dart';
 import 'package:duvet/widgets/message_content.dart';
@@ -39,8 +41,15 @@ class _Playback implements AudioPlayback {
   ValueListenable<PlaybackState> get state => _state;
 
   @override
-  Future<void> play(String id, String url, {required String title, String? artist, String? artUrl}) async {
-    played.add((id, url));
+  Future<void> play(
+    String id,
+    String url, {
+    required String title,
+    String? artist,
+    String? artUrl,
+    LinkSource? link,
+  }) async {
+    played.add((id, link == null ? url : await link()));
     _state.value = PlaybackState(
       id: id,
       title: title,
@@ -414,6 +423,87 @@ void main() {
     expect(playback.played.single, ('att-v', 'https://x/v.webm'));
     expect(find.bySemanticsLabel('Pause'), findsOneWidget);
     semantics.dispose();
+  });
+
+  // A file's link expires a day after the API signed it (#182).
+  group('file links', () {
+    String signed(String id, Duration left) =>
+        'https://x/attachments/$id?sig=old&exp=${DateTime.now().add(left).millisecondsSinceEpoch ~/ 1000}';
+    const fresh = 'https://x/attachments/p-1?sig=new&exp=4102444800';
+    MessageAttachment picture(String url) =>
+        MessageAttachment(id: 'p-1', filename: 'cat.png', contentType: 'image/png', url: url, width: 100, height: 100);
+    List<String> loaded(WidgetTester tester) => [
+      for (final image in tester.widgetList<Image>(find.byType(Image)))
+        if (switch (image.image) {
+              ResizeImage(:final imageProvider) => imageProvider,
+              final provider => provider,
+            }
+            case NetworkImage(:final url))
+          url,
+    ];
+
+    testWidgets('a picture whose link is about to expire loads from a new one; one with time left as it is', (
+      tester,
+    ) async {
+      final repository = await openMaya(tester);
+      repository.renewedLinks['p-1'] = fresh;
+      final soon = signed('p-1', const Duration(minutes: 5));
+      repository.push('c-maya', MessageCreated(withFiles('m-p', [picture(soon)])));
+      await tester.pumpAndSettle();
+      expect(repository.linksAsked, [(id: 'p-1', refused: false)]);
+      expect(loaded(tester), contains(fresh));
+      expect(loaded(tester), isNot(contains(soon)));
+
+      final later = signed('p-2', const Duration(hours: 5));
+      repository.push('c-maya', MessageCreated(withFiles('m-q', [picture(later)])));
+      await tester.pumpAndSettle();
+      expect(repository.linksAsked, hasLength(1));
+      expect(loaded(tester), contains(later));
+      semantics.dispose();
+    });
+
+    testWidgets('a link that fails to load is asked for anew, once', (tester) async {
+      final repository = FakeRepository()..renewedLinks['p-1'] = fresh;
+      final file = picture(signed('p-1', const Duration(hours: 5)));
+      final urls = <String>[];
+      late VoidCallback refuse;
+      await tester.pumpWidget(
+        RepositoryScope(
+          repository: repository,
+          child: AttachmentLinkBuilder(
+            attachment: file,
+            builder: (_, url, refused) {
+              urls.add(url);
+              refuse = refused;
+              return const SizedBox();
+            },
+          ),
+        ),
+      );
+      expect(urls.last, file.url);
+      refuse();
+      refuse();
+      await tester.pumpAndSettle();
+      expect(urls.last, fresh);
+      expect(repository.linksAsked, [(id: 'p-1', refused: true)]);
+    });
+
+    testWidgets('a voice note whose link is about to expire plays from a new one', (tester) async {
+      final repository = await openMaya(tester);
+      const renewed = 'https://x/attachments/att-v?sig=new&exp=4102444800';
+      repository.renewedLinks['att-v'] = renewed;
+      final note = MessageAttachment(
+        id: 'att-v',
+        filename: 'voice-note.webm',
+        contentType: 'audio/webm',
+        url: signed('att-v', const Duration(minutes: 5)),
+      );
+      repository.push('c-maya', MessageCreated(withFiles('v', [note], voice: true)));
+      await tester.pumpAndSettle();
+      await tapLabel(tester, 'Play voice note');
+      expect(playback.played.single, ('att-v', renewed));
+      semantics.dispose();
+    });
   });
 
   testWidgets('the playback bar over the tabs: what plays, pause, play, and stop and close', (tester) async {
@@ -900,18 +990,76 @@ void main() {
     repository.holdSends!.complete();
     await tester.pumpAndSettle();
 
+    // Every byte up: the API may post it whatever the app does, so no Cancel
+    // until it answers (#180).
+    repository
+      ..cancelled = false
+      ..holdSends = Completer();
+    await tapLabel(tester, 'Send');
+    repository.lastUpload!(0.99);
+    await tester.pump();
+    expect(find.bySemanticsLabel('Cancel upload'), findsOneWidget);
+    repository.lastUpload!(1);
+    await tester.pump();
+    expect(find.text('Uploading 2 of 2 · 100%'), findsOneWidget);
+    expect(find.bySemanticsLabel('Cancel upload'), findsNothing);
+    repository.holdSends!.complete();
+    await tester.pumpAndSettle();
+    expect(find.textContaining('Uploading'), findsNothing);
+    expect(find.bySemanticsLabel('Retry'), findsNothing);
+    expect(repository.cancelled, isFalse);
+
     // Over the limit: kept back, with the reason.
     ChatView.debugPickMedia = (_) async => const [
       OutgoingFile(path: '/tmp/big.mov', name: 'big.mov', contentType: 'video/quicktime', sizeBytes: 30 * 1024 * 1024),
     ];
-    await tapLabel(tester, 'Remove a.jpg');
-    await tapLabel(tester, 'Remove b.jpg');
     await tapLabel(tester, 'Add photos, a sticker or a mention');
     await tapLabel(tester, 'Photos & GIFs');
     final sent = repository.sent.length;
     await tapLabel(tester, 'Send');
     expect(repository.sent.length, sent);
     expect(find.text('big.mov is over your 25 MB upload limit'), findsOneWidget);
+    semantics.dispose();
+  });
+
+  testWidgets('a cancelled upload gives back its text and reply while the composer has neither', (tester) async {
+    final repository = await openMaya(tester);
+    ChatView.debugPickMedia = (_) async => const [
+      OutgoingFile(path: '/tmp/a.jpg', name: 'a.jpg', contentType: 'image/jpeg', sizeBytes: 1000),
+    ];
+    repository.holdSends = Completer();
+    String typed() => tester.widget<EditableText>(find.byType(EditableText)).controller.text;
+    const strip = 'Replying to Maya — Hey! Did you see the new tab bar?';
+    Future<void> sendWithReply() async {
+      await tester.drag(find.text('Hey! Did you see the new tab bar?').first, const Offset(-120, 0));
+      await tester.pumpAndSettle();
+      await tester.enterText(find.byType(EditableText), 'Here it is');
+      await tapLabel(tester, 'Add photos, a sticker or a mention');
+      await tapLabel(tester, 'Photos & GIFs');
+      await tapLabel(tester, 'Send');
+      expect((typed(), find.text(strip).evaluate().length), ('', 0));
+    }
+
+    // Nothing typed since: the text, the reply and the file come back.
+    await sendWithReply();
+    await tapLabel(tester, 'Cancel upload');
+    expect(typed(), 'Here it is');
+    expect(find.text(strip), findsOneWidget);
+    expect(find.bySemanticsLabel('Photo, a.jpg'), findsOneWidget);
+
+    // Something typed since: it stays, and only the file comes back.
+    await tapLabel(tester, 'Cancel reply');
+    await tester.enterText(find.byType(EditableText), '');
+    await tapLabel(tester, 'Remove a.jpg');
+    await sendWithReply();
+    await tester.enterText(find.byType(EditableText), 'wait');
+    await tester.pump();
+    await tapLabel(tester, 'Cancel upload');
+    expect(typed(), 'wait');
+    expect(find.text(strip), findsNothing);
+    expect(find.bySemanticsLabel('Photo, a.jpg'), findsOneWidget);
+    repository.holdSends!.complete();
+    await tester.pumpAndSettle();
     semantics.dispose();
   });
 

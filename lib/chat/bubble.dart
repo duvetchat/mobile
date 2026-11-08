@@ -693,7 +693,7 @@ class _FailedActions extends StatelessWidget {
 }
 
 /// Under a message whose files are uploading: "Uploading 2 of 3 · 64%", and
-/// Cancel.
+/// Cancel while bytes are still going up.
 class _UploadStatus extends StatelessWidget {
   final List<MessageAttachment> files;
   final double progress;
