@@ -373,7 +373,7 @@ class _ProfileState extends State<_Profile> {
                                   for (final r in roles) RoleChip(role: r)
                                 else
                                   // As the desktop: every role, colored if held, a tap gives or takes it.
-                                  for (final r in repository.roles(spaceId!).where((r) => !r.everyone))
+                                  for (final r in repository.roles(spaceId).where((r) => !r.everyone))
                                     RoleChip(
                                       role: RoleTag(r.name, color: r.color, id: r.id),
                                       held: held.contains(r.id),
