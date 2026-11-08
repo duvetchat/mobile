@@ -104,6 +104,7 @@ abstract interface class ChatRepository {
     List<OutgoingFile> files = const [],
     Sticker? sticker,
     String? replyTo,
+    bool? mentionRepliedUser,
     void Function(double progress)? onProgress,
     Future<void>? cancel,
   });

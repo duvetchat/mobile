@@ -8,7 +8,10 @@ class _ComposerStrip extends StatelessWidget {
   final MessageReply? reply;
   final bool editing;
   final VoidCallback onClose;
-  const _ComposerStrip({required this.reply, required this.editing, required this.onClose});
+
+  /// Turns the reply's mention of its author on or off; null hides the toggle.
+  final VoidCallback? onToggleMention;
+  const _ComposerStrip({required this.reply, required this.editing, required this.onClose, this.onToggleMention});
 
   @override
   Widget build(BuildContext context) {
@@ -42,6 +45,7 @@ class _ComposerStrip extends StatelessWidget {
               ],
             ),
             closeLabel: 'Cancel reply',
+            trailing: onToggleMention == null ? null : _mentionToggle(context, reply),
           );
     return AnimatedSize(
       duration: reduce ? Duration.zero : DuvetTokens.replyStrip,
@@ -70,6 +74,7 @@ class _ComposerStrip extends StatelessWidget {
     required InlineSpan text,
     required String closeLabel,
     IconData? icon,
+    Widget? trailing,
   }) {
     final colors = context.theme.colors;
     return Padding(
@@ -99,8 +104,52 @@ class _ComposerStrip extends StatelessWidget {
                   style: DuvetType.caption.copyWith(color: colors.mutedForeground),
                 ),
               ),
+              ?trailing,
               IconAction(icon: FLucideIcons.x, label: closeLabel, color: colors.mutedForeground, onPressed: onClose),
             ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  // The desktop's `@ ON` / `@ OFF`, as search's filter chips look.
+  Widget _mentionToggle(BuildContext context, MessageReply reply) {
+    final colors = context.theme.colors;
+    final tokens = context.duvet;
+    final on = reply.mentionAuthor;
+    // Off, a white card stands out on the light strip: a faint violet blends in. Dark keeps its card.
+    final light = colors.brightness == Brightness.light;
+    return Semantics(
+      container: true,
+      button: true,
+      toggled: on,
+      label: 'Mention ${reply.authorName}',
+      excludeSemantics: true,
+      onTap: onToggleMention,
+      child: GestureDetector(
+        behavior: HitTestBehavior.opaque,
+        onTap: onToggleMention,
+        child: Container(
+          height: 32,
+          margin: const EdgeInsets.only(left: 8),
+          padding: const EdgeInsets.symmetric(horizontal: 10),
+          alignment: Alignment.center,
+          decoration: BoxDecoration(
+            color: on
+                ? tokens.selectedFill
+                : light
+                ? tokens.violetText.withValues(alpha: 0.08)
+                : colors.card,
+            borderRadius: BorderRadius.circular(DuvetTokens.radiusChip),
+            boxShadow: on || light ? null : tokens.shadowRest,
+          ),
+          child: Text(
+            on ? '@ ON' : '@ OFF',
+            style: DuvetType.snippet.copyWith(
+              color: on ? tokens.violetText : colors.mutedForeground,
+              fontWeight: FontWeight.w500,
+            ),
           ),
         ),
       ),
