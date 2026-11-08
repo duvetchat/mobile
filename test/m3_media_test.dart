@@ -455,7 +455,7 @@ void main() {
       expect(loaded(tester), isNot(contains(soon)));
 
       final later = signed('p-2', const Duration(hours: 5));
-      repository.push('c-maya', MessageCreated(withFiles('m-q', [picture(later).withUrl(later)])));
+      repository.push('c-maya', MessageCreated(withFiles('m-q', [picture(later)])));
       await tester.pumpAndSettle();
       expect(repository.linksAsked, hasLength(1));
       expect(loaded(tester), contains(later));

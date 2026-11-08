@@ -199,8 +199,9 @@ class JustAudioPlayback implements AudioPlayback {
       );
       // Its link, renewed first when it's about to expire, and once more when
       // it won't load: an expired link is refused.
+      String? failed;
       for (var refused = false; ; refused = true) {
-        final source = link == null ? url : await link(refused: refused);
+        final source = link == null ? url : await link(failed: failed);
         // Another note, or Stop, took over while its link came.
         if (_state.value.id != id) return;
         try {
@@ -210,7 +211,10 @@ class JustAudioPlayback implements AudioPlayback {
           // Another note, or Stop, took over while this one loaded.
           return;
         } catch (e) {
-          if (link != null && !refused) continue;
+          if (link != null && !refused) {
+            failed = source;
+            continue;
+          }
           // A note that won't load mustn't stay in the bar and the notification.
           debugPrint('Voice note $id failed to load: $e');
           await handler.stop();
@@ -647,7 +651,7 @@ class _VideoTileState extends State<VideoTile> {
       },
       onError: (Object _) async {
         if (!retry || !mounted || widget.attachment.linkExpires == null) return;
-        final next = await link(refused: true);
+        final next = await link(failed: url);
         if (!mounted || !identical(_frame, frame)) return;
         _frame = null;
         await frame.dispose();
@@ -775,9 +779,10 @@ class _VideoPageState extends State<VideoPage> {
           setState(() => _error = e);
           return;
         }
-        final next = await link(refused: true);
+        final next = await link(failed: url);
         if (!mounted || !identical(_player, player)) return;
         player.removeListener(_changed);
+        _player = null;
         await player.dispose();
         _load(next, link, retry: false);
       },

@@ -648,6 +648,11 @@ void main() {
       // one, with no new request.
       expect(await repository.attachmentLink(file), _renewed);
       expect(resigns(), hasLength(1));
+
+      // The new one failing too (a file that won't decode, say) isn't signed
+      // again within the minute: it would spend the API's 64 a minute.
+      expect(await repository.attachmentLink(file.withUrl(_renewed), refused: true), _renewed);
+      expect(resigns(), hasLength(1));
     });
 
     test('one with time left is its own, unless it failed to load', () async {

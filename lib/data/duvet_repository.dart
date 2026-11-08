@@ -390,6 +390,9 @@ class DuvetRepository implements ChatRepository {
     drafts.clear();
     _ephemeral.clear();
     _links.clear();
+    _askedAt.clear();
+    _renewing.clear();
+    _linksSession++;
     mentions.value = const {};
     _voiceSignaling.detach();
     // Destroying the gateway closes the REST client's HTTP client too.
@@ -1665,10 +1668,20 @@ class DuvetRepository implements ChatRepository {
     ).then(_directMessage),
   };
 
-  // The links the API signed again this session, by attachment ID, and those
-  // it's signing: a file asked for twice at once is signed once.
+  // The links the API signed again this session, by attachment ID, when it
+  // was last asked for each, and those it's signing: a file asked for twice
+  // at once is signed once.
   final _links = <String, String>{};
+  final _askedAt = <String, DateTime>{};
   final _renewing = <String, Future<String>>{};
+  // Counts the sessions: a renewal that ends after the one it began in is
+  // kept nowhere.
+  var _linksSession = 0;
+
+  /// How long after the API was asked for a file's link it isn't asked
+  /// again: a link that fails for another reason (a file that won't decode,
+  /// a storage's own refusal) mustn't spend the API's 64 a minute.
+  static const resignCooldown = Duration(minutes: 1);
 
   @override
   Future<String> attachmentLink(MessageAttachment attachment, {bool refused = false}) async {
@@ -1678,11 +1691,17 @@ class DuvetRepository implements ChatRepository {
     // before, a bot's answer kept aside) has the old link.
     final renewed = _links[attachment.id];
     final known = switch (renewed) {
-      final url? when attachment.withUrl(url).linkExpires!.isAfter(own) => url,
+      final url? when attachment.withUrl(url).linkExpires?.isAfter(own) ?? false => url,
       _ => attachment.url,
     };
-    final due = attachment.withUrl(known).linkDueAt(clock.now());
+    final now = clock.now();
+    final due = attachment.withUrl(known).linkDueAt(now);
+    // [attachment] has the link that failed: a newer one may not have.
     if (!due && (!refused || known != attachment.url)) return known;
+    if (!_renewing.containsKey(attachment.id)) {
+      if (_askedAt[attachment.id] case final at? when now.difference(at) < resignCooldown) return known;
+      _askedAt[attachment.id] = now;
+    }
     try {
       // A block: whenComplete would wait for the future remove() answers,
       // which is this one.
@@ -1699,7 +1718,9 @@ class DuvetRepository implements ChatRepository {
   // Asks the API to sign [attachmentId]'s link again; the messages here with
   // the file load it from the new one, as do the pages kept for offline.
   Future<String> _renew(String attachmentId) async {
+    final session = _linksSession;
     final url = _absolute(await _call((api) => api.resignAttachment(attachmentId)), attachmentId);
+    if (session != _linksSession) return url;
     _links[attachmentId] = url;
     _messageEvents.add((_anyChat, AttachmentRenewed(attachmentId, url)));
     unawaited(_cache.changeMessages(attachmentId, (_, m) => m.withAttachmentLink(attachmentId, url)));
