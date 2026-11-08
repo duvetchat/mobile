@@ -118,6 +118,8 @@ class _ComposerStrip extends StatelessWidget {
     final colors = context.theme.colors;
     final tokens = context.duvet;
     final on = reply.mentionAuthor;
+    // Off, a white card stands out on the light strip: a faint violet blends in. Dark keeps its card.
+    final light = colors.brightness == Brightness.light;
     return Semantics(
       container: true,
       button: true,
@@ -134,9 +136,13 @@ class _ComposerStrip extends StatelessWidget {
           padding: const EdgeInsets.symmetric(horizontal: 10),
           alignment: Alignment.center,
           decoration: BoxDecoration(
-            color: on ? tokens.selectedFill : colors.card,
+            color: on
+                ? tokens.selectedFill
+                : light
+                ? tokens.violetText.withValues(alpha: 0.08)
+                : colors.card,
             borderRadius: BorderRadius.circular(DuvetTokens.radiusChip),
-            boxShadow: on ? null : tokens.shadowRest,
+            boxShadow: on || light ? null : tokens.shadowRest,
           ),
           child: Text(
             on ? '@ ON' : '@ OFF',
