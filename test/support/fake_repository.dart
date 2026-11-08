@@ -49,6 +49,16 @@ class FakeRepository implements ChatRepository {
   final ValueNotifier<Set<String>> collapsedCategories = ValueNotifier(const {});
 
   @override
+  final ValueNotifier<Set<String>> pinnedChats = ValueNotifier(const {});
+
+  @override
+  void setChatPinned(String key, bool pinned) => pinnedChats.value = {
+    for (final k in pinnedChats.value)
+      if (k != key) k,
+    if (pinned) key,
+  };
+
+  @override
   void setCategoryCollapsed(String categoryId, bool collapsed) => collapsedCategories.value = {
     for (final id in collapsedCategories.value)
       if (id != categoryId) id,

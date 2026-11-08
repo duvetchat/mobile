@@ -357,15 +357,14 @@ void main() {
     await finish(tester, app);
   });
 
-  testWidgets('a friend in voice in a shared Space shows on Chats, to join', (tester) async {
+  testWidgets('a voice room with people in it shows on Chats, to join', (tester) async {
     final app = await pumpApp(tester);
-    app.repository.friends.value = const Friends(
-      friends: [Member(userId: FakeRepository.maya, username: 'maya', alias: 'Maya')],
-    );
+    expect(find.text('In voice now'), findsNothing);
     app.gateway.push(state(FakeRepository.maya, 3));
     await tester.pumpAndSettle();
-    expect(find.text('Live · lounge · Design Guild'), findsOneWidget);
-    // Someone who isn't a friend shows no card.
+    expect(find.text('In voice now'), findsOneWidget);
+    expect(find.text('Live · Design Guild'), findsOneWidget);
+    // Anyone in it counts, a friend or not: still one card for the room.
     app.gateway.push(state(FakeRepository.leo, 4));
     await tester.pumpAndSettle();
     expect(find.text('Join'), findsOneWidget);
@@ -374,7 +373,7 @@ void main() {
     await settle(tester);
     expect(app.gateway.types, contains('VOICE_JOIN'));
     // In that room now: the voice bar has it, not a card.
-    expect(find.text('Live · lounge · Design Guild'), findsNothing);
+    expect(find.text('Live · Design Guild'), findsNothing);
     await finish(tester, app);
   });
 

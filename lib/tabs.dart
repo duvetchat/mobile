@@ -19,7 +19,9 @@ import 'widgets/avatar.dart';
 import 'widgets/call_presence.dart';
 import 'widgets/chrome.dart';
 import 'widgets/duvet_mascot.dart';
+import 'widgets/glass.dart';
 import 'widgets/ghost_art.dart';
+import 'widgets/now.dart';
 import 'widgets/rows.dart';
 
 /// The unified inbox: the recent chats, rooms and DMs alike, then the DMs
@@ -42,6 +44,7 @@ class ChatsTab extends StatelessWidget {
         repository.presence,
         repository.mobileOnly,
         repository.friends,
+        repository.pinnedChats,
         repository.typingNow,
         voice,
       ]),
@@ -54,6 +57,7 @@ class ChatsTab extends StatelessWidget {
           repository.profile.value?.id,
           repository.presence.value,
           repository.mobileOnly.value,
+          repository.pinnedChats.value,
         );
         final unread = repository.unread.value;
         // The requests to the user, counted on Friends as on the desktop's.
@@ -104,28 +108,14 @@ class ChatsTab extends StatelessWidget {
                 // CallBanner has them; not the user's own still ringing the
                 // others from another device: nothing to join yet.
                 // Not the call the user is in: the voice bar already shows that one.
-                for (final id in voice.callsInProgress)
-                  if (!callingElsewhere(voice, id) &&
-                      !(voice.call?.conversationId == id && voice.call?.phase != CallPhase.ringing))
-                    Padding(padding: const EdgeInsets.fromLTRB(16, 12, 16, 0), child: _ongoingCall(context, id)),
-                // Friends in voice in a Space the user shares with them, to join.
-                for (final (friend, room, space) in _friendsInVoice(repository, voice))
-                  Padding(
-                    padding: const EdgeInsets.fromLTRB(16, 12, 16, 0),
-                    child: CallPresenceCard(
-                      key: ValueKey('friend-${friend.userId}'),
-                      icon: FLucideIcons.volume2,
-                      leading: UserAvatar(name: friend.displayName, url: friend.avatarUrl, size: 40),
-                      title: friend.displayName,
-                      detail: '${room.name} · ${space.name}',
-                      onJoin: voice.canJoin(room)
-                          ? () {
-                              voice.joinRoom(room);
-                              openVoiceRoom(context, room);
-                            }
-                          : null,
-                    ),
-                  ),
+                for (final id in joinableCalls(
+                  voice.callsInProgress,
+                  (id) =>
+                      callingElsewhere(voice, id) ||
+                      (voice.call?.conversationId == id && voice.call?.phase != CallPhase.ringing),
+                ))
+                  Padding(padding: const EdgeInsets.fromLTRB(16, 12, 16, 0), child: _ongoingCall(context, id)),
+                const NowBlock(),
               ],
             ),
           ),
@@ -143,17 +133,38 @@ class ChatsTab extends StatelessWidget {
                   itemCount: rows.length,
                   itemBuilder: (context, i) {
                     final row = rows[i];
-                    return ListRow(
+                    // The row's own context anchors its menu.
+                    return Builder(
                       key: ValueKey(row.target.id),
-                      leading: row.leading,
-                      title: row.title,
-                      hash: row.target is RoomTarget,
-                      titleSuffix: row.space == null ? null : '· ${row.space}',
-                      snippet: typingSentence(repository.typingNow.value[row.target.id] ?? const []) ?? row.snippet,
-                      trailing: row.at == null ? null : shortTime(row.at!),
-                      unread: unread.contains(row.target.id),
-                      mentions: mentions[row.target.id] ?? 0,
-                      onTap: () => openChat(context, row.target, row.chatTitle),
+                      builder: (rowContext) => ListRow(
+                        leading: row.leading,
+                        title: row.title,
+                        hash: row.target is RoomTarget,
+                        titleSuffix: row.space == null ? null : '· ${row.space}',
+                        snippet: typingSentence(repository.typingNow.value[row.target.id] ?? const []) ?? row.snippet,
+                        trailing: row.at == null ? null : shortTime(row.at!),
+                        unread: unread.contains(row.target.id),
+                        mentions: mentions[row.target.id] ?? 0,
+                        detail: row.pinned ? 'pinned' : null,
+                        titleIcon: row.pinned
+                            ? Icon(FLucideIcons.pin, size: 14, color: context.theme.colors.mutedForeground)
+                            : null,
+                        onTap: () => openChat(context, row.target, row.chatTitle),
+                        onLongPress: () async {
+                          final pin = await showGlassMenu<bool>(
+                            rowContext,
+                            label: row.title,
+                            items: [
+                              GlassMenuItem(
+                                icon: row.pinned ? FLucideIcons.pinOff : FLucideIcons.pin,
+                                label: row.pinned ? 'Unpin' : 'Pin to top',
+                                value: !row.pinned,
+                              ),
+                            ],
+                          );
+                          if (pin != null) repository.setChatPinned(pinKey(row.target), pin);
+                        },
+                      ),
                     );
                   },
                 ),
@@ -162,21 +173,6 @@ class ChatsTab extends StatelessWidget {
         );
       },
     );
-  }
-
-  /// Each friend in a voice room of a Space the user is in, with the room; not
-  /// the room the user is in, which the voice bar shows.
-  static Iterable<(Member, Room, Space)> _friendsInVoice(ChatRepository repository, VoiceController voice) sync* {
-    final friends = {for (final f in repository.friends.value.friends) f.userId: f};
-    if (friends.isEmpty) return;
-    for (final space in repository.spaces.value) {
-      for (final room in space.rooms) {
-        if (room.kind != RoomKind.voice || voice.target?.id == room.id) continue;
-        for (final p in voice.participants(room.id)) {
-          if (friends[p.userId] case final friend?) yield (friend, room, space);
-        }
-      }
-    }
   }
 
   static Widget _ongoingCall(BuildContext context, String conversationId) {
@@ -203,6 +199,7 @@ class ChatsTab extends StatelessWidget {
     String? me,
     Map<String, Presence> presence,
     Set<String> mobileOnly,
+    Set<String> pinned,
   ) {
     final conversationsById = {for (final c in conversations) c.id: c};
     final spacesById = {for (final s in spaces) s.id: s};
@@ -275,9 +272,37 @@ class ChatsTab extends StatelessWidget {
             at: c.updatedAt,
           ),
     ];
-    // The newest first; undated ones last, in the order they came.
+    // A pinned room that dropped out of the recents comes back from its Space,
+    // if the user still sees it.
+    final shown = {for (final r in rows) r.target.id};
+    for (final key in pinned) {
+      if (!key.startsWith('room:') || shown.contains(key.substring(5))) continue;
+      for (final space in spaces) {
+        final room = space.rooms.where((r) => r.id == key.substring(5) && r.kind == RoomKind.text).firstOrNull;
+        if (room == null) continue;
+        rows.add(
+          _ChatRow(
+            target: room.target,
+            title: room.name,
+            chatTitle: '# ${room.name}',
+            space: space.name,
+            leading: SpaceIcon(space: space),
+          ),
+        );
+        break;
+      }
+    }
+    // Pinned first, then the newest; undated ones last, in the order they came.
     final dated = rows.where((r) => r.at != null).toList()..sort((a, b) => b.at!.compareTo(a.at!));
-    return [...dated, ...rows.where((r) => r.at == null)];
+    final ordered = [...dated, ...rows.where((r) => r.at == null)];
+    final isPinned = {
+      for (final r in ordered)
+        if (pinned.contains(pinKey(r.target))) r,
+    };
+    return [
+      for (final r in ordered.where(isPinned.contains)) r.pinnedRow(),
+      ...ordered.where((r) => !isPinned.contains(r)),
+    ];
   }
 }
 
@@ -291,6 +316,7 @@ class _ChatRow {
   final String? snippet;
   final Widget? leading;
   final DateTime? at;
+  final bool pinned;
   const _ChatRow({
     required this.target,
     required this.title,
@@ -299,7 +325,19 @@ class _ChatRow {
     this.snippet,
     this.leading,
     this.at,
+    this.pinned = false,
   });
+
+  _ChatRow pinnedRow() => _ChatRow(
+    target: target,
+    title: title,
+    chatTitle: chatTitle,
+    space: space,
+    snippet: snippet,
+    leading: leading,
+    at: at,
+    pinned: true,
+  );
 }
 
 /// The Launchpad: the user's Spaces as a two-column grid of cards.
