@@ -142,13 +142,14 @@ void main() {
     expect(find.text('More results'), findsNothing);
     repository.searchPageSize = 25;
 
-    // A filter from its chip, a member from theirs.
+    // A filter from its chip; the rooms and members it takes come as a list.
     await tester.enterText(find.byType(EditableText), 'ramp ');
     await tester.pump();
     await tapLabel(tester, 'in:');
-    await tapLabel(tester, '#general');
+    expect(find.bySemanticsLabel('# crit'), findsOneWidget);
+    await tapLabel(tester, '# general');
     await tapLabel(tester, 'from:');
-    await tapLabel(tester, 'leo');
+    await tapLabel(tester, 'leo, @leo');
     expect(tester.widget<EditableText>(find.byType(EditableText)).controller.text, 'ramp in:general from:leo ');
     await tester.pump(const Duration(milliseconds: 350));
     await tester.pumpAndSettle();
@@ -161,10 +162,14 @@ void main() {
     await tester.pumpAndSettle();
     expect(find.text('No member is called nobody'), findsOneWidget);
 
-    await tester.enterText(find.byType(EditableText), 'ramp pinned:false');
+    // Pinned is a toggle.
+    await tester.enterText(find.byType(EditableText), 'ramp');
     await tester.pump(const Duration(milliseconds: 350));
     await tester.pumpAndSettle();
-    expect(repository.searches.last.pinned, isFalse);
+    await tapLabel(tester, 'Pinned');
+    expect(repository.searches.last.pinned, isTrue);
+    await tapLabel(tester, 'Pinned');
+    expect(repository.searches.last.pinned, isNull);
 
     await tapLabel(tester, RegExp(r'^Leo in general'));
     expect(find.byType(EditableText), findsOneWidget); // back in the chat

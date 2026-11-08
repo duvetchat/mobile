@@ -61,8 +61,10 @@ void main() {
       ))
         s.label,
     ];
-    expect(labels(''), ['from:', 'mentions:', 'in:', 'has:', 'pinned:', 'before:', 'after:', 'during:']);
-    expect(labels('p'), ['pinned:']);
+    // pinned: is a toggle, not a suggestion.
+    expect(labels(''), ['from:', 'mentions:', 'in:', 'has:', 'before:', 'after:', 'during:']);
+    expect(labels('p'), isEmpty);
+    expect(labels('b'), ['before:']);
     expect(labels('from:m'), ['Maya Lin']);
     expect(searchSuggestions('from:m', members: members).single.insert, 'from:maya ');
     expect(labels('in:#d'), ['#Design Crit']);

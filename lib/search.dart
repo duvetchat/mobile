@@ -219,10 +219,11 @@ SearchQuery parseSearch(
 }
 
 /// What to put in place of the word being typed, [token].
-typedef SearchSuggestion = ({String label, String? detail, String insert});
+typedef SearchSuggestion = ({String label, String? detail, String insert, Member? member, Room? room});
 
 /// The desktop's suggestions for [token]: the filters, then the members, the
-/// rooms or the values a filter takes.
+/// rooms or the values a filter takes. `pinned:` is left to a toggle, though
+/// [parseSearch] still reads it.
 List<SearchSuggestion> searchSuggestions(
   String token, {
   required List<Member> members,
@@ -240,12 +241,11 @@ List<SearchSuggestion> searchSuggestions(
         ('mentions', 'Messages that mention a member'),
         if (inSpace) ('in', 'Messages in a room'),
         ('has', 'link, embed, file, image, video, sound or sticker'),
-        ('pinned', 'true or false: pinned messages, or the others'),
         ('before', 'Messages before a date, like $today'),
         ('after', 'Messages after a date'),
         ('during', 'Messages on a date'),
       ])
-        if (key.startsWith(typed)) (label: '$key:', detail: detail, insert: '$key:'),
+        if (key.startsWith(typed)) (label: '$key:', detail: detail, insert: '$key:', member: null, room: null),
     ];
   }
   final key = m[1]!.toLowerCase();
@@ -256,23 +256,25 @@ List<SearchSuggestion> searchSuggestions(
           in members
               .where((u) => u.username.toLowerCase().startsWith(value) || u.displayName.toLowerCase().startsWith(value))
               .take(8))
-        (label: u.displayName, detail: u.displayName == u.username ? null : u.username, insert: '$key:${u.username} '),
+        (
+          label: u.displayName,
+          detail: u.displayName == u.username ? null : u.username,
+          insert: '$key:${u.username} ',
+          member: u,
+          room: null,
+        ),
     ],
     'in' => [
       for (final r in rooms.where((r) => roomSlug(r.name).startsWith(value)).take(8))
-        (label: '#${r.name}', detail: null, insert: 'in:${roomSlug(r.name)} '),
-    ],
-    'pinned' => [
-      for (final v in const ['true', 'false'])
-        if (v.startsWith(value)) (label: v, detail: null, insert: 'pinned:$v '),
+        (label: '#${r.name}', detail: null, insert: 'in:${roomSlug(r.name)} ', member: null, room: r),
     ],
     'has' => [
       for (final v in searchHas)
-        if (v.startsWith(value)) (label: v, detail: null, insert: 'has:$v '),
+        if (v.startsWith(value)) (label: v, detail: null, insert: 'has:$v ', member: null, room: null),
     ],
-    'before' ||
-    'after' ||
-    'during' when today.startsWith(value) => [(label: today, detail: 'Today', insert: '$key:$today ')],
+    'before' || 'after' || 'during' when today.startsWith(value) => [
+      (label: today, detail: 'Today', insert: '$key:$today ', member: null, room: null),
+    ],
     _ => const [],
   };
 }
@@ -293,6 +295,7 @@ class _InChatSearchState extends State<InChatSearch> {
   final _query = TextEditingController();
   final _focus = FocusNode();
   Timer? _debounce;
+  bool _pinnedOnly = false;
   List<Member> _members = const [];
   SearchQuery? _shown;
   List<SearchHit>? _hits;
@@ -366,7 +369,8 @@ class _InChatSearchState extends State<InChatSearch> {
       final target = widget.target;
       try {
         query = parseSearch(
-          _query.text,
+          // The Pinned toggle, as the desktop's `pinned:true`.
+          _pinnedOnly ? '${_query.text} pinned:true' : _query.text,
           members: _members,
           rooms: _rooms,
           spaceId: _spaceId,
@@ -427,8 +431,25 @@ class _InChatSearchState extends State<InChatSearch> {
     return (start: start, value: before.substring(start));
   }
 
-  // Puts [s] in place of the word the caret is in, as the desktop does.
-  void _apply(SearchSuggestion s) {
+  // Puts [s] in place of the word the caret is in, as the desktop does. A
+  // date filter asks for its day with a date picker.
+  Future<void> _apply(SearchSuggestion s) async {
+    if (const ['before:', 'after:', 'during:'].contains(s.insert)) {
+      final now = DateTime.now();
+      final day = await showDatePicker(
+        context: context,
+        initialDate: now,
+        firstDate: DateTime(2020),
+        lastDate: now,
+        helpText: switch (s.insert) {
+          'before:' => 'Messages before',
+          'after:' => 'Messages after',
+          _ => 'Messages on',
+        },
+      );
+      if (day == null || !mounted) return;
+      s = (label: s.label, detail: null, insert: '${s.insert}${_isoDay(day)} ', member: null, room: null);
+    }
     final text = _query.text;
     final token = _token;
     final end = token.start + token.value.length;
@@ -462,6 +483,8 @@ class _InChatSearchState extends State<InChatSearch> {
     final inSpace = _spaceId != null;
     final where = inSpace ? (_spaceName ?? 'this Space') : widget.title;
     final suggestions = searchSuggestions(_token.value, members: _members, rooms: _rooms, inSpace: inSpace);
+    // Members and rooms come as a list under the bar, over the results: chips are for the short values.
+    final listed = suggestions.where((s) => s.member != null || s.room != null).toList();
     final words = _shown?.text ?? '';
     final count = _total >= 1000 ? '1,000+ results' : (_total == 1 ? '1 result' : '$_total results');
     // By day, the newest first.
@@ -478,7 +501,18 @@ class _InChatSearchState extends State<InChatSearch> {
               keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
               padding: EdgeInsets.only(top: padding.top + 108, bottom: padding.bottom + 72),
               children: [
-                if (_loading && (hits == null || hits.isEmpty))
+                if (listed.isNotEmpty)
+                  for (final s in listed)
+                    if (s.member case final m?)
+                      ListRow(
+                        leading: UserAvatar(name: m.displayName, url: m.avatarUrl, size: 40),
+                        title: m.displayName,
+                        snippet: '@${m.username}',
+                        onTap: () => _apply(s),
+                      )
+                    else
+                      ListRow(title: s.room!.name, hash: true, onTap: () => _apply(s))
+                else if (_loading && (hits == null || hits.isEmpty))
                   const Padding(
                     padding: EdgeInsets.all(24),
                     child: Center(child: FCircularProgress()),
@@ -549,11 +583,23 @@ class _InChatSearchState extends State<InChatSearch> {
                       child: ListView(
                         scrollDirection: Axis.horizontal,
                         children: [
-                          for (final s in suggestions)
-                            Padding(
-                              padding: const EdgeInsets.only(right: 8),
-                              child: _Chip(label: s.label, hint: s.detail, onTap: () => _apply(s)),
+                          Padding(
+                            padding: const EdgeInsets.only(right: 8),
+                            child: _Chip(
+                              label: 'Pinned',
+                              on: _pinnedOnly,
+                              onTap: () {
+                                setState(() => _pinnedOnly = !_pinnedOnly);
+                                _run();
+                              },
                             ),
+                          ),
+                          for (final s in suggestions)
+                            if (listed.isEmpty)
+                              Padding(
+                                padding: const EdgeInsets.only(right: 8),
+                                child: _Chip(label: s.label, hint: s.detail, onTap: () => _apply(s)),
+                              ),
                         ],
                       ),
                     ),
@@ -589,12 +635,14 @@ class _InChatSearchState extends State<InChatSearch> {
   }
 }
 
-/// A suggestion chip; [hint] says what it does, for a screen reader.
+/// A suggestion chip, or with [on] a toggle; [hint] says what it does, for a
+/// screen reader.
 class _Chip extends StatelessWidget {
   final String label;
   final String? hint;
+  final bool? on;
   final VoidCallback onTap;
-  const _Chip({required this.label, required this.onTap, this.hint});
+  const _Chip({required this.label, required this.onTap, this.hint, this.on});
 
   @override
   Widget build(BuildContext context) {
@@ -603,6 +651,7 @@ class _Chip extends StatelessWidget {
     return Semantics(
       container: true,
       button: true,
+      toggled: on,
       label: label,
       hint: hint,
       excludeSemantics: true,
@@ -614,13 +663,16 @@ class _Chip extends StatelessWidget {
           padding: const EdgeInsets.symmetric(horizontal: 12),
           alignment: Alignment.center,
           decoration: BoxDecoration(
-            color: colors.card,
+            color: on == true ? tokens.selectedFill : colors.card,
             borderRadius: BorderRadius.circular(DuvetTokens.radiusChip),
-            boxShadow: tokens.shadowRest,
+            boxShadow: on == true ? null : tokens.shadowRest,
           ),
           child: Text(
             label,
-            style: DuvetType.snippet.copyWith(color: colors.foreground, fontWeight: FontWeight.w500),
+            style: DuvetType.snippet.copyWith(
+              color: on == true ? tokens.violetText : colors.foreground,
+              fontWeight: FontWeight.w500,
+            ),
           ),
         ),
       ),
