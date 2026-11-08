@@ -6,6 +6,7 @@ import 'package:flutter/services.dart';
 import 'package:forui/forui.dart';
 
 import 'account.dart' show CropPage, maxDisplayNameLength, pickProfilePicture;
+import 'app_commands.dart';
 import 'data/links.dart' show botInviteLink;
 import 'data/models.dart';
 import 'data/scope.dart';
@@ -611,6 +612,18 @@ class _ApplicationPageState extends State<ApplicationPage> {
                   ],
                 ),
               ),
+            ),
+          ],
+        ),
+        const Overline('Commands'),
+        AdminPanel(
+          children: [
+            GlassRow(
+              icon: FLucideIcons.squareSlash,
+              label: 'Commands',
+              detail: 'What people type / to use',
+              onPressed: () =>
+                  Navigator.of(context).push(MaterialPageRoute<void>(builder: (_) => CommandsPage(app: _app))),
             ),
           ],
         ),
