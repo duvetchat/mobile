@@ -176,6 +176,10 @@ abstract interface class ChatRepository {
   Future<void> signUp({required String username, required String email, required String password, String? alias});
   Future<void> sendVerificationEmail();
 
+  /// Emails the signed-in user a link to set a new password, as Forgot
+  /// password does when signed out.
+  Future<void> sendResetPasswordEmail();
+
   /// Verifies the email with the token from the emailed link.
   Future<void> verifyEmail(String token);
 
