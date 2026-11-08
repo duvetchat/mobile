@@ -307,7 +307,7 @@ class _RoomCard extends StatelessWidget {
           ),
           const SizedBox(width: 12),
           DuvetButton(
-            label: 'Join ${room.name}',
+            label: 'Join',
             onPressed: () {
               voice.joinRoom(room);
               openVoiceRoom(context, room);

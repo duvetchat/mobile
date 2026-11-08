@@ -359,10 +359,10 @@ void main() {
 
   testWidgets('a voice room with people in it shows on Chats, to join', (tester) async {
     final app = await pumpApp(tester);
-    expect(find.text('In voice now'), findsNothing);
+    expect(find.text('IN VOICE NOW'), findsNothing);
     app.gateway.push(state(FakeRepository.maya, 3));
     await tester.pumpAndSettle();
-    expect(find.text('In voice now'), findsOneWidget);
+    expect(find.text('IN VOICE NOW'), findsOneWidget);
     expect(find.text('Live · Design Guild'), findsOneWidget);
     // Anyone in it counts, a friend or not: still one card for the room.
     app.gateway.push(state(FakeRepository.leo, 4));
