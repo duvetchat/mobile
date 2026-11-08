@@ -2607,6 +2607,8 @@ class _RoleEditorPageState extends State<RoleEditorPage> {
   late RoleColors _colors = widget.role.colors;
   late int _perms = widget.role.perms;
   late bool _hoisted = widget.role.hoisted;
+  // Members to give (true) or take (false) the role on Save.
+  final _memberChanges = <String, bool>{};
   bool _saving = false;
 
   @override
@@ -2619,19 +2621,25 @@ class _RoleEditorPageState extends State<RoleEditorPage> {
     final r = widget.role;
     final name = _name.text.trim();
     final navigator = Navigator.of(context);
+    final repository = context.repository;
+    final fields = _fieldsDirty;
     setState(() => _saving = true);
-    final ok = await adminTry(
-      context,
-      'Couldn’t save ${r.name}',
-      () => context.repository.updateRole(
-        widget.spaceId,
-        r.id,
-        name: r.everyone || name.isEmpty || name == r.name ? null : name,
-        colors: _colors != r.colors ? _colors : null,
-        perms: _perms != r.perms ? _perms : null,
-        hoisted: _hoisted != r.hoisted ? _hoisted : null,
-      ),
-    );
+    final ok = await adminTry(context, 'Couldn’t save ${r.name}', () async {
+      if (fields) {
+        await repository.updateRole(
+          widget.spaceId,
+          r.id,
+          name: r.everyone || name.isEmpty || name == r.name ? null : name,
+          colors: _colors != r.colors ? _colors : null,
+          perms: _perms != r.perms ? _perms : null,
+          hoisted: _hoisted != r.hoisted ? _hoisted : null,
+        );
+      }
+      for (final MapEntry(key: userId, value: has) in [..._memberChanges.entries]) {
+        await repository.setRole(widget.spaceId, r.id, userId, has: has);
+        _memberChanges.remove(userId);
+      }
+    });
     if (!mounted) return;
     setState(() => _saving = false);
     if (ok) navigator.pop();
@@ -2666,7 +2674,7 @@ class _RoleEditorPageState extends State<RoleEditorPage> {
       initialSize: 0.75,
       builder: (context, scroll) => StatefulBuilder(
         builder: (context, setSheet) {
-          final holders = repository.roleMembers(widget.spaceId, widget.role.id).toSet();
+          final holders = _holders;
           return ListView(
             controller: scroll,
             children: [
@@ -2677,7 +2685,7 @@ class _RoleEditorPageState extends State<RoleEditorPage> {
                   presence: presenceIn(repository.presence.value, m.userId, spaceId: widget.spaceId),
                   checked: holders.contains(m.userId),
                   username: false,
-                  onTap: () => _toggle(m, !holders.contains(m.userId), setSheet),
+                  onTap: () => setSheet(() => _toggle(m.userId, !holders.contains(m.userId))),
                 ),
             ],
           );
@@ -2687,13 +2695,29 @@ class _RoleEditorPageState extends State<RoleEditorPage> {
     if (mounted) setState(() {});
   }
 
-  Future<void> _toggle(Member m, bool has, StateSetter setSheet) async {
-    await adminTry(
-      context,
-      'Couldn’t change ${m.displayName}’s roles',
-      () => context.repository.setRole(widget.spaceId, widget.role.id, m.userId, has: has),
-    );
-    setSheet(() {});
+  /// Who has the role once Save applies the staged member changes.
+  Set<String> get _holders {
+    final holders = context.repository.roleMembers(widget.spaceId, widget.role.id).toSet();
+    _memberChanges.forEach((userId, has) => has ? holders.add(userId) : holders.remove(userId));
+    return holders;
+  }
+
+  // Stages it for Save; back to how it was, nothing is staged.
+  void _toggle(String userId, bool has) => setState(() {
+    if (context.repository.roleMembers(widget.spaceId, widget.role.id).contains(userId) == has) {
+      _memberChanges.remove(userId);
+    } else {
+      _memberChanges[userId] = has;
+    }
+  });
+
+  bool get _fieldsDirty {
+    final r = widget.role;
+    final name = _name.text.trim();
+    return (!r.everyone && name.isNotEmpty && name != r.name) ||
+        _colors != r.colors ||
+        _perms != r.perms ||
+        _hoisted != r.hoisted;
   }
 
   Future<void> _delete() async {
@@ -2718,7 +2742,7 @@ class _RoleEditorPageState extends State<RoleEditorPage> {
   Widget build(BuildContext context) {
     final colors = context.theme.colors;
     final r = widget.role;
-    final holders = context.repository.roleMembers(widget.spaceId, r.id);
+    final holders = _holders;
     final admin = Perm.has(_perms, Perm.administrator);
     final children = <Widget>[
       const SizedBox(height: 8),
@@ -2846,12 +2870,7 @@ class _RoleEditorPageState extends State<RoleEditorPage> {
       ],
     ];
     if (!widget.readOnly) {
-      final name = _name.text.trim();
-      final dirty =
-          (!r.everyone && name.isNotEmpty && name != r.name) ||
-          _colors != r.colors ||
-          _perms != r.perms ||
-          _hoisted != r.hoisted;
+      final dirty = _fieldsDirty || _memberChanges.isNotEmpty;
       return UnsavedChanges(
         dirty: dirty,
         child: AdminPage(
