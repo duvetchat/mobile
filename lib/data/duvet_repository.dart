@@ -153,6 +153,29 @@ class DuvetRepository implements ChatRepository {
   }
 
   @override
+  final ValueNotifier<Set<String>> pinnedChats = ValueNotifier(const {});
+
+  // As with [_collapsedTouched]: what's saved mustn't undo a pin made since.
+  bool _pinnedTouched = false;
+
+  @override
+  void setChatPinned(String key, bool pinned) {
+    if (pinnedChats.value.contains(key) == pinned) return;
+    _pinnedTouched = true;
+    pinnedChats.value = {
+      for (final k in pinnedChats.value)
+        if (k != key) k,
+      if (pinned) key,
+    };
+    _cache.savePinned(pinnedChats.value);
+  }
+
+  Future<void> _loadPinned() async {
+    final keys = await _cache.loadPinned();
+    if (keys != null && !_pinnedTouched) pinnedChats.value = keys;
+  }
+
+  @override
   final ValueNotifier<LiveStatus> status = ValueNotifier(LiveStatus.offline);
 
   // Outlives the sessions: each one's gateway is attached to it.
@@ -271,6 +294,7 @@ class DuvetRepository implements ChatRepository {
       conversations.value = home.conversations;
       spaces.value = home.spaces;
       unawaited(_loadCollapsed());
+      unawaited(_loadPinned());
       status.value = LiveStatus.offline;
       _recentsLoaded = _recents.load(home.profile.id);
       _retry = Timer.periodic(const Duration(seconds: 20), (_) => _comeBack());
@@ -348,6 +372,7 @@ class DuvetRepository implements ChatRepository {
     _names[me.id] = profile.value!.displayName;
     _recentsLoaded = _recents.load(me.id);
     unawaited(_loadCollapsed());
+    unawaited(_loadPinned());
     unawaited(refreshConversations().catchError((Object e) => debugPrint('conversations: $e')));
     _renewals?.cancel();
     _renewals = Timer.periodic(renewalCheck, (_) => _renewQuietly(renewAfter));
@@ -363,6 +388,8 @@ class DuvetRepository implements ChatRepository {
     unawaited(_cache.clear());
     collapsedCategories.value = const {};
     _collapsedTouched = false;
+    pinnedChats.value = const {};
+    _pinnedTouched = false;
     _renewalRetry?.cancel();
     _renewalRetry = null;
     _closeSession();
@@ -3959,6 +3986,7 @@ class DuvetRepository implements ChatRepository {
     presence.dispose();
     mobileOnly.dispose();
     collapsedCategories.dispose();
+    pinnedChats.dispose();
   }
 }
 

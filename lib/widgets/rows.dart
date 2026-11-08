@@ -27,7 +27,7 @@ class ListRow extends StatelessWidget {
   /// After the title, in `ink-secondary`, e.g. "· Space name".
   final String? titleSuffix;
 
-  /// Right after the title, kept when a long title is cut: [OwnerCrown].
+  /// Right after the title, a small glyph kept when a long title is cut: [OwnerCrown], the pin.
   final Widget? titleIcon;
   final String? snippet;
 

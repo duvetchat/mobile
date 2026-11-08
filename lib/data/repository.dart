@@ -27,6 +27,12 @@ abstract interface class ChatRepository {
   ValueListenable<Set<String>> get collapsedCategories;
   void setCategoryCollapsed(String categoryId, bool collapsed);
 
+  /// The chats pinned to the top of Chats, as `room:<id>` or `conv:<id>`
+  /// (see `pinKey`): kept on this device, for this account, as neither the
+  /// API nor the desktop has pins.
+  ValueListenable<Set<String>> get pinnedChats;
+  void setChatPinned(String key, bool pinned);
+
   ValueListenable<LiveStatus> get status;
 
   /// The gateway's voice and call signalling, which voice rooms and calls

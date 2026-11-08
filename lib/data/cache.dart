@@ -136,6 +136,25 @@ class ChatCache {
     }
   }
 
+  /// The chats pinned to the top of Chats, by key.
+  void savePinned(Set<String> keys) => _later(
+    'pinned',
+    () => {
+      'keys': [...keys],
+    },
+  );
+
+  Future<Set<String>?> loadPinned() async {
+    final j = await _read('pinned');
+    if (j == null) return null;
+    try {
+      return {...(j['keys']! as List).cast<String>()};
+    } catch (e) {
+      debugPrint('cache: $e');
+      return null;
+    }
+  }
+
   void saveHome({
     required Profile profile,
     required List<ConversationSummary> conversations,
