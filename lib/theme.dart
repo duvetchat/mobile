@@ -220,6 +220,9 @@ class DuvetTokens {
   /// Green for what is live: a call going on, someone online.
   final Color live;
 
+  /// Gold for a Space owner's crown: 3:1 or more on the background.
+  final Color crown;
+
   /// Received bubbles and other surfaces at rest.
   final List<BoxShadow> shadowRest;
 
@@ -250,6 +253,7 @@ class DuvetTokens {
     required this.secondaryFill,
     required this.hairline,
     required this.live,
+    required this.crown,
     required this.shadowRest,
     required this.shadowFloat,
     required this.shadowControl,
@@ -270,6 +274,7 @@ class DuvetTokens {
     secondaryFill: Color(0xFFE3E9FF),
     hairline: Color(0x1415172B),
     live: Color(0xFF2F9E62),
+    crown: Color(0xFFB7791F),
     // Light shadows carry a little cobalt, so surfaces float on the pastel sky.
     shadowRest: [
       BoxShadow(color: Color(0x0A15172B), blurRadius: 2, offset: Offset(0, 1)),
@@ -306,6 +311,7 @@ class DuvetTokens {
     secondaryFill: Color(0xFF1C1E2E),
     hairline: Color(0x12FFFFFF),
     live: Color(0xFF4CC38A),
+    crown: Color(0xFFFBBF24),
     shadowRest: [
       BoxShadow(color: Color(0x4D000000), blurRadius: 2, offset: Offset(0, 1)),
       BoxShadow(color: Color(0x40000000), blurRadius: 12, offset: Offset(0, 4)),
