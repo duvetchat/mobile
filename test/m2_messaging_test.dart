@@ -1,5 +1,6 @@
 import 'dart:ui' show Tristate;
 
+import 'package:duvet/data/call_notices.dart';
 import 'package:duvet/data/markdown.dart';
 import 'package:duvet/data/models.dart';
 import 'package:duvet/data/appearance.dart';
@@ -11,6 +12,7 @@ import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:forui/forui.dart' show FLucideIcons;
 
 import 'support/fake_repository.dart';
 
@@ -435,6 +437,62 @@ void main() {
     expect(repository.deletes, ['n1']);
     expect(notice, findsNothing);
     semantics.dispose();
+  });
+
+  testWidgets('call notices say who called and for how long, or that the call was missed (#158)', (tester) async {
+    ChatMessage notice(String id, String author, String name, List<String> participants, Duration lasted) {
+      final start = DateTime(2026, 10, 23, 9, 5);
+      return ChatMessage(
+        id: id,
+        authorId: author,
+        authorName: name,
+        content: '',
+        createdAt: start.add(lasted),
+        isNotice: true,
+        call: CallNotice(participants: participants, startedAt: start, endedAt: start.add(lasted)),
+      );
+    }
+
+    final repository = await openMaya(
+      tester,
+      setUp: (r) => r.history['c-maya']!.addAll([
+        notice('n1', _maya, 'Maya', [_maya, _me], const Duration(minutes: 12)),
+        notice('n2', _maya, 'Maya', [_maya], const Duration(seconds: 30)),
+        notice('n3', _me, 'Gaby', [_me, _maya], const Duration(hours: 1, minutes: 3)),
+        notice('n4', _me, 'Gaby', [_me], const Duration(seconds: 40)),
+      ]),
+    );
+    expect(find.text('Maya started a call that lasted 12 minutes.'), findsOneWidget);
+    expect(find.text('You missed a call from Maya.'), findsOneWidget);
+    expect(find.text('You started a call that lasted 1 hour 3 minutes.'), findsOneWidget);
+    expect(find.text('You started a call. No one answered.'), findsOneWidget);
+    expect(find.byIcon(FLucideIcons.phoneMissed), findsOneWidget);
+
+    // Either of a DM's two may delete one; it can't be replied to or pinned.
+    await longPress(tester, 'You missed a call from Maya.');
+    expect(find.bySemanticsLabel('Reply'), findsNothing);
+    expect(find.bySemanticsLabel('Pin'), findsNothing);
+    await tapLabel(tester, 'Delete');
+    await tapLabel(tester, 'Delete');
+    expect(repository.deletes, ['n2']);
+    expect(find.text('You missed a call from Maya.'), findsNothing);
+    semantics.dispose();
+  });
+
+  test('a call notice\'s case for each reader, and its length in words', () {
+    final call = CallNotice(participants: const ['a', 'b'], startedAt: DateTime(2026), endedAt: DateTime(2026));
+    final alone = CallNotice(participants: const ['a'], startedAt: DateTime(2026), endedAt: DateTime(2026));
+    expect(callNoticeCase(call, 'a', 'b'), CallNoticeCase.joined);
+    expect(callNoticeCase(call, 'a', 'a'), CallNoticeCase.joined);
+    expect(callNoticeCase(call, 'a', 'c'), CallNoticeCase.missed);
+    expect(callNoticeCase(alone, 'a', 'a'), CallNoticeCase.unanswered);
+    expect(callNoticeCase(alone, 'a', 'b'), CallNoticeCase.missedUnanswered);
+    expect(callNoticeCase(alone, 'a', null), CallNoticeCase.missedUnanswered);
+    expect(callDuration(const Duration(seconds: 59)), 'a few seconds');
+    expect(callDuration(const Duration(minutes: 1, seconds: 59)), '1 minute');
+    expect(callDuration(const Duration(minutes: 59)), '59 minutes');
+    expect(callDuration(const Duration(hours: 1)), '1 hour');
+    expect(callDuration(const Duration(hours: 2, minutes: 1)), '2 hours 1 minute');
   });
 
   testWidgets('editing your own message: the strip, Save, and "edited"', (tester) async {
