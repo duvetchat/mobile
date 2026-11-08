@@ -6,7 +6,7 @@ import 'chat_view.dart';
 import 'data/models.dart';
 import 'data/scope.dart';
 import 'members_sheet.dart' show MemberAction, PresenceAvatar;
-import 'space_admin.dart' show MemberRoleSwitches, confirmDestructive, managesRoleAt;
+import 'space_admin.dart' show adminTry, confirmDestructive, managesRoleAt;
 import 'theme.dart';
 import 'widgets/avatar.dart';
 import 'widgets/chrome.dart';
@@ -187,6 +187,7 @@ class _ProfileState extends State<_Profile> {
             (repository.spaceProfile(spaceId)?.can(Perm.manageRoles) ?? false) &&
             (!me ||
                 repository.roles(spaceId).any((r) => !r.everyone && managesRoleAt(repository, spaceId, r.position)));
+        final held = {for (final r in roles) r.id};
         final presence = presenceIn(repository.presence.value, m.userId, spaceId: widget.spaceId);
         final f = repository.friends.value;
         final isFriend = f.friends.any((x) => x.userId == m.userId);
@@ -360,11 +361,37 @@ class _ProfileState extends State<_Profile> {
                             )
                           else
                             Text('Nothing here yet.', style: DuvetType.body.copyWith(color: colors.mutedForeground)),
-                          if (roles.isNotEmpty) ...[
+                          if (roles.isNotEmpty || assignsRoles) ...[
                             divider,
                             _Label('Roles in ${spaceName ?? 'this Space'}'),
                             const SizedBox(height: 8),
-                            Wrap(spacing: 8, runSpacing: 8, children: [for (final r in roles) RoleChip(role: r)]),
+                            Wrap(
+                              spacing: 8,
+                              runSpacing: 8,
+                              children: [
+                                if (!assignsRoles)
+                                  for (final r in roles) RoleChip(role: r)
+                                else
+                                  // As the desktop: every role, colored if held, a tap gives or takes it.
+                                  for (final r in repository.roles(spaceId!).where((r) => !r.everyone))
+                                    RoleChip(
+                                      role: RoleTag(r.name, color: r.color, id: r.id),
+                                      held: held.contains(r.id),
+                                      onTap: managesRoleAt(repository, spaceId, r.position)
+                                          ? () => adminTry(
+                                              context,
+                                              'Couldn’t change ${m.displayName}’s roles',
+                                              () => repository.setRole(
+                                                spaceId,
+                                                r.id,
+                                                m.userId,
+                                                has: !held.contains(r.id),
+                                              ),
+                                            )
+                                          : null,
+                                    ),
+                              ],
+                            ),
                           ],
                           if (!me && mutual > 0) ...[
                             divider,
@@ -375,7 +402,6 @@ class _ProfileState extends State<_Profile> {
                         ],
                       ),
                     ),
-                    if (assignsRoles) ...[const Overline('Roles'), MemberRoleSwitches(spaceId: spaceId, member: m)],
                     if (removable) ...[
                       const SizedBox(height: 16),
                       DuvetButton(
@@ -411,12 +437,18 @@ class _Label extends StatelessWidget {
 /// A role, as a flat chip; its color as a small square beside the name.
 class RoleChip extends StatelessWidget {
   final RoleTag role;
-  const RoleChip({required this.role, super.key});
+
+  /// False: a role the member lacks, in grey.
+  final bool held;
+
+  /// Gives or takes it; null when it can't change.
+  final VoidCallback? onTap;
+  const RoleChip({required this.role, this.held = true, this.onTap, super.key});
 
   @override
   Widget build(BuildContext context) {
     final colors = context.theme.colors;
-    return Container(
+    final chip = Container(
       height: 28,
       padding: const EdgeInsets.symmetric(horizontal: 10),
       decoration: BoxDecoration(color: colors.secondary, borderRadius: BorderRadius.circular(DuvetTokens.radiusChip)),
@@ -427,12 +459,28 @@ class RoleChip extends StatelessWidget {
             Container(
               width: 8,
               height: 8,
-              decoration: BoxDecoration(color: Color(c), borderRadius: BorderRadius.circular(2)),
+              decoration: BoxDecoration(
+                color: held ? Color(c) : colors.mutedForeground,
+                borderRadius: BorderRadius.circular(2),
+              ),
             ),
             const SizedBox(width: 6),
           ],
-          Text(role.name, style: DuvetType.caption.copyWith(color: colors.foreground)),
+          Text(role.name, style: DuvetType.caption.copyWith(color: held ? colors.foreground : colors.mutedForeground)),
         ],
+      ),
+    );
+    if (onTap == null && held) return chip;
+    return Semantics(
+      button: onTap != null,
+      toggled: held,
+      label: role.name,
+      excludeSemantics: true,
+      // Padded past 44pt for the finger.
+      child: GestureDetector(
+        behavior: HitTestBehavior.opaque,
+        onTap: onTap,
+        child: Padding(padding: const EdgeInsets.symmetric(vertical: 8), child: chip),
       ),
     );
   }

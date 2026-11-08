@@ -47,7 +47,7 @@ void main() {
   testWidgets('an avatar opens a profile: bio, roles, Add friend, Mention', (tester) async {
     final repository = await pumpApp(
       tester,
-      setUp: (r) => r.roleTags[_leo] = const [RoleTag('Moderator', color: 0xFF2F9E62)],
+      setUp: (r) => r.roleTags[_leo] = const [RoleTag('Moderator', color: 0xFF2F9E62, id: 'role-mod')],
     );
     await tester.tap(find.descendant(of: find.byType(DuvetTabBar), matching: find.text('Spaces')));
     await tester.pumpAndSettle();
