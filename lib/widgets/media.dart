@@ -68,6 +68,22 @@ abstract class AudioPlayback {
   /// Stops and forgets it: the playback bar and the media notification go.
   Future<void> stop();
 
+  /// Each note's speed, as the user set it: one missing plays at 1×.
+  ValueListenable<Map<String, double>> get speeds;
+
+  /// Plays [id] at [speed]: at once if it's playing, and whenever it plays
+  /// next.
+  Future<void> setSpeed(String id, double speed);
+
+  /// The desktop's steps, which the speed button goes through in turn.
+  static const speedSteps = [0.5, 0.75, 1.0, 1.25, 1.5, 1.75, 2.0];
+
+  /// The step after [speed], back to the first after the last.
+  static double nextSpeed(double speed) {
+    final i = speedSteps.indexOf(speed);
+    return speedSteps[(i + 1) % speedSteps.length];
+  }
+
   static AudioPlayback instance = JustAudioPlayback();
 }
 
@@ -140,6 +156,17 @@ class VoiceNoteHandler extends svc.BaseAudioHandler with svc.SeekHandler {
 class JustAudioPlayback implements AudioPlayback {
   VoiceNoteHandler? _handler;
   final _state = ValueNotifier(PlaybackState.idle);
+  final _speeds = ValueNotifier(const <String, double>{});
+
+  @override
+  ValueListenable<Map<String, double>> get speeds => _speeds;
+
+  @override
+  Future<void> setSpeed(String id, double speed) async {
+    _speeds.value = {..._speeds.value, id: speed};
+    if (_state.value.id == id) await _handler?.player.setSpeed(speed);
+  }
+
   ({String id, String url, String title, String? artist, String? artUrl, LinkSource? link})? _last;
 
   @override
@@ -223,6 +250,7 @@ class JustAudioPlayback implements AudioPlayback {
         }
       }
     }
+    await handler.player.setSpeed(_speeds.value[id] ?? 1);
     // The player's own play: the handler's would replay a note that's idle.
     unawaited(handler.player.play());
   }
@@ -402,17 +430,17 @@ class VoiceNotePlayer extends StatelessWidget {
                 const SizedBox(width: 10),
                 Expanded(
                   child: ExcludeSemantics(
-                    child: GestureDetector(
-                      // Tap along the waveform to jump there.
-                      onTapDown: duration == null
-                          ? null
-                          : (d) {
-                              final box = context.findRenderObject() as RenderBox?;
-                              final width = (box?.size.width ?? 1) - 76;
-                              final f = ((d.localPosition.dx) / math.max(1, width)).clamp(0.0, 1.0);
-                              playback.seek(attachment.id, duration * f);
-                            },
-                      child: Waveform(bars: bars, color: ink, progress: active ? progress : 0),
+                    child: LayoutBuilder(
+                      builder: (context, box) => GestureDetector(
+                        // Tap along the waveform to jump there.
+                        onTapDown: duration == null
+                            ? null
+                            : (d) {
+                                final f = (d.localPosition.dx / math.max(1, box.maxWidth)).clamp(0.0, 1.0);
+                                playback.seek(attachment.id, duration * f);
+                              },
+                        child: Waveform(bars: bars, color: ink, progress: active ? progress : 0),
+                      ),
                     ),
                   ),
                 ),
@@ -426,7 +454,63 @@ class VoiceNotePlayer extends StatelessWidget {
                     ),
                   ),
                 ),
+                const SizedBox(width: 6),
+                _SpeedButton(id: attachment.id, onAccent: mine),
               ],
+            ),
+          ),
+        );
+      },
+    );
+  }
+}
+
+/// A voice note's speed, "1×": a tap takes the next of the desktop's steps.
+class _SpeedButton extends StatelessWidget {
+  final String id;
+  final bool onAccent;
+  const _SpeedButton({required this.id, required this.onAccent});
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = context.theme.colors;
+    final ink = ownBubble(context).ink;
+    final playback = AudioPlayback.instance;
+    return ValueListenableBuilder(
+      valueListenable: playback.speeds,
+      builder: (context, speeds, _) {
+        final speed = speeds[id] ?? 1;
+        final shown = '${speed.toString().replaceFirst(RegExp(r'\.0$'), '')}×';
+        void next() => playback.setSpeed(id, AudioPlayback.nextSpeed(speed));
+        return Semantics(
+          container: true,
+          button: true,
+          label: 'Speed, $shown',
+          excludeSemantics: true,
+          onTap: next,
+          child: GestureDetector(
+            behavior: HitTestBehavior.opaque,
+            onTap: next,
+            // 40 to hit, the chip to see.
+            child: SizedBox(
+              height: 40,
+              child: Center(
+                child: Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                  decoration: BoxDecoration(
+                    color: onAccent ? ink.withAlpha(0x2E) : colors.secondary,
+                    borderRadius: BorderRadius.circular(DuvetTokens.radiusChip),
+                  ),
+                  child: Text(
+                    shown,
+                    style: DuvetType.caption.copyWith(
+                      color: onAccent ? ink : colors.foreground,
+                      fontWeight: FontWeight.w600,
+                      fontFeatures: const [FontFeature.tabularFigures()],
+                    ),
+                  ),
+                ),
+              ),
             ),
           ),
         );

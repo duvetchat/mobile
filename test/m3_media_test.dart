@@ -73,6 +73,13 @@ class _Playback implements AudioPlayback {
   @override
   Future<void> seek(String id, Duration position) async {}
 
+  final _speeds = ValueNotifier(const <String, double>{});
+  @override
+  ValueListenable<Map<String, double>> get speeds => _speeds;
+
+  @override
+  Future<void> setSpeed(String id, double speed) async => _speeds.value = {..._speeds.value, id: speed};
+
   @override
   Future<void> resume() async {
     calls.add('resume');
@@ -422,6 +429,32 @@ void main() {
     await tapLabel(tester, 'Play voice note');
     expect(playback.played.single, ('att-v', 'https://x/v.webm'));
     expect(find.bySemanticsLabel('Pause'), findsOneWidget);
+    semantics.dispose();
+  });
+
+  testWidgets('a voice note\'s speed steps as the desktop\'s, and comes back round', (tester) async {
+    final repository = await openMaya(tester);
+    repository.push(
+      'c-maya',
+      MessageCreated(
+        withFiles('v', const [
+          MessageAttachment(
+            id: 'att-v',
+            filename: 'voice-note.webm',
+            contentType: 'audio/webm',
+            url: 'https://x/v.webm',
+          ),
+        ], voice: true),
+      ),
+    );
+    await tester.pumpAndSettle();
+    final seen = <String>[];
+    for (var i = 0; i < AudioPlayback.speedSteps.length; i++) {
+      await tapLabel(tester, RegExp(r'^Speed, '));
+      seen.add(playback.speeds.value['att-v']!.toString());
+    }
+    expect(seen, ['1.25', '1.5', '1.75', '2.0', '0.5', '0.75', '1.0']);
+    expect(find.bySemanticsLabel('Speed, 1×'), findsOneWidget);
     semantics.dispose();
   });
 
