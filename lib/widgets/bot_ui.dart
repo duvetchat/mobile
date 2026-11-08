@@ -6,6 +6,7 @@ import '../data/scope.dart';
 import '../theme.dart';
 import 'depth.dart';
 import 'glass.dart';
+import 'media.dart';
 import 'message_content.dart';
 import 'rows.dart';
 
@@ -175,13 +176,43 @@ class _BotComponentsState extends State<BotComponents> {
                 ),
               );
       case ComponentKind.mediaGallery:
+        // A video item: a dark tile with a play mark that plays it full
+        // screen, from the link the API gave.
+        Widget video(({String url, String? contentType}) item, double width, double height) {
+          void open() => openVideo(
+            context,
+            MessageAttachment(id: item.url, filename: 'Video', contentType: item.contentType!, url: item.url),
+          );
+          return Semantics(
+            container: true,
+            button: true,
+            label: 'Video',
+            excludeSemantics: true,
+            onTap: open,
+            child: GestureDetector(
+              onTap: open,
+              child: Container(
+                width: width,
+                height: height,
+                decoration: BoxDecoration(
+                  color: videoBackdrop,
+                  borderRadius: BorderRadius.circular(DuvetTokens.radiusField),
+                ),
+                child: const Center(child: PlayMark()),
+              ),
+            ),
+          );
+        }
+        bool isVideo(({String url, String? contentType}) item) => item.contentType?.startsWith('video/') ?? false;
         // One picture shows whole, at its own ratio (the desktop's
         // object-contain); several are square thumbnails.
-        if (c.galleryUrls.length == 1) {
+        if (c.gallery.length == 1) {
+          final item = c.gallery.single;
+          if (isVideo(item)) return video(item, 268, 268 * 168 / 248);
           return ClipRRect(
             borderRadius: BorderRadius.circular(DuvetTokens.radiusField),
             child: Image.network(
-              c.galleryUrls.single,
+              item.url,
               width: 268,
               // Decoded at its shown width: a big GIF's every frame at full size runs the phone out of memory.
               cacheWidth: (268 * MediaQuery.devicePixelRatioOf(context)).round(),
@@ -194,17 +225,20 @@ class _BotComponentsState extends State<BotComponents> {
           spacing: 4,
           runSpacing: 4,
           children: [
-            for (final url in c.galleryUrls)
-              ClipRRect(
-                borderRadius: BorderRadius.circular(DuvetTokens.radiusField),
-                child: Image.network(
-                  url,
-                  width: 128,
-                  height: 128,
-                  fit: BoxFit.cover,
-                  errorBuilder: (_, _, _) => const SizedBox.square(dimension: 128),
+            for (final item in c.gallery)
+              if (isVideo(item))
+                video(item, 128, 128)
+              else
+                ClipRRect(
+                  borderRadius: BorderRadius.circular(DuvetTokens.radiusField),
+                  child: Image.network(
+                    item.url,
+                    width: 128,
+                    height: 128,
+                    fit: BoxFit.cover,
+                    errorBuilder: (_, _, _) => const SizedBox.square(dimension: 128),
+                  ),
                 ),
-              ),
           ],
         );
       default:
