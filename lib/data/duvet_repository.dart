@@ -1959,13 +1959,14 @@ class DuvetRepository implements ChatRepository {
     List<OutgoingFile> files = const [],
     Sticker? sticker,
     String? replyTo,
+    bool? mentionRepliedUser,
     void Function(double progress)? onProgress,
     Future<void>? cancel,
   }) async {
     final upload = files.isEmpty ? null : [for (final f in files) File(f.path)];
     void progress(int sent, int total) => onProgress?.call(total == 0 ? 0 : sent / total);
     try {
-      return await _sendTo(target, content, nonce, upload, sticker, replyTo, progress, cancel);
+      return await _sendTo(target, content, nonce, upload, sticker, replyTo, mentionRepliedUser, progress, cancel);
     } on duvet.DuvetApiException catch (e) {
       if (e.statusCode == 413) throw const UploadTooLarge();
       if (_refusal(e) case final reason?) throw ActionFailed(reason);
@@ -1985,9 +1986,12 @@ class DuvetRepository implements ChatRepository {
     List<File>? upload,
     Sticker? sticker,
     String? replyTo,
+    bool? mentionRepliedUser,
     void Function(int sent, int total) progress,
     Future<void>? cancel,
   ) {
+    // Left out, the API pings the replied author.
+    final allowedMentions = mentionRepliedUser == null ? null : duvet.AllowedMentions(repliedUser: mentionRepliedUser);
     return switch (target) {
       RoomTarget(:final roomId) => _call(
         (api) => api.sendMessage(
@@ -1999,6 +2003,7 @@ class DuvetRepository implements ChatRepository {
           messageReference: replyTo == null
               ? null
               : duvet.MessageReference(type: duvet.MessageReferenceType.reply, messageId: replyTo, roomId: roomId),
+          allowedMentions: allowedMentions,
           onProgress: upload == null ? null : progress,
           abortTrigger: upload == null ? null : cancel,
         ),
@@ -2013,6 +2018,7 @@ class DuvetRepository implements ChatRepository {
           messageReference: replyTo == null
               ? null
               : duvet.MessageReference(type: duvet.MessageReferenceType.reply, messageId: replyTo),
+          allowedMentions: allowedMentions,
           onProgress: upload == null ? null : progress,
           abortTrigger: upload == null ? null : cancel,
         ),

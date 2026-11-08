@@ -58,6 +58,7 @@ class _Fake extends FakeRepository {
     List<OutgoingFile> files = const [],
     Sticker? sticker,
     String? replyTo,
+    bool? mentionRepliedUser,
     void Function(double progress)? onProgress,
     Future<void>? cancel,
   }) async {
@@ -69,6 +70,7 @@ class _Fake extends FakeRepository {
       files: files,
       sticker: sticker,
       replyTo: replyTo,
+      mentionRepliedUser: mentionRepliedUser,
       onProgress: onProgress,
       cancel: cancel,
     );

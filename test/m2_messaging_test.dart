@@ -219,8 +219,36 @@ void main() {
     await tester.pump();
     await tapLabel(tester, 'Send');
     expect(repository.sent.last.replyTo, 'm1');
+    expect(repository.sent.last.mentionRepliedUser, isTrue);
     expect(find.textContaining('Replying to Maya —'), findsNothing);
     expect(find.bySemanticsLabel('Replying to Maya: Hey! Did you see the new tab bar?. Jump to message'), findsOne);
+    semantics.dispose();
+  });
+
+  testWidgets('@ ON/OFF on the reply strip: a reply can leave its author unpinged, and yours has no toggle', (
+    tester,
+  ) async {
+    final repository = await openMaya(tester, reply: ReplyGesture.doubleTap);
+    Future<void> doubleTap(String text) async {
+      await tester.tap(find.text(text).last);
+      await tester.pump(const Duration(milliseconds: 50));
+      await tester.tap(find.text(text).last);
+      await tester.pumpAndSettle();
+    }
+
+    await doubleTap('Hey! Did you see the new tab bar?');
+    expect(find.text('@ ON'), findsOneWidget);
+    await tapLabel(tester, 'Mention Maya');
+    expect(find.text('@ OFF'), findsOneWidget);
+    await tester.enterText(find.byType(EditableText), 'quietly');
+    await tester.pump();
+    await tapLabel(tester, 'Send');
+    expect((repository.sent.last.replyTo, repository.sent.last.mentionRepliedUser), ('m1', false));
+
+    await doubleTap('quietly');
+    expect(find.textContaining('Replying to'), findsOneWidget);
+    expect(find.text('@ ON'), findsNothing);
+    expect(find.text('@ OFF'), findsNothing);
     semantics.dispose();
   });
 

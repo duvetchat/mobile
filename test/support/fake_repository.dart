@@ -1331,7 +1331,15 @@ class FakeRepository implements ChatRepository {
   final history = <String, List<ChatMessage>>{};
   final sent =
       <
-        ({ChatTarget target, String content, String nonce, List<OutgoingFile> files, Sticker? sticker, String? replyTo})
+        ({
+          ChatTarget target,
+          String content,
+          String nonce,
+          List<OutgoingFile> files,
+          Sticker? sticker,
+          String? replyTo,
+          bool? mentionRepliedUser,
+        })
       >[];
   final directMessagesOpened = <String>[];
   @override
@@ -1554,10 +1562,19 @@ class FakeRepository implements ChatRepository {
     List<OutgoingFile> files = const [],
     Sticker? sticker,
     String? replyTo,
+    bool? mentionRepliedUser,
     void Function(double progress)? onProgress,
     Future<void>? cancel,
   }) async {
-    sent.add((target: target, content: content, nonce: nonce, files: files, sticker: sticker, replyTo: replyTo));
+    sent.add((
+      target: target,
+      content: content,
+      nonce: nonce,
+      files: files,
+      sticker: sticker,
+      replyTo: replyTo,
+      mentionRepliedUser: mentionRepliedUser,
+    ));
     if (files.isNotEmpty) {
       onProgress?.call(0);
       lastUpload = onProgress;

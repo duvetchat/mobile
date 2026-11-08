@@ -418,6 +418,16 @@ class MessageReply {
     deleted: true,
   );
 
+  /// The same quote, mentioning its author or not.
+  MessageReply withMentionAuthor(bool mentionAuthor) => MessageReply(
+    messageId: messageId,
+    authorId: authorId,
+    authorName: authorName,
+    content: content,
+    mentionAuthor: mentionAuthor,
+    deleted: deleted,
+  );
+
   /// The same quote, its author named [authorName].
   MessageReply withAuthorName(String authorName) => MessageReply(
     messageId: messageId,

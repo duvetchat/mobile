@@ -64,7 +64,14 @@ enum _Delivery { sent, sending, failed }
 typedef _Entry = ({ChatMessage message, _Delivery delivery});
 
 /// What a pending message carries, kept to send it again.
-typedef _Outgoing = ({String content, List<OutgoingFile> files, Sticker? sticker, String? replyTo, Recording? voice});
+typedef _Outgoing = ({
+  String content,
+  List<OutgoingFile> files,
+  Sticker? sticker,
+  String? replyTo,
+  bool? mentionReplied,
+  Recording? voice,
+});
 
 /// How many files one message takes.
 const maxFiles = 10;
@@ -697,7 +704,14 @@ class _ChatViewState extends State<ChatView> {
     _lastTypingSent = DateTime.fromMillisecondsSinceEpoch(0);
     // In a thread, a message with no other target replies to the thread's root.
     final to = replyTo?.messageId ?? widget.threadOf;
-    _queue((content: content, files: files, sticker: null, replyTo: to, voice: null), reply: replyTo);
+    _queue((
+      content: content,
+      files: files,
+      sticker: null,
+      replyTo: to,
+      mentionReplied: replyTo?.mentionAuthor,
+      voice: null,
+    ), reply: replyTo);
   }
 
   static String _megabytes(int bytes) => '${(bytes / (1024 * 1024)).round()} MB';
@@ -712,11 +726,18 @@ class _ChatViewState extends State<ChatView> {
     final reply = _replyTo;
     if (reply != null) setState(() => _replyTo = null);
     final to = reply?.messageId ?? widget.threadOf;
-    _queue((content: content, files: const [], sticker: sticker, replyTo: to, voice: null), reply: reply);
+    _queue((
+      content: content,
+      files: const [],
+      sticker: sticker,
+      replyTo: to,
+      mentionReplied: reply?.mentionAuthor,
+      voice: null,
+    ), reply: reply);
   }
 
   void _sendVoice(Recording recording) =>
-      _queue((content: '', files: const [], sticker: null, replyTo: null, voice: recording));
+      _queue((content: '', files: const [], sticker: null, replyTo: null, mentionReplied: null, voice: recording));
 
   void _queue(_Outgoing outgoing, {MessageReply? reply}) {
     final nonce = _nonce();
@@ -776,6 +797,7 @@ class _ChatViewState extends State<ChatView> {
           files: outgoing.files,
           sticker: outgoing.sticker,
           replyTo: outgoing.replyTo,
+          mentionRepliedUser: outgoing.mentionReplied,
           onProgress: outgoing.files.isEmpty
               ? null
               : (p) {
@@ -992,6 +1014,8 @@ class _ChatViewState extends State<ChatView> {
         authorId: m.authorId,
         authorName: m.authorName,
         content: _repository.previewOf(m),
+        // The desktop's @ ON: a reply pings its author unless turned off.
+        mentionAuthor: m.authorId != _me && m.webhookId == null,
       );
     });
     _focus.requestFocus();
@@ -999,6 +1023,18 @@ class _ChatViewState extends State<ChatView> {
   }
 
   void _cancelReply() => setState(() => _replyTo = null);
+
+  void _toggleReplyMention() {
+    final reply = _replyTo;
+    if (reply == null) return;
+    setState(() => _replyTo = reply.withMentionAuthor(!reply.mentionAuthor));
+    _focus.requestFocus();
+  }
+
+  // As on the desktop: no @ ON/OFF for a reply to oneself or to a webhook.
+  bool _canMentionReplied(MessageReply reply) =>
+      reply.authorId != _me &&
+      _entries.where((e) => e.message.id == reply.messageId).firstOrNull?.message.webhookId == null;
 
   /// Dismisses a bot's answer to the user alone: it goes for the session.
   void _dismiss(ChatMessage m) {
@@ -2300,6 +2336,10 @@ class _ChatViewState extends State<ChatView> {
                           children: [
                             _ComposerStrip(
                               reply: _replyTo,
+                              onToggleMention: switch (_replyTo) {
+                                final r? when _canMentionReplied(r) => _toggleReplyMention,
+                                _ => null,
+                              },
                               editing: _editing != null,
                               onClose: () {
                                 if (_editing != null) {

@@ -1865,6 +1865,17 @@ void main() {
       final send = requests.lastWhere((r) => r.method == 'POST');
       final body = jsonDecode(send.body) as Map;
       expect((body['message_reference'] as Map)['message_id'], '9');
+      expect(body.containsKey('allowed_mentions'), isFalse);
+
+      await repository.send(
+        const ConversationTarget('c-1'),
+        'quietly',
+        nonce: 'n2',
+        replyTo: '9',
+        mentionRepliedUser: false,
+      );
+      final quiet = jsonDecode(requests.lastWhere((r) => r.method == 'POST').body) as Map;
+      expect(quiet['allowed_mentions'], {'replied_user': false});
     });
 
     test('the newest message of a room is fetched alone, and kept live', () async {
