@@ -1578,6 +1578,101 @@ void main() {
       expect(s.buckets.single.name, 'Guild bucket');
       expect(bucketReads(), 1);
     });
+
+    test('keeps the IDs, and which files are in a message', () async {
+      await signIn();
+      repository.handleEvent(
+        _event('SPACE_CREATE', _space(roles: {'role-store': Perm.manageBuckets}, mine: ['role-store'])),
+      );
+      storage();
+      routes[('GET', '/api/spaces/s-1/attachments')] = (_) => [
+        {'id': 'a-1', 'filename': 'poster.png', 'content_type': 'image/png', 'size_bytes': 3072, 'created_at': _at},
+        {
+          'id': 'a-2',
+          'message_id': 'm-1',
+          'filename': 'posted.pdf',
+          'content_type': 'application/pdf',
+          'size_bytes': 1024,
+          'created_at': _at,
+        },
+      ];
+      final s = await repository.spaceStorage('s-1');
+      expect([for (final f in s.files) (f.id, f.inMessage)], [('a-1', false), ('a-2', true)]);
+      expect(s.buckets.single.id, 'b-1');
+    });
+
+    test('a bucket saved sends every field: its limits as they are, an empty secret to keep it', () async {
+      await signIn();
+      routes[('PATCH', '/api/spaces/s-1/buckets/b-1')] = (_) => {
+        'id': 'b-1',
+        'owner_id': 's-1',
+        'name': 'Guild R2',
+        'endpoint': 'https://s3.example.com',
+        'bucket_name': 'guild',
+        'access_key_id': 'key',
+        'used_bytes': 0,
+        'created_at': _at,
+        'updated_at': _at,
+      };
+      await repository.updateSpaceBucket('s-1', 'b-1', (
+        name: 'Guild R2',
+        region: '',
+        endpoint: 'https://s3.example.com',
+        bucketName: 'guild',
+        accessKey: 'key',
+        secret: '',
+        pathStyle: true,
+        max: 1024 * 1024,
+        uploadLimit: null,
+      ));
+      final body = jsonDecode(requests.last.body) as Map<String, dynamic>;
+      expect(body, containsPair('max_bytes', 1024 * 1024));
+      expect(body, containsPair('upload_limit_bytes', null), reason: 'null removes the limit');
+      expect(body, containsPair('secret_access_key', ''), reason: 'the API keeps the stored one');
+      expect(body, containsPair('region', 'auto'));
+      expect(body, containsPair('use_path_style', true));
+    });
+
+    test('a bucket that holds files isn\'t deleted, and says how many', () async {
+      await signIn();
+      routes[('DELETE', '/api/spaces/s-1/buckets/b-1')] = (_) => http.Response(
+        jsonEncode({'error': 'bucket has files', 'files': 2}),
+        409,
+        headers: {'content-type': 'application/json'},
+      );
+      await expectLater(
+        repository.deleteSpaceBucket('s-1', 'b-1'),
+        throwsA(
+          isA<ActionFailed>().having(
+            (e) => e.message,
+            'message',
+            'This bucket still holds 2 files. Delete them first.',
+          ),
+        ),
+      );
+    });
+
+    test('a bucket turned on and off, a file deleted, and all of them', () async {
+      await signIn();
+      for (final path in ['/api/spaces/s-1/buckets/b-1/activate', '/api/spaces/s-1/buckets/b-1/deactivate']) {
+        routes[('POST', path)] = (_) => <String, Object?>{};
+      }
+      routes[('DELETE', '/api/spaces/s-1/attachments/a-1')] = (_) => <String, Object?>{};
+      routes[('DELETE', '/api/spaces/s-1/attachments')] = (_) => <String, Object?>{};
+      await repository.setSpaceBucketActive('s-1', 'b-1', true);
+      await repository.setSpaceBucketActive('s-1', 'b-1', false);
+      await repository.deleteSpaceFile('s-1', 'a-1');
+      await repository.deleteAllSpaceFiles('s-1');
+      expect(
+        [for (final r in requests.skip(requests.length - 4)) '${r.method} ${r.url.path}'],
+        [
+          'POST /api/spaces/s-1/buckets/b-1/activate',
+          'POST /api/spaces/s-1/buckets/b-1/deactivate',
+          'DELETE /api/spaces/s-1/attachments/a-1',
+          'DELETE /api/spaces/s-1/attachments',
+        ],
+      );
+    });
   });
 
   test('a bot\'s invite card is for bots: anyone else is refused, as on the desktop', () async {

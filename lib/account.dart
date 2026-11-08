@@ -1234,35 +1234,8 @@ class _MyFilesPageState extends State<MyFilesPage> {
   }
 
   Future<void> _delete(MyFile f) async {
-    final sure = await showGlassDialogSheet<bool>(
-      context,
-      label: 'Delete ${f.name}?',
-      builder: (context) => Padding(
-        padding: const EdgeInsets.fromLTRB(24, 16, 24, 24),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            Text('Delete ${f.name}?', style: DuvetType.titleSans.copyWith(color: context.theme.colors.foreground)),
-            const SizedBox(height: 12),
-            Text(
-              'It goes from every message it’s in. This can’t be undone.',
-              style: DuvetType.snippet.copyWith(color: context.theme.colors.mutedForeground),
-            ),
-            const SizedBox(height: 24),
-            DuvetButton(
-              label: 'Delete file',
-              variant: ButtonVariant.destructive,
-              expand: true,
-              onPressed: () => Navigator.of(context).pop(true),
-            ),
-            const SizedBox(height: 12),
-            DuvetButton(label: 'Cancel', expand: true, onPressed: () => Navigator.of(context).pop(false)),
-          ],
-        ),
-      ),
-    );
-    if (sure != true || !mounted) return;
+    final sure = await confirmFileDelete(context, 'Delete ${f.name}?');
+    if (!sure || !mounted) return;
     try {
       await context.repository.deleteMyFile(f.id);
       await _load();
@@ -1382,54 +1355,8 @@ class _MyFilesPageState extends State<MyFilesPage> {
                 else
                   for (final f in shown)
                     Padding(
-                      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-                      child: Row(
-                        children: [
-                          ClipRRect(
-                            borderRadius: BorderRadius.circular(DuvetTokens.radiusField),
-                            child: Container(
-                              width: 48,
-                              height: 48,
-                              color: colors.secondary,
-                              child: f.isImage
-                                  ? Image.network(
-                                      f.url,
-                                      fit: BoxFit.cover,
-                                      cacheWidth: (48 * MediaQuery.devicePixelRatioOf(context)).round(),
-                                      errorBuilder: (_, _, _) => Icon(FLucideIcons.image, color: colors.foreground),
-                                    )
-                                  : Icon(
-                                      f.isAudio ? FLucideIcons.mic : FLucideIcons.fileText,
-                                      color: colors.foreground,
-                                    ),
-                            ),
-                          ),
-                          const SizedBox(width: 12),
-                          Expanded(
-                            child: Column(
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              children: [
-                                Text(
-                                  f.name,
-                                  maxLines: 1,
-                                  overflow: TextOverflow.ellipsis,
-                                  style: DuvetType.rowTitle.copyWith(fontSize: 15, color: colors.foreground),
-                                ),
-                                Text(
-                                  '${formatBytes(f.sizeBytes)} · ${shortTime(f.createdAt)}',
-                                  style: DuvetType.caption.copyWith(color: colors.mutedForeground),
-                                ),
-                              ],
-                            ),
-                          ),
-                          IconAction(
-                            icon: FLucideIcons.trash2,
-                            label: 'Delete ${f.name}',
-                            color: colors.mutedForeground,
-                            onPressed: () => _delete(f),
-                          ),
-                        ],
-                      ),
+                      padding: const EdgeInsets.symmetric(horizontal: 16),
+                      child: FileRow(file: f, onDelete: () => _delete(f)),
                     ),
               ],
             ),
@@ -1440,6 +1367,105 @@ class _MyFilesPageState extends State<MyFilesPage> {
             right: 0,
             child: GlassTopBar(title: const Text('My files'), onBack: () => Navigator.of(context).maybePop()),
           ),
+        ],
+      ),
+    );
+  }
+}
+
+/// Asks before deleting files for good: one of the user's, by default.
+Future<bool> confirmFileDelete(
+  BuildContext context,
+  String title, {
+  String body = 'It goes from every message it’s in. This can’t be undone.',
+  String action = 'Delete file',
+}) async =>
+    await showGlassDialogSheet<bool>(
+      context,
+      label: title,
+      builder: (context) => Padding(
+        padding: const EdgeInsets.fromLTRB(24, 16, 24, 24),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Text(title, style: DuvetType.titleSans.copyWith(color: context.theme.colors.foreground)),
+            const SizedBox(height: 12),
+            Text(body, style: DuvetType.snippet.copyWith(color: context.theme.colors.mutedForeground)),
+            const SizedBox(height: 24),
+            DuvetButton(
+              label: action,
+              variant: ButtonVariant.destructive,
+              expand: true,
+              onPressed: () => Navigator.of(context).pop(true),
+            ),
+            const SizedBox(height: 12),
+            DuvetButton(label: 'Cancel', expand: true, onPressed: () => Navigator.of(context).pop(false)),
+          ],
+        ),
+      ),
+    ) ==
+    true;
+
+/// An uploaded file: its picture or kind, name, size and date, and a trash
+/// button when it can be deleted alone.
+class FileRow extends StatelessWidget {
+  final MyFile file;
+  final VoidCallback? onDelete;
+
+  /// After the size and date, e.g. why it can't be deleted alone.
+  final String? note;
+  const FileRow({required this.file, this.onDelete, this.note, super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = context.theme.colors;
+    final f = file;
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 8),
+      child: Row(
+        children: [
+          ClipRRect(
+            borderRadius: BorderRadius.circular(DuvetTokens.radiusField),
+            child: Container(
+              width: 48,
+              height: 48,
+              color: colors.secondary,
+              child: f.isImage
+                  ? Image.network(
+                      f.url,
+                      fit: BoxFit.cover,
+                      cacheWidth: (48 * MediaQuery.devicePixelRatioOf(context)).round(),
+                      errorBuilder: (_, _, _) => Icon(FLucideIcons.image, color: colors.foreground),
+                    )
+                  : Icon(f.isAudio ? FLucideIcons.mic : FLucideIcons.fileText, color: colors.foreground),
+            ),
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  f.name,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: DuvetType.rowTitle.copyWith(fontSize: 15, color: colors.foreground),
+                ),
+                Text(
+                  [formatBytes(f.sizeBytes), shortTime(f.createdAt), ?note].join(' · '),
+                  style: DuvetType.caption.copyWith(color: colors.mutedForeground),
+                ),
+              ],
+            ),
+          ),
+          if (onDelete != null)
+            IconAction(
+              icon: FLucideIcons.trash2,
+              label: 'Delete ${f.name}',
+              color: colors.mutedForeground,
+              onPressed: onDelete,
+            ),
         ],
       ),
     );
@@ -1567,7 +1593,10 @@ class StorageMeter extends StatelessWidget {
 class BucketMeter extends StatelessWidget {
   final BucketUsage bucket;
   final bool big;
-  const BucketMeter({required this.bucket, this.big = false, super.key});
+
+  /// Before the bucket's name: whose storage it is.
+  final String title;
+  const BucketMeter({required this.bucket, this.big = false, this.title = 'Your own storage', super.key});
 
   @override
   Widget build(BuildContext context) {
@@ -1584,13 +1613,13 @@ class BucketMeter extends StatelessWidget {
       ),
       child: Semantics(
         container: true,
-        label: 'Your own storage, ${bucket.name}: ${formatBytes(bucket.used)} $of',
+        label: '$title, ${bucket.name}: ${formatBytes(bucket.used)} $of',
         excludeSemantics: true,
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             Text(
-              'Your own storage · ${bucket.name}',
+              '$title · ${bucket.name}',
               maxLines: 1,
               overflow: TextOverflow.ellipsis,
               style: DuvetType.caption.copyWith(color: colors.mutedForeground),

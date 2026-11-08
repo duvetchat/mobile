@@ -635,7 +635,7 @@ class RoleTag {
 /// desktop picks it, from roles highest first as [ChatRepository.rolesOf] gives them.
 RoleColors? nameColorsOf(Iterable<RoleTag> roles) => roles.where((r) => r.color != null).firstOrNull?.colors;
 
-/// One of the user's uploaded files.
+/// An uploaded file: one of the user's, or of a Space's.
 class MyFile {
   final String id;
   final String name;
@@ -643,6 +643,10 @@ class MyFile {
   final int sizeBytes;
   final DateTime createdAt;
   final String url;
+
+  /// Posted in a message: a Space's admins can't delete it alone, only with
+  /// all the Space's files.
+  final bool inMessage;
   const MyFile({
     required this.id,
     required this.name,
@@ -650,6 +654,7 @@ class MyFile {
     required this.sizeBytes,
     required this.createdAt,
     required this.url,
+    this.inMessage = false,
   });
 
   bool get isImage => contentType.startsWith('image/');

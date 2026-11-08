@@ -296,6 +296,22 @@ abstract interface class ChatRepository {
 
   Future<SpaceStorage> spaceStorage(String spaceId);
 
+  /// A bucket for the Space's files; while one is active, the uploads go to it.
+  Future<void> createSpaceBucket(String spaceId, BucketDraft draft);
+
+  /// Sends every field: a null limit removes it, an empty secret keeps it.
+  Future<void> updateSpaceBucket(String spaceId, String bucketId, BucketDraft draft);
+
+  /// Refused while it holds files, said with how many.
+  Future<void> deleteSpaceBucket(String spaceId, String bucketId);
+  Future<void> setSpaceBucketActive(String spaceId, String bucketId, bool active);
+
+  /// A file posted in no message: the API won't delete one that is.
+  Future<void> deleteSpaceFile(String spaceId, String fileId);
+
+  /// Every file of the Space's, those in messages too.
+  Future<void> deleteAllSpaceFiles(String spaceId);
+
   /// The team invites waiting on the user: fetched on READY, and again when
   /// TEAM_INVITE_CREATE brings one.
   ValueListenable<List<TeamInvite>> get teamInvites;

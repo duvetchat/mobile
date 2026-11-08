@@ -13,7 +13,7 @@ import 'package:duvet/spaces.dart' show pickSpaceIcon;
 import 'package:duvet/theme.dart';
 import 'package:duvet/widgets/chrome.dart';
 import 'package:duvet/widgets/glass.dart' show GlassRow;
-import 'package:duvet/widgets/rows.dart' show DuvetChip;
+import 'package:duvet/widgets/rows.dart' show DuvetChip, DuvetTextField;
 import 'package:duvet/widgets/picture_edit.dart' show takePhoto;
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
@@ -1482,16 +1482,148 @@ void main() {
       tester,
       setUp: (r) => r.storageOfSpace = SpaceStorage(
         used: 3 * 1024 * 1024,
-        buckets: const [(name: 'Guild bucket', used: 3 * 1024 * 1024, max: 50 * 1024 * 1024 * 1024, active: true)],
+        buckets: const [
+          Bucket(id: 'b-1', name: 'Guild bucket', used: 3 * 1024 * 1024, max: 50 * 1024 * 1024 * 1024, active: true),
+        ],
         files: [
-          (name: 'poster.png', contentType: 'image/png', size: 3 * 1024 * 1024, createdAt: DateTime(2026, 10, 1)),
+          MyFile(
+            id: 'a-1',
+            name: 'poster.png',
+            contentType: 'image/png',
+            sizeBytes: 3 * 1024 * 1024,
+            createdAt: DateTime(2026, 10, 1),
+            url: 'https://example.invalid/poster.png',
+          ),
         ],
       ),
     );
     await tapLabel(tester, RegExp(r'^Storage, 3\.0 MB used'));
     expect(find.bySemanticsLabel('3.0 MB used by 1 files'), findsOneWidget);
-    expect(find.text('3.0 MB of 50.0 GB'), findsOneWidget);
+    expect(find.bySemanticsLabel('Active, Guild bucket: 3.0 MB of 50.0 GB used'), findsOneWidget);
     expect(find.text('poster.png'), findsOneWidget);
+    semantics.dispose();
+  });
+
+  // A form field by its label, scrolled into the list's build.
+  Future<void> fill(WidgetTester tester, String label, String text) async {
+    final field = find.widgetWithText(DuvetTextField, label);
+    await tester.scrollUntilVisible(
+      field,
+      200,
+      scrollable: find.descendant(of: find.byType(ListView).last, matching: find.byType(Scrollable)).first,
+    );
+    await tester.enterText(find.descendant(of: field, matching: find.byType(EditableText)), text);
+    await tester.pump();
+  }
+
+  testWidgets('storage: a bucket added, edited with its limits kept, turned off, and refused while it holds files', (
+    tester,
+  ) async {
+    final repository = await pumpSettings(
+      tester,
+      setUp: (r) => r
+        ..refusals['deleteSpaceBucket'] = 'This bucket still holds 2 files. Delete them first.'
+        ..storageOfSpace = const SpaceStorage(
+          used: 3 * 1024 * 1024,
+          buckets: [
+            Bucket(
+              id: 'b-1',
+              name: 'Guild bucket',
+              region: 'auto',
+              endpoint: 'https://s3.example.com',
+              bucketName: 'guild',
+              accessKey: 'key',
+              active: true,
+              used: 3 * 1024 * 1024,
+              max: 50 * 1024 * 1024 * 1024,
+              uploadLimit: 25 * 1024 * 1024,
+            ),
+          ],
+        ),
+    );
+    await tapLabel(tester, RegExp(r'^Storage, 3\.0 MB used'));
+
+    // Edited: every field as it was but the name, so the limits stay and the secret is kept.
+    await tapLabel(tester, 'Options for Guild bucket');
+    await tapLabel(tester, 'Edit');
+    expect(find.text('Leave it empty to keep the current one'), findsOneWidget);
+    await fill(tester, 'Name', 'Guild R2');
+    await tapLabel(tester, 'Save');
+    expect(repository.admin.last, 'bucket* b-1 Guild R2 region=auto path=false max=53687091200 limit=26214400 secret=');
+    expect(find.bySemanticsLabel(RegExp(r'^Active, Guild R2')), findsOneWidget);
+
+    await tapLabel(tester, 'Options for Guild R2');
+    await tapLabel(tester, 'Deactivate');
+    expect(repository.admin.last, 'bucket off b-1');
+    expect(find.bySemanticsLabel(RegExp(r'^Off, Guild R2')), findsOneWidget);
+    await tapLabel(tester, 'Options for Guild R2');
+    await tapLabel(tester, 'Activate');
+    expect(repository.admin.last, 'bucket on b-1');
+    expect(find.bySemanticsLabel(RegExp(r'^Active, Guild R2')), findsOneWidget);
+
+    await tapLabel(tester, 'Options for Guild R2');
+    await tapLabel(tester, 'Delete');
+    await tapLabel(tester, 'Delete bucket');
+    expect(repository.admin.last, 'bucket- b-1');
+    expect(find.text('This bucket still holds 2 files. Delete them first.'), findsOneWidget);
+    await tester.pump(const Duration(seconds: 4));
+
+    // Added: the secret is needed, and the owner's trust asked first.
+    await tapLabel(tester, 'Add a bucket');
+    await fill(tester, 'Name', 'Backups');
+    await fill(tester, 'Endpoint', 'https://minio.example.com');
+    await fill(tester, 'Bucket name', 'backups');
+    await fill(tester, 'Access key ID', 'minio');
+    await fill(tester, 'Total (MB)', '0');
+    expect(find.text('A number above 0'), findsOneWidget);
+    await fill(tester, 'Total (MB)', '100');
+    await tapLabel(tester, 'Save');
+    expect(repository.admin.last, 'bucket- b-1', reason: 'no secret yet');
+    await fill(tester, 'Secret access key', 's3cret');
+    await tapLabel(tester, 'Save');
+    expect(find.textContaining('Whoever owns the bucket can read'), findsOneWidget);
+    await tapLabel(tester, 'Yes, add bucket');
+    expect(repository.admin.last, 'bucket+ Backups region= path=false max=104857600 limit=null secret=s3cret');
+    expect(find.bySemanticsLabel(RegExp(r'^Off, Backups')), findsOneWidget);
+    semantics.dispose();
+  });
+
+  testWidgets('storage: a file alone only when it\'s in no message; all of them, those in messages too', (
+    tester,
+  ) async {
+    MyFile file(String id, String name, {bool inMessage = false}) => MyFile(
+      id: id,
+      name: name,
+      contentType: 'application/pdf',
+      sizeBytes: 1024,
+      createdAt: DateTime(2026, 10, 1),
+      url: 'https://example.invalid/$name',
+      inMessage: inMessage,
+    );
+    final repository = await pumpSettings(
+      tester,
+      setUp: (r) => r.storageOfSpace = SpaceStorage(
+        used: 2048,
+        files: [file('a-1', 'notes.pdf'), file('a-2', 'posted.pdf', inMessage: true)],
+      ),
+    );
+    await tapLabel(tester, RegExp(r'^Storage, '));
+    expect(find.bySemanticsLabel('Delete posted.pdf'), findsNothing);
+    expect(find.textContaining('In a message'), findsOneWidget);
+
+    await tapLabel(tester, 'Delete notes.pdf');
+    await tapLabel(tester, 'Delete file');
+    expect(repository.admin.last, 'file- a-1');
+    expect(find.text('notes.pdf'), findsNothing);
+
+    await tapLabel(tester, 'Delete all files');
+    expect(
+      find.text('Delete all 1 file in this Space, including ones posted in messages? This can’t be undone.'),
+      findsOneWidget,
+    );
+    await tapLabel(tester, 'Delete all files');
+    expect(repository.admin.last, 'files-');
+    expect(find.text('No files yet'), findsOneWidget);
     semantics.dispose();
   });
 }
