@@ -50,6 +50,9 @@ class ComponentOption {
   );
 }
 
+/// A media gallery's item.
+typedef GalleryItem = ({String url, String? contentType, String? description, String? attachmentId, bool spoiler});
+
 /// One component, any kind: the fields it has are its kind's.
 class UiComponent {
   final int type;
@@ -77,10 +80,24 @@ class UiComponent {
   final String? content;
   final String? mediaUrl;
 
-  /// A gallery's items: each one's link and its `content_type` (a `video/*`
-  /// one is a video).
-  final List<({String url, String? contentType})> gallery;
+  /// The file behind [mediaUrl] when the message carries it: its link
+  /// renews.
+  final String? mediaAttachmentId;
+
+  /// A gallery's items: each one's link, its `content_type` (a `video/*`
+  /// one is a video), its description, its file and whether it's a spoiler.
+  final List<GalleryItem> gallery;
   final String? description;
+
+  /// A container, thumbnail or file covered until tapped.
+  final bool spoiler;
+
+  /// A container's stripe down its left side, as `0xRRGGBB`.
+  final int? accentColor;
+
+  /// A file's name and size in bytes, as the API gives them.
+  final String? fileName;
+  final int? fileSize;
   final bool? required;
   final int? minLength;
   final int? maxLength;
@@ -110,8 +127,13 @@ class UiComponent {
     this.input,
     this.content,
     this.mediaUrl,
+    this.mediaAttachmentId,
     this.gallery = const [],
     this.description,
+    this.spoiler = false,
+    this.accentColor,
+    this.fileName,
+    this.fileSize,
     this.required,
     this.minLength,
     this.maxLength,
@@ -162,12 +184,23 @@ class UiComponent {
       },
       content: j['content'] as String?,
       mediaUrl: webUrl((j['media'] as Map?)?['url']) ?? webUrl((j['file'] as Map?)?['url']),
+      mediaAttachmentId: ((j['media'] ?? j['file']) as Map?)?['attachment_id'] as String?,
       gallery: [
         for (final i in j['items'] as List? ?? const [])
           if (i case {'media': final Map m} when webUrl(m['url']) != null)
-            (url: m['url'] as String, contentType: m['content_type'] as String?),
+            (
+              url: m['url'] as String,
+              contentType: m['content_type'] as String?,
+              description: i['description'] as String?,
+              attachmentId: m['attachment_id'] as String?,
+              spoiler: i['spoiler'] == true,
+            ),
       ],
       description: j['description'] as String?,
+      spoiler: j['spoiler'] == true,
+      accentColor: j['accent_color'] as int?,
+      fileName: j['name'] as String?,
+      fileSize: j['size'] as int?,
       required: j['required'] as bool?,
       minLength: j['min_length'] as int?,
       maxLength: j['max_length'] as int?,

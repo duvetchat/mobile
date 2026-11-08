@@ -1,3 +1,5 @@
+import 'dart:ui' show ImageFilter;
+
 import 'package:flutter/material.dart';
 import 'package:forui/forui.dart';
 
@@ -142,43 +144,79 @@ class _BotComponentsState extends State<BotComponents> {
       case ComponentKind.container:
         return Container(
           width: 300,
-          padding: const EdgeInsets.all(16),
+          clipBehavior: Clip.antiAlias,
           decoration: BoxDecoration(
             color: colors.card,
             borderRadius: BorderRadius.circular(DuvetTokens.radiusCard),
             boxShadow: tokens.shadowRaised,
           ),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
+          child: Stack(
             children: [
-              for (final (i, child) in c.children.indexed)
-                Padding(
-                  padding: EdgeInsets.only(top: i == 0 ? 0 : 12),
-                  child: _component(context, child),
+              Padding(
+                padding: const EdgeInsets.all(16),
+                child: _Spoiler(
+                  hidden: c.spoiler,
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      for (final (i, child) in c.children.indexed)
+                        Padding(
+                          padding: EdgeInsets.only(top: i == 0 ? 0 : 12),
+                          child: _component(context, child),
+                        ),
+                    ],
+                  ),
                 ),
+              ),
+              // Its accent color, as the desktop's left border.
+              if (c.accentColor case final accent?)
+                Positioned(left: 0, top: 0, bottom: 0, width: 4, child: ColoredBox(color: Color(0xFF000000 | accent))),
+            ],
+          ),
+        );
+      case ComponentKind.file:
+        final url = c.mediaUrl;
+        if (url == null) return const SizedBox.shrink();
+        return _Spoiler(
+          hidden: c.spoiler,
+          child: MessageAttachments(
+            maxWidth: 268,
+            attachments: [
+              MessageAttachment(
+                id: c.mediaAttachmentId ?? url,
+                filename: c.fileName ?? 'file',
+                contentType: 'application/octet-stream',
+                url: url,
+                sizeBytes: c.fileSize ?? 0,
+              ),
             ],
           ),
         );
       case ComponentKind.separator:
         return Container(height: 1, width: 268, color: tokens.hairline);
       case ComponentKind.thumbnail:
-        return c.mediaUrl == null
-            ? const SizedBox.shrink()
-            : ClipRRect(
-                borderRadius: BorderRadius.circular(DuvetTokens.radiusField),
-                child: Image.network(
-                  c.mediaUrl!,
-                  width: 64,
-                  height: 64,
-                  fit: BoxFit.cover,
-                  semanticLabel: c.description,
-                  errorBuilder: (_, _, _) => const SizedBox.square(dimension: 64),
-                ),
-              );
+        final url = c.mediaUrl;
+        if (url == null) return const SizedBox.shrink();
+        return _Spoiler(
+          hidden: c.spoiler,
+          child: _Enlargeable(
+            pictures: [_picture(url, c.description, c.mediaAttachmentId)],
+            child: ClipRRect(
+              borderRadius: BorderRadius.circular(DuvetTokens.radiusField),
+              child: Image.network(
+                url,
+                width: 64,
+                height: 64,
+                fit: BoxFit.cover,
+                errorBuilder: (_, _, _) => const SizedBox.square(dimension: 64),
+              ),
+            ),
+          ),
+        );
       case ComponentKind.mediaGallery:
         // A video item: a dark tile with a play mark that plays it full
         // screen, from the link the API gave.
-        Widget video(({String url, String? contentType}) item, double width, double height) {
+        Widget video(GalleryItem item, double width, double height) {
           void open() => openVideo(
             context,
             MessageAttachment(id: item.url, filename: 'Video', contentType: item.contentType!, url: item.url),
@@ -203,21 +241,33 @@ class _BotComponentsState extends State<BotComponents> {
             ),
           );
         }
-        bool isVideo(({String url, String? contentType}) item) => item.contentType?.startsWith('video/') ?? false;
+        bool isVideo(GalleryItem item) => item.contentType?.startsWith('video/') ?? false;
+        // Its pictures, to swipe between full screen, as a message's are.
+        final pictures = [
+          for (final item in c.gallery)
+            if (!isVideo(item)) _picture(item.url, item.description, item.attachmentId, item.contentType),
+        ];
+        Widget picture(GalleryItem item, Widget image) => _Spoiler(
+          hidden: item.spoiler,
+          child: _Enlargeable(pictures: pictures, index: pictures.indexWhere((p) => p.url == item.url), child: image),
+        );
         // One picture shows whole, at its own ratio (the desktop's
         // object-contain); several are square thumbnails.
         if (c.gallery.length == 1) {
           final item = c.gallery.single;
-          if (isVideo(item)) return video(item, 268, 268 * 168 / 248);
-          return ClipRRect(
-            borderRadius: BorderRadius.circular(DuvetTokens.radiusField),
-            child: Image.network(
-              item.url,
-              width: 268,
-              // Decoded at its shown width: a big GIF's every frame at full size runs the phone out of memory.
-              cacheWidth: (268 * MediaQuery.devicePixelRatioOf(context)).round(),
-              fit: BoxFit.contain,
-              errorBuilder: (_, _, _) => const SizedBox.square(dimension: 128),
+          if (isVideo(item)) return _Spoiler(hidden: item.spoiler, child: video(item, 268, 268 * 168 / 248));
+          return picture(
+            item,
+            ClipRRect(
+              borderRadius: BorderRadius.circular(DuvetTokens.radiusField),
+              child: Image.network(
+                item.url,
+                width: 268,
+                // Decoded at its shown width: a big GIF's every frame at full size runs the phone out of memory.
+                cacheWidth: (268 * MediaQuery.devicePixelRatioOf(context)).round(),
+                fit: BoxFit.contain,
+                errorBuilder: (_, _, _) => const SizedBox.square(dimension: 128),
+              ),
             ),
           );
         }
@@ -227,16 +277,19 @@ class _BotComponentsState extends State<BotComponents> {
           children: [
             for (final item in c.gallery)
               if (isVideo(item))
-                video(item, 128, 128)
+                _Spoiler(hidden: item.spoiler, child: video(item, 128, 128))
               else
-                ClipRRect(
-                  borderRadius: BorderRadius.circular(DuvetTokens.radiusField),
-                  child: Image.network(
-                    item.url,
-                    width: 128,
-                    height: 128,
-                    fit: BoxFit.cover,
-                    errorBuilder: (_, _, _) => const SizedBox.square(dimension: 128),
+                picture(
+                  item,
+                  ClipRRect(
+                    borderRadius: BorderRadius.circular(DuvetTokens.radiusField),
+                    child: Image.network(
+                      item.url,
+                      width: 128,
+                      height: 128,
+                      fit: BoxFit.cover,
+                      errorBuilder: (_, _, _) => const SizedBox.square(dimension: 128),
+                    ),
                   ),
                 ),
           ],
@@ -244,6 +297,100 @@ class _BotComponentsState extends State<BotComponents> {
       default:
         return const SizedBox.shrink();
     }
+  }
+}
+
+/// A component's picture as a file the viewer opens: the message's own file,
+/// when it carries it, so its link renews.
+MessageAttachment _picture(String url, String? description, String? attachmentId, [String? contentType]) =>
+    MessageAttachment(
+      id: attachmentId ?? url,
+      filename: description ?? 'Image',
+      contentType: contentType ?? 'image/png',
+      url: url,
+    );
+
+/// A thumbnail or a gallery's picture: a tap opens [pictures] full screen,
+/// at [index], as the desktop's click enlarges it.
+class _Enlargeable extends StatelessWidget {
+  final List<MessageAttachment> pictures;
+  final int index;
+  final Widget child;
+  const _Enlargeable({required this.pictures, this.index = 0, required this.child});
+
+  @override
+  Widget build(BuildContext context) {
+    void open() => openImageViewer(context, pictures, index);
+    return Semantics(
+      container: true,
+      image: true,
+      button: true,
+      label: pictures[index].filename,
+      hint: 'Double tap to open',
+      excludeSemantics: true,
+      onTap: open,
+      child: GestureDetector(onTap: open, child: child),
+    );
+  }
+}
+
+/// A component or a gallery's item marked as a spoiler: blurred under a
+/// "Spoiler" badge until a tap reveals it, as the desktop's `SpoilerCover`;
+/// what it hides takes no taps meanwhile.
+class _Spoiler extends StatefulWidget {
+  final bool hidden;
+  final Widget child;
+  const _Spoiler({required this.hidden, required this.child});
+
+  @override
+  State<_Spoiler> createState() => _SpoilerState();
+}
+
+class _SpoilerState extends State<_Spoiler> {
+  bool _revealed = false;
+
+  void _reveal() => setState(() => _revealed = true);
+
+  @override
+  Widget build(BuildContext context) {
+    if (!widget.hidden || _revealed) return widget.child;
+    return Semantics(
+      container: true,
+      button: true,
+      label: 'Spoiler',
+      hint: 'Double tap to reveal',
+      excludeSemantics: true,
+      onTap: _reveal,
+      child: GestureDetector(
+        behavior: HitTestBehavior.opaque,
+        onTap: _reveal,
+        child: ClipRRect(
+          borderRadius: BorderRadius.circular(DuvetTokens.radiusField),
+          child: Stack(
+            children: [
+              IgnorePointer(
+                child: ImageFiltered(
+                  imageFilter: ImageFilter.blur(sigmaX: 16, sigmaY: 16, tileMode: TileMode.decal),
+                  child: widget.child,
+                ),
+              ),
+              Positioned.fill(
+                child: Center(
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+                    decoration: BoxDecoration(color: const Color(0xB3141416), borderRadius: BorderRadius.circular(6)),
+                    child: Text(
+                      'Spoiler',
+                      style: DuvetType.tabLabel.copyWith(color: Colors.white, fontWeight: FontWeight.w700),
+                    ),
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
   }
 }
 
