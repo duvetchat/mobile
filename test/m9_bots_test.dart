@@ -289,6 +289,9 @@ void main() {
     await tapLabel(tester, 'Members');
     await tester.tap(find.text('Ballot').last);
     await tester.pumpAndSettle();
+    // Below the profile's roles.
+    await tester.ensureVisible(find.bySemanticsLabel('Remove from Space').last);
+    await tester.pumpAndSettle();
     await tapLabel(tester, 'Remove from Space');
     await tapLabel(tester, 'Remove from Space');
     expect(repository.botsRemoved, [('s-guild', _ballot)]);

@@ -6,7 +6,7 @@ import 'chat_view.dart';
 import 'data/models.dart';
 import 'data/scope.dart';
 import 'members_sheet.dart' show MemberAction, PresenceAvatar;
-import 'space_admin.dart' show confirmDestructive;
+import 'space_admin.dart' show adminTry, confirmDestructive, managesRoleAt;
 import 'theme.dart';
 import 'widgets/avatar.dart';
 import 'widgets/chrome.dart';
@@ -172,13 +172,25 @@ class _ProfileState extends State<_Profile> {
             bannerUrl: widget.member.bannerUrl ?? known.bannerUrl,
           );
     final me = repository.profile.value?.id == m.userId;
-    final roles = widget.spaceId == null ? const <RoleTag>[] : repository.rolesOf(widget.spaceId!, m.userId);
     final spaceName = repository.spaces.value.where((s) => s.id == widget.spaceId).firstOrNull?.name;
     final removable =
         m.isBot && widget.spaceId != null && (repository.spaceProfile(widget.spaceId!)?.can(Perm.manageBots) ?? false);
     return ListenableBuilder(
-      listenable: Listenable.merge([repository.presence, repository.mobileOnly, repository.friends]),
+      // spaces: a role given or taken here shows at once.
+      listenable: Listenable.merge([repository.presence, repository.mobileOnly, repository.friends, repository.spaces]),
       builder: (context, _) {
+        final spaceId = widget.spaceId;
+        final roles = spaceId == null ? const <RoleTag>[] : repository.rolesOf(spaceId, m.userId);
+        // As MemberAdminPage; on their own profile only if a role is theirs to change.
+        final assignsRoles =
+            spaceId != null &&
+            (repository.spaceProfile(spaceId)?.can(Perm.manageRoles) ?? false) &&
+            (!me ||
+                repository.roles(spaceId).any((r) => !r.everyone && managesRoleAt(repository, spaceId, r.position)));
+        final held = {for (final r in roles) r.id};
+        final spaceRoles = assignsRoles
+            ? repository.roles(spaceId).where((r) => !r.everyone).toList()
+            : const <SpaceRole>[];
         final presence = presenceIn(repository.presence.value, m.userId, spaceId: widget.spaceId);
         final f = repository.friends.value;
         final isFriend = f.friends.any((x) => x.userId == m.userId);
@@ -352,11 +364,41 @@ class _ProfileState extends State<_Profile> {
                             )
                           else
                             Text('Nothing here yet.', style: DuvetType.body.copyWith(color: colors.mutedForeground)),
-                          if (roles.isNotEmpty) ...[
+                          if (roles.isNotEmpty || assignsRoles) ...[
                             divider,
                             _Label('Roles in ${spaceName ?? 'this Space'}'),
                             const SizedBox(height: 8),
-                            Wrap(spacing: 8, runSpacing: 8, children: [for (final r in roles) RoleChip(role: r)]),
+                            Wrap(
+                              spacing: 8,
+                              runSpacing: 8,
+                              children: [
+                                if (!assignsRoles)
+                                  for (final r in roles) RoleChip(role: r)
+                                else ...[
+                                  // As the desktop: every role, colored if held, a tap gives or takes it.
+                                  for (final r in spaceRoles)
+                                    RoleChip(
+                                      role: RoleTag(r.name, color: r.color, id: r.id),
+                                      held: held.contains(r.id),
+                                      onTap: managesRoleAt(repository, spaceId, r.position)
+                                          ? () => adminTry(
+                                              context,
+                                              'Couldn’t change ${m.displayName}’s roles',
+                                              () => repository.setRole(
+                                                spaceId,
+                                                r.id,
+                                                m.userId,
+                                                has: !held.contains(r.id),
+                                              ),
+                                            )
+                                          : null,
+                                    ),
+                                  // Held but not in the Space's list (yet): it still shows, unchangeable here.
+                                  for (final r in roles)
+                                    if (!spaceRoles.any((s) => s.id == r.id)) RoleChip(role: r),
+                                ],
+                              ],
+                            ),
                           ],
                           if (!me && mutual > 0) ...[
                             divider,
@@ -402,12 +444,18 @@ class _Label extends StatelessWidget {
 /// A role, as a flat chip; its color as a small square beside the name.
 class RoleChip extends StatelessWidget {
   final RoleTag role;
-  const RoleChip({required this.role, super.key});
+
+  /// False: a role the member lacks, in grey.
+  final bool held;
+
+  /// Gives or takes it; null when it can't change.
+  final VoidCallback? onTap;
+  const RoleChip({required this.role, this.held = true, this.onTap, super.key});
 
   @override
   Widget build(BuildContext context) {
     final colors = context.theme.colors;
-    return Container(
+    final chip = Container(
       height: 28,
       padding: const EdgeInsets.symmetric(horizontal: 10),
       decoration: BoxDecoration(color: colors.secondary, borderRadius: BorderRadius.circular(DuvetTokens.radiusChip)),
@@ -418,12 +466,28 @@ class RoleChip extends StatelessWidget {
             Container(
               width: 8,
               height: 8,
-              decoration: BoxDecoration(color: Color(c), borderRadius: BorderRadius.circular(2)),
+              decoration: BoxDecoration(
+                color: held ? Color(c) : colors.mutedForeground,
+                borderRadius: BorderRadius.circular(2),
+              ),
             ),
             const SizedBox(width: 6),
           ],
-          Text(role.name, style: DuvetType.caption.copyWith(color: colors.foreground)),
+          Text(role.name, style: DuvetType.caption.copyWith(color: held ? colors.foreground : colors.mutedForeground)),
         ],
+      ),
+    );
+    if (onTap == null && held) return chip;
+    return Semantics(
+      button: onTap != null,
+      toggled: held,
+      label: role.name,
+      excludeSemantics: true,
+      // Padded past 44pt for the finger.
+      child: GestureDetector(
+        behavior: HitTestBehavior.opaque,
+        onTap: onTap,
+        child: Padding(padding: const EdgeInsets.symmetric(vertical: 8), child: chip),
       ),
     );
   }
