@@ -786,17 +786,35 @@ class _ChatViewState extends State<ChatView> {
     }
   }
 
-  /// Stops an upload: the message goes, its files back to the tray.
+  /// Stops an upload: the message goes, its files back to the tray. Its text
+  /// and reply come back too while the composer has neither, as the desktop
+  /// does; what the user wrote or picked since stays.
   void _cancelUpload(_Entry entry) {
     final nonce = entry.message.nonce;
     if (nonce == null) return;
     _cancels[nonce]?.complete();
     final outgoing = _outgoing.remove(nonce);
+    final restore = outgoing != null && _editing == null;
+    final empty = _composer.text.trim().isEmpty && _replyTo == null;
+    // A reply whose message was deleted meanwhile can't be sent again.
+    final reply = entry.message.reply;
     setState(() {
       _entries.remove(entry);
       _progress.remove(nonce);
-      if (outgoing != null && _editing == null) _files.addAll(outgoing.files.take(maxFiles - _files.length));
+      if (restore) {
+        _files.addAll(outgoing.files.take(maxFiles - _files.length));
+        if (empty && reply != null && !reply.deleted) _replyTo = reply;
+      }
     });
+    if (restore && empty && outgoing.content.isNotEmpty) {
+      final directory = _directory;
+      _composer.setEncoded(
+        outgoing.content,
+        nameOf: directory.nameOf,
+        emojiNameOf: (id) => directory.emojiOf(id)?.name,
+        roomNameOf: (id) => directory.roomOf(id)?.name,
+      );
+    }
     _announce('Upload cancelled');
   }
 

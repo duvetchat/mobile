@@ -932,6 +932,47 @@ void main() {
     semantics.dispose();
   });
 
+  testWidgets('a cancelled upload gives back its text and reply while the composer has neither', (tester) async {
+    final repository = await openMaya(tester);
+    ChatView.debugPickMedia = (_) async => const [
+      OutgoingFile(path: '/tmp/a.jpg', name: 'a.jpg', contentType: 'image/jpeg', sizeBytes: 1000),
+    ];
+    repository.holdSends = Completer();
+    String typed() => tester.widget<EditableText>(find.byType(EditableText)).controller.text;
+    const strip = 'Replying to Maya — Hey! Did you see the new tab bar?';
+    Future<void> sendWithReply() async {
+      await tester.drag(find.text('Hey! Did you see the new tab bar?').first, const Offset(-120, 0));
+      await tester.pumpAndSettle();
+      await tester.enterText(find.byType(EditableText), 'Here it is');
+      await tapLabel(tester, 'Add photos, a sticker or a mention');
+      await tapLabel(tester, 'Photos & GIFs');
+      await tapLabel(tester, 'Send');
+      expect((typed(), find.text(strip).evaluate().length), ('', 0));
+    }
+
+    // Nothing typed since: the text, the reply and the file come back.
+    await sendWithReply();
+    await tapLabel(tester, 'Cancel upload');
+    expect(typed(), 'Here it is');
+    expect(find.text(strip), findsOneWidget);
+    expect(find.bySemanticsLabel('Photo, a.jpg'), findsOneWidget);
+
+    // Something typed since: it stays, and only the file comes back.
+    await tapLabel(tester, 'Cancel reply');
+    await tester.enterText(find.byType(EditableText), '');
+    await tapLabel(tester, 'Remove a.jpg');
+    await sendWithReply();
+    await tester.enterText(find.byType(EditableText), 'wait');
+    await tester.pump();
+    await tapLabel(tester, 'Cancel upload');
+    expect(typed(), 'wait');
+    expect(find.text(strip), findsNothing);
+    expect(find.bySemanticsLabel('Photo, a.jpg'), findsOneWidget);
+    repository.holdSends!.complete();
+    await tester.pumpAndSettle();
+    semantics.dispose();
+  });
+
   testWidgets('a file the server finds too large says so, with no Retry', (tester) async {
     final repository = await openMaya(tester);
     repository.tooLarge = true;
