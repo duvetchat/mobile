@@ -1963,7 +1963,7 @@ class DuvetRepository implements ChatRepository {
     void Function(double progress)? onProgress,
     Future<void>? cancel,
   }) async {
-    final upload = files.isEmpty ? null : [for (final f in files) File(f.path)];
+    final upload = files.isEmpty ? null : [for (final f in files) await _named(f)];
     void progress(int sent, int total) => onProgress?.call(total == 0 ? 0 : sent / total);
     try {
       return await _sendTo(target, content, nonce, upload, sticker, replyTo, mentionRepliedUser, progress, cancel);
@@ -1971,7 +1971,20 @@ class DuvetRepository implements ChatRepository {
       if (e.statusCode == 413) throw const UploadTooLarge();
       if (_refusal(e) case final reason?) throw ActionFailed(reason);
       rethrow;
+    } finally {
+      // The links [_named] made, not the files they point to.
+      for (final (i, f) in files.indexed) {
+        if (upload![i].path != f.path) upload[i].parent.delete(recursive: true).ignore();
+      }
     }
+  }
+
+  // duvet_client names an upload after its path's last part: a file named
+  // otherwise (marked as a spoiler, say) goes through a link of its name.
+  static Future<File> _named(OutgoingFile f) async {
+    if (File(f.path).uri.pathSegments.last == f.name) return File(f.path);
+    final dir = await Directory.systemTemp.createTemp('upload');
+    return File((await Link('${dir.path}/${f.name}').create(f.path)).path);
   }
 
   // Why the API refused a request, for the user to read: its reason, as the

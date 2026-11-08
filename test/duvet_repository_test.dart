@@ -294,6 +294,9 @@ void main() {
           'total_results': 40,
           'messages': [_dm('2', _me, 'second')],
         },
+        ('POST', '/api/users/@me/conversations/c-1/messages')
+            when (request.headers['content-type'] ?? '').startsWith('multipart/') =>
+          _dm('3', _me, ''),
         ('POST', '/api/users/@me/conversations/c-1/messages') => _dm(
           '3',
           _me,
@@ -753,6 +756,23 @@ void main() {
     final sent = await repository.send(target, 'hello', nonce: 'n-1');
     expect(sent.content, 'hello');
     expect(sent.nonce, 'n-1');
+  });
+
+  test('a file marked as a spoiler uploads under its SPOILER_ name, and the picked file stays', () async {
+    await repository.logIn('gaby@duvet.chat', 'secret');
+    final dir = await Directory.systemTemp.createTemp('picked');
+    addTearDown(() => dir.delete(recursive: true));
+    final picked = await File('${dir.path}/scaled_1.jpg').writeAsBytes([1, 2, 3]);
+
+    await repository.send(
+      const ConversationTarget('c-1'),
+      '',
+      nonce: 'n-1',
+      files: [OutgoingFile(path: picked.path, name: 'SPOILER_cat.jpg', contentType: 'image/jpeg')],
+    );
+    final upload = requests.lastWhere((r) => r.method == 'POST');
+    expect(latin1.decode(upload.bodyBytes), contains('filename="SPOILER_cat.jpg"'));
+    expect(picked.existsSync(), isTrue);
   });
 
   test('gateway events build spaces, unread state and live messages', () async {
