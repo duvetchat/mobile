@@ -21,6 +21,7 @@ import 'tabs.dart' show LiveIndicator;
 import 'theme.dart';
 import 'widgets/avatar.dart';
 import 'widgets/chrome.dart';
+import 'widgets/code_highlight.dart';
 import 'widgets/ghost_art.dart';
 import 'widgets/glass.dart';
 import 'widgets/picture_edit.dart';
@@ -1706,112 +1707,331 @@ class _YouTabState extends State<YouTab> {
           slivers: [
             SliverPadding(
               padding: const EdgeInsets.fromLTRB(16, 16, 16, 0),
-              sliver: SliverList.list(
-                children: [
-                  Container(
-                    padding: const EdgeInsets.all(16),
-                    decoration: BoxDecoration(
-                      color: colors.card,
-                      borderRadius: BorderRadius.circular(DuvetTokens.radiusCard),
-                      boxShadow: tokens.shadowRaised,
-                    ),
-                    child: Row(
-                      children: [
-                        ExcludeSemantics(
-                          child: UserAvatar(name: profile.displayName, url: profile.avatarUrl, size: 56),
-                        ),
-                        const SizedBox(width: 12),
-                        Expanded(
-                          child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              Text(
-                                profile.displayName,
-                                maxLines: 1,
-                                overflow: TextOverflow.ellipsis,
-                                style: DuvetType.rowTitleUnread.copyWith(fontSize: 17, color: colors.foreground),
-                              ),
-                              Text(
-                                '@${profile.username}',
-                                style: DuvetType.caption.copyWith(color: colors.mutedForeground),
-                              ),
-                            ],
+              // Built whole, not lazily: a short page, and every row (Storage,
+              // the Developer portal) exists for finders and screen readers alike.
+              sliver: SliverToBoxAdapter(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    Container(
+                      padding: const EdgeInsets.all(16),
+                      decoration: BoxDecoration(
+                        color: colors.card,
+                        borderRadius: BorderRadius.circular(DuvetTokens.radiusCard),
+                        boxShadow: tokens.shadowRaised,
+                      ),
+                      child: Row(
+                        children: [
+                          ExcludeSemantics(
+                            child: UserAvatar(name: profile.displayName, url: profile.avatarUrl, size: 56),
                           ),
-                        ),
-                        DuvetButton(label: 'Edit', onPressed: () => _push(const EditProfilePage())),
-                      ],
+                          const SizedBox(width: 12),
+                          Expanded(
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Text(
+                                  profile.displayName,
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                  style: DuvetType.rowTitleUnread.copyWith(fontSize: 17, color: colors.foreground),
+                                ),
+                                Text(
+                                  '@${profile.username}',
+                                  style: DuvetType.caption.copyWith(color: colors.mutedForeground),
+                                ),
+                              ],
+                            ),
+                          ),
+                          DuvetButton(label: 'Edit', onPressed: () => _push(const EditProfilePage())),
+                        ],
+                      ),
                     ),
-                  ),
-                  if (!profile.emailVerified) ...[
+                    if (!profile.emailVerified) ...[
+                      const SizedBox(height: 16),
+                      panel([
+                        row('Verify your email', () => _push(const VerifyEmailPage()), value: 'Not verified yet'),
+                      ]),
+                    ],
                     const SizedBox(height: 16),
-                    panel([row('Verify your email', () => _push(const VerifyEmailPage()), value: 'Not verified yet')]),
-                  ],
-                  const SizedBox(height: 16),
-                  panel([
-                    row(
-                      'Friends',
-                      () => _push(const FriendsPage()),
-                      value: repository.friends.value.incoming.isEmpty
-                          ? null
-                          : '${repository.friends.value.incoming.length} waiting',
+                    panel([
+                      row(
+                        'Friends',
+                        () => _push(const FriendsPage()),
+                        value: repository.friends.value.incoming.isEmpty
+                            ? null
+                            : '${repository.friends.value.incoming.length} waiting',
+                      ),
+                    ]),
+                    // What others see while you're connected.
+                    const Overline('Status'),
+                    Segmented<Presence>(
+                      label: 'Status',
+                      value: _choosing ?? profile.status,
+                      options: const {Presence.online: 'Online', Presence.doNotDisturb: 'Do not disturb'},
+                      onChanged: _setStatus,
                     ),
-                  ]),
-                  // What others see while you're connected.
-                  const Overline('Status'),
-                  Segmented<Presence>(
-                    label: 'Status',
-                    value: _choosing ?? profile.status,
-                    options: const {Presence.online: 'Online', Presence.doNotDisturb: 'Do not disturb'},
-                    onChanged: _setStatus,
-                  ),
-                  const Overline('Appearance'),
-                  Segmented<ThemeMode>(
-                    label: 'Appearance',
-                    value: appearance.value,
-                    options: const {ThemeMode.system: 'System', ThemeMode.light: 'Light', ThemeMode.dark: 'Dark'},
-                    onChanged: appearance.set,
-                  ),
-                  const Overline('Reply to a message'),
-                  _ReplyGesturePicker(value: appearance.replyGesture, onChanged: appearance.setReplyGesture),
-                  const Overline('Storage'),
-                  Semantics(
-                    container: true,
-                    button: true,
-                    label: 'My files',
-                    onTap: () => _push(const MyFilesPage()),
-                    child: GestureDetector(
+                    const Overline('Appearance'),
+                    Segmented<ThemeMode>(
+                      label: 'Appearance',
+                      value: appearance.value,
+                      options: const {ThemeMode.system: 'System', ThemeMode.light: 'Light', ThemeMode.dark: 'Dark'},
+                      onChanged: appearance.set,
+                    ),
+                    const SizedBox(height: 12),
+                    panel([
+                      row(
+                        'Code theme',
+                        () => showGlassDialogSheet<void>(
+                          context,
+                          label: 'Code theme',
+                          builder: (_) => const _CodeThemeSheet(),
+                        ),
+                        value: appearance.codeTheme == null ? 'GitHub' : 'Custom',
+                      ),
+                    ]),
+                    const Overline('Reply to a message'),
+                    _ReplyGesturePicker(value: appearance.replyGesture, onChanged: appearance.setReplyGesture),
+                    const Overline('Your bubbles'),
+                    _BubbleColorPicker(value: appearance.bubbleColor, onChanged: appearance.setBubbleColor),
+                    const Overline('Storage'),
+                    Semantics(
+                      container: true,
+                      button: true,
+                      label: 'My files',
                       onTap: () => _push(const MyFilesPage()),
-                      // Where the uploads go: the user's own bucket while one is active.
-                      child: switch (_storage) {
-                        null => panel([row('My files', () => _push(const MyFilesPage()))]),
-                        StorageInfo(:final activeBucket?) => BucketMeter(bucket: activeBucket),
-                        final storage => StorageMeter(storage: storage, images: 0, files: storage.used, voice: 0),
-                      },
+                      child: GestureDetector(
+                        onTap: () => _push(const MyFilesPage()),
+                        // Where the uploads go: the user's own bucket while one is active.
+                        child: switch (_storage) {
+                          null => panel([row('My files', () => _push(const MyFilesPage()))]),
+                          StorageInfo(:final activeBucket?) => BucketMeter(bucket: activeBucket),
+                          final storage => StorageMeter(storage: storage, images: 0, files: storage.used, voice: 0),
+                        },
+                      ),
                     ),
-                  ),
-                  const Overline('Developer'),
-                  panel([
-                    row(
-                      'Developer portal',
-                      () => _push(const DeveloperPage()),
-                      value: switch (repository.teamInvites.value.length) {
-                        0 => null,
-                        1 => '1 invite',
-                        final n => '$n invites',
-                      },
-                    ),
-                  ]),
-                  const Overline('Account'),
-                  panel([
-                    row('Change email', () => _push(const ChangeEmailPage())),
-                    row('Sign out', repository.logOut, warn: true),
-                  ]),
-                ],
+                    const Overline('Developer'),
+                    panel([
+                      row(
+                        'Developer portal',
+                        () => _push(const DeveloperPage()),
+                        value: switch (repository.teamInvites.value.length) {
+                          0 => null,
+                          1 => '1 invite',
+                          final n => '$n invites',
+                        },
+                      ),
+                    ]),
+                    const Overline('Account'),
+                    panel([
+                      row('Change email', () => _push(const ChangeEmailPage())),
+                      row('Sign out', repository.logOut, warn: true),
+                    ]),
+                  ],
+                ),
               ),
             ),
           ],
         );
       },
+    );
+  }
+}
+
+/// A VS Code theme for code blocks, by its URL: fetched once, on Apply, and
+/// previewed on the surface it's used on, so applying a dark one in light
+/// mode still shows.
+class _CodeThemeSheet extends StatefulWidget {
+  const _CodeThemeSheet();
+
+  @override
+  State<_CodeThemeSheet> createState() => _CodeThemeSheetState();
+}
+
+class _CodeThemeSheetState extends State<_CodeThemeSheet> {
+  late final _url = TextEditingController(text: AppearanceScope.of(context).codeTheme?.url);
+  String? _error;
+  bool _busy = false;
+
+  static const _sample =
+      'package main\n\n// Greet says hello.\nfunc Greet(name string) string {\n\treturn fmt.Sprintf("Hi, %s", name) + strconv.Itoa(42)\n}';
+
+  @override
+  void dispose() {
+    _url.dispose();
+    super.dispose();
+  }
+
+  Future<void> _apply() async {
+    final appearance = AppearanceScope.of(context);
+    setState(() {
+      _busy = true;
+      _error = null;
+    });
+    try {
+      await appearance.applyCodeTheme(_url.text);
+    } catch (e) {
+      debugPrint('code theme: $e');
+      if (mounted) setState(() => _error = 'Couldn’t read a VS Code theme there');
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = context.theme.colors;
+    final appearance = AppearanceScope.of(context);
+    final theme = appearance.codeTheme;
+    final dark = theme?.dark ?? Theme.of(context).brightness == Brightness.dark;
+    final surface = dark ? Duvet.dark : Duvet.light;
+    final style = DuvetType.code.copyWith(fontSize: 13, height: 1.5, color: surface.foreground);
+    final where = theme == null
+        ? 'GitHub’s colors, as on the desktop'
+        : [
+            'Used in ${dark ? 'dark' : 'light'} mode',
+            if (ownBubble(context).onDark == dark) 'and on your bubbles',
+          ].join(' ');
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 8, 16, 24),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Semantics(
+            header: true,
+            child: Text('Code theme', style: DuvetType.title.copyWith(color: colors.foreground)),
+          ),
+          const SizedBox(height: 4),
+          Text(
+            'A VS Code color theme’s JSON, by its link.',
+            style: DuvetType.snippet.copyWith(color: colors.mutedForeground),
+          ),
+          const SizedBox(height: 16),
+          DuvetTextField(
+            label: 'Theme link',
+            controller: _url,
+            hint: 'https://…/theme.json',
+            error: _error,
+            keyboardType: TextInputType.url,
+            textInputAction: TextInputAction.done,
+            onSubmitted: (_) => _apply(),
+          ),
+          const SizedBox(height: 16),
+          // The theme's own surface, not the app's: its colors are made for it.
+          Semantics(
+            label: 'Preview. $where',
+            excludeSemantics: true,
+            child: Container(
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+              decoration: BoxDecoration(
+                color: surface.card,
+                borderRadius: BorderRadius.circular(DuvetTokens.radiusField),
+                border: Border.all(color: colors.border),
+              ),
+              child: SingleChildScrollView(
+                scrollDirection: Axis.horizontal,
+                child: Text.rich(highlightCode(_sample, 'go', base: style, dark: dark, custom: theme)!),
+              ),
+            ),
+          ),
+          const SizedBox(height: 6),
+          ExcludeSemantics(
+            child: Text(where, style: DuvetType.caption.copyWith(color: colors.mutedForeground)),
+          ),
+          const SizedBox(height: 16),
+          DuvetButton(label: 'Apply', variant: ButtonVariant.primary, expand: true, busy: _busy, onPressed: _apply),
+          if (theme != null) ...[
+            const SizedBox(height: 8),
+            Center(
+              child: TextAction(
+                label: 'Use the default',
+                onPressed: () {
+                  _url.clear();
+                  setState(() => _error = null);
+                  appearance.resetCodeTheme();
+                },
+              ),
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+}
+
+/// Your bubbles' color: azure, or a role swatch, on a bubble as the chat
+/// draws it. Solid fills only; the ink on them is picked for contrast.
+class _BubbleColorPicker extends StatelessWidget {
+  final int? value;
+  final ValueChanged<int?> onChanged;
+  const _BubbleColorPicker({required this.value, required this.onChanged});
+
+  // [roleSwatches]' names, in its order.
+  static const _names = ['Red', 'Orange', 'Yellow', 'Green', 'Teal', 'Blue', 'Indigo', 'Purple', 'Pink'];
+
+  void _pick(int? rgb) {
+    HapticFeedback.selectionClick();
+    onChanged(rgb);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = context.theme.colors;
+    final bubble = bubbleColors(value);
+    final options = <(int?, String)>[(null, 'Azure'), for (final (i, rgb) in roleSwatches.indexed) (rgb, _names[i])];
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Container(
+          padding: const EdgeInsets.all(16),
+          decoration: BoxDecoration(
+            color: colors.secondary,
+            borderRadius: BorderRadius.circular(DuvetTokens.radiusField),
+          ),
+          alignment: Alignment.centerRight,
+          child: ExcludeSemantics(
+            child: Container(
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+              decoration: BoxDecoration(
+                color: bubble.fill,
+                borderRadius: BorderRadius.circular(DuvetTokens.radiusButton),
+                boxShadow: context.duvet.shadowRest,
+              ),
+              child: Text('Looks good to me', style: DuvetType.body.copyWith(color: bubble.ink)),
+            ),
+          ),
+        ),
+        const SizedBox(height: 12),
+        Wrap(
+          spacing: 12,
+          runSpacing: 12,
+          children: [
+            for (final (rgb, name) in options)
+              Semantics(
+                container: true,
+                button: true,
+                selected: value == rgb,
+                label: name,
+                excludeSemantics: true,
+                onTap: () => _pick(rgb),
+                child: GestureDetector(
+                  onTap: () => _pick(rgb),
+                  child: AnimatedContainer(
+                    duration: MediaQuery.disableAnimationsOf(context) ? Duration.zero : DuvetTokens.pressOut,
+                    width: 44,
+                    height: 44,
+                    decoration: BoxDecoration(
+                      color: bubbleColors(rgb).fill,
+                      borderRadius: BorderRadius.circular(DuvetTokens.radiusField),
+                      border: value == rgb ? Border.all(color: colors.foreground, width: 3) : null,
+                    ),
+                  ),
+                ),
+              ),
+          ],
+        ),
+      ],
     );
   }
 }
@@ -1965,7 +2185,7 @@ class _ReplyGestureDemo extends StatelessWidget {
       width: 44,
       height: 22,
       decoration: BoxDecoration(
-        color: picked ? Duvet.accent : colors.mutedForeground.withValues(alpha: 0.35),
+        color: picked ? ownBubble(context).fill : colors.mutedForeground.withValues(alpha: 0.35),
         borderRadius: BorderRadius.circular(11),
       ),
     );
