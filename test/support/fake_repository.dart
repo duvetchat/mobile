@@ -1312,6 +1312,17 @@ class FakeRepository implements ChatRepository {
   /// Messages only a fetch by ID finds: older than the loaded page.
   final older = <String, List<ChatMessage>>{};
 
+  /// The links asked for, and the new link of each file, by ID: one without
+  /// keeps its own.
+  final linksAsked = <({String id, bool refused})>[];
+  final renewedLinks = <String, String>{};
+
+  @override
+  Future<String> attachmentLink(MessageAttachment attachment, {bool refused = false}) async {
+    linksAsked.add((id: attachment.id, refused: refused));
+    return renewedLinks[attachment.id] ?? attachment.url;
+  }
+
   /// What [messagesAfter] answers, by chat ID.
   final missed = <String, List<ChatMessage>>{};
 
