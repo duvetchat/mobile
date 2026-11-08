@@ -215,11 +215,12 @@ abstract interface class ChatRepository {
 
   /// Changes the Space; [removeBanner] takes its banner away, as no
   /// [bannerPath] can. With pictures, [onProgress] follows their upload (0 to
-  /// 1).
+  /// 1). An empty [locale] clears it.
   Future<void> updateSpace(
     String spaceId, {
     String? name,
     String? description,
+    String? locale,
     String? iconPath,
     String? bannerPath,
     bool removeBanner = false,
