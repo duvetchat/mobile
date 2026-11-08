@@ -1413,7 +1413,8 @@ void main() {
     await tapLabel(tester, RegExp(r'^CI'));
     await tapLabel(tester, RegExp(r'^New URL'));
     expect(repository.admin.last, 'hook~ w-CI');
-    await tapLabel(tester, 'Copy URL');
+    await tapLabel(tester, 'Copy GitHub URL');
+    expect(copied, 'https://api.duvet.chat/api/webhooks/w-CI/fresh/github');
     await tapLabel(tester, RegExp(r'^CI'));
     await tapLabel(tester, 'Delete');
     await tapLabel(tester, 'Delete webhook');
