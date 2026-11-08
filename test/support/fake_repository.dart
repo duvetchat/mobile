@@ -457,6 +457,9 @@ class FakeRepository implements ChatRepository {
   /// What [spaceProfile] says of ManageChannels in some room.
   bool managesRooms = false;
 
+  /// The Space's locale, as [updateSpace] leaves it.
+  String? spaceLocale;
+
   @override
   bool canInRoom(String spaceId, String roomId, int bit) => switch (bit) {
     _ when (deniedInRoom[roomId] ?? 0) & bit != 0 => false,
@@ -475,6 +478,7 @@ class FakeRepository implements ChatRepository {
       name: space.name,
       iconUrl: space.iconUrl,
       bannerUrl: space.bannerUrl,
+      locale: spaceLocale,
       memberCount: everyone.length,
       owner: spaceOwner,
       perms: spacePerms,
@@ -487,6 +491,7 @@ class FakeRepository implements ChatRepository {
     String spaceId, {
     String? name,
     String? description,
+    String? locale,
     String? iconPath,
     String? bannerPath,
     bool removeBanner = false,
@@ -494,8 +499,9 @@ class FakeRepository implements ChatRepository {
     void Function(double progress)? onProgress,
   }) async {
     if (iconPath != null || bannerPath != null) await _upload(onProgress);
+    if (locale != null) spaceLocale = locale;
     admin.add(
-      'space ${[if (name != null) 'name=$name', if (description != null) 'about=$description', if (iconPath != null) 'icon=$iconPath', if (removeIcon && iconPath == null) 'icon=none', if (bannerPath != null) 'banner=$bannerPath', if (removeBanner && bannerPath == null) 'banner=none'].join(' ')}',
+      'space ${[if (name != null) 'name=$name', if (description != null) 'about=$description', if (locale != null) 'locale=$locale', if (iconPath != null) 'icon=$iconPath', if (removeIcon && iconPath == null) 'icon=none', if (bannerPath != null) 'banner=$bannerPath', if (removeBanner && bannerPath == null) 'banner=none'].join(' ')}',
     );
     if (name != null || iconPath != null || bannerPath != null || removeBanner || removeIcon) {
       spaces.value = [

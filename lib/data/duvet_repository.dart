@@ -2738,6 +2738,7 @@ class DuvetRepository implements ChatRepository {
       description: space.description,
       iconUrl: avatarUrl(space.icon),
       bannerUrl: avatarUrl(space.banner),
+      locale: space.locale,
       memberCount: _spaceMemberIds[spaceId]?.length ?? 0,
       owner: space.ownerId == profile.value?.id,
       perms: _permsIn(spaceId),
@@ -2750,6 +2751,7 @@ class DuvetRepository implements ChatRepository {
     String spaceId, {
     String? name,
     String? description,
+    String? locale,
     String? iconPath,
     String? bannerPath,
     bool removeBanner = false,
@@ -2759,16 +2761,23 @@ class DuvetRepository implements ChatRepository {
     final removesBanner = removeBanner && bannerPath == null;
     final removesIcon = removeIcon && iconPath == null;
     // Pictures, or taking one away, go as a form, where the API skips an
-    // empty description: one cleared goes first, on its own.
+    // empty description or locale: those cleared go first, on their own.
     final multipart = iconPath != null || bannerPath != null || removesBanner || removesIcon;
     final clearsDescription = description != null && description.isEmpty && multipart;
+    final clearsLocale = locale != null && locale.isEmpty && multipart;
     try {
-      if (clearsDescription) await _call((api) => api.updateSpace(spaceId, description: ''));
+      if (clearsDescription || clearsLocale) {
+        await _call(
+          (api) =>
+              api.updateSpace(spaceId, description: clearsDescription ? '' : null, locale: clearsLocale ? '' : null),
+        );
+      }
       await _call(
         (api) => api.updateSpace(
           spaceId,
           name: name,
           description: clearsDescription ? null : description,
+          locale: clearsLocale ? null : locale,
           icon: iconPath == null ? null : File(iconPath),
           banner: bannerPath == null ? null : File(bannerPath),
           removeBanner: removesBanner,

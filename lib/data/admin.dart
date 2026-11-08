@@ -98,6 +98,9 @@ class SpaceProfile {
   final String? description;
   final String? iconUrl;
   final String? bannerUrl;
+
+  /// The language the Space mostly speaks, as free text (e.g. "en").
+  final String? locale;
   final int memberCount;
   final bool owner;
 
@@ -114,6 +117,7 @@ class SpaceProfile {
     this.description,
     this.iconUrl,
     this.bannerUrl,
+    this.locale,
     this.memberCount = 0,
     this.owner = false,
     this.perms = 0,
