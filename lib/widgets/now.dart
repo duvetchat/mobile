@@ -80,8 +80,17 @@ class _NowBlockState extends State<NowBlock> {
   // Not kept: the rooms past the busiest are a look, not a setting.
   bool _all = false;
 
+  // Chats rebuilds this const block without running it again: it listens itself, as VoiceScope asks.
   @override
   Widget build(BuildContext context) {
+    final repository = context.repository;
+    return ListenableBuilder(
+      listenable: Listenable.merge([context.voice, repository.spaces, repository.presence, repository.friends]),
+      builder: (context, _) => _now(context),
+    );
+  }
+
+  Widget _now(BuildContext context) {
     final repository = context.repository;
     final voice = context.voice;
     final sorted = busiestRooms(

@@ -27,9 +27,15 @@ void main() {
     });
 
     test('capFaces and fitFaces leave a place for the "+N"', () {
-      expect(capFaces([1, 2, 3, 4, 5], 4), (faces: [1, 2, 3, 4], more: 1));
-      expect(fitFaces([1, 2, 3], 3), (faces: [1, 2, 3], more: 0));
-      expect(fitFaces([1, 2, 3, 4], 3), (faces: [1, 2], more: 2));
+      // A record holding a List compares it by identity, so check the fields.
+      void faces(({List<int> faces, int more}) got, List<int> faces, int more) {
+        expect(got.faces, faces);
+        expect(got.more, more);
+      }
+
+      faces(capFaces([1, 2, 3, 4, 5], 4), [1, 2, 3, 4], 1);
+      faces(fitFaces([1, 2, 3], 3), [1, 2, 3], 0);
+      faces(fitFaces([1, 2, 3, 4], 3), [1, 2], 2);
     });
 
     test('joinableCalls drops what is skipped; pinKey tells rooms from conversations', () {
