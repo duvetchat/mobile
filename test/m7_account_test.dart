@@ -14,9 +14,21 @@ import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart' show MethodChannel;
 import 'package:flutter_test/flutter_test.dart';
+import 'package:http/http.dart' as http;
+import 'package:http/testing.dart';
 import 'package:image/image.dart' as img;
 
 import 'support/fake_repository.dart';
+
+// A dark VS Code theme, comments and trailing commas and all.
+const _codeTheme = '''{
+  // Cut down.
+  "type": "dark",
+  "colors": {"editor.foreground": "#ABB2BF"},
+  "tokenColors": [
+    {"scope": "keyword", "settings": {"foreground": "#C678DD"}},
+  ],
+}''';
 
 class _Links implements DeepLinkSource {
   final controller = StreamController<Uri>.broadcast();
@@ -208,6 +220,66 @@ void main() {
     await tapLabel(tester, 'Send link');
     expect(repository.account.last, 'change-send new@example.com');
     expect(find.textContaining('Check new@example.com'), findsOneWidget);
+    semantics.dispose();
+  });
+
+  testWidgets('You: a code theme from a link, applied once, then back to the default', (tester) async {
+    final asked = <Uri>[];
+    appearance = Appearance(
+      store,
+      () => MockClient((request) async {
+        asked.add(request.url);
+        return http.Response(request.url.path == '/theme.json' ? _codeTheme : '<html></html>', 200);
+      }),
+    );
+    await pumpApp(tester);
+    await openYou(tester);
+    await tester.ensureVisible(find.text('Code theme'));
+    await tester.pumpAndSettle();
+    await tapLabel(tester, 'Code theme, GitHub');
+
+    // Not a theme: said inline, and nothing changes.
+    await tester.enterText(find.byType(EditableText).last, 'https://example.com/page');
+    await tapLabel(tester, 'Apply');
+    expect(find.text('Couldn’t read a VS Code theme there'), findsOneWidget);
+    expect(appearance.codeTheme, isNull);
+    expect(store.codeTheme, isNull);
+
+    await tester.enterText(find.byType(EditableText).last, 'https://example.com/theme.json');
+    await tapLabel(tester, 'Apply');
+    expect(find.text('Couldn’t read a VS Code theme there'), findsNothing);
+    expect(appearance.codeTheme?.dark, isTrue);
+    expect(appearance.codeTheme?.styles['keyword']?.color, const Color(0xFFC678DD));
+    expect(store.codeTheme?.url, 'https://example.com/theme.json');
+    expect(store.codeTheme?.json, _codeTheme);
+    // Azure bubbles are dark too.
+    expect(find.text('Used in dark mode and on your bubbles'), findsOneWidget);
+    expect(asked, hasLength(2));
+
+    await tapLabel(tester, 'Use the default');
+    expect(appearance.codeTheme, isNull);
+    expect(store.codeTheme, isNull);
+    expect(asked, hasLength(2), reason: 'the default needs no fetch');
+    semantics.dispose();
+  });
+
+  testWidgets('You: your bubbles take a swatch; a pale one gets dark ink', (tester) async {
+    await pumpApp(tester);
+    await openYou(tester);
+    await tester.ensureVisible(find.bySemanticsLabel('Yellow'));
+    await tester.pumpAndSettle();
+    Color? ink() => tester.widget<Text>(find.text('Looks good to me')).style?.color;
+    expect(ink(), const Color(0xFFFFFFFF));
+
+    await tapLabel(tester, 'Yellow');
+    expect(appearance.bubbleColor, 0xD6A400);
+    expect(store.bubbleColor, '${0xD6A400}');
+    expect(ink(), bubbleDarkInk);
+
+    await tapLabel(tester, 'Azure');
+    expect(appearance.bubbleColor, isNull);
+    expect(store.bubbleColor, isNull);
+    expect(ink(), const Color(0xFFFFFFFF));
     semantics.dispose();
   });
 

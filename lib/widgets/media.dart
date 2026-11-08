@@ -13,6 +13,7 @@ import 'package:video_player/video_player.dart';
 
 import '../data/models.dart';
 import '../data/ogg.dart';
+import '../data/appearance.dart' show ownBubble;
 import '../theme.dart';
 import 'depth.dart';
 
@@ -279,6 +280,7 @@ class _PlaySquare extends StatelessWidget {
     final colors = context.theme.colors;
     final tokens = context.duvet;
     const radius = BorderRadius.all(Radius.circular(DuvetTokens.radiusField));
+    final ink = ownBubble(context).ink;
     return Semantics(
       container: true,
       button: true,
@@ -290,14 +292,14 @@ class _PlaySquare extends StatelessWidget {
         builder: (context, pressed) => Container(
           width: 36,
           height: 36,
-          decoration: BoxDecoration(color: onAccent ? const Color(0x2EFFFFFF) : colors.secondary, borderRadius: radius),
+          decoration: BoxDecoration(color: onAccent ? ink.withAlpha(0x2E) : colors.secondary, borderRadius: radius),
           child: InsetShadow(
             shadows: onAccent ? const [] : (pressed ? tokens.shadowPressed : tokens.shadowWell),
             borderRadius: radius,
             child: Icon(
               playing ? FLucideIcons.pause : FLucideIcons.play,
               size: 18,
-              color: onAccent ? colors.primaryForeground : colors.foreground,
+              color: onAccent ? ink : colors.foreground,
             ),
           ),
         ),
@@ -328,7 +330,8 @@ class VoiceNotePlayer extends StatelessWidget {
     final colors = context.theme.colors;
     final tokens = context.duvet;
     final playback = AudioPlayback.instance;
-    final ink = mine ? colors.primaryForeground : colors.foreground;
+    final bubble = ownBubble(context);
+    final ink = mine ? bubble.ink : colors.foreground;
     final bars = fallbackBars(attachment.id, 30);
     return ValueListenableBuilder(
       valueListenable: playback.state,
@@ -349,7 +352,7 @@ class VoiceNotePlayer extends StatelessWidget {
             width: 260,
             padding: const EdgeInsets.fromLTRB(8, 8, 12, 8),
             decoration: BoxDecoration(
-              color: mine ? Duvet.azure : colors.card,
+              color: mine ? bubble.fill : colors.card,
               borderRadius: BorderRadius.circular(DuvetTokens.radiusButton),
               boxShadow: tokens.shadowRest,
             ),

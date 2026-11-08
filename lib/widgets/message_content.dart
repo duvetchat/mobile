@@ -12,6 +12,8 @@ import 'package:url_launcher/url_launcher.dart';
 import 'package:youtube_player_iframe/youtube_player_iframe.dart'
     show PlayerState, YoutubePlayerController, YoutubeValueBuilder;
 
+import '../data/appearance.dart';
+import '../data/code_theme.dart';
 import '../data/emoji_catalog.dart';
 import '../data/links.dart';
 import '../data/markdown.dart';
@@ -116,7 +118,7 @@ class _MessageTextState extends State<MessageText> {
   late List<MdBlock> _blocks = _parse();
 
   // Its code blocks' colors, worked out once a block and a theme, not each build.
-  final _colored = <(String, String, bool), TextSpan?>{};
+  final _colored = <(String, String, bool, CodeTheme?), TextSpan?>{};
 
   List<MdBlock> _parse() {
     if (!widget.singleLine) return parseMarkdown(widget.content);
@@ -183,8 +185,11 @@ class _MessageTextState extends State<MessageText> {
     final base = jumbo ? widget.style.copyWith(fontSize: 40, height: 1.2) : widget.style;
     final emojiSize = jumbo ? 48.0 : 22.0;
     final dark = Theme.of(context).brightness == Brightness.dark;
+    final appearance = AppearanceScope.maybeOf(context);
+    // Overlays on your bubble are its ink, faint: white on azure.
+    final ink = ownBubble(context).ink;
     final codeFill = widget.onAccent
-        ? const Color(0x29FFFFFF)
+        ? ink.withAlpha(0x29)
         : dark
         ? const Color(0x14FFFFFF)
         : const Color(0x0F141416);
@@ -301,9 +306,9 @@ class _MessageTextState extends State<MessageText> {
             return spans(
               children,
               (style ?? const TextStyle()).copyWith(
-                color: widget.onAccent ? colors.primaryForeground : tokens.accentText,
+                color: widget.onAccent ? ink : tokens.accentText,
                 decoration: TextDecoration.underline,
-                decorationColor: widget.onAccent ? colors.primaryForeground : tokens.accentText,
+                decorationColor: widget.onAccent ? ink : tokens.accentText,
               ),
               _tap(() => _open(url)),
             );
@@ -316,7 +321,7 @@ class _MessageTextState extends State<MessageText> {
               children,
               (style ?? const TextStyle()).copyWith(
                 color: const Color(0x00000000),
-                backgroundColor: widget.onAccent ? const Color(0x52FFFFFF) : colors.secondary,
+                backgroundColor: widget.onAccent ? ink.withAlpha(0x52) : colors.secondary,
                 decoration: TextDecoration.none,
               ),
               _tap(_reveal),
@@ -345,7 +350,7 @@ class _MessageTextState extends State<MessageText> {
           MdQuote(:final inlines) => Container(
             padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
             decoration: BoxDecoration(
-              color: widget.onAccent ? const Color(0x1FFFFFFF) : colors.secondary,
+              color: widget.onAccent ? ink.withAlpha(0x1F) : colors.secondary,
               borderRadius: BorderRadius.circular(DuvetTokens.radiusField),
             ),
             child: rich(inlines, base.copyWith(color: secondary)),
@@ -404,15 +409,18 @@ class _MessageTextState extends State<MessageText> {
               scrollDirection: Axis.horizontal,
               child: () {
                 final style = DuvetType.code.copyWith(fontSize: 13, height: 1.5, color: base.color);
-                // Its language's colors, as the desktop's; on the accent, the dark ones.
-                final onDark = dark || widget.onAccent;
+                // Its language's colors, as the desktop's; on your bubble,
+                // those for its ink.
+                final onDark = widget.onAccent ? ownBubble(context).onDark : dark;
+                final custom = appearance?.codeTheme;
                 final colored = language == null
                     ? null
                     : _colored.putIfAbsent((
                         code,
                         language,
                         onDark,
-                      ), () => highlightCode(code, language, base: style, dark: onDark));
+                        custom,
+                      ), () => highlightCode(code, language, base: style, dark: onDark, custom: custom));
                 return colored == null ? Text(code, style: style) : Text.rich(colored);
               }(),
             ),

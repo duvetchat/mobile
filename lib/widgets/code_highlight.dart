@@ -28,6 +28,8 @@ import 'package:re_highlight/re_highlight.dart';
 import 'package:re_highlight/styles/github-dark.dart';
 import 'package:re_highlight/styles/github.dart';
 
+import '../data/code_theme.dart';
+
 /// The desktop's languages (its `markdown.ts` LANGS), and Dart. Their
 /// aliases come with them: `js`, `jsx`, `ts`, `tsx`, `sh`, `html`, `toml`…
 /// Svelte and Zig, which highlight.js has no rules for, stay plain.
@@ -66,11 +68,21 @@ final _dark = {...githubDarkTheme}..remove('root');
 final _light = {...githubTheme}..remove('root');
 
 /// [code] in [language]'s colors, over [base]; null for a language it
-/// doesn't know, which then shows plain.
-TextSpan? highlightCode(String code, String language, {required TextStyle base, required bool dark}) {
+/// doesn't know, which then shows plain. A [custom] theme is used on a
+/// surface of its own darkness; GitHub's elsewhere.
+TextSpan? highlightCode(
+  String code,
+  String language, {
+  required TextStyle base,
+  required bool dark,
+  CodeTheme? custom,
+}) {
   final name = language.toLowerCase();
   if (_highlight.getLanguage(name) == null) return null;
-  final renderer = TextSpanRenderer(base, dark ? _dark : _light);
+  final renderer = TextSpanRenderer(
+    base,
+    custom != null && custom.dark == dark ? custom.styles : (dark ? _dark : _light),
+  );
   _highlight.highlight(code: code, language: name).render(renderer);
   return renderer.span;
 }

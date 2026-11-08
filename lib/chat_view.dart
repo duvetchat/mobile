@@ -14,7 +14,7 @@ import 'package:file_picker/file_picker.dart';
 import 'package:image_picker/image_picker.dart';
 
 import 'calls.dart';
-import 'data/appearance.dart' show AppearanceScope, ReplyGesture;
+import 'data/appearance.dart' show AppearanceScope, ReplyGesture, ownBubble;
 import 'data/call_notices.dart';
 import 'data/emoji_catalog.dart';
 import 'data/links.dart';

@@ -158,7 +158,7 @@ class _Bubble extends StatelessWidget {
                 padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
                 constraints: BoxConstraints(maxWidth: maxWidth),
                 decoration: BoxDecoration(
-                  color: mine ? Duvet.azure : colors.card,
+                  color: mine ? ownBubble(context).fill : colors.card,
                   borderRadius: BorderRadius.circular(DuvetTokens.radiusButton),
                   boxShadow: editing ? null : (lifted ? tokens.shadowFloat : tokens.shadowRest),
                   // Mentioning the user: the accent as an outline, never a fill.
@@ -168,7 +168,7 @@ class _Bubble extends StatelessWidget {
                   content: text,
                   directory: directory,
                   onAccent: mine,
-                  style: DuvetType.body.copyWith(color: mine ? colors.primaryForeground : colors.foreground),
+                  style: DuvetType.body.copyWith(color: mine ? ownBubble(context).ink : colors.foreground),
                   onMention: onOpenMention,
                   onRoom: onOpenRoom,
                   messageActions: anchor == null ? const {} : actionsAt(anchor),

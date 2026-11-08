@@ -27,13 +27,18 @@ void main() {
     WidgetTester tester, {
     void Function(FakeRepository r)? setUp,
     ReplyGesture reply = ReplyGesture.swipeLeft,
+    int? bubble,
   }) async {
     semantics = tester.ensureSemantics();
     tester.view.physicalSize = const Size(390 * 3, 844 * 3);
     tester.view.devicePixelRatio = 3;
     addTearDown(tester.view.reset);
     final repository = FakeRepository();
-    final appearance = Appearance(MemoryAppearanceStore()..replyGesture = reply.name);
+    final appearance = Appearance(
+      MemoryAppearanceStore()
+        ..replyGesture = reply.name
+        ..bubbleColor = bubble?.toString(),
+    );
     await appearance.load();
     addTearDown(appearance.dispose);
     await tester.pumpWidget(DuvetApp(repository: repository, appearance: appearance));
@@ -216,6 +221,24 @@ void main() {
     expect(repository.sent.last.replyTo, 'm1');
     expect(find.textContaining('Replying to Maya —'), findsNothing);
     expect(find.bySemanticsLabel('Replying to Maya: Hey! Did you see the new tab bar?. Jump to message'), findsOne);
+    semantics.dispose();
+  });
+
+  testWidgets('your bubbles take your color; on a pale one, the text is dark', (tester) async {
+    await openMaya(tester, bubble: 0xD6A400);
+    await tester.enterText(find.byType(EditableText), 'sunny side');
+    await tester.pump();
+    await tapLabel(tester, 'Send');
+    expect(
+      find.byWidgetPredicate(
+        (w) =>
+            w is Container &&
+            w.decoration is BoxDecoration &&
+            (w.decoration! as BoxDecoration).color == const Color(0xFFD6A400),
+      ),
+      findsWidgets,
+    );
+    expect(tester.widget<Text>(find.text('sunny side').last).textSpan?.style?.color, bubbleDarkInk);
     semantics.dispose();
   });
 
