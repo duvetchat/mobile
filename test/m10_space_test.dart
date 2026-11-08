@@ -837,7 +837,8 @@ void main() {
     await tapLabel(tester, 'Done');
     await tapLabel(tester, RegExp(r'^0 members'));
     await tapLabel(tester, 'Maya');
-    expect(repository.admin.last, 'give role-Hosts Maya');
+    // Staged: shown, but nothing given until Save.
+    expect(repository.admin.last, 'role+ Hosts');
     await tester.tapAt(const Offset(195, 60));
     await tester.pumpAndSettle();
     expect(find.text('1 member'), findsOneWidget);
@@ -847,7 +848,10 @@ void main() {
     await tapLabel(tester, 'Pin messages');
     expect(tester.getSemantics(pin).flagsCollection.isToggled.toString(), contains('isTrue'));
     await tapLabel(tester, 'Save');
-    expect(repository.admin.last, 'role~ role-Hosts color=30a46c perms=${Perm.pinMessages}');
+    expect(repository.admin.sublist(repository.admin.length - 2), [
+      'role~ role-Hosts color=30a46c perms=${Perm.pinMessages}',
+      'give role-Hosts Maya',
+    ]);
     expect(find.text('Hosts'), findsOneWidget);
 
     await tapLabel(tester, RegExp(r'^Hosts'));
@@ -903,6 +907,63 @@ void main() {
     expect(find.text('Edit role'), findsNothing);
     expect(repository.admin.where((a) => a.startsWith('role~')), isEmpty);
     expect(find.text('Moderator'), findsOneWidget);
+    semantics.dispose();
+  });
+
+  testWidgets('a role\'s members change on Save, and leaving first asks and changes nothing', (tester) async {
+    final repository = await pumpSettings(tester);
+    await tapLabel(tester, RegExp(r'^Roles'));
+    await tapLabel(tester, RegExp(r'^Moderator'));
+    bool saveEnabled() =>
+        tester.getSemantics(find.bySemanticsLabel('Save').last).flagsCollection.isEnabled.toString().contains('isTrue');
+    bool given() => repository.admin.any((a) => a.startsWith('give') || a.startsWith('take'));
+
+    // Picked and unpicked: back to how it was, nothing to save.
+    await tapLabel(tester, RegExp(r'^0 members'));
+    await tapLabel(tester, 'Maya');
+    await tapLabel(tester, 'Maya');
+    await tester.tapAt(const Offset(195, 60));
+    await tester.pumpAndSettle();
+    expect(find.text('0 members'), findsOneWidget);
+    expect(saveEnabled(), isFalse);
+
+    await tapLabel(tester, RegExp(r'^0 members'));
+    await tapLabel(tester, 'Maya');
+    await tester.tapAt(const Offset(195, 60));
+    await tester.pumpAndSettle();
+    expect(find.text('1 member'), findsOneWidget);
+    expect(saveEnabled(), isTrue);
+    expect(given(), isFalse);
+
+    await tester.binding.handlePopRoute();
+    await tester.pumpAndSettle();
+    expect(find.text('Unsaved changes'), findsOneWidget);
+    await tapLabel(tester, 'Discard');
+    expect(find.text('Edit role'), findsNothing);
+    expect(given(), isFalse);
+    expect(repository.roleMembers('s-guild', 'role-mod'), isEmpty);
+
+    // Again, saved: only the member change goes, no role~.
+    await tapLabel(tester, RegExp(r'^Moderator'));
+    await tapLabel(tester, RegExp(r'^0 members'));
+    await tapLabel(tester, 'Maya');
+    await tester.tapAt(const Offset(195, 60));
+    await tester.pumpAndSettle();
+    await tapLabel(tester, 'Save');
+    expect(find.text('Edit role'), findsNothing);
+    expect(repository.admin.last, 'give role-mod Maya');
+    expect(repository.admin.where((a) => a.startsWith('role~')), isEmpty);
+
+    // Taken off: the same, on Save.
+    await tapLabel(tester, RegExp(r'^Moderator'));
+    await tapLabel(tester, RegExp(r'^1 member'));
+    await tapLabel(tester, 'Maya');
+    await tester.tapAt(const Offset(195, 60));
+    await tester.pumpAndSettle();
+    expect(find.text('0 members'), findsOneWidget);
+    expect(repository.admin.last, 'give role-mod Maya');
+    await tapLabel(tester, 'Save');
+    expect(repository.admin.last, 'take role-mod Maya');
     semantics.dispose();
   });
 
