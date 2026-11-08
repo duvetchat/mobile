@@ -67,8 +67,11 @@ jobs:
       - name: Build
         working-directory: mobile
         run: flutter build apk --release --target-platform android-arm64
+      # Storage is billed in GB-hours: 1-day APKs fit the monthly allowance (372), and once it is
+      # used up the upload fails, which shouldn't fail a run whose build and tests passed (#196).
       - uses: actions/upload-artifact@v5
+        continue-on-error: true
         with:
           name: duvet-apk
           path: mobile/build/app/outputs/flutter-apk/app-release.apk
-          retention-days: 14
+          retention-days: 1
