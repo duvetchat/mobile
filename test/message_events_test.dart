@@ -161,12 +161,16 @@ void main() {
   late List<http.Request> requests;
   late DuvetRepository repository;
   late _HeldWrites cache;
+  // A message fetch that waits for it, while it's set.
+  Completer<void>? heldFetch;
 
   setUp(() {
+    heldFetch = null;
     requests = [];
     cache = _HeldWrites();
     final client = MockClient((request) async {
       requests.add(request);
+      if (request.url.path == '/api/rooms/r-1/messages/9') await heldFetch?.future;
       final json = switch ((request.method, request.url.path)) {
         ('POST', '/api/auth/login') => {'token': 'access-1', 'session_token': 'refresh-1'},
         ('GET', '/api/users/@me') => {..._user(_me, 'gaby', alias: 'Gaby'), 'email_verified': true},
@@ -233,6 +237,10 @@ void main() {
           400,
         ),
         ('PUT', '/api/rooms/r-1/pins/8') => http.Response('upstream timed out', 504),
+        // Messages a mention's notice fetches: 10 was deleted first.
+        ('GET', '/api/rooms/r-1/messages/8') => _roomMessage('8', 'fetched'),
+        ('GET', '/api/rooms/r-1/messages/9') => _roomMessage('9', 'soon gone'),
+        ('GET', '/api/users/@me/conversations/c-1/messages/31') => _dmMessage('31', 'fetched in the DM'),
         _ => null,
       };
       if (json is http.Response) return json;
@@ -590,6 +598,125 @@ void main() {
       await pumpEventQueue();
       expect(events.whereType<AuthorChanged>().length, 2);
       expect(cache.listed, 2);
+    });
+  });
+
+  // A mention of the user in a chat that isn't on screen shows a notice at the
+  // top: who, where, and what they wrote (#80).
+  group('mention notices', () {
+    void mention(String messageId) => repository.handleEvent(
+      _event('MENTION_CREATE', {'message_id': messageId, 'room_id': 'r-1', 'author_id': _maya}),
+    );
+    List<String> shown() => [for (final n in repository.mentionNotices.value) n.messageId];
+    Iterable<String> fetched() => [
+      for (final r in requests)
+        if (r.method == 'GET' && RegExp(r'/messages/[^/]+$').hasMatch(r.url.path)) r.url.path,
+    ];
+
+    setUp(() async {
+      await listen(_room);
+      repository.handleEvent(_event('SPACE_CREATE', _space()));
+    });
+
+    test('shows who mentioned the user, where, and their message, which its MESSAGE_CREATE brought', () async {
+      repository.handleEvent(_event('MESSAGE_CREATE', _roomMessage('7', 'Hey <@$_me>, look')));
+      mention('7');
+      final notice = repository.mentionNotices.value.single;
+      expect(
+        (notice.messageId, notice.target, notice.title, notice.authorName, notice.where, notice.text),
+        ('7', _room, '# general', 'Maya', 'in #general · Design Guild', 'Hey @Gaby, look'),
+      );
+      expect(fetched(), isEmpty);
+
+      // Once per message.
+      mention('7');
+      expect(shown(), ['7']);
+    });
+
+    test('fetches a message whose MESSAGE_CREATE hasn\'t come, and takes the event if it comes first', () async {
+      mention('8');
+      expect(shown(), isEmpty);
+      await pumpEventQueue();
+      expect(fetched(), ['/api/rooms/r-1/messages/8']);
+      expect(repository.mentionNotices.value.single.text, 'fetched');
+
+      heldFetch = Completer();
+      mention('9');
+      repository.handleEvent(_event('MESSAGE_CREATE', _roomMessage('9', 'came first')));
+      heldFetch!.complete();
+      await pumpEventQueue();
+      expect(repository.mentionNotices.value.first.text, 'came first');
+      expect(shown(), ['9', '8']);
+    });
+
+    test('shows nothing for the chat on screen, nor in do not disturb; a thread of it, for its replies only', () async {
+      repository.chatShown(_room);
+      repository.handleEvent(_event('MESSAGE_CREATE', _roomMessage('7', 'here')));
+      mention('7');
+      expect(shown(), isEmpty);
+
+      // A thread of the room shows its replies only.
+      repository.chatShown(_room, threadOf: 'root');
+      repository.chatHidden(_room);
+      repository.handleEvent(_event('MESSAGE_CREATE', _roomMessage('11', 'elsewhere in the room')));
+      mention('11');
+      expect(shown(), ['11']);
+      repository.handleEvent(
+        _event('MESSAGE_CREATE', {
+          ..._roomMessage('12', 'in the thread'),
+          'referenced_message': {'message_id': 'root', 'author_id': _me, 'content': 'root'},
+        }),
+      );
+      mention('12');
+      expect(shown(), ['11']);
+      repository.chatHidden(_room, threadOf: 'root');
+
+      repository.handleEvent(_event('USER_STATUS_UPDATE', {'user_id': _me, 'status_id': 2}));
+      repository.handleEvent(_event('MESSAGE_CREATE', _roomMessage('13', 'busy')));
+      mention('13');
+      expect(shown(), ['11']);
+    });
+
+    test('a deleted message takes its notice away, and one deleted while it was fetched never shows', () async {
+      repository.handleEvent(_event('MESSAGE_CREATE', _roomMessage('7', 'oops')));
+      mention('7');
+      expect(shown(), ['7']);
+      repository.handleEvent(_event('MESSAGE_DELETE', {'id': '7', 'room_id': 'r-1'}));
+      expect(shown(), isEmpty);
+
+      heldFetch = Completer();
+      mention('9');
+      repository.handleEvent(_event('MESSAGE_DELETE', {'id': '9', 'room_id': 'r-1'}));
+      heldFetch!.complete();
+      await pumpEventQueue();
+      expect(shown(), isEmpty);
+
+      // Deleted first, which the API no longer has: nothing.
+      mention('10');
+      await pumpEventQueue();
+      expect(shown(), isEmpty);
+    });
+
+    test('three show at most, the newest first, and each goes when dismissed', () async {
+      for (final id in ['21', '22', '23', '24']) {
+        repository.handleEvent(_event('MESSAGE_CREATE', _roomMessage(id, 'number $id')));
+        mention(id);
+      }
+      expect(shown(), ['24', '23', '22']);
+      repository.dismissMentionNotice('23');
+      expect(shown(), ['24', '22']);
+    });
+
+    test('in a conversation, a DM says it\'s a direct message', () async {
+      repository.handleEvent(
+        _event('DM_MENTION_CREATE', {'message_id': '31', 'conversation_id': 'c-1', 'author_id': _maya}),
+      );
+      await pumpEventQueue();
+      final notice = repository.mentionNotices.value.single;
+      expect(
+        (notice.target, notice.where, notice.authorName, notice.text),
+        (_dm, 'in a direct message', 'Maya', 'fetched in the DM'),
+      );
     });
   });
 

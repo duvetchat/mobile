@@ -197,9 +197,11 @@ class _ChatViewState extends State<ChatView> {
     if (onTop != _onTop) {
       _onTop = onTop;
       if (onTop) WidgetsBinding.instance.addPostFrameCallback((_) => _readIfSeen());
+      if (_events != null) _onScreen(onTop);
     }
     if (_events != null) return;
     _repository = context.repository;
+    _onScreen(_onTop);
     // Listen before loading, so nothing sent meanwhile is missed.
     _events = _repository.messageEvents(widget.target).listen(_onEvent);
     _typingSub = _repository.typing(widget.target).listen(_onTyping);
@@ -215,8 +217,14 @@ class _ChatViewState extends State<ChatView> {
     _loadDirectory();
   }
 
+  // On top, the chat is on screen: its mentions show no notice at the top.
+  void _onScreen(bool onScreen) => onScreen
+      ? _repository.chatShown(widget.target, threadOf: widget.threadOf)
+      : _repository.chatHidden(widget.target, threadOf: widget.threadOf);
+
   @override
   void dispose() {
+    if (_events != null) _onScreen(false);
     _saveDraft();
     _voice?.removeListener(_onVoice);
     _recordTick?.cancel();

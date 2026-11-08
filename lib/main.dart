@@ -19,6 +19,7 @@ import 'data/voice.dart';
 import 'data/webrtc_engine.dart';
 import 'calls.dart';
 import 'deep_links.dart';
+import 'mention_notices.dart';
 import 'account.dart';
 import 'welcome.dart';
 import 'tabs.dart';
@@ -72,6 +73,8 @@ class DuvetApp extends StatefulWidget {
 }
 
 class _DuvetAppState extends State<DuvetApp> {
+  // The app's own navigator: the notices of mentions, over it, open chats on it.
+  final _navigator = GlobalKey<NavigatorState>();
   late final _appearance = widget.appearance ?? (Appearance()..load());
   late final _launchpad = widget.launchpad ?? (LaunchpadPrefs()..load());
   late final _voice =
@@ -137,6 +140,7 @@ class _DuvetAppState extends State<DuvetApp> {
       child: VoiceScope(
         voice: _voice,
         child: MaterialApp(
+          navigatorKey: _navigator,
           debugShowCheckedModeBanner: false,
           scrollBehavior: const DuvetScrollBehavior(),
           // forui's list brings material_ui's and cupertino_ui's localizations; the framework's widgets
@@ -150,7 +154,15 @@ class _DuvetAppState extends State<DuvetApp> {
           theme: Duvet.material(brightness),
           builder: (context, child) => FTheme(
             data: theme,
-            child: FToaster(child: child!),
+            child: FToaster(
+              child: Stack(
+                children: [
+                  child!,
+                  // Over every screen, the chats opened from Chats and Spaces too.
+                  MentionNotices(navigator: _navigator),
+                ],
+              ),
+            ),
           ),
           // Duvet's links open whether signed in or not: verifying an email
           // and resetting a password come from links too.
