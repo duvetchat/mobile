@@ -3948,6 +3948,15 @@ class DuvetRepository implements ChatRepository {
     isEphemeral: m.flags & duvet.MessageFlag.ephemeral != 0,
     isLoading: m.flags & duvet.MessageFlag.loading != 0,
     isComponentsV2: m.flags & duvet.MessageFlag.isComponentsV2 != 0,
+    interaction: switch (m.interactionMetadata) {
+      final i? => MessageInteraction(
+        userName: i.user.alias ?? i.user.username,
+        userAvatarUrl: avatarUrl(i.user.avatar),
+        command: i.name,
+        interactedMessageId: i.interactedMessageId,
+      ),
+      null => null,
+    },
     attachments: _attachments(m.attachments),
     stickerUrl: m.stickerAttachmentId == null ? null : attachmentUrl(m.stickerAttachmentId!),
     embeds: _embeds(m.embeds),

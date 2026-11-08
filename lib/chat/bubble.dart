@@ -278,7 +278,16 @@ class _Bubble extends StatelessWidget {
             ),
           ),
         if (m.reply case final reply?)
-          _ReplyRef(reply: reply, directory: directory, onTap: () => onJump(reply.messageId)),
+          _ReplyRef(reply: reply, directory: directory, onTap: () => onJump(reply.messageId))
+        else if (m.interaction case final used?)
+          _UsedRef(
+            used: used,
+            botName: m.authorName,
+            onTap: switch (used.interactedMessageId) {
+              final id? => () => onJump(id),
+              null => null,
+            },
+          ),
         Builder(
           builder: (anchor) => GestureDetector(
             onLongPress: switch (onLongPress) {
@@ -822,6 +831,62 @@ class _ReplyRef extends StatelessWidget {
                         style: TextStyle(color: colors.foreground, fontWeight: FontWeight.w500),
                       ),
                       TextSpan(text: ' $shown'),
+                    ],
+                  ),
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: DuvetType.caption.copyWith(color: colors.mutedForeground),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// Above a bot's answer, as the desktop's: the avatar, then "**Jon** used **/ping**",
+/// or the bot's name for a component's. Tapping it goes to the message whose
+/// component was used.
+class _UsedRef extends StatelessWidget {
+  final MessageInteraction used;
+  final String botName;
+  final VoidCallback? onTap;
+  const _UsedRef({required this.used, required this.botName, this.onTap});
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = context.theme.colors;
+    final what = switch (used.command) {
+      final name? => '/$name',
+      null => botName,
+    };
+    final strong = TextStyle(color: colors.foreground, fontWeight: FontWeight.w500);
+    return Semantics(
+      container: true,
+      button: onTap != null,
+      label: '${used.userName} used $what${onTap == null ? '' : '. Jump to message'}',
+      excludeSemantics: true,
+      onTap: onTap,
+      child: GestureDetector(
+        behavior: HitTestBehavior.opaque,
+        onTap: onTap,
+        child: Container(
+          constraints: const BoxConstraints(maxWidth: 260, minHeight: 24),
+          padding: const EdgeInsets.fromLTRB(4, 0, 4, 4),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              UserAvatar(name: used.userName, url: used.userAvatarUrl, size: 16),
+              const SizedBox(width: 6),
+              Flexible(
+                child: Text.rich(
+                  TextSpan(
+                    children: [
+                      TextSpan(text: used.userName, style: strong),
+                      const TextSpan(text: ' used '),
+                      TextSpan(text: what, style: strong),
                     ],
                   ),
                   maxLines: 1,
