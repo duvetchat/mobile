@@ -112,6 +112,43 @@ class _ComposerStrip extends StatelessWidget {
       ),
     );
   }
+
+  // The desktop's `@ ON` / `@ OFF`, as search's filter chips look.
+  Widget _mentionToggle(BuildContext context, MessageReply reply) {
+    final colors = context.theme.colors;
+    final tokens = context.duvet;
+    final on = reply.mentionAuthor;
+    return Semantics(
+      container: true,
+      button: true,
+      toggled: on,
+      label: 'Mention ${reply.authorName}',
+      excludeSemantics: true,
+      onTap: onToggleMention,
+      child: GestureDetector(
+        behavior: HitTestBehavior.opaque,
+        onTap: onToggleMention,
+        child: Container(
+          height: 32,
+          margin: const EdgeInsets.only(left: 8),
+          padding: const EdgeInsets.symmetric(horizontal: 10),
+          alignment: Alignment.center,
+          decoration: BoxDecoration(
+            color: on ? tokens.selectedFill : colors.card,
+            borderRadius: BorderRadius.circular(DuvetTokens.radiusChip),
+            boxShadow: on ? null : tokens.shadowRest,
+          ),
+          child: Text(
+            on ? '@ ON' : '@ OFF',
+            style: DuvetType.snippet.copyWith(
+              color: on ? tokens.violetText : colors.mutedForeground,
+              fontWeight: FontWeight.w500,
+            ),
+          ),
+        ),
+      ),
+    );
+  }
 }
 
 /// The composer: one `radius-card` field holding exactly four controls,
@@ -578,41 +615,4 @@ class _TrayBadge extends StatelessWidget {
       style: DuvetType.tabLabel.copyWith(color: Colors.white, fontWeight: FontWeight.w700),
     ),
   );
-
-  // The desktop's `@ ON` / `@ OFF`, as search's filter chips look.
-  Widget _mentionToggle(BuildContext context, MessageReply reply) {
-    final colors = context.theme.colors;
-    final tokens = context.duvet;
-    final on = reply.mentionAuthor;
-    return Semantics(
-      container: true,
-      button: true,
-      toggled: on,
-      label: 'Mention ${reply.authorName}',
-      excludeSemantics: true,
-      onTap: onToggleMention,
-      child: GestureDetector(
-        behavior: HitTestBehavior.opaque,
-        onTap: onToggleMention,
-        child: Container(
-          height: 32,
-          margin: const EdgeInsets.only(left: 8),
-          padding: const EdgeInsets.symmetric(horizontal: 10),
-          alignment: Alignment.center,
-          decoration: BoxDecoration(
-            color: on ? tokens.selectedFill : colors.card,
-            borderRadius: BorderRadius.circular(DuvetTokens.radiusChip),
-            boxShadow: on ? null : tokens.shadowRest,
-          ),
-          child: Text(
-            on ? '@ ON' : '@ OFF',
-            style: DuvetType.snippet.copyWith(
-              color: on ? tokens.violetText : colors.mutedForeground,
-              fontWeight: FontWeight.w500,
-            ),
-          ),
-        ),
-      ),
-    );
-  }
 }
