@@ -389,6 +389,7 @@ class DuvetRepository implements ChatRepository {
     _lastRead.clear();
     drafts.clear();
     _ephemeral.clear();
+    _links.clear();
     mentions.value = const {};
     _voiceSignaling.detach();
     // Destroying the gateway closes the REST client's HTTP client too.
@@ -1663,6 +1664,47 @@ class DuvetRepository implements ChatRepository {
       (api) => api.getDirectMessageById(conversationId, messageId),
     ).then(_directMessage),
   };
+
+  // The links the API signed again this session, by attachment ID, and those
+  // it's signing: a file asked for twice at once is signed once.
+  final _links = <String, String>{};
+  final _renewing = <String, Future<String>>{};
+
+  @override
+  Future<String> attachmentLink(MessageAttachment attachment, {bool refused = false}) async {
+    final own = attachment.linkExpires;
+    if (own == null) return attachment.url;
+    // A copy of the message older than one renewed here (a gallery opened
+    // before, a bot's answer kept aside) has the old link.
+    final renewed = _links[attachment.id];
+    final known = switch (renewed) {
+      final url? when attachment.withUrl(url).linkExpires!.isAfter(own) => url,
+      _ => attachment.url,
+    };
+    final due = attachment.withUrl(known).linkDueAt(clock.now());
+    if (!due && (!refused || known != attachment.url)) return known;
+    try {
+      // A block: whenComplete would wait for the future remove() answers,
+      // which is this one.
+      return await (_renewing[attachment.id] ??= _renew(attachment.id).whenComplete(() {
+        _renewing.remove(attachment.id);
+      }));
+    } catch (e) {
+      // Not found, or offline: its link is all there is.
+      debugPrint('attachment link: $e');
+      return known;
+    }
+  }
+
+  // Asks the API to sign [attachmentId]'s link again; the messages here with
+  // the file load it from the new one, as do the pages kept for offline.
+  Future<String> _renew(String attachmentId) async {
+    final url = _absolute(await _call((api) => api.resignAttachment(attachmentId)), attachmentId);
+    _links[attachmentId] = url;
+    _messageEvents.add((_anyChat, AttachmentRenewed(attachmentId, url)));
+    unawaited(_cache.changeMessages(attachmentId, (_, m) => m.withAttachmentLink(attachmentId, url)));
+    return url;
+  }
 
   @override
   Future<ChatMessage> edit(ChatTarget target, String messageId, String content) => switch (target) {
@@ -3655,16 +3697,20 @@ class DuvetRepository implements ChatRepository {
           id: a.id,
           filename: a.filename,
           contentType: a.contentType,
-          url: switch (a.url) {
-            final url? when url.startsWith('http') => url,
-            final url? when url.startsWith('/') => 'https://${_router.api}$url',
-            _ => attachmentUrl(a.id),
-          },
+          url: _absolute(a.url, a.id),
           width: a.width,
           height: a.height,
           sizeBytes: a.sizeBytes,
         ),
   ];
+
+  // An attachment's link as the API gives it, a path on its host most often,
+  // made whole.
+  String _absolute(String? url, String attachmentId) => switch (url) {
+    final url? when url.startsWith('http') => url,
+    final url? when url.startsWith('/') => 'https://${_router.api}$url',
+    _ => attachmentUrl(attachmentId),
+  };
 
   static List<MessageEmbed> _embeds(List<duvet.Embed>? list) => [
     for (final e in list ?? const <duvet.Embed>[])

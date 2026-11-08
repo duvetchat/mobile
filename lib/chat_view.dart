@@ -495,6 +495,12 @@ class _ChatViewState extends State<ChatView> {
     if (event case ReactionChanged(:final messageId) when !_entries.any((e) => e.message.id == messageId)) return;
     // A profile change that shows nothing new on the messages here.
     if (event is AuthorChanged && _entries.every((e) => identical(e.message.changedBy(event), e.message))) return;
+    if (event case AttachmentRenewed(
+      :final attachmentId,
+      :final url,
+    ) when _entries.every((e) => identical(e.message.withAttachmentLink(attachmentId, url), e.message))) {
+      return;
+    }
     // A thread takes the replies to its messages, and its own sends.
     if (widget.threadOf != null) {
       if (event case MessageCreated(
@@ -544,6 +550,13 @@ class _ChatViewState extends State<ChatView> {
           for (var i = 0; i < _entries.length; i++) {
             final m = _entries[i].message;
             final changed = m.changedBy(event);
+            if (!identical(changed, m)) _entries[i] = (message: changed, delivery: _entries[i].delivery);
+          }
+        // A file's new link, once its old one expired.
+        case AttachmentRenewed(:final attachmentId, :final url):
+          for (var i = 0; i < _entries.length; i++) {
+            final m = _entries[i].message;
+            final changed = m.withAttachmentLink(attachmentId, url);
             if (!identical(changed, m)) _entries[i] = (message: changed, delivery: _entries[i].delivery);
           }
       }

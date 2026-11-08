@@ -396,6 +396,14 @@ abstract interface class ChatRepository {
   /// One message, e.g. the original of a reply that isn't loaded.
   Future<ChatMessage> fetchMessage(ChatTarget target, String messageId);
 
+  /// A link to [attachment] that works now. Its own while it has more than
+  /// [MessageAttachment.renewBefore] left (or one renewed here since), else a
+  /// new one the API signs, which the messages with the file then carry
+  /// ([AttachmentRenewed]), the pages kept for offline included. [refused]:
+  /// its link failed to load, so a new one even if it hasn't expired. Its
+  /// own when the API can't sign one.
+  Future<String> attachmentLink(MessageAttachment attachment, {bool refused = false});
+
   /// The messages after [messageId], the oldest first: what was missed while
   /// the socket was down.
   Future<List<ChatMessage>> messagesAfter(ChatTarget target, String messageId);
