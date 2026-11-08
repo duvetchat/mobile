@@ -958,6 +958,40 @@ class FakeRepository implements ChatRepository {
     appList[app.teamId]?.removeWhere((a) => a.id == app.id);
   }
 
+  /// Each application's commands, by its ID.
+  final appCommandList = <String, List<BotCommand>>{};
+  int _commandIds = 0;
+
+  @override
+  Future<List<BotCommand>> appCommands(DevApp app) async =>
+      [...?appCommandList[app.id]]..sort((a, b) => a.name.compareTo(b.name));
+
+  @override
+  Future<BotCommand> saveAppCommand(DevApp app, BotCommand command) async {
+    _refuse('saveAppCommand');
+    final saved = BotCommand(
+      id: command.id.isEmpty ? 'cmd-${++_commandIds}' : command.id,
+      applicationId: app.id,
+      appName: app.name,
+      name: command.name,
+      description: command.description,
+      options: command.options,
+    );
+    admin.add('${command.id.isEmpty ? 'command+' : 'command'} ${saved.name}');
+    final list = appCommandList[app.id] ??= [];
+    list
+      ..removeWhere((c) => c.id == saved.id)
+      ..add(saved);
+    return saved;
+  }
+
+  @override
+  Future<void> deleteAppCommand(DevApp app, String commandId) async {
+    _refuse('deleteAppCommand');
+    admin.add('command- $commandId');
+    appCommandList[app.id]?.removeWhere((c) => c.id == commandId);
+  }
+
   @override
   Future<String> createBot(DevApp app) async {
     admin.add('bot+ ${app.id}');

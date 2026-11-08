@@ -194,6 +194,13 @@ class BotCommand {
 }
 
 abstract final class OptionKind {
+  /// Something the command does, with options of its own: a command's
+  /// options are all subcommands and groups of them, or none of them.
+  static const subcommand = 1;
+
+  /// Subcommands that go together, one level deep: a group holds only
+  /// subcommands.
+  static const subcommandGroup = 2;
   static const string = 3;
   static const integer = 4;
   static const boolean = 5;
@@ -217,6 +224,9 @@ class BotCommandOption {
 
   /// A room option's room types, as a select's; empty takes any.
   final List<int> roomTypes;
+
+  /// A subcommand's options, or a group's subcommands.
+  final List<BotCommandOption> options;
   const BotCommandOption({
     required this.type,
     required this.name,
@@ -228,7 +238,10 @@ class BotCommandOption {
     this.minLength,
     this.maxLength,
     this.roomTypes = const [],
+    this.options = const [],
   });
+
+  bool get isSubcommand => type == OptionKind.subcommand || type == OptionKind.subcommandGroup;
 }
 
 /// A modal a bot opened, and where its submit goes.
