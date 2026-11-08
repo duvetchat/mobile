@@ -238,6 +238,20 @@ void main() {
     semantics.dispose();
   });
 
+  testWidgets('a bot removed from the members list leaves it', (tester) async {
+    final repository = await pumpGeneral(tester);
+    repository.extraRoomMembers.add(const Member(userId: _ballot, username: 'ballot', alias: 'Ballot', isBot: true));
+    await tapLabel(tester, 'More');
+    await tapLabel(tester, 'Members');
+    await tester.tap(find.text('Ballot').last);
+    await tester.pumpAndSettle();
+    await tapLabel(tester, 'Remove from Space');
+    await tapLabel(tester, 'Remove from Space');
+    expect(repository.botsRemoved, [('s-guild', _ballot)]);
+    expect(find.text('Ballot'), findsNothing);
+    semantics.dispose();
+  });
+
   testWidgets('without Manage bots, a bot\'s profile has no Remove from Space', (tester) async {
     final repository = await pumpGeneral(tester, history: [poll()]);
     repository

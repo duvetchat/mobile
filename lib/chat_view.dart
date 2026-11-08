@@ -1585,7 +1585,7 @@ class _ChatViewState extends State<ChatView> {
     if (id == null) return;
     _openProfile(
       _members.where((x) => x.userId == id).firstOrNull ??
-          Member(userId: id, username: m.authorName, avatarUrl: m.authorAvatarUrl, isBot: m.fromBot),
+          Member(userId: id, username: m.authorName, avatarUrl: m.authorAvatarUrl, isBot: m.fromBot && !m.fromWebhook),
     );
   }
 

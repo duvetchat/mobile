@@ -1077,6 +1077,9 @@ class FakeRepository implements ChatRepository {
   Future<void> removeBot(String spaceId, String botId) async {
     _refuse('removeBot');
     botsRemoved.add((spaceId, botId));
+    // The gateway's SPACE_MEMBER_REMOVE that follows.
+    spaceMembers[spaceId]?.remove(botId);
+    spaces.value = [...spaces.value];
   }
 
   @override
@@ -1377,8 +1380,13 @@ class FakeRepository implements ChatRepository {
   final extraRoomMembers = <Member>[];
 
   @override
-  Future<List<Member>> members(ChatTarget target, {bool refresh = false}) async =>
-      target is RoomTarget ? [...everyone, ...extraRoomMembers] : everyone.where((m) => m.userId != leo).toList();
+  Future<List<Member>> members(ChatTarget target, {bool refresh = false}) async {
+    if (target is! RoomTarget) return everyone.where((m) => m.userId != leo).toList();
+    final list = [...everyone, ...extraRoomMembers];
+    // As the real one: a list loaded tells who's in the Space.
+    (spaceMembers[target.spaceId] ??= {}).addAll(list.map((m) => m.userId));
+    return list;
+  }
 
   @override
   String? nameOf(String userId) => everyone.where((m) => m.userId == userId).firstOrNull?.displayName;
