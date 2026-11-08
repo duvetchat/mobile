@@ -312,6 +312,7 @@ void main() {
     await tester.pumpAndSettle();
     expect(repository.admin, ['give role-mod Maya']);
     expect(tester.widget<DuvetSwitch>(find.byType(DuvetSwitch).last).value, isTrue, reason: 'it shows live');
+    await reveal(tester, find.byType(DuvetSwitch).last);
     await tester.tap(find.byType(DuvetSwitch).last);
     await tester.pumpAndSettle();
     expect(repository.admin, ['give role-mod Maya', 'take role-mod Maya']);
@@ -335,7 +336,7 @@ void main() {
       tester,
       setUp: (r) => r
         ..spaceOwner = false
-        ..spacePerms = Perm.manageRoles,
+        ..spacePerms = Perm.all & ~Perm.administrator,
     );
     expect(find.text('ROLES'), findsOneWidget);
     final moderator = find.byType(DuvetSwitch).last;
