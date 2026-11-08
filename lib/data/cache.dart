@@ -136,6 +136,25 @@ class ChatCache {
     }
   }
 
+  /// The chats pinned to the top of Chats, by key.
+  void savePinned(Set<String> keys) => _later(
+    'pinned',
+    () => {
+      'keys': [...keys],
+    },
+  );
+
+  Future<Set<String>?> loadPinned() async {
+    final j = await _read('pinned');
+    if (j == null) return null;
+    try {
+      return {...(j['keys']! as List).cast<String>()};
+    } catch (e) {
+      debugPrint('cache: $e');
+      return null;
+    }
+  }
+
   void saveHome({
     required Profile profile,
     required List<ConversationSummary> conversations,
@@ -346,6 +365,7 @@ Map<String, Object?> spaceToJson(Space s) => {
   'name': s.name,
   'iconUrl': s.iconUrl,
   'bannerUrl': s.bannerUrl,
+  'ownerId': s.ownerId,
   'sections': [
     for (final section in s.sections)
       {
@@ -370,6 +390,7 @@ Space spaceFromJson(Map<String, Object?> j) => Space(
   name: j['name']! as String,
   iconUrl: j['iconUrl'] as String?,
   bannerUrl: j['bannerUrl'] as String?,
+  ownerId: j['ownerId'] as String?,
   sections: [
     for (final section in j['sections']! as List)
       RoomSection(

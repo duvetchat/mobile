@@ -153,6 +153,29 @@ class DuvetRepository implements ChatRepository {
   }
 
   @override
+  final ValueNotifier<Set<String>> pinnedChats = ValueNotifier(const {});
+
+  // As with [_collapsedTouched]: what's saved mustn't undo a pin made since.
+  bool _pinnedTouched = false;
+
+  @override
+  void setChatPinned(String key, bool pinned) {
+    if (pinnedChats.value.contains(key) == pinned) return;
+    _pinnedTouched = true;
+    pinnedChats.value = {
+      for (final k in pinnedChats.value)
+        if (k != key) k,
+      if (pinned) key,
+    };
+    _cache.savePinned(pinnedChats.value);
+  }
+
+  Future<void> _loadPinned() async {
+    final keys = await _cache.loadPinned();
+    if (keys != null && !_pinnedTouched) pinnedChats.value = keys;
+  }
+
+  @override
   final ValueNotifier<LiveStatus> status = ValueNotifier(LiveStatus.offline);
 
   // Outlives the sessions: each one's gateway is attached to it.
@@ -271,6 +294,7 @@ class DuvetRepository implements ChatRepository {
       conversations.value = home.conversations;
       spaces.value = home.spaces;
       unawaited(_loadCollapsed());
+      unawaited(_loadPinned());
       status.value = LiveStatus.offline;
       _recentsLoaded = _recents.load(home.profile.id);
       _retry = Timer.periodic(const Duration(seconds: 20), (_) => _comeBack());
@@ -348,6 +372,7 @@ class DuvetRepository implements ChatRepository {
     _names[me.id] = profile.value!.displayName;
     _recentsLoaded = _recents.load(me.id);
     unawaited(_loadCollapsed());
+    unawaited(_loadPinned());
     unawaited(refreshConversations().catchError((Object e) => debugPrint('conversations: $e')));
     _renewals?.cancel();
     _renewals = Timer.periodic(renewalCheck, (_) => _renewQuietly(renewAfter));
@@ -363,6 +388,8 @@ class DuvetRepository implements ChatRepository {
     unawaited(_cache.clear());
     collapsedCategories.value = const {};
     _collapsedTouched = false;
+    pinnedChats.value = const {};
+    _pinnedTouched = false;
     _renewalRetry?.cancel();
     _renewalRetry = null;
     _closeSession();
@@ -389,7 +416,12 @@ class DuvetRepository implements ChatRepository {
     _lastRead.clear();
     drafts.clear();
     _ephemeral.clear();
+    _links.clear();
+    _signedAt.clear();
+    _renewing.clear();
+    _linksSession++;
     mentions.value = const {};
+    _forgetMentionNotices();
     _voiceSignaling.detach();
     // Destroying the gateway closes the REST client's HTTP client too.
     if (_gateway case final gateway?) {
@@ -692,8 +724,14 @@ class DuvetRepository implements ChatRepository {
 
       case duvet.MentionCreatedEvent(:final data) when data.authorId != me:
         _mentioned(data.conversationId ?? data.roomId);
+        if (data.conversationId case final id?) {
+          _mentionNotice(ConversationTarget(id), data.messageId);
+        } else if (spaces.value.where((s) => s.rooms.any((r) => r.id == data.roomId)).firstOrNull case final space?) {
+          _mentionNotice(RoomTarget(spaceId: space.id, roomId: data.roomId), data.messageId);
+        }
       case duvet.DMMentionCreatedEvent(:final data) when data.authorId != me:
         _mentioned(data.conversationId);
+        _mentionNotice(ConversationTarget(data.conversationId), data.messageId);
 
       case duvet.ReactionAddedEvent(:final data) || duvet.DMReactionAddedEvent(:final data):
         _messageEvents.add((
@@ -838,11 +876,13 @@ class DuvetRepository implements ChatRepository {
           if (data.authorId != me) _markUnread(data.roomId);
           _recents.roomMessage(data.roomId, message);
           _setLatest(data.roomId, message);
+          _arrivedForNotice(message);
         }
         _messageEvents.add((data.roomId, MessageCreated(message)));
       case duvet.MessageUpdateEvent(:final data):
         if (data.deletedAt != null) {
           _dropEphemeral(data.roomId, data.id);
+          _dropMentionNotice(data.id);
           _recents.deleted(data.roomId, data.id);
           _latestDeleted(data.roomId, data.id);
           _messageEvents.add((data.roomId, MessageDeleted(data.id)));
@@ -859,6 +899,7 @@ class DuvetRepository implements ChatRepository {
         }
       case duvet.MessageDeletedEvent(:final data):
         _dropEphemeral(data.roomId, data.id);
+        _dropMentionNotice(data.id);
         _recents.deleted(data.roomId, data.id);
         _latestDeleted(data.roomId, data.id);
         _messageEvents.add((data.roomId, MessageDeleted(data.id)));
@@ -876,10 +917,12 @@ class DuvetRepository implements ChatRepository {
         if (known == null) unawaited(refreshConversations().catchError((_) {}));
         _recents.conversationMessage(id, message, title: known?.title);
         _setLatest(id, message);
+        _arrivedForNotice(message);
         _messageEvents.add((id, MessageCreated(message)));
       case duvet.DMMessageUpdatedEvent(:final data):
         if (data.conversationId case final id?) _updated(id, _directMessage(data));
       case duvet.DMMessageDeletedEvent(:final data):
+        _dropMentionNotice(data.id);
         _recents.deleted(data.conversationId, data.id);
         _messageEvents.add((data.conversationId, MessageDeleted(data.id)));
 
@@ -1128,6 +1171,153 @@ class DuvetRepository implements ChatRepository {
 
   void _mentioned(String chatId) => mentions.value = {...mentions.value, chatId: (mentions.value[chatId] ?? 0) + 1};
 
+  // ---------------------------------------------------------------------------
+  // Mention notices
+  // ---------------------------------------------------------------------------
+
+  @override
+  final ValueNotifier<List<MentionNotice>> mentionNotices = ValueNotifier(const []);
+
+  /// How long a mention's notice shows, and how many show at once: a new one
+  /// goes on top, and the oldest goes past them, as on the desktop.
+  static const noticeTime = Duration(seconds: 6);
+  static const noticesShown = 3;
+
+  ({String chatId, String? threadOf})? _onScreen;
+
+  // The newest messages that came, by ID: a mention's comes over another
+  // subscription, in no set order, and neither event carries the other.
+  final _arrived = <String, ChatMessage>{};
+  static const _arrivedKept = 200;
+
+  // Mentions whose message hasn't come, by its ID: it's being fetched.
+  final _awaited = <String, ChatTarget>{};
+
+  // The messages whose notice showed, or never will (deleted), the newest
+  // last: each shows once. The API sends a mention once and a resume replays
+  // only what came after it, so this is only a guard.
+  final _settled = <String>{};
+  static const _settledKept = 500;
+  final _noticeTimers = <String, Timer>{};
+
+  @override
+  void chatShown(ChatTarget target, {String? threadOf, bool opened = true}) {
+    _onScreen = (chatId: target.id, threadOf: threadOf);
+    // The chat itself is here now: its notices would only open it again.
+    if (opened && threadOf == null) {
+      for (final notice in [...mentionNotices.value.where((n) => n.target == target)]) {
+        dismissMentionNotice(notice.messageId);
+      }
+    }
+  }
+
+  @override
+  void chatHidden(ChatTarget target, {String? threadOf}) {
+    if (_onScreen == (chatId: target.id, threadOf: threadOf)) _onScreen = null;
+  }
+
+  // [messageId] mentions the user in [target]: its notice shows once the
+  // message is here, fetched if it hasn't come.
+  void _mentionNotice(ChatTarget target, String messageId) {
+    if (_settled.contains(messageId) || _awaited.containsKey(messageId)) return;
+    if (_arrived[messageId] case final message?) return _showNotice(target, message);
+    _awaited[messageId] = target;
+    fetchMessage(target, messageId).then(
+      // Unless it came meanwhile, or was deleted.
+      (message) {
+        if (_awaited.remove(messageId) != null) _showNotice(target, message);
+      },
+      onError: (Object e) {
+        // Deleted first, which the API no longer has, or offline: nothing shows.
+        _awaited.remove(messageId);
+        debugPrint('mention: $e');
+      },
+    );
+  }
+
+  void _arrivedForNotice(ChatMessage message) {
+    _arrived[message.id] = message;
+    if (_arrived.length > _arrivedKept) _arrived.remove(_arrived.keys.first);
+    if (_awaited.remove(message.id) case final target?) _showNotice(target, message);
+  }
+
+  void _showNotice(ChatTarget target, ChatMessage message) {
+    if (_settled.contains(message.id) || profile.value?.status == Presence.doNotDisturb) return;
+    // The chat on screen shows it already; a thread of it, its replies.
+    if (_onScreen case (
+      :final chatId,
+      :final threadOf,
+    ) when chatId == target.id && (threadOf == null || message.reply?.messageId == threadOf)) {
+      return;
+    }
+    final ({String title, String where})? place = switch (target) {
+      RoomTarget(:final spaceId, :final roomId) => () {
+        final space = spaces.value.where((s) => s.id == spaceId).firstOrNull;
+        final room = space?.rooms.where((r) => r.id == roomId).firstOrNull;
+        return room == null ? null : (title: '# ${room.name}', where: 'in #${room.name} · ${space!.name}');
+      }(),
+      ConversationTarget(:final conversationId) => () {
+        final conversation = conversations.value.where((c) => c.id == conversationId).firstOrNull;
+        return (
+          title: conversation?.title ?? 'Direct message',
+          where: conversation != null && conversation.isGroup ? 'in ${conversation.title}' : 'in a direct message',
+        );
+      }(),
+    };
+    if (place == null) return;
+    _settle(message.id);
+    final notice = MentionNotice(
+      messageId: message.id,
+      target: target,
+      title: place.title,
+      authorName: message.authorName,
+      authorAvatarUrl: message.authorAvatarUrl,
+      where: place.where,
+      text: previewOf(message),
+    );
+    final shown = [notice, ...mentionNotices.value];
+    for (final gone in shown.skip(noticesShown)) {
+      _noticeTimers.remove(gone.messageId)?.cancel();
+    }
+    mentionNotices.value = shown.take(noticesShown).toList();
+    _noticeTimers[message.id] = Timer(noticeTime, () => dismissMentionNotice(message.id));
+  }
+
+  void _settle(String messageId) {
+    _settled
+      ..remove(messageId)
+      ..add(messageId);
+    if (_settled.length > _settledKept) _settled.remove(_settled.first);
+  }
+
+  @override
+  void dismissMentionNotice(String messageId) {
+    _noticeTimers.remove(messageId)?.cancel();
+    if (mentionNotices.value.any((n) => n.messageId == messageId)) {
+      mentionNotices.value = [...mentionNotices.value.where((n) => n.messageId != messageId)];
+    }
+  }
+
+  // A message was deleted: its notice goes, and one on its way never shows.
+  void _dropMentionNotice(String messageId) {
+    _settle(messageId);
+    _arrived.remove(messageId);
+    _awaited.remove(messageId);
+    dismissMentionNotice(messageId);
+  }
+
+  void _forgetMentionNotices() {
+    for (final timer in _noticeTimers.values) {
+      timer.cancel();
+    }
+    _noticeTimers.clear();
+    _arrived.clear();
+    _awaited.clear();
+    _settled.clear();
+    _onScreen = null;
+    mentionNotices.value = const [];
+  }
+
   /// [userId]'s presence everywhere, a person's: it outdates the Spaces' own
   /// entries a SPACE_CREATE gave them.
   Map<String, Presence> _presentEverywhere(String userId, Presence status) {
@@ -1216,6 +1406,7 @@ class DuvetRepository implements ChatRepository {
           name: space.name,
           iconUrl: avatarUrl(space.icon),
           bannerUrl: avatarUrl(space.banner),
+          ownerId: space.ownerId,
           sections: _sections(space.id, _visibleRooms(space.id, rooms.values)),
           onlineCount: switch (_spaceMemberIds[space.id]) {
             final ids? when ids.isNotEmpty =>
@@ -1663,6 +1854,70 @@ class DuvetRepository implements ChatRepository {
       (api) => api.getDirectMessageById(conversationId, messageId),
     ).then(_directMessage),
   };
+
+  // The links the API signed again this session, by attachment ID, when it
+  // signed each, and those it's signing: a file asked for twice at once is
+  // signed once.
+  final _links = <String, String>{};
+  final _signedAt = <String, DateTime>{};
+  final _renewing = <String, Future<String>>{};
+  // Counts the sessions: a renewal that ends after the one it began in is
+  // kept nowhere.
+  var _linksSession = 0;
+
+  /// How long after the API signed a file's link it isn't asked again: a
+  /// link that fails for another reason (a file that won't decode, a
+  /// storage's own refusal) mustn't spend the API's 64 a minute.
+  static const resignCooldown = Duration(minutes: 1);
+
+  @override
+  Future<String> attachmentLink(MessageAttachment attachment, {bool refused = false}) async {
+    final own = attachment.linkExpires;
+    if (own == null) return attachment.url;
+    // A copy of the message older than one renewed here (a gallery opened
+    // before, a bot's answer kept aside) has the old link.
+    final renewed = _links[attachment.id];
+    final known = switch (renewed) {
+      final url? when attachment.withUrl(url).linkExpires?.isAfter(own) ?? false => url,
+      _ => attachment.url,
+    };
+    final now = clock.now();
+    final due = attachment.withUrl(known).linkDueAt(now);
+    // [attachment] has the link that failed: a newer one may not have.
+    if (!due && (!refused || known != attachment.url)) return known;
+    final signedAt = _signedAt[attachment.id];
+    if (!_renewing.containsKey(attachment.id) && signedAt != null && now.difference(signedAt) < resignCooldown) {
+      return known;
+    }
+    try {
+      return await (_renewing[attachment.id] ??= () {
+        final renewing = _renew(attachment.id);
+        // A block: whenComplete would wait for the future remove() answers,
+        // which is this one. One of a session since ended leaves the next's.
+        renewing.whenComplete(() {
+          if (identical(_renewing[attachment.id], renewing)) _renewing.remove(attachment.id);
+        }).ignore();
+        return renewing;
+      }());
+    } catch (e) {
+      // Not found, or offline: its link is all there is.
+      debugPrint('attachment link: $e');
+      return known;
+    }
+  }
+
+  // Asks the API to sign [attachmentId]'s link again; the messages here with
+  // the file load it from the new one, as do the pages kept for offline.
+  Future<String> _renew(String attachmentId) async {
+    final session = _linksSession;
+    final url = _absolute(await _call((api) => api.resignAttachment(attachmentId)), attachmentId);
+    if (session != _linksSession) return url;
+    _links[attachmentId] = url;
+    _signedAt[attachmentId] = clock.now();
+    _messageEvents.add((_anyChat, AttachmentRenewed(attachmentId, url)));
+    unawaited(_cache.changeMessages(attachmentId, (_, m) => m.withAttachmentLink(attachmentId, url)));
+    return url;
+  }
 
   @override
   Future<ChatMessage> edit(ChatTarget target, String messageId, String content) => switch (target) {
@@ -2510,6 +2765,7 @@ class DuvetRepository implements ChatRepository {
       description: space.description,
       iconUrl: avatarUrl(space.icon),
       bannerUrl: avatarUrl(space.banner),
+      locale: space.locale,
       memberCount: _spaceMemberIds[spaceId]?.length ?? 0,
       owner: space.ownerId == profile.value?.id,
       perms: _permsIn(spaceId),
@@ -2522,6 +2778,7 @@ class DuvetRepository implements ChatRepository {
     String spaceId, {
     String? name,
     String? description,
+    String? locale,
     String? iconPath,
     String? bannerPath,
     bool removeBanner = false,
@@ -2531,16 +2788,23 @@ class DuvetRepository implements ChatRepository {
     final removesBanner = removeBanner && bannerPath == null;
     final removesIcon = removeIcon && iconPath == null;
     // Pictures, or taking one away, go as a form, where the API skips an
-    // empty description: one cleared goes first, on its own.
+    // empty description or locale: those cleared go first, on their own.
     final multipart = iconPath != null || bannerPath != null || removesBanner || removesIcon;
     final clearsDescription = description != null && description.isEmpty && multipart;
+    final clearsLocale = locale != null && locale.isEmpty && multipart;
     try {
-      if (clearsDescription) await _call((api) => api.updateSpace(spaceId, description: ''));
+      if (clearsDescription || clearsLocale) {
+        await _call(
+          (api) =>
+              api.updateSpace(spaceId, description: clearsDescription ? '' : null, locale: clearsLocale ? '' : null),
+        );
+      }
       await _call(
         (api) => api.updateSpace(
           spaceId,
           name: name,
           description: clearsDescription ? null : description,
+          locale: clearsLocale ? null : locale,
           icon: iconPath == null ? null : File(iconPath),
           banner: bannerPath == null ? null : File(bannerPath),
           removeBanner: removesBanner,
@@ -3732,16 +3996,20 @@ class DuvetRepository implements ChatRepository {
           id: a.id,
           filename: a.filename,
           contentType: a.contentType,
-          url: switch (a.url) {
-            final url? when url.startsWith('http') => url,
-            final url? when url.startsWith('/') => 'https://${_router.api}$url',
-            _ => attachmentUrl(a.id),
-          },
+          url: _absolute(a.url, a.id),
           width: a.width,
           height: a.height,
           sizeBytes: a.sizeBytes,
         ),
   ];
+
+  // An attachment's link as the API gives it, a path on its host most often,
+  // made whole.
+  String _absolute(String? url, String attachmentId) => switch (url) {
+    final url? when url.startsWith('http') => url,
+    final url? when url.startsWith('/') => 'https://${_router.api}$url',
+    _ => attachmentUrl(attachmentId),
+  };
 
   static List<MessageEmbed> _embeds(List<duvet.Embed>? list) => [
     for (final e in list ?? const <duvet.Embed>[])
@@ -3781,6 +4049,10 @@ class DuvetRepository implements ChatRepository {
     _signedOut.close();
     _resumed.close();
     mentions.dispose();
+    for (final timer in _noticeTimers.values) {
+      timer.cancel();
+    }
+    mentionNotices.dispose();
     _messageEvents.close();
     _typing.close();
     for (final t in _typingEnds.values) {
@@ -3791,6 +4063,7 @@ class DuvetRepository implements ChatRepository {
     presence.dispose();
     mobileOnly.dispose();
     collapsedCategories.dispose();
+    pinnedChats.dispose();
   }
 }
 

@@ -13,7 +13,7 @@ import 'package:duvet/spaces.dart' show pickSpaceIcon;
 import 'package:duvet/theme.dart';
 import 'package:duvet/widgets/chrome.dart';
 import 'package:duvet/widgets/glass.dart' show GlassRow;
-import 'package:duvet/widgets/rows.dart' show DuvetChip, DuvetTextField;
+import 'package:duvet/widgets/rows.dart' show DuvetChip, DuvetTextField, OwnerCrown;
 import 'package:duvet/widgets/picture_edit.dart' show takePhoto;
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
@@ -234,6 +234,8 @@ void main() {
     await tapLabel(tester, RegExp(r'^Members'));
     expect(find.text('Helper'), findsOneWidget);
     expect(find.textContaining('No roles'), findsWidgets);
+    expect(find.byType(OwnerCrown), findsOneWidget, reason: 'Maya owns the Space');
+    expect(find.bySemanticsLabel(RegExp(r'^Maya, .*owner')), findsOneWidget);
 
     await tester.enterText(find.byType(EditableText).first, 'may');
     await tester.pumpAndSettle();
@@ -286,6 +288,30 @@ void main() {
     await tapLabel(tester, 'Save');
     expect(repository.admin, ['space name=Design Guild 2']);
     expect(find.text('Design Guild 2'), findsWidgets);
+    semantics.dispose();
+  });
+
+  testWidgets('overview: set the locale', (tester) async {
+    final repository = await pumpSettings(tester);
+    final locale = find.descendant(
+      of: find.widgetWithText(DuvetTextField, 'Locale'),
+      matching: find.byType(EditableText),
+    );
+    await tapLabel(tester, RegExp(r'^Overview'));
+    await reveal(tester, locale);
+    await tester.enterText(locale, 'fr');
+    await tester.pump();
+    await tapLabel(tester, 'Save');
+    expect(repository.admin, ['space locale=fr']);
+
+    // Shown when the page opens again; cleared, it is sent empty.
+    await tapLabel(tester, RegExp(r'^Overview'));
+    await reveal(tester, locale);
+    expect(tester.widget<EditableText>(locale).controller.text, 'fr');
+    await tester.enterText(locale, '');
+    await tester.pump();
+    await tapLabel(tester, 'Save');
+    expect(repository.admin.last, 'space locale=');
     semantics.dispose();
   });
 

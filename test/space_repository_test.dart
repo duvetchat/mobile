@@ -1784,6 +1784,18 @@ void main() {
       expect(patches.last.body, isNot(contains('name="description"')));
     });
 
+    test('a locale cleared as the banner goes is cleared first, alone, as the description is', () async {
+      await signIn();
+      repository.handleEvent(_event('SPACE_CREATE', _spaceOf('s-1', 'Duvet Official', banner: banner)));
+      routes[('PATCH', '/api/spaces/s-1')] = (_) => updated(null);
+      final before = requests.length;
+      await repository.updateSpace('s-1', locale: '', removeBanner: true);
+      final patches = requests.skip(before).where((r) => r.method == 'PATCH').toList();
+      expect(patches, hasLength(2));
+      expect(jsonDecode(patches.first.body), {'locale': ''});
+      expect(patches.last.body, isNot(contains('name="locale"')));
+    });
+
     test('removing the banner asks the API to remove it; a new one, given too, wins', () async {
       await signIn();
       repository.handleEvent(_event('SPACE_CREATE', _spaceOf('s-1', 'Duvet Official', banner: banner)));

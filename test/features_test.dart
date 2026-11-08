@@ -364,7 +364,7 @@ void main() {
       await tester.enterText(find.byType(EditableText).last, '');
       await tester.pumpAndSettle();
 
-      await tester.tap(find.bySemanticsLabel('Maya, Online · @maya'));
+      await tester.tap(find.bySemanticsLabel('Maya, Online · @maya · owner'));
       await tester.pumpAndSettle();
       // Her profile over the members sheet: back returns to it.
       expect(find.bySemanticsLabel('Maya’s profile'), findsWidgets);
@@ -375,7 +375,7 @@ void main() {
       expect(find.text('ONLINE — 1'), findsOneWidget);
 
       // Mention closes both.
-      await tester.tap(find.bySemanticsLabel('Maya, Online · @maya'));
+      await tester.tap(find.bySemanticsLabel('Maya, Online · @maya · owner'));
       await tester.pumpAndSettle();
       await tester.tap(find.bySemanticsLabel('Mention Maya'));
       await tester.pumpAndSettle();

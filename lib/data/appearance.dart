@@ -1,16 +1,35 @@
+import 'dart:io';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
+import 'package:http/http.dart' as http;
+import 'package:path_provider/path_provider.dart';
+
+import '../theme.dart';
+import 'admin.dart' show contrastOf;
+import 'code_theme.dart';
 
 /// The one gesture that replies to a message. Only [doubleTap] makes a tap
 /// on a picture wait to rule out a second one.
 enum ReplyGesture { swipeLeft, swipeRight, doubleTap }
 
-/// System, light or dark, and the reply gesture, kept on the device.
+/// System, light or dark, the reply gesture, the code theme and the color of
+/// your bubbles, kept on the device.
 class Appearance extends ValueNotifier<ThemeMode> {
   final AppearanceStore _store;
-  Appearance([AppearanceStore? store]) : _store = store ?? const SecureAppearanceStore(), super(ThemeMode.system);
+  final http.Client Function() _client;
+  Appearance([AppearanceStore? store, http.Client Function()? client])
+    : _store = store ?? const SecureAppearanceStore(),
+      _client = client ?? http.Client.new,
+      super(ThemeMode.system);
 
   ReplyGesture replyGesture = ReplyGesture.swipeLeft;
+
+  /// A custom code theme; null for GitHub's.
+  CodeTheme? codeTheme;
+
+  /// Your bubbles' fill, as `0xRRGGBB`; null for azure.
+  int? bubbleColor;
 
   Future<void> load() async {
     try {
@@ -22,6 +41,19 @@ class Appearance extends ValueNotifier<ThemeMode> {
     } catch (e) {
       debugPrint('appearance: $e');
     }
+    try {
+      bubbleColor = int.tryParse(await _store.readBubbleColor() ?? '');
+      // Fetched once, on Apply: launching never asks the theme's server again.
+      if (await _store.readCodeTheme() case (:final url, :final json)) {
+        codeTheme = CodeTheme.parse(url, json);
+      }
+    } catch (e) {
+      debugPrint('appearance: $e');
+      // A theme kept that no longer reads: forget it rather than fail each launch.
+      if (e is FormatException || e is TypeError) await _store.writeCodeTheme(null).catchError((_) {});
+    }
+    // Only for a change: an app closed before this lands has disposed it.
+    if (bubbleColor != null || codeTheme != null) notifyListeners();
     try {
       value = switch (await _store.read()) {
         'light' => ThemeMode.light,
@@ -52,6 +84,41 @@ class Appearance extends ValueNotifier<ThemeMode> {
     }
   }
 
+  /// Fetches the VS Code theme at [url] and uses it for code. Throws, with
+  /// nothing changed, when it can't be fetched or read.
+  Future<void> applyCodeTheme(String url) async {
+    final client = _client();
+    try {
+      final got = await fetchCodeTheme(url, client);
+      await _store.writeCodeTheme((url: got.theme.url, json: got.json));
+      codeTheme = got.theme;
+      notifyListeners();
+    } finally {
+      client.close();
+    }
+  }
+
+  /// Back to GitHub's colors.
+  Future<void> resetCodeTheme() async {
+    codeTheme = null;
+    notifyListeners();
+    try {
+      await _store.writeCodeTheme(null);
+    } catch (e) {
+      debugPrint('appearance: $e');
+    }
+  }
+
+  Future<void> setBubbleColor(int? rgb) async {
+    bubbleColor = rgb;
+    notifyListeners();
+    try {
+      await _store.writeBubbleColor(rgb?.toString());
+    } catch (e) {
+      debugPrint('appearance: $e');
+    }
+  }
+
   /// The brightness to draw with, given the system's.
   Brightness resolve(Brightness system) => switch (value) {
     ThemeMode.light => Brightness.light,
@@ -65,13 +132,31 @@ abstract interface class AppearanceStore {
   Future<void> write(String mode);
   Future<String?> readReplyGesture();
   Future<void> writeReplyGesture(String gesture);
+
+  /// The custom code theme: its URL and the JSON fetched from it.
+  Future<({String url, String json})?> readCodeTheme();
+
+  /// Null forgets it.
+  Future<void> writeCodeTheme(({String url, String json})? theme);
+  Future<String?> readBubbleColor();
+  Future<void> writeBubbleColor(String? rgb);
 }
 
 class SecureAppearanceStore implements AppearanceStore {
   const SecureAppearanceStore();
   static const _key = 'duvet_appearance';
   static const _replyKey = 'duvet_reply_gesture';
+  static const _codeThemeKey = 'duvet_code_theme_url';
+  static const _bubbleKey = 'duvet_bubble_color';
   static const _storage = FlutterSecureStorage();
+
+  // The theme's JSON is too big for secure storage. It sits outside the
+  // per-account cache, which signing out wipes: it belongs to the device.
+  static Future<File> _themeFile() async {
+    final base = await getApplicationSupportDirectory();
+    final dir = await Directory('${base.path}/device').create(recursive: true);
+    return File('${dir.path}/code_theme.json');
+  }
 
   @override
   Future<String?> read() => _storage.read(key: _key);
@@ -84,11 +169,40 @@ class SecureAppearanceStore implements AppearanceStore {
 
   @override
   Future<void> writeReplyGesture(String gesture) => _storage.write(key: _replyKey, value: gesture);
+
+  @override
+  Future<({String url, String json})?> readCodeTheme() async {
+    final url = await _storage.read(key: _codeThemeKey);
+    if (url == null) return null;
+    final file = await _themeFile();
+    return await file.exists() ? (url: url, json: await file.readAsString()) : null;
+  }
+
+  @override
+  Future<void> writeCodeTheme(({String url, String json})? theme) async {
+    final file = await _themeFile();
+    if (theme == null) {
+      await _storage.delete(key: _codeThemeKey);
+      if (await file.exists()) await file.delete();
+      return;
+    }
+    await file.writeAsString(theme.json, flush: true);
+    await _storage.write(key: _codeThemeKey, value: theme.url);
+  }
+
+  @override
+  Future<String?> readBubbleColor() => _storage.read(key: _bubbleKey);
+
+  @override
+  Future<void> writeBubbleColor(String? rgb) =>
+      rgb == null ? _storage.delete(key: _bubbleKey) : _storage.write(key: _bubbleKey, value: rgb);
 }
 
 class MemoryAppearanceStore implements AppearanceStore {
   String? mode;
   String? replyGesture;
+  ({String url, String json})? codeTheme;
+  String? bubbleColor;
   @override
   Future<String?> read() async => mode;
 
@@ -100,7 +214,37 @@ class MemoryAppearanceStore implements AppearanceStore {
 
   @override
   Future<void> writeReplyGesture(String gesture) async => replyGesture = gesture;
+
+  @override
+  Future<({String url, String json})?> readCodeTheme() async => codeTheme;
+
+  @override
+  Future<void> writeCodeTheme(({String url, String json})? theme) async => codeTheme = theme;
+
+  @override
+  Future<String?> readBubbleColor() async => bubbleColor;
+
+  @override
+  Future<void> writeBubbleColor(String? rgb) async => bubbleColor = rgb;
 }
+
+/// The ink on your bubble when the fill is too pale for white.
+const bubbleDarkInk = Color(0xFF15172B);
+
+/// Your bubbles' fill for [rgb] (null for azure), the ink on it (white or
+/// near-black, whichever reads better), and whether that ink is light, so
+/// code on it takes a dark theme.
+({Color fill, Color ink, bool onDark}) bubbleColors(int? rgb) {
+  const white = Color(0xFFFFFFFF);
+  if (rgb == null) return (fill: Duvet.azure, ink: white, onDark: true);
+  final fill = Color(0xFF000000 | rgb);
+  final light = contrastOf(fill, white) >= contrastOf(fill, bubbleDarkInk);
+  return (fill: fill, ink: light ? white : bubbleDarkInk, onDark: light);
+}
+
+/// [bubbleColors] for the user's pick.
+({Color fill, Color ink, bool onDark}) ownBubble(BuildContext context) =>
+    bubbleColors(AppearanceScope.maybeOf(context)?.bubbleColor);
 
 /// Hands the [Appearance] down the tree.
 class AppearanceScope extends InheritedNotifier<Appearance> {

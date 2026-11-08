@@ -802,6 +802,7 @@ class _SpaceOverviewPageState extends State<SpaceOverviewPage> {
   late final SpaceProfile? _profile = context.repository.spaceProfile(widget.spaceId);
   late final _name = TextEditingController(text: _profile?.name)..addListener(_changed);
   late final _about = TextEditingController(text: _profile?.description)..addListener(_changed);
+  late final _locale = TextEditingController(text: _profile?.locale)..addListener(_changed);
   void _changed() => setState(() {});
 
   /// The new icon and banner, cropped; or [_removeIcon] and [_removeBanner]
@@ -871,6 +872,7 @@ class _SpaceOverviewPageState extends State<SpaceOverviewPage> {
   void dispose() {
     _name.dispose();
     _about.dispose();
+    _locale.dispose();
     _upload.dispose();
     super.dispose();
   }
@@ -880,6 +882,7 @@ class _SpaceOverviewPageState extends State<SpaceOverviewPage> {
     final name = _name.text.trim();
     if (p == null || name.isEmpty) return;
     final about = _about.text.trim();
+    final locale = _locale.text.trim();
     final navigator = Navigator.of(context);
     setState(() => _saving = true);
     final ok = await adminTry(
@@ -889,6 +892,7 @@ class _SpaceOverviewPageState extends State<SpaceOverviewPage> {
         p.id,
         name: name == p.name ? null : name,
         description: about == (p.description ?? '') ? null : about,
+        locale: locale == (p.locale ?? '') ? null : locale,
         iconPath: _icon,
         bannerPath: _banner,
         removeBanner: _removeBanner,
@@ -919,7 +923,8 @@ class _SpaceOverviewPageState extends State<SpaceOverviewPage> {
             _removeIcon ||
             _removeBanner ||
             _name.text.trim() != p.name ||
-            _about.text.trim() != (p.description ?? '').trim());
+            _about.text.trim() != (p.description ?? '').trim() ||
+            _locale.text.trim() != (p.locale ?? '').trim());
     return UnsavedChanges(
       dirty: dirty,
       child: AdminPage(
@@ -973,6 +978,9 @@ class _SpaceOverviewPageState extends State<SpaceOverviewPage> {
             DuvetTextField(label: 'Name', controller: _name),
             const SizedBox(height: 16),
             DuvetTextField(label: 'What it’s about', controller: _about, maxLines: 3),
+            const SizedBox(height: 16),
+            // Free text, as the desktop takes it.
+            DuvetTextField(label: 'Locale', controller: _locale, hint: 'en', maxLength: 4),
           ],
         ],
       ),
@@ -3027,6 +3035,7 @@ class _MembersAdminPageState extends State<MembersAdminPage> {
         valueListenable: repository.spaces,
         builder: (context, _, _) {
           final all = snapshot.data;
+          final ownerId = repository.spaces.value.where((s) => s.id == widget.spaceId).firstOrNull?.ownerId;
           final q = _search.text.trim().toLowerCase();
           final shown = [
             for (final m in all ?? const <Member>[])
@@ -3058,8 +3067,10 @@ class _MembersAdminPageState extends State<MembersAdminPage> {
                       child: UserAvatar(name: m.displayName, url: m.avatarUrl, size: 40),
                     ),
                     title: m.displayName,
+                    titleIcon: m.userId == ownerId ? const OwnerCrown() : null,
                     snippet: [
                       if (m.username.isNotEmpty) '@${m.username}',
+                      if (m.userId == ownerId) 'owner',
                       if (m.isBot) 'bot',
                       switch (repository.rolesOf(widget.spaceId, m.userId)) {
                         [] => 'No roles',

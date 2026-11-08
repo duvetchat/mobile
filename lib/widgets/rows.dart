@@ -26,6 +26,9 @@ class ListRow extends StatelessWidget {
 
   /// After the title, in `ink-secondary`, e.g. "· Space name".
   final String? titleSuffix;
+
+  /// Right after the title, a small glyph kept when a long title is cut: [OwnerCrown], the pin.
+  final Widget? titleIcon;
   final String? snippet;
 
   /// Right-aligned on the first line, e.g. the time.
@@ -56,6 +59,7 @@ class ListRow extends StatelessWidget {
     this.leading,
     this.hash = false,
     this.titleSuffix,
+    this.titleIcon,
     this.snippet,
     this.trailing,
     this.unread = false,
@@ -85,6 +89,26 @@ class ListRow extends StatelessWidget {
       ?snippet,
       ?trailing,
     ].join(', ');
+    final titleText = Text.rich(
+      TextSpan(
+        children: [
+          if (hash)
+            TextSpan(
+              text: '# ',
+              style: TextStyle(color: secondary),
+            ),
+          TextSpan(text: title),
+          if (titleSuffix != null)
+            TextSpan(
+              text: ' $titleSuffix',
+              style: TextStyle(color: secondary, fontWeight: FontWeight.w400),
+            ),
+        ],
+      ),
+      maxLines: 1,
+      overflow: TextOverflow.ellipsis,
+      style: (unread ? DuvetType.rowTitleUnread : DuvetType.rowTitle).copyWith(color: name),
+    );
     return Semantics(
       container: ownNode,
       button: onTap != null,
@@ -125,26 +149,15 @@ class ListRow extends StatelessWidget {
                         textBaseline: TextBaseline.alphabetic,
                         children: [
                           Expanded(
-                            child: Text.rich(
-                              TextSpan(
-                                children: [
-                                  if (hash)
-                                    TextSpan(
-                                      text: '# ',
-                                      style: TextStyle(color: secondary),
-                                    ),
-                                  TextSpan(text: title),
-                                  if (titleSuffix != null)
-                                    TextSpan(
-                                      text: ' $titleSuffix',
-                                      style: TextStyle(color: secondary, fontWeight: FontWeight.w400),
-                                    ),
-                                ],
-                              ),
-                              maxLines: 1,
-                              overflow: TextOverflow.ellipsis,
-                              style: (unread ? DuvetType.rowTitleUnread : DuvetType.rowTitle).copyWith(color: name),
-                            ),
+                            child: titleIcon == null
+                                ? titleText
+                                : Row(
+                                    children: [
+                                      Flexible(child: titleText),
+                                      const SizedBox(width: 4),
+                                      titleIcon!,
+                                    ],
+                                  ),
                           ),
                           if (trailing != null) ...[
                             const SizedBox(width: 8),
@@ -1166,4 +1179,18 @@ class Segmented<T> extends StatelessWidget {
       ),
     );
   }
+}
+
+/// A Space owner's crown, after their name: gold, dimmed while they're offline.
+class OwnerCrown extends StatelessWidget {
+  final bool offline;
+  const OwnerCrown({this.offline = false, super.key});
+
+  @override
+  Widget build(BuildContext context) => Icon(
+    FLucideIcons.crown,
+    size: 14,
+    color: context.duvet.crown.withValues(alpha: offline ? 0.6 : 1),
+    semanticLabel: 'Owner',
+  );
 }

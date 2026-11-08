@@ -12,6 +12,8 @@ import 'package:url_launcher/url_launcher.dart';
 import 'package:youtube_player_iframe/youtube_player_iframe.dart'
     show PlayerState, YoutubePlayerController, YoutubeValueBuilder;
 
+import '../data/appearance.dart';
+import '../data/code_theme.dart';
 import '../data/emoji_catalog.dart';
 import '../data/links.dart';
 import '../data/markdown.dart';
@@ -20,6 +22,7 @@ import '../data/message_tokens.dart';
 import '../data/models.dart';
 import '../theme.dart';
 import 'apng.dart';
+import 'attachment_link.dart';
 import 'code_highlight.dart';
 import 'depth.dart';
 import 'glass.dart';
@@ -116,7 +119,7 @@ class _MessageTextState extends State<MessageText> {
   late List<MdBlock> _blocks = _parse();
 
   // Its code blocks' colors, worked out once a block and a theme, not each build.
-  final _colored = <(String, String, bool), TextSpan?>{};
+  final _colored = <(String, String, bool, CodeTheme?), TextSpan?>{};
 
   List<MdBlock> _parse() {
     if (!widget.singleLine) return parseMarkdown(widget.content);
@@ -183,8 +186,11 @@ class _MessageTextState extends State<MessageText> {
     final base = jumbo ? widget.style.copyWith(fontSize: 40, height: 1.2) : widget.style;
     final emojiSize = jumbo ? 48.0 : 22.0;
     final dark = Theme.of(context).brightness == Brightness.dark;
+    final appearance = AppearanceScope.maybeOf(context);
+    // Overlays on your bubble are its ink, faint: white on azure.
+    final ink = ownBubble(context).ink;
     final codeFill = widget.onAccent
-        ? const Color(0x29FFFFFF)
+        ? ink.withAlpha(0x29)
         : dark
         ? const Color(0x14FFFFFF)
         : const Color(0x0F141416);
@@ -301,9 +307,9 @@ class _MessageTextState extends State<MessageText> {
             return spans(
               children,
               (style ?? const TextStyle()).copyWith(
-                color: widget.onAccent ? colors.primaryForeground : tokens.accentText,
+                color: widget.onAccent ? ink : tokens.accentText,
                 decoration: TextDecoration.underline,
-                decorationColor: widget.onAccent ? colors.primaryForeground : tokens.accentText,
+                decorationColor: widget.onAccent ? ink : tokens.accentText,
               ),
               _tap(() => _open(url)),
             );
@@ -316,7 +322,7 @@ class _MessageTextState extends State<MessageText> {
               children,
               (style ?? const TextStyle()).copyWith(
                 color: const Color(0x00000000),
-                backgroundColor: widget.onAccent ? const Color(0x52FFFFFF) : colors.secondary,
+                backgroundColor: widget.onAccent ? ink.withAlpha(0x52) : colors.secondary,
                 decoration: TextDecoration.none,
               ),
               _tap(_reveal),
@@ -345,7 +351,7 @@ class _MessageTextState extends State<MessageText> {
           MdQuote(:final inlines) => Container(
             padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
             decoration: BoxDecoration(
-              color: widget.onAccent ? const Color(0x1FFFFFFF) : colors.secondary,
+              color: widget.onAccent ? ink.withAlpha(0x1F) : colors.secondary,
               borderRadius: BorderRadius.circular(DuvetTokens.radiusField),
             ),
             child: rich(inlines, base.copyWith(color: secondary)),
@@ -404,15 +410,18 @@ class _MessageTextState extends State<MessageText> {
               scrollDirection: Axis.horizontal,
               child: () {
                 final style = DuvetType.code.copyWith(fontSize: 13, height: 1.5, color: base.color);
-                // Its language's colors, as the desktop's; on the accent, the dark ones.
-                final onDark = dark || widget.onAccent;
+                // Its language's colors, as the desktop's; on your bubble,
+                // those for its ink.
+                final onDark = widget.onAccent ? ownBubble(context).onDark : dark;
+                final custom = appearance?.codeTheme;
                 final colored = language == null
                     ? null
                     : _colored.putIfAbsent((
                         code,
                         language,
                         onDark,
-                      ), () => highlightCode(code, language, base: style, dark: onDark));
+                        custom,
+                      ), () => highlightCode(code, language, base: style, dark: onDark, custom: custom));
                 return colored == null ? Text(code, style: style) : Text.rich(colored);
               }(),
             ),
@@ -797,23 +806,37 @@ Widget _image(MessageAttachment a, double width, {BoxFit fit = BoxFit.cover}) {
   final cache = math.max(1, (width * dpr).round());
   Widget broken(BuildContext context, Object _, StackTrace? _) =>
       Center(child: Icon(FLucideIcons.imageOff, color: context.theme.colors.mutedForeground));
-  final still = a.local
-      ? Image.file(File(a.url), fit: fit, cacheWidth: fit == BoxFit.cover ? cache : null, errorBuilder: broken)
-      : Image.network(
-          a.url,
-          fit: fit,
-          cacheWidth: fit == BoxFit.cover ? cache : null,
-          errorBuilder: broken,
-          frameBuilder: (context, child, frame, sync) => AnimatedOpacity(
-            opacity: frame == null && !sync ? 0 : 1,
-            duration: const Duration(milliseconds: 200),
-            child: child,
-          ),
-        );
   // Flutter plays GIFs and WebPs itself, APNGs not: apng.dart does.
-  return a.contentType == 'image/apng'
-      ? ApngImage(url: a.url, local: a.local, width: width, fit: fit, placeholder: still)
+  Widget played(String url, Widget still) => a.contentType == 'image/apng'
+      ? ApngImage(key: ValueKey(url), url: url, local: a.local, width: width, fit: fit, placeholder: still)
       : still;
+  if (a.local) {
+    return played(
+      a.url,
+      Image.file(File(a.url), fit: fit, cacheWidth: fit == BoxFit.cover ? cache : null, errorBuilder: broken),
+    );
+  }
+  return AttachmentLinkBuilder(
+    attachment: a,
+    builder: (context, url, refused) => played(
+      url,
+      Image.network(
+        url,
+        fit: fit,
+        cacheWidth: fit == BoxFit.cover ? cache : null,
+        errorBuilder: (context, error, stack) {
+          // Its link expired: the API refuses it.
+          if (error is NetworkImageLoadException && error.statusCode == 403) refused();
+          return broken(context, error, stack);
+        },
+        frameBuilder: (context, child, frame, sync) => AnimatedOpacity(
+          opacity: frame == null && !sync ? 0 : 1,
+          duration: const Duration(milliseconds: 200),
+          child: child,
+        ),
+      ),
+    ),
+  );
 }
 
 class _Badge extends StatelessWidget {
@@ -914,6 +937,7 @@ class _FileTile extends StatelessWidget {
 }
 
 Future<void> _fileMenu(BuildContext anchor, MessageAttachment a) async {
+  final link = linkSource(anchor, a);
   final picked = await showGlassMenu(
     anchor,
     label: 'File options',
@@ -926,11 +950,11 @@ Future<void> _fileMenu(BuildContext anchor, MessageAttachment a) async {
   try {
     switch (picked) {
       case 'open':
-        await MediaActions.instance.open(a.url);
+        await MediaActions.instance.open(await link());
       case 'share':
-        await MediaActions.instance.share(a.url, a.displayName, a.contentType);
+        await MediaActions.instance.share(await link(), a.displayName, a.contentType);
       case 'copy':
-        await Clipboard.setData(ClipboardData(text: a.url));
+        await Clipboard.setData(ClipboardData(text: await link()));
     }
   } catch (_) {
     if (anchor.mounted) {
@@ -1550,8 +1574,9 @@ class _ImageViewerState extends State<ImageViewer> with TickerProviderStateMixin
   }
 
   Future<void> _save(MessageAttachment a) async {
+    final link = linkSource(context, a);
     try {
-      final saved = await MediaActions.instance.saveToGallery(a.url, a.displayName);
+      final saved = await MediaActions.instance.saveToGallery(await link(), a.displayName);
       _toast(saved ? 'Saved to your photos' : 'Duvet can’t save to your photos');
     } catch (_) {
       _toast('Couldn’t save the photo');
@@ -1559,8 +1584,9 @@ class _ImageViewerState extends State<ImageViewer> with TickerProviderStateMixin
   }
 
   Future<void> _share(MessageAttachment a) async {
+    final link = linkSource(context, a);
     try {
-      await MediaActions.instance.share(a.url, a.displayName, a.contentType);
+      await MediaActions.instance.share(await link(), a.displayName, a.contentType);
     } catch (_) {
       _toast('Couldn’t share the photo');
     }
@@ -1749,7 +1775,8 @@ class _ImageViewerState extends State<ImageViewer> with TickerProviderStateMixin
                             action(FLucideIcons.download, 'Save', () => _save(current)),
                             action(FLucideIcons.share2, 'Share', () => _share(current)),
                             action(FLucideIcons.link, 'Copy link', () async {
-                              await Clipboard.setData(ClipboardData(text: current.url));
+                              final link = linkSource(context, current);
+                              await Clipboard.setData(ClipboardData(text: await link()));
                               _toast('Link copied');
                             }),
                           ],

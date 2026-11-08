@@ -49,6 +49,16 @@ class FakeRepository implements ChatRepository {
   final ValueNotifier<Set<String>> collapsedCategories = ValueNotifier(const {});
 
   @override
+  final ValueNotifier<Set<String>> pinnedChats = ValueNotifier(const {});
+
+  @override
+  void setChatPinned(String key, bool pinned) => pinnedChats.value = {
+    for (final k in pinnedChats.value)
+      if (k != key) k,
+    if (pinned) key,
+  };
+
+  @override
   void setCategoryCollapsed(String categoryId, bool collapsed) => collapsedCategories.value = {
     for (final id in collapsedCategories.value)
       if (id != categoryId) id,
@@ -69,6 +79,30 @@ class FakeRepository implements ChatRepository {
   final ValueNotifier<Map<String, List<TypingUser>>> typingNow = ValueNotifier(const {});
   @override
   final ValueNotifier<Map<String, int>> mentions = ValueNotifier(const {});
+
+  @override
+  final ValueNotifier<List<MentionNotice>> mentionNotices = ValueNotifier(const []);
+
+  @override
+  void dismissMentionNotice(String messageId) =>
+      mentionNotices.value = [...mentionNotices.value.where((n) => n.messageId != messageId)];
+
+  /// The chat on screen, as its screen says it.
+  ({String chatId, String? threadOf})? onScreen;
+
+  @override
+  void chatShown(ChatTarget target, {String? threadOf, bool opened = true}) {
+    onScreen = (chatId: target.id, threadOf: threadOf);
+    if (opened && threadOf == null) {
+      mentionNotices.value = [...mentionNotices.value.where((n) => n.target != target)];
+    }
+  }
+
+  @override
+  void chatHidden(ChatTarget target, {String? threadOf}) {
+    if (onScreen == (chatId: target.id, threadOf: threadOf)) onScreen = null;
+  }
+
   @override
   final drafts = <String, ChatDraft>{};
   final lastRead = <String, String>{};
@@ -433,6 +467,9 @@ class FakeRepository implements ChatRepository {
   /// What [spaceProfile] says of ManageChannels in some room.
   bool managesRooms = false;
 
+  /// The Space's locale, as [updateSpace] leaves it.
+  String? spaceLocale;
+
   @override
   bool canInRoom(String spaceId, String roomId, int bit) => switch (bit) {
     _ when (deniedInRoom[roomId] ?? 0) & bit != 0 => false,
@@ -451,6 +488,7 @@ class FakeRepository implements ChatRepository {
       name: space.name,
       iconUrl: space.iconUrl,
       bannerUrl: space.bannerUrl,
+      locale: spaceLocale,
       memberCount: everyone.length,
       owner: spaceOwner,
       perms: spacePerms,
@@ -463,6 +501,7 @@ class FakeRepository implements ChatRepository {
     String spaceId, {
     String? name,
     String? description,
+    String? locale,
     String? iconPath,
     String? bannerPath,
     bool removeBanner = false,
@@ -470,8 +509,9 @@ class FakeRepository implements ChatRepository {
     void Function(double progress)? onProgress,
   }) async {
     if (iconPath != null || bannerPath != null) await _upload(onProgress);
+    if (locale != null) spaceLocale = locale;
     admin.add(
-      'space ${[if (name != null) 'name=$name', if (description != null) 'about=$description', if (iconPath != null) 'icon=$iconPath', if (removeIcon && iconPath == null) 'icon=none', if (bannerPath != null) 'banner=$bannerPath', if (removeBanner && bannerPath == null) 'banner=none'].join(' ')}',
+      'space ${[if (name != null) 'name=$name', if (description != null) 'about=$description', if (locale != null) 'locale=$locale', if (iconPath != null) 'icon=$iconPath', if (removeIcon && iconPath == null) 'icon=none', if (bannerPath != null) 'banner=$bannerPath', if (removeBanner && bannerPath == null) 'banner=none'].join(' ')}',
     );
     if (name != null || iconPath != null || bannerPath != null || removeBanner || removeIcon) {
       spaces.value = [
@@ -487,6 +527,7 @@ class FakeRepository implements ChatRepository {
                       : s.iconUrl,
                   sections: s.sections,
                   onlineCount: s.onlineCount,
+                  ownerId: s.ownerId,
                   // As SPACE_UPDATE brings it: an uploaded banner, or none.
                   bannerUrl: bannerPath != null
                       ? 'https://example.invalid/banner.png'
@@ -524,6 +565,7 @@ class FakeRepository implements ChatRepository {
               iconUrl: s.iconUrl,
               onlineCount: s.onlineCount,
               bannerUrl: s.bannerUrl,
+              ownerId: s.ownerId,
               sections: [
                 for (final section in s.sections)
                   RoomSection(
@@ -1307,6 +1349,7 @@ class FakeRepository implements ChatRepository {
         id: 's-guild',
         name: 'Design Guild',
         onlineCount: 1,
+        ownerId: maya,
         sections: [
           RoomSection(
             name: null,
@@ -1431,6 +1474,17 @@ class FakeRepository implements ChatRepository {
 
   /// Messages only a fetch by ID finds: older than the loaded page.
   final older = <String, List<ChatMessage>>{};
+
+  /// The links asked for, and the new link of each file, by ID: one without
+  /// keeps its own.
+  final linksAsked = <({String id, bool refused})>[];
+  final renewedLinks = <String, String>{};
+
+  @override
+  Future<String> attachmentLink(MessageAttachment attachment, {bool refused = false}) async {
+    linksAsked.add((id: attachment.id, refused: refused));
+    return renewedLinks[attachment.id] ?? attachment.url;
+  }
 
   /// What [messagesAfter] answers, by chat ID.
   final missed = <String, List<ChatMessage>>{};
