@@ -3181,7 +3181,7 @@ class DuvetRepository implements ChatRepository {
     UiComponent component, {
     List<String>? values,
   }) async {
-    final reply = await _call(
+    final reply = await _interaction(
       (api) => api.useComponent(
         target.roomId,
         messageId,
@@ -3194,7 +3194,7 @@ class DuvetRepository implements ChatRepository {
   @override
   Future<BotModal?> useCommand(RoomTarget target, BotCommand command, Map<String, Object> options) async {
     final types = {for (final o in command.options) o.name: o.type};
-    final reply = await _call(
+    final reply = await _interaction(
       (api) => api.useCommand(
         target.roomId,
         command.applicationId,
@@ -3211,9 +3211,23 @@ class DuvetRepository implements ChatRepository {
   }
 
   @override
-  Future<void> submitModal(BotModal modal, List<Map<String, dynamic>> components) => _call(
+  Future<void> submitModal(BotModal modal, List<Map<String, dynamic>> components) => _interaction(
     (api) => api.submitModal(modal.roomId, modal.applicationId, modal.customId, components, messageId: modal.messageId),
   );
+
+  /// A command, a component or a modal sent to a bot, failing with the
+  /// desktop's texts: a 504 is the API giving up waiting on the bot.
+  Future<T> _interaction<T>(Future<T> Function(duvet.RestClient api) request) async {
+    try {
+      return await _call(request);
+    } catch (e) {
+      throw ActionFailed(
+        e is duvet.DuvetApiException && e.statusCode == 504
+            ? 'The application did not respond'
+            : 'This interaction failed',
+      );
+    }
+  }
 
   @override
   Future<BotInfo> bot(String userId) async {
@@ -3239,6 +3253,9 @@ class DuvetRepository implements ChatRepository {
 
   @override
   Future<void> addBot(String spaceId, String botId) => _explained((api) => api.addBotToSpace(spaceId, botId));
+
+  @override
+  Future<void> removeBot(String spaceId, String botId) => _explained((api) => api.removeBotFromSpace(spaceId, botId));
 
   @override
   List<({String id, String name})> spaceRoles(String spaceId) => [

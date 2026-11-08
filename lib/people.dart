@@ -6,6 +6,7 @@ import 'chat_view.dart';
 import 'data/models.dart';
 import 'data/scope.dart';
 import 'members_sheet.dart' show MemberAction, PresenceAvatar;
+import 'space_admin.dart' show confirmDestructive;
 import 'theme.dart';
 import 'widgets/avatar.dart';
 import 'widgets/chrome.dart';
@@ -57,6 +58,31 @@ class _ProfileState extends State<_Profile> {
   void didChangeDependencies() {
     super.didChangeDependencies();
     context.repository.loadFriends().catchError((Object e) => debugPrint('friends: $e'));
+  }
+
+  // The API's reason when it refuses, as adding a bot shows it.
+  Future<void> _removeBot(String spaceId, String spaceName) async {
+    final name = widget.member.displayName;
+    final sure = await confirmDestructive(
+      context,
+      title: 'Remove $name from $spaceName?',
+      body: 'It leaves the Space and loses its roles. It can be added again later.',
+      action: 'Remove from Space',
+    );
+    if (!sure || !mounted) return;
+    final navigator = Navigator.of(context);
+    try {
+      await context.repository.removeBot(spaceId, widget.member.userId);
+      navigator.pop();
+    } catch (e) {
+      if (mounted) {
+        showFToast(
+          context: context,
+          title: Text(e is ActionFailed ? e.message : 'Couldn’t remove $name'),
+          duration: const Duration(seconds: 3),
+        );
+      }
+    }
   }
 
   Future<void> _message() async {
@@ -137,6 +163,8 @@ class _ProfileState extends State<_Profile> {
     final me = repository.profile.value?.id == m.userId;
     final roles = widget.spaceId == null ? const <RoleTag>[] : repository.rolesOf(widget.spaceId!, m.userId);
     final spaceName = repository.spaces.value.where((s) => s.id == widget.spaceId).firstOrNull?.name;
+    final removable =
+        m.isBot && widget.spaceId != null && (repository.spaceProfile(widget.spaceId!)?.can(Perm.manageBots) ?? false);
     return ListenableBuilder(
       listenable: Listenable.merge([repository.presence, repository.mobileOnly, repository.friends]),
       builder: (context, _) {
@@ -328,6 +356,16 @@ class _ProfileState extends State<_Profile> {
                         ],
                       ),
                     ),
+                    if (removable) ...[
+                      const SizedBox(height: 16),
+                      DuvetButton(
+                        label: 'Remove from Space',
+                        icon: FLucideIcons.userMinus,
+                        variant: ButtonVariant.destructive,
+                        expand: true,
+                        onPressed: () => _removeBot(widget.spaceId!, spaceName ?? 'this Space'),
+                      ),
+                    ],
                   ],
                 ),
               ),

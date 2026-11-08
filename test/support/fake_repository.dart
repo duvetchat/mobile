@@ -1038,6 +1038,7 @@ class FakeRepository implements ChatRepository {
     UiComponent component, {
     List<String>? values,
   }) async {
+    _refuse('useComponent');
     interactions.add('component ${component.customId}${values == null ? '' : ' ${values.join(',')}'}');
     final modal = nextModal;
     nextModal = null;
@@ -1068,6 +1069,14 @@ class FakeRepository implements ChatRepository {
   Future<void> addBot(String spaceId, String botId) async {
     _refuse('addBot');
     botsAdded.add((spaceId, botId));
+  }
+
+  final botsRemoved = <(String, String)>[];
+
+  @override
+  Future<void> removeBot(String spaceId, String botId) async {
+    _refuse('removeBot');
+    botsRemoved.add((spaceId, botId));
   }
 
   @override
