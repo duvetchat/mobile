@@ -88,6 +88,7 @@ class _MembersSheetState extends State<_MembersSheet> {
               RoomTarget(:final spaceId) => spaceId,
               ConversationTarget() => null,
             };
+            final ownerId = widget.repository.spaces.value.where((s) => s.id == spaceId).firstOrNull?.ownerId;
             final q = _search.text.trim().toLowerCase();
             // Without those the gateway says left since the list came (a bot
             // removed, say).
@@ -195,6 +196,7 @@ class _MembersSheetState extends State<_MembersSheet> {
                           presence: of(members[i]),
                           mobileOnly: mobileOnly.contains(members[i].userId),
                           me: widget.repository.profile.value?.id == members[i].userId,
+                          owner: ownerId != null && ownerId == members[i].userId,
                           spaceId: spaceId,
                           roleColors: switch (widget.target) {
                             RoomTarget(:final spaceId) => nameColorsOf(
@@ -223,6 +225,9 @@ class _MemberRow extends StatelessWidget {
   final Presence? presence;
   final bool mobileOnly;
   final bool me;
+
+  /// Owns the Space: a crown after their name, as the desktop has it.
+  final bool owner;
   final String? spaceId;
 
   /// Their highest colored role's colors: they tint the name, or run across it as a gradient.
@@ -232,6 +237,7 @@ class _MemberRow extends StatelessWidget {
     required this.presence,
     required this.mobileOnly,
     required this.me,
+    this.owner = false,
     this.spaceId,
     this.roleColors,
   });
@@ -245,11 +251,18 @@ class _MemberRow extends StatelessWidget {
       null => null,
     };
     // The status as the caption line, then who they are.
-    final detail = [?status, '@${member.username}', if (member.isBot) 'bot', if (me) 'you'].join(' · ');
+    final detail = [
+      ?status,
+      '@${member.username}',
+      if (owner) 'owner',
+      if (member.isBot) 'bot',
+      if (me) 'you',
+    ].join(' · ');
     return Builder(
       builder: (rowContext) => GlassRow(
         label: member.displayName,
         labelColors: roleColors,
+        labelIcon: owner ? OwnerCrown(offline: isOffline(presence)) : null,
         detail: detail,
         hint: me ? null : 'Double tap for options',
         leading: PresenceAvatar(member: member, presence: presence, mobileOnly: mobileOnly, size: 48),

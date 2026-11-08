@@ -27,7 +27,7 @@ class ListRow extends StatelessWidget {
   /// After the title, in `ink-secondary`, e.g. "· Space name".
   final String? titleSuffix;
 
-  /// Right after the title, a small glyph kept when a long title is cut, e.g. the pin.
+  /// Right after the title, a small glyph kept when a long title is cut: [OwnerCrown], the pin.
   final Widget? titleIcon;
   final String? snippet;
 
@@ -1179,4 +1179,18 @@ class Segmented<T> extends StatelessWidget {
       ),
     );
   }
+}
+
+/// A Space owner's crown, after their name: gold, dimmed while they're offline.
+class OwnerCrown extends StatelessWidget {
+  final bool offline;
+  const OwnerCrown({this.offline = false, super.key});
+
+  @override
+  Widget build(BuildContext context) => Icon(
+    FLucideIcons.crown,
+    size: 14,
+    color: context.duvet.crown.withValues(alpha: offline ? 0.6 : 1),
+    semanticLabel: 'Owner',
+  );
 }

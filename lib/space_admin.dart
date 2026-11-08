@@ -3027,6 +3027,7 @@ class _MembersAdminPageState extends State<MembersAdminPage> {
         valueListenable: repository.spaces,
         builder: (context, _, _) {
           final all = snapshot.data;
+          final ownerId = repository.spaces.value.where((s) => s.id == widget.spaceId).firstOrNull?.ownerId;
           final q = _search.text.trim().toLowerCase();
           final shown = [
             for (final m in all ?? const <Member>[])
@@ -3058,8 +3059,10 @@ class _MembersAdminPageState extends State<MembersAdminPage> {
                       child: UserAvatar(name: m.displayName, url: m.avatarUrl, size: 40),
                     ),
                     title: m.displayName,
+                    titleIcon: m.userId == ownerId ? const OwnerCrown() : null,
                     snippet: [
                       if (m.username.isNotEmpty) '@${m.username}',
+                      if (m.userId == ownerId) 'owner',
                       if (m.isBot) 'bot',
                       switch (repository.rolesOf(widget.spaceId, m.userId)) {
                         [] => 'No roles',
