@@ -138,7 +138,7 @@ class _Bubble extends StatelessWidget {
         if (m.stickerUrl != null)
           GestureDetector(
             onDoubleTap: onDoubleTap,
-            child: StickerView(url: m.stickerUrl!, name: stickerName),
+            child: StickerView(url: m.stickerUrl!, name: stickerName, zoomable: !lifted),
           ),
         if (text.isNotEmpty)
           if (isJumboEmoji(text))
