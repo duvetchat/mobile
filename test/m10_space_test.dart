@@ -13,7 +13,7 @@ import 'package:duvet/spaces.dart' show pickSpaceIcon;
 import 'package:duvet/theme.dart';
 import 'package:duvet/widgets/chrome.dart';
 import 'package:duvet/widgets/glass.dart' show GlassRow;
-import 'package:duvet/widgets/rows.dart' show DuvetChip, DuvetTextField, OwnerCrown;
+import 'package:duvet/widgets/rows.dart' show DuvetChip, DuvetSwitch, DuvetTextField, OwnerCrown;
 import 'package:duvet/widgets/picture_edit.dart' show takePhoto;
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
@@ -274,6 +274,74 @@ void main() {
     await tester.tap(find.text('Maya'));
     await tester.pumpAndSettle();
     await tester.tap(find.bySemanticsLabel('Moderator').last);
+    await tester.pumpAndSettle();
+    expect(repository.admin, isEmpty);
+    semantics.dispose();
+  });
+
+  // Maya's profile, from # general's members sheet.
+  Future<FakeRepository> pumpMayaProfile(WidgetTester tester, {void Function(FakeRepository r)? setUp}) async {
+    semantics = tester.ensureSemantics();
+    tester.view.physicalSize = const Size(390 * 3, 844 * 3);
+    tester.view.devicePixelRatio = 3;
+    addTearDown(tester.view.reset);
+    final repository = FakeRepository();
+    setUp?.call(repository);
+    await tester.pumpWidget(DuvetApp(repository: repository));
+    await tester.pumpAndSettle();
+    await tester.tap(find.descendant(of: find.byType(DuvetTabBar), matching: find.text('Spaces')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Design Guild'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('# general'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.bySemanticsLabel('More').hitTestable().last);
+    await tester.pumpAndSettle();
+    await tester.tap(find.bySemanticsLabel('Members').hitTestable().last);
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Maya').hitTestable().last);
+    await tester.pumpAndSettle();
+    return repository;
+  }
+
+  testWidgets('a member\'s profile gives and takes a role at once', (tester) async {
+    final repository = await pumpMayaProfile(tester);
+    expect(find.text('ROLES'), findsOneWidget);
+    await reveal(tester, find.byType(DuvetSwitch).last);
+    await tester.tap(find.byType(DuvetSwitch).last);
+    await tester.pumpAndSettle();
+    expect(repository.admin, ['give role-mod Maya']);
+    expect(tester.widget<DuvetSwitch>(find.byType(DuvetSwitch).last).value, isTrue, reason: 'it shows live');
+    await tester.tap(find.byType(DuvetSwitch).last);
+    await tester.pumpAndSettle();
+    expect(repository.admin, ['give role-mod Maya', 'take role-mod Maya']);
+    semantics.dispose();
+  });
+
+  testWidgets('without Manage roles, a member\'s profile has no Roles to change', (tester) async {
+    await pumpMayaProfile(
+      tester,
+      setUp: (r) => r
+        ..spaceOwner = false
+        ..spacePerms = Perm.all & ~Perm.manageRoles & ~Perm.administrator,
+    );
+    expect(find.text('ROLES'), findsNothing);
+    expect(find.byType(DuvetSwitch), findsNothing);
+    semantics.dispose();
+  });
+
+  testWidgets('on a member\'s profile, a role above the user\'s highest shows but doesn\'t change', (tester) async {
+    final repository = await pumpMayaProfile(
+      tester,
+      setUp: (r) => r
+        ..spaceOwner = false
+        ..spacePerms = Perm.manageRoles,
+    );
+    expect(find.text('ROLES'), findsOneWidget);
+    final moderator = find.byType(DuvetSwitch).last;
+    expect(tester.widget<DuvetSwitch>(moderator).onChanged, isNull, reason: 'the user has no role above it');
+    await reveal(tester, moderator);
+    await tester.tap(moderator);
     await tester.pumpAndSettle();
     expect(repository.admin, isEmpty);
     semantics.dispose();

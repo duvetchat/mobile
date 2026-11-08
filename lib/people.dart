@@ -6,7 +6,7 @@ import 'chat_view.dart';
 import 'data/models.dart';
 import 'data/scope.dart';
 import 'members_sheet.dart' show MemberAction, PresenceAvatar;
-import 'space_admin.dart' show confirmDestructive;
+import 'space_admin.dart' show MemberRoleSwitches, confirmDestructive, managesRoleAt;
 import 'theme.dart';
 import 'widgets/avatar.dart';
 import 'widgets/chrome.dart';
@@ -172,13 +172,21 @@ class _ProfileState extends State<_Profile> {
             bannerUrl: widget.member.bannerUrl ?? known.bannerUrl,
           );
     final me = repository.profile.value?.id == m.userId;
-    final roles = widget.spaceId == null ? const <RoleTag>[] : repository.rolesOf(widget.spaceId!, m.userId);
     final spaceName = repository.spaces.value.where((s) => s.id == widget.spaceId).firstOrNull?.name;
     final removable =
         m.isBot && widget.spaceId != null && (repository.spaceProfile(widget.spaceId!)?.can(Perm.manageBots) ?? false);
     return ListenableBuilder(
-      listenable: Listenable.merge([repository.presence, repository.mobileOnly, repository.friends]),
+      // spaces: a role given or taken here shows at once.
+      listenable: Listenable.merge([repository.presence, repository.mobileOnly, repository.friends, repository.spaces]),
       builder: (context, _) {
+        final spaceId = widget.spaceId;
+        final roles = spaceId == null ? const <RoleTag>[] : repository.rolesOf(spaceId, m.userId);
+        // As MemberAdminPage; on their own profile only if a role is theirs to change.
+        final assignsRoles =
+            spaceId != null &&
+            (repository.spaceProfile(spaceId)?.can(Perm.manageRoles) ?? false) &&
+            (!me ||
+                repository.roles(spaceId).any((r) => !r.everyone && managesRoleAt(repository, spaceId, r.position)));
         final presence = presenceIn(repository.presence.value, m.userId, spaceId: widget.spaceId);
         final f = repository.friends.value;
         final isFriend = f.friends.any((x) => x.userId == m.userId);
@@ -367,6 +375,7 @@ class _ProfileState extends State<_Profile> {
                         ],
                       ),
                     ),
+                    if (assignsRoles) ...[const Overline('Roles'), MemberRoleSwitches(spaceId: spaceId, member: m)],
                     if (removable) ...[
                       const SizedBox(height: 16),
                       DuvetButton(

@@ -3091,6 +3091,58 @@ class _MembersAdminPageState extends State<MembersAdminPage> {
   }
 }
 
+/// A member's roles as switches; those the user manages change at once.
+/// The caller rebuilds it when repository.spaces changes.
+class MemberRoleSwitches extends StatelessWidget {
+  final String spaceId;
+  final Member member;
+  const MemberRoleSwitches({required this.spaceId, required this.member, super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    final repository = context.repository;
+    final m = member;
+    final has = {for (final r in repository.rolesOf(spaceId, m.userId)) r.id};
+    final roles = repository.roles(spaceId).where((r) => !r.everyone).toList();
+    return AdminPanel(
+      children: [
+        if (roles.isEmpty) const ListNote('This Space has no roles yet'),
+        for (final r in roles)
+          Builder(
+            builder: (context) {
+              final on = has.contains(r.id);
+              final change = managesRoleAt(repository, spaceId, r.position)
+                  ? (bool on) => adminTry(
+                      context,
+                      'Couldn’t change ${m.displayName}’s roles',
+                      () => repository.setRole(spaceId, r.id, m.userId, has: on),
+                    )
+                  : null;
+              // The whole row toggles, for a target past 44pt.
+              return GestureDetector(
+                behavior: HitTestBehavior.opaque,
+                excludeFromSemantics: true,
+                onTap: change == null ? null : () => change(!on),
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                  child: Row(
+                    children: [
+                      Expanded(
+                        child: RoleName(r.name, colors: r.colors, style: DuvetType.rowTitle),
+                      ),
+                      const SizedBox(width: 12),
+                      DuvetSwitch(label: r.name, value: on, onChanged: change),
+                    ],
+                  ),
+                ),
+              );
+            },
+          ),
+      ],
+    );
+  }
+}
+
 /// One member, in Space settings: their ID, their roles (those the user
 /// manages can be given and taken) and, for a bot, Remove from Space.
 class MemberAdminPage extends StatelessWidget {
@@ -3108,8 +3160,6 @@ class MemberAdminPage extends StatelessWidget {
       builder: (context, spaces, _) {
         final profile = repository.spaceProfile(spaceId);
         final spaceName = spaces.where((s) => s.id == spaceId).firstOrNull?.name ?? 'this Space';
-        final has = {for (final r in repository.rolesOf(spaceId, m.userId)) r.id};
-        final roles = repository.roles(spaceId).where((r) => !r.everyone).toList();
         return AdminPage(
           title: m.displayName,
           backLabel: 'Back to Members',
@@ -3149,34 +3199,7 @@ class MemberAdminPage extends StatelessWidget {
               ],
             ),
             const Overline('Roles'),
-            AdminPanel(
-              children: [
-                if (roles.isEmpty) const ListNote('This Space has no roles yet'),
-                for (final r in roles)
-                  Padding(
-                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-                    child: Row(
-                      children: [
-                        Expanded(
-                          child: RoleName(r.name, colors: r.colors, style: DuvetType.rowTitle),
-                        ),
-                        const SizedBox(width: 12),
-                        DuvetSwitch(
-                          label: r.name,
-                          value: has.contains(r.id),
-                          onChanged: managesRoleAt(repository, spaceId, r.position)
-                              ? (on) => adminTry(
-                                  context,
-                                  'Couldn’t change ${m.displayName}’s roles',
-                                  () => repository.setRole(spaceId, r.id, m.userId, has: on),
-                                )
-                              : null,
-                        ),
-                      ],
-                    ),
-                  ),
-              ],
-            ),
+            MemberRoleSwitches(spaceId: spaceId, member: m),
             if (m.isBot && (profile?.can(Perm.manageBots) ?? false)) ...[
               const SizedBox(height: 32),
               DuvetButton(
