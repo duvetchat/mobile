@@ -737,6 +737,7 @@ Future<void> showSecretOnce(
   required String body,
   required String secret,
   required String copyLabel,
+  ({String label, String secret, String note})? also,
 }) => showGlassDialogSheet<void>(
   context,
   label: title,
@@ -768,6 +769,19 @@ Future<void> showSecretOnce(
             Navigator.of(context).pop();
           },
         ),
+        if (also != null) ...[
+          const SizedBox(height: 12),
+          DuvetButton(
+            label: also.label,
+            expand: true,
+            onPressed: () {
+              Clipboard.setData(ClipboardData(text: also.secret));
+              Navigator.of(context).pop();
+            },
+          ),
+          const SizedBox(height: 8),
+          Text(also.note, style: DuvetType.caption.copyWith(color: context.theme.colors.mutedForeground)),
+        ],
       ],
     ),
   ),
@@ -3472,6 +3486,11 @@ class _WebhooksPageState extends State<WebhooksPage> {
     body: 'Copy it now: it won’t be shown again. Anyone with it can post as $name.',
     secret: url,
     copyLabel: 'Copy URL',
+    also: (
+      label: 'Copy GitHub URL',
+      secret: '$url/github',
+      note: 'Paste it as a GitHub repository’s webhook: its pushes, issues and pull requests post here.',
+    ),
   );
 
   Future<void> _new() async {
