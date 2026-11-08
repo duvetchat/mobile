@@ -3424,14 +3424,91 @@ class DuvetRepository implements ChatRepository {
     ).wait;
     return SpaceStorage(
       used: used,
-      buckets: [for (final b in buckets) (name: b.name, used: b.usedBytes, max: b.maxBytes, active: b.isActive)],
+      buckets: [
+        for (final b in buckets)
+          Bucket(
+            id: b.id,
+            name: b.name,
+            region: b.region,
+            endpoint: b.endpoint,
+            bucketName: b.bucketName,
+            accessKey: b.accessKeyId,
+            pathStyle: b.usePathStyle,
+            active: b.isActive,
+            used: b.usedBytes,
+            max: b.maxBytes,
+            uploadLimit: b.uploadLimitBytes,
+          ),
+      ],
       files: [
         for (final f in files)
           if (f.deletedAt == null && f.deleted != true)
-            (name: f.filename, contentType: f.contentType, size: f.sizeBytes, createdAt: f.createdAt.toLocal()),
-      ]..sort((a, b) => b.size.compareTo(a.size)),
+            MyFile(
+              id: f.id,
+              name: f.filename,
+              contentType: f.contentType,
+              sizeBytes: f.sizeBytes,
+              createdAt: f.createdAt.toLocal(),
+              url: attachmentUrl(f.id),
+              inMessage: f.messageId != null,
+            ),
+      ]..sort((a, b) => b.sizeBytes.compareTo(a.sizeBytes)),
     );
   }
+
+  static duvet.BucketPayload _bucketPayload(BucketDraft d) => duvet.BucketPayload(
+    name: d.name,
+    endpoint: d.endpoint,
+    region: d.region.isEmpty ? 'auto' : d.region,
+    bucketName: d.bucketName,
+    accessKeyId: d.accessKey,
+    secretAccessKey: d.secret,
+    usePathStyle: d.pathStyle,
+    maxBytes: d.max,
+    uploadLimitBytes: d.uploadLimit,
+  );
+
+  @override
+  Future<void> createSpaceBucket(String spaceId, BucketDraft draft) =>
+      _explained((api) => api.createSpaceBucket(spaceId, _bucketPayload(draft)));
+
+  @override
+  Future<void> updateSpaceBucket(String spaceId, String bucketId, BucketDraft draft) =>
+      _explained((api) => api.updateSpaceBucket(spaceId, bucketId, _bucketPayload(draft)));
+
+  @override
+  Future<void> deleteSpaceBucket(String spaceId, String bucketId) => _explained((api) async {
+    try {
+      await api.deleteSpaceBucket(spaceId, bucketId);
+    } on duvet.DuvetApiException catch (e) {
+      // Its files would break: the API answers 409 {error, files} and keeps it.
+      if (_filesIn(e) case final n? when e.statusCode == 409) {
+        throw ActionFailed('This bucket still holds $n ${n == 1 ? 'file' : 'files'}. Delete them first.');
+      }
+      rethrow;
+    }
+  });
+
+  static int? _filesIn(duvet.DuvetApiException e) {
+    try {
+      final body = jsonDecode(e.body ?? '') as Map<String, dynamic>;
+      return body['error'] == 'bucket has files' && body['files'] is int ? body['files'] as int : null;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  @override
+  Future<void> setSpaceBucketActive(String spaceId, String bucketId, bool active) => _explained(
+    (api) => active ? api.activateSpaceBucket(spaceId, bucketId) : api.deactivateSpaceBucket(spaceId, bucketId),
+  );
+
+  @override
+  Future<void> deleteSpaceFile(String spaceId, String fileId) =>
+      _explained((api) => api.deleteSpaceAttachment(spaceId, fileId));
+
+  @override
+  Future<void> deleteAllSpaceFiles(String spaceId) => _explained((api) => api.deleteAllSpaceAttachments(spaceId));
 
   @override
   Future<List<BotCommand>> commands(String spaceId) async {

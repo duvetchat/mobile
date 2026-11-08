@@ -5,6 +5,8 @@ library;
 import 'dart:math' as math;
 import 'dart:ui' show Color;
 
+import 'models.dart' show BucketUsage, MyFile;
+
 /// The permission bits, as the API's Go constants (`1 << iota`).
 abstract final class Perm {
   static const administrator = 1 << 0;
@@ -311,10 +313,57 @@ class DevApp {
 /// Where a Space's files are, and how much they take.
 class SpaceStorage {
   final int used;
-  final List<({String name, int used, int? max, bool active})> buckets;
-  final List<({String name, String contentType, int size, DateTime createdAt})> files;
+  final List<Bucket> buckets;
+
+  /// Largest first.
+  final List<MyFile> files;
   const SpaceStorage({required this.used, this.buckets = const [], this.files = const []});
 }
+
+/// An S3-compatible bucket and its settings, all but the secret, which the
+/// API never gives back.
+class Bucket {
+  final String id;
+  final String name;
+  final String region;
+  final String endpoint;
+  final String bucketName;
+  final String accessKey;
+  final bool pathStyle;
+  final bool active;
+  final int used;
+  final int? max;
+  final int? uploadLimit;
+  const Bucket({
+    required this.id,
+    required this.name,
+    this.region = '',
+    this.endpoint = '',
+    this.bucketName = '',
+    this.accessKey = '',
+    this.pathStyle = false,
+    this.active = false,
+    this.used = 0,
+    this.max,
+    this.uploadLimit,
+  });
+
+  BucketUsage get usage => (name: name, used: used, max: max, active: active);
+}
+
+/// A bucket's settings as its form saves them. An empty [secret] keeps the
+/// stored one on an edit; null limits are none.
+typedef BucketDraft = ({
+  String name,
+  String region,
+  String endpoint,
+  String bucketName,
+  String accessKey,
+  String secret,
+  bool pathStyle,
+  int? max,
+  int? uploadLimit,
+});
 
 // -----------------------------------------------------------------------------
 // Role colors

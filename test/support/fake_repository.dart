@@ -902,6 +902,126 @@ class FakeRepository implements ChatRepository {
   @override
   Future<SpaceStorage> spaceStorage(String spaceId) async => storageOfSpace;
 
+  String _limits(BucketDraft d) =>
+      'region=${d.region} path=${d.pathStyle} max=${d.max} limit=${d.uploadLimit} secret=${d.secret}';
+
+  @override
+  Future<void> createSpaceBucket(String spaceId, BucketDraft draft) async {
+    admin.add('bucket+ ${draft.name} ${_limits(draft)}');
+    _refuse('createSpaceBucket');
+    final s = storageOfSpace;
+    storageOfSpace = SpaceStorage(
+      used: s.used,
+      files: s.files,
+      buckets: [
+        ...s.buckets,
+        Bucket(
+          id: 'b-${draft.name}',
+          name: draft.name,
+          region: draft.region,
+          endpoint: draft.endpoint,
+          bucketName: draft.bucketName,
+          accessKey: draft.accessKey,
+          pathStyle: draft.pathStyle,
+          max: draft.max,
+          uploadLimit: draft.uploadLimit,
+        ),
+      ],
+    );
+  }
+
+  @override
+  Future<void> updateSpaceBucket(String spaceId, String bucketId, BucketDraft draft) async {
+    admin.add('bucket* $bucketId ${draft.name} ${_limits(draft)}');
+    _refuse('updateSpaceBucket');
+    final s = storageOfSpace;
+    storageOfSpace = SpaceStorage(
+      used: s.used,
+      files: s.files,
+      buckets: [
+        for (final b in s.buckets)
+          b.id != bucketId
+              ? b
+              : Bucket(
+                  id: b.id,
+                  name: draft.name,
+                  region: draft.region,
+                  endpoint: draft.endpoint,
+                  bucketName: draft.bucketName,
+                  accessKey: draft.accessKey,
+                  pathStyle: draft.pathStyle,
+                  active: b.active,
+                  used: b.used,
+                  max: draft.max,
+                  uploadLimit: draft.uploadLimit,
+                ),
+      ],
+    );
+  }
+
+  @override
+  Future<void> deleteSpaceBucket(String spaceId, String bucketId) async {
+    admin.add('bucket- $bucketId');
+    _refuse('deleteSpaceBucket');
+    final s = storageOfSpace;
+    storageOfSpace = SpaceStorage(
+      used: s.used,
+      files: s.files,
+      buckets: s.buckets.where((b) => b.id != bucketId).toList(),
+    );
+  }
+
+  @override
+  Future<void> setSpaceBucketActive(String spaceId, String bucketId, bool active) async {
+    admin.add('bucket ${active ? 'on' : 'off'} $bucketId');
+    _refuse('setSpaceBucketActive');
+    final s = storageOfSpace;
+    // One active at most, as the API keeps it.
+    storageOfSpace = SpaceStorage(
+      used: s.used,
+      files: s.files,
+      buckets: [
+        for (final b in s.buckets)
+          Bucket(
+            id: b.id,
+            name: b.name,
+            region: b.region,
+            endpoint: b.endpoint,
+            bucketName: b.bucketName,
+            accessKey: b.accessKey,
+            pathStyle: b.pathStyle,
+            active: b.id == bucketId
+                ? active
+                : active
+                ? false
+                : b.active,
+            used: b.used,
+            max: b.max,
+            uploadLimit: b.uploadLimit,
+          ),
+      ],
+    );
+  }
+
+  @override
+  Future<void> deleteSpaceFile(String spaceId, String fileId) async {
+    admin.add('file- $fileId');
+    _refuse('deleteSpaceFile');
+    final s = storageOfSpace;
+    storageOfSpace = SpaceStorage(
+      used: s.used,
+      buckets: s.buckets,
+      files: s.files.where((f) => f.id != fileId).toList(),
+    );
+  }
+
+  @override
+  Future<void> deleteAllSpaceFiles(String spaceId) async {
+    admin.add('files-');
+    _refuse('deleteAllSpaceFiles');
+    storageOfSpace = SpaceStorage(used: 0, buckets: storageOfSpace.buckets);
+  }
+
   // The developer portal: teams, their members and apps, by team ID, and the
   // bots' profiles by user ID. Changes go in [admin].
   @override

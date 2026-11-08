@@ -13,7 +13,7 @@ import 'package:image/image.dart' as img;
 import 'package:image_picker/image_picker.dart';
 import 'package:path_provider/path_provider.dart';
 
-import 'account.dart' show CropPage, formatBytes;
+import 'account.dart' show BucketMeter, CropPage, FileRow, confirmFileDelete, formatBytes;
 import 'data/models.dart';
 import 'data/repository.dart' show ChatRepository;
 import 'data/scope.dart';
@@ -3631,7 +3631,9 @@ class _WebhooksPageState extends State<WebhooksPage> {
 // Storage
 // -----------------------------------------------------------------------------
 
-/// What the Space's files take, where they're kept, and the largest.
+/// What the Space's files take and where they're kept: its buckets to add,
+/// change and delete (ManageSpaceBuckets), and its files to delete
+/// (ManageSpaceAttachments).
 class SpaceStoragePage extends StatefulWidget {
   final String spaceId;
   const SpaceStoragePage({required this.spaceId, super.key});
@@ -3641,12 +3643,101 @@ class SpaceStoragePage extends StatefulWidget {
 }
 
 class _SpaceStoragePageState extends State<SpaceStoragePage> {
-  late final Future<SpaceStorage> _storage = context.repository.spaceStorage(widget.spaceId);
+  late Future<SpaceStorage> _storage = context.repository.spaceStorage(widget.spaceId);
+
+  void _reload() => setState(() {
+    _storage = context.repository.spaceStorage(widget.spaceId);
+  });
+
+  Future<void> _editBucket(Bucket? b) async {
+    final repository = context.repository;
+    final id = widget.spaceId;
+    final saved = await Navigator.of(context).push<bool>(
+      MaterialPageRoute(
+        builder: (_) => BucketFormPage(
+          bucket: b,
+          onSave: (draft) =>
+              b == null ? repository.createSpaceBucket(id, draft) : repository.updateSpaceBucket(id, b.id, draft),
+        ),
+      ),
+    );
+    if (saved == true && mounted) _reload();
+  }
+
+  Future<void> _bucketOptions(BuildContext anchor, Bucket b) async {
+    final picked = await showGlassMenu<String>(
+      anchor,
+      label: b.name,
+      items: [
+        const GlassMenuItem(icon: FLucideIcons.pencil, label: 'Edit', value: 'edit'),
+        b.active
+            ? const GlassMenuItem(
+                icon: FLucideIcons.pause,
+                label: 'Deactivate',
+                value: 'off',
+                hint: 'Uploads go back to Duvet’s storage',
+              )
+            : const GlassMenuItem(
+                icon: FLucideIcons.play,
+                label: 'Activate',
+                value: 'on',
+                hint: 'The Space’s uploads go to it',
+              ),
+        const GlassMenuItem(icon: FLucideIcons.trash2, label: 'Delete', value: 'delete', destructive: true),
+      ],
+    );
+    if (picked == null || !mounted) return;
+    if (picked == 'edit') return _editBucket(b);
+    final repository = context.repository;
+    if (picked == 'delete') {
+      final sure = await confirmDestructive(
+        context,
+        title: 'Delete ${b.name}?',
+        body: 'Duvet forgets its keys. The bucket and what’s in it stay with its owner.',
+        action: 'Delete bucket',
+      );
+      if (!sure || !mounted) return;
+      // Refused while it holds files: the repository says how many.
+      await adminTry(context, 'Couldn’t delete the bucket', () => repository.deleteSpaceBucket(widget.spaceId, b.id));
+    } else {
+      await adminTry(
+        context,
+        'Couldn’t change the bucket',
+        () => repository.setSpaceBucketActive(widget.spaceId, b.id, picked == 'on'),
+      );
+    }
+    if (mounted) _reload();
+  }
+
+  Future<void> _deleteFile(MyFile f) async {
+    final sure = await confirmFileDelete(context, 'Delete ${f.name}?', body: 'This can’t be undone.');
+    if (!sure || !mounted) return;
+    await adminTry(context, 'Couldn’t delete the file', () => context.repository.deleteSpaceFile(widget.spaceId, f.id));
+    if (mounted) _reload();
+  }
+
+  Future<void> _deleteAll(int n) async {
+    // The API deletes every file, those posted in messages too: the confirm says so.
+    final sure = await confirmFileDelete(
+      context,
+      'Delete all files?',
+      body:
+          'Delete all $n ${n == 1 ? 'file' : 'files'} in this Space, including ones posted in messages? '
+          'This can’t be undone.',
+      action: 'Delete all files',
+    );
+    if (!sure || !mounted) return;
+    await adminTry(context, 'Couldn’t delete the files', () => context.repository.deleteAllSpaceFiles(widget.spaceId));
+    if (mounted) _reload();
+  }
 
   @override
   Widget build(BuildContext context) {
     final colors = context.theme.colors;
     final tokens = context.duvet;
+    final profile = context.repository.spaceProfile(widget.spaceId);
+    final manageBuckets = profile?.can(Perm.manageBuckets) ?? false;
+    final manageFiles = profile?.can(Perm.manageAttachments) ?? false;
     return FutureBuilder(
       future: _storage,
       builder: (context, snapshot) {
@@ -3684,33 +3775,289 @@ class _SpaceStoragePageState extends State<SpaceStoragePage> {
                   ),
                 ),
               ),
-              if (s.buckets.isNotEmpty) ...[
-                const Overline('Kept in'),
-                AdminPanel(
-                  children: [
-                    for (final b in s.buckets)
-                      ListRow(
-                        title: b.name,
-                        snippet: [
-                          b.max == null
-                              ? '${formatBytes(b.used)} used'
-                              : '${formatBytes(b.used)} of ${formatBytes(b.max!)}',
-                          if (!b.active) 'off',
-                        ].join(' · '),
+              if (manageBuckets) ...[
+                const Overline('Buckets'),
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(4, 0, 4, 12),
+                  child: Text(
+                    'Connect an S3-compatible bucket. While one is active, the Space’s uploads go to it.',
+                    style: DuvetType.caption.copyWith(color: colors.mutedForeground),
+                  ),
+                ),
+                for (final b in s.buckets)
+                  Padding(
+                    padding: const EdgeInsets.only(bottom: 12),
+                    // The menu opens under the meter it's for.
+                    child: Builder(
+                      builder: (anchor) => Semantics(
+                        container: true,
+                        button: true,
+                        label: 'Options for ${b.name}',
+                        onTap: () => _bucketOptions(anchor, b),
+                        child: GestureDetector(
+                          onTap: () => _bucketOptions(anchor, b),
+                          child: BucketMeter(bucket: b.usage, title: b.active ? 'Active' : 'Off'),
+                        ),
                       ),
-                  ],
+                    ),
+                  ),
+                Align(
+                  alignment: Alignment.centerLeft,
+                  child: DuvetButton(
+                    label: 'Add a bucket',
+                    icon: FLucideIcons.plus,
+                    onPressed: () => _editBucket(null),
+                  ),
                 ),
               ],
-              const Overline('Largest files'),
+              // Largest first: those worth deleting.
+              const Overline('Files'),
               if (s.files.isEmpty)
                 const ListNote('No files yet')
-              else
-                for (final f in s.files.take(20))
-                  ListRow(title: f.name, snippet: '${formatBytes(f.size)} · ${shortTime(f.createdAt)}'),
+              else ...[
+                for (final f in s.files)
+                  FileRow(
+                    file: f,
+                    // The API deletes a file in a message only with all of them.
+                    note: f.inMessage ? 'In a message' : null,
+                    onDelete: manageFiles && !f.inMessage ? () => _deleteFile(f) : null,
+                  ),
+                if (manageFiles) ...[
+                  const SizedBox(height: 24),
+                  DuvetButton(
+                    label: 'Delete all files',
+                    variant: ButtonVariant.destructive,
+                    expand: true,
+                    onPressed: () => _deleteAll(s.files.length),
+                  ),
+                ],
+              ],
             ],
           ],
         );
       },
+    );
+  }
+}
+
+/// A bucket's settings, to add one or change it. [onSave] does the saving, so
+/// the user's own buckets can use the form too.
+class BucketFormPage extends StatefulWidget {
+  /// The one to change, or null to add one.
+  final Bucket? bucket;
+  final Future<void> Function(BucketDraft draft) onSave;
+  const BucketFormPage({required this.onSave, this.bucket, super.key});
+
+  @override
+  State<BucketFormPage> createState() => _BucketFormPageState();
+}
+
+class _BucketFormPageState extends State<BucketFormPage> {
+  // Every field but the secret starts as the bucket has it: the API takes
+  // them all on an edit, and a blank limit would remove it.
+  late final Bucket? _b = widget.bucket;
+  late final _name = TextEditingController(text: _b?.name);
+  late final _region = TextEditingController(text: _b?.region);
+  late final _endpoint = TextEditingController(text: _b?.endpoint);
+  late final _bucketName = TextEditingController(text: _b?.bucketName);
+  late final _accessKey = TextEditingController(text: _b?.accessKey);
+  final _secret = TextEditingController();
+  late final _max = TextEditingController(text: _mb(_b?.max));
+  late final _uploadLimit = TextEditingController(text: _mb(_b?.uploadLimit));
+  late bool _pathStyle = _b?.pathStyle ?? false;
+  late final List<TextEditingController> _fields = [
+    _name,
+    _region,
+    _endpoint,
+    _bucketName,
+    _accessKey,
+    _secret,
+    _max,
+    _uploadLimit,
+  ];
+  late final Map<TextEditingController, String> _initial = {for (final c in _fields) c: c.text};
+  bool _saving = false;
+
+  static const _mib = 1024 * 1024;
+
+  /// Whole MB when it is, so an unchanged limit saves the same bytes.
+  static String _mb(int? bytes) => bytes == null ? '' : (bytes % _mib == 0 ? '${bytes ~/ _mib}' : '${bytes / _mib}');
+
+  /// What a limit field means: none when empty, else its bytes; not [ok]
+  /// when it isn't a number above 0.
+  static ({bool ok, int? bytes}) _limit(String text, int? was) {
+    final t = text.trim();
+    if (t.isEmpty) return (ok: true, bytes: null);
+    if (t == _mb(was)) return (ok: true, bytes: was);
+    final mb = double.tryParse(t);
+    return mb == null || mb <= 0 ? (ok: false, bytes: null) : (ok: true, bytes: (mb * _mib).round());
+  }
+
+  @override
+  void initState() {
+    super.initState();
+    // Reading [_initial] here keeps the texts the page opened with.
+    for (final c in _initial.keys) {
+      c.addListener(_changed);
+    }
+  }
+
+  void _changed() => setState(() {});
+
+  @override
+  void dispose() {
+    for (final c in _fields) {
+      c.dispose();
+    }
+    super.dispose();
+  }
+
+  Future<void> _save(BucketDraft draft) async {
+    if (_b == null) {
+      final sure = await confirmDestructive(
+        context,
+        title: 'Add this bucket?',
+        body:
+            'Only use keys you own and control. Whoever owns the bucket can read, change or delete every file '
+            'kept in it, and cut off access at any time.',
+        action: 'Yes, add bucket',
+        destructive: false,
+      );
+      if (!sure || !mounted) return;
+    }
+    final navigator = Navigator.of(context);
+    setState(() => _saving = true);
+    final ok = await adminTry(context, 'Couldn’t save the bucket', () => widget.onSave(draft));
+    if (!mounted) return;
+    setState(() => _saving = false);
+    if (ok) navigator.pop(true);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = context.theme.colors;
+    final max = _limit(_max.text, _b?.max);
+    final uploadLimit = _limit(_uploadLimit.text, _b?.uploadLimit);
+    final draft = (
+      name: _name.text.trim(),
+      region: _region.text.trim(),
+      endpoint: _endpoint.text.trim(),
+      bucketName: _bucketName.text.trim(),
+      accessKey: _accessKey.text.trim(),
+      secret: _secret.text,
+      pathStyle: _pathStyle,
+      max: max.bytes,
+      uploadLimit: uploadLimit.bytes,
+    );
+    final dirty = _pathStyle != (_b?.pathStyle ?? false) || _initial.entries.any((e) => e.key.text != e.value);
+    final complete =
+        draft.name.isNotEmpty &&
+        draft.endpoint.isNotEmpty &&
+        draft.bucketName.isNotEmpty &&
+        draft.accessKey.isNotEmpty &&
+        // A new bucket needs its secret; an edit keeps the stored one when it's empty.
+        (_b != null || draft.secret.trim().isNotEmpty) &&
+        max.ok &&
+        uploadLimit.ok;
+    const gap = SizedBox(height: 16);
+    return UnsavedChanges(
+      dirty: dirty,
+      child: AdminPage(
+        title: _b == null ? 'Add a bucket' : 'Edit bucket',
+        actions: [TextAction(label: 'Save', onPressed: _saving || !dirty || !complete ? null : () => _save(draft))],
+        children: [
+          const Overline('Bucket'),
+          DuvetTextField(label: 'Name', controller: _name, hint: 'My R2', textInputAction: TextInputAction.next),
+          gap,
+          DuvetTextField(label: 'Region', controller: _region, hint: 'auto', textInputAction: TextInputAction.next),
+          gap,
+          DuvetTextField(
+            label: 'Endpoint',
+            controller: _endpoint,
+            hint: 'https://account-id.r2.cloudflarestorage.com',
+            keyboardType: TextInputType.url,
+            textInputAction: TextInputAction.next,
+          ),
+          gap,
+          DuvetTextField(
+            label: 'Bucket name',
+            controller: _bucketName,
+            hint: 'my-bucket',
+            textInputAction: TextInputAction.next,
+          ),
+          const Overline('Keys'),
+          DuvetTextField(label: 'Access key ID', controller: _accessKey, textInputAction: TextInputAction.next),
+          gap,
+          DuvetTextField(
+            label: 'Secret access key',
+            controller: _secret,
+            obscure: true,
+            helper: _b == null ? null : 'Leave it empty to keep the current one',
+          ),
+          gap,
+          AdminPanel(
+            children: [
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                child: Row(
+                  children: [
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text('Path-style addressing', style: DuvetType.rowTitle.copyWith(color: colors.foreground)),
+                          Text(
+                            'Needed for MinIO, RustFS and the like',
+                            style: DuvetType.caption.copyWith(color: colors.mutedForeground),
+                          ),
+                        ],
+                      ),
+                    ),
+                    const SizedBox(width: 12),
+                    DuvetSwitch(
+                      label: 'Path-style addressing',
+                      value: _pathStyle,
+                      onChanged: (on) => setState(() => _pathStyle = on),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+          const Overline('Limits'),
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Expanded(
+                child: DuvetTextField(
+                  label: 'Total (MB)',
+                  controller: _max,
+                  hint: 'No limit',
+                  keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                  error: max.ok ? null : 'A number above 0',
+                ),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: DuvetTextField(
+                  label: 'Per file (MB)',
+                  controller: _uploadLimit,
+                  hint: 'No limit',
+                  keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                  error: uploadLimit.ok ? null : 'A number above 0',
+                ),
+              ),
+            ],
+          ),
+          Padding(
+            padding: const EdgeInsets.fromLTRB(4, 8, 4, 0),
+            child: Text(
+              'Leave them empty for no limit. With a total limit, the oldest files make room when it’s full.',
+              style: DuvetType.caption.copyWith(color: colors.mutedForeground),
+            ),
+          ),
+        ],
+      ),
     );
   }
 }
