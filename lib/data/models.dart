@@ -874,6 +874,36 @@ final class ReactionChanged extends MessageEvent {
   });
 }
 
+/// A notice at the top of the app that someone mentioned the user in a chat
+/// that isn't on screen: who, where, and what they wrote. Tapping it opens
+/// the message.
+class MentionNotice {
+  final String messageId;
+  final ChatTarget target;
+
+  /// The chat's title, as its screen has it: `# general`, a person's name.
+  final String title;
+  final String authorName;
+  final String? authorAvatarUrl;
+
+  /// Where, after the author: "in #general · Design Guild", "in Weekend" (a
+  /// group), "in a direct message".
+  final String where;
+
+  /// The message on one line, as a chat's preview has it.
+  final String text;
+
+  const MentionNotice({
+    required this.messageId,
+    required this.target,
+    required this.title,
+    required this.authorName,
+    required this.where,
+    required this.text,
+    this.authorAvatarUrl,
+  });
+}
+
 /// Someone started typing in a chat, or recording a voice message: either
 /// replaces the other.
 class TypingUser {

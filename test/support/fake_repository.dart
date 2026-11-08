@@ -69,6 +69,30 @@ class FakeRepository implements ChatRepository {
   final ValueNotifier<Map<String, List<TypingUser>>> typingNow = ValueNotifier(const {});
   @override
   final ValueNotifier<Map<String, int>> mentions = ValueNotifier(const {});
+
+  @override
+  final ValueNotifier<List<MentionNotice>> mentionNotices = ValueNotifier(const []);
+
+  @override
+  void dismissMentionNotice(String messageId) =>
+      mentionNotices.value = [...mentionNotices.value.where((n) => n.messageId != messageId)];
+
+  /// The chat on screen, as its screen says it.
+  ({String chatId, String? threadOf})? onScreen;
+
+  @override
+  void chatShown(ChatTarget target, {String? threadOf, bool opened = true}) {
+    onScreen = (chatId: target.id, threadOf: threadOf);
+    if (opened && threadOf == null) {
+      mentionNotices.value = [...mentionNotices.value.where((n) => n.target != target)];
+    }
+  }
+
+  @override
+  void chatHidden(ChatTarget target, {String? threadOf}) {
+    if (onScreen == (chatId: target.id, threadOf: threadOf)) onScreen = null;
+  }
+
   @override
   final drafts = <String, ChatDraft>{};
   final lastRead = <String, String>{};

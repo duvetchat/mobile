@@ -412,6 +412,26 @@ abstract interface class ChatRepository {
   /// Unread mentions of the user, by chat ID.
   ValueListenable<Map<String, int>> get mentions;
 
+  /// The notices of mentions of the user in chats that aren't on screen, the
+  /// newest first, a few at most, each for a few seconds. None in do not
+  /// disturb; a message deleted takes its notice away, and opening its chat
+  /// ([chatShown]) does too.
+  ValueListenable<List<MentionNotice>> get mentionNotices;
+
+  /// Takes a message's notice away: it was opened, or swiped off.
+  void dismissMentionNotice(String messageId);
+
+  /// The chat on screen ([threadOf]: a thread of it, showing the replies to
+  /// that message), whose mentions show no notice: a chat's screen says so
+  /// while it's on top with the app in front, then [chatHidden]. A chat
+  /// [opened] (not a thread, nor only back from the background) takes its
+  /// notices away.
+  void chatShown(ChatTarget target, {String? threadOf, bool opened = true});
+
+  /// The chat stopped being on screen; nothing changes when another is on
+  /// screen by now.
+  void chatHidden(ChatTarget target, {String? threadOf});
+
   /// The last message the user read in a room, as the server knows it; null
   /// when it doesn't (and in conversations).
   String? lastReadOf(ChatTarget target);
