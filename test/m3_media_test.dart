@@ -900,12 +900,29 @@ void main() {
     repository.holdSends!.complete();
     await tester.pumpAndSettle();
 
+    // Every byte up: the API may post it whatever the app does, so no Cancel
+    // until it answers (#180).
+    repository
+      ..cancelled = false
+      ..holdSends = Completer();
+    await tapLabel(tester, 'Send');
+    repository.lastUpload!(0.99);
+    await tester.pump();
+    expect(find.bySemanticsLabel('Cancel upload'), findsOneWidget);
+    repository.lastUpload!(1);
+    await tester.pump();
+    expect(find.text('Uploading 2 of 2 · 100%'), findsOneWidget);
+    expect(find.bySemanticsLabel('Cancel upload'), findsNothing);
+    repository.holdSends!.complete();
+    await tester.pumpAndSettle();
+    expect(find.textContaining('Uploading'), findsNothing);
+    expect(find.bySemanticsLabel('Retry'), findsNothing);
+    expect(repository.cancelled, isFalse);
+
     // Over the limit: kept back, with the reason.
     ChatView.debugPickMedia = (_) async => const [
       OutgoingFile(path: '/tmp/big.mov', name: 'big.mov', contentType: 'video/quicktime', sizeBytes: 30 * 1024 * 1024),
     ];
-    await tapLabel(tester, 'Remove a.jpg');
-    await tapLabel(tester, 'Remove b.jpg');
     await tapLabel(tester, 'Add photos, a sticker or a mention');
     await tapLabel(tester, 'Photos & GIFs');
     final sent = repository.sent.length;

@@ -2346,7 +2346,11 @@ class _ChatViewState extends State<ChatView> {
       onOpenReactors: (r) => _openReactors(m, r),
       onLongPress: pinned ? null : (anchor) => _messageActions(anchor, entry),
       progress: m.nonce == null ? null : _progress[m.nonce],
-      onCancelUpload: entry.delivery == _Delivery.sending ? () => _cancelUpload(entry) : null,
+      // Once every byte is up the API may post the message whatever comes
+      // next, so there's nothing left to cancel: it shows as being sent.
+      onCancelUpload: entry.delivery == _Delivery.sending && (_progress[m.nonce] ?? 0) < 1
+          ? () => _cancelUpload(entry)
+          : null,
       tooLarge: m.nonce != null && _tooLarge.contains(m.nonce),
       onOpenLink: _openLink,
       onOpenSpace: _openSpace,
