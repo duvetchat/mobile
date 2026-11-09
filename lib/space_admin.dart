@@ -23,6 +23,7 @@ import 'theme.dart';
 import 'widgets/avatar.dart';
 import 'widgets/chrome.dart';
 import 'widgets/depth.dart' show Pressable;
+import 'widgets/color_picker.dart';
 import 'widgets/glass.dart';
 import 'widgets/picture_edit.dart';
 import 'widgets/role_name.dart';
@@ -2152,10 +2153,9 @@ int _adminRank(SpaceRole r) => Perm.has(r.perms, Perm.administrator)
 
 /// A role's colors read aloud: "default", "#30A46C", or a gradient's stops.
 String describeRoleColors(RoleColors c) {
-  String hex(int rgb) => '#${rgb.toRadixString(16).padLeft(6, '0').toUpperCase()}';
   if (c.from == null) return 'default';
-  if (c.to == null) return hex(c.from!);
-  return 'gradient, ${[c.from, c.via, c.to].nonNulls.map(hex).join(' to ')}';
+  if (c.to == null) return hexOf(c.from!);
+  return 'gradient, ${[c.from, c.via, c.to].nonNulls.map(hexOf).join(' to ')}';
 }
 
 /// A role's colors on a small rounded swatch, left to right: the picker's
@@ -2185,9 +2185,9 @@ enum _ColorKind { none, solid, gradient }
 
 enum _Stop { start, middle, end }
 
-/// The name's color: none, one of the swatches, or a gradient across two or
-/// three of them, previewed on the name as members will see it. A color set
-/// on the desktop outside the swatches stays offered. Answers on Done.
+/// The name's color: none, a swatch or any custom color, or a gradient across
+/// two or three of those, previewed on the name as members will see it.
+/// Answers on Done.
 class _RoleColorSheet extends StatefulWidget {
   final String name;
   final RoleColors initial;
@@ -2207,13 +2207,6 @@ class _RoleColorSheetState extends State<_RoleColorSheet> {
       : _ColorKind.gradient;
   _Stop _stop = _Stop.start;
 
-  // The swatches, and any color the role has beyond them.
-  late final _swatches = [
-    ...roleSwatches,
-    for (final c in [widget.initial.from, widget.initial.via, widget.initial.to].nonNulls)
-      if (!roleSwatches.contains(c)) c,
-  ];
-
   void _kindTo(_ColorKind kind) => setState(() {
     _kind = kind;
     _stop = _Stop.start;
@@ -2231,7 +2224,6 @@ class _RoleColorSheetState extends State<_RoleColorSheet> {
   });
 
   void _pick(int? rgb) => setState(() {
-    HapticFeedback.selectionClick();
     _c = switch ((_kind, _stop)) {
       (_ColorKind.gradient, _Stop.middle) => (from: _c.from, via: rgb, to: _c.to),
       (_ColorKind.gradient, _Stop.end) => (from: _c.from, via: _c.via, to: rgb),
@@ -2249,7 +2241,6 @@ class _RoleColorSheetState extends State<_RoleColorSheet> {
   @override
   Widget build(BuildContext context) {
     final colors = context.theme.colors;
-    final accent = context.duvet.accentText;
     // The middle stop alone may be left out.
     final none = _kind == _ColorKind.gradient && _stop == _Stop.middle;
     return ListView(
@@ -2297,35 +2288,16 @@ class _RoleColorSheetState extends State<_RoleColorSheet> {
         ],
         if (_kind != _ColorKind.none)
           Padding(
+            // Kept by key as the stops' row comes and goes: Custom stays open.
+            key: const ValueKey('color'),
             padding: const EdgeInsets.all(16),
-            child: Wrap(
-              spacing: 12,
-              runSpacing: 12,
-              children: [
-                for (final rgb in [if (none) null, ..._swatches])
-                  Semantics(
-                    container: true,
-                    button: true,
-                    selected: _current == rgb,
-                    label: rgb == null ? 'No middle' : describeRoleColors((from: rgb, via: null, to: null)),
-                    excludeSemantics: true,
-                    onTap: () => _pick(rgb),
-                    child: GestureDetector(
-                      onTap: () => _pick(rgb),
-                      child: AnimatedContainer(
-                        duration: MediaQuery.disableAnimationsOf(context) ? Duration.zero : DuvetTokens.pressOut,
-                        width: 44,
-                        height: 44,
-                        decoration: BoxDecoration(
-                          color: rgb == null ? colors.secondary : roleColorOn(context, rgb),
-                          borderRadius: BorderRadius.circular(DuvetTokens.radiusField),
-                          border: _current == rgb ? Border.all(color: accent, width: 3) : null,
-                        ),
-                        child: rgb == null ? Icon(FLucideIcons.ban, size: 18, color: colors.mutedForeground) : null,
-                      ),
-                    ),
-                  ),
-              ],
+            child: ColorPick(
+              value: _current,
+              presets: [if (none) null, ...roleSwatches],
+              label: (rgb) => rgb == null ? 'No middle' : hexOf(rgb),
+              fill: (rgb) => rgb == null ? colors.secondary : roleColorOn(context, rgb)!,
+              noneIcon: FLucideIcons.ban,
+              onChanged: _pick,
             ),
           ),
         Padding(

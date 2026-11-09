@@ -10,6 +10,7 @@ import 'package:duvet/deep_links.dart';
 import 'package:duvet/main.dart';
 import 'package:duvet/space_admin.dart' show framedGif, saveBannerImage, saveSquareImage;
 import 'package:duvet/widgets/chrome.dart';
+import 'package:duvet/widgets/color_picker.dart' show ColorPick;
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart' show MethodChannel;
@@ -310,6 +311,20 @@ void main() {
     expect(appearance.bubbleColor, isNull);
     expect(store.bubbleColor, isNull);
     expect(ink(), const Color(0xFFFFFFFF));
+    semantics.dispose();
+  });
+
+  testWidgets('You: your bubbles take any color, typed as #RRGGBB', (tester) async {
+    await pumpApp(tester);
+    await openYou(tester);
+    await Scrollable.ensureVisible(tester.element(find.bySemanticsLabel('Custom color')), alignment: 0.5);
+    await tester.pumpAndSettle();
+    await tapLabel(tester, 'Custom color');
+    await tester.enterText(find.descendant(of: find.byType(ColorPick), matching: find.byType(EditableText)), '#F0F0F0');
+    await tester.pumpAndSettle();
+    expect(appearance.bubbleColor, 0xF0F0F0);
+    expect(store.bubbleColor, '${0xF0F0F0}');
+    expect(tester.widget<Text>(find.text('Looks good to me')).style?.color, bubbleDarkInk);
     semantics.dispose();
   });
 
