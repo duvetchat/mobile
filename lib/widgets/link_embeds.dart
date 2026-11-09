@@ -31,7 +31,7 @@ List<String> duvetLinksIn(String content) {
 String withoutPreviewedLinks(String content, List<MessageEmbed> embeds, {bool cards = true}) {
   final bare = [
     for (final e in embeds)
-      if (e.title == null && e.description == null && (e.imageUrl != null || e.videoUrl != null)) e,
+      if (e.isWordless && (e.imageUrl != null || e.videoUrl != null)) e,
   ];
   final invites = {
     if (cards)

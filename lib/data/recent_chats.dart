@@ -98,7 +98,7 @@ String previewOf(ChatMessage m, String Function(String content) readable) {
         : (m.attachments.length == 1 ? 'file' : 'files');
     return m.attachments.length == 1 ? 'Sent a $noun' : 'Sent ${m.attachments.length} $noun';
   }
-  if (m.embeds.isNotEmpty) return m.embeds.first.title ?? 'Sent a link';
+  if (m.embeds.isNotEmpty) return m.embeds.first.title ?? m.embeds.first.authorName ?? 'Sent a link';
   return 'Sent a message';
 }
 
