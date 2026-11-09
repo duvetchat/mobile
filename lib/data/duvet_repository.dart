@@ -99,7 +99,7 @@ class DuvetRepository implements ChatRepository {
     final was = typingNow.value[chatId] ?? const <TypingUser>[];
     if (user == null && was.every((u) => u.userId != userId)) return;
     if (user != null) {
-      _typingEnds[(chatId, userId)] = Timer(const Duration(seconds: 6), () => _setTyping(chatId, userId));
+      _typingEnds[(chatId, userId)] = Timer(const Duration(seconds: 5), () => _setTyping(chatId, userId));
     }
     typingNow.value = {
       ...typingNow.value,
@@ -3200,7 +3200,7 @@ class DuvetRepository implements ChatRepository {
           id: i.id,
           code: i.code,
           roomName: rooms[i.roomId]?.name ?? 'a room',
-          createdBy: nameOf(i.createdBy) ?? 'Someone',
+          createdBy: nameOf(i.createdBy) ?? 'Unknown user',
           createdAt: i.createdAt.toLocal(),
           expiresAt: i.expiresAt?.toLocal(),
         ),

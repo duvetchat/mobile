@@ -806,7 +806,7 @@ void main() {
     semantics.dispose();
   });
 
-  testWidgets('an unread chat opens at a "New messages" divider after the last read', (tester) async {
+  testWidgets('an unread chat opens at a "2 new messages" divider after the last read', (tester) async {
     await openMaya(
       tester,
       setUp: (r) {
@@ -814,7 +814,7 @@ void main() {
         r.history['c-maya']!.add(FakeRepository.message('m3', author: _maya, name: 'Maya', text: 'Hello?'));
       },
     );
-    final divider = find.text('New messages');
+    final divider = find.text('2 new messages');
     expect(divider, findsOneWidget);
     expect(
       tester.getTopLeft(divider).dy,

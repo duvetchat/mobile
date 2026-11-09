@@ -119,7 +119,7 @@ class ComposerController extends TextEditingController {
       RegExp(r'<@([0-9a-fA-F-]{8,})>|<:([0-9a-fA-F-]{8,}):>|<#([0-9a-fA-F-]{8,})>'),
       (m) {
         if (m.group(1) case final id?) {
-          final token = '@${nameOf(id) ?? 'someone'}';
+          final token = '@${nameOf(id) ?? id.substring(0, 8)}';
           _mentions[token] = id;
           return token;
         }

@@ -642,6 +642,35 @@ void main() {
       semantics.dispose();
     });
 
+    testWidgets('one that comes while the reader is up the list places a divider, as on the desktop', (tester) async {
+      final repository = await openMaya(tester, setUp: longChat);
+      expect(find.textContaining('new message'), findsNothing);
+
+      // Up the list, Maya's two messages go below a divider after the last one seen, which stays for the visit.
+      await tester.drag(list, const Offset(0, 600));
+      await tester.pumpAndSettle();
+      repository.push('c-maya', MessageCreated(later('n1', 'While you were up there')));
+      repository.push('c-maya', MessageCreated(later('n2', 'And this')));
+      await tester.pumpAndSettle();
+      await tester.drag(list, const Offset(0, -3000));
+      await tester.pumpAndSettle();
+      final divider = find.text('2 new messages');
+      expect(divider, findsOneWidget);
+      expect(tester.getTopLeft(divider).dy, greaterThan(tester.getTopLeft(find.text('Line 39')).dy));
+      expect(tester.getTopLeft(divider).dy, lessThan(tester.getTopLeft(find.text('While you were up there')).dy));
+
+      // No other is placed: the one there counts the newest too.
+      await tester.drag(list, const Offset(0, 600));
+      await tester.pumpAndSettle();
+      repository.push('c-maya', MessageCreated(later('n3', 'Again')));
+      await tester.pumpAndSettle();
+      await tester.drag(list, const Offset(0, -3000));
+      await tester.pumpAndSettle();
+      expect(find.text('3 new messages'), findsOneWidget);
+      expect(find.textContaining('new message'), findsOneWidget);
+      semantics.dispose();
+    });
+
     testWidgets('a chat opened at its divider is read at the bottom, not on opening', (tester) async {
       final repository = await openMaya(
         tester,
@@ -651,8 +680,8 @@ void main() {
           r.unread.value = {'c-maya'};
         },
       );
-      // It opens at its divider, above its newest messages: nothing is read.
-      expect(find.text('New messages'), findsOneWidget);
+      // It opens at its divider, above its newest messages, which it counts: nothing is read.
+      expect(find.text('30 new messages'), findsOneWidget);
       expect(repository.reads, isEmpty);
       expect(repository.unread.value, contains('c-maya'));
 
@@ -661,7 +690,7 @@ void main() {
       expect(repository.unread.value, contains('c-maya'));
       await tester.tap(find.text('Maya'));
       await tester.pumpAndSettle();
-      expect(find.text('New messages'), findsOneWidget);
+      expect(find.text('30 new messages'), findsOneWidget);
       expect(repository.reads, isEmpty);
 
       // Scrolled down to the bottom, it's read.
@@ -696,9 +725,12 @@ void main() {
       );
       // Above the oldest message of the first page, where it opens, and where it stays when the older page comes:
       // nothing is read.
-      expect(find.text('New messages'), findsOneWidget);
+      expect(find.text('100 new messages'), findsOneWidget);
       expect(find.text('Line 100'), findsOneWidget);
-      expect(tester.getTopLeft(find.text('New messages')).dy, lessThan(tester.getTopLeft(find.text('Line 100')).dy));
+      expect(
+        tester.getTopLeft(find.text('100 new messages')).dy,
+        lessThan(tester.getTopLeft(find.text('Line 100')).dy),
+      );
       expect(repository.reads, isEmpty);
       expect(repository.unread.value, contains('c-maya'));
 

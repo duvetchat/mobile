@@ -907,7 +907,7 @@ void main() {
         'c-1': ['maya', 'leo (recording)'],
       });
 
-      // Typing again starts the 6 seconds over.
+      // Typing again starts the 5 seconds over.
       async.elapse(const Duration(seconds: 4));
       typed('DM_TYPING', _maya, 'maya');
       async.elapse(const Duration(seconds: 2));

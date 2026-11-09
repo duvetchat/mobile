@@ -233,7 +233,7 @@ class _MessageTextState extends State<MessageText> {
         switch (token) {
           TextToken(:final text) => TextSpan(text: text, style: style),
           MentionToken(:final userId) => mention(
-            '@${mentions[userId] = widget.directory.nameOf(userId) ?? 'someone'}',
+            '@${mentions[userId] = widget.directory.nameOf(userId) ?? userId.substring(0, 8)}',
             userId,
             style,
           ),

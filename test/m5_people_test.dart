@@ -214,7 +214,7 @@ void main() {
     tester,
   ) async {
     await openWith(tester, 'cc <@0a0a0a0a-0000-4000-8000-0000000000ff>');
-    await tester.tapOnText(find.textRange.ofSubstring('@someone'));
+    await tester.tapOnText(find.textRange.ofSubstring('@0a0a0a0a'));
     await tester.pump(kDoubleTapTimeout);
     await tester.pumpAndSettle();
     expect(find.text('Someone'), findsOneWidget);
