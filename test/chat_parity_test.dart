@@ -753,6 +753,8 @@ void main() {
         tester.binding.handleAppLifecycleStateChanged(state);
       }
       await tester.pumpAndSettle();
+      // Below a divider placed while away, as on the desktop, and read: it was at its bottom.
+      expect(find.text('1 new message'), findsOneWidget);
       expect(repository.reads.last.$2, 'n1');
       semantics.dispose();
     });

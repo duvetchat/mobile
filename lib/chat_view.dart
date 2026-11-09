@@ -524,7 +524,8 @@ class _ChatViewState extends State<ChatView> {
   void _back() {
     if (!_showDividerOnReturn) return _readIfSeen();
     _showDividerOnReturn = false;
-    _showDivider().whenComplete(_readIfSeen);
+    // Not before a frame: none ran while the app was behind, so the divider isn't built yet.
+    WidgetsBinding.instance.endOfFrame.then((_) => _showDivider()).whenComplete(_readIfSeen);
   }
 
   static bool get _inFront => switch (WidgetsBinding.instance.lifecycleState) {
