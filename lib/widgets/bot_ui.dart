@@ -8,6 +8,7 @@ import '../data/scope.dart';
 import '../theme.dart';
 import 'depth.dart';
 import 'glass.dart';
+import 'attachment_link.dart';
 import 'media.dart';
 import 'message_content.dart';
 import 'rows.dart';
@@ -170,7 +171,13 @@ class _BotComponentsState extends State<BotComponents> {
               ),
               // Its accent color, as the desktop's left border.
               if (c.accentColor case final accent?)
-                Positioned(left: 0, top: 0, bottom: 0, width: 4, child: ColoredBox(color: Color(0xFF000000 | accent))),
+                Positioned(
+                  left: 0,
+                  top: 0,
+                  bottom: 0,
+                  width: 4,
+                  child: ColoredBox(color: Color(0xFF000000 | (accent & 0xFFFFFF))),
+                ),
             ],
           ),
         );
@@ -203,12 +210,11 @@ class _BotComponentsState extends State<BotComponents> {
             pictures: [_picture(url, c.description, c.mediaAttachmentId)],
             child: ClipRRect(
               borderRadius: BorderRadius.circular(DuvetTokens.radiusField),
-              child: Image.network(
-                url,
+              child: _MediaImage(
+                picture: _picture(url, c.description, c.mediaAttachmentId),
                 width: 64,
                 height: 64,
                 fit: BoxFit.cover,
-                errorBuilder: (_, _, _) => const SizedBox.square(dimension: 64),
               ),
             ),
           ),
@@ -242,31 +248,43 @@ class _BotComponentsState extends State<BotComponents> {
           );
         }
         bool isVideo(GalleryItem item) => item.contentType?.startsWith('video/') ?? false;
-        // Its pictures, to swipe between full screen, as a message's are.
+        MessageAttachment pictureOf(GalleryItem item) =>
+            _picture(item.url, item.description, item.attachmentId, item.contentType);
+        // Its pictures, to swipe between full screen, as a message's are. A
+        // spoiler opens alone: a swipe mustn't show one still covered here.
+        bool swiped(GalleryItem item) => !isVideo(item) && !item.spoiler;
         final pictures = [
           for (final item in c.gallery)
-            if (!isVideo(item)) _picture(item.url, item.description, item.attachmentId, item.contentType),
+            if (swiped(item)) pictureOf(item),
         ];
-        Widget picture(GalleryItem item, Widget image) => _Spoiler(
-          hidden: item.spoiler,
-          child: _Enlargeable(pictures: pictures, index: pictures.indexWhere((p) => p.url == item.url), child: image),
-        );
+        // The item at [at] in the gallery: by its place, as two can share a link.
+        Widget picture(int at, Widget image) {
+          final item = c.gallery[at];
+          return _Spoiler(
+            hidden: item.spoiler,
+            child: _Enlargeable(
+              pictures: item.spoiler ? [pictureOf(item)] : pictures,
+              index: item.spoiler ? 0 : c.gallery.take(at).where(swiped).length,
+              child: image,
+            ),
+          );
+        }
         // One picture shows whole, at its own ratio (the desktop's
         // object-contain); several are square thumbnails.
         if (c.gallery.length == 1) {
           final item = c.gallery.single;
           if (isVideo(item)) return _Spoiler(hidden: item.spoiler, child: video(item, 268, 268 * 168 / 248));
           return picture(
-            item,
+            0,
             ClipRRect(
               borderRadius: BorderRadius.circular(DuvetTokens.radiusField),
-              child: Image.network(
-                item.url,
+              child: _MediaImage(
+                picture: pictureOf(item),
                 width: 268,
                 // Decoded at its shown width: a big GIF's every frame at full size runs the phone out of memory.
                 cacheWidth: (268 * MediaQuery.devicePixelRatioOf(context)).round(),
                 fit: BoxFit.contain,
-                errorBuilder: (_, _, _) => const SizedBox.square(dimension: 128),
+                broken: 128,
               ),
             ),
           );
@@ -275,21 +293,15 @@ class _BotComponentsState extends State<BotComponents> {
           spacing: 4,
           runSpacing: 4,
           children: [
-            for (final item in c.gallery)
+            for (final (at, item) in c.gallery.indexed)
               if (isVideo(item))
                 _Spoiler(hidden: item.spoiler, child: video(item, 128, 128))
               else
                 picture(
-                  item,
+                  at,
                   ClipRRect(
                     borderRadius: BorderRadius.circular(DuvetTokens.radiusField),
-                    child: Image.network(
-                      item.url,
-                      width: 128,
-                      height: 128,
-                      fit: BoxFit.cover,
-                      errorBuilder: (_, _, _) => const SizedBox.square(dimension: 128),
-                    ),
+                    child: _MediaImage(picture: pictureOf(item), width: 128, height: 128, fit: BoxFit.cover),
                   ),
                 ),
           ],
@@ -309,6 +321,51 @@ MessageAttachment _picture(String url, String? description, String? attachmentId
       contentType: contentType ?? 'image/png',
       url: url,
     );
+
+/// A component's picture inline. One the message carries (an attachment, its
+/// link signed for a day) gets a new link when it's about to expire or the API
+/// refuses it, as a message's own pictures do; any other loads as it is.
+class _MediaImage extends StatelessWidget {
+  final MessageAttachment picture;
+  final double width;
+  final double? height;
+  final BoxFit fit;
+  final int? cacheWidth;
+
+  /// The side of the box left where it failed to load.
+  final double? broken;
+  const _MediaImage({
+    required this.picture,
+    required this.width,
+    this.height,
+    required this.fit,
+    this.cacheWidth,
+    this.broken,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    Widget image(String url, VoidCallback? refused) => Image.network(
+      url,
+      width: width,
+      height: height,
+      fit: fit,
+      cacheWidth: cacheWidth,
+      errorBuilder: (_, error, _) {
+        if (error is NetworkImageLoadException && error.statusCode == 403) refused?.call();
+        return SizedBox(width: broken ?? width, height: broken ?? height ?? width);
+      },
+    );
+    // Its id is its link when it isn't the message's file: nothing to renew.
+    if (picture.id == picture.url) return image(picture.url, null);
+    return AttachmentLinkBuilder(
+      attachment: picture,
+      // Its own box while a new link comes: a Wrap's height is unbounded.
+      waiting: SizedBox(width: broken ?? width, height: broken ?? height ?? width),
+      builder: (context, url, refused) => image(url, refused),
+    );
+  }
+}
 
 /// A thumbnail or a gallery's picture: a tap opens [pictures] full screen,
 /// at [index], as the desktop's click enlarges it.
