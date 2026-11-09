@@ -86,9 +86,11 @@
             android:exported="false"
             android:foregroundServiceType="microphone"/>
         <!-- Screen sharing in voice: started between the consent and the capture,
-             stopped with the share (chat.duvet/screen in MainActivity). -->
+             stopped with the share (chat.duvet/screen in MainActivity), or with
+             the app when it is swiped away during one. -->
         <service
             android:name=".ScreenCaptureService"
+            android:stopWithTask="true"
             android:exported="false"
             android:foregroundServiceType="mediaProjection"/>
         <!-- A voice note playing, in the media notification and quick settings
