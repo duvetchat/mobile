@@ -4,6 +4,7 @@ import 'dart:math' as math;
 
 import 'package:duvet_client/duvet.dart' as duvet;
 import 'package:flutter/foundation.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter/widgets.dart';
 import 'package:flutter_background/flutter_background.dart';
 import 'package:flutter_webrtc/flutter_webrtc.dart' as rtc;
@@ -100,9 +101,12 @@ class WebRtcVoiceEngine implements VoiceEngine {
         await stream.dispose();
         return null;
       }
-      final facing = deviceId == null
-          ? CameraFacing.front
-          : (await cameras()).where((d) => d.id == deviceId).firstOrNull?.facing ?? CameraFacing.external;
+      // The camera that opened, by the id its track reports: asked for the
+      // front one, a phone with only a back one opens that.
+      final opened = tracks.first.getSettings()['deviceId'] as String? ?? deviceId;
+      final facing =
+          (await cameras()).where((d) => d.id == opened).firstOrNull?.facing ??
+          (deviceId == null ? CameraFacing.front : CameraFacing.external);
       return _Camera(stream, tracks.first, facing);
     } catch (e) {
       // Refused, or no camera.
@@ -111,29 +115,53 @@ class WebRtcVoiceEngine implements VoiceEngine {
     }
   }
 
-  // shortcut: flutter_background's service carries only the microphone type
-  // (it starts with every type in the manifest, and on Android 14 and later a
-  // camera or screen capture type fails to start without that permission
-  // granted first), and Android lets a screen capture run only under a
-  // service of the screen capture type, so getDisplayMedia fails here (its
-  // error comes back, no crash) until a service of that type is started
-  // between the consent and the capture.
+  /// The app's own foreground service of the screen capture type (MainActivity,
+  /// ScreenCaptureService): Android 10 and later capture the screen only under
+  /// one, and flutter_background's carries only the microphone type (it starts
+  /// with every type it has, and on Android 14 a screen capture type fails to
+  /// start before the consent).
+  static const _screenService = MethodChannel('chat.duvet/screen');
+
+  // shortcut: flutter_webrtc 1.6.3 ignores MediaProjection's onStop, so a
+  // share stopped from the system's UI never ends the track (onEnded stays
+  // silent); the user stops it in the app.
   @override
   Future<VoiceScreen?> openScreen() async {
     if (!_android) return null;
+    var serviceStarted = false;
+    rtc.MediaStream? stream;
     try {
-      // The consent first: getDisplayMedia then captures right away.
-      if (!await rtc.Helper.requestCapturePermission()) return null;
-      final stream = await rtc.navigator.mediaDevices.getDisplayMedia({'video': true, 'audio': false});
+      // The consent, then the service, then the capture: Android 14 lets a
+      // screen capture service start only after the consent, and the capture
+      // only under that service. Helper.requestCapturePermission asks the
+      // same, behind a platform check a test can't pass.
+      final granted = await rtc.WebRTC.invokeMethod<bool, dynamic>('requestCapturePermission', {
+        'fullScreenOnly': false,
+      });
+      if (granted != true) return null;
+      await _screenService.invokeMethod<void>('start');
+      serviceStarted = true;
+      stream = await rtc.navigator.mediaDevices.getDisplayMedia({'video': true, 'audio': false});
       final tracks = stream.getVideoTracks();
-      if (tracks.isEmpty) {
-        await stream.dispose();
-        return null;
-      }
-      return _Screen(stream, tracks.first);
+      if (tracks.isEmpty) throw StateError('no screen track');
+      return _Screen(stream, tracks.first, _stopScreenService);
     } catch (e) {
       debugPrint('voice: screen: $e');
+      try {
+        await stream?.dispose();
+      } catch (e) {
+        debugPrint('voice: screen: $e');
+      }
+      if (serviceStarted) await _stopScreenService();
       return null;
+    }
+  }
+
+  static Future<void> _stopScreenService() async {
+    try {
+      await _screenService.invokeMethod<void>('stop');
+    } catch (e) {
+      debugPrint('voice: screen: $e');
     }
   }
 
@@ -449,7 +477,17 @@ class _Camera extends _Capture implements VoiceCamera {
 }
 
 class _Screen extends _Capture implements VoiceScreen {
-  _Screen(super.stream, super.track);
+  // Stops the screen capture service once the capture is over.
+  final Future<void> Function() _release;
+
+  _Screen(super.stream, super.track, this._release);
+
+  @override
+  Future<void> stop() async {
+    if (_stopped) return;
+    await super.stop();
+    await _release();
+  }
 }
 
 class _Mic implements VoiceMic {

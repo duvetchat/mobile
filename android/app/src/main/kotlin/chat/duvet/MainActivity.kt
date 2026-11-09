@@ -2,6 +2,7 @@ package chat.duvet
 
 import android.app.NotificationManager
 import android.content.Context
+import android.content.Intent
 import android.media.AudioManager
 import android.os.Build
 import android.os.PowerManager
@@ -30,6 +31,28 @@ class MainActivity : AudioServiceActivity() {
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "chat.duvet/ringer").setMethodCallHandler { call, result ->
             when (call.method) {
                 "state" -> result.success(ringer())
+                else -> result.notImplemented()
+            }
+        }
+        // A screen share's foreground service (ScreenCaptureService): "start"
+        // answers once it is in the foreground.
+        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "chat.duvet/screen").setMethodCallHandler { call, result ->
+            val service = Intent(this, ScreenCaptureService::class.java)
+            when (call.method) {
+                "start" -> try {
+                    ScreenCaptureService.started = { error ->
+                        if (error == null) result.success(null) else result.error("screen", error.message, null)
+                    }
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) startForegroundService(service) else startService(service)
+                } catch (e: RuntimeException) {
+                    // Not allowed to start now (Android 12 and later, from the background).
+                    ScreenCaptureService.started = null
+                    result.error("screen", e.message, null)
+                }
+                "stop" -> {
+                    stopService(service)
+                    result.success(null)
+                }
                 else -> result.notImplemented()
             }
         }
