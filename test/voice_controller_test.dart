@@ -11,7 +11,7 @@ import 'package:duvet/data/voice.dart';
 import 'package:duvet/data/voice_engine.dart' show PeerState;
 import 'package:duvet_client/duvet.dart' as duvet;
 import 'package:fake_async/fake_async.dart';
-import 'package:flutter/widgets.dart' show AppLifecycleState, SizedBox;
+import 'package:flutter/widgets.dart' show AppLifecycleState, SizedBox, VoidCallback;
 import 'package:flutter_test/flutter_test.dart';
 
 import 'support/fake_repository.dart';
@@ -94,7 +94,8 @@ class _Player implements SoundPlayer {
   final stopped = <Sound>[];
 
   @override
-  Future<void> play(Sound sound, double gain, {bool loop = false}) async => played.add((sound, loop));
+  Future<void> play(Sound sound, double gain, {bool loop = false, VoidCallback? onDone}) async =>
+      played.add((sound, loop));
 
   @override
   Future<void> stop(Sound sound) async => stopped.add(sound);

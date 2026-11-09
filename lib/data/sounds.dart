@@ -26,9 +26,10 @@ enum Sound {
   String get asset => 'assets/sounds/$file.ogg';
 }
 
-/// Plays a [Sound] at a gain from 0 to 1, once or looped until [stop].
+/// Plays a [Sound] at a gain from 0 to 1, once or looped until [stop]; [onDone]
+/// runs when that playback ends or is stopped.
 abstract interface class SoundPlayer {
-  Future<void> play(Sound sound, double gain, {bool loop = false});
+  Future<void> play(Sound sound, double gain, {bool loop = false, VoidCallback? onDone});
   Future<void> stop(Sound sound);
   Future<void> dispose();
 }
@@ -93,14 +94,16 @@ class JustAudioSoundPlayer implements SoundPlayer {
   }();
 
   @override
-  Future<void> play(Sound sound, double gain, {bool loop = false}) async {
-    if (!Platform.isAndroid) return;
+  Future<void> play(Sound sound, double gain, {bool loop = false, VoidCallback? onDone}) async {
+    if (!Platform.isAndroid) return onDone?.call();
     final player = await _load(sound);
+    // A finished sound stays "playing", and play() on a playing player returns at once.
+    await player.pause();
     await player.setVolume(gain);
     await player.setLoopMode(loop ? ja.LoopMode.one : ja.LoopMode.off);
     await player.seek(Duration.zero);
-    // Its future ends with the playback, never for a loop.
-    unawaited(player.play());
+    // Its future ends with the playback or a pause, never for a loop.
+    unawaited(player.play().whenComplete(() => onDone?.call()));
   }
 
   @override
@@ -137,6 +140,12 @@ class Sounds extends ChangeNotifier {
 
   /// The ring playing or about to: a stop while it waits on the ringer cancels it.
   Object? _ring;
+
+  /// The sound a preview is playing, until it ends or [stopPreview].
+  final previewing = ValueNotifier<Sound?>(null);
+
+  /// The current preview: an older one ending late leaves [previewing] alone.
+  Object? _preview;
 
   int get master => _master;
   int volume(Sound sound) => _volumes[sound]!;
@@ -187,10 +196,35 @@ class Sounds extends ChangeNotifier {
   }
 
   /// Plays [sound] once even when the phone wants quiet: the user asked to hear it.
-  /// The ring's own preview waits while a call rings: it shares the ring's player.
+  /// Stops the preview before it. The ring's own preview waits while a call rings:
+  /// it shares the ring's player.
   Future<void> preview(Sound sound) async {
     if (sound == Sound.incomingCall && _ring != null) return;
-    await _guard(() => _player.play(sound, gain(sound)));
+    await stopPreview();
+    final token = _preview = Object();
+    previewing.value = sound;
+    void done() {
+      if (!identical(_preview, token)) return;
+      _preview = null;
+      previewing.value = null;
+    }
+
+    try {
+      await _player.play(sound, gain(sound), onDone: done);
+    } catch (e) {
+      debugPrint('sounds: $e');
+      done();
+    }
+  }
+
+  /// Stops the preview playing, if any; a call's ring goes on.
+  Future<void> stopPreview() async {
+    final sound = previewing.value;
+    if (sound == null) return;
+    _preview = null;
+    previewing.value = null;
+    if (sound == Sound.incomingCall && _ring != null) return;
+    await _guard(() => _player.stop(sound));
   }
 
   /// Rings until [stopRing]; a ring already going goes on alone.
@@ -225,6 +259,8 @@ class Sounds extends ChangeNotifier {
   @override
   void dispose() {
     _ring = null;
+    _preview = null;
+    previewing.dispose();
     unawaited(_player.dispose());
     super.dispose();
   }

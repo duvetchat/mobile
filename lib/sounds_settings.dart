@@ -7,10 +7,17 @@ import 'widgets/chrome.dart';
 import 'widgets/rows.dart';
 
 /// The volume of every sound and of each one, as the desktop's Audio settings:
-/// 0 to 200%, 0 is off, and a button to hear it.
-class SoundsPage extends StatelessWidget {
+/// 0 to 200%, 0 is off, and a button to hear it or stop it.
+class SoundsPage extends StatefulWidget {
   final Sounds sounds;
   const SoundsPage({required this.sounds, super.key});
+
+  @override
+  State<SoundsPage> createState() => _SoundsPageState();
+}
+
+class _SoundsPageState extends State<SoundsPage> {
+  Sounds get sounds => widget.sounds;
 
   // The desktop's order and names, not the enum's.
   static const _labels = [
@@ -23,6 +30,13 @@ class SoundsPage extends StatelessWidget {
   ];
 
   @override
+  void dispose() {
+    // A preview doesn't outlive the page.
+    sounds.stopPreview();
+    super.dispose();
+  }
+
+  @override
   Widget build(BuildContext context) {
     final padding = MediaQuery.paddingOf(context);
     return Scaffold(
@@ -31,7 +45,7 @@ class SoundsPage extends StatelessWidget {
         children: [
           Positioned.fill(
             child: ListenableBuilder(
-              listenable: sounds,
+              listenable: Listenable.merge([sounds, sounds.previewing]),
               builder: (context, _) => ListView(
                 padding: EdgeInsets.only(top: GlassTopBar.heightOf(context) + 16, bottom: padding.bottom + 24),
                 children: [
@@ -43,7 +57,8 @@ class SoundsPage extends StatelessWidget {
                       label: label,
                       value: sounds.volume(sound),
                       onChanged: (v) => sounds.setVolume(sound, v),
-                      onPreview: () => sounds.preview(sound),
+                      playing: sounds.previewing.value == sound,
+                      onPreview: () => sounds.previewing.value == sound ? sounds.stopPreview() : sounds.preview(sound),
                     ),
                   ],
                 ],
@@ -62,13 +77,20 @@ class SoundsPage extends StatelessWidget {
   }
 }
 
-/// A card: the name and its volume over a 0–200 slider, and Play when there is one sound to hear.
+/// A card: the name and its volume over a 0–200 slider, and Play (Pause while [playing]) when there is one sound to hear.
 class _VolumeRow extends StatelessWidget {
   final String label;
   final int value;
   final ValueChanged<int> onChanged;
   final VoidCallback? onPreview;
-  const _VolumeRow({required this.label, required this.value, required this.onChanged, this.onPreview});
+  final bool playing;
+  const _VolumeRow({
+    required this.label,
+    required this.value,
+    required this.onChanged,
+    this.onPreview,
+    this.playing = false,
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -117,7 +139,12 @@ class _VolumeRow extends StatelessWidget {
                   ),
                 ),
               ),
-              if (onPreview != null) IconAction(icon: FLucideIcons.play, label: 'Play $label', onPressed: onPreview),
+              if (onPreview != null)
+                IconAction(
+                  icon: playing ? FLucideIcons.pause : FLucideIcons.play,
+                  label: '${playing ? 'Pause' : 'Play'} $label',
+                  onPressed: onPreview,
+                ),
             ],
           ),
         ],
