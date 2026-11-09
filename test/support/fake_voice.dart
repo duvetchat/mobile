@@ -82,8 +82,17 @@ class FakeVoiceSignaling implements VoiceSignaling {
   int? get connection => socket;
 
   @override
-  bool joinVoice(String roomId, duvet.SessionDescription offer, {required bool videoOff}) =>
-      _send('VOICE_JOIN', {'room_id': roomId, 'offer': offer.sdp, 'video_off': videoOff});
+  bool joinVoice(
+    String roomId,
+    duvet.SessionDescription offer, {
+    Map<String, String> tracks = const {},
+    required bool videoOff,
+  }) => _send('VOICE_JOIN', {
+    'room_id': roomId,
+    'offer': offer.sdp,
+    if (tracks.isNotEmpty) 'tracks': tracks,
+    'video_off': videoOff,
+  });
 
   @override
   bool leaveVoice(String roomId) => _send('VOICE_LEAVE', {'room_id': roomId});
@@ -112,6 +121,14 @@ class FakeVoiceSignaling implements VoiceSignaling {
   @override
   bool sendAnswer(String roomId, duvet.SessionDescription answer) =>
       _send('WEBRTC_ANSWER', {'room_id': roomId, 'answer': answer.sdp});
+
+  @override
+  bool sendRenegotiateOffer(String roomId, duvet.SessionDescription offer, {Map<String, String> tracks = const {}}) =>
+      _send('WEBRTC_RENEGOTIATE_OFFER', {
+        'room_id': roomId,
+        'offer': offer.sdp,
+        if (tracks.isNotEmpty) 'tracks': tracks,
+      });
 
   @override
   bool initiateCall(String conversationId, List<String> memberIds) =>
