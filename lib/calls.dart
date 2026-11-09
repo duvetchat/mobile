@@ -17,6 +17,7 @@ import 'widgets/chrome.dart';
 import 'widgets/duvet_mascot.dart';
 import 'widgets/depth.dart';
 import 'widgets/rows.dart';
+import 'widgets/voice_video.dart';
 
 /// Opens the call screen of [conversationId]'s call.
 Future<void> openCall(BuildContext context, String conversationId) => Navigator.of(
@@ -130,7 +131,14 @@ class _CallScreenState extends State<CallScreen> with _Ticking {
     final voice = context.voice;
     final colors = context.theme.colors;
     return ListenableBuilder(
-      listenable: Listenable.merge([voice, voice.levels, repository.conversations, repository.profile]),
+      listenable: Listenable.merge([
+        voice,
+        voice.levels,
+        voice.remoteVideos,
+        VoicePrefsScope.maybeOf(context),
+        repository.conversations,
+        repository.profile,
+      ]),
       builder: (context, _) {
         final call = voice.call;
         if (call == null || call.conversationId != widget.conversationId) {
@@ -154,9 +162,9 @@ class _CallScreenState extends State<CallScreen> with _Ticking {
                         avatarUrl: summary?.isGroup == true ? null : summary?.avatarUrl,
                         status: status,
                       )
-                    : VoiceGrid(
+                    : VoiceStage(
                         people: people,
-                        levels: voice.levels.value,
+                        here: inVoice,
                         padding: EdgeInsets.fromLTRB(
                           16,
                           GlassTopBar.heightOf(context) + 16,
