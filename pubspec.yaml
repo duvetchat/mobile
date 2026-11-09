@@ -108,6 +108,7 @@ flutter:
     - assets/mascot/dark/
     - assets/logo/app-icon-rounded.svg
     - assets/logo/mark-on-light.svg
+    - assets/sounds/
 
   # The Ghost theme's three faces (lib/theme.dart, DuvetType): Fraunces for
   # the smaller headers and Space names (one variable file, axes set in code),
