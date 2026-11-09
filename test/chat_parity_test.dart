@@ -438,7 +438,18 @@ void main() {
           content: 'the plan',
           createdAt: DateTime(2026, 10, 23, 10),
           attachments: [file('kept', 'kept.pdf', 'application/pdf')],
-          deletedAttachments: [file('d', 'plan.pdf', 'application/pdf')],
+          deletedAttachments: [
+            file('d', 'plan.pdf', 'application/pdf'),
+            // Emoji-sized: its box still fits its words.
+            const MessageAttachment(
+              id: 'tiny',
+              filename: 'dot.png',
+              contentType: 'image/png',
+              url: 'https://example.invalid/tiny',
+              width: 16,
+              height: 16,
+            ),
+          ],
         ),
       ),
     );
@@ -457,7 +468,8 @@ void main() {
       ),
     );
     await tester.pumpAndSettle();
-    expect(find.bySemanticsLabel('Attachment deleted'), findsOneWidget);
+    expect(find.bySemanticsLabel('Attachment deleted'), findsNWidgets(2));
+    expect(tester.takeException(), isNull, reason: 'no overflow');
     expect(find.bySemanticsLabel(RegExp(r'^PDF, kept\.pdf')), findsOneWidget);
     expect(find.bySemanticsLabel(RegExp(r'plan\.pdf')), findsNothing);
     expect(find.bySemanticsLabel('Voice note deleted'), findsOneWidget);

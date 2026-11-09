@@ -617,7 +617,11 @@ class DeletedAttachment extends StatelessWidget {
     final label = voice ? 'Voice note deleted' : 'Attachment deleted';
     final (w, h) = (a.width ?? 0, a.height ?? 0);
     final scale = w > 0 && h > 0 ? math.min(1.0, math.min(maxWidth / w, 260 / h)) : 0.0;
-    final size = scale > 0 && !voice ? Size(w * scale, h * scale) : Size(math.min(200, maxWidth), 48);
+    // Never smaller than its words: a deleted emoji-sized picture keeps a box they fit in.
+    final minWidth = math.min(180.0, maxWidth);
+    final size = scale > 0 && !voice
+        ? Size(math.max(w * scale, minWidth), math.max(h * scale, 48))
+        : Size(math.min(200, maxWidth), 48);
     return Semantics(
       container: true,
       label: label,
