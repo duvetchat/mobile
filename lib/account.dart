@@ -23,6 +23,7 @@ import 'theme.dart';
 import 'widgets/avatar.dart';
 import 'widgets/chrome.dart';
 import 'widgets/code_highlight.dart';
+import 'widgets/color_picker.dart';
 import 'widgets/ghost_art.dart';
 import 'widgets/glass.dart';
 import 'widgets/picture_edit.dart';
@@ -2072,26 +2073,35 @@ class _CodeThemeSheetState extends State<_CodeThemeSheet> {
   }
 }
 
-/// Your bubbles' color: azure, or a role swatch, on a bubble as the chat
-/// draws it. Solid fills only; the ink on them is picked for contrast.
-class _BubbleColorPicker extends StatelessWidget {
+/// Your bubbles' color: azure, a role swatch or any custom color, on a bubble
+/// as the chat draws it. Solid fills only; the ink on them is picked for
+/// contrast.
+class _BubbleColorPicker extends StatefulWidget {
   final int? value;
   final ValueChanged<int?> onChanged;
   const _BubbleColorPicker({required this.value, required this.onChanged});
 
+  @override
+  State<_BubbleColorPicker> createState() => _BubbleColorPickerState();
+}
+
+class _BubbleColorPickerState extends State<_BubbleColorPicker> {
   // [roleSwatches]' names, in its order.
   static const _names = ['Red', 'Orange', 'Yellow', 'Green', 'Teal', 'Blue', 'Indigo', 'Purple', 'Pink'];
 
-  void _pick(int? rgb) {
-    HapticFeedback.selectionClick();
-    onChanged(rgb);
+  // Shown while the wheel is dragged; saved, app-wide, once it's let go.
+  late int? _shown = widget.value;
+
+  @override
+  void didUpdateWidget(_BubbleColorPicker oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (widget.value != oldWidget.value) _shown = widget.value;
   }
 
   @override
   Widget build(BuildContext context) {
     final colors = context.theme.colors;
-    final bubble = bubbleColors(value);
-    final options = <(int?, String)>[(null, 'Azure'), for (final (i, rgb) in roleSwatches.indexed) (rgb, _names[i])];
+    final bubble = bubbleColors(_shown);
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
@@ -2115,33 +2125,13 @@ class _BubbleColorPicker extends StatelessWidget {
           ),
         ),
         const SizedBox(height: 12),
-        Wrap(
-          spacing: 12,
-          runSpacing: 12,
-          children: [
-            for (final (rgb, name) in options)
-              Semantics(
-                container: true,
-                button: true,
-                selected: value == rgb,
-                label: name,
-                excludeSemantics: true,
-                onTap: () => _pick(rgb),
-                child: GestureDetector(
-                  onTap: () => _pick(rgb),
-                  child: AnimatedContainer(
-                    duration: MediaQuery.disableAnimationsOf(context) ? Duration.zero : DuvetTokens.pressOut,
-                    width: 44,
-                    height: 44,
-                    decoration: BoxDecoration(
-                      color: bubbleColors(rgb).fill,
-                      borderRadius: BorderRadius.circular(DuvetTokens.radiusField),
-                      border: value == rgb ? Border.all(color: colors.foreground, width: 3) : null,
-                    ),
-                  ),
-                ),
-              ),
-          ],
+        ColorPick(
+          value: _shown,
+          presets: [null, ...roleSwatches],
+          label: (rgb) => rgb == null ? 'Azure' : _names[roleSwatches.indexOf(rgb)],
+          fill: (rgb) => bubbleColors(rgb).fill,
+          onChanged: (rgb) => setState(() => _shown = rgb),
+          onChangeEnd: widget.onChanged,
         ),
       ],
     );

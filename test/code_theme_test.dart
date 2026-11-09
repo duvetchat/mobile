@@ -4,6 +4,7 @@ import 'package:duvet/data/appearance.dart' show bubbleColors, bubbleDarkInk;
 import 'package:duvet/data/code_theme.dart';
 import 'package:duvet/theme.dart';
 import 'package:duvet/widgets/code_highlight.dart';
+import 'package:duvet/widgets/color_picker.dart' show hexOf, parseHex;
 import 'package:flutter/painting.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
@@ -164,5 +165,14 @@ void main() {
     expect(bubbleColors(null), (fill: Duvet.azure, ink: const Color(0xFFFFFFFF), onDark: true));
     expect(bubbleColors(0xD6A400), (fill: const Color(0xFFD6A400), ink: bubbleDarkInk, onDark: false));
     expect(bubbleColors(0x8E4EC6).ink, const Color(0xFFFFFFFF));
+  });
+
+  test('a hex code is #RRGGBB, exactly', () {
+    expect(parseHex('#30A46C'), 0x30A46C);
+    expect(parseHex('#30a46c'), 0x30A46C);
+    for (final bad in ['', '30A46C', '#30A46', '#30A46C0', '#30A46G', ' #30A46C', '#FFF']) {
+      expect(parseHex(bad), isNull, reason: bad);
+    }
+    expect(hexOf(0x0090FF), '#0090FF');
   });
 }

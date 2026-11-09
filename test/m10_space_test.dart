@@ -13,6 +13,7 @@ import 'package:duvet/space_admin.dart';
 import 'package:duvet/spaces.dart' show pickSpaceIcon;
 import 'package:duvet/theme.dart';
 import 'package:duvet/widgets/chrome.dart';
+import 'package:duvet/widgets/color_picker.dart' show ColorPick;
 import 'package:duvet/widgets/glass.dart' show GlassRow;
 import 'package:duvet/widgets/rows.dart' show DuvetChip, DuvetTextField, OwnerCrown;
 import 'package:duvet/widgets/picture_edit.dart' show takePhoto;
@@ -1060,6 +1061,41 @@ void main() {
     await tapLabel(tester, 'Done');
     await tapLabel(tester, 'Save');
     expect(repository.admin.last, 'role~ role-mod color=30a46c');
+    semantics.dispose();
+  });
+
+  testWidgets('a role\'s name color can be any color, typed as #RRGGBB, solid or a gradient\'s stop', (tester) async {
+    final repository = await pumpSettings(tester);
+    await tapLabel(tester, RegExp(r'^Roles'));
+    await tapLabel(tester, RegExp(r'^Moderator'));
+    await tapLabel(tester, 'Name color: #30A46C');
+    await tapLabel(tester, 'Custom color');
+    final hex = find.descendant(of: find.byType(ColorPick), matching: find.byType(EditableText));
+    const error = 'Use #RRGGBB, as #30A46C';
+
+    // Half a code waits; a wrong one is turned down and changes nothing.
+    await tester.enterText(hex, '#12345');
+    await tester.pump();
+    expect(find.text(error), findsNothing);
+    await tester.enterText(hex, '#12345G');
+    await tester.pump();
+    expect(find.text(error), findsOneWidget);
+    expect(find.bySemanticsLabel('Preview: Moderator, #30A46C'), findsOneWidget);
+
+    await tester.enterText(hex, '#123456');
+    await tester.pumpAndSettle();
+    expect(find.text(error), findsNothing);
+    expect(find.bySemanticsLabel('Preview: Moderator, #123456'), findsOneWidget);
+    expect(find.bySemanticsLabel('Custom color, #123456'), findsOneWidget);
+
+    await tapLabel(tester, 'Gradient');
+    await tapLabel(tester, 'End');
+    await tester.enterText(hex, '#ABCDEF');
+    await tester.pumpAndSettle();
+    expect(find.bySemanticsLabel('Preview: Moderator, gradient, #123456 to #ABCDEF'), findsOneWidget);
+    await tapLabel(tester, 'Done');
+    await tapLabel(tester, 'Save');
+    expect(repository.admin.last, 'role~ role-mod color=123456..abcdef');
     semantics.dispose();
   });
 
