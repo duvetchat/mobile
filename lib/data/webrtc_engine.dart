@@ -4,6 +4,7 @@ import 'dart:math' as math;
 
 import 'package:duvet_client/duvet.dart' as duvet;
 import 'package:flutter/foundation.dart';
+import 'package:flutter/widgets.dart';
 import 'package:flutter_background/flutter_background.dart';
 import 'package:flutter_webrtc/flutter_webrtc.dart' as rtc;
 import 'package:permission_handler/permission_handler.dart';
@@ -55,9 +56,11 @@ class WebRtcVoiceEngine implements VoiceEngine {
   }
 
   @override
-  Future<VoiceMic?> openMicrophone() async {
+  Future<VoiceMic?> openMicrophone({bool noiseSuppression = true}) async {
     try {
-      final stream = await rtc.navigator.mediaDevices.getUserMedia({'audio': true, 'video': false});
+      final stream = await rtc.navigator.mediaDevices.getUserMedia(
+        microphoneConstraints(noiseSuppression: noiseSuppression),
+      );
       final tracks = stream.getAudioTracks();
       if (tracks.isEmpty) {
         await stream.dispose();
@@ -68,6 +71,68 @@ class WebRtcVoiceEngine implements VoiceEngine {
     } catch (e) {
       // Refused, or no microphone.
       debugPrint('voice: microphone: $e');
+      return null;
+    }
+  }
+
+  @override
+  Future<List<VoiceCameraDevice>> cameras() async {
+    try {
+      return [
+        for (final d in await rtc.navigator.mediaDevices.enumerateDevices())
+          if (d.kind == 'videoinput') VoiceCameraDevice(id: d.deviceId, label: d.label, facing: cameraFacing(d.label)),
+      ];
+    } catch (e) {
+      debugPrint('voice: cameras: $e');
+      return const [];
+    }
+  }
+
+  @override
+  Future<VoiceCamera?> openCamera({String? deviceId}) async {
+    try {
+      // iOS: flutter_webrtc asks itself (permission_handler's camera is
+      // compiled out there).
+      if (_android && !await Permission.camera.request().isGranted) return null;
+      final stream = await rtc.navigator.mediaDevices.getUserMedia(cameraConstraints(deviceId));
+      final tracks = stream.getVideoTracks();
+      if (tracks.isEmpty) {
+        await stream.dispose();
+        return null;
+      }
+      final facing = deviceId == null
+          ? CameraFacing.front
+          : (await cameras()).where((d) => d.id == deviceId).firstOrNull?.facing ?? CameraFacing.external;
+      return _Camera(stream, tracks.first, facing);
+    } catch (e) {
+      // Refused, or no camera.
+      debugPrint('voice: camera: $e');
+      return null;
+    }
+  }
+
+  // shortcut: flutter_background's service carries only the microphone type
+  // (it starts with every type in the manifest, and on Android 14 and later a
+  // camera or screen capture type fails to start without that permission
+  // granted first), and Android lets a screen capture run only under a
+  // service of the screen capture type, so getDisplayMedia fails here (its
+  // error comes back, no crash) until a service of that type is started
+  // between the consent and the capture.
+  @override
+  Future<VoiceScreen?> openScreen() async {
+    if (!_android) return null;
+    try {
+      // The consent first: getDisplayMedia then captures right away.
+      if (!await rtc.Helper.requestCapturePermission()) return null;
+      final stream = await rtc.navigator.mediaDevices.getDisplayMedia({'video': true, 'audio': false});
+      final tracks = stream.getVideoTracks();
+      if (tracks.isEmpty) {
+        await stream.dispose();
+        return null;
+      }
+      return _Screen(stream, tracks.first);
+    } catch (e) {
+      debugPrint('voice: screen: $e');
       return null;
     }
   }
@@ -208,6 +273,185 @@ AudioRoute? currentRoute(List<AudioRoute> available, AudioRoute? chosen, bool sp
           : of(AudioRouteKind.earpiece) ?? of(AudioRouteKind.speaker));
 }
 
+/// getUserMedia's microphone. flutter_webrtc passes audio constraints to
+/// WebRTC only as `mandatory` and `optional`, under WebRTC's own names, as
+/// strings.
+@visibleForTesting
+Map<String, Object> microphoneConstraints({required bool noiseSuppression}) => {
+  'audio': {
+    'mandatory': {
+      'googNoiseSuppression': '$noiseSuppression',
+      'googEchoCancellation': 'true',
+      'googAutoGainControl': 'true',
+    },
+    'optional': <Object>[],
+  },
+  'video': false,
+};
+
+/// getUserMedia's camera: [deviceId], else the front one, at 640x360 and up
+/// to 30 fps.
+@visibleForTesting
+Map<String, Object> cameraConstraints(String? deviceId) => {
+  'audio': false,
+  'video': {
+    'deviceId': ?deviceId,
+    if (deviceId == null) 'facingMode': 'user',
+    'width': 640,
+    'height': 360,
+    'frameRate': 30,
+  },
+};
+
+/// Which way a camera faces, from its name: flutter_webrtc drops Android's
+/// facing and keeps it in the label ("Camera 1, Facing front, Orientation
+/// 270"), and iOS names its cameras "Front Camera", "Back Camera"…
+@visibleForTesting
+CameraFacing cameraFacing(String label) {
+  final name = label.toLowerCase();
+  if (name.contains('front')) return CameraFacing.front;
+  if (name.contains('back') || name.contains('rear')) return CameraFacing.back;
+  return CameraFacing.external;
+}
+
+/// Whose video a remote stream is: the gateway sends a user's camera as
+/// `<user_id>.camera` and their screen in `<user_id>` (with their audio).
+/// Anything else is no one's.
+@visibleForTesting
+({String userId, VideoKind kind})? videoOwner(String streamId) {
+  final parts = streamId.split('.');
+  return switch (parts) {
+    [final id] when id.isNotEmpty => (userId: id, kind: VideoKind.screen),
+    [final id, 'camera'] when id.isNotEmpty => (userId: id, kind: VideoKind.camera),
+    _ => null,
+  };
+}
+
+/// [codecs] with VP8 first, the rest as they were: the gateway forwards video
+/// as it comes, and every client decodes VP8.
+@visibleForTesting
+List<rtc.RTCRtpCodecCapability> vp8First(List<rtc.RTCRtpCodecCapability> codecs) {
+  bool vp8(rtc.RTCRtpCodecCapability c) => c.mimeType.toLowerCase() == 'video/vp8';
+  return [...codecs.where(vp8), ...codecs.where((c) => !vp8(c))];
+}
+
+/// A renderer that is released only once it's ready: flutter_webrtc leaks the
+/// texture of one disposed while it initializes.
+class _Renderer {
+  final renderer = rtc.RTCVideoRenderer();
+  late final Future<void> _ready = renderer.initialize();
+  bool _released = false;
+
+  /// Shows [stream] once ready.
+  void show(rtc.MediaStream stream) => unawaited(
+    _ready
+        .then((_) {
+          if (!_released) renderer.srcObject = stream;
+        })
+        .catchError((Object e) => debugPrint('voice: video: $e')),
+  );
+
+  void release() {
+    if (_released) return;
+    _released = true;
+    unawaited(_ready.then((_) => renderer.dispose()).catchError((Object e) => debugPrint('voice: video: $e')));
+  }
+}
+
+/// A local capture's view, with its own renderer.
+class _Preview extends StatefulWidget {
+  final rtc.MediaStream stream;
+  final bool mirror;
+  const _Preview(this.stream, this.mirror);
+
+  @override
+  State<_Preview> createState() => _PreviewState();
+}
+
+class _PreviewState extends State<_Preview> {
+  final _renderer = _Renderer();
+
+  @override
+  void initState() {
+    super.initState();
+    _renderer.show(widget.stream);
+  }
+
+  // Another capture in the same place (a new camera picked): show it, not the stopped one.
+  @override
+  void didUpdateWidget(_Preview old) {
+    super.didUpdateWidget(old);
+    if (old.stream != widget.stream) _renderer.show(widget.stream);
+  }
+
+  @override
+  void dispose() {
+    _renderer.release();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) => rtc.RTCVideoView(
+    _renderer.renderer,
+    mirror: widget.mirror,
+    objectFit: rtc.RTCVideoViewObjectFit.RTCVideoViewObjectFitCover,
+  );
+}
+
+class _Capture implements VoiceVideoSource {
+  final rtc.MediaStream stream;
+  final rtc.MediaStreamTrack track;
+  final _ended = StreamController<void>.broadcast();
+  bool _stopped = false;
+
+  _Capture(this.stream, this.track) {
+    track.onEnded = () {
+      if (!_stopped) _ended.add(null);
+    };
+  }
+
+  @override
+  Widget preview({bool mirror = false}) => _Preview(stream, mirror);
+
+  @override
+  Stream<void> get onEnded => _ended.stream;
+
+  @override
+  Future<void> stop() async {
+    if (_stopped) return;
+    _stopped = true;
+    unawaited(_ended.close());
+    try {
+      await track.stop();
+      await stream.dispose();
+    } catch (e) {
+      debugPrint('voice: video: $e');
+    }
+  }
+}
+
+class _Camera extends _Capture implements VoiceCamera {
+  @override
+  CameraFacing facing;
+
+  _Camera(super.stream, super.track, this.facing);
+
+  @override
+  Future<void> switchFacing() async {
+    try {
+      // It answers whether the camera now is the front one.
+      final front = await rtc.Helper.switchCamera(track);
+      facing = front ? CameraFacing.front : CameraFacing.back;
+    } catch (e) {
+      debugPrint('voice: camera: $e');
+    }
+  }
+}
+
+class _Screen extends _Capture implements VoiceScreen {
+  _Screen(super.stream, super.track);
+}
+
 class _Mic implements VoiceMic {
   final rtc.MediaStream stream;
   final rtc.MediaStreamTrack track;
@@ -240,9 +484,23 @@ class _Peer implements VoicePeer {
   // duration totals, to average the level between two reads.
   final _totals = <String, ({double energy, double duration})>{};
 
+  // The camera transceiver's sender, the screen's while shared, and the
+  // camera's mid once the local description has one.
+  rtc.RTCRtpSender? _cameraSender;
+  rtc.RTCRtpSender? _screenSender;
+  var _labels = const <String, String>{};
+  void Function()? _negotiationNeeded;
+
+  // The others' cameras and screens, by track ID.
+  final _videos = <String, ({VoiceRemoteVideo video, _Renderer renderer})>{};
+  final _remoteVideos = ValueNotifier<List<VoiceRemoteVideo>>(const []);
+
   _Peer(this._pc) {
     _pc.onTrack = _onTrack;
-    _pc.onRemoveTrack = (_, track) => _forget(track.id);
+    _pc.onRemoveTrack = (_, track) {
+      _forget(track.id);
+      _dropVideo(track.id);
+    };
   }
 
   void _forget(String? trackId) {
@@ -274,12 +532,104 @@ class _Peer implements VoicePeer {
   void _onTrack(rtc.RTCTrackEvent event) {
     final track = event.track;
     final id = track.id;
-    if (track.kind != 'audio' || id == null) return;
+    if (id == null) return;
+    if (track.kind == 'video') return _showVideo(id, track, event.streams.firstOrNull);
+    if (track.kind != 'audio') return;
     final stream = event.streams.firstOrNull?.id;
     _tracks[id] = track;
     if (stream != null) _owners[id] = stream.split('.').first;
     track.enabled = _receiving;
     track.onEnded = () => _forget(id);
+  }
+
+  void _showVideo(String id, rtc.MediaStreamTrack track, rtc.MediaStream? stream) {
+    final owner = stream == null ? null : videoOwner(stream.id);
+    if (stream == null || owner == null) return;
+    final renderer = _Renderer()..show(stream);
+    final kind = owner.kind;
+    final video = VoiceRemoteVideo(
+      userId: owner.userId,
+      kind: kind,
+      view: (mirror) => rtc.RTCVideoView(
+        renderer.renderer,
+        mirror: mirror,
+        // A screen whole, a face filling its tile.
+        objectFit: kind == VideoKind.camera
+            ? rtc.RTCVideoViewObjectFit.RTCVideoViewObjectFitCover
+            : rtc.RTCVideoViewObjectFit.RTCVideoViewObjectFitContain,
+      ),
+    );
+    // One per user and kind, and per track: a new one replaces the old.
+    for (final old in [
+      for (final e in _videos.entries)
+        if (e.key == id || e.value.video == video) e.key,
+    ]) {
+      _dropVideo(old, publish: false);
+    }
+    _videos[id] = (video: video, renderer: renderer);
+    track.onEnded = () => _dropVideo(id);
+    _publishVideos();
+  }
+
+  void _dropVideo(String? id, {bool publish = true}) {
+    final entry = _videos.remove(id);
+    if (entry == null) return;
+    entry.renderer.release();
+    if (publish) _publishVideos();
+  }
+
+  void _publishVideos() => _remoteVideos.value = [for (final v in _videos.values) v.video];
+
+  @override
+  ValueListenable<List<VoiceRemoteVideo>> get remoteVideos => _remoteVideos;
+
+  @override
+  set onNegotiationNeeded(void Function()? handler) => _negotiationNeeded = handler;
+
+  @override
+  Map<String, String> get trackLabels => _labels;
+
+  @override
+  Future<void> addVideo() async {
+    if (_cameraSender != null) return;
+    final transceiver = await _pc.addTransceiver(
+      kind: rtc.RTCRtpMediaType.RTCRtpMediaTypeVideo,
+      init: rtc.RTCRtpTransceiverInit(
+        direction: rtc.TransceiverDirection.SendRecv,
+        sendEncodings: [rtc.RTCRtpEncoding(maxBitrate: 500000, maxFramerate: 30)],
+      ),
+    );
+    _cameraSender = transceiver.sender;
+    try {
+      final codecs = (await rtc.getRtpReceiverCapabilities('video')).codecs ?? const [];
+      await transceiver.setCodecPreferences(vp8First(codecs));
+    } catch (e) {
+      // WebRTC's own order then: the gateway still picks one both sides have.
+      debugPrint('voice: codecs: $e');
+    }
+  }
+
+  @override
+  Future<void> setCamera(VoiceCamera? camera) async =>
+      _cameraSender?.replaceTrack(camera is _Camera ? camera.track : null);
+
+  @override
+  Future<void> setScreen(VoiceScreen? screen) async {
+    final track = screen is _Screen ? screen.track : null;
+    final sender = _screenSender;
+    if (track == null && sender == null) return;
+    if (track != null && sender != null) {
+      // Another screen on the same sender: nothing to negotiate.
+      await sender.replaceTrack(track);
+      return;
+    }
+    if (sender != null) {
+      await _pc.removeTrack(sender);
+      _screenSender = null;
+    } else {
+      _screenSender = await _pc.addTrack(track!, (screen as _Screen).stream);
+    }
+    _negotiationNeeded?.call();
   }
 
   @override
@@ -323,11 +673,13 @@ class _Peer implements VoicePeer {
       duvet.SessionDescription(type: d.type ?? '', sdp: d.sdp ?? '');
 
   // flutter_webrtc reads only `mandatory` and `optional` (a flat map was
-  // ignored), and with no map at all it asks for video too.
+  // ignored), and with no map at all it asks for video too. Video isn't
+  // named: false would take receiving off every video transceiver, the
+  // others' cameras and screens with them.
   @override
   Future<duvet.SessionDescription> createOffer() async => _description(
     await _pc.createOffer({
-      'mandatory': {'OfferToReceiveAudio': true, 'OfferToReceiveVideo': false},
+      'mandatory': {'OfferToReceiveAudio': true},
       'optional': [],
     }),
   );
@@ -336,8 +688,16 @@ class _Peer implements VoicePeer {
   Future<duvet.SessionDescription> createAnswer() async => _description(await _pc.createAnswer({}));
 
   @override
-  Future<void> setLocalDescription(duvet.SessionDescription d) =>
-      _pc.setLocalDescription(rtc.RTCSessionDescription(d.sdp, d.type));
+  Future<void> setLocalDescription(duvet.SessionDescription d) async {
+    await _pc.setLocalDescription(rtc.RTCSessionDescription(d.sdp, d.type));
+    final camera = _cameraSender;
+    if (camera == null) return;
+    // flutter_webrtc's transceivers keep the mid they had when read: a fresh
+    // read has the one the description gave it.
+    final transceivers = await _pc.getTransceivers();
+    final mid = transceivers.where((t) => t.sender.senderId == camera.senderId).firstOrNull?.mid;
+    _labels = mid == null || mid.isEmpty ? const {} : {mid: 'camera'};
+  }
 
   @override
   Future<void> setRemoteDescription(duvet.SessionDescription d) =>
@@ -400,6 +760,10 @@ class _Peer implements VoicePeer {
 
   @override
   Future<void> close() async {
+    for (final id in [..._videos.keys]) {
+      _dropVideo(id, publish: false);
+    }
+    _publishVideos();
     try {
       await _pc.close();
       await _pc.dispose();

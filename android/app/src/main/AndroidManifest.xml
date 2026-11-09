@@ -4,6 +4,10 @@
     <uses-permission android:name="android.permission.INTERNET"/>
     <!-- Voice notes, and voice rooms and calls. -->
     <uses-permission android:name="android.permission.RECORD_AUDIO"/>
+    <!-- The camera in voice rooms and calls; a phone without one still
+         installs the app. -->
+    <uses-permission android:name="android.permission.CAMERA"/>
+    <uses-feature android:name="android.hardware.camera" android:required="false"/>
     <!-- Voice and calls: WebRTC routes the sound (loudspeaker, earpiece,
          headsets) and follows the network through a change. -->
     <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS"/>

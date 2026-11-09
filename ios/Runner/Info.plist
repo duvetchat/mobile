@@ -7,7 +7,7 @@
 	<key>NSPhotoLibraryAddUsageDescription</key>
 	<string>Duvet saves photos you choose to keep.</string>
 	<key>NSCameraUsageDescription</key>
-	<string>Duvet takes photos to send in your chats.</string>
+	<string>Duvet takes photos to send in your chats and shows your camera in voice rooms and calls.</string>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>Duvet records voice notes and carries your voice in calls.</string>
 	<key>UIBackgroundModes</key>
