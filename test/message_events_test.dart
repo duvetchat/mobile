@@ -1043,7 +1043,8 @@ void main() {
     final reread = messageFromJson(
       jsonDecode(jsonEncode(messageToJson((events.single as MessageCreated).message))) as Map<String, Object?>,
     ).embeds.first;
-    expect((reread.authorName, reread.footer, reread.colors), ('CI', 'GitHub', [0x22C55E, 0x14B8A6, 0x3B82F6]));
+    expect((reread.authorName, reread.footer), ('CI', 'GitHub'));
+    expect(reread.colors, [0x22C55E, 0x14B8A6, 0x3B82F6]);
     expect((reread.fields.single.name, reread.timestamp), ('Branch', DateTime.parse(_at).toLocal()));
   });
 
