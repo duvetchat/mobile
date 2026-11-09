@@ -1096,7 +1096,7 @@ class EmbedCard extends StatelessWidget {
       ?e.footer,
       if (e.timestamp case final t?)
         '${MaterialLocalizations.of(context).formatCompactDate(t)}, '
-            '${MaterialLocalizations.of(context).formatTimeOfDay(TimeOfDay.fromDateTime(t))}',
+            '${MaterialLocalizations.of(context).formatTimeOfDay(TimeOfDay.fromDateTime(t), alwaysUse24HourFormat: MediaQuery.alwaysUse24HourFormatOf(context))}',
     ].join(' • ');
     final text = Column(
       crossAxisAlignment: CrossAxisAlignment.start,

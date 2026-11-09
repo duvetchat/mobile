@@ -25,6 +25,17 @@ void main() {
     );
   });
 
+  test('a card with an author, fields or a footer keeps its link, picture or not', () {
+    const post = 'https://example.invalid/post';
+    for (final card in const [
+      MessageEmbed(url: post, imageUrl: gif, authorName: 'CI'),
+      MessageEmbed(url: post, imageUrl: gif, fields: [(name: 'Branch', value: 'dev', inline: true)]),
+      MessageEmbed(url: post, imageUrl: gif, footer: 'GitHub'),
+    ]) {
+      expect(withoutPreviewedLinks(post, [card]), post);
+    }
+  });
+
   test('an invite goes for its card, unless there\'s no card', () {
     const invite = 'https://duvet.chat/invite?code=abc';
     expect(withoutPreviewedLinks('join us $invite', const []), 'join us');
