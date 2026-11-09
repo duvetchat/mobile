@@ -26,7 +26,7 @@ void main() {
         readableContent(content, nameOf: (id) => id == _maya ? 'Maya' : null, emojiNameOf: (_) => 'party'),
         'hey @Maya :party:!',
       );
-      expect(readableContent('<@0a0a0a0a-ffff>'), '@someone');
+      expect(readableContent('<@0a0a0a0a-ffff>'), '@0a0a0a0a');
       expect(mentionedIn(content), {_maya});
       expect(
         readableContent('see <#$_design> and <#$_gone>', roomNameOf: (id) => id == _design ? 'design' : null),

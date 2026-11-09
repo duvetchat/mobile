@@ -108,8 +108,9 @@ class ChatView extends StatefulWidget {
 
 class _ChatViewState extends State<ChatView> {
   static const _pageSize = 100;
-  static const _typingFor = Duration(seconds: 6);
-  static const _typingEvery = Duration(seconds: 5);
+  // As the desktop: a notice every 3 s while typing, shown for 5 s.
+  static const _typingFor = Duration(seconds: 5);
+  static const _typingEvery = Duration(seconds: 3);
 
   late final _composer = ComposerController(accent: () => context.duvet.accentText);
   final _scroll = ScrollController();
@@ -156,8 +157,10 @@ class _ChatViewState extends State<ChatView> {
   MessageReply? _replyTo;
   ChatMessage? _editing;
 
-  // The last message read when the chat opened: the "New messages" divider
-  // goes after it.
+  // The last message read when the chat opened: the "N new messages" divider
+  // goes after it. Or, as the desktop places one later in the visit, the last
+  // one seen when someone else's came while the reader was up the list, or
+  // away from the chat.
   String? _unreadAfter;
   // When that one wasn't loaded on opening (further back than the first page,
   // or deleted), the first message loaded after it, as the desktop does: the
@@ -165,6 +168,9 @@ class _ChatViewState extends State<ChatView> {
   // or not.
   String? _unreadFrom;
   final _dividerKey = GlobalKey();
+  // One placed while away from the chat at its bottom is brought into view
+  // once back, as the desktop does.
+  bool _showDividerOnReturn = false;
   final _keys = <String, GlobalKey>{};
 
   /// Messages being deleted, gone to dust: their place stays a moment,
@@ -193,7 +199,7 @@ class _ChatViewState extends State<ChatView> {
       if (mounted) setState(() => _catalog = c);
     }, onError: (Object e) => debugPrint('emoji: $e'));
     _lifecycle = AppLifecycleListener(
-      onResume: _readIfSeen,
+      onResume: _back,
       onStateChange: (_) {
         if (_events != null) _reportScreen(opened: false);
       },
@@ -208,7 +214,7 @@ class _ChatViewState extends State<ChatView> {
     final onTop = ModalRoute.of(context)?.isCurrent ?? true;
     if (onTop != _onTop) {
       _onTop = onTop;
-      if (onTop) WidgetsBinding.instance.addPostFrameCallback((_) => _readIfSeen());
+      if (onTop) WidgetsBinding.instance.addPostFrameCallback((_) => _back());
       if (_events != null) _reportScreenAfterBuild();
     }
     if (_events != null) return;
@@ -421,7 +427,7 @@ class _ChatViewState extends State<ChatView> {
       if (e.delivery == _Delivery.sent && !e.message.isEphemeral) e.message,
   ];
 
-  /// Brings the "New messages" divider into view, near the top.
+  /// Brings the "N new messages" divider into view, near the top.
   Future<void> _showDivider() async {
     if (!mounted || !_entries.any((e) => e.message.id == (_unreadFrom ?? _unreadAfter))) return;
     if (await _scrollUntilBuilt(() => _dividerKey.currentContext)) {
@@ -469,6 +475,7 @@ class _ChatViewState extends State<ChatView> {
       if (!mounted || missed.isEmpty) return;
       setState(() {
         for (final m in missed) {
+          _markUnreadFrom(m);
           _upsert(m);
         }
       });
@@ -513,6 +520,16 @@ class _ChatViewState extends State<ChatView> {
     _markRead();
   }
 
+  /// Back at the chat: read, as it was left at its bottom, and the divider
+  /// placed meanwhile, if any, brought into view.
+  void _back() {
+    _readIfSeen();
+    if (!_showDividerOnReturn) return;
+    _showDividerOnReturn = false;
+    // Not before a frame: none ran while the app was behind, so the divider isn't built yet.
+    WidgetsBinding.instance.endOfFrame.then((_) => _showDivider());
+  }
+
   static bool get _inFront => switch (WidgetsBinding.instance.lifecycleState) {
     null || AppLifecycleState.resumed || AppLifecycleState.inactive => true,
     _ => false,
@@ -540,6 +557,7 @@ class _ChatViewState extends State<ChatView> {
       switch (event) {
         case MessageCreated(:final message):
           _stopTyping(message.authorId);
+          _markUnreadFrom(message);
           _upsert(message);
         case MessageUpdated(:final message):
           _applyUpdate(message);
@@ -589,6 +607,20 @@ class _ChatViewState extends State<ChatView> {
       }
     });
     if (event is MessageCreated) _readIfSeen();
+  }
+
+  /// Someone else's [message] coming while the reader doesn't see the newest
+  /// (up the list, the app behind, a chat over this one) places the divider
+  /// after the last message they saw, unless the visit has one already.
+  void _markUnreadFrom(ChatMessage message) {
+    // A thread acks nothing, so has no last seen: it gets no divider, as on opening.
+    final seen = _acked;
+    if (seen == null || _unreadAfter != null || _unreadFrom != null) return;
+    if (message.authorId == _me || message.id.compareTo(seen) <= 0) return;
+    if (_onTop && _inFront && _atBottom) return;
+    if (!_entries.any((e) => e.message.id == seen)) return;
+    _unreadAfter = seen;
+    if (_atBottom) _showDividerOnReturn = true;
   }
 
   /// An edit, or a link preview that came late, merged into the message (see
@@ -2524,7 +2556,10 @@ class _ChatViewState extends State<ChatView> {
         }
         return switch (items[items.length - 1 - index]) {
           _Day(:final day) => _DaySeparator(day: day),
-          _NewMessages() => _NewMessagesDivider(key: _dividerKey),
+          _NewMessages(:final count) => _NewMessagesDivider(
+            key: _dividerKey,
+            text: count == 1 ? '1 new message' : '$count new messages',
+          ),
           _Replies(:final count) => _NewMessagesDivider(text: count == 1 ? '1 reply' : '$count replies', quiet: true),
           _Message(:final entry, :final first, :final last) =>
             entry.message.isNotice
@@ -2564,7 +2599,7 @@ class _ChatViewState extends State<ChatView> {
   }
 
   /// The entries, oldest first, with a separator where the day changes, the
-  /// "New messages" divider after the last one read (or above [_unreadFrom]),
+  /// "N new messages" divider after the last one read (or above [_unreadFrom]),
   /// and each message marked first and last of its run: one author, minutes
   /// apart. A webhook has no author ID: its own ID and the name it posts under
   /// stand in, as on the desktop. A person's name isn't compared: the history
@@ -2579,7 +2614,7 @@ class _ChatViewState extends State<ChatView> {
       final newDay = previous == null || !_sameDay(previous.createdAt, m.createdAt);
       if (newDay) items.add(_Day(day));
       final unreadStart = _unreadFrom != null ? m.id == _unreadFrom : previous != null && previous.id == _unreadAfter;
-      if (unreadStart) items.add(const _NewMessages());
+      if (unreadStart) items.add(_NewMessages(_entries.length - i));
       if (widget.threadOf != null && i == 1) items.add(_Replies(_entries.length - 1));
       final nextBreaks = next == null || (_unreadFrom != null ? next.id == _unreadFrom : m.id == _unreadAfter);
       items.add(
@@ -2644,7 +2679,9 @@ class _Day extends _Item {
 }
 
 class _NewMessages extends _Item {
-  const _NewMessages();
+  /// The messages below it, as the desktop counts them.
+  final int count;
+  const _NewMessages(this.count);
 }
 
 /// In a thread, between its root and the replies.

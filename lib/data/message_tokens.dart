@@ -47,8 +47,9 @@ List<MessageToken> tokenize(String content) {
   return tokens;
 }
 
-/// [content] as people read it: `@Maya`, `#general` and `:party:`, or
-/// `@someone`, `#unknown` and `:emoji:` for names not known here.
+/// [content] as people read it: `@Maya`, `#general` and `:party:`, or, for
+/// names not known here, the desktop's `@` and the user ID's first 8
+/// characters, `#unknown` and `:emoji:`.
 String readableContent(
   String content, {
   String? Function(String userId)? nameOf,
@@ -57,7 +58,7 @@ String readableContent(
 }) => content.replaceAllMapped(
   _token,
   (m) => switch (m.groups([1, 2, 3])) {
-    [final user?, _, _] => '@${nameOf?.call(user) ?? 'someone'}',
+    [final user?, _, _] => '@${nameOf?.call(user) ?? user.substring(0, 8)}',
     [_, final emoji?, _] => ':${emojiNameOf?.call(emoji) ?? 'emoji'}:',
     [_, _, final room] => '#${roomNameOf?.call(room!) ?? 'unknown'}',
     _ => throw StateError('unreachable'),

@@ -2939,13 +2939,15 @@ class _InvitesAdminPageState extends State<InvitesAdminPage> {
     _invites = context.repository.spaceInvites(widget.spaceId);
   });
 
-  static String _until(DateTime? t) {
-    if (t == null) return 'never expires';
-    final left = t.difference(DateTime.now());
-    if (left.isNegative) return 'expired';
-    if (left.inDays >= 1) return 'expires in ${left.inDays} ${left.inDays == 1 ? 'day' : 'days'}';
-    if (left.inHours >= 1) return 'expires in ${left.inHours} h';
-    return 'expires in ${left.inMinutes} min';
+  /// As the desktop: "Expires 11/15/2026, 3:04 PM", or "Never expires".
+  String _until(DateTime? t) {
+    if (t == null) return 'Never expires';
+    final l = MaterialLocalizations.of(context);
+    final time = l.formatTimeOfDay(
+      TimeOfDay.fromDateTime(t),
+      alwaysUse24HourFormat: MediaQuery.alwaysUse24HourFormatOf(context),
+    );
+    return 'Expires ${l.formatCompactDate(t)}, $time';
   }
 
   Future<void> _revoke(SpaceInvite i) async {

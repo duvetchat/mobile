@@ -279,44 +279,8 @@ class _InviteCardState extends State<InviteCard> {
       future: _invite,
       builder: (context, snapshot) {
         final invite = snapshot.data;
-        if (snapshot.hasError) {
-          return Semantics(
-            container: true,
-            label: 'Invite expired. Ask for a new link',
-            excludeSemantics: true,
-            child: Container(
-              width: 240,
-              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-              decoration: BoxDecoration(
-                color: colors.card,
-                borderRadius: BorderRadius.circular(DuvetTokens.radiusButton),
-                boxShadow: tokens.shadowRest,
-              ),
-              child: Row(
-                children: [
-                  Opacity(
-                    opacity: 0.6,
-                    child: SpaceIcon(
-                      space: const Space(id: '', name: '?'),
-                      size: 40,
-                    ),
-                  ),
-                  const SizedBox(width: 12),
-                  Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(
-                        'Invite expired',
-                        style: DuvetType.rowTitle.copyWith(fontSize: 15, color: colors.foreground),
-                      ),
-                      Text('Ask for a new link', style: DuvetType.caption.copyWith(color: colors.mutedForeground)),
-                    ],
-                  ),
-                ],
-              ),
-            ),
-          );
-        }
+        // One that doesn't load shows nothing, as on the desktop.
+        if (snapshot.hasError) return const SizedBox.shrink();
         if (invite == null) {
           return const SizedBox(
             width: 280,

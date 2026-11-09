@@ -1207,7 +1207,7 @@ void main() {
       ],
     );
     await tapLabel(tester, RegExp(r'^Invites, 1 active'));
-    expect(find.text('#general · Maya · never expires'), findsOneWidget);
+    expect(find.text('#general · Maya · Never expires'), findsOneWidget);
     await tapLabel(tester, RegExp(r'^crit-night'));
     await tapLabel(tester, 'Revoke link');
     expect(repository.admin, ['revoke i1']);
