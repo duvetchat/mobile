@@ -959,47 +959,6 @@ void main() {
     expect(replyBack.reply!.mentionAuthor, isTrue);
   });
 
-  test('an embed keeps its colors, author, fields, footer and date, and the offline cache keeps them', () async {
-    final events = await listen(_room);
-    repository.handleEvent(
-      _event('MESSAGE_CREATE', {
-        ..._answer('17', 'deployed', flags: 0),
-        'embeds': [
-          {
-            'type': 'rich',
-            'color': {'color_from': 0x22C55E, 'color_via': 0x14B8A6, 'color_to': 0x3B82F6},
-            'author': {'name': 'CI', 'url': 'https://ci.example', 'icon_url': 'https://ci.example/i.png'},
-            'fields': [
-              {'name': 'Branch', 'value': 'dev', 'inline': true},
-            ],
-            'footer': {'text': 'GitHub'},
-            'timestamp': _at,
-          },
-          {
-            'type': 'rich',
-            'title': 'One color',
-            'color': {'color_from': 0xEF4444, 'color_via': 0x000000},
-          },
-        ],
-      }),
-    );
-    await pumpEventQueue();
-    final [rich, plain] = (events.single as MessageCreated).message.embeds;
-    expect(rich.title, isNull, reason: 'the author shows as itself, not as the title');
-    expect((rich.authorName, rich.authorUrl, rich.footer), ('CI', 'https://ci.example', 'GitHub'));
-    expect(rich.colors, [0x22C55E, 0x14B8A6, 0x3B82F6]);
-    expect(rich.fields.single, (name: 'Branch', value: 'dev', inline: true));
-    expect(rich.timestamp, DateTime.parse(_at).toLocal());
-    // Without its end, only its start: as the desktop's border.
-    expect(plain.colors, [0xEF4444]);
-
-    final reread = messageFromJson(
-      jsonDecode(jsonEncode(messageToJson((events.single as MessageCreated).message))) as Map<String, Object?>,
-    ).embeds.first;
-    expect((reread.authorName, reread.footer, reread.colors), ('CI', 'GitHub', [0x22C55E, 0x14B8A6, 0x3B82F6]));
-    expect((reread.fields.single.name, reread.timestamp), ('Branch', DateTime.parse(_at).toLocal()));
-  });
-
   test('a webhook\'s message keeps its webhook, which tells it from another\'s', () async {
     final events = await listen(_room);
     repository.handleEvent(
@@ -1045,6 +1004,47 @@ void main() {
     await repository.logIn('gaby@duvet.chat', 'secret');
     final go = (await repository.commands('s-1')).single;
     expect(go.options.single.roomTypes, [1, 3]);
+  });
+
+  test('an embed keeps its colors, author, fields, footer and date, and the offline cache keeps them', () async {
+    final events = await listen(_room);
+    repository.handleEvent(
+      _event('MESSAGE_CREATE', {
+        ..._answer('17', 'deployed', flags: 0),
+        'embeds': [
+          {
+            'type': 'rich',
+            'color': {'color_from': 0x22C55E, 'color_via': 0x14B8A6, 'color_to': 0x3B82F6},
+            'author': {'name': 'CI', 'url': 'https://ci.example', 'icon_url': 'https://ci.example/i.png'},
+            'fields': [
+              {'name': 'Branch', 'value': 'dev', 'inline': true},
+            ],
+            'footer': {'text': 'GitHub'},
+            'timestamp': _at,
+          },
+          {
+            'type': 'rich',
+            'title': 'One color',
+            'color': {'color_from': 0xEF4444, 'color_via': 0x000000},
+          },
+        ],
+      }),
+    );
+    await pumpEventQueue();
+    final [rich, plain] = (events.single as MessageCreated).message.embeds;
+    expect(rich.title, isNull, reason: 'the author shows as itself, not as the title');
+    expect((rich.authorName, rich.authorUrl, rich.footer), ('CI', 'https://ci.example', 'GitHub'));
+    expect(rich.colors, [0x22C55E, 0x14B8A6, 0x3B82F6]);
+    expect(rich.fields.single, (name: 'Branch', value: 'dev', inline: true));
+    expect(rich.timestamp, DateTime.parse(_at).toLocal());
+    // Without its end, only its start: as the desktop's border.
+    expect(plain.colors, [0xEF4444]);
+
+    final reread = messageFromJson(
+      jsonDecode(jsonEncode(messageToJson((events.single as MessageCreated).message))) as Map<String, Object?>,
+    ).embeds.first;
+    expect((reread.authorName, reread.footer, reread.colors), ('CI', 'GitHub', [0x22C55E, 0x14B8A6, 0x3B82F6]));
+    expect((reread.fields.single.name, reread.timestamp), ('Branch', DateTime.parse(_at).toLocal()));
   });
 
   test('a send or a pin the API refuses says why, as the desktop shows it', () async {
