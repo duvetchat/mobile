@@ -552,7 +552,7 @@ class _VoiceMoreState extends State<_VoiceMore> {
   // consent) never comes up over it.
   void _then(Future<void> Function() action) {
     Navigator.of(context).pop();
-    action();
+    unawaited(action());
   }
 
   @override
