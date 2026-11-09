@@ -363,7 +363,6 @@ class _VoiceRoomScreenState extends State<VoiceRoomScreen> {
     return ListenableBuilder(
       listenable: Listenable.merge([
         voice,
-        voice.levels,
         voice.remoteVideos,
         VoicePrefsScope.maybeOf(context),
         repository.spaces,

@@ -133,7 +133,6 @@ class _CallScreenState extends State<CallScreen> with _Ticking {
     return ListenableBuilder(
       listenable: Listenable.merge([
         voice,
-        voice.levels,
         voice.remoteVideos,
         VoicePrefsScope.maybeOf(context),
         repository.conversations,

@@ -90,7 +90,6 @@ class _VoiceStageState extends State<VoiceStage> {
       final rows = (n / columns).ceil();
       final fill = (box.maxHeight - widget.padding.vertical - (rows - 1) * 12) / rows;
       final extent = n <= 4 ? math.max(156.0, fill) : 180.0;
-      final eyes = eyesToward(widget.people, context.voice.levels.value, columns);
       return GridView.builder(
         padding: widget.padding,
         gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
@@ -100,7 +99,12 @@ class _VoiceStageState extends State<VoiceStage> {
           mainAxisExtent: extent,
         ),
         itemCount: n,
-        itemBuilder: (context, i) => _tile(tiles[i], eyes: eyes[tiles[i].person.id] ?? Offset.zero, size: extent),
+        // A tile that moves (someone before it left) keeps its video view.
+        findChildIndexCallback: (key) {
+          final i = tiles.indexWhere((t) => ValueKey(t.key) == key);
+          return i < 0 ? null : i;
+        },
+        itemBuilder: (context, i) => _tile(tiles[i], columns: columns, size: extent),
       );
     },
   );
@@ -129,25 +133,24 @@ class _VoiceStageState extends State<VoiceStage> {
     );
   }
 
-  Widget _tile(_Tile t, {Offset eyes = Offset.zero, required double size}) {
+  /// [columns] is the grid's, for the eyes; null out of the grid, where they look ahead.
+  Widget _tile(_Tile t, {int? columns, required double size}) {
     final focused = _focused == t.key;
     void toggle() => setState(() => _focused = focused ? null : t.key);
     return t.screen
         ? _screenTile(t.person, focused: focused, onTap: toggle, key: ValueKey(t.key))
-        : _personTile(t.person, eyes: eyes, size: size, focused: focused, onTap: toggle, key: ValueKey(t.key));
+        : _personTile(t.person, columns: columns, size: size, focused: focused, onTap: toggle, key: ValueKey(t.key));
   }
 
   Widget _personTile(
     VoicePerson p, {
-    required Offset eyes,
+    required int? columns,
     required double size,
     required bool focused,
     required VoidCallback onTap,
     Key? key,
   }) {
     final voice = context.voice;
-    final level = voice.levels.value[p.id] ?? 0;
-    final speaking = level > 0 && !p.muted;
     // Only this place's: the user's own capture, else the camera coming in.
     final camera = voice.camera;
     final video = !p.camera || !widget.here
@@ -161,36 +164,52 @@ class _VoiceStageState extends State<VoiceStage> {
     final faceSize = (size * 0.4).clamp(48.0, 120.0);
     final faces = VoicePrefsScope.maybeOf(context)?.facesInVoice ?? false;
     final reduce = MediaQuery.disableAnimationsOf(context);
-    return _TileFrame(
+    // The levels tick about five times a second: only the frame and the face
+    // follow them, the same video widget passing through untouched.
+    return ValueListenableBuilder(
       key: key,
-      label: [
-        p.isMe ? '${p.name} (you)' : p.name,
-        if (p.deafened) 'deafened' else if (p.muted) 'muted',
-        if (p.camera) video == null ? 'camera on, video is off' : 'camera on',
-        if (speaking) 'speaking',
-      ].join(', '),
-      name: p.name,
-      marks: [
-        if (p.deafened) FLucideIcons.headphoneOff else if (p.muted) FLucideIcons.micOff,
-        if (p.camera && video == null) FLucideIcons.videoOff,
-      ],
-      speaking: speaking,
-      bannerUrl: video == null ? p.bannerUrl : null,
-      media: video != null,
-      focused: focused,
-      onTap: onTap,
-      child:
-          video ??
-          Center(
-            child: faces
-                ? VoiceFace(name: p.name, level: speaking ? level : 0, eyeOffset: eyes, size: faceSize)
-                : TweenAnimationBuilder<double>(
-                    tween: Tween(end: speaking ? level : 0),
-                    duration: reduce ? Duration.zero : const Duration(milliseconds: 150),
-                    builder: (context, open, _) =>
-                        UserAvatar(name: p.name, url: p.avatarUrl, size: faceSize, mouthOpen: open, eyeOffset: eyes),
-                  ),
-          ),
+      valueListenable: voice.levels,
+      child: video,
+      builder: (context, levels, video) {
+        final level = levels[p.id] ?? 0;
+        final speaking = level > 0 && !p.muted;
+        final eyes = columns == null ? Offset.zero : eyesToward(widget.people, levels, columns)[p.id] ?? Offset.zero;
+        return _TileFrame(
+          label: [
+            p.isMe ? '${p.name} (you)' : p.name,
+            if (p.deafened) 'deafened' else if (p.muted) 'muted',
+            if (p.camera) video == null ? 'camera on, video is off' : 'camera on',
+            if (speaking) 'speaking',
+          ].join(', '),
+          name: p.name,
+          marks: [
+            if (p.deafened) FLucideIcons.headphoneOff else if (p.muted) FLucideIcons.micOff,
+            if (p.camera && video == null) FLucideIcons.videoOff,
+          ],
+          speaking: speaking,
+          bannerUrl: video == null ? p.bannerUrl : null,
+          media: video != null,
+          focused: focused,
+          onTap: onTap,
+          child:
+              video ??
+              Center(
+                child: faces
+                    ? VoiceFace(name: p.name, level: speaking ? level : 0, eyeOffset: eyes, size: faceSize)
+                    : TweenAnimationBuilder<double>(
+                        tween: Tween(end: speaking ? level : 0),
+                        duration: reduce ? Duration.zero : const Duration(milliseconds: 150),
+                        builder: (context, open, _) => UserAvatar(
+                          name: p.name,
+                          url: p.avatarUrl,
+                          size: faceSize,
+                          mouthOpen: open,
+                          eyeOffset: eyes,
+                        ),
+                      ),
+              ),
+        );
+      },
     );
   }
 

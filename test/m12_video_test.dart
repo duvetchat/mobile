@@ -70,6 +70,18 @@ VoiceRemoteVideo _video(String user, VideoKind kind) => VoiceRemoteVideo(
   view: (_) => SizedBox.expand(key: Key('$user-${kind.name}')),
 );
 
+/// A video view that counts its builds.
+class _Counted extends StatelessWidget {
+  final VoidCallback onBuild;
+  const _Counted(this.onBuild);
+
+  @override
+  Widget build(BuildContext context) {
+    onBuild();
+    return const SizedBox.expand();
+  }
+}
+
 void main() {
   setUp(() => FlutterSecureStorage.setMockInitialValues({}));
 
@@ -254,6 +266,28 @@ void main() {
     await settle(tester);
     expect(find.byKey(const Key('$_maya-camera')), findsNothing);
     expect(find.bySemanticsLabel('Maya, camera on, video is off'), findsOneWidget);
+    semantics.dispose();
+    await finish(tester, app);
+  });
+
+  testWidgets('a voice level tick moves the mouths, not the video views', (tester) async {
+    final semantics = tester.ensureSemantics();
+    final app = await pumpApp(tester);
+    await joinLounge(tester, app);
+    var views = 0;
+    app.gateway.push(_state(_maya, 3, camera: true));
+    app.engine.peer.remoteVideos.value = [
+      VoiceRemoteVideo(userId: _maya, kind: VideoKind.camera, view: (_) => _Counted(() => views++)),
+    ];
+    await settle(tester);
+    final before = views;
+    expect(before, greaterThan(0));
+
+    app.engine.peer.levels = (local: null, remote: {_maya: 0.5});
+    await tester.pump(const Duration(milliseconds: 200));
+    await tester.pump(const Duration(milliseconds: 200));
+    expect(find.bySemanticsLabel('Maya, camera on, speaking'), findsOneWidget);
+    expect(views, before);
     semantics.dispose();
     await finish(tester, app);
   });
