@@ -263,17 +263,6 @@ void main() {
       ],
     },
     {
-      'type': 9,
-      'components': [
-        {'type': 10, 'content': 'Cover art'},
-      ],
-      'accessory': {
-        'type': 11,
-        'description': 'Cover',
-        'media': {'url': pictureUrl},
-      },
-    },
-    {
       'type': 13,
       'name': 'report.pdf',
       'size': 2048,
@@ -289,10 +278,22 @@ void main() {
         },
       ],
     },
+    // Last, by the composer: a tap reaches it, not the top bar.
+    {
+      'type': 9,
+      'components': [
+        {'type': 10, 'content': 'Cover art'},
+      ],
+      'accessory': {
+        'type': 11,
+        'description': 'Cover',
+        'media': {'url': pictureUrl},
+      },
+    },
   ];
 
   test('v2 components keep their accent color, spoilers, a file\'s name and size, and a gallery item\'s', () {
-    final [container, _, file, gallery] = componentsFromJson(v2());
+    final [container, file, gallery, _] = componentsFromJson(v2());
     expect((container.accentColor, container.spoiler), (0x5865F2, true));
     expect((file.mediaUrl, file.mediaAttachmentId, file.fileName, file.fileSize), (fileUrl, 'f-1', 'report.pdf', 2048));
     final item = gallery.gallery.single;

@@ -959,43 +959,6 @@ void main() {
     expect(replyBack.reply!.mentionAuthor, isTrue);
   });
 
-  test('a v2 file the message carries, a path on the API\'s host, gets a whole link', () async {
-    final events = await listen(_room);
-    repository.handleEvent(
-      _event('MESSAGE_CREATE', {
-        ..._answer('16', '', flags: 1 << 15),
-        'components': [
-          {
-            'type': 13,
-            'name': 'report.pdf',
-            'file': {'url': '/attachments/f-1?sig=abc', 'attachment_id': 'f-1'},
-          },
-          {
-            'type': 12,
-            'items': [
-              {
-                'media': {'url': '/attachments/p-1?sig=abc'},
-              },
-              {
-                'media': {'url': 'https://cdn.example/cat.png'},
-              },
-            ],
-          },
-        ],
-      }),
-    );
-    await pumpEventQueue();
-    final m = (events.single as MessageCreated).message;
-    expect(m.components[0].mediaUrl, 'https://api.duvet.chat/attachments/f-1?sig=abc');
-    expect(m.components[1].gallery.map((i) => i.url), [
-      'https://api.duvet.chat/attachments/p-1?sig=abc',
-      'https://cdn.example/cat.png',
-    ]);
-    // The offline cache keeps the whole links.
-    final reread = messageFromJson(jsonDecode(jsonEncode(messageToJson(m))) as Map<String, Object?>);
-    expect(reread.components[0].mediaUrl, 'https://api.duvet.chat/attachments/f-1?sig=abc');
-  });
-
   test('a webhook\'s message keeps its webhook, which tells it from another\'s', () async {
     final events = await listen(_room);
     repository.handleEvent(
@@ -1035,6 +998,43 @@ void main() {
     expect(back.isNotice, isTrue);
     expect(back.call!.participants, [_maya, _me]);
     expect(back.call!.duration, const Duration(minutes: 5));
+  });
+
+  test('a v2 file the message carries, a path on the API\'s host, gets a whole link', () async {
+    final events = await listen(_room);
+    repository.handleEvent(
+      _event('MESSAGE_CREATE', {
+        ..._answer('16', '', flags: 1 << 15),
+        'components': [
+          {
+            'type': 13,
+            'name': 'report.pdf',
+            'file': {'url': '/attachments/f-1?sig=abc', 'attachment_id': 'f-1'},
+          },
+          {
+            'type': 12,
+            'items': [
+              {
+                'media': {'url': '/attachments/p-1?sig=abc'},
+              },
+              {
+                'media': {'url': 'https://cdn.example/cat.png'},
+              },
+            ],
+          },
+        ],
+      }),
+    );
+    await pumpEventQueue();
+    final m = (events.single as MessageCreated).message;
+    expect(m.components[0].mediaUrl, 'https://api.duvet.chat/attachments/f-1?sig=abc');
+    expect(m.components[1].gallery.map((i) => i.url), [
+      'https://api.duvet.chat/attachments/p-1?sig=abc',
+      'https://cdn.example/cat.png',
+    ]);
+    // The offline cache keeps the whole links.
+    final reread = messageFromJson(jsonDecode(jsonEncode(messageToJson(m))) as Map<String, Object?>);
+    expect(reread.components[0].mediaUrl, 'https://api.duvet.chat/attachments/f-1?sig=abc');
   });
 
   test('a command\'s room option keeps the room types it takes', () async {
