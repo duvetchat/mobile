@@ -193,4 +193,25 @@ void main() {
     expect(player.played, [(Sound.voiceJoin, 0.5, false)]);
     semantics.dispose();
   });
+
+  test('a load ending after a change keeps the change', () async {
+    FlutterSecureStorage.setMockInitialValues({
+      'duvet.sounds': jsonEncode({'master': 40}),
+    });
+    final sounds = Sounds(player: _Player(), ringer: _Ringer());
+    addTearDown(sounds.dispose);
+    final loading = sounds.load();
+    await sounds.setMaster(150);
+    await loading;
+    expect(sounds.master, 150);
+  });
+
+  test('previewing the ring while a call rings leaves the ring alone', () async {
+    final player = _Player();
+    final sounds = Sounds(player: player, ringer: _Ringer());
+    addTearDown(sounds.dispose);
+    await sounds.startRing();
+    await sounds.preview(Sound.incomingCall);
+    expect(player.played, [(Sound.incomingCall, sounds.gain(Sound.incomingCall), true)]);
+  });
 }
