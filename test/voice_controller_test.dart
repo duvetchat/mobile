@@ -134,6 +134,7 @@ class _Harness {
       clock: () => now,
       inFront: () => inFront,
       lifecycle: lifecycle.stream,
+      cameraRefused: () async => !engine.cameraAllowed,
       sounds: sounds,
     );
     voice.notices.listen(notices.add);
@@ -1894,6 +1895,63 @@ void main() {
       expect(h.gateway.types.where((t) => t == 'VOICE_SYNC'), hasLength(1));
     });
 
+    _voice('a camera allowed but busy says only that it couldn\'t turn on', (async, h) {
+      connected(async, h);
+      h.engine.cameraBusy = true;
+      h.voice.toggleCamera();
+      async.flushMicrotasks();
+      expect(h.notices.last, 'Couldn’t turn on the camera');
+      expect(h.voice.cameraOn, isFalse);
+    });
+
+    _voice('a tap while the camera opens is the latest word: one camera opens, and off stays off', (async, h) {
+      connected(async, h);
+      h.engine.holdCamera = Completer<void>();
+      h.voice.toggleCamera();
+      async.flushMicrotasks();
+      h.voice.toggleCamera();
+      async.flushMicrotasks();
+      h.engine.holdCamera!.complete();
+      h.engine.holdCamera = null;
+      async.flushMicrotasks();
+      expect(h.engine.cameraOpens, 1);
+      expect(h.engine.openedCameras.single.stopped, isTrue);
+      expect(h.voice.cameraOn, isFalse);
+      expect(h.engine.peer.camera, isNull);
+      expect(h.notices, isEmpty);
+      expect(h.gateway.last('VOICE_SYNC'), _sync());
+      expect(h.lifecycle.hasListener, isFalse);
+
+      // On, off, on: on, still with one camera opening.
+      h.engine.holdCamera = Completer<void>();
+      h.voice.toggleCamera();
+      async.flushMicrotasks();
+      h.voice.toggleCamera();
+      h.voice.toggleCamera();
+      h.engine.holdCamera!.complete();
+      h.engine.holdCamera = null;
+      async.flushMicrotasks();
+      expect(h.engine.cameraOpens, 2);
+      expect(h.voice.camera, h.engine.openedCameras.last);
+      expect(h.gateway.last('VOICE_SYNC'), _sync(camera: true));
+    });
+
+    _voice('the app going to the background while the camera opens leaves it off', (async, h) {
+      connected(async, h);
+      h.engine.holdCamera = Completer<void>();
+      h.voice.toggleCamera();
+      async.flushMicrotasks();
+      h.lifecycle.add(AppLifecycleState.paused);
+      h.engine.holdCamera!.complete();
+      h.engine.holdCamera = null;
+      async.flushMicrotasks();
+      expect(h.voice.cameraOn, isFalse);
+      expect(h.engine.openedCameras.single.stopped, isTrue);
+      expect(h.notices, ['Camera turned off in the background']);
+      expect(h.gateway.last('VOICE_SYNC'), _sync());
+      expect(h.lifecycle.hasListener, isFalse);
+    });
+
     _voice('the camera picked opens on the next tap, or replaces the one on', (async, h) {
       connected(async, h);
       h.voice.selectCamera('0');
@@ -1947,6 +2005,57 @@ void main() {
       h.gateway.push(_answer('r-lounge', 'b2'));
       async.flushMicrotasks();
       expect(h.engine.peer.log.last, 'remote answer b2');
+    });
+
+    _voice('a second tap while the screen capture starts asks nothing more', (async, h) {
+      connected(async, h);
+      h.engine.holdScreen = Completer<void>();
+      h.voice.startScreenShare();
+      h.voice.startScreenShare();
+      async.flushMicrotasks();
+      h.engine.holdScreen!.complete();
+      h.engine.holdScreen = null;
+      async.flushMicrotasks();
+      expect(h.engine.screenOpens, 1);
+      expect(h.voice.screen, h.engine.screens.single);
+      expect(offers(h), hasLength(1));
+    });
+
+    _voice('stopping the screen while its offer is out offers again once the answer is in', (async, h) {
+      connected(async, h);
+      h.voice.startScreenShare();
+      async.flushMicrotasks();
+      h.voice.stopScreenShare();
+      async.flushMicrotasks();
+      expect(offers(h), hasLength(1));
+      h.gateway.push(_answer('r-lounge', 'b1'));
+      async.flushMicrotasks();
+      expect(offers(h), hasLength(2));
+      h.gateway.push(_answer('r-lounge', 'b2'));
+      async.flushMicrotasks();
+      expect(h.engine.peer.log, containsAllInOrder(['remote answer b1', 'remote answer b2']));
+      expect(h.engine.peers, hasLength(1));
+    });
+
+    _voice('the second answer to an offer sent again on a resumed socket isn\'t taken for the next one\'s', (async, h) {
+      connected(async, h);
+      h.voice.startScreenShare();
+      async.flushMicrotasks();
+      h.gateway.resumed();
+      async.flushMicrotasks();
+      h.gateway.push(_answer('r-lounge', 'b1'));
+      async.flushMicrotasks();
+      h.voice.stopScreenShare();
+      async.flushMicrotasks();
+      expect(offers(h), hasLength(3));
+      h.gateway.push(_answer('r-lounge', 'b1-again'));
+      async.flushMicrotasks();
+      expect(h.engine.peer.log, isNot(contains('remote answer b1-again')));
+      h.gateway.push(_answer('r-lounge', 'b2'));
+      async.flushMicrotasks();
+      expect(h.engine.peer.log.last, 'remote answer b2');
+      async.elapse(const Duration(seconds: 15));
+      expect(h.engine.peers, hasLength(1));
     });
 
     _voice('a screen capture refused, or ended on its own', (async, h) {
@@ -2192,6 +2301,46 @@ void main() {
       h.voice.joinRoom(_lounge);
       async.flushMicrotasks();
       expect(h.engine.noiseSuppression.last, isFalse);
+    });
+
+    _voice('noise suppression toggled quickly reopens the microphone one at a time, the last setting winning', (
+      async,
+      h,
+    ) {
+      connected(async, h);
+      final peer = h.engine.peer;
+      h.engine.holdMic = Completer<void>();
+      h.voice.setNoiseSuppression(false);
+      async.flushMicrotasks();
+      h.voice.setNoiseSuppression(true);
+      h.voice.setNoiseSuppression(false);
+      h.engine.holdMic!.complete();
+      h.engine.holdMic = null;
+      async.flushMicrotasks();
+      expect(h.engine.noiseSuppression, [true, false]);
+      expect(peer.log.where((l) => l == 'mic'), hasLength(1));
+      expect(h.engine.mics.first.stopped, isTrue);
+      expect(h.engine.mics.last.stopped, isFalse);
+
+      h.voice.setNoiseSuppression(true);
+      h.voice.setNoiseSuppression(false);
+      h.voice.setNoiseSuppression(true);
+      async.flushMicrotasks();
+      expect(h.engine.noiseSuppression, [true, false, true]);
+      expect(h.engine.mics.where((m) => !m.stopped), hasLength(1));
+    });
+
+    _voice('the setting changed while joining opens the microphone again with it', (async, h) {
+      h.engine.holdMic = Completer<void>();
+      h.voice.joinRoom(_lounge);
+      async.flushMicrotasks();
+      h.voice.setNoiseSuppression(false);
+      h.engine.holdMic!.complete();
+      h.engine.holdMic = null;
+      async.flushMicrotasks();
+      expect(h.engine.noiseSuppression, [true, false]);
+      expect(h.engine.mics.first.stopped, isTrue);
+      expect(h.engine.mics.last.stopped, isFalse);
     });
   });
 
