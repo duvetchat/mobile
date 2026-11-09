@@ -1,5 +1,6 @@
 import 'package:duvet_client/duvet.dart' as duvet;
 import 'package:flutter/foundation.dart';
+import 'package:flutter/widgets.dart';
 
 /// The phone's side of voice: the microphone, the peer connection to the
 /// gateway, where the sound plays, and what keeps a call going in the
@@ -12,8 +13,21 @@ abstract interface class VoiceEngine {
   Future<void> prepare();
 
   /// Opens the microphone, asking for it the first time; null when the user
-  /// refused it or there is none.
-  Future<VoiceMic?> openMicrophone();
+  /// refused it or there is none. [noiseSuppression] is WebRTC's own; echo
+  /// cancellation and gain control stay on either way.
+  Future<VoiceMic?> openMicrophone({bool noiseSuppression = true});
+
+  /// The phone's cameras; empty when it has none.
+  Future<List<VoiceCameraDevice>> cameras();
+
+  /// Opens a camera ([deviceId], else the front one) at 640x360 and up to 30
+  /// fps, asking for it the first time; null when the user refused it or there
+  /// is none.
+  Future<VoiceCamera?> openCamera({String? deviceId});
+
+  /// Captures the screen (Android's screen capture, which asks every time);
+  /// null when the user refused it or the phone can't (iOS).
+  Future<VoiceScreen?> openScreen();
 
   /// A peer connection to the gateway over [iceServers] (READY's STUN and
   /// TURN servers).
@@ -44,9 +58,62 @@ abstract interface class VoiceMic {
   Future<void> stop();
 }
 
+/// A camera the user can pick.
+class VoiceCameraDevice {
+  final String id;
+  final String label;
+  final CameraFacing facing;
+  const VoiceCameraDevice({required this.id, required this.label, required this.facing});
+}
+
+enum CameraFacing { front, back, external }
+
+/// A local video capture: the camera or the screen.
+abstract interface class VoiceVideoSource {
+  /// What it captures, cover-fit; the view owns its renderer.
+  Widget preview({bool mirror = false});
+
+  /// The capture ended without [stop]: permission revoked, screen capture
+  /// stopped, the camera taken by another app.
+  Stream<void> get onEnded;
+
+  /// Stops the capture and releases the device; once is enough.
+  Future<void> stop();
+}
+
+abstract interface class VoiceCamera implements VoiceVideoSource {
+  CameraFacing get facing;
+
+  /// Flips front and back in place: the same track, so no renegotiation.
+  Future<void> switchFacing();
+}
+
+abstract interface class VoiceScreen implements VoiceVideoSource {}
+
+enum VideoKind { camera, screen }
+
+/// Someone's camera or screen coming in. One per user and kind, so two are
+/// equal by those alone.
+class VoiceRemoteVideo {
+  final String userId;
+  final VideoKind kind;
+
+  /// A view of it.
+  final Widget Function(bool mirror) view;
+
+  const VoiceRemoteVideo({required this.userId, required this.kind, required this.view});
+
+  @override
+  bool operator ==(Object other) => other is VoiceRemoteVideo && other.userId == userId && other.kind == kind;
+
+  @override
+  int get hashCode => Object.hash(userId, kind);
+}
+
 /// The peer connection of a voice room or call: one audio transceiver that
 /// sends the microphone, and the others' audio coming in, each user's in a
-/// stream named after them.
+/// stream named after them; with video, a camera transceiver, the screen's
+/// sender while shared, and the others' cameras and screens.
 abstract interface class VoicePeer {
   set onIceCandidate(void Function(duvet.IceCandidateInit candidate)? handler);
   set onState(void Function(PeerState state)? handler);
@@ -57,6 +124,27 @@ abstract interface class VoicePeer {
 
   /// The microphone to send from now on: one opened after joining.
   Future<void> useMicrophone(VoiceMic mic);
+
+  /// Adds the camera transceiver, sending and receiving, with no track yet:
+  /// once, before the first offer, so turning the camera on never
+  /// renegotiates.
+  Future<void> addVideo();
+
+  /// `{mid: "camera"}` for the camera transceiver, for the gateway to tell it
+  /// from the screen; set by [setLocalDescription].
+  Map<String, String> get trackLabels;
+
+  /// Sends [camera] on the camera transceiver, or nothing: never renegotiates.
+  Future<void> setCamera(VoiceCamera? camera);
+
+  /// Adds or removes the screen's sender, then calls [onNegotiationNeeded]:
+  /// the client offers it.
+  Future<void> setScreen(VoiceScreen? screen);
+
+  /// The others' cameras and screens now.
+  ValueListenable<List<VoiceRemoteVideo>> get remoteVideos;
+
+  set onNegotiationNeeded(void Function()? handler);
 
   /// Sends the microphone, or nothing (muted or deafened).
   Future<void> setSending(bool sending);

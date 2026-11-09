@@ -3,7 +3,7 @@ import 'dart:async';
 import 'package:duvet/data/voice_engine.dart';
 import 'package:duvet/data/voice_signaling.dart';
 import 'package:duvet_client/duvet.dart' as duvet;
-import 'package:flutter/foundation.dart';
+import 'package:flutter/widgets.dart';
 
 /// A gateway for voice: it keeps what's sent, and tests push what the gateway
 /// would send.
@@ -143,6 +143,43 @@ class FakeMic implements VoiceMic {
   Future<void> stop() async => stopped = true;
 }
 
+/// A capture that is only a name: tests end it with [end].
+class FakeVideoSource implements VoiceVideoSource {
+  final _ended = StreamController<void>.broadcast(sync: true);
+  bool stopped = false;
+
+  /// The capture ended on its own (permission revoked, capture stopped).
+  void end() => _ended.add(null);
+
+  @override
+  Widget preview({bool mirror = false}) => const SizedBox.shrink();
+
+  @override
+  Stream<void> get onEnded => _ended.stream;
+
+  @override
+  Future<void> stop() async => stopped = true;
+}
+
+class FakeCamera extends FakeVideoSource implements VoiceCamera {
+  /// The device it was opened with; null for the default one.
+  final String? deviceId;
+  FakeCamera(this.deviceId);
+
+  @override
+  CameraFacing facing = CameraFacing.front;
+
+  int switches = 0;
+
+  @override
+  Future<void> switchFacing() async {
+    switches++;
+    facing = facing == CameraFacing.front ? CameraFacing.back : CameraFacing.front;
+  }
+}
+
+class FakeScreen extends FakeVideoSource implements VoiceScreen {}
+
 /// A peer connection that keeps what it was told.
 class FakePeer implements VoicePeer {
   final int number;
@@ -167,6 +204,47 @@ class FakePeer implements VoicePeer {
 
   /// Holds setRemoteDescription while set.
   Completer<void>? holdRemote;
+
+  bool videoAdded = false;
+
+  /// What [setCamera] and [setScreen] were last given.
+  VoiceCamera? camera;
+  VoiceScreen? screen;
+
+  void Function()? negotiationHandler;
+
+  /// Set it to show the others' video.
+  @override
+  final ValueNotifier<List<VoiceRemoteVideo>> remoteVideos = ValueNotifier(const []);
+
+  @override
+  set onNegotiationNeeded(void Function()? handler) => negotiationHandler = handler;
+
+  /// The peer wants a client offer, as after [setScreen].
+  void needNegotiation() => negotiationHandler?.call();
+
+  @override
+  Future<void> addVideo() async {
+    videoAdded = true;
+    log.add('video');
+  }
+
+  @override
+  Map<String, String> get trackLabels => videoAdded ? const {'1': 'camera'} : const {};
+
+  @override
+  Future<void> setCamera(VoiceCamera? camera) async {
+    this.camera = camera;
+    log.add('camera ${camera != null}');
+  }
+
+  @override
+  Future<void> setScreen(VoiceScreen? screen) async {
+    final changed = (this.screen == null) != (screen == null);
+    this.screen = screen;
+    log.add('screen ${screen != null}');
+    if (changed) needNegotiation();
+  }
 
   /// The gateway's offers fail to apply while set.
   bool failOffers = false;
@@ -235,6 +313,19 @@ class FakeVoiceEngine implements VoiceEngine {
   /// Whether the user lets the microphone open.
   bool micAllowed = true;
   final mics = <FakeMic>[];
+
+  /// What each openMicrophone asked for noise suppression.
+  final noiseSuppression = <bool>[];
+
+  /// The phone's cameras, and whether the user lets them and the screen open.
+  List<VoiceCameraDevice> cameraDevices = const [
+    VoiceCameraDevice(id: '1', label: 'Front Camera', facing: CameraFacing.front),
+    VoiceCameraDevice(id: '0', label: 'Back Camera', facing: CameraFacing.back),
+  ];
+  bool cameraAllowed = true;
+  bool screenAllowed = true;
+  final openedCameras = <FakeCamera>[];
+  final screens = <FakeScreen>[];
   final peers = <FakePeer>[];
   final iceServers = <List<duvet.IceServer>>[];
   final keptAlive = <String>[];
@@ -258,12 +349,33 @@ class FakeVoiceEngine implements VoiceEngine {
   Future<void> prepare() async => prepared++;
 
   @override
-  Future<VoiceMic?> openMicrophone() async {
+  Future<VoiceMic?> openMicrophone({bool noiseSuppression = true}) async {
+    this.noiseSuppression.add(noiseSuppression);
     if (holdMic case final hold?) await hold.future;
     if (!micAllowed) return null;
     final mic = FakeMic();
     mics.add(mic);
     return mic;
+  }
+
+  @override
+  Future<List<VoiceCameraDevice>> cameras() async => cameraDevices;
+
+  @override
+  Future<VoiceCamera?> openCamera({String? deviceId}) async {
+    if (!cameraAllowed || cameraDevices.isEmpty) return null;
+    final camera = FakeCamera(deviceId);
+    if (cameraDevices.where((d) => d.id == deviceId).firstOrNull case final device?) camera.facing = device.facing;
+    openedCameras.add(camera);
+    return camera;
+  }
+
+  @override
+  Future<VoiceScreen?> openScreen() async {
+    if (!screenAllowed) return null;
+    final screen = FakeScreen();
+    screens.add(screen);
+    return screen;
   }
 
   @override
