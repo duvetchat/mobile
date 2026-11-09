@@ -737,7 +737,9 @@ class VoiceController extends ChangeNotifier {
   /// Shares the screen: the phone offers its new sender to the gateway.
   Future<void> startScreenShare() async {
     final target = _target;
-    if (target == null || _screen != null || _peer == null) return;
+    // Only on a connection that's joined: a join's offer must carry no
+    // untagged video (see [_connect]).
+    if (target == null || _screen != null || !_negotiationReady) return;
     if (!_canVideo) {
       _notice(_noVideo(target));
       return;
@@ -748,7 +750,7 @@ class VoiceController extends ChangeNotifier {
       if (session == _session) _notice('Duvet can’t share the screen');
       return;
     }
-    if (session != _session || _screen != null || !_canVideo || _peer == null) {
+    if (session != _session || _screen != null || !_canVideo || !_negotiationReady) {
       await screen.stop();
       return;
     }

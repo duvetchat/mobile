@@ -2249,6 +2249,32 @@ void main() {
     });
   });
 
+  test('the ring stops when the controller goes', () {
+    fakeAsync((async) {
+      final repository = FakeRepository()..restore();
+      final player = _Player();
+      final voice = VoiceController(
+        repository: repository,
+        engine: FakeVoiceEngine(),
+        historyStore: MemoryCallHistoryStore(),
+        sounds: Sounds(player: player, ringer: _Ringer()),
+      );
+      async.flushMicrotasks();
+      repository.voiceSignaling.push(
+        const duvet.CallIncomingPayloadEvent(
+          duvet.CallIncomingEvent(conversationId: 'c-leo', initiatorId: FakeRepository.leo, initiatorName: 'Leo'),
+        ),
+      );
+      async.flushMicrotasks();
+      expect(player.played, [(Sound.incomingCall, true)]);
+      voice.dispose();
+      async.flushMicrotasks();
+      expect(player.stopped, [Sound.incomingCall]);
+      repository.dispose();
+      async.flushMicrotasks();
+    });
+  });
+
   test('a session refused at launch forgets the call histories kept on the phone', () {
     fakeAsync((async) {
       final repository = FakeRepository(signedIn: false);
