@@ -96,8 +96,8 @@ Future<void> pickAudioRoute(BuildContext anchor, VoiceController voice) async {
 typedef _Tile = ({String key, VoicePerson person, bool screen});
 
 /// The people in voice, a tile each with their camera or their face, and a
-/// tile per screen shared. Its layout follows the count: one large, two
-/// stacked, a 2×2 grid to four, then two columns scrolling. A tap shows a
+/// tile per screen shared. Its layout follows the count: one large, up to
+/// three stacked, a 2×2 grid to four, then two columns scrolling. A tap shows a
 /// tile large over a strip of the others; another tap, or back, returns.
 ///
 /// [here] says the user's voice is in this room or call: only then are the
@@ -166,7 +166,8 @@ class _VoiceStageState extends State<VoiceStage> {
   Widget _grid(List<_Tile> tiles) => LayoutBuilder(
     builder: (context, box) {
       final n = tiles.length;
-      final columns = n <= 2 ? 1 : 2;
+      // Three stacked, not two over one beside a hole.
+      final columns = n <= 3 ? 1 : 2;
       final rows = (n / columns).ceil();
       final fill = (box.maxHeight - widget.padding.vertical - (rows - 1) * 12) / rows;
       final extent = n <= 4 ? math.max(156.0, fill) : 180.0;
@@ -330,7 +331,7 @@ class _VoiceStageState extends State<VoiceStage> {
             alignment: Alignment.topRight,
             child: Padding(
               padding: const EdgeInsets.all(8),
-              child: DuvetButton(label: 'Stop watching', onPressed: () => watch(false)),
+              child: _MediaChip(label: 'Stop watching', onTap: () => watch(false)),
             ),
           ),
         ],
@@ -464,6 +465,31 @@ class _TileFrame extends StatelessWidget {
       ),
     );
   }
+}
+
+/// A small button over a video, as the name pill is: light ink on the media
+/// scrim, so it reads on a dark or a light picture and never crowds the tile.
+class _MediaChip extends StatelessWidget {
+  final String label;
+  final VoidCallback onTap;
+  const _MediaChip({required this.label, required this.onTap});
+
+  @override
+  Widget build(BuildContext context) => Semantics(
+    button: true,
+    child: Pressable(
+      onTap: onTap,
+      builder: (context, _) => Container(
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+        decoration: BoxDecoration(
+          color: DuvetTokens.mediaScrim,
+          borderRadius: BorderRadius.circular(DuvetTokens.radiusChip),
+          border: Border.all(color: DuvetTokens.mediaScrimEdge),
+        ),
+        child: Text(label, style: DuvetType.caption.copyWith(color: DuvetTokens.mediaInk)),
+      ),
+    ),
+  );
 }
 
 /// A quiet line in a tile, in `ink-secondary`, with an optional button under it.
