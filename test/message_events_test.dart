@@ -959,6 +959,45 @@ void main() {
     expect(replyBack.reply!.mentionAuthor, isTrue);
   });
 
+  test('a bot\'s answer says who used which command, and the offline cache keeps it', () async {
+    final events = await listen(_room);
+    repository.handleEvent(
+      _event('MESSAGE_CREATE', {
+        ..._answer('13', 'pong', flags: 0),
+        'interaction_metadata': {
+          'id': 'i-1',
+          'type': 2,
+          'user': {'id': _maya, 'username': 'maya', 'alias': 'Maya'},
+          'name': 'permissions user get',
+        },
+      }),
+    );
+    repository.handleEvent(
+      _event('MESSAGE_CREATE', {
+        ..._answer('14', 'voted', flags: 0),
+        'interaction_metadata': {
+          'id': 'i-2',
+          'type': 3,
+          'user': {'id': _maya, 'username': 'maya'},
+          'interacted_message_id': '13',
+        },
+      }),
+    );
+    await pumpEventQueue();
+    final command = (events[0] as MessageCreated).message.interaction!;
+    expect((command.userName, command.command, command.interactedMessageId), ('Maya', 'permissions user get', null));
+    final component = (events[1] as MessageCreated).message;
+    expect((component.interaction!.userName, component.interaction!.command), ('maya', null));
+    final reread = messageFromJson(jsonDecode(jsonEncode(messageToJson(component))) as Map<String, Object?>);
+    expect(reread.interaction!.interactedMessageId, '13');
+    expect(
+      messageFromJson(
+        jsonDecode(jsonEncode(messageToJson((events[0] as MessageCreated).message))),
+      ).interaction!.command,
+      'permissions user get',
+    );
+  });
+
   test('a webhook\'s message keeps its webhook, which tells it from another\'s', () async {
     final events = await listen(_room);
     repository.handleEvent(

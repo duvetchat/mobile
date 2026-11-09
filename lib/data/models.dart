@@ -89,6 +89,21 @@ final class ConversationTarget extends ChatTarget {
   int get hashCode => Object.hash(ConversationTarget, conversationId);
 }
 
+/// Over a bot's answer, as on the desktop: "Jon used /ping".
+class MessageInteraction {
+  final String userName;
+  final String? userAvatarUrl;
+
+  /// The command with its group and subcommand (`permissions user get`); null
+  /// for a component's interaction.
+  final String? command;
+
+  /// The message whose component was used: tapping the header goes there.
+  final String? interactedMessageId;
+
+  const MessageInteraction({required this.userName, this.userAvatarUrl, this.command, this.interactedMessageId});
+}
+
 class ChatMessage {
   final String id;
   final String? authorId;
@@ -155,6 +170,9 @@ class ChatMessage {
   /// text displays.
   final bool isComponentsV2;
 
+  /// A bot's answer to a command or a component: who used which.
+  final MessageInteraction? interaction;
+
   const ChatMessage({
     required this.id,
     required this.authorId,
@@ -181,6 +199,7 @@ class ChatMessage {
     this.isEphemeral = false,
     this.isLoading = false,
     this.isComponentsV2 = false,
+    this.interaction,
   });
 
   int get attachmentCount => attachments.length;
@@ -229,6 +248,7 @@ class ChatMessage {
     isEphemeral: isEphemeral,
     isLoading: isLoading,
     isComponentsV2: isComponentsV2,
+    interaction: interaction,
   );
 
   /// This message as an edit, or a link preview that came late, leaves it.
@@ -263,6 +283,7 @@ class ChatMessage {
     isEphemeral: isEphemeral,
     isLoading: update.isLoading,
     isComponentsV2: update.isComponentsV2,
+    interaction: update.interaction ?? interaction,
   );
 
   /// This message once [change] took place: the name and avatar of its
@@ -303,6 +324,7 @@ class ChatMessage {
       isEphemeral: isEphemeral,
       isLoading: isLoading,
       isComponentsV2: isComponentsV2,
+      interaction: interaction,
     );
   }
 
@@ -336,6 +358,7 @@ class ChatMessage {
       isEphemeral: isEphemeral,
       isLoading: isLoading,
       isComponentsV2: isComponentsV2,
+      interaction: interaction,
     );
   }
 

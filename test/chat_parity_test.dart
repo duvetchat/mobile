@@ -359,6 +359,42 @@ void main() {
       semantics.dispose();
     });
 
+    testWidgets('one to a command says who used it; one to a component, the bot\'s', (tester) async {
+      final repository = await openGeneral(tester);
+      repository.push(
+        'r-general',
+        MessageCreated(
+          ChatMessage(
+            id: 'c1',
+            authorId: 'u-ballot',
+            authorName: 'Ballot',
+            fromBot: true,
+            content: 'Poll started',
+            createdAt: DateTime(2026, 10, 23, 9, 5),
+            interaction: const MessageInteraction(userName: 'Leo', command: 'poll start'),
+          ),
+        ),
+      );
+      repository.push(
+        'r-general',
+        MessageCreated(
+          ChatMessage(
+            id: 'c2',
+            authorId: 'u-ballot',
+            authorName: 'Ballot',
+            fromBot: true,
+            content: 'Vote counted',
+            createdAt: DateTime(2026, 10, 23, 9, 6),
+            interaction: const MessageInteraction(userName: 'Leo', interactedMessageId: 'c1'),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+      expect(find.bySemanticsLabel('Leo used /poll start'), findsOneWidget);
+      expect(find.bySemanticsLabel('Leo used Ballot. Jump to message'), findsOneWidget);
+      semantics.dispose();
+    });
+
     testWidgets('a deferred one: the bot is thinking, and past 15 minutes it did not respond', (tester) async {
       final repository = await openGeneral(tester);
       repository.push('r-general', MessageCreated(answer('l1', '', ephemeral: false, loading: true, at: clock.now())));

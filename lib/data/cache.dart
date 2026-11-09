@@ -433,6 +433,13 @@ Map<String, Object?> messageToJson(ChatMessage m) => {
   'webhookId': ?m.webhookId,
   if (m.isLoading) 'isLoading': true,
   if (m.isComponentsV2) 'isComponentsV2': true,
+  if (m.interaction case final i?)
+    'interaction': {
+      'userName': i.userName,
+      'userAvatarUrl': ?i.userAvatarUrl,
+      'command': ?i.command,
+      'interactedMessageId': ?i.interactedMessageId,
+    },
   if (m.rawComponents.isNotEmpty) 'components': m.rawComponents,
   'stickerUrl': m.stickerUrl,
   'attachments': [
@@ -498,6 +505,15 @@ ChatMessage messageFromJson(Map<String, Object?> j) => ChatMessage(
   webhookId: j['webhookId'] as String?,
   isLoading: j['isLoading'] as bool? ?? false,
   isComponentsV2: j['isComponentsV2'] as bool? ?? false,
+  interaction: switch (j['interaction']) {
+    final Map<String, Object?> i => MessageInteraction(
+      userName: i['userName'] as String? ?? 'Someone',
+      userAvatarUrl: i['userAvatarUrl'] as String?,
+      command: i['command'] as String?,
+      interactedMessageId: i['interactedMessageId'] as String?,
+    ),
+    _ => null,
+  },
   components: componentsFromJson([
     for (final c in j['components'] as List? ?? const [])
       if (c is Map<String, dynamic>) c,
