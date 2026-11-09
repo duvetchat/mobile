@@ -377,6 +377,13 @@ class _PreviewState extends State<_Preview> {
     _renderer.show(widget.stream);
   }
 
+  // Another capture in the same place (a new camera picked): show it, not the stopped one.
+  @override
+  void didUpdateWidget(_Preview old) {
+    super.didUpdateWidget(old);
+    if (old.stream != widget.stream) _renderer.show(widget.stream);
+  }
+
   @override
   void dispose() {
     _renderer.release();
