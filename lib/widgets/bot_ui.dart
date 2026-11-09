@@ -329,7 +329,8 @@ class _Enlargeable extends StatelessWidget {
       hint: 'Double tap to open',
       excludeSemantics: true,
       onTap: open,
-      child: GestureDetector(onTap: open, child: child),
+      // Opaque: a picture that failed to load still opens on a tap.
+      child: GestureDetector(behavior: HitTestBehavior.opaque, onTap: open, child: child),
     );
   }
 }
