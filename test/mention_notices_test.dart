@@ -1,11 +1,30 @@
 import 'package:duvet/chat_view.dart';
 import 'package:duvet/data/appearance.dart';
 import 'package:duvet/data/models.dart';
+import 'package:duvet/data/sounds.dart';
 import 'package:duvet/main.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import 'support/fake_repository.dart';
+
+class _Player implements SoundPlayer {
+  final played = <Sound>[];
+
+  @override
+  Future<void> play(Sound sound, double gain, {bool loop = false}) async => played.add(sound);
+
+  @override
+  Future<void> stop(Sound sound) async {}
+
+  @override
+  Future<void> dispose() async {}
+}
+
+class _Ringer implements RingerMode {
+  @override
+  Future<bool> quiet() async => false;
+}
 
 const _general = RoomTarget(spaceId: 's-guild', roomId: 'r-general');
 const _notice = MentionNotice(
@@ -105,5 +124,31 @@ void main() {
     await tester.pumpAndSettle();
     expect(repository.onScreen, isNull);
     semantics.dispose();
+  });
+
+  testWidgets('a new notice plays the mention sound once; one already shown doesn\'t again', (tester) async {
+    tester.view.physicalSize = const Size(390 * 3, 844 * 3);
+    tester.view.devicePixelRatio = 3;
+    addTearDown(tester.view.reset);
+    final repository = FakeRepository();
+    final appearance = Appearance(MemoryAppearanceStore());
+    await appearance.load();
+    addTearDown(appearance.dispose);
+    final player = _Player();
+    final sounds = Sounds(player: player, ringer: _Ringer());
+    addTearDown(sounds.dispose);
+    await tester.pumpWidget(DuvetApp(repository: repository, appearance: appearance, sounds: sounds));
+    await tester.pumpAndSettle();
+
+    repository.mentionNotices.value = [_notice];
+    await tester.pumpAndSettle();
+    expect(player.played, [Sound.mention]);
+
+    // Another change of the list with nothing new in it: no sound.
+    repository.mentionNotices.value = [...repository.mentionNotices.value];
+    await tester.pumpAndSettle();
+    repository.dismissMentionNotice(_notice.messageId);
+    await tester.pumpAndSettle();
+    expect(player.played, [Sound.mention]);
   });
 }

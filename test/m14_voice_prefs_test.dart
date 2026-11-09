@@ -3,7 +3,6 @@ import 'dart:convert';
 
 import 'package:duvet/data/appearance.dart';
 import 'package:duvet/data/emoji_catalog.dart';
-import 'package:duvet/data/scope.dart';
 import 'package:duvet/data/sounds.dart';
 import 'package:duvet/data/voice_prefs.dart';
 import 'package:duvet/deep_links.dart';
@@ -125,12 +124,11 @@ void main() {
       final prefs = VoicePrefs();
       final sounds = Sounds(player: _Player(), ringer: _Ringer());
       await tester.pumpWidget(
-        VoicePrefsScope(
-          prefs: prefs,
-          child: SoundsScope(
-            sounds: sounds,
-            child: DuvetApp(repository: FakeRepository(), appearance: Appearance(MemoryAppearanceStore())),
-          ),
+        DuvetApp(
+          repository: FakeRepository(),
+          appearance: Appearance(MemoryAppearanceStore()),
+          sounds: sounds,
+          voicePrefs: prefs,
         ),
       );
       await tester.pumpAndSettle();

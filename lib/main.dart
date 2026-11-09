@@ -9,6 +9,8 @@ import 'package:image_picker_platform_interface/image_picker_platform_interface.
 import 'package:audio_service/audio_service.dart';
 
 import 'data/appearance.dart';
+import 'data/sounds.dart';
+import 'data/voice_prefs.dart';
 import 'data/launchpad.dart';
 import 'data/call_history.dart';
 import 'data/duvet_repository.dart';
@@ -66,7 +68,20 @@ class DuvetApp extends StatefulWidget {
   /// Voice rooms and calls; tests pass one over fakes. By default, WebRTC
   /// and the call history in the keystore.
   final VoiceController? voice;
-  const DuvetApp({required this.repository, this.appearance, this.launchpad, this.voice, super.key});
+
+  /// The sounds and their volumes, and the voice settings (faces, noise
+  /// suppression); tests pass ones kept in memory.
+  final Sounds? sounds;
+  final VoicePrefs? voicePrefs;
+  const DuvetApp({
+    required this.repository,
+    this.appearance,
+    this.launchpad,
+    this.voice,
+    this.sounds,
+    this.voicePrefs,
+    super.key,
+  });
 
   @override
   State<DuvetApp> createState() => _DuvetAppState();
@@ -77,13 +92,19 @@ class _DuvetAppState extends State<DuvetApp> {
   final _navigator = GlobalKey<NavigatorState>();
   late final _appearance = widget.appearance ?? (Appearance()..load());
   late final _launchpad = widget.launchpad ?? (LaunchpadPrefs()..load());
+  late final _sounds = widget.sounds ?? (Sounds()..load());
+  late final _voicePrefs = widget.voicePrefs ?? (VoicePrefs()..load());
   late final _voice =
       widget.voice ??
       VoiceController(
         repository: widget.repository,
         engine: WebRtcVoiceEngine(),
         historyStore: const SecureCallHistoryStore(),
+        sounds: _sounds,
       );
+
+  // The mentions already sounded: the list keeps a notice until it is dismissed.
+  Set<String> _mentionsHeard = const {};
 
   late final AppLifecycleListener _lifecycle;
 
@@ -99,6 +120,19 @@ class _DuvetAppState extends State<DuvetApp> {
     _lifecycle = AppLifecycleListener(onResume: () => widget.repository.cameToFront());
     _voice.addListener(_followEarpiece);
     _voice.routes.addListener(_followEarpiece);
+    _voicePrefs.addListener(_followVoicePrefs);
+    _followVoicePrefs();
+    _mentionsHeard = {for (final n in widget.repository.mentionNotices.value) n.messageId};
+    widget.repository.mentionNotices.addListener(_soundMentions);
+  }
+
+  void _followVoicePrefs() => _voice.setNoiseSuppression(_voicePrefs.noiseSuppression);
+
+  // A new mention notice comes with the mention sound (#23).
+  void _soundMentions() {
+    final ids = {for (final n in widget.repository.mentionNotices.value) n.messageId};
+    if (ids.difference(_mentionsHeard).isNotEmpty) _sounds.play(Sound.mention);
+    _mentionsHeard = ids;
   }
 
   void _followEarpiece() {
@@ -112,6 +146,8 @@ class _DuvetAppState extends State<DuvetApp> {
   void dispose() {
     _voice.removeListener(_followEarpiece);
     _voice.routes.removeListener(_followEarpiece);
+    _voicePrefs.removeListener(_followVoicePrefs);
+    widget.repository.mentionNotices.removeListener(_soundMentions);
     if (_atEar) _proximity.invokeMethod<void>('hold', false).catchError((Object e) => debugPrint('proximity: $e'));
     _lifecycle.dispose();
     // Before the repository: it listens to it.
@@ -119,6 +155,8 @@ class _DuvetAppState extends State<DuvetApp> {
     widget.repository.dispose();
     if (widget.appearance == null) _appearance.dispose();
     if (widget.launchpad == null) _launchpad.dispose();
+    if (widget.sounds == null) _sounds.dispose();
+    if (widget.voicePrefs == null) _voicePrefs.dispose();
     super.dispose();
   }
 
@@ -139,34 +177,40 @@ class _DuvetAppState extends State<DuvetApp> {
       repository: widget.repository,
       child: VoiceScope(
         voice: _voice,
-        child: MaterialApp(
-          navigatorKey: _navigator,
-          debugShowCheckedModeBanner: false,
-          scrollBehavior: const DuvetScrollBehavior(),
-          // forui's list brings material_ui's and cupertino_ui's localizations; the framework's widgets
-          // (TextField first) read their own, which only English has without these, and fail to build.
-          localizationsDelegates: const [
-            ...FLocalizations.localizationsDelegates,
-            GlobalMaterialLocalizations.delegate,
-            GlobalCupertinoLocalizations.delegate,
-          ],
-          supportedLocales: FLocalizations.supportedLocales,
-          theme: Duvet.material(brightness),
-          builder: (context, child) => FTheme(
-            data: theme,
-            child: FToaster(
-              child: Stack(
-                children: [
-                  child!,
-                  // Over every screen, the chats opened from Chats and Spaces too.
-                  MentionNotices(navigator: _navigator),
-                ],
+        child: SoundsScope(
+          sounds: _sounds,
+          child: VoicePrefsScope(
+            prefs: _voicePrefs,
+            child: MaterialApp(
+              navigatorKey: _navigator,
+              debugShowCheckedModeBanner: false,
+              scrollBehavior: const DuvetScrollBehavior(),
+              // forui's list brings material_ui's and cupertino_ui's localizations; the framework's widgets
+              // (TextField first) read their own, which only English has without these, and fail to build.
+              localizationsDelegates: const [
+                ...FLocalizations.localizationsDelegates,
+                GlobalMaterialLocalizations.delegate,
+                GlobalCupertinoLocalizations.delegate,
+              ],
+              supportedLocales: FLocalizations.supportedLocales,
+              theme: Duvet.material(brightness),
+              builder: (context, child) => FTheme(
+                data: theme,
+                child: FToaster(
+                  child: Stack(
+                    children: [
+                      child!,
+                      // Over every screen, the chats opened from Chats and Spaces too.
+                      MentionNotices(navigator: _navigator),
+                    ],
+                  ),
+                ),
               ),
+              // Duvet's links open whether signed in or not: verifying an email
+              // and resetting a password come from links too.
+              home: const DeepLinkHandler(child: SessionGate()),
             ),
           ),
-          // Duvet's links open whether signed in or not: verifying an email
-          // and resetting a password come from links too.
-          home: const DeepLinkHandler(child: SessionGate()),
         ),
       ),
     );
