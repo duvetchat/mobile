@@ -198,7 +198,17 @@ class VoiceButton extends StatelessWidget {
       ),
     );
     return switch (hint) {
-      final hint? => Tooltip(message: hint, excludeFromSemantics: true, child: button),
+      final hint? => Tooltip(
+        message: hint,
+        excludeFromSemantics: true,
+        decoration: BoxDecoration(
+          color: colors.foreground,
+          borderRadius: BorderRadius.circular(DuvetTokens.radiusChip),
+          boxShadow: tokens.shadowFloat,
+        ),
+        textStyle: DuvetType.caption.copyWith(color: colors.background),
+        child: button,
+      ),
       null => button,
     };
   }

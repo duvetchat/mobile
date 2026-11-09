@@ -9,6 +9,7 @@ import '../data/voice.dart';
 import '../theme.dart';
 import '../voice_room.dart';
 import 'avatar.dart';
+import 'depth.dart';
 import 'glass.dart';
 import 'rows.dart';
 
@@ -175,6 +176,7 @@ class _VoiceStageState extends State<VoiceStage> {
       ],
       speaking: speaking,
       bannerUrl: video == null ? p.bannerUrl : null,
+      media: video != null,
       focused: focused,
       onTap: onTap,
       child:
@@ -197,6 +199,7 @@ class _VoiceStageState extends State<VoiceStage> {
     final watching = _watching.contains(p.id);
     void watch(bool on) => setState(() => on ? _watching.add(p.id) : _watching.remove(p.id));
     final Widget content;
+    var media = false;
     if (!widget.here) {
       content = const _Note(icon: FLucideIcons.monitorUp, text: 'Sharing their screen');
     } else if (p.isMe) {
@@ -209,15 +212,12 @@ class _VoiceStageState extends State<VoiceStage> {
         action: DuvetButton(label: 'Turn on video', onPressed: () => voice.setIncomingVideo(true)),
       );
     } else if (!watching) {
+      // Secondary: the speaking ring is the screen's one accent.
       content = Center(
-        child: DuvetButton(
-          label: 'Watch',
-          icon: FLucideIcons.monitorUp,
-          variant: ButtonVariant.primary,
-          onPressed: () => watch(true),
-        ),
+        child: DuvetButton(label: 'Watch', icon: FLucideIcons.monitorUp, onPressed: () => watch(true)),
       );
     } else {
+      media = true;
       final screen = voice.remoteVideos.value.where((v) => v.userId == p.id && v.kind == VideoKind.screen).firstOrNull;
       content = Stack(
         fit: StackFit.expand,
@@ -239,6 +239,7 @@ class _VoiceStageState extends State<VoiceStage> {
       label: name,
       name: name,
       marks: const [FLucideIcons.monitorUp],
+      media: media,
       focused: focused,
       onTap: onTap,
       buttonsInside: true,
@@ -248,8 +249,9 @@ class _VoiceStageState extends State<VoiceStage> {
 }
 
 /// A tile: `base-raised`, `radius-card`, `shadow-raised`, its content
-/// clipped to it, a name on a pill of unblurred glass (a grid that scrolls
-/// takes no blur), and the `accent-text` ring while its person speaks.
+/// clipped to it, its name on a pill, and the `accent-text` ring while its
+/// person speaks. It presses like a card. The pill is solid, not glass: a
+/// grid that scrolls takes no blur.
 class _TileFrame extends StatelessWidget {
   final String label;
   final String name;
@@ -258,6 +260,10 @@ class _TileFrame extends StatelessWidget {
   final List<IconData> marks;
   final bool speaking;
   final String? bannerUrl;
+
+  /// Whether a video fills it: the name then sits on the media scrim, light
+  /// in both themes, since a camera is as likely dark as light.
+  final bool media;
   final bool focused;
   final VoidCallback onTap;
 
@@ -273,6 +279,7 @@ class _TileFrame extends StatelessWidget {
     required this.child,
     this.speaking = false,
     this.bannerUrl,
+    this.media = false,
     this.buttonsInside = false,
     super.key,
   });
@@ -281,6 +288,8 @@ class _TileFrame extends StatelessWidget {
   Widget build(BuildContext context) {
     final colors = context.theme.colors;
     final tokens = context.duvet;
+    final ink = media ? DuvetTokens.mediaInk : colors.foreground;
+    final reduce = MediaQuery.disableAnimationsOf(context);
     const radius = BorderRadius.all(Radius.circular(DuvetTokens.radiusCard));
     return Semantics(
       container: true,
@@ -290,61 +299,63 @@ class _TileFrame extends StatelessWidget {
       onTap: onTap,
       excludeSemantics: !buttonsInside,
       explicitChildNodes: buttonsInside,
-      child: GestureDetector(
-        behavior: HitTestBehavior.opaque,
+      child: Pressable(
+        scale: 0.98,
         onTap: onTap,
-        child: AnimatedContainer(
-          duration: MediaQuery.disableAnimationsOf(context) ? Duration.zero : DuvetTokens.pressOut,
+        builder: (context, pressed) => AnimatedContainer(
+          duration: reduce ? Duration.zero : DuvetTokens.pressOut,
+          curve: DuvetTokens.decelerate,
           clipBehavior: Clip.antiAlias,
           decoration: BoxDecoration(
             color: colors.card,
             image: memberBanner(context, bannerUrl),
             borderRadius: radius,
-            boxShadow: tokens.shadowRaised,
+            boxShadow: pressed ? null : tokens.shadowRaised,
           ),
           // Over the video, not under it.
           foregroundDecoration: BoxDecoration(
             borderRadius: radius,
             border: Border.all(color: speaking ? tokens.accentText : Colors.transparent, width: 2),
           ),
-          child: Stack(
-            fit: StackFit.expand,
-            children: [
-              child,
-              Align(
-                alignment: Alignment.bottomLeft,
-                child: Padding(
-                  padding: const EdgeInsets.all(8),
-                  child: ExcludeSemantics(
-                    child: Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                      decoration: BoxDecoration(
-                        color: tokens.glass,
-                        borderRadius: BorderRadius.circular(DuvetTokens.radiusChip),
-                        border: Border.all(color: tokens.glassEdge),
-                      ),
-                      child: Row(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          for (final m in marks) ...[
-                            Icon(m, size: 16, color: colors.foreground),
-                            const SizedBox(width: 4),
-                          ],
-                          Flexible(
-                            child: Text(
-                              name,
-                              maxLines: 1,
-                              overflow: TextOverflow.ellipsis,
-                              style: DuvetType.caption.copyWith(color: colors.foreground),
+          child: InsetShadow(
+            shadows: pressed ? tokens.shadowPressed : const [],
+            borderRadius: radius,
+            child: Stack(
+              fit: StackFit.expand,
+              children: [
+                child,
+                Align(
+                  alignment: Alignment.bottomLeft,
+                  child: Padding(
+                    padding: const EdgeInsets.all(8),
+                    child: ExcludeSemantics(
+                      child: Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                        decoration: BoxDecoration(
+                          color: media ? DuvetTokens.mediaScrim : colors.secondary,
+                          borderRadius: BorderRadius.circular(DuvetTokens.radiusChip),
+                          border: media ? Border.all(color: DuvetTokens.mediaScrimEdge) : null,
+                        ),
+                        child: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            for (final m in marks) ...[Icon(m, size: 16, color: ink), const SizedBox(width: 4)],
+                            Flexible(
+                              child: Text(
+                                name,
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                                style: DuvetType.caption.copyWith(color: ink),
+                              ),
                             ),
-                          ),
-                        ],
+                          ],
+                        ),
                       ),
                     ),
                   ),
                 ),
-              ),
-            ],
+              ],
+            ),
           ),
         ),
       ),
@@ -472,7 +483,7 @@ class _VoiceMoreState extends State<_VoiceMore> {
                   behavior: HitTestBehavior.opaque,
                   onTap: () => voice.setIncomingVideo(!voice.incomingVideo),
                   child: Padding(
-                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
                     child: Row(
                       children: [
                         Icon(FLucideIcons.video, size: 24, color: colors.foreground),
