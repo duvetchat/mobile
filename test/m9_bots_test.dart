@@ -345,6 +345,37 @@ void main() {
     semantics.dispose();
   });
 
+  testWidgets('a gallery opens a repeated picture at its own place, and swipes past no spoiler', (tester) async {
+    Map<String, Object?> item(String description, String url, {bool spoiler = false}) => {
+      'media': {'url': url, 'content_type': 'image/png'},
+      'description': description,
+      'spoiler': spoiler,
+    };
+    final message = ChatMessage(
+      id: 'shots',
+      authorId: _ballot,
+      authorName: 'Ballot',
+      fromBot: true,
+      content: '',
+      createdAt: DateTime(2026, 10, 23, 9),
+      components: componentsFromJson([
+        {
+          'type': 12,
+          'items': [
+            item('First', pictureUrl),
+            item('Again', pictureUrl),
+            item('Hidden', 'https://cdn.example/dog.png', spoiler: true),
+          ],
+        },
+      ]),
+    );
+    await pumpGeneral(tester, history: [message]);
+    await tapLabel(tester, 'Again');
+    expect(find.bySemanticsLabel('Photo, Again, 2 of 2'), findsOneWidget);
+    expect(find.bySemanticsLabel(RegExp('Hidden')), findsNothing);
+    semantics.dispose();
+  });
+
   testWidgets('a bot\'s profile removes it from the Space, after asking, for those who manage bots', (tester) async {
     final repository = await pumpGeneral(tester, history: [poll()]);
     await tapLabel(tester, 'Ballot, bot,’s profile');
