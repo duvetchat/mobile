@@ -1,6 +1,9 @@
 package chat.duvet
 
+import android.app.NotificationManager
 import android.content.Context
+import android.media.AudioManager
+import android.os.Build
 import android.os.PowerManager
 import com.ryanheise.audioservice.AudioServiceActivity
 import io.flutter.embedding.engine.FlutterEngine
@@ -23,6 +26,31 @@ class MainActivity : AudioServiceActivity() {
                 else -> result.notImplemented()
             }
         }
+        // The app's sounds keep quiet in Do not disturb and on silent or vibrate (lib/data/sounds.dart).
+        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "chat.duvet/ringer").setMethodCallHandler { call, result ->
+            when (call.method) {
+                "state" -> result.success(ringer())
+                else -> result.notImplemented()
+            }
+        }
+    }
+
+    private fun ringer(): Map<String, Any> {
+        val audio = getSystemService(Context.AUDIO_SERVICE) as AudioManager
+        val mode = when (audio.ringerMode) {
+            AudioManager.RINGER_MODE_SILENT -> "silent"
+            AudioManager.RINGER_MODE_VIBRATE -> "vibrate"
+            else -> "normal"
+        }
+        // Unknown (the filter can't be read) counts as not disturbed.
+        val filter = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            (getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager).currentInterruptionFilter
+        } else {
+            NotificationManager.INTERRUPTION_FILTER_ALL
+        }
+        val dnd = filter != NotificationManager.INTERRUPTION_FILTER_ALL &&
+            filter != NotificationManager.INTERRUPTION_FILTER_UNKNOWN
+        return mapOf("mode" to mode, "dnd" to dnd)
     }
 
     private fun hold(on: Boolean) {
