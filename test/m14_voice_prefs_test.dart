@@ -41,7 +41,7 @@ class _SlowStorage extends FlutterSecureStorage {
 
 class _Player implements SoundPlayer {
   @override
-  Future<void> play(Sound sound, double gain, {bool loop = false}) async {}
+  Future<void> play(Sound sound, double gain, {bool loop = false, VoidCallback? onDone}) async {}
 
   @override
   Future<void> stop(Sound sound) async {}

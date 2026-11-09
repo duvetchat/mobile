@@ -13,9 +13,13 @@ class _Player implements SoundPlayer {
   final played = <(Sound, double, bool)>[];
   final stopped = <Sound>[];
   bool disposed = false;
+  VoidCallback? onDone;
 
   @override
-  Future<void> play(Sound sound, double gain, {bool loop = false}) async => played.add((sound, gain, loop));
+  Future<void> play(Sound sound, double gain, {bool loop = false, VoidCallback? onDone}) async {
+    played.add((sound, gain, loop));
+    this.onDone = onDone;
+  }
 
   @override
   Future<void> stop(Sound sound) async => stopped.add(sound);
@@ -213,5 +217,45 @@ void main() {
     await sounds.startRing();
     await sounds.preview(Sound.incomingCall);
     expect(player.played, [(Sound.incomingCall, sounds.gain(Sound.incomingCall), true)]);
+  });
+
+  test('a preview shows until it ends, a stale end leaves the next one alone', () async {
+    await sounds.preview(Sound.mention);
+    expect(sounds.previewing.value, Sound.mention);
+    final first = player.onDone!;
+    await sounds.preview(Sound.voiceJoin);
+    expect(player.stopped, [Sound.mention]);
+    first();
+    expect(sounds.previewing.value, Sound.voiceJoin);
+    player.onDone!();
+    expect(sounds.previewing.value, isNull);
+    await sounds.stopPreview();
+    expect(player.stopped, [Sound.mention]);
+  });
+
+  testWidgets('Play turns to Pause, which stops it, and leaving the page stops it', (tester) async {
+    final semantics = tester.ensureSemantics();
+    tester.view.physicalSize = const Size(390 * 3, 1200 * 3);
+    tester.view.devicePixelRatio = 3;
+    addTearDown(tester.view.reset);
+    Widget page(Widget child) => MaterialApp(
+      theme: Duvet.material(Brightness.light),
+      home: FTheme(data: Duvet.theme(Brightness.light), child: child),
+    );
+    await tester.pumpWidget(page(SoundsPage(sounds: sounds)));
+    await tester.tap(find.bySemanticsLabel('Play Incoming Call'));
+    await tester.pump();
+    expect(find.bySemanticsLabel('Play Incoming Call'), findsNothing);
+    await tester.tap(find.bySemanticsLabel('Pause Incoming Call'));
+    await tester.pump();
+    expect(player.stopped, [Sound.incomingCall]);
+    expect(find.bySemanticsLabel('Play Incoming Call'), findsOneWidget);
+
+    await tester.tap(find.bySemanticsLabel('Play Join Voice'));
+    await tester.pump();
+    await tester.pumpWidget(page(const SizedBox()));
+    expect(player.stopped, [Sound.incomingCall, Sound.voiceJoin]);
+    expect(sounds.previewing.value, isNull);
+    semantics.dispose();
   });
 }
