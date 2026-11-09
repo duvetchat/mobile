@@ -507,7 +507,7 @@ ChatMessage messageFromJson(Map<String, Object?> j) => ChatMessage(
   isComponentsV2: j['isComponentsV2'] as bool? ?? false,
   interaction: switch (j['interaction']) {
     final Map<String, Object?> i => MessageInteraction(
-      userName: i['userName']! as String,
+      userName: i['userName'] as String? ?? 'Someone',
       userAvatarUrl: i['userAvatarUrl'] as String?,
       command: i['command'] as String?,
       interactedMessageId: i['interactedMessageId'] as String?,
