@@ -520,12 +520,14 @@ class _ChatViewState extends State<ChatView> {
     _markRead();
   }
 
-  /// Back at the chat: at the divider placed meanwhile, if any, else read.
+  /// Back at the chat: read, as it was left at its bottom, and the divider
+  /// placed meanwhile, if any, brought into view.
   void _back() {
-    if (!_showDividerOnReturn) return _readIfSeen();
+    _readIfSeen();
+    if (!_showDividerOnReturn) return;
     _showDividerOnReturn = false;
     // Not before a frame: none ran while the app was behind, so the divider isn't built yet.
-    WidgetsBinding.instance.endOfFrame.then((_) => _showDivider()).whenComplete(_readIfSeen);
+    WidgetsBinding.instance.endOfFrame.then((_) => _showDivider());
   }
 
   static bool get _inFront => switch (WidgetsBinding.instance.lifecycleState) {
