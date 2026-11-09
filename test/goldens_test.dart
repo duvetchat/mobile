@@ -4,6 +4,7 @@ import 'package:duvet/data/emoji_catalog.dart';
 import 'package:duvet/data/models.dart';
 import 'package:duvet/deep_links.dart';
 import 'package:duvet/main.dart';
+import 'package:duvet/people.dart' show RoleChip;
 import 'package:duvet/theme.dart';
 import 'package:duvet/widgets/chrome.dart';
 import 'package:duvet/widgets/glass.dart';
@@ -229,6 +230,33 @@ void main() {
         await expectLater(find.byType(DuvetApp), matchesGoldenFile('goldens/empty_dm_${b.name}.png'));
       }),
     );
+
+    // #215: a profile's roles, held ones in their color or gradient.
+    testWidgets('role chips, ${b.name}', (tester) async {
+      phone(tester, height: 120);
+      await tester.pumpWidget(
+        themed(
+          b,
+          Padding(
+            padding: const EdgeInsets.all(16),
+            child: Wrap(
+              spacing: 8,
+              runSpacing: 8,
+              children: [
+                const RoleChip(role: RoleTag('Moderator', color: 0x30A46C)),
+                const RoleChip(role: RoleTag('Designer', color: 0x8E4EC6, colorVia: 0xD6409F, colorTo: 0xF76B15)),
+                const RoleChip(role: RoleTag('Plain')),
+                RoleChip(role: const RoleTag('Helpers', color: 0xE5484D), held: false, onTap: () {}),
+                RoleChip(role: const RoleTag('Crew', color: 0x0090FF, colorTo: 0xD6A400), held: false, onTap: () {}),
+                RoleChip(role: const RoleTag('Guests'), held: false, onTap: () {}),
+              ],
+            ),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+      await expectLater(find.byType(MaterialApp), matchesGoldenFile('goldens/role_chips_${b.name}.png'));
+    });
   }
 }
 

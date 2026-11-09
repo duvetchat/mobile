@@ -6,7 +6,7 @@ import 'chat_view.dart';
 import 'data/models.dart';
 import 'data/scope.dart';
 import 'members_sheet.dart' show MemberAction, PresenceAvatar;
-import 'space_admin.dart' show adminTry, confirmDestructive, managesRoleAt;
+import 'space_admin.dart' show RoleSwatch, adminTry, confirmDestructive, managesRoleAt;
 import 'theme.dart';
 import 'widgets/avatar.dart';
 import 'widgets/chrome.dart';
@@ -378,7 +378,13 @@ class _ProfileState extends State<_Profile> {
                                   // As the desktop: every role, colored if held, a tap gives or takes it.
                                   for (final r in spaceRoles)
                                     RoleChip(
-                                      role: RoleTag(r.name, color: r.color, id: r.id),
+                                      role: RoleTag(
+                                        r.name,
+                                        color: r.color,
+                                        colorVia: r.colorVia,
+                                        colorTo: r.colorTo,
+                                        id: r.id,
+                                      ),
                                       held: held.contains(r.id),
                                       onTap: managesRoleAt(repository, spaceId, r.position)
                                           ? () => adminTry(
@@ -441,7 +447,9 @@ class _Label extends StatelessWidget {
   );
 }
 
-/// A role, as a flat chip; its color as a small square beside the name.
+/// A role, as a flat chip. Held, it's tinted with the role's color or
+/// gradient, the name in it as members see it; a role the member lacks stays
+/// grey. Either way a dot beside the name: the role's colors, or grey.
 class RoleChip extends StatelessWidget {
   final RoleTag role;
 
@@ -455,25 +463,44 @@ class RoleChip extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final colors = context.theme.colors;
+    final background = colors.background;
+    // Solid tints, each stop a fifth over the background, so the name's
+    // contrast is checked against what it's drawn on: the tint furthest from
+    // the background, the hardest to read on.
+    final tints = [
+      if (held)
+        for (final c in [role.color, role.colorVia, role.colorTo].nonNulls)
+          Color.alphaBlend(Color(0xFF000000 | c).withValues(alpha: 0.2), background),
+    ];
+    final on = tints.isEmpty
+        ? null
+        : tints.reduce((a, b) => contrastOf(a, background) >= contrastOf(b, background) ? a : b);
     final chip = Container(
       height: 28,
       padding: const EdgeInsets.symmetric(horizontal: 10),
-      decoration: BoxDecoration(color: colors.secondary, borderRadius: BorderRadius.circular(DuvetTokens.radiusChip)),
+      decoration: BoxDecoration(
+        color: tints.firstOrNull ?? colors.secondary,
+        // A gradient only with both ends, as [RoleName] reads one.
+        gradient: tints.length > 1 && role.colorTo != null ? LinearGradient(colors: tints) : null,
+        borderRadius: BorderRadius.circular(DuvetTokens.radiusChip),
+      ),
       child: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
-          if (role.color case final c?) ...[
-            Container(
-              width: 8,
-              height: 8,
-              decoration: BoxDecoration(
-                color: held ? Color(c) : colors.mutedForeground,
-                borderRadius: BorderRadius.circular(2),
-              ),
-            ),
+          if (role.color != null) ...[
+            held
+                ? RoleSwatch(colors: role.colors, width: 8, height: 8)
+                : Container(
+                    width: 8,
+                    height: 8,
+                    decoration: BoxDecoration(color: colors.mutedForeground, borderRadius: BorderRadius.circular(6)),
+                  ),
             const SizedBox(width: 6),
           ],
-          Text(role.name, style: DuvetType.caption.copyWith(color: held ? colors.foreground : colors.mutedForeground)),
+          if (held)
+            RoleName(role.name, colors: role.colors, style: DuvetType.caption, on: on)
+          else
+            Text(role.name, style: DuvetType.caption.copyWith(color: colors.mutedForeground)),
         ],
       ),
     );
