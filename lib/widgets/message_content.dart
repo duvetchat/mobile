@@ -600,6 +600,62 @@ class MessageAttachments extends StatelessWidget {
   }
 }
 
+/// Where a file deleted since it was sent was, as the desktop shows one: a
+/// picture's box keeps its size, when known.
+class DeletedAttachment extends StatelessWidget {
+  final MessageAttachment attachment;
+
+  /// A voice note's recording: "Voice note deleted", a voice note's height.
+  final bool voice;
+  final double maxWidth;
+  const DeletedAttachment({required this.attachment, this.voice = false, this.maxWidth = 260, super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = context.theme.colors;
+    final a = attachment;
+    final label = voice ? 'Voice note deleted' : 'Attachment deleted';
+    final (w, h) = (a.width ?? 0, a.height ?? 0);
+    final scale = w > 0 && h > 0 ? math.min(1.0, math.min(maxWidth / w, 260 / h)) : 0.0;
+    // Never smaller than its words: a deleted emoji-sized picture keeps a box they fit in.
+    final minWidth = math.min(180.0, maxWidth);
+    final size = scale > 0 && !voice
+        ? Size(math.max(w * scale, minWidth), math.max(h * scale, 48))
+        : Size(math.min(200, maxWidth), 48);
+    return Semantics(
+      container: true,
+      label: label,
+      excludeSemantics: true,
+      child: Container(
+        width: size.width,
+        height: size.height,
+        margin: const EdgeInsets.only(top: 4),
+        padding: const EdgeInsets.symmetric(horizontal: 12),
+        decoration: BoxDecoration(
+          color: colors.secondary,
+          borderRadius: BorderRadius.circular(DuvetTokens.radiusField),
+          border: Border.all(color: context.duvet.hairline),
+        ),
+        child: Row(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Icon(FLucideIcons.trash2, size: 16, color: colors.mutedForeground),
+            const SizedBox(width: 8),
+            Flexible(
+              child: Text(
+                label,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: DuvetType.caption.copyWith(color: colors.mutedForeground, fontStyle: FontStyle.italic),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
 /// A spoiler video, audio or file: blurred under a cover until a tap reveals
 /// it, as the desktop has it; what it hides takes no taps meanwhile.
 /// Pictures have their own cover ([_Picture]).

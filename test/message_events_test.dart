@@ -1019,6 +1019,35 @@ void main() {
     expect(messageFromJson(jsonDecode(jsonEncode(messageToJson(m))) as Map<String, Object?>).webhookId, 'w-1');
   });
 
+  test('a deleted file is kept apart from the rest, and the offline cache keeps both', () async {
+    final events = await listen(_room);
+    final message = _roomMessage('15', 'files');
+    repository.handleEvent(
+      _event('MESSAGE_CREATE', {
+        ...message,
+        'attachments': [
+          ...message['attachments'] as List,
+          {
+            'id': 'a-2',
+            'filename': 'cat.png',
+            'content_type': 'image/png',
+            'size_bytes': 4096,
+            'width': 800,
+            'height': 600,
+            'created_at': _at,
+            'deleted_at': _at,
+          },
+        ],
+      }),
+    );
+    await pumpEventQueue();
+    final m = (events.single as MessageCreated).message;
+    expect(m.attachments.map((a) => a.id), ['a-1']);
+    expect([for (final a in m.deletedAttachments) (a.id, a.width)], [('a-2', 800)]);
+    final reread = messageFromJson(jsonDecode(jsonEncode(messageToJson(m))) as Map<String, Object?>);
+    expect((reread.attachments.single.id, reread.deletedAttachments.single.id), ('a-1', 'a-2'));
+  });
+
   test('the offline cache keeps a call notice\'s call (#158)', () {
     final m = ChatMessage(
       id: 'n-1',
