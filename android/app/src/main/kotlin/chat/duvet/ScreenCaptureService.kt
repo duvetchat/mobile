@@ -48,7 +48,7 @@ class ScreenCaptureService : Service() {
             .setOngoing(true)
             .setContentIntent(
                 PendingIntent.getActivity(
-                    this, 0, packageManager.getLaunchIntentForPackage(packageName),
+                    this, 0, Intent(this, MainActivity::class.java),
                     PendingIntent.FLAG_IMMUTABLE,
                 )
             )
