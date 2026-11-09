@@ -498,6 +498,7 @@ class _SpeedButton extends StatelessWidget {
               constraints: const BoxConstraints(minWidth: 40, minHeight: 40),
               child: Center(
                 widthFactor: 1,
+                heightFactor: 1,
                 child: Container(
                   padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
                   decoration: BoxDecoration(
