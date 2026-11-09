@@ -657,6 +657,25 @@ class OutgoingFile {
     this.height,
     this.sizeBytes,
   });
+
+  /// Sent as a spoiler: named as [MessageAttachment.isSpoiler] reads it.
+  bool get isSpoiler => name.startsWith(MessageAttachment.spoilerPrefix) && name != MessageAttachment.spoilerPrefix;
+
+  /// The name shown in the tray, without the spoiler prefixes.
+  String get displayName {
+    final shown = name.replaceFirst(RegExp('^(?:${MessageAttachment.spoilerPrefix})+'), '');
+    return shown.isEmpty ? name : shown;
+  }
+
+  /// This file, renamed to be a spoiler or not, as the desktop's toggle does.
+  OutgoingFile withSpoiler(bool spoiler) => OutgoingFile(
+    path: path,
+    name: spoiler ? (isSpoiler ? name : '${MessageAttachment.spoilerPrefix}$name') : displayName,
+    contentType: contentType,
+    width: width,
+    height: height,
+    sizeBytes: sizeBytes,
+  );
 }
 
 /// The user's friends and the requests between them and others.

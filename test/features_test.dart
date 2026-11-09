@@ -309,6 +309,30 @@ void main() {
       semantics.dispose();
     });
 
+    testWidgets('a picked file can be marked as a spoiler, and sends named as one', (tester) async {
+      ChatView.debugPickMedia = (_) async => const [
+        OutgoingFile(path: '/nowhere/cat.jpg', name: 'cat.jpg', contentType: 'image/jpeg'),
+      ];
+      final repository = await openGeneral(tester);
+      await tester.tap(find.bySemanticsLabel('Add photos, a sticker or a mention'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.bySemanticsLabel('Photos & GIFs'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.bySemanticsLabel('Mark cat.jpg as spoiler'));
+      await tester.pumpAndSettle();
+      expect(find.bySemanticsLabel('Spoiler, Photo, cat.jpg'), findsOneWidget);
+      // Twice is back to a plain photo; three times, a spoiler again.
+      await tester.tap(find.bySemanticsLabel('Mark cat.jpg as spoiler'));
+      await tester.pumpAndSettle();
+      expect(find.bySemanticsLabel('Photo, cat.jpg'), findsOneWidget);
+      await tester.tap(find.bySemanticsLabel('Mark cat.jpg as spoiler'));
+      await tester.pumpAndSettle();
+
+      await send(tester);
+      expect(repository.sent.last.files.single.name, 'SPOILER_cat.jpg');
+      semantics.dispose();
+    });
+
     testWidgets('a GIF waits for a tap when animations are off', (tester) async {
       final repository = await openGeneral(tester);
       tester.platformDispatcher.accessibilityFeaturesTestValue = const FakeAccessibilityFeatures(

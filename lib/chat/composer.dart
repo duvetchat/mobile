@@ -504,11 +504,13 @@ class _SuggestionsPanel extends StatelessWidget {
   }
 }
 
-/// The picked files, above the composer, each removable.
+/// The picked files, above the composer, each removable and each markable
+/// as a spoiler.
 class _AttachmentTray extends StatelessWidget {
   final List<OutgoingFile> files;
   final ValueChanged<OutgoingFile> onRemove;
-  const _AttachmentTray({required this.files, required this.onRemove});
+  final ValueChanged<OutgoingFile> onToggleSpoiler;
+  const _AttachmentTray({required this.files, required this.onRemove, required this.onToggleSpoiler});
 
   @override
   Widget build(BuildContext context) {
@@ -534,7 +536,7 @@ class _AttachmentTray extends StatelessWidget {
                     child: Semantics(
                       container: true,
                       image: true,
-                      label: '${_kind(f.contentType)}, ${f.name}',
+                      label: '${f.isSpoiler ? 'Spoiler, ' : ''}${_kind(f.contentType)}, ${f.displayName}',
                       excludeSemantics: true,
                       child: ClipRRect(
                         borderRadius: BorderRadius.circular(DuvetTokens.radiusField),
@@ -543,7 +545,15 @@ class _AttachmentTray extends StatelessWidget {
                           height: 64,
                           color: colors.secondary,
                           child: f.contentType.startsWith('image/')
-                              ? Image(image: ResizeImage(FileImage(File(f.path)), width: 192), fit: BoxFit.cover)
+                              ? ImageFiltered(
+                                  // A spoiler is blurred here, as it'll be covered in the chat.
+                                  enabled: f.isSpoiler,
+                                  imageFilter: ImageFilter.blur(sigmaX: 8, sigmaY: 8),
+                                  child: Image(
+                                    image: ResizeImage(FileImage(File(f.path)), width: 192),
+                                    fit: BoxFit.cover,
+                                  ),
+                                )
                               : Icon(f.contentType.startsWith('video/') ? FLucideIcons.film : FLucideIcons.file),
                         ),
                       ),
@@ -561,7 +571,7 @@ class _AttachmentTray extends StatelessWidget {
                     child: Semantics(
                       container: true,
                       button: true,
-                      label: 'Remove ${f.name}',
+                      label: 'Remove ${f.displayName}',
                       excludeSemantics: true,
                       onTap: () => onRemove(f),
                       child: GestureDetector(
@@ -584,6 +594,47 @@ class _AttachmentTray extends StatelessWidget {
                                   border: Border.all(color: colors.background, width: 1.5),
                                 ),
                                 child: Icon(FLucideIcons.x, size: 13, color: colors.background),
+                              ),
+                            ),
+                          ),
+                        ),
+                      ),
+                    ),
+                  ),
+                  Positioned(
+                    bottom: 0,
+                    left: 44,
+                    child: Semantics(
+                      container: true,
+                      button: true,
+                      toggled: f.isSpoiler,
+                      label: 'Mark ${f.displayName} as spoiler',
+                      excludeSemantics: true,
+                      onTap: () => onToggleSpoiler(f),
+                      child: GestureDetector(
+                        onTap: () => onToggleSpoiler(f),
+                        behavior: HitTestBehavior.opaque,
+                        // As the remove button, on the thumbnail's bottom corner.
+                        child: SizedBox(
+                          width: 40,
+                          height: 36,
+                          child: Align(
+                            alignment: Alignment.bottomLeft,
+                            child: Padding(
+                              padding: const EdgeInsets.only(left: 9, bottom: 1),
+                              child: Container(
+                                width: 22,
+                                height: 22,
+                                decoration: BoxDecoration(
+                                  color: f.isSpoiler ? colors.primary : const Color(0xB3141416),
+                                  borderRadius: BorderRadius.circular(DuvetTokens.radiusChip),
+                                  border: Border.all(color: colors.background, width: 1.5),
+                                ),
+                                child: Icon(
+                                  FLucideIcons.eyeOff,
+                                  size: 13,
+                                  color: f.isSpoiler ? colors.primaryForeground : Colors.white,
+                                ),
                               ),
                             ),
                           ),
