@@ -172,6 +172,101 @@ void main() {
       messenger.setMockMethodCallHandler(const MethodChannel('flutter.baseflow.com/permissions/methods'), null);
       messenger.setMockMethodCallHandler(const MethodChannel('FlutterWebRTC.Method'), null);
       messenger.setMockMethodCallHandler(keystore, null);
+      messenger.setMockMethodCallHandler(_screenService, null);
+    });
+
+    // Every call to flutter_webrtc and the screen service, in order; getDisplayMedia answers [display].
+    List<String> mockScreenCapture({bool consent = true, Object? display}) {
+      final calls = <String>[];
+      messenger.setMockMethodCallHandler(_screenService, (call) async {
+        calls.add('service ${call.method}');
+        return null;
+      });
+      messenger.setMockMethodCallHandler(const MethodChannel('FlutterWebRTC.Method'), (call) async {
+        // flutter_webrtc's own set-up, once per run.
+        if (call.method != 'initialize') calls.add(call.method);
+        return switch (call.method) {
+          'requestCapturePermission' => consent,
+          'getDisplayMedia' => display is Exception ? throw display : display,
+          _ => null,
+        };
+      });
+      return calls;
+    }
+
+    const screenStream = {
+      'streamId': 's-1',
+      'audioTracks': <Object?>[],
+      'videoTracks': [
+        {'id': 'v-1', 'kind': 'video', 'label': 'video', 'enabled': true},
+      ],
+    };
+
+    test('shares the screen under its service: the consent, the service, then the capture', () async {
+      final calls = mockScreenCapture(display: screenStream);
+      final screen = await WebRtcVoiceEngine(android: true).openScreen();
+      expect(screen, isNotNull);
+      expect(calls, ['requestCapturePermission', 'service start', 'getDisplayMedia']);
+
+      calls.clear();
+      await screen!.stop();
+      await screen.stop();
+      expect(calls.last, 'service stop');
+      expect(calls.where((c) => c == 'service stop'), hasLength(1));
+    });
+
+    test('a refused consent starts no service and captures nothing', () async {
+      final calls = mockScreenCapture(consent: false);
+      expect(await WebRtcVoiceEngine(android: true).openScreen(), isNull);
+      expect(calls, ['requestCapturePermission']);
+    });
+
+    test('a capture that fails stops the service again', () async {
+      final calls = mockScreenCapture(display: PlatformException(code: 'getDisplayMedia'));
+      expect(await WebRtcVoiceEngine(android: true).openScreen(), isNull);
+      expect(calls, ['requestCapturePermission', 'service start', 'getDisplayMedia', 'service stop']);
+    });
+
+    test('a capture without a track is disposed and stops the service', () async {
+      final calls = mockScreenCapture(display: {...screenStream, 'videoTracks': <Object?>[]});
+      expect(await WebRtcVoiceEngine(android: true).openScreen(), isNull);
+      expect(calls, ['requestCapturePermission', 'service start', 'getDisplayMedia', 'streamDispose', 'service stop']);
+    });
+
+    test('no screen share on iOS', () async {
+      final calls = mockScreenCapture(display: screenStream);
+      expect(await WebRtcVoiceEngine(android: false).openScreen(), isNull);
+      expect(calls, isEmpty);
+    });
+
+    test('the camera faces the way the one that opened does: a back-only phone opens its back one', () async {
+      messenger.setMockMethodCallHandler(const MethodChannel('FlutterWebRTC.Method'), (call) async {
+        return switch (call.method) {
+          'getUserMedia' => {
+            'streamId': 's-1',
+            'audioTracks': <Object?>[],
+            'videoTracks': [
+              {
+                'id': 'v-1',
+                'kind': 'video',
+                'label': 'v-1',
+                'enabled': true,
+                // flutter_webrtc keeps the facing asked for, and names the camera that opened.
+                'settings': {'deviceId': '0', 'facingMode': 'user'},
+              },
+            ],
+          },
+          'getSources' => {
+            'sources': [
+              {'deviceId': '0', 'label': 'Camera 0, Facing back, Orientation 90', 'kind': 'videoinput'},
+            ],
+          },
+          _ => null,
+        };
+      });
+      // Not Android: no permission_handler to mock.
+      final camera = await WebRtcVoiceEngine(android: false).openCamera();
+      expect(camera?.facing, CameraFacing.back);
     });
 
     test('forgetting deletes every account\'s call history and recent chats, and nothing else', () async {
@@ -298,6 +393,8 @@ void main() {
     });
   });
 }
+
+const _screenService = MethodChannel('chat.duvet/screen');
 
 /// A keystore whose reads answer what was kept when they were asked, once
 /// [release] completes.

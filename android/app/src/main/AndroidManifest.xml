@@ -21,6 +21,9 @@
          and its wake and Wi-Fi locks. -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE"/>
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE"/>
+    <!-- A screen share's own foreground service (ScreenCaptureService), started
+         after the consent: the screen capture runs only under one. -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PROJECTION"/>
     <!-- Voice notes in Android's media controls (audio_service): their
          foreground service plays media. -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK"/>
@@ -82,6 +85,12 @@
             android:name="de.julianassmann.flutter_background.IsolateHolderService"
             android:exported="false"
             android:foregroundServiceType="microphone"/>
+        <!-- Screen sharing in voice: started between the consent and the capture,
+             stopped with the share (chat.duvet/screen in MainActivity). -->
+        <service
+            android:name=".ScreenCaptureService"
+            android:exported="false"
+            android:foregroundServiceType="mediaProjection"/>
         <!-- A voice note playing, in the media notification and quick settings
              (audio_service, through VoiceNoteHandler), and the headset's
              play/pause buttons. -->
