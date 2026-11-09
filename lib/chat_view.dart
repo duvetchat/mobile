@@ -688,7 +688,7 @@ class _ChatViewState extends State<ChatView> {
       if (over.isNotEmpty) {
         _toast(
           over.length == 1
-              ? '${over.single.name} is over your ${_megabytes(limit!)} upload limit'
+              ? '${over.single.displayName} is over your ${_megabytes(limit!)} upload limit'
               : '${over.length} files are over your ${_megabytes(limit!)} upload limit',
         );
         return;
@@ -2331,8 +2331,10 @@ class _ChatViewState extends State<ChatView> {
                         _AttachmentTray(
                           files: _files,
                           onRemove: (f) => setState(() => _files.remove(f)),
-                          onToggleSpoiler: (f) =>
-                              setState(() => _files[_files.indexOf(f)] = f.withSpoiler(!f.isSpoiler)),
+                          onToggleSpoiler: (f) => setState(() {
+                            final i = _files.indexOf(f);
+                            if (i >= 0) _files[i] = f.withSpoiler(!f.isSpoiler);
+                          }),
                         ),
                       Padding(
                         padding: const EdgeInsets.symmetric(horizontal: 16),

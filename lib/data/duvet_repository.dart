@@ -1963,27 +1963,38 @@ class DuvetRepository implements ChatRepository {
     void Function(double progress)? onProgress,
     Future<void>? cancel,
   }) async {
-    final upload = files.isEmpty ? null : [for (final f in files) await _named(f)];
+    // The folders of the links [_named] makes: deleted once sent, or not.
+    final links = <Directory>[];
     void progress(int sent, int total) => onProgress?.call(total == 0 ? 0 : sent / total);
     try {
+      final upload = files.isEmpty ? null : [for (final f in files) await _named(f, links)];
       return await _sendTo(target, content, nonce, upload, sticker, replyTo, mentionRepliedUser, progress, cancel);
     } on duvet.DuvetApiException catch (e) {
       if (e.statusCode == 413) throw const UploadTooLarge();
       if (_refusal(e) case final reason?) throw ActionFailed(reason);
       rethrow;
     } finally {
-      // The links [_named] made, not the files they point to.
-      for (final (i, f) in files.indexed) {
-        if (upload![i].path != f.path) upload[i].parent.delete(recursive: true).ignore();
+      // The links go, not the files they point to.
+      for (final dir in links) {
+        try {
+          await dir.delete(recursive: true);
+        } on FileSystemException catch (e) {
+          debugPrint('upload link: $e');
+        }
       }
     }
   }
 
   // duvet_client names an upload after its path's last part: a file named
-  // otherwise (marked as a spoiler, say) goes through a link of its name.
-  static Future<File> _named(OutgoingFile f) async {
-    if (File(f.path).uri.pathSegments.last == f.name) return File(f.path);
+  // otherwise (marked as a spoiler, say) goes through a link of its name, in
+  // a folder of its own added to [links]. A name that can't be one file's
+  // (empty, or with a slash) goes as the path names it.
+  static Future<File> _named(OutgoingFile f, List<Directory> links) async {
+    final file = File(f.path);
+    if (f.name.isEmpty || f.name.contains('/') || f.name == '.' || f.name == '..') return file;
+    if (file.uri.pathSegments.last == f.name) return file;
     final dir = await Directory.systemTemp.createTemp('upload');
+    links.add(dir);
     return File((await Link('${dir.path}/${f.name}').create(f.path)).path);
   }
 

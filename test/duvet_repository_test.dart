@@ -773,6 +773,12 @@ void main() {
     final upload = requests.lastWhere((r) => r.method == 'POST');
     expect(latin1.decode(upload.bodyBytes), contains('filename="SPOILER_cat.jpg"'));
     expect(picked.existsSync(), isTrue);
+    // The link it went up through is gone, folder and all.
+    final links = [
+      for (final d in Directory.systemTemp.listSync().whereType<Directory>())
+        if (File('${d.path}/SPOILER_cat.jpg').existsSync()) d.path,
+    ];
+    expect(links, isEmpty);
   });
 
   test('gateway events build spaces, unread state and live messages', () async {

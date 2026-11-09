@@ -659,7 +659,7 @@ class OutgoingFile {
   });
 
   /// Sent as a spoiler: named as [MessageAttachment.isSpoiler] reads it.
-  bool get isSpoiler => name.startsWith(MessageAttachment.spoilerPrefix);
+  bool get isSpoiler => name.startsWith(MessageAttachment.spoilerPrefix) && name != MessageAttachment.spoilerPrefix;
 
   /// The name shown in the tray, without the spoiler prefixes.
   String get displayName {
