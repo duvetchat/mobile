@@ -836,28 +836,32 @@ class _PictureState extends State<_Picture> {
     );
   }
 
-  void _open(BuildContext context) {
-    // Out of the composer: or closing the viewer hands it the keyboard back.
-    FocusManager.instance.primaryFocus?.unfocus();
-    Navigator.of(context).push(
-      PageRouteBuilder<void>(
-        opaque: false,
-        barrierColor: Colors.black,
-        transitionDuration: DuvetTokens.panelIn,
-        reverseTransitionDuration: DuvetTokens.panelOut,
-        pageBuilder: (_, _, _) => ImageViewer(gallery: widget.gallery, initial: widget.index),
-        transitionsBuilder: (_, animation, _, child) => FadeTransition(
-          opacity: CurvedAnimation(parent: animation, curve: DuvetTokens.decelerate),
-          child: child,
-        ),
+  void _open(BuildContext context) => openImageViewer(context, widget.gallery, widget.index);
+}
+
+/// Opens [gallery] full screen, at [index].
+void openImageViewer(BuildContext context, List<MessageAttachment> gallery, [int index = 0]) {
+  // Out of the composer: or closing the viewer hands it the keyboard back.
+  FocusManager.instance.primaryFocus?.unfocus();
+  Navigator.of(context).push(
+    PageRouteBuilder<void>(
+      opaque: false,
+      barrierColor: Colors.black,
+      transitionDuration: DuvetTokens.panelIn,
+      reverseTransitionDuration: DuvetTokens.panelOut,
+      pageBuilder: (_, _, _) => ImageViewer(gallery: gallery, initial: index),
+      transitionsBuilder: (_, animation, _, child) => FadeTransition(
+        opacity: CurvedAnimation(parent: animation, curve: DuvetTokens.decelerate),
+        child: child,
       ),
-    );
-  }
+    ),
+  );
 }
 
 String _heroTag(MessageAttachment a) => 'attachment:${a.id}:${a.url}';
 
-Widget _image(MessageAttachment a, double width, {BoxFit fit = BoxFit.cover}) {
+/// [retry]: a picture that didn't load says so, and a tap loads it again.
+Widget _image(MessageAttachment a, double width, {BoxFit fit = BoxFit.cover, bool retry = false}) {
   final dpr = WidgetsBinding.instance.platformDispatcher.views.first.devicePixelRatio;
   final cache = math.max(1, (width * dpr).round());
   Widget broken(BuildContext context, Object _, StackTrace? _) =>
@@ -872,27 +876,74 @@ Widget _image(MessageAttachment a, double width, {BoxFit fit = BoxFit.cover}) {
       Image.file(File(a.url), fit: fit, cacheWidth: fit == BoxFit.cover ? cache : null, errorBuilder: broken),
     );
   }
-  return AttachmentLinkBuilder(
-    attachment: a,
-    builder: (context, url, refused) => played(
-      url,
-      Image.network(
+  // Reloading starts its link over too: an expired one is asked for anew.
+  return _Reloadable(
+    builder: (context, reload) => AttachmentLinkBuilder(
+      attachment: a,
+      builder: (context, url, refused) => played(
         url,
-        fit: fit,
-        cacheWidth: fit == BoxFit.cover ? cache : null,
-        errorBuilder: (context, error, stack) {
-          // Its link expired: the API refuses it.
-          if (error is NetworkImageLoadException && error.statusCode == 403) refused();
-          return broken(context, error, stack);
-        },
-        frameBuilder: (context, child, frame, sync) => AnimatedOpacity(
-          opacity: frame == null && !sync ? 0 : 1,
-          duration: const Duration(milliseconds: 200),
-          child: child,
+        Image.network(
+          url,
+          fit: fit,
+          cacheWidth: fit == BoxFit.cover ? cache : null,
+          errorBuilder: (context, error, stack) {
+            // Its link expired: the API refuses it.
+            if (error is NetworkImageLoadException && error.statusCode == 403) refused();
+            if (!retry) return broken(context, error, stack);
+            final muted = context.theme.colors.mutedForeground;
+            return Center(
+              child: Semantics(
+                container: true,
+                button: true,
+                label: 'Couldn’t load the picture. Try again',
+                excludeSemantics: true,
+                onTap: reload,
+                child: GestureDetector(
+                  behavior: HitTestBehavior.opaque,
+                  onTap: reload,
+                  child: Padding(
+                    padding: const EdgeInsets.all(16),
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Icon(FLucideIcons.imageOff, color: muted),
+                        const SizedBox(height: 8),
+                        Text('Tap to try again', style: DuvetType.caption.copyWith(color: muted)),
+                      ],
+                    ),
+                  ),
+                ),
+              ),
+            );
+          },
+          frameBuilder: (context, child, frame, sync) => AnimatedOpacity(
+            opacity: frame == null && !sync ? 0 : 1,
+            duration: const Duration(milliseconds: 200),
+            child: child,
+          ),
         ),
       ),
     ),
   );
+}
+
+/// Builds its child again, from scratch, each time the child calls `reload`:
+/// a picture that failed loads anew, as Flutter drops a failed one from its
+/// cache.
+class _Reloadable extends StatefulWidget {
+  final Widget Function(BuildContext context, VoidCallback reload) builder;
+  const _Reloadable({required this.builder});
+
+  @override
+  State<_Reloadable> createState() => _ReloadableState();
+}
+
+class _ReloadableState extends State<_Reloadable> {
+  int _attempt = 0;
+
+  @override
+  Widget build(BuildContext context) =>
+      KeyedSubtree(key: ValueKey(_attempt), child: widget.builder(context, () => setState(() => _attempt++)));
 }
 
 class _Badge extends StatelessWidget {
@@ -1023,37 +1074,49 @@ Future<void> _fileMenu(BuildContext anchor, MessageAttachment a) async {
 class StickerView extends StatelessWidget {
   final String url;
   final String? name;
-  const StickerView({required this.url, this.name, super.key});
+
+  /// A tap opens it full screen, to zoom in, as a picture does.
+  final bool zoomable;
+  const StickerView({required this.url, this.name, this.zoomable = false, super.key});
+
+  void _open(BuildContext context) => openImageViewer(context, [
+    MessageAttachment(id: 'sticker:$url', filename: name ?? 'Sticker', contentType: 'image/png', url: url),
+  ]);
 
   @override
   Widget build(BuildContext context) => Semantics(
     container: true,
     image: true,
+    button: zoomable,
     label: name == null ? 'Sticker' : 'Sticker, $name',
+    hint: zoomable ? 'Double tap to open' : null,
     excludeSemantics: true,
-    child: Image.network(
-      url,
+    onTap: zoomable ? () => _open(context) : null,
+    child: GestureDetector(onTap: zoomable ? () => _open(context) : null, child: _sticker(context)),
+  );
+
+  Widget _sticker(BuildContext context) => Image.network(
+    url,
+    width: 160,
+    height: 160,
+    cacheWidth: (160 * MediaQuery.devicePixelRatioOf(context)).round(),
+    fit: BoxFit.contain,
+    // Not behind the sticker once it's there: stickers are see-through.
+    frameBuilder: (context, child, frame, sync) => frame == null && !sync
+        ? Container(
+            width: 160,
+            height: 160,
+            decoration: BoxDecoration(
+              color: context.theme.colors.secondary,
+              borderRadius: BorderRadius.circular(DuvetTokens.radiusButton),
+            ),
+          )
+        : child,
+    errorBuilder: (context, _, _) => SizedBox(
       width: 160,
       height: 160,
-      cacheWidth: (160 * MediaQuery.devicePixelRatioOf(context)).round(),
-      fit: BoxFit.contain,
-      // Not behind the sticker once it's there: stickers are see-through.
-      frameBuilder: (context, child, frame, sync) => frame == null && !sync
-          ? Container(
-              width: 160,
-              height: 160,
-              decoration: BoxDecoration(
-                color: context.theme.colors.secondary,
-                borderRadius: BorderRadius.circular(DuvetTokens.radiusButton),
-              ),
-            )
-          : child,
-      errorBuilder: (context, _, _) => SizedBox(
-        width: 160,
-        height: 160,
-        child: Center(
-          child: Text('Sticker unavailable', style: TextStyle(color: context.theme.colors.mutedForeground)),
-        ),
+      child: Center(
+        child: Text('Sticker unavailable', style: TextStyle(color: context.theme.colors.mutedForeground)),
       ),
     ),
   );
@@ -1389,6 +1452,11 @@ class _ImageViewerState extends State<ImageViewer> with TickerProviderStateMixin
   late final _pages = PageController(initialPage: widget.initial);
   late int _index = widget.initial;
 
+  // Each photo's quarter turns clockwise, from Rotate, by its page: each
+  // starts upright, and keeps its turn while swiped away and back.
+  final _turnsOf = <int, int>{};
+  int get _turns => _turnsOf[_index] ?? 0;
+
   // The zoom of the photo shown: paging stops while it's zoomed, so the others
   // are always at their size.
   double _scale = 1;
@@ -1460,7 +1528,9 @@ class _ImageViewerState extends State<ImageViewer> with TickerProviderStateMixin
     final whole = Offset.zero & _view;
     // shortcut: a photo of unknown size takes the whole view, so panning can reach past its edges.
     if (a.width == null || a.height == null || a.width == 0 || a.height == 0) return whole;
-    final size = Size(a.width!.toDouble(), a.height!.toDouble());
+    final size = _turns.isOdd
+        ? Size(a.height!.toDouble(), a.width!.toDouble())
+        : Size(a.width!.toDouble(), a.height!.toDouble());
     final fitted = applyBoxFit(BoxFit.contain, size, _view).destination;
     // A photo smaller than the screen shows at its own size: it isn't scaled up.
     return Alignment.center.inscribe(fitted.width > size.width ? size : fitted, whole);
@@ -1480,6 +1550,16 @@ class _ImageViewerState extends State<ImageViewer> with TickerProviderStateMixin
     _scaleTo = Tween(begin: _scale, end: scale).animate(curve);
     _panTo = Tween(begin: _pan, end: pan).animate(curve);
     _zoomMotion.forward(from: 0);
+  }
+
+  // A quarter turn clockwise, at its size: a zoom wouldn't fit the turned photo.
+  void _rotate() {
+    _zoomMotion.stop();
+    setState(() {
+      _turnsOf[_index] = (_turns + 1) % 4;
+      _scale = 1;
+      _pan = Offset.zero;
+    });
   }
 
   // Double-tap: zoom in where tapped, or back out.
@@ -1722,11 +1802,12 @@ class _ImageViewerState extends State<ImageViewer> with TickerProviderStateMixin
                         onPageChanged: (i) => setState(() => _index = i),
                         itemBuilder: (context, i) {
                           final a = widget.gallery[i];
+                          // Its own node, with the picture's Try again under it when it failed.
                           return Semantics(
+                            container: true,
                             image: true,
                             label:
                                 '${a.isGif ? 'GIF' : 'Photo'}, ${a.displayName}, ${i + 1} of ${widget.gallery.length}',
-                            excludeSemantics: true,
                             child: RawGestureDetector(
                               gestures: {
                                 if (!_zoomed && !_pinching)
@@ -1749,9 +1830,21 @@ class _ImageViewerState extends State<ImageViewer> with TickerProviderStateMixin
                                           ..setTranslationRaw(_pan.dx, _pan.dy, 0))
                                       : Matrix4.identity(),
                                   child: Center(
-                                    child: Hero(
-                                      tag: _heroTag(a),
-                                      child: _image(a, MediaQuery.sizeOf(context).width, fit: BoxFit.contain),
+                                    // Turned, it fades out rather than flying back upright.
+                                    child: HeroMode(
+                                      enabled: (_turnsOf[i] ?? 0) == 0,
+                                      child: Hero(
+                                        tag: _heroTag(a),
+                                        child: RotatedBox(
+                                          quarterTurns: _turnsOf[i] ?? 0,
+                                          child: _image(
+                                            a,
+                                            MediaQuery.sizeOf(context).width,
+                                            fit: BoxFit.contain,
+                                            retry: true,
+                                          ),
+                                        ),
+                                      ),
                                     ),
                                   ),
                                 ),
@@ -1807,7 +1900,20 @@ class _ImageViewerState extends State<ImageViewer> with TickerProviderStateMixin
                                 ],
                               ),
                             ),
-                            const SizedBox(width: 48),
+                            Semantics(
+                              button: true,
+                              label: 'Rotate',
+                              excludeSemantics: true,
+                              onTap: _rotate,
+                              child: GestureDetector(
+                                onTap: _rotate,
+                                child: const SizedBox.square(
+                                  dimension: 40,
+                                  child: Icon(FLucideIcons.rotateCw, color: _ink),
+                                ),
+                              ),
+                            ),
+                            const SizedBox(width: 8),
                           ],
                         ),
                       ),
