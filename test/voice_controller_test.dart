@@ -1954,7 +1954,9 @@ void main() {
 
     _voice('the camera picked opens on the next tap, or replaces the one on', (async, h) {
       connected(async, h);
+      expect(h.voice.selectedCameraId, isNull);
       h.voice.selectCamera('0');
+      expect(h.voice.selectedCameraId, '0');
       h.voice.toggleCamera();
       async.flushMicrotasks();
       expect(h.engine.openedCameras.single.deviceId, '0');
@@ -1964,6 +1966,7 @@ void main() {
       final [back, front] = h.engine.openedCameras;
       expect(back.stopped, isTrue);
       expect(front.deviceId, '1');
+      expect(h.voice.selectedCameraId, '1');
       expect(h.voice.camera, front);
       expect(h.engine.peer.camera, front);
       expect(offers(h), isEmpty);

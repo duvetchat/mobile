@@ -642,20 +642,27 @@ class _SpaceDirectoryState extends State<SpaceDirectory> {
   }
 }
 
-/// Who's in a voice room, for its row: "Maya, Leo and 2 more", or no one.
+/// Who's in a voice room, for its row: "Maya, Leo and 2 more", or no one,
+/// then what is live there, as Now's room cards say it: "· sharing screen".
 String voiceSnippet(ChatRepository repository, VoiceController voice, String roomId) {
   final me = repository.profile.value?.id;
   final known = {for (final m in repository.people) m.userId: m.displayName};
+  final people = voice.participants(roomId);
   final names = [
-    for (final p in voice.participants(roomId))
-      p.userId == me ? 'You' : known[p.userId] ?? repository.nameOf(p.userId) ?? 'Someone',
+    for (final p in people) p.userId == me ? 'You' : known[p.userId] ?? repository.nameOf(p.userId) ?? 'Someone',
   ];
   if (voice.target?.id == roomId && !names.contains('You')) names.insert(0, 'You');
-  return switch (names.length) {
-    0 => 'No one’s here',
-    1 || 2 => names.join(', '),
-    final n => '${names.take(2).join(', ')} and ${n - 2} more',
+  final live = switch (liveIn(people)) {
+    NowLive.screen => ' · sharing screen',
+    NowLive.camera => ' · camera on',
+    null => '',
   };
+  return switch (names.length) {
+        0 => 'No one’s here',
+        1 || 2 => names.join(', '),
+        final n => '${names.take(2).join(', ')} and ${n - 2} more',
+      } +
+      live;
 }
 
 /// The calls this phone saw: Duvet's servers keep no call history.
