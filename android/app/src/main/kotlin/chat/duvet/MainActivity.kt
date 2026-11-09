@@ -39,13 +39,18 @@ class MainActivity : AudioServiceActivity() {
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "chat.duvet/screen").setMethodCallHandler { call, result ->
             val service = Intent(this, ScreenCaptureService::class.java)
             when (call.method) {
-                "start" -> try {
+                "start" -> if (ScreenCaptureService.running) {
+                    result.success(null)
+                } else try {
+                    // One answer per call: a start still waiting is told it was replaced.
+                    ScreenCaptureService.started?.invoke(IllegalStateException("another screen share started"))
                     ScreenCaptureService.started = { error ->
                         if (error == null) result.success(null) else result.error("screen", error.message, null)
                     }
-                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) startForegroundService(service) else startService(service)
+                    // Not startForegroundService: see ScreenCaptureService.
+                    startService(service)
                 } catch (e: RuntimeException) {
-                    // Not allowed to start now (Android 12 and later, from the background).
+                    // Not allowed to start now (Android 8 and later, from the background).
                     ScreenCaptureService.started = null
                     result.error("screen", e.message, null)
                 }

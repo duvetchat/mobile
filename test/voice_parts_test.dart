@@ -233,6 +233,40 @@ void main() {
       expect(calls, ['requestCapturePermission', 'service start', 'getDisplayMedia', 'streamDispose', 'service stop']);
     });
 
+    test('a share stopped while it starts is stopped once its sender is added', () async {
+      mockScreenCapture(display: screenStream);
+      final screen = await WebRtcVoiceEngine(android: true).openScreen();
+      final calls = <String>[];
+      messenger.setMockMethodCallHandler(const MethodChannel('FlutterWebRTC.Method'), (call) async {
+        calls.add(call.method);
+        return switch (call.method) {
+          'createPeerConnection' => {'peerConnectionId': 'pc-1'},
+          'addTrack' => {
+            'senderId': 's-1',
+            'track': {'id': 'v-1', 'kind': 'video', 'label': 'video', 'enabled': true},
+            'rtpParameters': {
+              'encodings': <Object?>[],
+              'headerExtensions': <Object?>[],
+              'codecs': <Object?>[],
+              'rtcp': {'cname': '', 'reducedSize': false},
+            },
+            'ownsTrack': false,
+          },
+          'removeTrack' => {'result': true},
+          _ => null,
+        };
+      });
+      messenger.setMockStreamHandler(
+        const EventChannel('FlutterWebRTC/peerConnectionEventpc-1'),
+        MockStreamHandler.inline(onListen: (_, _) {}),
+      );
+      final peer = await WebRtcVoiceEngine().createPeer(const []);
+      final started = peer.setScreen(screen);
+      await peer.setScreen(null);
+      await started;
+      expect(calls.where((c) => c == 'addTrack' || c == 'removeTrack'), ['addTrack', 'removeTrack']);
+    });
+
     test('no screen share on iOS', () async {
       final calls = mockScreenCapture(display: screenStream);
       expect(await WebRtcVoiceEngine(android: false).openScreen(), isNull);
