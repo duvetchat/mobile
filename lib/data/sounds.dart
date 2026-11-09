@@ -81,7 +81,14 @@ class JustAudioSoundPlayer implements SoundPlayer {
         usage: sound == Sound.incomingCall ? AndroidAudioUsage.notificationRingtone : AndroidAudioUsage.notification,
       ),
     );
-    await player.setAsset(sound.asset);
+    try {
+      await player.setAsset(sound.asset);
+    } catch (_) {
+      // Not kept: the next play tries again with a new player.
+      _players.remove(sound);
+      unawaited(player.dispose());
+      rethrow;
+    }
     return player;
   }();
 
@@ -125,6 +132,9 @@ class Sounds extends ChangeNotifier {
   int _master = 100;
   final _volumes = {for (final s in Sound.values) s: 100};
 
+  // A change made before load() ends wins over what load() reads.
+  bool _changed = false;
+
   /// The ring playing or about to: a stop while it waits on the ringer cancels it.
   Object? _ring;
 
@@ -139,7 +149,7 @@ class Sounds extends ChangeNotifier {
   Future<void> load() async {
     try {
       final raw = await _storage.read(key: _key);
-      if (raw == null) return;
+      if (raw == null || _changed) return;
       final json = jsonDecode(raw) as Map<String, dynamic>;
       _master = _clamp(json['master']);
       for (final s in Sound.values) {
@@ -156,6 +166,7 @@ class Sounds extends ChangeNotifier {
   Future<void> setVolume(Sound sound, int value) => _set(() => _volumes[sound] = value.clamp(0, 200));
 
   Future<void> _set(void Function() change) async {
+    _changed = true;
     change();
     notifyListeners();
     try {
@@ -176,7 +187,11 @@ class Sounds extends ChangeNotifier {
   }
 
   /// Plays [sound] once even when the phone wants quiet: the user asked to hear it.
-  Future<void> preview(Sound sound) => _guard(() => _player.play(sound, gain(sound)));
+  /// The ring's own preview waits while a call rings: it shares the ring's player.
+  Future<void> preview(Sound sound) async {
+    if (sound == Sound.incomingCall && _ring != null) return;
+    await _guard(() => _player.play(sound, gain(sound)));
+  }
 
   /// Rings until [stopRing]; a ring already going goes on alone.
   Future<void> startRing() async {

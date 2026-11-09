@@ -651,8 +651,15 @@ class _Peer implements VoicePeer {
   Future<void> setCamera(VoiceCamera? camera) async =>
       _cameraSender?.replaceTrack(camera is _Camera ? camera.track : null);
 
+  // setScreen calls in turn: a stop made while a start still adds its sender
+  // would see no sender, and leave the start's sender carrying a stopped track.
+  Future<void> _screenTurn = Future.value();
+
   @override
-  Future<void> setScreen(VoiceScreen? screen) async {
+  Future<void> setScreen(VoiceScreen? screen) =>
+      _screenTurn = _screenTurn.catchError((Object _) {}).then((_) => _setScreen(screen));
+
+  Future<void> _setScreen(VoiceScreen? screen) async {
     final track = screen is _Screen ? screen.track : null;
     final sender = _screenSender;
     if (track == null && sender == null) return;
@@ -808,5 +815,7 @@ class _Peer implements VoicePeer {
     } catch (e) {
       debugPrint('voice: close: $e');
     }
+    // Last, with the connection gone: no track comes to publish after it.
+    _remoteVideos.dispose();
   }
 }

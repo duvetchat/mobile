@@ -341,6 +341,18 @@ class FakeVoiceEngine implements VoiceEngine {
   ];
   bool cameraAllowed = true;
   bool screenAllowed = true;
+
+  /// Another app has the camera: it doesn't open, though allowed.
+  bool cameraBusy = false;
+
+  /// How many times openCamera and openScreen were called.
+  int cameraOpens = 0;
+  int screenOpens = 0;
+
+  /// Hold openCamera and openScreen while set: the permission and consent
+  /// dialogs.
+  Completer<void>? holdCamera;
+  Completer<void>? holdScreen;
   final openedCameras = <FakeCamera>[];
   final screens = <FakeScreen>[];
   final peers = <FakePeer>[];
@@ -380,7 +392,9 @@ class FakeVoiceEngine implements VoiceEngine {
 
   @override
   Future<VoiceCamera?> openCamera({String? deviceId}) async {
-    if (!cameraAllowed || cameraDevices.isEmpty) return null;
+    cameraOpens++;
+    if (holdCamera case final hold?) await hold.future;
+    if (!cameraAllowed || cameraBusy || cameraDevices.isEmpty) return null;
     final camera = FakeCamera(deviceId);
     if (cameraDevices.where((d) => d.id == deviceId).firstOrNull case final device?) camera.facing = device.facing;
     openedCameras.add(camera);
@@ -389,6 +403,8 @@ class FakeVoiceEngine implements VoiceEngine {
 
   @override
   Future<VoiceScreen?> openScreen() async {
+    screenOpens++;
+    if (holdScreen case final hold?) await hold.future;
     if (!screenAllowed) return null;
     final screen = FakeScreen();
     screens.add(screen);

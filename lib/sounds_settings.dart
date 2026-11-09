@@ -108,7 +108,7 @@ class _VolumeRow extends StatelessWidget {
             children: [
               Expanded(
                 child: Semantics(
-                  label: '$label volume',
+                  label: label.endsWith('Volume') ? label : '$label volume',
                   child: Slider(
                     value: value.toDouble(),
                     max: 200,

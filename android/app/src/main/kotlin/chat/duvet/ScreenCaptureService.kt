@@ -15,12 +15,16 @@ import android.os.IBinder
 // alone: it starts with every type it has, and on Android 14 a screen capture
 // type fails to start before the user's consent. So this one starts after the
 // consent and before the capture (lib/data/webrtc_engine.dart, openScreen).
+// MainActivity starts it with startService, not startForegroundService: a
+// service stopped before it reaches the foreground after the latter crashes
+// the app, and startForeground can fail here (no consent, from the background).
 class ScreenCaptureService : Service() {
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         val error = try {
             foreground()
+            running = true
             null
         } catch (e: Exception) {
             stopSelf()
@@ -29,6 +33,11 @@ class ScreenCaptureService : Service() {
         started?.invoke(error)
         started = null
         return START_NOT_STICKY
+    }
+
+    override fun onDestroy() {
+        running = false
+        super.onDestroy()
     }
 
     private fun foreground() {
@@ -43,7 +52,7 @@ class ScreenCaptureService : Service() {
             Notification.Builder(this)
         }
         val notification = builder
-            .setSmallIcon(R.mipmap.ic_launcher)
+            .setSmallIcon(R.mipmap.ic_launcher_monochrome)
             .setContentTitle("Sharing your screen")
             .setOngoing(true)
             .setContentIntent(
@@ -67,5 +76,8 @@ class ScreenCaptureService : Service() {
         // Told once the service is in the foreground (null) or why it isn't:
         // onStartCommand runs on the main thread, as MainActivity's channel does.
         var started: ((Exception?) -> Unit)? = null
+
+        // In the foreground: a second start is answered at once.
+        var running = false
     }
 }
