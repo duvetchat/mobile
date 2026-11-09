@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:forui/forui.dart';
 
+import '../theme.dart';
 import 'facehash.dart';
 
 /// A person's avatar: their image once it loads, a `base-sunken` circle until
@@ -57,6 +58,46 @@ class UserAvatar extends StatelessWidget {
       ),
     );
   }
+}
+
+/// A person in voice as the desktop draws everyone with "Faces in voice" on:
+/// their [Facehash] whatever their picture, its mouth opening with their voice.
+class VoiceFace extends StatelessWidget {
+  final String name;
+
+  /// Their audio level, 0–1: how open the mouth is.
+  final double level;
+
+  /// Where the eyes look, each axis in -1–1.
+  final Offset eyeOffset;
+  final double size;
+
+  const VoiceFace({required this.name, this.level = 0, this.eyeOffset = Offset.zero, this.size = 72, super.key});
+
+  // Eased toward each level rather than snapped to it: levels come a few times
+  // a second. Decelerating, not overshooting: a mouth below 0 would flash the
+  // initial back.
+  @override
+  Widget build(BuildContext context) => Center(
+    widthFactor: 1,
+    heightFactor: 1,
+    // Just the name: the face's initial, there only while the mouth is shut,
+    // would otherwise come and go from the label.
+    child: Semantics(
+      label: name,
+      image: true,
+      excludeSemantics: true,
+      child: SizedBox.square(
+        dimension: size,
+        child: TweenAnimationBuilder<double>(
+          tween: Tween(end: level.clamp(0, 1).toDouble()),
+          duration: MediaQuery.disableAnimationsOf(context) ? Duration.zero : const Duration(milliseconds: 150),
+          curve: DuvetTokens.decelerate,
+          builder: (context, open, _) => Facehash(name: name, size: size, mouthOpen: open, eyeOffset: eyeOffset),
+        ),
+      ),
+    ),
+  );
 }
 
 /// A member's banner, faintly behind their row as the desktop's member list
