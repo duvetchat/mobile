@@ -820,10 +820,11 @@ Widget _image(MessageAttachment a, double width, {BoxFit fit = BoxFit.cover, boo
       Image.file(File(a.url), fit: fit, cacheWidth: fit == BoxFit.cover ? cache : null, errorBuilder: broken),
     );
   }
-  return AttachmentLinkBuilder(
-    attachment: a,
-    builder: (context, url, refused) => _Reloadable(
-      builder: (context, reload) => played(
+  // Reloading starts its link over too: an expired one is asked for anew.
+  return _Reloadable(
+    builder: (context, reload) => AttachmentLinkBuilder(
+      attachment: a,
+      builder: (context, url, refused) => played(
         url,
         Image.network(
           url,
@@ -836,6 +837,7 @@ Widget _image(MessageAttachment a, double width, {BoxFit fit = BoxFit.cover, boo
             final muted = context.theme.colors.mutedForeground;
             return Center(
               child: Semantics(
+                container: true,
                 button: true,
                 label: 'Couldn’t load the picture. Try again',
                 excludeSemantics: true,
@@ -1394,8 +1396,10 @@ class _ImageViewerState extends State<ImageViewer> with TickerProviderStateMixin
   late final _pages = PageController(initialPage: widget.initial);
   late int _index = widget.initial;
 
-  // The photo shown's quarter turns clockwise, from Rotate; each starts upright.
-  int _turns = 0;
+  // Each photo's quarter turns clockwise, from Rotate, by its page: each
+  // starts upright, and keeps its turn while swiped away and back.
+  final _turnsOf = <int, int>{};
+  int get _turns => _turnsOf[_index] ?? 0;
 
   // The zoom of the photo shown: paging stops while it's zoomed, so the others
   // are always at their size.
@@ -1496,7 +1500,7 @@ class _ImageViewerState extends State<ImageViewer> with TickerProviderStateMixin
   void _rotate() {
     _zoomMotion.stop();
     setState(() {
-      _turns = (_turns + 1) % 4;
+      _turnsOf[_index] = (_turns + 1) % 4;
       _scale = 1;
       _pan = Offset.zero;
     });
@@ -1739,17 +1743,15 @@ class _ImageViewerState extends State<ImageViewer> with TickerProviderStateMixin
                         controller: _pages,
                         physics: _zoomed || _pinching ? const NeverScrollableScrollPhysics() : null,
                         itemCount: widget.gallery.length,
-                        onPageChanged: (i) => setState(() {
-                          _index = i;
-                          _turns = 0;
-                        }),
+                        onPageChanged: (i) => setState(() => _index = i),
                         itemBuilder: (context, i) {
                           final a = widget.gallery[i];
+                          // Its own node, with the picture's Try again under it when it failed.
                           return Semantics(
+                            container: true,
                             image: true,
                             label:
                                 '${a.isGif ? 'GIF' : 'Photo'}, ${a.displayName}, ${i + 1} of ${widget.gallery.length}',
-                            excludeSemantics: true,
                             child: RawGestureDetector(
                               gestures: {
                                 if (!_zoomed && !_pinching)
@@ -1772,15 +1774,19 @@ class _ImageViewerState extends State<ImageViewer> with TickerProviderStateMixin
                                           ..setTranslationRaw(_pan.dx, _pan.dy, 0))
                                       : Matrix4.identity(),
                                   child: Center(
-                                    child: Hero(
-                                      tag: _heroTag(a),
-                                      child: RotatedBox(
-                                        quarterTurns: i == _index ? _turns : 0,
-                                        child: _image(
-                                          a,
-                                          MediaQuery.sizeOf(context).width,
-                                          fit: BoxFit.contain,
-                                          retry: true,
+                                    // Turned, it fades out rather than flying back upright.
+                                    child: HeroMode(
+                                      enabled: (_turnsOf[i] ?? 0) == 0,
+                                      child: Hero(
+                                        tag: _heroTag(a),
+                                        child: RotatedBox(
+                                          quarterTurns: _turnsOf[i] ?? 0,
+                                          child: _image(
+                                            a,
+                                            MediaQuery.sizeOf(context).width,
+                                            fit: BoxFit.contain,
+                                            retry: true,
+                                          ),
                                         ),
                                       ),
                                     ),

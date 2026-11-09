@@ -157,6 +157,9 @@ void main() {
 
     await untilBroken();
     expect(find.text('Tap to try again'), findsOneWidget);
+    // A screen reader reaches it too, under the photo's own label.
+    expect(find.bySemanticsLabel('Couldn’t load the picture. Try again'), findsOneWidget);
+    expect(find.bySemanticsLabel('Photo, wide.png, 1 of 1'), findsOneWidget);
     await tester.tap(find.text('Tap to try again'));
     await tester.pump(kDoubleTapTimeout);
     expect(find.text('Tap to try again'), findsNothing, reason: 'it loads anew');
