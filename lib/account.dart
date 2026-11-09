@@ -16,6 +16,7 @@ import 'data/scope.dart';
 import 'developer.dart' show DeveloperPage;
 import 'login.dart';
 import 'people.dart';
+import 'sounds_settings.dart';
 import 'space_admin.dart' show avatarSide, confirmDestructive, saveBannerImage, saveSquareImage;
 import 'tabs.dart' show LiveIndicator;
 import 'theme.dart';
@@ -1747,6 +1748,9 @@ class _YouTabState extends State<YouTab> {
   Widget build(BuildContext context) {
     final repository = context.repository;
     final appearance = AppearanceScope.of(context);
+    // Null where the app doesn't hand them down (a test's bare app): no Voice section.
+    final voicePrefs = VoicePrefsScope.maybeOf(context);
+    final sounds = SoundsScope.maybeOf(context);
     final colors = context.theme.colors;
     final tokens = context.duvet;
     return ListenableBuilder(
@@ -1765,6 +1769,27 @@ class _YouTabState extends State<YouTab> {
         );
         Widget row(String label, VoidCallback onTap, {String? value, bool warn = false}) =>
             GlassRow(label: label, detail: value, destructive: warn, onPressed: onTap);
+        Widget toggle(String label, String detail, bool value, ValueChanged<bool> onChanged) => Semantics(
+          container: true,
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+            child: Row(
+              children: [
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(label, style: DuvetType.rowTitle.copyWith(color: colors.foreground)),
+                      Text(detail, style: DuvetType.caption.copyWith(color: colors.mutedForeground)),
+                    ],
+                  ),
+                ),
+                const SizedBox(width: 12),
+                DuvetSwitch(label: label, value: value, onChanged: onChanged),
+              ],
+            ),
+          ),
+        );
         return LargeTitlePage(
           title: 'You',
           titleLeading: const AppIcon(size: 32),
@@ -1859,6 +1884,27 @@ class _YouTabState extends State<YouTab> {
                     _ReplyGesturePicker(value: appearance.replyGesture, onChanged: appearance.setReplyGesture),
                     const Overline('Your bubbles'),
                     _BubbleColorPicker(value: appearance.bubbleColor, onChanged: appearance.setBubbleColor),
+                    if (voicePrefs != null) ...[
+                      const Overline('Voice'),
+                      ListenableBuilder(
+                        listenable: voicePrefs,
+                        builder: (context, _) => panel([
+                          toggle(
+                            'Faces in voice',
+                            'Voice tiles show everyone’s animated face instead of their picture',
+                            voicePrefs.facesInVoice,
+                            voicePrefs.setFacesInVoice,
+                          ),
+                          toggle(
+                            'Noise suppression',
+                            'Filters background noise from your microphone',
+                            voicePrefs.noiseSuppression,
+                            voicePrefs.setNoiseSuppression,
+                          ),
+                          if (sounds != null) row('Sounds', () => _push(SoundsPage(sounds: sounds))),
+                        ]),
+                      ),
+                    ],
                     const Overline('Storage'),
                     Semantics(
                       container: true,
