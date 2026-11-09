@@ -251,6 +251,8 @@ class JustAudioPlayback implements AudioPlayback {
       }
     }
     await handler.player.setSpeed(_speeds.value[id] ?? 1);
+    // Stop, or another note, took over while the speed was set.
+    if (_state.value.id != id) return;
     // The player's own play: the handler's would replay a note that's idle.
     unawaited(handler.player.play());
   }
@@ -491,10 +493,11 @@ class _SpeedButton extends StatelessWidget {
           child: GestureDetector(
             behavior: HitTestBehavior.opaque,
             onTap: next,
-            // 40 to hit, the chip to see.
-            child: SizedBox(
-              height: 40,
+            // At least 40 by 40 to hit, the chip to see.
+            child: ConstrainedBox(
+              constraints: const BoxConstraints(minWidth: 40, minHeight: 40),
               child: Center(
+                widthFactor: 1,
                 child: Container(
                   padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
                   decoration: BoxDecoration(
