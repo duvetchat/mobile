@@ -3964,8 +3964,8 @@ class DuvetRepository implements ChatRepository {
     isNotice: m.type == duvet.MessageType.pinNotice,
     isVoice: m.type == duvet.MessageType.voice,
     pinned: m.pinnedAt != null,
-    components: componentsFromJson(m.components),
-    rawComponents: m.components ?? const [],
+    components: componentsFromJson(_wholeMedia(m.components)),
+    rawComponents: _wholeMedia(m.components),
     fromBot: m.user?.isBot ?? false,
     fromWebhook: m.webhookId != null,
     webhookId: m.webhookId,
@@ -4064,6 +4064,28 @@ class DuvetRepository implements ChatRepository {
     final url? when url.startsWith('/') => 'https://${_router.api}$url',
     _ => attachmentUrl(attachmentId),
   };
+
+  // A component's file that the message carries (a gallery's picture, a
+  // file) comes as a signed path on the API's host, as the desktop's
+  // `mediaSrc` takes it: made whole, so the components and the offline cache
+  // have a link that loads.
+  List<Map<String, dynamic>> _wholeMedia(List<Map<String, dynamic>>? list) {
+    Object? whole(Object? j) => switch (j) {
+      Map<String, dynamic>() => {
+        for (final MapEntry(:key, :value) in j.entries)
+          key: switch (value) {
+            {'url': final String url} when (key == 'media' || key == 'file') && url.startsWith('/') => {
+              ...value as Map<String, dynamic>,
+              'url': _absolute(url, ''),
+            },
+            _ => whole(value),
+          },
+      },
+      List() => [for (final e in j) whole(e)],
+      _ => j,
+    };
+    return [for (final c in list ?? const <Map<String, dynamic>>[]) whole(c)! as Map<String, dynamic>];
+  }
 
   static List<MessageEmbed> _embeds(List<duvet.Embed>? list) => [
     for (final e in list ?? const <duvet.Embed>[])
