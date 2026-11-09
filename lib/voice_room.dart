@@ -1,5 +1,3 @@
-import 'dart:math' as math;
-
 import 'package:flutter/material.dart';
 import 'package:forui/forui.dart';
 
@@ -8,11 +6,10 @@ import 'data/repository.dart';
 import 'data/scope.dart';
 import 'data/voice.dart';
 import 'theme.dart';
-import 'widgets/avatar.dart';
 import 'widgets/chrome.dart';
 import 'widgets/depth.dart';
-import 'widgets/glass.dart';
 import 'widgets/rows.dart';
+import 'widgets/voice_video.dart';
 
 /// Opens a voice room's screen: who's in, and Join voice, or the controls
 /// once the user is in.
@@ -21,28 +18,6 @@ Future<void> openVoiceRoom(BuildContext context, Room room) => Navigator.of(cont
     builder: (_) => VoiceRoomScreen(spaceId: room.spaceId, roomId: room.id),
   ),
 );
-
-/// Someone in voice, as a tile shows them.
-class VoicePerson {
-  final String id;
-  final String name;
-  final String? avatarUrl;
-
-  /// Their banner, faintly behind their tile: see [memberBanner].
-  final String? bannerUrl;
-  final bool muted;
-  final bool deafened;
-  final bool isMe;
-  const VoicePerson({
-    required this.id,
-    required this.name,
-    this.avatarUrl,
-    this.bannerUrl,
-    this.muted = false,
-    this.deafened = false,
-    this.isMe = false,
-  });
-}
 
 /// Who's in [roomId]'s voice (a room, or a call's conversation), named from
 /// what the app knows; the user too while their voice is there, with their
@@ -58,6 +33,8 @@ List<VoicePerson> voicePeople(ChatRepository repository, VoiceController voice, 
     bannerUrl: me.bannerUrl,
     muted: voice.muted,
     deafened: voice.deafened,
+    camera: voice.cameraOn,
+    screenSharing: voice.screenSharing,
     isMe: true,
   );
   final people = [
@@ -72,130 +49,13 @@ List<VoicePerson> voicePeople(ChatRepository repository, VoiceController voice, 
           bannerUrl: known[p.userId]?.bannerUrl,
           muted: p.muted,
           deafened: p.deafened,
+          camera: p.camera,
+          screenSharing: p.screenSharing,
           isMe: p.userId == me?.id,
         ),
   ];
   if (here && me != null && !people.any((p) => p.id == me.id)) people.add(mine());
   return people;
-}
-
-/// The faces in a grid of [columns] look at whoever is speaking, as on the
-/// desktop: each one's eyes turned toward the speaker's tile, and straight
-/// ahead in silence.
-Map<String, Offset> eyesToward(List<VoicePerson> people, Map<String, double> levels, int columns) {
-  final speaker = people.indexWhere((p) => (levels[p.id] ?? 0) > 0);
-  if (speaker < 0) return const {};
-  final (sr, sc) = (speaker ~/ columns, speaker % columns);
-  return {
-    for (final (i, p) in people.indexed)
-      if (i != speaker)
-        p.id: () {
-          final (dx, dy) = ((sc - i % columns).toDouble(), (sr - i ~/ columns).toDouble());
-          final length = math.sqrt(dx * dx + dy * dy);
-          return Offset(dx / length, dy / length) * 0.8;
-        }(),
-  };
-}
-
-/// A person in voice: their face, its mouth moving with their voice, their
-/// name, and whether they're muted or deafened. Speaking rings the tile in
-/// `accent-text`, the screen's one accent while in voice.
-class VoiceTile extends StatelessWidget {
-  final VoicePerson person;
-
-  /// How open the mouth is (0–1).
-  final double level;
-  final Offset eyes;
-  const VoiceTile({required this.person, this.level = 0, this.eyes = Offset.zero, super.key});
-
-  @override
-  Widget build(BuildContext context) {
-    final colors = context.theme.colors;
-    final tokens = context.duvet;
-    final reduce = MediaQuery.disableAnimationsOf(context);
-    final speaking = level > 0 && !person.muted;
-    final state = person.deafened
-        ? FLucideIcons.headphoneOff
-        : person.muted
-        ? FLucideIcons.micOff
-        : null;
-    final label = [
-      person.isMe ? '${person.name} (you)' : person.name,
-      if (person.deafened) 'deafened' else if (person.muted) 'muted',
-      if (speaking) 'speaking',
-    ].join(', ');
-    return Semantics(
-      container: true,
-      label: label,
-      excludeSemantics: true,
-      child: AnimatedContainer(
-        duration: reduce ? Duration.zero : const Duration(milliseconds: 150),
-        decoration: BoxDecoration(
-          color: colors.card,
-          image: memberBanner(context, person.bannerUrl),
-          borderRadius: BorderRadius.circular(DuvetTokens.radiusCard),
-          boxShadow: tokens.shadowRest,
-          border: Border.all(color: speaking ? tokens.accentText : Colors.transparent, width: 2),
-        ),
-        padding: const EdgeInsets.all(12),
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            TweenAnimationBuilder<double>(
-              tween: Tween(end: speaking ? level : 0),
-              duration: reduce ? Duration.zero : const Duration(milliseconds: 150),
-              builder: (context, open, _) =>
-                  UserAvatar(name: person.name, url: person.avatarUrl, size: 72, mouthOpen: open, eyeOffset: eyes),
-            ),
-            const SizedBox(height: 12),
-            Row(
-              mainAxisAlignment: MainAxisAlignment.center,
-              children: [
-                if (state != null) ...[Icon(state, size: 16, color: colors.mutedForeground), const SizedBox(width: 4)],
-                Flexible(
-                  child: Text(
-                    person.name,
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: DuvetType.rowTitle.copyWith(color: colors.foreground),
-                  ),
-                ),
-              ],
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-}
-
-/// The people in voice, two to a row, scrolling under the bars.
-class VoiceGrid extends StatelessWidget {
-  final List<VoicePerson> people;
-  final Map<String, double> levels;
-  final EdgeInsets padding;
-  const VoiceGrid({required this.people, required this.levels, required this.padding, super.key});
-
-  static const columns = 2;
-
-  @override
-  Widget build(BuildContext context) {
-    final eyes = eyesToward(people, levels, columns);
-    return GridView.builder(
-      padding: padding,
-      gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-        crossAxisCount: columns,
-        mainAxisSpacing: 12,
-        crossAxisSpacing: 12,
-        mainAxisExtent: 156,
-      ),
-      itemCount: people.length,
-      itemBuilder: (context, i) {
-        final p = people[i];
-        return VoiceTile(key: ValueKey(p.id), person: p, level: levels[p.id] ?? 0, eyes: eyes[p.id] ?? Offset.zero);
-      },
-    );
-  }
 }
 
 /// The connection's state, for the top bar's banner; none once connected.
@@ -217,6 +77,9 @@ class VoiceButton extends StatelessWidget {
   /// Read by screen readers in place of [label], e.g. "Hang up the call".
   final String? semanticLabel;
 
+  /// Why it's disabled: read by screen readers, and shown on a long press.
+  final String? hint;
+
   /// A switch, on or off; null for a plain button.
   final bool? on;
   final bool destructive;
@@ -226,6 +89,7 @@ class VoiceButton extends StatelessWidget {
     required this.label,
     required this.onPressed,
     this.semanticLabel,
+    this.hint,
     this.on,
     this.destructive = false,
     super.key,
@@ -247,12 +111,13 @@ class VoiceButton extends StatelessWidget {
         : active
         ? colors.background
         : colors.foreground;
-    return Semantics(
+    final button = Semantics(
       container: true,
       button: true,
       toggled: on,
       enabled: onPressed != null,
       label: semanticLabel ?? label,
+      hint: hint,
       excludeSemantics: true,
       onTap: onPressed,
       child: Opacity(
@@ -284,65 +149,27 @@ class VoiceButton extends StatelessWidget {
         ),
       ),
     );
-  }
-}
-
-IconData routeIcon(AudioRouteKind? kind) => switch (kind) {
-  AudioRouteKind.bluetooth => FLucideIcons.bluetooth,
-  AudioRouteKind.wired => FLucideIcons.headphones,
-  AudioRouteKind.earpiece => FLucideIcons.ear,
-  AudioRouteKind.speaker || null => FLucideIcons.volume2,
-};
-
-String routeName(AudioRoute route) => switch (route.kind) {
-  AudioRouteKind.speaker => 'Speaker',
-  AudioRouteKind.earpiece => 'Phone',
-  AudioRouteKind.wired => 'Headphones',
-  AudioRouteKind.bluetooth => route.label.isEmpty ? 'Bluetooth' : route.label,
-};
-
-/// Where the sound plays: tapping switches between the loudspeaker and the
-/// earpiece, or, with a headset around, opens the list of outputs.
-class AudioRouteButton extends StatelessWidget {
-  final VoiceController voice;
-  const AudioRouteButton({required this.voice, super.key});
-
-  @override
-  Widget build(BuildContext context) => ValueListenableBuilder(
-    valueListenable: voice.routes,
-    builder: (context, routes, _) {
-      final current = routes.current;
-      final name = current == null ? 'Speaker' : routeName(current);
-      return Builder(
-        builder: (anchor) => VoiceButton(
-          icon: routeIcon(current?.kind),
-          label: current?.kind == AudioRouteKind.bluetooth ? 'Bluetooth' : name,
-          semanticLabel: 'Sound plays on: $name. Change',
-          onPressed: routes.available.length < 2 ? null : () => _pick(anchor, routes),
+    return switch (hint) {
+      final hint? => Tooltip(
+        message: hint,
+        excludeFromSemantics: true,
+        decoration: BoxDecoration(
+          color: colors.foreground,
+          borderRadius: BorderRadius.circular(DuvetTokens.radiusChip),
+          boxShadow: tokens.shadowFloat,
         ),
-      );
-    },
-  );
-
-  Future<void> _pick(BuildContext anchor, AudioRoutes routes) async {
-    final available = routes.available;
-    final others = available.where((r) => r != routes.current).toList();
-    if (available.length == 2 && others.length == 1) {
-      await voice.selectRoute(others.single);
-      return;
-    }
-    final picked = await showGlassMenu<AudioRoute>(
-      anchor,
-      label: 'Audio output',
-      items: [for (final r in available) GlassMenuItem(icon: routeIcon(r.kind), label: routeName(r), value: r)],
-    );
-    if (picked != null) await voice.selectRoute(picked);
+        textStyle: DuvetType.caption.copyWith(color: colors.background),
+        child: button,
+      ),
+      null => button,
+    };
   }
 }
 
 /// The controls while in voice, on a glass bar at the bottom: mute, deafen,
-/// where the sound plays, and leave.
-class VoiceControls extends StatelessWidget {
+/// the camera, more (screen, sound output, cameras, incoming video), and
+/// leave.
+class VoiceControls extends StatefulWidget {
   final VoiceController voice;
   final String leaveLabel;
   final String leaveSemanticLabel;
@@ -356,39 +183,72 @@ class VoiceControls extends StatelessWidget {
   });
 
   @override
-  Widget build(BuildContext context) => GlassChrome(
-    top: false,
-    child: Padding(
-      padding: EdgeInsets.fromLTRB(16, 12, 16, 12 + MediaQuery.paddingOf(context).bottom),
-      child: Row(
-        mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-        children: [
-          VoiceButton(
-            icon: voice.muted ? FLucideIcons.micOff : FLucideIcons.mic,
-            label: voice.muted ? 'Unmute' : 'Mute',
-            semanticLabel: 'Mute',
-            on: voice.muted,
-            onPressed: voice.toggleMute,
-          ),
-          VoiceButton(
-            icon: voice.deafened ? FLucideIcons.headphoneOff : FLucideIcons.headphones,
-            label: voice.deafened ? 'Undeafen' : 'Deafen',
-            semanticLabel: 'Deafen',
-            on: voice.deafened,
-            onPressed: voice.toggleDeafen,
-          ),
-          AudioRouteButton(voice: voice),
-          VoiceButton(
-            icon: FLucideIcons.phoneOff,
-            label: leaveLabel,
-            semanticLabel: leaveSemanticLabel,
-            destructive: true,
-            onPressed: onLeave,
-          ),
-        ],
+  State<VoiceControls> createState() => _VoiceControlsState();
+}
+
+class _VoiceControlsState extends State<VoiceControls> {
+  // A camera opening: a second tap meanwhile would open it twice.
+  bool _cameraBusy = false;
+
+  Future<void> _toggleCamera() async {
+    if (_cameraBusy) return;
+    setState(() => _cameraBusy = true);
+    try {
+      await widget.voice.toggleCamera();
+    } finally {
+      if (mounted) setState(() => _cameraBusy = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final voice = widget.voice;
+    return GlassChrome(
+      top: false,
+      child: Padding(
+        padding: EdgeInsets.fromLTRB(16, 12, 16, 12 + MediaQuery.paddingOf(context).bottom),
+        child: Row(
+          mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+          children: [
+            VoiceButton(
+              icon: voice.muted ? FLucideIcons.micOff : FLucideIcons.mic,
+              label: voice.muted ? 'Unmute' : 'Mute',
+              semanticLabel: 'Mute',
+              on: voice.muted,
+              onPressed: voice.toggleMute,
+            ),
+            VoiceButton(
+              icon: voice.deafened ? FLucideIcons.headphoneOff : FLucideIcons.headphones,
+              label: voice.deafened ? 'Undeafen' : 'Deafen',
+              semanticLabel: 'Deafen',
+              on: voice.deafened,
+              onPressed: voice.toggleDeafen,
+            ),
+            VoiceButton(
+              icon: voice.cameraOn ? FLucideIcons.video : FLucideIcons.videoOff,
+              label: 'Camera',
+              on: voice.cameraOn,
+              hint: voice.canVideo ? null : noVideoReason(voice),
+              onPressed: voice.canVideo && !_cameraBusy ? _toggleCamera : null,
+            ),
+            VoiceButton(
+              icon: FLucideIcons.ellipsis,
+              label: 'More',
+              semanticLabel: 'More voice options',
+              onPressed: () => showVoiceMore(context, voice),
+            ),
+            VoiceButton(
+              icon: FLucideIcons.phoneOff,
+              label: widget.leaveLabel,
+              semanticLabel: widget.leaveSemanticLabel,
+              destructive: true,
+              onPressed: widget.onLeave,
+            ),
+          ],
+        ),
       ),
-    ),
-  );
+    );
+  }
 }
 
 /// A voice room: who's in, and Join voice; once the user is in, the controls.
@@ -421,7 +281,13 @@ class _VoiceRoomScreenState extends State<VoiceRoomScreen> {
     final voice = context.voice;
     final colors = context.theme.colors;
     return ListenableBuilder(
-      listenable: Listenable.merge([voice, voice.levels, repository.spaces, repository.profile]),
+      listenable: Listenable.merge([
+        voice,
+        voice.remoteVideos,
+        VoicePrefsScope.maybeOf(context),
+        repository.spaces,
+        repository.profile,
+      ]),
       builder: (context, _) {
         final space = repository.spaces.value.where((s) => s.id == widget.spaceId).firstOrNull;
         final room = space?.rooms.where((r) => r.id == widget.roomId).firstOrNull;
@@ -438,9 +304,9 @@ class _VoiceRoomScreenState extends State<VoiceRoomScreen> {
                     ? const EmptyState(icon: FLucideIcons.volumeX, text: 'This voice room is gone')
                     : people.isEmpty
                     ? EmptyState(icon: FLucideIcons.volume2, text: 'No one’s here yet')
-                    : VoiceGrid(
+                    : VoiceStage(
                         people: people,
-                        levels: voice.levels.value,
+                        here: here,
                         padding: EdgeInsets.fromLTRB(16, top + 16, 16, 140 + media.padding.bottom),
                       ),
               ),

@@ -14,7 +14,8 @@ import 'widgets/glass.dart';
 /// screen, the newest first: who, where, and what they wrote. A tap opens the
 /// message, on [navigator]; a swipe up takes the notice away.
 ///
-/// They come silently: a sound, and a vibration with it, are for #23.
+/// Each new one plays the mention sound (main.dart), unless the phone is on
+/// silent or Do not disturb.
 class MentionNotices extends StatelessWidget {
   final GlobalKey<NavigatorState> navigator;
   const MentionNotices({required this.navigator, super.key});

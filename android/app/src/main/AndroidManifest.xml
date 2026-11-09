@@ -4,6 +4,10 @@
     <uses-permission android:name="android.permission.INTERNET"/>
     <!-- Voice notes, and voice rooms and calls. -->
     <uses-permission android:name="android.permission.RECORD_AUDIO"/>
+    <!-- The camera in voice rooms and calls; a phone without one still
+         installs the app. -->
+    <uses-permission android:name="android.permission.CAMERA"/>
+    <uses-feature android:name="android.hardware.camera" android:required="false"/>
     <!-- Voice and calls: WebRTC routes the sound (loudspeaker, earpiece,
          headsets) and follows the network through a change. -->
     <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS"/>
@@ -17,6 +21,9 @@
          and its wake and Wi-Fi locks. -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE"/>
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE"/>
+    <!-- A screen share's own foreground service (ScreenCaptureService), started
+         after the consent: the screen capture runs only under one. -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PROJECTION"/>
     <!-- Voice notes in Android's media controls (audio_service): their
          foreground service plays media. -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK"/>
@@ -78,6 +85,14 @@
             android:name="de.julianassmann.flutter_background.IsolateHolderService"
             android:exported="false"
             android:foregroundServiceType="microphone"/>
+        <!-- Screen sharing in voice: started between the consent and the capture,
+             stopped with the share (chat.duvet/screen in MainActivity), or with
+             the app when it is swiped away during one. -->
+        <service
+            android:name=".ScreenCaptureService"
+            android:stopWithTask="true"
+            android:exported="false"
+            android:foregroundServiceType="mediaProjection"/>
         <!-- A voice note playing, in the media notification and quick settings
              (audio_service, through VoiceNoteHandler), and the headset's
              play/pause buttons. -->

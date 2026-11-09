@@ -9,15 +9,28 @@ import 'dart:ui' show AppLifecycleState;
 import 'package:duvet_client/duvet.dart' as duvet;
 import 'package:flutter/foundation.dart';
 import 'package:flutter/scheduler.dart' show SchedulerBinding;
+import 'package:flutter/widgets.dart' show AppLifecycleListener;
+import 'package:permission_handler/permission_handler.dart' show Permission, PermissionActions, PermissionStatusGetters;
 
 import 'call_history.dart';
 import 'models.dart';
 import 'repository.dart';
+import 'sounds.dart';
 import 'voice_engine.dart';
 import 'voice_signaling.dart';
 
 export 'call_history.dart' show CallHistory, CallOutcome, CallRecord;
-export 'voice_engine.dart' show AudioRoute, AudioRouteKind, AudioRoutes;
+export 'voice_engine.dart'
+    show
+        AudioRoute,
+        AudioRouteKind,
+        AudioRoutes,
+        CameraFacing,
+        VideoKind,
+        VoiceCamera,
+        VoiceCameraDevice,
+        VoiceRemoteVideo,
+        VoiceScreen;
 
 /// Where the user's voice is: a space's voice room, or a conversation's call.
 sealed class VoiceTarget {
@@ -151,7 +164,11 @@ const mouthRange = 0.2;
 /// socket keeps its voice as it was; a join made while the gateway is out of
 /// reach waits for its next session (a new one: it asks for it), and
 /// [rejoinWindow] at most, and one it doesn't answer in [joinTimeout] leaves.
-/// Video is out: the phone asks for none (`video_off`) and sends none.
+///
+/// Video: the camera's transceiver is in every join's offer, tagged, so
+/// turning the camera on or off only swaps its track and says so in
+/// VOICE_SYNC. Sharing the screen adds a sender, the phone's only own offer
+/// (WEBRTC_RENEGOTIATE_OFFER), ordered with the gateway's offers.
 class VoiceController extends ChangeNotifier {
   VoiceController({
     required ChatRepository repository,
@@ -163,17 +180,24 @@ class VoiceController extends ChangeNotifier {
     this.pingInterval = const Duration(seconds: 3),
     DateTime Function()? clock,
     @visibleForTesting bool Function()? inFront,
+    @visibleForTesting Stream<AppLifecycleState>? lifecycle,
+    @visibleForTesting Future<bool> Function()? cameraRefused,
+    Sounds? sounds,
   }) : _repository = repository,
        _signaling = repository.voiceSignaling,
        _engine = engine,
        _now = clock ?? DateTime.now,
        _inFront = inFront ?? _appInFront,
+       _lifecycle = lifecycle ?? _appLifecycle(),
+       _cameraRefused = cameraRefused ?? _cameraPermissionRefused,
+       _sounds = sounds,
        history = CallHistory(historyStore) {
     _events = _signaling.events.listen(_onEvent);
     _resumes = _signaling.resumes.listen((_) => _onResume());
     _signedOut = _repository.signedOut.listen((_) => _onSignedOut());
     _repository.profile.addListener(_onProfile);
-    _repository.spaces.addListener(_checkSpeak);
+    _repository.spaces.addListener(_checkPerms);
+    addListener(_followRing);
     _onProfile();
   }
 
@@ -191,6 +215,39 @@ class VoiceController extends ChangeNotifier {
     null || AppLifecycleState.resumed || AppLifecycleState.inactive => true,
     _ => false,
   };
+
+  // The app's lifecycle, followed only while the camera is on: a controller
+  // made without Flutter running (some tests) never touches its binding.
+  final Stream<AppLifecycleState> _lifecycle;
+  static Stream<AppLifecycleState> _appLifecycle() {
+    AppLifecycleListener? listener;
+    late final StreamController<AppLifecycleState> states;
+    states = StreamController.broadcast(
+      onListen: () => listener = AppLifecycleListener(onStateChange: states.add),
+      onCancel: () {
+        listener?.dispose();
+        listener = null;
+      },
+    );
+    return states.stream;
+  }
+
+  // Whether the user refused the camera, as far as the phone tells: a camera
+  // that doesn't open may be busy instead (another app has it).
+  final Future<bool> Function() _cameraRefused;
+  static Future<bool> _cameraPermissionRefused() async {
+    // iOS: flutter_webrtc asks itself, and can't say.
+    if (defaultTargetPlatform != TargetPlatform.android) return false;
+    try {
+      final status = await Permission.camera.status;
+      return status.isDenied || status.isPermanentlyDenied;
+    } catch (e) {
+      debugPrint('voice: camera permission: $e');
+      return false;
+    }
+  }
+
+  final Sounds? _sounds;
 
   /// How long the gateway has to answer a join.
   final Duration joinTimeout;
@@ -274,6 +331,45 @@ class VoiceController extends ChangeNotifier {
 
   /// Whether the user may speak where they are (SpeakInVoice in a room).
   bool get canSpeak => _canSpeak;
+
+  bool _canVideo = true;
+
+  /// Whether the user may turn on a camera or share the screen where they
+  /// are: Video in a room; always in a call.
+  bool get canVideo => _canVideo;
+
+  VoiceCamera? _camera;
+  VoiceScreen? _screen;
+  StreamSubscription<void>? _cameraEnded;
+  StreamSubscription<void>? _screenEnded;
+  StreamSubscription<AppLifecycleState>? _background;
+
+  /// The camera while it's on, for its preview.
+  VoiceCamera? get camera => _camera;
+  bool get cameraOn => _camera != null;
+
+  /// The screen while it's shared.
+  VoiceScreen? get screen => _screen;
+  bool get screenSharing => _screen != null;
+
+  // The camera picked for this session; the front one until then.
+  String? _cameraDevice;
+
+  bool _incomingVideo = true;
+
+  /// Whether the others' cameras and screens come in (`video_off` is its
+  /// opposite).
+  bool get incomingVideo => _incomingVideo;
+
+  /// The others' cameras and screens: none while [incomingVideo] is off or
+  /// out of voice.
+  ValueListenable<List<VoiceRemoteVideo>> get remoteVideos => _remoteVideos;
+  final _remoteVideos = ValueNotifier<List<VoiceRemoteVideo>>(const []);
+
+  // The peer whose videos [remoteVideos] shows.
+  VoicePeer? _watched;
+
+  bool _noiseSuppression = true;
 
   /// Where the sound plays.
   ValueListenable<AudioRoutes> get routes => _engine.routes;
@@ -382,6 +478,7 @@ class VoiceController extends ChangeNotifier {
     }
     _leaveCurrent();
     _canSpeak = _speakAllowed(target);
+    _canVideo = _videoAllowed(target);
     if (!_canSpeak) _muted = true;
     await _begin(target, speaker: true);
   }
@@ -400,26 +497,36 @@ class VoiceController extends ChangeNotifier {
   }
 
   bool _speakAllowed(RoomVoice t) => _repository.canInRoom(t.spaceId, t.roomId, Perm.speakInVoice);
+  bool _videoAllowed(RoomVoice t) => _repository.canInRoom(t.spaceId, t.roomId, Perm.video);
 
   bool _inSpaces(RoomVoice t) =>
       _repository.spaces.value.any((s) => s.id == t.spaceId && s.rooms.any((r) => r.id == t.roomId));
 
   // A role or an overwrite changed: without SpeakInVoice the user is muted,
-  // as the gateway already shows them. Not in a room the user no longer has,
-  // deleted or no longer one they can view: its ROOM_DELETE took its
-  // overwrites, and the SpeakInVoice they gave, before the gateway ends its
-  // voice, and a mute set then would stay for the next room.
-  void _checkSpeak() {
+  // as the gateway already shows them, and without Video their camera and
+  // screen stop. Not in a room the user no longer has, deleted or no longer
+  // one they can view: its ROOM_DELETE took its overwrites, and what they
+  // gave, before the gateway ends its voice, and a mute set then would stay
+  // for the next room.
+  void _checkPerms() {
     final target = _target;
     if (target is! RoomVoice || !_inSpaces(target)) return;
     final can = _speakAllowed(target);
-    if (can == _canSpeak) return;
+    final video = _videoAllowed(target);
+    if (can == _canSpeak && video == _canVideo) return;
     _canSpeak = can;
+    _canVideo = video;
     if (!can && !_muted) {
       _muted = true;
       _sync();
       unawaited(_applyAudio());
       _notice('You can’t speak in this room now');
+    }
+    if (!video && (_camera != null || _screen != null)) {
+      _cameraOff();
+      _screenOff();
+      _sync();
+      _notice('You can’t use video in this room now');
     }
     notifyListeners();
   }
@@ -445,7 +552,8 @@ class VoiceController extends ChangeNotifier {
       // While joining, the microphone is opening already.
       if (_mic == null && _link != VoiceLink.starting) {
         final session = _session;
-        final mic = await _engine.openMicrophone();
+        final suppressing = _noiseSuppression;
+        final mic = await _engine.openMicrophone(noiseSuppression: suppressing);
         if (session != _session) {
           await mic?.stop();
           return;
@@ -458,8 +566,10 @@ class VoiceController extends ChangeNotifier {
           return;
         } else {
           _mic = mic;
+          _micSuppressing = suppressing;
           await _peer?.useMicrophone(mic);
           _keepAlive(target);
+          _matchNoiseSuppression();
         }
       }
       _muted = false;
@@ -493,8 +603,53 @@ class VoiceController extends ChangeNotifier {
     }
   }
 
+  /// Uses WebRTC's noise suppression on the microphone, or not: the one open
+  /// in voice opens again with it.
+  void setNoiseSuppression(bool on) {
+    if (on == _noiseSuppression) return;
+    _noiseSuppression = on;
+    _matchNoiseSuppression();
+  }
+
+  // What the microphone open was opened with.
+  bool _micSuppressing = true;
+
+  // The microphone's reopenings, one at a time: two at once could attach a
+  // microphone the other one stopped.
+  Future<void> _micSwaps = Future.value();
+
+  // Opens the microphone again if it was opened with another setting than the
+  // one set now; once the reopenings before are done, so the last one wins.
+  void _matchNoiseSuppression() {
+    _micSwaps = _micSwaps.then((_) => _reopenMic()).catchError((Object e) => debugPrint('voice: microphone: $e'));
+  }
+
+  Future<void> _reopenMic() async {
+    final session = _session;
+    final old = _mic;
+    final suppressing = _noiseSuppression;
+    if (old == null || _target == null || suppressing == _micSuppressing) return;
+    final mic = await _engine.openMicrophone(noiseSuppression: suppressing);
+    if (session != _session || !identical(_mic, old)) {
+      await mic?.stop();
+      return;
+    }
+    // Refused now: the one open goes on as it was.
+    if (mic == null) return;
+    _mic = mic;
+    _micSuppressing = suppressing;
+    try {
+      await _peer?.useMicrophone(mic);
+    } catch (e) {
+      debugPrint('voice: $e');
+    }
+    await old.stop();
+    // The new track sends only if the user does: muted stays muted.
+    await _applyAudio();
+  }
+
   /// VOICE_SYNC with the whole state: the gateway turns off what a sync
-  /// leaves out. No video, ever.
+  /// leaves out.
   void _sync() {
     final target = _target;
     if (target == null) return;
@@ -502,10 +657,283 @@ class VoiceController extends ChangeNotifier {
       target.id,
       muted: _muted,
       deafened: _deafened,
-      screenSharing: false,
-      camera: false,
-      videoOff: true,
+      screenSharing: _screen != null,
+      camera: _camera != null,
+      videoOff: !_incomingVideo,
     );
+  }
+
+  // ---------------------------------------------------------------------------
+  // Camera and screen
+  // ---------------------------------------------------------------------------
+
+  /// Turns the camera on or off: only ever from the user's tap. It swaps the
+  /// camera transceiver's track, so nothing renegotiates.
+  ///
+  /// One camera opens at a time: a tap while it opens is the user's latest
+  /// word on it, and a camera that arrives no longer wanted stops at once
+  /// (many phones can't open two cameras at once, either).
+  Future<void> toggleCamera() async {
+    final target = _target;
+    if (target == null) return;
+    if (_cameraOpening == _session) {
+      _cameraWanted = !_cameraWanted;
+      return;
+    }
+    if (_camera != null) {
+      _cameraOff();
+      _sync();
+      notifyListeners();
+      return;
+    }
+    if (!_canVideo) {
+      _notice(_noVideo(target));
+      return;
+    }
+    final session = _cameraOpening = _session;
+    _cameraWanted = true;
+    // From now: a camera that opens with the app gone to the background
+    // would be blocked there.
+    _followBackground();
+    final VoiceCamera? camera;
+    try {
+      camera = await _openCamera();
+    } finally {
+      if (_cameraOpening == session) _cameraOpening = null;
+    }
+    if (camera == null || session != _session || _camera != null || !_canVideo || !_cameraWanted) {
+      await camera?.stop();
+      // Unless another camera opens meanwhile (a new session's).
+      if (_camera == null && _cameraOpening != _session) _stopFollowingBackground();
+      return;
+    }
+    _useCamera(camera);
+    _sync();
+    notifyListeners();
+  }
+
+  // The session whose camera is opening, and whether the user still wants it.
+  int? _cameraOpening;
+  bool _cameraWanted = false;
+
+  /// Flips the camera between front and back, in place.
+  Future<void> switchCamera() async {
+    await _camera?.switchFacing();
+    notifyListeners();
+  }
+
+  /// The phone's cameras, to pick one.
+  Future<List<VoiceCameraDevice>> cameras() => _engine.cameras();
+
+  /// The camera picked with [selectCamera], for the picker's check; null for
+  /// the phone's default. A flip doesn't change it.
+  String? get selectedCameraId => _cameraDevice;
+
+  /// Picks the camera [deviceId]: it replaces the one on, or the next tap
+  /// opens it. Kept for this session only.
+  Future<void> selectCamera(String deviceId) async {
+    _cameraDevice = deviceId;
+    final old = _camera;
+    if (old == null) return;
+    final session = _session;
+    // Many phones can't open two cameras at once: the old one goes first.
+    _cameraEnded?.cancel();
+    _cameraEnded = null;
+    await old.stop();
+    final camera = await _openCamera();
+    if (session != _session || !identical(_camera, old)) {
+      await camera?.stop();
+      return;
+    }
+    if (camera == null) {
+      _cameraOff();
+      _sync();
+    } else {
+      _useCamera(camera);
+    }
+    notifyListeners();
+  }
+
+  // Opens the camera picked, or says why it can't.
+  Future<VoiceCamera?> _openCamera() async {
+    final camera = await _engine.openCamera(deviceId: _cameraDevice);
+    if (camera == null) {
+      final none = (await _engine.cameras()).isEmpty;
+      final refused = !none && await _cameraRefused();
+      _notice(
+        none
+            ? 'This phone has no camera'
+            : refused
+            ? 'Allow Duvet to use the camera to turn it on'
+            : 'Couldn’t turn on the camera',
+      );
+    }
+    return camera;
+  }
+
+  void _useCamera(VoiceCamera camera) {
+    _camera = camera;
+    _cameraEnded = camera.onEnded.listen((_) {
+      if (!identical(_camera, camera)) return;
+      _cameraOff();
+      _sync();
+      notifyListeners();
+    });
+    _followBackground();
+    _onPeer((peer) => peer.setCamera(camera));
+  }
+
+  // Android blocks the camera of an app in the background: it turns off, or,
+  // still opening, stays off once it opens.
+  void _followBackground() {
+    _background ??= _lifecycle.listen((state) {
+      if (state != AppLifecycleState.paused && state != AppLifecycleState.hidden) return;
+      if (_cameraOpening == _session && _cameraWanted) {
+        _cameraWanted = false;
+        _notice('Camera turned off in the background');
+      }
+      if (_camera == null) return;
+      _cameraOff();
+      _sync();
+      _notice('Camera turned off in the background');
+      notifyListeners();
+    });
+  }
+
+  void _stopFollowingBackground() {
+    _background?.cancel();
+    _background = null;
+  }
+
+  // The camera goes off: no track on its transceiver, the device released.
+  void _cameraOff() {
+    final camera = _camera;
+    if (camera == null) return;
+    _camera = null;
+    _cameraEnded?.cancel();
+    _cameraEnded = null;
+    _stopFollowingBackground();
+    _onPeer((peer) => peer.setCamera(null));
+    unawaited(camera.stop());
+  }
+
+  /// Shares the screen: the phone offers its new sender to the gateway.
+  Future<void> startScreenShare() async {
+    final target = _target;
+    // Only on a connection that's joined: a join's offer must carry no
+    // untagged video (see [_connect]).
+    // One at a time: a second tap would ask the user's consent twice.
+    if (target == null || _screen != null || !_negotiationReady || _screenStarting == _session) return;
+    if (!_canVideo) {
+      _notice(_noVideo(target));
+      return;
+    }
+    final session = _screenStarting = _session;
+    final VoiceScreen? screen;
+    try {
+      screen = await _engine.openScreen();
+    } finally {
+      if (_screenStarting == session) _screenStarting = null;
+    }
+    if (screen == null) {
+      if (session == _session) _notice('Duvet can’t share the screen');
+      return;
+    }
+    if (session != _session || _screen != null || !_canVideo || !_negotiationReady) {
+      await screen.stop();
+      return;
+    }
+    _screen = screen;
+    _screenEnded = screen.onEnded.listen((_) {
+      if (identical(_screen, screen)) unawaited(stopScreenShare());
+    });
+    _onPeer((peer) => peer.setScreen(screen));
+    _sync();
+    notifyListeners();
+  }
+
+  // The session whose screen capture is starting.
+  int? _screenStarting;
+
+  /// Stops sharing the screen: the phone offers its sender's removal.
+  Future<void> stopScreenShare() async {
+    if (_screen == null) return;
+    _screenOff();
+    _sync();
+    notifyListeners();
+  }
+
+  // The screen stops: its sender goes, if there's a connection, and the
+  // capture with it.
+  void _screenOff() {
+    final screen = _screen;
+    if (screen == null) return;
+    _screen = null;
+    _screenEnded?.cancel();
+    _screenEnded = null;
+    _onPeer((peer) => peer.setScreen(null));
+    unawaited(screen.stop());
+  }
+
+  // Does [change] to the connection, if there is one now.
+  void _onPeer(Future<void> Function(VoicePeer peer) change) {
+    final peer = _peer;
+    if (peer == null) return;
+    unawaited(change(peer).catchError((Object e) => debugPrint('voice: $e')));
+  }
+
+  static String _noVideo(VoiceTarget target) => 'You can’t use video in this ${_place(target)}';
+  static String _place(VoiceTarget target) => target is RoomVoice ? 'room' : 'call';
+
+  /// Lets the others' cameras and screens come in, or not.
+  Future<void> setIncomingVideo(bool on) async {
+    if (on == _incomingVideo) return;
+    _incomingVideo = on;
+    _showVideos();
+    _sync();
+    notifyListeners();
+  }
+
+  void _watchVideos(VoicePeer? peer) {
+    _watched?.remoteVideos.removeListener(_showVideos);
+    _watched = peer;
+    peer?.remoteVideos.addListener(_showVideos);
+    _showVideos();
+  }
+
+  void _showVideos() {
+    final peer = _watched;
+    _remoteVideos.value = peer != null && _incomingVideo ? peer.remoteVideos.value : const [];
+  }
+
+  // VOICE_VIDEO_REFUSED: the gateway turned down, or stopped, the camera or
+  // the screen. Said as desktop's videoRefusedMessage says it.
+  void _onVideoRefused(duvet.VoiceVideoRefusedEvent data) {
+    final target = _target;
+    if (target == null || data.roomId != target.id) return;
+    switch (data.kind) {
+      case 'camera' when _camera != null:
+        _cameraOff();
+      case 'screen' when _screen != null:
+        _screenOff();
+      default:
+        return;
+    }
+    _sync();
+    final place = _place(target);
+    _notice(switch (data.reason) {
+      'limit' => switch (data.limit) {
+        // The gateway can be set to allow no cameras at all.
+        0 => 'Cameras are turned off in this $place',
+        null => 'This $place already has as many cameras on as it can',
+        1 => 'This $place already has 1 camera on',
+        final n => 'This $place already has $n cameras on',
+      },
+      'permission' => 'You can’t use video in this $place',
+      'bitrate' => 'Your camera was turned off: it was sending more video than this $place allows',
+      _ => 'Your camera was turned off',
+    });
+    notifyListeners();
   }
 
   void _keepAlive(VoiceTarget target) {
@@ -544,13 +972,15 @@ class VoiceController extends ChangeNotifier {
     var refused = false;
     // A call placed from here opened it already (see [startCall]).
     if (_canSpeak && _mic == null) {
-      final mic = await _engine.openMicrophone();
+      final suppressing = _noiseSuppression;
+      final mic = await _engine.openMicrophone(noiseSuppression: suppressing);
       if (session != _session) {
         // Left while the microphone opened.
         await mic?.stop();
         return;
       }
       _mic = mic;
+      _micSuppressing = suppressing;
       if (mic == null) {
         _muted = true;
         refused = true;
@@ -565,6 +995,9 @@ class VoiceController extends ChangeNotifier {
     } else if (refused) {
       _notice('Duvet can’t use the microphone: you’re listening only');
     }
+    // The setting changed while the microphone opened (here, or for a call
+    // placed): it opens again with it.
+    _matchNoiseSuppression();
     unawaited(_engine.useDefaultRoute(speaker: speaker));
     _joining = true;
     await _connect();
@@ -580,6 +1013,7 @@ class VoiceController extends ChangeNotifier {
     _answered = false;
     _pendingCandidates.clear();
     _negotiations = Future.value();
+    _dropOwnOffer();
     if (!_joined.isCompleted) _joined.complete();
     _joined = Completer<void>();
 
@@ -596,6 +1030,14 @@ class VoiceController extends ChangeNotifier {
     // connection doesn't start it again.
     if (_peer case final old?) _retired.add(old);
     _peer = null;
+    _watchVideos(null);
+    // A join's offer can't carry the screen: the gateway would take its
+    // untagged video for a new share. The camera's transceiver is tagged,
+    // and stays on.
+    if (_screen != null) {
+      _screenOff();
+      _notice('Screen sharing stopped');
+    }
     final VoicePeer peer;
     try {
       peer = await _engine.createPeer(_iceServers);
@@ -615,13 +1057,20 @@ class VoiceController extends ChangeNotifier {
     }
     _closeRetired();
     _peer = peer;
+    _watchVideos(peer);
     peer.onIceCandidate = (c) {
       if (identical(_peer, peer)) _signaling.sendIceCandidate(target.id, c);
     };
     peer.onState = (s) => _onPeerState(peer, s);
+    peer.onNegotiationNeeded = () {
+      if (identical(_peer, peer)) _offerOwn(peer, target);
+    };
 
     try {
       await peer.addAudio(_mic);
+      // Before the first offer, so the camera never renegotiates.
+      await peer.addVideo();
+      if (_camera case final camera?) await peer.setCamera(camera);
       await peer.setSending(_sending);
       await peer.setReceiving(!_deafened);
       final offer = await peer.createOffer();
@@ -634,7 +1083,7 @@ class VoiceController extends ChangeNotifier {
         _waitForSession();
         return;
       }
-      _signaling.joinVoice(target.id, offer, videoOff: true);
+      _signaling.joinVoice(target.id, offer, tracks: peer.trackLabels, videoOff: !_incomingVideo);
       _joinedOn = connection;
       _sync();
     } catch (e) {
@@ -747,10 +1196,14 @@ class VoiceController extends ChangeNotifier {
         }
         notifyListeners();
       case duvet.VoiceStateUpdatedEvent(:final data):
+        final before = _states.participantsIn(data.roomId).where((p) => p.userId == data.userId).firstOrNull;
         if (_states.apply(data)) {
-          if (data.userId == _me && data.roomId == _target?.id) _checkSpeak();
+          if (data.userId == _me && data.roomId == _target?.id) _checkPerms();
+          if (data.userId != _me && data.roomId == _target?.id) _cue(before, data);
           notifyListeners();
         }
+      case duvet.VoiceVideoRefusedPayloadEvent(:final data):
+        _onVideoRefused(data);
       case duvet.VoiceJoinedPayloadEvent(:final data):
         _onJoined(data);
       case duvet.WebRTCIceCandidateEvent(:final data):
@@ -902,6 +1355,17 @@ class VoiceController extends ChangeNotifier {
     _answerAgain();
     if (_joining && _target != null && _joinedOn != null && _joinedOn != connection && !_answered) {
       unawaited(_connect());
+      return;
+    }
+    // The phone's own offer, still unanswered, may have been lost too.
+    if ((_target, _peer, _ownOffer, _ownAnswer) case (
+      final target?,
+      final peer?,
+      final offer?,
+      final pending?,
+    ) when !pending.isCompleted) {
+      _signaling.sendRenegotiateOffer(target.id, offer, tracks: peer.trackLabels);
+      _ownSends++;
     }
   }
 
@@ -961,10 +1425,15 @@ class VoiceController extends ChangeNotifier {
     final target = _target;
     final peer = _peer;
     if (target == null || peer == null || data.roomId != target.id) return;
+    // It crossed the phone's own offer, which the gateway, with an offer
+    // out, fails: the phone gives way (see [_offerOwn]).
+    _gatewayWaiting++;
+    if (_ownAnswer case final pending? when !pending.isCompleted) pending.complete(null);
     final gate = _joined.future;
     _negotiations = _negotiations.then((_) async {
       await gate;
       if (!identical(_peer, peer)) return;
+      _gatewayWaiting--;
       try {
         await peer.setRemoteDescription(data.offer);
         if (!identical(_peer, peer)) return;
@@ -978,22 +1447,119 @@ class VoiceController extends ChangeNotifier {
       } catch (e) {
         debugPrint('voice: renegotiation: $e');
         if (!identical(_peer, peer)) return;
-        // Unanswered, the gateway's side waits for the answer forever: a new
-        // connection, as after a failed one; twice in a row at most.
-        if (++_failedOffers > 2) {
-          _fail('Lost the connection to voice');
-        } else {
-          unawaited(_connect());
-        }
+        // Unanswered, the gateway's side waits for the answer forever.
+        _negotiationFailed();
       }
     });
   }
 
+  // A negotiation that can't finish: a new connection, as after a failed
+  // one; twice in a row at most.
+  void _negotiationFailed() {
+    if (++_failedOffers > 2) {
+      _fail('Lost the connection to voice');
+    } else {
+      unawaited(_connect());
+    }
+  }
+
+  // The phone's own offer, out and waiting for the gateway's answer: null
+  // when the gateway's offer crossed it. Sent again on a resumed socket.
+  Completer<duvet.SessionDescription?>? _ownAnswer;
+  duvet.SessionDescription? _ownOffer;
+
+  // How many times the offer out went (again on a resumed socket), and the
+  // gateway's answers to it still to come once one was applied: stale, they
+  // mustn't be taken for the next offer's.
+  int _ownSends = 0;
+  int _staleAnswers = 0;
+  Timer? _staleTimer;
+  bool _ownQueued = false;
+
+  // The gateway's offers queued and not yet taken up: the phone's own goes
+  // after them.
+  int _gatewayWaiting = 0;
+
+  // The screen's sender came or went: the phone offers it, in turn with the
+  // gateway's offers, one negotiation at a time. Glare: the gateway, with its
+  // own offer out, fails the phone's, so the phone gives way (rolls its offer
+  // back), answers the gateway's, then offers again. Waiting for an answer
+  // that never comes instead would hold every offer behind it.
+  void _offerOwn(VoicePeer peer, VoiceTarget target) {
+    if (_ownQueued) return;
+    _ownQueued = true;
+    final gate = _joined.future;
+    _negotiations = _negotiations.then((_) async {
+      await gate;
+      _ownQueued = false;
+      if (!identical(_peer, peer)) return;
+      if (_gatewayWaiting > 0) {
+        _offerOwn(peer, target);
+        return;
+      }
+      try {
+        final offer = await peer.createOffer();
+        if (!identical(_peer, peer)) return;
+        await peer.setLocalDescription(offer);
+        if (!identical(_peer, peer)) return;
+        duvet.SessionDescription? answer;
+        if (_gatewayWaiting == 0) {
+          final pending = _ownAnswer = Completer();
+          _ownOffer = offer;
+          _ownSends = 1;
+          _signaling.sendRenegotiateOffer(target.id, offer, tracks: peer.trackLabels);
+          answer = await pending.future.timeout(joinTimeout);
+          if (identical(_ownAnswer, pending)) {
+            _ownAnswer = null;
+            _ownOffer = null;
+          }
+          if (!identical(_peer, peer)) return;
+        }
+        if (answer == null) {
+          await peer.setLocalDescription(const duvet.SessionDescription(type: 'rollback', sdp: ''));
+          _offerOwn(peer, target);
+          return;
+        }
+        await peer.setRemoteDescription(answer);
+        _failedOffers = 0;
+      } catch (e) {
+        debugPrint('voice: own offer: $e');
+        if (!identical(_peer, peer)) return;
+        _negotiationFailed();
+      }
+    });
+  }
+
+  // Forgets the negotiations of a connection that's gone.
+  void _dropOwnOffer() {
+    final pending = _ownAnswer;
+    _ownAnswer = null;
+    _ownOffer = null;
+    _ownQueued = false;
+    _gatewayWaiting = 0;
+    _staleAnswers = 0;
+    _staleTimer?.cancel();
+    if (pending != null && !pending.isCompleted) pending.complete(null);
+  }
+
   void _onAnswer(duvet.RenegotiateAnswerEvent data) {
-    final peer = _peer;
     final answer = data.answer;
-    if (peer == null || answer == null || data.roomId != _target?.id) return;
-    unawaited(peer.setRemoteDescription(answer).catchError((Object e) => debugPrint('voice: answer: $e')));
+    if (answer == null || data.roomId != _target?.id) return;
+    // shortcut: answers carry no tag and VoicePeer shows no signaling state,
+    // so an offer sent twice counts on two answers, the second dropped for
+    // joinTimeout at most; if only one came, an offer answered within that
+    // loses its answer and voice connects again. A tag on the gateway's
+    // answers would tell for sure.
+    if (_staleAnswers > 0) {
+      _staleAnswers--;
+      return;
+    }
+    if (_ownAnswer case final pending? when !pending.isCompleted) {
+      pending.complete(answer);
+      _staleAnswers = _ownSends - 1;
+      _staleTimer?.cancel();
+      if (_staleAnswers > 0) _staleTimer = Timer(joinTimeout, () => _staleAnswers = 0);
+    }
   }
 
   // Another device took the voice, or the user lost access to the room.
@@ -1179,7 +1745,8 @@ class VoiceController extends ChangeNotifier {
     // may be behind another app, and Android lets neither the microphone
     // open nor a microphone service start from there.
     await _engine.prepare();
-    final mic = await _engine.openMicrophone();
+    final suppressing = _noiseSuppression;
+    final mic = await _engine.openMicrophone(noiseSuppression: suppressing);
     if (_call != null || _repository.profile.value?.id != me.id) {
       await mic?.stop();
       return;
@@ -1207,6 +1774,7 @@ class VoiceController extends ChangeNotifier {
     if (_cancelledIn == conversationId) _cancelledIn = null;
     _calls = {..._calls, conversationId};
     _mic = mic;
+    _micSuppressing = suppressing;
     if (mic != null) _keepAlive(CallVoice(conversationId));
     notifyListeners();
   }
@@ -1325,6 +1893,7 @@ class VoiceController extends ChangeNotifier {
     if (_target is RoomVoice) _handOver(() => _teardown(sendLeave: true));
     // Calls ask for no permission.
     _canSpeak = true;
+    _canVideo = true;
     await _begin(target, speaker: false);
   }
 
@@ -1427,11 +1996,16 @@ class VoiceController extends ChangeNotifier {
     _negotiationReady = false;
     _remoteSet = false;
     _pendingCandidates.clear();
+    _dropOwnOffer();
     if (!_joined.isCompleted) _joined.complete();
     final peer = _peer;
     final mic = _mic;
     _peer = null;
     _mic = null;
+    // The connection closes: the captures only stop, releasing the camera.
+    _cameraOff();
+    _screenOff();
+    _watchVideos(null);
     _closeRetired();
     unawaited(() async {
       await peer?.close();
@@ -1447,6 +2021,39 @@ class VoiceController extends ChangeNotifier {
 
   void _notice(String text) {
     if (!_notices.isClosed) _notices.add(text);
+  }
+
+  // ---------------------------------------------------------------------------
+  // Sounds
+  // ---------------------------------------------------------------------------
+
+  // Someone else in the user's voice joined, left, or started or stopped
+  // sharing their screen; [before] is what was known of them. Snapshots
+  // (READY, SPACE_CREATE, CALL_ONGOING) aren't updates, and a catch-up
+  // update of someone known changes nothing, so joining makes no sound.
+  void _cue(duvet.VoiceParticipant? before, duvet.VoiceStateEvent now) {
+    final sounds = _sounds;
+    if (sounds == null) return;
+    final sound = switch ((before, now.joined)) {
+      (null, true) => Sound.voiceJoin,
+      (_?, false) => Sound.voiceLeave,
+      (final b?, true) when b.screenSharing != now.screenSharing =>
+        now.screenSharing ? Sound.screenShareOn : Sound.screenShareOff,
+      _ => null,
+    };
+    if (sound != null) unawaited(sounds.play(sound));
+  }
+
+  bool _ringing = false;
+
+  // Rings while a call rings here, and stops the moment it doesn't:
+  // answered, declined, cancelled, ended, replaced.
+  void _followRing() {
+    final ringing = _call?.phase == CallPhase.ringing;
+    if (ringing == _ringing) return;
+    _ringing = ringing;
+    final sounds = _sounds;
+    if (sounds != null) unawaited(ringing ? sounds.startRing() : sounds.stopRing());
   }
 
   // The session ended for good, its gateway still there: voice and calls tell
@@ -1474,6 +2081,8 @@ class VoiceController extends ChangeNotifier {
       _iceServers = _stun;
       _muted = false;
       _deafened = false;
+      _incomingVideo = true;
+      _cameraDevice = null;
       unawaited(history.close(forget: me == null));
       notifyListeners();
     }
@@ -1487,10 +2096,12 @@ class VoiceController extends ChangeNotifier {
     unawaited(_resumes.cancel());
     unawaited(_signedOut.cancel());
     _repository.profile.removeListener(_onProfile);
-    _repository.spaces.removeListener(_checkSpeak);
+    _repository.spaces.removeListener(_checkPerms);
+    if (_ringing) unawaited(_sounds?.stopRing());
     unawaited(_notices.close());
     levels.dispose();
     ping.dispose();
+    _remoteVideos.dispose();
     history.dispose();
     super.dispose();
   }

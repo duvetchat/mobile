@@ -9,7 +9,9 @@ import 'package:duvet/data/recent_chats.dart' show SecureRecentChatsStore;
 import 'package:duvet/data/voice.dart' show mouthFor, speakingLevel;
 import 'package:duvet/data/voice_engine.dart';
 import 'package:duvet/data/webrtc_engine.dart';
+import 'package:duvet_client/duvet.dart' as duvet;
 import 'package:flutter/services.dart';
+import 'package:flutter_webrtc/flutter_webrtc.dart' show RTCRtpCodecCapability;
 import 'package:flutter_test/flutter_test.dart';
 
 const _speaker = AudioRoute(id: 'speaker', kind: AudioRouteKind.speaker, label: 'Speakerphone');
@@ -46,6 +48,48 @@ void main() {
     // The headset chosen went away.
     expect(currentRoute([_speaker, _earpiece], _headset, false), _earpiece);
     expect(currentRoute(const [], null, true), isNull);
+  });
+
+  test('whose video a stream is: <id>.camera a camera, <id> a screen, else no one\'s', () {
+    expect(videoOwner('u1.camera'), (userId: 'u1', kind: VideoKind.camera));
+    expect(videoOwner('u1'), (userId: 'u1', kind: VideoKind.screen));
+    expect(videoOwner('u1.screen'), isNull);
+    expect(videoOwner('u1.camera.x'), isNull);
+    expect(videoOwner('.camera'), isNull);
+    expect(videoOwner(''), isNull);
+  });
+
+  test('VP8 first, the other codecs in their order', () {
+    RTCRtpCodecCapability codec(String mime) => RTCRtpCodecCapability(mimeType: mime, clockRate: 90000);
+    final ordered = vp8First([codec('video/H264'), codec('video/rtx'), codec('video/VP8'), codec('video/AV1')]);
+    expect([for (final c in ordered) c.mimeType], ['video/VP8', 'video/H264', 'video/rtx', 'video/AV1']);
+    expect(vp8First(const []), isEmpty);
+  });
+
+  test('which way a camera faces, from Android\'s and iOS\'s names', () {
+    expect(cameraFacing('Camera 1, Facing front, Orientation 270'), CameraFacing.front);
+    expect(cameraFacing('Camera 0, Facing back, Orientation 90'), CameraFacing.back);
+    expect(cameraFacing('Front Camera'), CameraFacing.front);
+    expect(cameraFacing('Back Dual Wide Camera'), CameraFacing.back);
+    expect(cameraFacing('USB Webcam'), CameraFacing.external);
+  });
+
+  test('the microphone with and without noise suppression, echo cancellation and gain control on', () {
+    Object? mandatory(bool on) => (microphoneConstraints(noiseSuppression: on)['audio'] as Map)['mandatory'];
+    expect(mandatory(true), {
+      'googNoiseSuppression': 'true',
+      'googEchoCancellation': 'true',
+      'googAutoGainControl': 'true',
+    });
+    expect(mandatory(false), containsPair('googNoiseSuppression', 'false'));
+    expect(mandatory(false), containsPair('googEchoCancellation', 'true'));
+    expect(microphoneConstraints(noiseSuppression: true)['video'], false);
+  });
+
+  test('the camera at 640x360, 30 fps: the one picked, else the front one', () {
+    expect(cameraConstraints(null)['video'], {'facingMode': 'user', 'width': 640, 'height': 360, 'frameRate': 30});
+    expect(cameraConstraints('0')['video'], {'deviceId': '0', 'width': 640, 'height': 360, 'frameRate': 30});
+    expect(cameraConstraints('0')['audio'], false);
   });
 
   test('a voice\'s level as a mouth: shut in silence, wide open loud', () {
@@ -128,6 +172,135 @@ void main() {
       messenger.setMockMethodCallHandler(const MethodChannel('flutter.baseflow.com/permissions/methods'), null);
       messenger.setMockMethodCallHandler(const MethodChannel('FlutterWebRTC.Method'), null);
       messenger.setMockMethodCallHandler(keystore, null);
+      messenger.setMockMethodCallHandler(_screenService, null);
+    });
+
+    // Every call to flutter_webrtc and the screen service, in order; getDisplayMedia answers [display].
+    List<String> mockScreenCapture({bool consent = true, Object? display}) {
+      final calls = <String>[];
+      messenger.setMockMethodCallHandler(_screenService, (call) async {
+        calls.add('service ${call.method}');
+        return null;
+      });
+      messenger.setMockMethodCallHandler(const MethodChannel('FlutterWebRTC.Method'), (call) async {
+        // flutter_webrtc's own set-up, once per run.
+        if (call.method != 'initialize') calls.add(call.method);
+        return switch (call.method) {
+          'requestCapturePermission' => consent,
+          'getDisplayMedia' => display is Exception ? throw display : display,
+          _ => null,
+        };
+      });
+      return calls;
+    }
+
+    const screenStream = {
+      'streamId': 's-1',
+      'audioTracks': <Object?>[],
+      'videoTracks': [
+        {'id': 'v-1', 'kind': 'video', 'label': 'video', 'enabled': true},
+      ],
+    };
+
+    test('shares the screen under its service: the consent, the service, then the capture', () async {
+      final calls = mockScreenCapture(display: screenStream);
+      final screen = await WebRtcVoiceEngine(android: true).openScreen();
+      expect(screen, isNotNull);
+      expect(calls, ['requestCapturePermission', 'service start', 'getDisplayMedia']);
+
+      calls.clear();
+      await screen!.stop();
+      await screen.stop();
+      expect(calls.last, 'service stop');
+      expect(calls.where((c) => c == 'service stop'), hasLength(1));
+    });
+
+    test('a refused consent starts no service and captures nothing', () async {
+      final calls = mockScreenCapture(consent: false);
+      expect(await WebRtcVoiceEngine(android: true).openScreen(), isNull);
+      expect(calls, ['requestCapturePermission']);
+    });
+
+    test('a capture that fails stops the service again', () async {
+      final calls = mockScreenCapture(display: PlatformException(code: 'getDisplayMedia'));
+      expect(await WebRtcVoiceEngine(android: true).openScreen(), isNull);
+      expect(calls, ['requestCapturePermission', 'service start', 'getDisplayMedia', 'service stop']);
+    });
+
+    test('a capture without a track is disposed and stops the service', () async {
+      final calls = mockScreenCapture(display: {...screenStream, 'videoTracks': <Object?>[]});
+      expect(await WebRtcVoiceEngine(android: true).openScreen(), isNull);
+      expect(calls, ['requestCapturePermission', 'service start', 'getDisplayMedia', 'streamDispose', 'service stop']);
+    });
+
+    test('a share stopped while it starts is stopped once its sender is added', () async {
+      mockScreenCapture(display: screenStream);
+      final screen = await WebRtcVoiceEngine(android: true).openScreen();
+      final calls = <String>[];
+      messenger.setMockMethodCallHandler(const MethodChannel('FlutterWebRTC.Method'), (call) async {
+        calls.add(call.method);
+        return switch (call.method) {
+          'createPeerConnection' => {'peerConnectionId': 'pc-1'},
+          'addTrack' => {
+            'senderId': 's-1',
+            'track': {'id': 'v-1', 'kind': 'video', 'label': 'video', 'enabled': true},
+            'rtpParameters': {
+              'encodings': <Object?>[],
+              'headerExtensions': <Object?>[],
+              'codecs': <Object?>[],
+              'rtcp': {'cname': '', 'reducedSize': false},
+            },
+            'ownsTrack': false,
+          },
+          'removeTrack' => {'result': true},
+          _ => null,
+        };
+      });
+      messenger.setMockStreamHandler(
+        const EventChannel('FlutterWebRTC/peerConnectionEventpc-1'),
+        MockStreamHandler.inline(onListen: (_, _) {}),
+      );
+      final peer = await WebRtcVoiceEngine().createPeer(const []);
+      final started = peer.setScreen(screen);
+      await peer.setScreen(null);
+      await started;
+      expect(calls.where((c) => c == 'addTrack' || c == 'removeTrack'), ['addTrack', 'removeTrack']);
+    });
+
+    test('no screen share on iOS', () async {
+      final calls = mockScreenCapture(display: screenStream);
+      expect(await WebRtcVoiceEngine(android: false).openScreen(), isNull);
+      expect(calls, isEmpty);
+    });
+
+    test('the camera faces the way the one that opened does: a back-only phone opens its back one', () async {
+      messenger.setMockMethodCallHandler(const MethodChannel('FlutterWebRTC.Method'), (call) async {
+        return switch (call.method) {
+          'getUserMedia' => {
+            'streamId': 's-1',
+            'audioTracks': <Object?>[],
+            'videoTracks': [
+              {
+                'id': 'v-1',
+                'kind': 'video',
+                'label': 'v-1',
+                'enabled': true,
+                // flutter_webrtc keeps the facing asked for, and names the camera that opened.
+                'settings': {'deviceId': '0', 'facingMode': 'user'},
+              },
+            ],
+          },
+          'getSources' => {
+            'sources': [
+              {'deviceId': '0', 'label': 'Camera 0, Facing back, Orientation 90', 'kind': 'videoinput'},
+            ],
+          },
+          _ => null,
+        };
+      });
+      // Not Android: no permission_handler to mock.
+      final camera = await WebRtcVoiceEngine(android: false).openCamera();
+      expect(camera?.facing, CameraFacing.back);
     });
 
     test('forgetting deletes every account\'s call history and recent chats, and nothing else', () async {
@@ -170,7 +343,7 @@ void main() {
       expect(asked, isNot(contains('requestPermissions')));
     });
 
-    test('offers audio alone, in the shape flutter_webrtc reads (it ignores a flat map)', () async {
+    test('offers audio without naming video, in the shape flutter_webrtc reads (it ignores a flat map)', () async {
       final calls = <MethodCall>[];
       messenger.setMockMethodCallHandler(const MethodChannel('FlutterWebRTC.Method'), (call) async {
         calls.add(call);
@@ -188,12 +361,74 @@ void main() {
       await peer.createOffer();
       final offer = calls.singleWhere((c) => c.method == 'createOffer');
       expect((offer.arguments as Map)['constraints'], {
-        'mandatory': {'OfferToReceiveAudio': true, 'OfferToReceiveVideo': false},
+        // OfferToReceiveVideo false would stop the others' video coming in.
+        'mandatory': {'OfferToReceiveAudio': true},
         'optional': <Object?>[],
       });
     });
+
+    test('adds one camera transceiver, VP8 first, and labels it by the mid the local description gave', () async {
+      final calls = <MethodCall>[];
+      const parameters = {
+        'encodings': <Object?>[],
+        'headerExtensions': <Object?>[],
+        'codecs': <Object?>[],
+        'rtcp': {'cname': '', 'reducedSize': false},
+      };
+      Map<String, Object?> transceiver(String mid) => {
+        'transceiverId': 't-1',
+        'direction': 'sendrecv',
+        'mid': mid,
+        'sender': {'senderId': 's-1', 'track': <String, Object?>{}, 'rtpParameters': parameters, 'ownsTrack': false},
+        'receiver': {
+          'receiverId': 'r-1',
+          'track': {'id': 'v-1', 'kind': 'video', 'label': '', 'enabled': true},
+          'rtpParameters': parameters,
+        },
+      };
+      messenger.setMockMethodCallHandler(const MethodChannel('FlutterWebRTC.Method'), (call) async {
+        calls.add(call);
+        return switch (call.method) {
+          'createPeerConnection' => {'peerConnectionId': 'pc-1'},
+          'addTransceiver' => transceiver(''),
+          'getRtpReceiverCapabilities' => {
+            'codecs': [
+              {'mimeType': 'video/H264', 'clockRate': 90000},
+              {'mimeType': 'video/VP8', 'clockRate': 90000},
+            ],
+            'headerExtensions': <Object?>[],
+            'fecMechanisms': <Object?>[],
+          },
+          'getTransceivers' => {
+            'transceivers': [transceiver('1')],
+          },
+          _ => null,
+        };
+      });
+      messenger.setMockStreamHandler(
+        const EventChannel('FlutterWebRTC/peerConnectionEventpc-1'),
+        MockStreamHandler.inline(onListen: (_, _) {}),
+      );
+      final peer = await WebRtcVoiceEngine().createPeer(const []);
+      await peer.addVideo();
+      await peer.addVideo();
+      final added = calls.where((c) => c.method == 'addTransceiver');
+      expect(added, hasLength(1));
+      final init = (added.single.arguments as Map)['transceiverInit'] as Map;
+      expect(init['direction'], 'sendrecv');
+      expect(init['sendEncodings'], [containsPair('maxBitrate', 500000)]);
+      expect((init['sendEncodings'] as List).single, containsPair('maxFramerate', 30));
+      final preferred = calls.singleWhere((c) => c.method == 'setCodecPreferences').arguments as Map;
+      expect([for (final c in preferred['codecs'] as List) (c as Map)['mimeType']], ['video/VP8', 'video/H264']);
+
+      expect(peer.trackLabels, isEmpty);
+      await peer.setLocalDescription(const duvet.SessionDescription(type: 'offer', sdp: 'v=0'));
+      expect(peer.trackLabels, {'1': 'camera'});
+    });
   });
 }
+
+const _screenService = MethodChannel('chat.duvet/screen');
 
 /// A keystore whose reads answer what was kept when they were asked, once
 /// [release] completes.

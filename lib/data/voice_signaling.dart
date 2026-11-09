@@ -33,7 +33,14 @@ abstract interface class VoiceSignaling {
   /// may have been lost with it.
   Stream<void> get resumes;
 
-  bool joinVoice(String roomId, duvet.SessionDescription offer, {required bool videoOff});
+  /// [tracks] tags the camera's transceiver by mid; [videoOff] receives no
+  /// video at all.
+  bool joinVoice(
+    String roomId,
+    duvet.SessionDescription offer, {
+    Map<String, String> tracks = const {},
+    required bool videoOff,
+  });
   bool leaveVoice(String roomId);
 
   /// The client's whole voice state: the gateway turns off whatever a sync
@@ -48,6 +55,10 @@ abstract interface class VoiceSignaling {
   });
   bool sendIceCandidate(String roomId, duvet.IceCandidateInit candidate);
   bool sendAnswer(String roomId, duvet.SessionDescription answer);
+
+  /// The client's own offer (the screen's sender came or went), its camera
+  /// tagged in [tracks]; the gateway answers with WEBRTC_RENEGOTIATE_ANSWER.
+  bool sendRenegotiateOffer(String roomId, duvet.SessionDescription offer, {Map<String, String> tracks = const {}});
 
   bool initiateCall(String conversationId, List<String> memberIds);
   bool acceptCall(String conversationId);
@@ -102,6 +113,7 @@ class GatewayVoiceSignaling implements VoiceSignaling {
     duvet.WebRTCIceCandidateEvent() ||
     duvet.WebRTCRenegotiateEvent() ||
     duvet.WebRTCRenegotiateAnswerEvent() ||
+    duvet.VoiceVideoRefusedPayloadEvent() ||
     duvet.CallIncomingPayloadEvent() ||
     // A call the user placed, and one going on without ringing them; a
     // gateway from before calls across devices sends neither.
@@ -129,8 +141,12 @@ class GatewayVoiceSignaling implements VoiceSignaling {
   Stream<void> get resumes => _resumes.stream;
 
   @override
-  bool joinVoice(String roomId, duvet.SessionDescription offer, {required bool videoOff}) =>
-      _rtc?.joinVoice(roomId, offer, videoOff: videoOff) ?? false;
+  bool joinVoice(
+    String roomId,
+    duvet.SessionDescription offer, {
+    Map<String, String> tracks = const {},
+    required bool videoOff,
+  }) => _rtc?.joinVoice(roomId, offer, tracks: tracks, videoOff: videoOff) ?? false;
 
   @override
   bool leaveVoice(String roomId) => _rtc?.leaveVoice(roomId) ?? false;
@@ -160,6 +176,10 @@ class GatewayVoiceSignaling implements VoiceSignaling {
 
   @override
   bool sendAnswer(String roomId, duvet.SessionDescription answer) => _rtc?.sendAnswer(roomId, answer) ?? false;
+
+  @override
+  bool sendRenegotiateOffer(String roomId, duvet.SessionDescription offer, {Map<String, String> tracks = const {}}) =>
+      _rtc?.sendRenegotiateOffer(roomId, offer, tracks: tracks) ?? false;
 
   @override
   bool initiateCall(String conversationId, List<String> memberIds) =>

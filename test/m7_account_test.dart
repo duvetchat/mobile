@@ -295,7 +295,8 @@ void main() {
   testWidgets('You: your bubbles take a swatch; a pale one gets dark ink', (tester) async {
     await pumpApp(tester);
     await openYou(tester);
-    await tester.ensureVisible(find.bySemanticsLabel('Yellow'));
+    // Mid-screen: the Voice section above pushes the swatches down to the tab bar's glass.
+    await Scrollable.ensureVisible(tester.element(find.bySemanticsLabel('Yellow')), alignment: 0.5);
     await tester.pumpAndSettle();
     Color? ink() => tester.widget<Text>(find.text('Looks good to me')).style?.color;
     expect(ink(), const Color(0xFFFFFFFF));

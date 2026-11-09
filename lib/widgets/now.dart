@@ -236,6 +236,12 @@ class _RoomCard extends StatelessWidget {
     final tokens = context.duvet;
     final people = voice.participants(room.id);
     final known = {for (final m in repository.people) m.userId: m};
+    String nameOf(duvet.VoiceParticipant p) => known[p.userId]?.displayName ?? repository.nameOf(p.userId) ?? 'Someone';
+    // Who is live, by name: the faces' glyphs say it to the eye.
+    final liveNames = [
+      for (final p in people)
+        if (p.screenSharing) '${nameOf(p)}, sharing screen' else if (p.camera) '${nameOf(p)}, camera on',
+    ];
     final shown = capFaces(people, nowRoomFaces);
     final live = switch (liveIn(people)) {
       NowLive.screen => ' · sharing screen',
@@ -256,7 +262,7 @@ class _RoomCard extends StatelessWidget {
           Expanded(
             child: Semantics(
               container: true,
-              label: '${room.name}, $detail, $count',
+              label: [room.name, detail, count, ...liveNames].join(', '),
               excludeSemantics: true,
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
@@ -291,10 +297,29 @@ class _RoomCard extends StatelessWidget {
                       for (final p in shown.faces)
                         Padding(
                           padding: const EdgeInsets.only(right: 4),
-                          child: UserAvatar(
-                            name: known[p.userId]?.displayName ?? repository.nameOf(p.userId) ?? 'Someone',
-                            url: known[p.userId]?.avatarUrl,
-                            size: 28,
+                          child: Stack(
+                            clipBehavior: Clip.none,
+                            children: [
+                              UserAvatar(name: nameOf(p), url: known[p.userId]?.avatarUrl, size: 28),
+                              if (p.screenSharing || p.camera)
+                                Positioned(
+                                  right: -4,
+                                  bottom: -4,
+                                  child: Container(
+                                    padding: const EdgeInsets.all(2),
+                                    decoration: BoxDecoration(
+                                      color: colors.card,
+                                      borderRadius: BorderRadius.circular(4),
+                                      boxShadow: tokens.shadowRest,
+                                    ),
+                                    child: Icon(
+                                      p.screenSharing ? FLucideIcons.monitorUp : FLucideIcons.video,
+                                      size: 12,
+                                      color: colors.foreground,
+                                    ),
+                                  ),
+                                ),
+                            ],
                           ),
                         ),
                       if (shown.more > 0)
