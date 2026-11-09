@@ -1,5 +1,3 @@
-import 'dart:math' as math;
-
 import 'package:flutter/material.dart';
 import 'package:forui/forui.dart';
 
@@ -8,10 +6,8 @@ import 'data/repository.dart';
 import 'data/scope.dart';
 import 'data/voice.dart';
 import 'theme.dart';
-import 'widgets/avatar.dart';
 import 'widgets/chrome.dart';
 import 'widgets/depth.dart';
-import 'widgets/glass.dart';
 import 'widgets/rows.dart';
 import 'widgets/voice_video.dart';
 
@@ -22,32 +18,6 @@ Future<void> openVoiceRoom(BuildContext context, Room room) => Navigator.of(cont
     builder: (_) => VoiceRoomScreen(spaceId: room.spaceId, roomId: room.id),
   ),
 );
-
-/// Someone in voice, as a tile shows them.
-class VoicePerson {
-  final String id;
-  final String name;
-  final String? avatarUrl;
-
-  /// Their banner, faintly behind their tile: see [memberBanner].
-  final String? bannerUrl;
-  final bool muted;
-  final bool deafened;
-  final bool camera;
-  final bool screenSharing;
-  final bool isMe;
-  const VoicePerson({
-    required this.id,
-    required this.name,
-    this.avatarUrl,
-    this.bannerUrl,
-    this.muted = false,
-    this.deafened = false,
-    this.camera = false,
-    this.screenSharing = false,
-    this.isMe = false,
-  });
-}
 
 /// Who's in [roomId]'s voice (a room, or a call's conversation), named from
 /// what the app knows; the user too while their voice is there, with their
@@ -86,24 +56,6 @@ List<VoicePerson> voicePeople(ChatRepository repository, VoiceController voice, 
   ];
   if (here && me != null && !people.any((p) => p.id == me.id)) people.add(mine());
   return people;
-}
-
-/// The faces in a grid of [columns] look at whoever is speaking, as on the
-/// desktop: each one's eyes turned toward the speaker's tile, and straight
-/// ahead in silence.
-Map<String, Offset> eyesToward(List<VoicePerson> people, Map<String, double> levels, int columns) {
-  final speaker = people.indexWhere((p) => (levels[p.id] ?? 0) > 0);
-  if (speaker < 0) return const {};
-  final (sr, sc) = (speaker ~/ columns, speaker % columns);
-  return {
-    for (final (i, p) in people.indexed)
-      if (i != speaker)
-        p.id: () {
-          final (dx, dy) = ((sc - i % columns).toDouble(), (sr - i ~/ columns).toDouble());
-          final length = math.sqrt(dx * dx + dy * dy);
-          return Offset(dx / length, dy / length) * 0.8;
-        }(),
-  };
 }
 
 /// The connection's state, for the top bar's banner; none once connected.
@@ -212,38 +164,6 @@ class VoiceButton extends StatelessWidget {
       null => button,
     };
   }
-}
-
-IconData routeIcon(AudioRouteKind? kind) => switch (kind) {
-  AudioRouteKind.bluetooth => FLucideIcons.bluetooth,
-  AudioRouteKind.wired => FLucideIcons.headphones,
-  AudioRouteKind.earpiece => FLucideIcons.ear,
-  AudioRouteKind.speaker || null => FLucideIcons.volume2,
-};
-
-String routeName(AudioRoute route) => switch (route.kind) {
-  AudioRouteKind.speaker => 'Speaker',
-  AudioRouteKind.earpiece => 'Phone',
-  AudioRouteKind.wired => 'Headphones',
-  AudioRouteKind.bluetooth => route.label.isEmpty ? 'Bluetooth' : route.label,
-};
-
-/// Where the sound plays: switches between the two outputs there are, or,
-/// with a headset around, opens the list of outputs under [anchor].
-Future<void> pickAudioRoute(BuildContext anchor, VoiceController voice) async {
-  final routes = voice.routes.value;
-  final available = routes.available;
-  final others = available.where((r) => r != routes.current).toList();
-  if (available.length == 2 && others.length == 1) {
-    await voice.selectRoute(others.single);
-    return;
-  }
-  final picked = await showGlassMenu<AudioRoute>(
-    anchor,
-    label: 'Audio output',
-    items: [for (final r in available) GlassMenuItem(icon: routeIcon(r.kind), label: routeName(r), value: r)],
-  );
-  if (picked != null) await voice.selectRoute(picked);
 }
 
 /// The controls while in voice, on a glass bar at the bottom: mute, deafen,

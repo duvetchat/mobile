@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:math' as math;
 
 import 'package:flutter/foundation.dart';
@@ -7,7 +8,6 @@ import 'package:forui/forui.dart';
 import '../data/scope.dart';
 import '../data/voice.dart';
 import '../theme.dart';
-import '../voice_room.dart';
 import 'avatar.dart';
 import 'depth.dart';
 import 'glass.dart';
@@ -16,6 +16,82 @@ import 'rows.dart';
 /// Why the camera and the screen are off limits where the user is.
 String noVideoReason(VoiceController voice) =>
     'You can’t use video in this ${voice.target is RoomVoice ? 'room' : 'call'}';
+
+/// Someone in voice, as a tile shows them.
+class VoicePerson {
+  final String id;
+  final String name;
+  final String? avatarUrl;
+
+  /// Their banner, faintly behind their tile: see [memberBanner].
+  final String? bannerUrl;
+  final bool muted;
+  final bool deafened;
+  final bool camera;
+  final bool screenSharing;
+  final bool isMe;
+  const VoicePerson({
+    required this.id,
+    required this.name,
+    this.avatarUrl,
+    this.bannerUrl,
+    this.muted = false,
+    this.deafened = false,
+    this.camera = false,
+    this.screenSharing = false,
+    this.isMe = false,
+  });
+}
+
+/// The faces in a grid of [columns] look at whoever is speaking, as on the
+/// desktop: each one's eyes turned toward the speaker's tile, and straight
+/// ahead in silence.
+Map<String, Offset> eyesToward(List<VoicePerson> people, Map<String, double> levels, int columns) {
+  final speaker = people.indexWhere((p) => (levels[p.id] ?? 0) > 0);
+  if (speaker < 0) return const {};
+  final (sr, sc) = (speaker ~/ columns, speaker % columns);
+  return {
+    for (final (i, p) in people.indexed)
+      if (i != speaker)
+        p.id: () {
+          final (dx, dy) = ((sc - i % columns).toDouble(), (sr - i ~/ columns).toDouble());
+          final length = math.sqrt(dx * dx + dy * dy);
+          return Offset(dx / length, dy / length) * 0.8;
+        }(),
+  };
+}
+
+IconData routeIcon(AudioRouteKind? kind) => switch (kind) {
+  AudioRouteKind.bluetooth => FLucideIcons.bluetooth,
+  AudioRouteKind.wired => FLucideIcons.headphones,
+  AudioRouteKind.earpiece => FLucideIcons.ear,
+  AudioRouteKind.speaker || null => FLucideIcons.volume2,
+};
+
+String routeName(AudioRoute route) => switch (route.kind) {
+  AudioRouteKind.speaker => 'Speaker',
+  AudioRouteKind.earpiece => 'Phone',
+  AudioRouteKind.wired => 'Headphones',
+  AudioRouteKind.bluetooth => route.label.isEmpty ? 'Bluetooth' : route.label,
+};
+
+/// Where the sound plays: switches between the two outputs there are, or,
+/// with a headset around, opens the list of outputs under [anchor].
+Future<void> pickAudioRoute(BuildContext anchor, VoiceController voice) async {
+  final routes = voice.routes.value;
+  final available = routes.available;
+  final others = available.where((r) => r != routes.current).toList();
+  if (available.length == 2 && others.length == 1) {
+    await voice.selectRoute(others.single);
+    return;
+  }
+  final picked = await showGlassMenu<AudioRoute>(
+    anchor,
+    label: 'Audio output',
+    items: [for (final r in available) GlassMenuItem(icon: routeIcon(r.kind), label: routeName(r), value: r)],
+  );
+  if (picked != null) await voice.selectRoute(picked);
+}
 
 typedef _Tile = ({String key, VoicePerson person, bool screen});
 
@@ -43,6 +119,9 @@ class _VoiceStageState extends State<VoiceStage> {
   // never kept.
   final _watching = <String>{};
 
+  // A global key per tile's video, by tile key.
+  final _videos = <String, GlobalKey>{};
+
   @override
   Widget build(BuildContext context) {
     final people = widget.people;
@@ -53,35 +132,36 @@ class _VoiceStageState extends State<VoiceStage> {
         if (p.screenSharing) (key: 'screen:${p.id}', person: p, screen: true),
     ];
     _watching.retainWhere((id) => people.any((p) => p.id == id && p.screenSharing));
-    // A focused tile that's gone (its person left, or stopped sharing) leaves the grid as it was.
+    _videos.removeWhere((key, _) => tiles.every((t) => t.key != key));
+    // A focused tile that's gone (its person left, or stopped sharing) is forgotten: back, it shows in the grid.
     final focused = tiles.where((t) => t.key == _focused).firstOrNull;
+    if (focused == null) _focused = null;
     final reduce = MediaQuery.disableAnimationsOf(context);
     return PopScope(
       canPop: focused == null,
       onPopInvokedWithResult: (didPop, _) {
         if (!didPop) setState(() => _focused = null);
       },
-      child: AnimatedSwitcher(
+      // The new layout comes in alone, not crossfaded with the old: a video
+      // can be in one place only, and moves into it by its global key.
+      child: TweenAnimationBuilder<double>(
+        key: ValueKey(focused?.key),
+        tween: Tween(begin: 0, end: 1),
         duration: reduce ? Duration.zero : DuvetTokens.panelIn,
-        reverseDuration: reduce ? Duration.zero : DuvetTokens.panelOut,
         // The spring's tiny overshoot on the scale only: an opacity can't pass 1.
-        transitionBuilder: (child, animation) => FadeTransition(
-          opacity: CurvedAnimation(parent: animation, curve: DuvetTokens.decelerate),
-          child: ScaleTransition(
-            scale: Tween(
-              begin: 0.97,
-              end: 1.0,
-            ).animate(CurvedAnimation(parent: animation, curve: DuvetTokens.overshoot)),
-            child: child,
-          ),
+        builder: (context, t, child) => Opacity(
+          opacity: DuvetTokens.decelerate.transform(t),
+          child: Transform.scale(scale: 0.97 + 0.03 * DuvetTokens.overshoot.transform(t), child: child),
         ),
-        child: KeyedSubtree(
-          key: ValueKey(focused?.key),
-          child: focused == null ? _grid(tiles) : _focus(tiles, focused),
-        ),
+        child: focused == null ? _grid(tiles) : _focus(tiles, focused),
       ),
     );
   }
+
+  // A tile's video keeps its widget, and so its renderer, between the grid
+  // and the focus: a new one would flash black while it starts.
+  Widget? _keep(String tile, Widget? video) =>
+      video == null ? null : KeyedSubtree(key: _videos.putIfAbsent(tile, GlobalKey.new), child: video);
 
   Widget _grid(List<_Tile> tiles) => LayoutBuilder(
     builder: (context, box) {
@@ -153,14 +233,17 @@ class _VoiceStageState extends State<VoiceStage> {
     final voice = context.voice;
     // Only this place's: the user's own capture, else the camera coming in.
     final camera = voice.camera;
-    final video = !p.camera || !widget.here
-        ? null
-        : p.isMe && camera != null
-        ? camera.preview(mirror: camera.facing == CameraFacing.front)
-        : voice.remoteVideos.value
-              .where((v) => v.userId == p.id && v.kind == VideoKind.camera)
-              .firstOrNull
-              ?.view(false);
+    final video = _keep(
+      'person:${p.id}',
+      !p.camera || !widget.here
+          ? null
+          : p.isMe && camera != null
+          ? camera.preview(mirror: camera.facing == CameraFacing.front)
+          : voice.remoteVideos.value
+                .where((v) => v.userId == p.id && v.kind == VideoKind.camera)
+                .firstOrNull
+                ?.view(false),
+    );
     final faceSize = (size * 0.4).clamp(48.0, 120.0);
     final faces = VoicePrefsScope.maybeOf(context)?.facesInVoice ?? false;
     final reduce = MediaQuery.disableAnimationsOf(context);
@@ -178,13 +261,14 @@ class _VoiceStageState extends State<VoiceStage> {
           label: [
             p.isMe ? '${p.name} (you)' : p.name,
             if (p.deafened) 'deafened' else if (p.muted) 'muted',
-            if (p.camera) video == null ? 'camera on, video is off' : 'camera on',
+            // Out of this place's voice no video comes in: the camera is only on, not off here.
+            if (p.camera) widget.here && video == null ? 'camera on, video is off' : 'camera on',
             if (speaking) 'speaking',
           ].join(', '),
           name: p.name,
           marks: [
             if (p.deafened) FLucideIcons.headphoneOff else if (p.muted) FLucideIcons.micOff,
-            if (p.camera && video == null) FLucideIcons.videoOff,
+            if (p.camera && video == null) widget.here ? FLucideIcons.videoOff : FLucideIcons.video,
           ],
           speaking: speaking,
           bannerUrl: video == null ? p.bannerUrl : null,
@@ -236,12 +320,12 @@ class _VoiceStageState extends State<VoiceStage> {
         child: DuvetButton(label: 'Watch', icon: FLucideIcons.monitorUp, onPressed: () => watch(true)),
       );
     } else {
-      media = true;
       final screen = voice.remoteVideos.value.where((v) => v.userId == p.id && v.kind == VideoKind.screen).firstOrNull;
+      media = screen != null;
       content = Stack(
         fit: StackFit.expand,
         children: [
-          screen?.view(false) ?? const Center(child: FCircularProgress(semanticsLabel: 'Loading the screen')),
+          _keep('screen:${p.id}', screen?.view(false)) ?? _ScreenWait(name: p.name),
           Align(
             alignment: Alignment.topRight,
             child: Padding(
@@ -413,6 +497,38 @@ class _Note extends StatelessWidget {
   }
 }
 
+/// A watched screen whose video hasn't come: a spinner, then after ten
+/// seconds, or at once with animations off, a calm note, never an endless spin.
+class _ScreenWait extends StatefulWidget {
+  final String name;
+  const _ScreenWait({required this.name});
+
+  @override
+  State<_ScreenWait> createState() => _ScreenWaitState();
+}
+
+class _ScreenWaitState extends State<_ScreenWait> {
+  late final Timer _timer;
+  bool _late = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _timer = Timer(const Duration(seconds: 10), () => setState(() => _late = true));
+  }
+
+  @override
+  void dispose() {
+    _timer.cancel();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) => _late || MediaQuery.disableAnimationsOf(context)
+      ? _Note(icon: FLucideIcons.monitorUp, text: 'Waiting for ${widget.name}’s screen…')
+      : const Center(child: FCircularProgress(semanticsLabel: 'Loading the screen'));
+}
+
 /// The voice options past the bar's: share the screen, where the sound
 /// plays, flip or pick the camera, and whether others' video comes in.
 Future<void> showVoiceMore(BuildContext context, VoiceController voice) => showGlassDialogSheet<void>(
@@ -448,6 +564,7 @@ class _VoiceMoreState extends State<_VoiceMore> {
       builder: (context, _) {
         final routes = voice.routes.value;
         final current = routes.current;
+        final reason = voice.canVideo ? null : noVideoReason(voice);
         return Padding(
           padding: const EdgeInsets.fromLTRB(8, 0, 8, 8),
           child: Column(
@@ -456,7 +573,7 @@ class _VoiceMoreState extends State<_VoiceMore> {
               // iOS can't share the screen yet: it needs ReplayKit.
               if (defaultTargetPlatform != TargetPlatform.iOS)
                 _Disabled(
-                  reason: voice.canVideo ? null : noVideoReason(voice),
+                  reason: reason,
                   child: GlassRow(
                     icon: voice.screenSharing ? FLucideIcons.screenShareOff : FLucideIcons.screenShare,
                     label: voice.screenSharing ? 'Stop sharing' : 'Share screen',
@@ -472,32 +589,48 @@ class _VoiceMoreState extends State<_VoiceMore> {
                     onPressed: () => pickAudioRoute(anchor, voice),
                   ),
                 ),
-              if (voice.cameraOn)
-                GlassRow(
-                  icon: FLucideIcons.switchCamera,
-                  label: 'Flip camera',
-                  onPressed: () => _then(voice.switchCamera),
+              // Without Video, shown out of reach with why, as Share screen is.
+              if (voice.cameraOn || !voice.canVideo)
+                _Disabled(
+                  reason: reason,
+                  child: GlassRow(
+                    icon: FLucideIcons.switchCamera,
+                    label: 'Flip camera',
+                    onPressed: () => _then(voice.switchCamera),
+                  ),
                 ),
-              if (voice.canVideo)
-                FutureBuilder(
-                  future: _cameras,
-                  builder: (context, cameras) => Column(
-                    crossAxisAlignment: CrossAxisAlignment.stretch,
-                    children: [
-                      // One camera is nothing to pick from.
-                      if ((cameras.data?.length ?? 0) > 1)
-                        for (final c in cameras.data!)
-                          GlassRow(
+              FutureBuilder(
+                future: _cameras,
+                builder: (context, cameras) => Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    // One camera is nothing to pick from.
+                    if ((cameras.data?.length ?? 0) > 1)
+                      for (final c in cameras.data!)
+                        _Disabled(
+                          reason: reason,
+                          child: GlassRow(
                             icon: FLucideIcons.camera,
                             label: c.label.isEmpty ? _facing(c.facing) : c.label,
                             detail: _facing(c.facing),
+                            selected: c.id == voice.selectedCameraId,
+                            trailing: c.id == voice.selectedCameraId
+                                ? Icon(FLucideIcons.check, size: 24, color: context.duvet.accentText)
+                                : null,
                             onPressed: () => _then(() => voice.selectCamera(c.id)),
                           ),
-                    ],
-                  ),
+                        ),
+                  ],
                 ),
+              ),
+              // One node: the switch's state read with its label, once.
               Semantics(
                 container: true,
+                label: 'Incoming video',
+                hint: 'See the others’ cameras and screens',
+                toggled: voice.incomingVideo,
+                onTap: () => voice.setIncomingVideo(!voice.incomingVideo),
+                excludeSemantics: true,
                 child: GestureDetector(
                   behavior: HitTestBehavior.opaque,
                   onTap: () => voice.setIncomingVideo(!voice.incomingVideo),
@@ -559,7 +692,7 @@ class _Disabled extends StatelessWidget {
       container: true,
       button: true,
       enabled: false,
-      label: child.label,
+      label: child.detail == null ? child.label : '${child.label}, ${child.detail}',
       hint: reason,
       child: ExcludeSemantics(
         child: IgnorePointer(child: Opacity(opacity: 0.5, child: child)),

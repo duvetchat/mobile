@@ -725,6 +725,10 @@ class VoiceController extends ChangeNotifier {
   /// The phone's cameras, to pick one.
   Future<List<VoiceCameraDevice>> cameras() => _engine.cameras();
 
+  /// The camera picked with [selectCamera], for the picker's check; null for
+  /// the phone's default. A flip doesn't change it.
+  String? get selectedCameraId => _cameraDevice;
+
   /// Picks the camera [deviceId]: it replaces the one on, or the next tap
   /// opens it. Kept for this session only.
   Future<void> selectCamera(String deviceId) async {

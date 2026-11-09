@@ -82,6 +82,26 @@ class _Counted extends StatelessWidget {
   }
 }
 
+/// A video view that counts its starts: a renderer made.
+class _Started extends StatefulWidget {
+  final VoidCallback onStart;
+  const _Started(this.onStart);
+
+  @override
+  State<_Started> createState() => _StartedState();
+}
+
+class _StartedState extends State<_Started> {
+  @override
+  void initState() {
+    super.initState();
+    widget.onStart();
+  }
+
+  @override
+  Widget build(BuildContext context) => const SizedBox.expand();
+}
+
 void main() {
   setUp(() => FlutterSecureStorage.setMockInitialValues({}));
 
@@ -192,6 +212,17 @@ void main() {
     await tester.tap(find.text('Share screen'), warnIfMissed: false);
     await settle(tester);
     expect(app.engine.screens, isEmpty);
+
+    // Flip camera and the cameras show too, out of reach, saying why.
+    for (final label in ['Flip camera', 'Back Camera, Back']) {
+      expect(
+        tester.getSemantics(find.bySemanticsLabel(label)),
+        isSemantics(label: label, hint: 'You can’t use video in this room', isButton: true, isEnabled: false),
+      );
+    }
+    await tester.tap(find.text('Back Camera'), warnIfMissed: false);
+    await settle(tester);
+    expect(app.voice.selectedCameraId, isNull);
     semantics.dispose();
     await finish(tester, app);
   });
@@ -224,12 +255,22 @@ void main() {
     expect(app.engine.openedCameras.single.switches, 1);
 
     await openMore(tester);
+    expect(find.byIcon(FLucideIcons.check), findsNothing);
     await tester.tap(find.text('Back Camera'));
     await settle(tester);
     expect(app.engine.openedCameras.last.deviceId, '0');
     expect(app.voice.cameraOn, isTrue);
 
+    // The camera picked is checked.
     await openMore(tester);
+    expect(tester.getSemantics(find.bySemanticsLabel('Back Camera, Back')), isSemantics(isSelected: true));
+    expect(tester.getSemantics(find.bySemanticsLabel('Front Camera, Front')), isSemantics(isSelected: false));
+    expect(find.byIcon(FLucideIcons.check), findsOneWidget);
+    // Incoming video reads once, with its state.
+    expect(
+      tester.getSemantics(find.bySemanticsLabel('Incoming video')),
+      isSemantics(label: 'Incoming video', isToggled: true, hasToggledState: true, hasTapAction: true),
+    );
     await tester.tap(find.byWidgetPredicate((w) => w is DuvetSwitch && w.label == 'Incoming video'));
     await settle(tester);
     expect(app.voice.incomingVideo, isFalse);
@@ -266,6 +307,66 @@ void main() {
     await settle(tester);
     expect(find.byKey(const Key('$_maya-camera')), findsNothing);
     expect(find.bySemanticsLabel('Maya, camera on, video is off'), findsOneWidget);
+    semantics.dispose();
+    await finish(tester, app);
+  });
+
+  testWidgets('showing a camera large and back keeps its video view, renderer and all', (tester) async {
+    final semantics = tester.ensureSemantics();
+    final app = await pumpApp(tester);
+    await joinLounge(tester, app);
+    var starts = 0;
+    app.gateway.push(_state(_maya, 3, camera: true));
+    app.engine.peer.remoteVideos.value = [
+      VoiceRemoteVideo(userId: _maya, kind: VideoKind.camera, view: (_) => _Started(() => starts++)),
+    ];
+    await settle(tester);
+    expect(starts, 1);
+
+    await tester.tap(find.bySemanticsLabel('Maya, camera on'));
+    await settle(tester);
+    expect(tester.getSemantics(find.bySemanticsLabel('Maya, camera on')).hint, 'Show everyone');
+    await tester.tap(find.bySemanticsLabel('Maya, camera on'));
+    await settle(tester);
+    expect(tester.getSemantics(find.bySemanticsLabel('Maya, camera on')).hint, 'Show large');
+    expect(starts, 1);
+    semantics.dispose();
+    await finish(tester, app);
+  });
+
+  testWidgets('a large tile that goes is forgotten: shared again, it comes back in the grid', (tester) async {
+    final semantics = tester.ensureSemantics();
+    final app = await pumpApp(tester);
+    await joinLounge(tester, app);
+    app.gateway.push(_state(_maya, 3, screen: true));
+    await settle(tester);
+    // Its corner: Watch is in its middle.
+    await tester.tapAt(tester.getTopLeft(find.bySemanticsLabel('Maya’s screen')) + const Offset(24, 24));
+    await settle(tester);
+    expect(tester.getSemantics(find.bySemanticsLabel('Maya’s screen')).hint, 'Show everyone');
+
+    app.gateway.push(_state(_maya, 4));
+    await settle(tester);
+    expect(find.bySemanticsLabel('Maya’s screen'), findsNothing);
+    app.gateway.push(_state(_maya, 5, screen: true));
+    await settle(tester);
+    expect(tester.getSemantics(find.bySemanticsLabel('Maya’s screen')).hint, 'Show large');
+    semantics.dispose();
+    await finish(tester, app);
+  });
+
+  testWidgets('out of the room\'s voice, a camera reads as on, not as off', (tester) async {
+    final semantics = tester.ensureSemantics();
+    final app = await pumpApp(tester);
+    app.gateway.push(_state(_maya, 3, camera: true));
+    await tester.tap(find.descendant(of: find.byType(DuvetTabBar), matching: find.text('Spaces')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Design Guild'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('lounge').last);
+    await settle(tester);
+    expect(find.bySemanticsLabel('Maya, camera on'), findsOneWidget);
+    expect(find.byIcon(FLucideIcons.videoOff), findsNothing);
     semantics.dispose();
     await finish(tester, app);
   });
@@ -311,6 +412,18 @@ void main() {
     expect(find.byKey(const Key('$_maya-screen')), findsNothing);
     expect(find.text('Watch'), findsOneWidget);
 
+    // A screen that doesn't come: a spinner a while, then a calm note, not an endless spin.
+    app.engine.peer.remoteVideos.value = [];
+    await tester.tap(find.text('Watch'));
+    await settle(tester);
+    expect(find.bySemanticsLabel('Loading the screen'), findsOneWidget);
+    await tester.pump(const Duration(seconds: 10));
+    expect(find.bySemanticsLabel('Loading the screen'), findsNothing);
+    expect(find.text('Waiting for Maya’s screen…'), findsOneWidget);
+    await tester.tap(find.text('Stop watching'));
+    await settle(tester);
+    expect(find.text('Watch'), findsOneWidget);
+
     // Incoming video off: a quiet note, and a way back.
     await app.voice.setIncomingVideo(false);
     await settle(tester);
@@ -353,7 +466,35 @@ void main() {
     expect(find.byKey(const Key('$_maya-camera')), findsOneWidget);
     expect(find.bySemanticsLabel('Maya, camera on'), findsOneWidget);
     expect(find.bySemanticsLabel('Camera'), findsOneWidget);
+
+    // The clock ticks its text only, not the video views.
+    var views = 0;
+    app.engine.peer.remoteVideos.value = [
+      VoiceRemoteVideo(userId: _maya, kind: VideoKind.camera, view: (_) => _Counted(() => views++)),
+    ];
+    await settle(tester);
+    final before = views;
+    expect(before, greaterThan(0));
+    await tester.pump(const Duration(seconds: 1));
+    await tester.pump(const Duration(seconds: 1));
+    expect(views, before);
     semantics.dispose();
+    await finish(tester, app);
+  });
+
+  testWidgets('a Space\'s voice row and banner say who has a camera on or shares a screen', (tester) async {
+    final app = await pumpApp(tester);
+    app.gateway.push(_state(_maya, 3, camera: true));
+    await tester.tap(find.descendant(of: find.byType(DuvetTabBar), matching: find.text('Spaces')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Design Guild'));
+    await tester.pumpAndSettle();
+    expect(find.text('Maya · camera on'), findsOneWidget);
+    expect(find.text('Live · Maya · camera on'), findsOneWidget);
+
+    app.gateway.push(_state(_maya, 4, camera: true, screen: true));
+    await tester.pumpAndSettle();
+    expect(find.text('Maya · sharing screen'), findsOneWidget);
     await finish(tester, app);
   });
 

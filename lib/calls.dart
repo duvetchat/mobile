@@ -96,6 +96,20 @@ mixin _Ticking<T extends StatefulWidget> on State<T> {
   }
 }
 
+/// Builds [builder] again each second, and only it: the clock's text, not the videos around it.
+class _EverySecond extends StatefulWidget {
+  final WidgetBuilder builder;
+  const _EverySecond({required this.builder});
+
+  @override
+  State<_EverySecond> createState() => _EverySecondState();
+}
+
+class _EverySecondState extends State<_EverySecond> with _Ticking {
+  @override
+  Widget build(BuildContext context) => widget.builder(context);
+}
+
 /// The call: who's in it, how long it's been, and the controls. Back keeps
 /// the call going; the bar over the tabs brings it back.
 class CallScreen extends StatefulWidget {
@@ -106,7 +120,7 @@ class CallScreen extends StatefulWidget {
   State<CallScreen> createState() => _CallScreenState();
 }
 
-class _CallScreenState extends State<CallScreen> with _Ticking {
+class _CallScreenState extends State<CallScreen> {
   bool _closing = false;
 
   // The call ended or moved on: this screen goes, wherever it is.
@@ -146,7 +160,7 @@ class _CallScreenState extends State<CallScreen> with _Ticking {
         }
         final summary = repository.conversations.value.where((c) => c.id == call.conversationId).firstOrNull;
         final title = summary?.title ?? call.initiatorName;
-        final status = callStatus(voice, call, voice.now());
+        String status() => callStatus(voice, call, voice.now());
         final people = voicePeople(repository, voice, call.conversationId);
         final inVoice = voice.target == CallVoice(call.conversationId);
         final media = MediaQuery.of(context);
@@ -156,10 +170,12 @@ class _CallScreenState extends State<CallScreen> with _Ticking {
             children: [
               Positioned.fill(
                 child: call.phase == CallPhase.calling || people.isEmpty
-                    ? _Waiting(
-                        name: title,
-                        avatarUrl: summary?.isGroup == true ? null : summary?.avatarUrl,
-                        status: status,
+                    ? _EverySecond(
+                        builder: (_) => _Waiting(
+                          name: title,
+                          avatarUrl: summary?.isGroup == true ? null : summary?.avatarUrl,
+                          status: status(),
+                        ),
                       )
                     : VoiceStage(
                         people: people,
@@ -178,16 +194,21 @@ class _CallScreenState extends State<CallScreen> with _Ticking {
                 right: 0,
                 child: GlassTopBar(
                   onBack: () => Navigator.of(context).maybePop(),
-                  title: Semantics(
-                    label: 'Call with $title, $status',
-                    excludeSemantics: true,
-                    child: Column(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        Text(title, maxLines: 1, overflow: TextOverflow.ellipsis),
-                        Text(status, style: DuvetType.caption.copyWith(color: colors.mutedForeground)),
-                      ],
-                    ),
+                  title: _EverySecond(
+                    builder: (_) {
+                      final now = status();
+                      return Semantics(
+                        label: 'Call with $title, $now',
+                        excludeSemantics: true,
+                        child: Column(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Text(title, maxLines: 1, overflow: TextOverflow.ellipsis),
+                            Text(now, style: DuvetType.caption.copyWith(color: colors.mutedForeground)),
+                          ],
+                        ),
+                      );
+                    },
                   ),
                 ),
               ),
