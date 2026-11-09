@@ -1190,12 +1190,12 @@ class EmbedCard extends StatelessWidget {
     // it has more than one, as the desktop's border.
     final stripe = switch (e.colors) {
       [] => null,
-      [final c] => BoxDecoration(color: Color(0xFF000000 | c)),
+      [final c] => BoxDecoration(color: Color(0xFF000000 | (c & 0xFFFFFF))),
       final cs => BoxDecoration(
         gradient: LinearGradient(
           begin: Alignment.topCenter,
           end: Alignment.bottomCenter,
-          colors: [for (final c in cs) Color(0xFF000000 | c)],
+          colors: [for (final c in cs) Color(0xFF000000 | (c & 0xFFFFFF))],
         ),
       ),
     };
