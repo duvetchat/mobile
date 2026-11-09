@@ -1063,13 +1063,24 @@ class _CropPageState extends State<CropPage> {
   @override
   void initState() {
     super.initState();
+    // Its size from its header: decoding a frame isn't needed, and a moving
+    // GIF's first frame sometimes never came in tests.
     File(widget.path)
         .readAsBytes()
-        .then(ui.instantiateImageCodec)
-        .then((codec) => codec.getNextFrame())
+        .then(ui.ImmutableBuffer.fromUint8List)
+        .then((buffer) async {
+          try {
+            final descriptor = await ui.ImageDescriptor.encoded(buffer);
+            final size = Size(descriptor.width.toDouble(), descriptor.height.toDouble());
+            descriptor.dispose();
+            return size;
+          } finally {
+            buffer.dispose();
+          }
+        })
         .then(
-          (frame) {
-            if (mounted) setState(() => _image = Size(frame.image.width.toDouble(), frame.image.height.toDouble()));
+          (size) {
+            if (mounted) setState(() => _image = size);
           },
           onError: (Object e) {
             if (mounted) Navigator.of(context).pop();
