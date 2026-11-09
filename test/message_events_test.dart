@@ -959,6 +959,27 @@ void main() {
     expect(replyBack.reply!.mentionAuthor, isTrue);
   });
 
+  test('a webhook\'s message keeps its webhook, which tells it from another\'s', () async {
+    final events = await listen(_room);
+    repository.handleEvent(
+      _event('MESSAGE_CREATE', {
+        'id': '13',
+        'room_id': 'r-1',
+        'author_id': null,
+        'webhook_id': 'w-1',
+        'content': 'Deployed',
+        'type': 0,
+        'created_at': _at,
+        'updated_at': _at,
+        'user': {..._user('w-1', 'Deploys'), 'is_bot': true},
+      }),
+    );
+    await pumpEventQueue();
+    final m = (events.single as MessageCreated).message;
+    expect((m.webhookId, m.fromWebhook, m.authorId), ('w-1', true, null));
+    expect(messageFromJson(jsonDecode(jsonEncode(messageToJson(m))) as Map<String, Object?>).webhookId, 'w-1');
+  });
+
   test('a deleted file is kept apart from the rest, and the offline cache keeps both', () async {
     final events = await listen(_room);
     final message = _roomMessage('15', 'files');
@@ -986,27 +1007,6 @@ void main() {
     expect([for (final a in m.deletedAttachments) (a.id, a.width)], [('a-2', 800)]);
     final reread = messageFromJson(jsonDecode(jsonEncode(messageToJson(m))) as Map<String, Object?>);
     expect((reread.attachments.single.id, reread.deletedAttachments.single.id), ('a-1', 'a-2'));
-  });
-
-  test('a webhook\'s message keeps its webhook, which tells it from another\'s', () async {
-    final events = await listen(_room);
-    repository.handleEvent(
-      _event('MESSAGE_CREATE', {
-        'id': '13',
-        'room_id': 'r-1',
-        'author_id': null,
-        'webhook_id': 'w-1',
-        'content': 'Deployed',
-        'type': 0,
-        'created_at': _at,
-        'updated_at': _at,
-        'user': {..._user('w-1', 'Deploys'), 'is_bot': true},
-      }),
-    );
-    await pumpEventQueue();
-    final m = (events.single as MessageCreated).message;
-    expect((m.webhookId, m.fromWebhook, m.authorId), ('w-1', true, null));
-    expect(messageFromJson(jsonDecode(jsonEncode(messageToJson(m))) as Map<String, Object?>).webhookId, 'w-1');
   });
 
   test('the offline cache keeps a call notice\'s call (#158)', () {
