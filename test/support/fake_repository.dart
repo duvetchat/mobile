@@ -1300,6 +1300,25 @@ class FakeRepository implements ChatRepository {
     spaces.value = [...spaces.value];
   }
 
+  final kicked = <(String, String)>[];
+  final banned = <(String, String, String?)>[];
+
+  @override
+  Future<void> kick(String spaceId, String userId) async {
+    _refuse('kick');
+    kicked.add((spaceId, userId));
+    spaceMembers[spaceId]?.remove(userId);
+    spaces.value = [...spaces.value];
+  }
+
+  @override
+  Future<void> ban(String spaceId, String userId, {String? reason}) async {
+    _refuse('ban');
+    banned.add((spaceId, userId, reason));
+    spaceMembers[spaceId]?.remove(userId);
+    spaces.value = [...spaces.value];
+  }
+
   @override
   List<({String id, String name})> spaceRoles(String spaceId) => const [(id: 'role-mod', name: 'Moderator')];
 

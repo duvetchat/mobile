@@ -28,9 +28,11 @@ abstract final class Perm {
   static const manageWebhooks = 1 << 16;
   static const pinMessages = 1 << 17;
   static const video = 1 << 18;
+  static const kickMembers = 1 << 19;
+  static const banMembers = 1 << 20;
 
   /// Every bit: the owner, or an administrator.
-  static const all = (1 << 19) - 1;
+  static const all = (1 << 21) - 1;
 
   /// Any of these opens Space settings.
   static const anyAdmin =
@@ -43,7 +45,9 @@ abstract final class Perm {
       manageWebhooks |
       manageAttachments |
       manageBuckets |
-      manageBots;
+      manageBots |
+      kickMembers |
+      banMembers;
 
   static bool has(int perms, int bit) => perms & administrator != 0 || perms & bit == bit;
 }
@@ -76,6 +80,12 @@ const permissionGroups = <(String, List<PermissionInfo>)>[
       (bit: Perm.createInvites, label: 'Invite people', description: 'Make invite links'),
       (bit: Perm.manageInvites, label: 'Manage invites', description: 'See and revoke every link'),
       (bit: Perm.manageRoles, label: 'Manage roles', description: 'Make roles and give them out'),
+      (
+        bit: Perm.kickMembers,
+        label: 'Kick members',
+        description: 'Remove those below their highest role; they can come back',
+      ),
+      (bit: Perm.banMembers, label: 'Ban members', description: 'Keep those below their highest role out'),
     ],
   ),
   (

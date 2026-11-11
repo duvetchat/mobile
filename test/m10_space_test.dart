@@ -282,7 +282,11 @@ void main() {
   });
 
   // Maya's profile, from # general's members sheet.
-  Future<FakeRepository> pumpMayaProfile(WidgetTester tester, {void Function(FakeRepository r)? setUp}) async {
+  Future<FakeRepository> pumpMayaProfile(
+    WidgetTester tester, {
+    void Function(FakeRepository r)? setUp,
+    String name = 'Maya',
+  }) async {
     semantics = tester.ensureSemantics();
     tester.view.physicalSize = const Size(390 * 3, 844 * 3);
     tester.view.devicePixelRatio = 3;
@@ -301,10 +305,69 @@ void main() {
     await tester.pumpAndSettle();
     await tester.tap(find.bySemanticsLabel('Members').hitTestable().last);
     await tester.pumpAndSettle();
-    await tester.tap(find.text('Maya').hitTestable().last);
+    await tester.tap(find.text(name).hitTestable().last);
     await tester.pumpAndSettle();
     return repository;
   }
+
+  testWidgets('the owner kicks a member from their profile, after asking', (tester) async {
+    final repository = await pumpMayaProfile(tester, name: 'Leo');
+    await reveal(tester, find.text('Kick from Space'));
+    await tester.tap(find.text('Kick from Space'));
+    await tester.pumpAndSettle();
+    expect(find.text('Kick Leo from Design Guild?'), findsOneWidget);
+    await tester.tap(find.text('Kick'));
+    await tester.pumpAndSettle();
+    expect(repository.kicked, [('s-guild', FakeRepository.leo)]);
+    expect(find.text('Kick from Space'), findsNothing, reason: 'the profile closes');
+    semantics.dispose();
+  });
+
+  testWidgets('a ban sends its reason, trimmed', (tester) async {
+    final repository = await pumpMayaProfile(tester, name: 'Leo');
+    await reveal(tester, find.text('Ban from Space'));
+    await tester.tap(find.text('Ban from Space'));
+    await tester.pumpAndSettle();
+    await tester.enterText(find.byType(TextField).last, '  spam  ');
+    await tester.tap(find.text('Ban'));
+    await tester.pumpAndSettle();
+    expect(repository.banned, [('s-guild', FakeRepository.leo, 'spam')]);
+    semantics.dispose();
+  });
+
+  testWidgets('no Kick or Ban on the Space\'s owner', (tester) async {
+    await pumpMayaProfile(tester);
+    expect(find.text('Kick from Space'), findsNothing);
+    expect(find.text('Ban from Space'), findsNothing);
+    semantics.dispose();
+  });
+
+  testWidgets('no Kick or Ban without the permissions, nor without a role above theirs', (tester) async {
+    await pumpMayaProfile(
+      tester,
+      name: 'Leo',
+      setUp: (r) => r
+        ..spaceOwner = false
+        ..spacePerms = Perm.all & ~Perm.kickMembers & ~Perm.banMembers & ~Perm.administrator,
+    );
+    expect(find.text('Kick from Space'), findsNothing);
+    expect(find.text('Ban from Space'), findsNothing);
+    semantics.dispose();
+  });
+
+  testWidgets('a member with Kick Members kicks only below their highest role', (tester) async {
+    await pumpMayaProfile(
+      tester,
+      name: 'Leo',
+      setUp: (r) => r
+        ..spaceOwner = false
+        ..spacePerms = Perm.all & ~Perm.banMembers & ~Perm.administrator
+        ..roleTags[FakeRepository.me.id] = [const RoleTag('Moderator', id: 'role-mod', position: 2)],
+    );
+    expect(find.text('Kick from Space'), findsOneWidget);
+    expect(find.text('Ban from Space'), findsNothing);
+    semantics.dispose();
+  });
 
   testWidgets('a member\'s profile gives and takes a role at once', (tester) async {
     final repository = await pumpMayaProfile(tester);

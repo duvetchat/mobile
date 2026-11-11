@@ -17,7 +17,7 @@ import 'account.dart' show BucketMeter, CropPage, FileRow, confirmFileDelete, fo
 import 'data/models.dart';
 import 'data/repository.dart' show ChatRepository;
 import 'data/scope.dart';
-import 'people.dart' show PersonRow, removeBotAsking;
+import 'people.dart' show PersonRow, removeBotAsking, removeMemberButtons;
 import 'spaces.dart' show deleteSpace, inviteRoomOf, pickSpaceIcon, showInviteSheet;
 import 'theme.dart';
 import 'widgets/avatar.dart';
@@ -312,7 +312,10 @@ class _SpaceSettingsPageState extends State<SpaceSettingsPage> {
                   detail: '$roles',
                   onPressed: () => _open(RolesPage(spaceId: id)),
                 ),
-              if (profile.can(Perm.manageRoles) || profile.can(Perm.manageBots))
+              if (profile.can(Perm.manageRoles) ||
+                  profile.can(Perm.manageBots) ||
+                  profile.can(Perm.kickMembers) ||
+                  profile.can(Perm.banMembers))
                 GlassRow(
                   icon: FLucideIcons.users,
                   label: 'Members',
@@ -2992,10 +2995,22 @@ bool managesRoleAt(ChatRepository repository, String spaceId, int position) {
   return position < highest;
 }
 
+/// May kick or ban [userId] ([bit]: Kick or Ban Members), as the API rules:
+/// never the owner or themselves and, but for the owner, only someone whose
+/// highest role is below the user's own.
+bool mayRemove(ChatRepository repository, String spaceId, String userId, int bit) {
+  final profile = repository.spaceProfile(spaceId);
+  final me = repository.profile.value?.id;
+  if (profile == null || me == null || userId == me || !profile.can(bit)) return false;
+  if (repository.spaces.value.where((s) => s.id == spaceId).firstOrNull?.ownerId == userId) return false;
+  if (profile.owner) return true;
+  int highest(String id) => repository.rolesOf(spaceId, id).firstOrNull?.position ?? 0;
+  return highest(userId) < highest(me);
+}
+
 /// A Space's members, as the desktop's Members tab lists them: searchable by
 /// name, username or ID, each with their roles. One opens to change their
-/// roles, and a bot's to remove it. Kicking and banning come here once the
-/// API has them (#39).
+/// roles, and to remove a bot or kick or ban a person.
 class MembersAdminPage extends StatefulWidget {
   final String spaceId;
   const MembersAdminPage({required this.spaceId, super.key});
@@ -3151,7 +3166,8 @@ class MemberRoleSwitches extends StatelessWidget {
 }
 
 /// One member, in Space settings: their ID, their roles (those the user
-/// manages can be given and taken) and, for a bot, Remove from Space.
+/// manages can be given and taken) and Remove from Space for a bot, or Kick
+/// and Ban for a person.
 class MemberAdminPage extends StatelessWidget {
   final String spaceId;
   final Member member;
@@ -3220,6 +3236,14 @@ class MemberAdminPage extends StatelessWidget {
                 },
               ),
             ],
+            ...removeMemberButtons(
+              context,
+              spaceId: spaceId,
+              member: m,
+              spaceName: spaceName,
+              gap: 32,
+              onGone: Navigator.of(context).pop,
+            ),
           ],
         );
       },

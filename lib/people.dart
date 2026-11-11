@@ -6,7 +6,7 @@ import 'chat_view.dart';
 import 'data/models.dart';
 import 'data/scope.dart';
 import 'members_sheet.dart' show MemberAction, PresenceAvatar;
-import 'space_admin.dart' show RoleSwatch, adminTry, confirmDestructive, managesRoleAt;
+import 'space_admin.dart' show RoleSwatch, adminTry, confirmDestructive, managesRoleAt, mayRemove;
 import 'theme.dart';
 import 'widgets/avatar.dart';
 import 'widgets/chrome.dart';
@@ -53,6 +53,117 @@ Future<bool> removeBotAsking(
     }
     return false;
   }
+}
+
+/// Kick and Ban for a person, each only for who may ([mayRemove]), after
+/// [gap]; nothing for a bot, which has Remove from Space. [onGone] once
+/// they're out.
+List<Widget> removeMemberButtons(
+  BuildContext context, {
+  required String spaceId,
+  required Member member,
+  required String spaceName,
+  required double gap,
+  required VoidCallback onGone,
+}) {
+  final repository = context.repository;
+  final kick = !member.isBot && mayRemove(repository, spaceId, member.userId, Perm.kickMembers);
+  final ban = !member.isBot && mayRemove(repository, spaceId, member.userId, Perm.banMembers);
+  if (!kick && !ban) return const [];
+  final name = member.displayName;
+  Future<void> remove(String failed, Future<void> Function() call) async {
+    try {
+      await call();
+      onGone();
+    } catch (e) {
+      if (context.mounted) {
+        showFToast(
+          context: context,
+          title: Text(e is ActionFailed ? e.message : failed),
+          duration: const Duration(seconds: 3),
+        );
+      }
+    }
+  }
+
+  return [
+    SizedBox(height: gap),
+    if (kick)
+      DuvetButton(
+        label: 'Kick from Space',
+        icon: FLucideIcons.userMinus,
+        variant: ButtonVariant.destructive,
+        expand: true,
+        onPressed: () async {
+          final sure = await confirmDestructive(
+            context,
+            title: 'Kick $name from $spaceName?',
+            body: 'They leave the Space and lose their roles. They can join again with an invite.',
+            action: 'Kick',
+          );
+          if (sure && context.mounted) {
+            await remove('Couldn’t kick $name', () => repository.kick(spaceId, member.userId));
+          }
+        },
+      ),
+    if (kick && ban) const SizedBox(height: 12),
+    if (ban)
+      DuvetButton(
+        label: 'Ban from Space',
+        icon: FLucideIcons.ban,
+        variant: ButtonVariant.destructive,
+        expand: true,
+        onPressed: () async {
+          final reason = await _askBanReason(context, title: 'Ban $name from $spaceName?');
+          if (reason != null && context.mounted) {
+            await remove('Couldn’t ban $name', () => repository.ban(spaceId, member.userId, reason: reason));
+          }
+        },
+      ),
+  ];
+}
+
+/// Asks before a ban, with a reason or none (empty); null when cancelled.
+Future<String?> _askBanReason(BuildContext context, {required String title}) {
+  var reason = '';
+  return showGlassDialogSheet<String>(
+    context,
+    label: title,
+    builder: (context) => Padding(
+      padding: const EdgeInsets.fromLTRB(24, 16, 24, 24),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Text(title, style: DuvetType.title.copyWith(color: context.theme.colors.foreground)),
+          const SizedBox(height: 12),
+          Text(
+            'They leave the Space, lose their roles and can’t join again while banned.',
+            style: DuvetType.snippet.copyWith(color: context.theme.colors.mutedForeground),
+          ),
+          const SizedBox(height: 16),
+          DuvetTextField(
+            label: 'Reason',
+            hint: 'Optional',
+            maxLines: 3,
+            keyboardType: TextInputType.multiline,
+            // As the API keeps it.
+            maxLength: 512,
+            onChanged: (v) => reason = v,
+          ),
+          const SizedBox(height: 24),
+          DuvetButton(
+            label: 'Ban',
+            variant: ButtonVariant.destructive,
+            expand: true,
+            onPressed: () => Navigator.of(context).pop(reason.trim()),
+          ),
+          const SizedBox(height: 12),
+          DuvetButton(label: 'Cancel', expand: true, onPressed: () => Navigator.of(context).pop()),
+        ],
+      ),
+    ),
+  );
 }
 
 /// Someone's profile, in a glass sheet: banner, avatar, presence, name, what
@@ -425,6 +536,15 @@ class _ProfileState extends State<_Profile> {
                         onPressed: () => _removeBot(widget.spaceId!, spaceName ?? 'this Space'),
                       ),
                     ],
+                    if (spaceId != null)
+                      ...removeMemberButtons(
+                        context,
+                        spaceId: spaceId,
+                        member: m,
+                        spaceName: spaceName ?? 'this Space',
+                        gap: 16,
+                        onGone: Navigator.of(context).pop,
+                      ),
                   ],
                 ),
               ),
