@@ -1319,6 +1319,33 @@ class FakeRepository implements ChatRepository {
     spaces.value = [...spaces.value];
   }
 
+  /// The Space's bans, newest first; [banElsewhere] adds one as SPACE_BAN_ADD would.
+  var banList = <SpaceBan>[];
+  final unbanned = <(String, String)>[];
+
+  @override
+  Future<List<SpaceBan>> bans(String spaceId) async {
+    _refuse('bans');
+    return [...banList];
+  }
+
+  @override
+  Future<void> unban(String spaceId, String userId) async {
+    _refuse('unban');
+    unbanned.add((spaceId, userId));
+    banList = banList.where((b) => b.user.userId != userId).toList();
+  }
+
+  final _bansChanged = StreamController<String>.broadcast();
+
+  @override
+  Stream<String> get bansChanged => _bansChanged.stream;
+
+  void banElsewhere(String spaceId, SpaceBan ban) {
+    banList = [ban, ...banList];
+    _bansChanged.add(spaceId);
+  }
+
   @override
   List<({String id, String name})> spaceRoles(String spaceId) => const [(id: 'role-mod', name: 'Moderator')];
 

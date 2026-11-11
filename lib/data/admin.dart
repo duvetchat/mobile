@@ -5,7 +5,7 @@ library;
 import 'dart:math' as math;
 import 'dart:ui' show Color;
 
-import 'models.dart' show BucketUsage, MyFile;
+import 'models.dart' show BucketUsage, Member, MyFile;
 
 /// The permission bits, as the API's Go constants (`1 << iota`).
 abstract final class Perm {
@@ -256,6 +256,19 @@ class SpaceInvite {
     required this.createdAt,
     this.expiresAt,
   });
+}
+
+/// Someone banned from a Space: who, why, by whom and when.
+class SpaceBan {
+  final Member user;
+
+  /// Why, as the API keeps it (trimmed); null without one.
+  final String? reason;
+
+  /// Who banned them, by name.
+  final String bannedBy;
+  final DateTime at;
+  const SpaceBan({required this.user, this.reason, required this.bannedBy, required this.at});
 }
 
 enum AssetKind { emoji, sticker }
