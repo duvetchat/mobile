@@ -5,6 +5,7 @@ import 'package:duvet/data/emoji_catalog.dart';
 import 'package:duvet/data/gifs.dart';
 import 'package:duvet/data/links.dart';
 import 'package:duvet/data/models.dart';
+import 'package:duvet/data/recent_emoji.dart';
 import 'package:duvet/data/scope.dart';
 import 'package:duvet/data/appearance.dart';
 import 'package:duvet/main.dart';
@@ -715,6 +716,30 @@ void main() {
     await tester.tap(find.text('Celebrate'));
     await tester.pumpAndSettle();
     expect(gifs.searched, ['cat', 'Celebrate']);
+    semantics.dispose();
+  });
+
+  testWidgets('Recently used: a long press takes an emoji out, in the store too', (tester) async {
+    final store = MemoryRecentEmojiStore();
+    RecentEmoji.instance = RecentEmoji(store);
+    addTearDown(() => RecentEmoji.instance = RecentEmoji(MemoryRecentEmojiStore()));
+    EmojiCatalog.used('😀');
+    // A space's emoji: kept, and not shown in a DM.
+    EmojiCatalog.used(FakeRepository.party.code);
+    await openMaya(tester);
+    await tapLabel(tester, 'Emoji and stickers');
+    expect(find.text('RECENTLY USED'), findsOneWidget);
+    expect(find.bySemanticsLabel('party'), findsNothing);
+
+    // The first is the recent one; the second sits in its category.
+    await tester.longPress(find.bySemanticsLabel('grinning').first);
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Remove from recently used'));
+    await tester.pumpAndSettle();
+    expect(find.text('RECENTLY USED'), findsNothing);
+    expect(RecentEmoji.instance.ranked, [FakeRepository.party.code]);
+    expect(store.uses, isNot(contains('😀')));
+    expect(store.uses, contains(FakeRepository.party.code));
     semantics.dispose();
   });
 

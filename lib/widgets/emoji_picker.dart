@@ -1,12 +1,14 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/semantics.dart';
 import 'package:flutter/services.dart';
 import 'package:forui/forui.dart';
 
 import '../data/emoji_catalog.dart';
 import '../data/gifs.dart';
 import '../data/models.dart';
+import '../data/recent_emoji.dart';
 import '../theme.dart';
 import 'glass.dart';
 import 'rows.dart';
@@ -186,17 +188,17 @@ class _PickerState extends State<_Picker> {
         if (found.isNotEmpty) ..._section('Results', found),
       ];
     } else {
-      final recent = EmojiCatalog.recent.value;
       final customById = {for (final e in _custom) e.code: e};
+      // Cut after leaving out other spaces' emoji, so they take no place.
+      final recent = <Object>[
+        for (final r in EmojiCatalog.recent)
+          if (customById[r] case final custom?)
+            custom
+          else if (!r.startsWith('<:'))
+            EmojiEntry(r, catalog.nameOf(r) ?? r),
+      ].take(RecentEmoji.shown).toList();
       slivers = [
-        if (recent.isNotEmpty)
-          ..._section('Recently used', [
-            for (final r in recent)
-              if (customById[r] case final custom?)
-                custom
-              else if (!r.startsWith('<:'))
-                EmojiEntry(r, catalog.nameOf(r) ?? r),
-          ]),
+        if (recent.isNotEmpty) ..._section('Recently used', recent, recent: true),
         if (_custom.isNotEmpty) ..._section('This space', _custom),
         for (final c in catalog.categories) ..._section(c.label, c.emojis),
       ];
@@ -271,7 +273,7 @@ class _PickerState extends State<_Picker> {
 
   // Each section's cells are built as they scroll into view, from the entries
   // (an EmojiEntry or a CustomEmoji), not made up front: there are ~1,900.
-  List<Widget> _section(String label, List<Object> entries) => [
+  List<Widget> _section(String label, List<Object> entries, {bool recent = false}) => [
     SliverToBoxAdapter(
       child: Padding(
         key: _sectionKeys.putIfAbsent(label, GlobalKey.new),
@@ -291,8 +293,8 @@ class _PickerState extends State<_Picker> {
         gridDelegate: const SliverGridDelegateWithMaxCrossAxisExtent(maxCrossAxisExtent: 48),
         delegate: SliverChildBuilderDelegate(
           (context, i) => switch (entries[i]) {
-            final CustomEmoji e => _customCell(e),
-            final EmojiEntry e => _unicodeCell(e),
+            final CustomEmoji e => _customCell(e, recent: recent),
+            final EmojiEntry e => _unicodeCell(e, recent: recent),
             _ => const SizedBox.shrink(),
           },
           childCount: entries.length,
@@ -302,15 +304,22 @@ class _PickerState extends State<_Picker> {
     ),
   ];
 
-  Widget _unicodeCell(EmojiEntry e) => _Cell(
+  void _forget(String emojiOrCode) {
+    RecentEmoji.instance.remove(emojiOrCode);
+    if (mounted) setState(() {});
+  }
+
+  Widget _unicodeCell(EmojiEntry e, {bool recent = false}) => _Cell(
     label: e.name,
     onTap: () => _pick(PickedEmoji(e.emoji)),
+    onRemove: recent ? () => _forget(e.emoji) : null,
     child: Text(e.emoji, style: const TextStyle(fontFamily: DuvetType.emoji, fontSize: 28, height: 1.15)),
   );
 
-  Widget _customCell(CustomEmoji e) => _Cell(
+  Widget _customCell(CustomEmoji e, {bool recent = false}) => _Cell(
     label: e.name,
     onTap: () => _pick(PickedCustomEmoji(e)),
+    onRemove: recent ? () => _forget(e.code) : null,
     child: Image.network(
       e.url,
       width: 30,
@@ -392,8 +401,11 @@ class _Cell extends StatefulWidget {
   final String label;
   final String? hint;
   final VoidCallback onTap;
+
+  /// In Recently used: a long press offers to take it out of there.
+  final VoidCallback? onRemove;
   final Widget child;
-  const _Cell({required this.label, required this.onTap, required this.child, this.hint});
+  const _Cell({required this.label, required this.onTap, required this.child, this.hint, this.onRemove});
 
   @override
   State<_Cell> createState() => _CellState();
@@ -402,6 +414,19 @@ class _Cell extends StatefulWidget {
 class _CellState extends State<_Cell> {
   bool _pressed = false;
 
+  static const _remove = 'Remove from recently used';
+
+  Future<void> _offerRemove() async {
+    // Kept: the cell may be gone by the time the menu answers.
+    final remove = widget.onRemove!;
+    final sure = await showGlassMenu<bool>(
+      context,
+      label: widget.label,
+      items: const [GlassMenuItem(icon: FLucideIcons.x, label: _remove, value: true)],
+    );
+    if (sure == true) remove();
+  }
+
   @override
   Widget build(BuildContext context) => Semantics(
     button: true,
@@ -409,7 +434,10 @@ class _CellState extends State<_Cell> {
     hint: widget.hint,
     excludeSemantics: true,
     onTap: widget.onTap,
+    // The long press, for a screen reader; it needs no menu to confirm.
+    customSemanticsActions: {const CustomSemanticsAction(label: _remove): ?widget.onRemove},
     child: GestureDetector(
+      onLongPress: widget.onRemove == null ? null : _offerRemove,
       onTapDown: (_) => setState(() => _pressed = true),
       onTapUp: (_) => setState(() => _pressed = false),
       onTapCancel: () => setState(() => _pressed = false),

@@ -3,6 +3,8 @@ import 'dart:convert';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 
+import 'recent_emoji.dart';
+
 /// A Unicode emoji, named as emoji-datasource names it (the desktop app's set).
 class EmojiEntry {
   final String emoji;
@@ -89,13 +91,11 @@ class EmojiCatalog {
 
   late final Map<String, EmojiEntry> _byEmoji = {for (final e in all) e.emoji: e};
 
-  /// Used this session, the latest first: Unicode emoji, or a custom emoji's
-  /// `<:id:>` code.
-  static final ValueNotifier<List<String>> recent = ValueNotifier(const []);
+  /// Used lately, the best first ([RecentEmoji.ranked]): Unicode emoji, or a
+  /// custom emoji's `<:id:>` code.
+  static List<String> get recent => RecentEmoji.instance.ranked;
 
-  static void used(String emojiOrCode) {
-    recent.value = [emojiOrCode, ...recent.value.where((e) => e != emojiOrCode)].take(24).toList();
-  }
+  static void used(String emojiOrCode) => RecentEmoji.instance.used(emojiOrCode);
 }
 
 // Everything an emoji is drawn from: pictographs and their variation
