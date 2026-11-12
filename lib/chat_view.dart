@@ -674,7 +674,7 @@ class _ChatViewState extends State<ChatView> {
   void _onComposerChanged() {
     final query = _composer.query;
     final text = _composer.text;
-    final slash = _commands.isNotEmpty && _editing == null && _canUseCommands && RegExp(r'^/\S*$').hasMatch(text)
+    final slash = _commands.isNotEmpty && _editing == null && _canUseCommands && RegExp(r'^/[^\n]*$').hasMatch(text)
         ? text.substring(1)
         : null;
     if (query != _query || _canSend != _couldSend || slash != _slash) {
@@ -704,9 +704,9 @@ class _ChatViewState extends State<ChatView> {
     }
     final content = _composer.encoded.trim();
     if (content.isEmpty && _files.isEmpty) return;
-    // `/name` of a command runs it.
+    // `/name` of a command, or `/name group sub` of a subcommand, runs it.
     if (_files.isEmpty && content.startsWith('/') && _canUseCommands) {
-      final command = _commands.where((c) => '/${c.name}' == content).firstOrNull;
+      final command = _commands.where((c) => '/${c.path}' == content).firstOrNull;
       if (command != null) return _runCommand(command);
     }
     // Files over the upload limit stay in the tray, with the reason.
@@ -2042,9 +2042,9 @@ class _ChatViewState extends State<ChatView> {
     if (_slash case final typed?) {
       final needle = typed.toLowerCase();
       return [
-        for (final c in _commands.where((c) => c.name.toLowerCase().startsWith(needle)).take(5))
+        for (final c in _commands.where((c) => c.path.toLowerCase().startsWith(needle)).take(5))
           GlassRow(
-            label: '/${c.name}',
+            label: '/${c.path}',
             detail: [c.appName, if (c.description.isNotEmpty) c.description].join(' · '),
             hint: 'Double tap to use',
             leading: const BotAvatar(),

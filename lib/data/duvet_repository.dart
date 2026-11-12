@@ -3607,18 +3607,30 @@ class DuvetRepository implements ChatRepository {
   Future<List<BotCommand>> commands(String spaceId) async {
     final all = await _call((api) => api.getSpaceCommands(spaceId));
     final apps = {for (final a in all.applications) a.id: a.name};
+    BotCommand entry(duvet.ApplicationCommand c, BotCommandOption? sub, {String? group}) => BotCommand(
+      id: c.id,
+      applicationId: c.applicationId,
+      appName: apps[c.applicationId] ?? 'Bot',
+      name: c.name,
+      description: sub == null || sub.description.isEmpty ? c.description : sub.description,
+      options: sub?.options ?? [for (final o in c.options) _optionOf(o)],
+      subcommandGroup: group,
+      subcommand: sub?.name,
+    );
     return [
       for (final c in all.commands)
         if (c.type == 1)
-          BotCommand(
-            id: c.id,
-            applicationId: c.applicationId,
-            appName: apps[c.applicationId] ?? 'Bot',
-            name: c.name,
-            description: c.description,
-            options: [for (final o in c.options) _optionOf(o)],
-          ),
-    ]..sort((a, b) => a.name.compareTo(b.name));
+          // A command with subcommands is used through one of them: each is
+          // its own entry, as `/perms user get`.
+          if (c.options.map(_optionOf).where((o) => o.isSubcommand).toList() case final subs when subs.isNotEmpty)
+            for (final o in subs)
+              if (o.type == OptionKind.subcommandGroup)
+                for (final s in o.options) entry(c, s, group: o.name)
+              else
+                entry(c, o)
+          else
+            entry(c, null),
+    ]..sort((a, b) => a.path.compareTo(b.path));
   }
 
   static BotCommandOption _optionOf(duvet.CommandOption o) => BotCommandOption(
@@ -3723,6 +3735,8 @@ class DuvetRepository implements ChatRepository {
         duvet.CommandUse(
           id: command.id,
           name: command.name,
+          subcommandGroup: command.subcommandGroup,
+          subcommand: command.subcommand,
           options: [
             for (final e in options.entries) duvet.UsedOption(name: e.key, type: types[e.key] ?? 3, value: e.value),
           ],
