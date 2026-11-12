@@ -56,7 +56,12 @@ abstract final class Duvet {
 
   static FThemeData theme(Brightness brightness) {
     final colors = brightness == Brightness.dark ? dark : light;
-    final face = FTypeface.inherit(colors: colors, touch: true, fontFamily: DuvetType.family);
+    final face = FTypeface.inherit(
+      colors: colors,
+      touch: true,
+      fontFamily: DuvetType.family,
+      fontFamilyFallback: DuvetType.fallback,
+    );
     // forui's own widgets read these slots; Duvet code uses [DuvetType] by name.
     final ramp = face.copyWith(
       xs3: DuvetType.tabLabel.copyWith(color: colors.foreground),
@@ -81,6 +86,7 @@ abstract final class Duvet {
     return ThemeData(
       brightness: brightness,
       fontFamily: DuvetType.family,
+      fontFamilyFallback: DuvetType.fallback,
       scaffoldBackgroundColor: c.background,
       canvasColor: c.background,
       colorScheme: ColorScheme(
@@ -109,6 +115,14 @@ abstract final class DuvetType {
   static const serif = 'Fraunces';
   static const mono = 'Fira Mono';
 
+  /// Twemoji, as on desktop. Set it first on text that is only emoji: as a
+  /// fallback it loses ©️ ™️ ‼️ ❤️ #️⃣ and the like to Inter's and Roboto's own glyphs.
+  static const emoji = 'Twemoji';
+
+  /// Emoji in every face are Twemoji instead of whatever the phone ships
+  /// (older Androids miss the newer ones).
+  static const fallback = [emoji];
+
   // Fraunces is one variable font whose default instance is Black and wonky:
   // pin the soft Regular cut, at the optical size its size calls for.
   static TextStyle _headline(
@@ -118,6 +132,7 @@ abstract final class DuvetType {
     double tracking = -0.01,
   }) => TextStyle(
     fontFamily: serif,
+    fontFamilyFallback: fallback,
     fontSize: size,
     height: 1.1,
     letterSpacing: size * tracking,
@@ -129,7 +144,12 @@ abstract final class DuvetType {
       const FontVariation('WONK', 0),
     ],
   );
-  static const _text = TextStyle(fontFamily: family, height: 1.4, leadingDistribution: TextLeadingDistribution.even);
+  static const _text = TextStyle(
+    fontFamily: family,
+    fontFamilyFallback: fallback,
+    height: 1.4,
+    leadingDistribution: TextLeadingDistribution.even,
+  );
 
   /// Page titles (h1): the tabs' Chats, Spaces, Calls, You. Inter, not
   /// Fraunces: a serif this big shouts.
@@ -185,7 +205,7 @@ abstract final class DuvetType {
   static final tabLabel = _text.copyWith(fontSize: 11, fontWeight: FontWeight.w500);
 
   /// Inline and block code.
-  static const code = TextStyle(fontFamily: mono, fontSize: 14, height: 1.4);
+  static const code = TextStyle(fontFamily: mono, fontFamilyFallback: fallback, fontSize: 14, height: 1.4);
 }
 
 /// The Duvet design-system tokens forui has no slot for: Liquid Glass, the
