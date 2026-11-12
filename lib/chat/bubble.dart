@@ -999,7 +999,9 @@ class _Reactions extends StatelessWidget {
                         errorBuilder: (_, _, _) => Text(name),
                       )
                     else
-                      Text(r.emojiId == null ? r.emoji : name, style: const TextStyle(fontSize: 15)),
+                      r.emojiId == null
+                          ? Text(r.emoji, style: const TextStyle(fontFamily: DuvetType.emoji, fontSize: 15))
+                          : Text(name, style: const TextStyle(fontSize: 15)),
                     const SizedBox(width: 4),
                     Text('${r.count}'),
                   ],

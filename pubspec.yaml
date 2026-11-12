@@ -140,6 +140,10 @@ flutter:
     - family: Fira Mono
       fonts:
         - asset: assets/fonts/FiraMono-Regular.ttf
+    # jdecked/twemoji 17.0.2 as a COLR font, SableClient/twemoji-font v1.0.4's TTF.
+    - family: Twemoji
+      fonts:
+        - asset: assets/fonts/Twemoji.ttf
 
   # To add assets to your application, add an assets section, like this:
   # assets:
