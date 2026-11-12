@@ -1265,7 +1265,7 @@ class FakeRepository implements ChatRepository {
 
   @override
   Future<BotModal?> useCommand(RoomTarget target, BotCommand command, Map<String, Object> options) async {
-    interactions.add('command ${command.name} ${options.entries.map((e) => '${e.key}=${e.value}').join(' ')}'.trim());
+    interactions.add('command ${command.path} ${options.entries.map((e) => '${e.key}=${e.value}').join(' ')}'.trim());
     final modal = nextModal;
     nextModal = null;
     return modal;

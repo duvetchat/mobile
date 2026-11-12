@@ -223,6 +223,12 @@ class BotCommand {
   final String name;
   final String description;
   final List<BotCommandOption> options;
+
+  /// The subcommand this entry uses, and its group when it's in one: a
+  /// command with subcommands is listed once per subcommand, with that
+  /// subcommand's options and description.
+  final String? subcommandGroup;
+  final String? subcommand;
   const BotCommand({
     required this.id,
     required this.applicationId,
@@ -230,7 +236,12 @@ class BotCommand {
     required this.name,
     required this.description,
     this.options = const [],
+    this.subcommandGroup,
+    this.subcommand,
   });
+
+  /// What's typed after the `/`: `perms user get`.
+  String get path => [name, subcommandGroup, subcommand].nonNulls.join(' ');
 }
 
 abstract final class OptionKind {

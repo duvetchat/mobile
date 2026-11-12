@@ -325,6 +325,28 @@ void main() {
           {..._command, ...jsonDecode(request.body) as Map<String, dynamic>, 'id': 'cmd-1'},
         ('DELETE', '/api/users/@me/teams/t-1/applications/a-1/commands/cmd-1') => http.Response('', 204),
         ('GET', '/api/rooms/r-general/messages') => [roomNewest],
+        ('GET', '/api/spaces/s-1/commands') => {
+          'applications': [
+            {
+              'id': 'a-1',
+              'name': 'Helper',
+              'bot': {'id': 'b-1', 'username': 'helper'},
+            },
+          ],
+          'commands': [
+            _command,
+            {
+              ..._command,
+              'id': 'cmd-2',
+              'name': 'ping',
+              'description': 'Pong',
+              'options': [
+                {'type': 4, 'name': 'times', 'description': 'How many'},
+              ],
+            },
+          ],
+        },
+        ('POST', '/api/interactions') => {'type': 5},
         ('GET', '/api/spaces/s-1/members') => [
           {
             'id': 'm-maya',
@@ -642,6 +664,51 @@ void main() {
 
     // A bot's token is the API's `token`.
     expect(await repository.createBot(const DevApp(id: 'a-1', teamId: 't-1', name: 'Helper')), 'bot-token');
+  });
+
+  test('a space\'s commands: one entry per subcommand, used through it; a flat one as before', () async {
+    const general = RoomTarget(spaceId: 's-1', roomId: 'r-general');
+    await repository.logIn('gaby@duvet.chat', 'secret');
+    final listed = await repository.commands('s-1');
+    expect(
+      [for (final c in listed) '${c.path} · ${c.description} · ${c.options.map((o) => o.name).join(',')}'],
+      ['perms user get · Show them · id', 'ping · Pong · times'],
+    );
+
+    Future<Object?> used(BotCommand command, Map<String, Object> options) async {
+      requests.clear();
+      await repository.useCommand(general, command, options);
+      return (jsonDecode(requests.single.body) as Map)['data'];
+    }
+
+    expect(await used(listed.first, {'id': 'me'}), {
+      'id': 'cmd-1',
+      'name': 'perms',
+      'type': 1,
+      'options': [
+        {
+          'name': 'user',
+          'type': 2,
+          'options': [
+            {
+              'name': 'get',
+              'type': 1,
+              'options': [
+                {'name': 'id', 'type': 3, 'value': 'me'},
+              ],
+            },
+          ],
+        },
+      ],
+    });
+    expect(await used(listed.last, {'times': 2}), {
+      'id': 'cmd-2',
+      'name': 'ping',
+      'type': 1,
+      'options': [
+        {'name': 'times', 'type': 4, 'value': 2},
+      ],
+    });
   });
 
   test('an application\'s commands: subcommands kept both ways; saved new or changed; deleted', () async {

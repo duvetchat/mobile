@@ -976,7 +976,7 @@ Future<Map<String, Object>?> showCommandForm(
   required List<ComponentOption> Function(BotCommandOption option) choicesFor,
 }) => showGlassSheet<Map<String, Object>>(
   context,
-  label: '/${command.name}',
+  label: '/${command.path}',
   initialSize: 0.75,
   builder: (context, scroll) => _CommandForm(command: command, choicesFor: choicesFor, scroll: scroll),
 );
@@ -1085,7 +1085,7 @@ class _CommandFormState extends State<_CommandForm> {
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Text('/${command.name}', style: DuvetType.code.copyWith(fontSize: 18, color: colors.foreground)),
+                    Text('/${command.path}', style: DuvetType.code.copyWith(fontSize: 18, color: colors.foreground)),
                     Text(
                       [command.appName, if (command.description.isNotEmpty) command.description].join(' · '),
                       style: DuvetType.caption.copyWith(color: colors.mutedForeground),
@@ -1109,7 +1109,7 @@ class _CommandFormState extends State<_CommandForm> {
         Padding(
           padding: EdgeInsets.fromLTRB(16, 8, 16, 16 + MediaQuery.paddingOf(context).bottom),
           child: DuvetButton(
-            label: 'Send /${command.name}',
+            label: 'Send /${command.path}',
             variant: ButtonVariant.primary,
             expand: true,
             onPressed: _send,
