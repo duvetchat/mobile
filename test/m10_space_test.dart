@@ -15,7 +15,7 @@ import 'package:duvet/theme.dart';
 import 'package:duvet/widgets/chrome.dart';
 import 'package:duvet/widgets/color_picker.dart' show ColorPick;
 import 'package:duvet/widgets/glass.dart' show GlassRow;
-import 'package:duvet/widgets/rows.dart' show DuvetChip, DuvetTextField, OwnerCrown;
+import 'package:duvet/widgets/rows.dart' show DuvetButton, DuvetChip, DuvetTextField, OwnerCrown;
 import 'package:duvet/widgets/picture_edit.dart' show takePhoto;
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
@@ -332,6 +332,29 @@ void main() {
     await tester.tap(find.text('Ban'));
     await tester.pumpAndSettle();
     expect(repository.banned, [('s-guild', FakeRepository.leo, 'spam')]);
+    expect(find.text('Banned leo from Design Guild'), findsOneWidget, reason: 'it says the ban went through');
+    semantics.dispose();
+  });
+
+  testWidgets('a ban made while the profile is open greys leo out, and Kick and Ban with him', (tester) async {
+    final repository = await pumpMayaProfile(tester, name: 'leo');
+    expect(find.bySemanticsLabel('Not in this Space'), findsNothing);
+    // SPACE_MEMBER_REMOVE, then SPACE_BAN_ADD.
+    repository.spaceMembers['s-guild']!.remove(FakeRepository.leo);
+    repository.spaces.value = [...repository.spaces.value];
+    repository.banElsewhere(
+      's-guild',
+      SpaceBan(
+        user: const Member(userId: FakeRepository.leo, username: 'leo'),
+        bannedBy: 'Maya',
+        at: DateTime(2026, 11, 1),
+      ),
+    );
+    await tester.pumpAndSettle();
+    expect(find.bySemanticsLabel('Not in this Space'), findsOneWidget);
+    await reveal(tester, find.text('Banned'));
+    expect(tester.widget<DuvetButton>(find.widgetWithText(DuvetButton, 'Banned')).onPressed, isNull);
+    expect(tester.widget<DuvetButton>(find.widgetWithText(DuvetButton, 'Kick from Space')).onPressed, isNull);
     semantics.dispose();
   });
 
