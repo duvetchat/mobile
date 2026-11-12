@@ -1,6 +1,7 @@
 import 'dart:ui' show Tristate;
 
 import 'package:duvet/data/call_notices.dart';
+import 'package:duvet/data/emoji_catalog.dart';
 import 'package:duvet/data/markdown.dart';
 import 'package:duvet/data/models.dart';
 import 'package:duvet/data/appearance.dart';
@@ -716,6 +717,18 @@ void main() {
     repository.push('*', const ReactionChanged(messageId: 'm1', userId: FakeRepository.leo, emoji: '❤️', added: true));
     await tester.pumpAndSettle();
     expect(find.bySemanticsLabel('❤️ 2, you reacted'), findsOneWidget);
+    semantics.dispose();
+  });
+
+  testWidgets('the quick bar leads with your most used emoji, and a quick reaction counts as a use', (tester) async {
+    EmojiCatalog.used('🔥');
+    await openMaya(tester);
+    await longPress(tester, 'Hey! Did you see the new tab bar?');
+    // 🔥 takes the last default's place.
+    expect(find.bySemanticsLabel(RegExp('^React (fire|🔥)')), findsOneWidget);
+    expect(find.bySemanticsLabel(RegExp('^React clapping')), findsNothing);
+    await tapLabel(tester, RegExp('^React heart'));
+    expect(EmojiCatalog.recent, contains('❤️'));
     semantics.dispose();
   });
 

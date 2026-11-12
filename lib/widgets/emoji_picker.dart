@@ -422,7 +422,7 @@ class _CellState extends State<_Cell> {
     final sure = await showGlassMenu<bool>(
       context,
       label: widget.label,
-      items: const [GlassMenuItem(icon: FLucideIcons.x, label: _remove, value: true)],
+      items: const [GlassMenuItem(icon: FLucideIcons.trash2, label: _remove, value: true, destructive: true)],
     );
     if (sure == true) remove();
   }

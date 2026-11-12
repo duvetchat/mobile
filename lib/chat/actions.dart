@@ -267,7 +267,12 @@ class _QuickReactions extends StatelessWidget {
           child: Row(
             mainAxisSize: MainAxisSize.min,
             children: [
-              for (final emoji in _quickReactions)
+              // Your most used first, the defaults after, five in all; custom
+              // emoji stay in the picker.
+              for (final emoji in {
+                ...EmojiCatalog.recent.where((e) => !e.startsWith('<:')),
+                ..._quickReactions,
+              }.take(_quickReactions.length))
                 Padding(
                   padding: const EdgeInsets.only(right: 2),
                   child: button(

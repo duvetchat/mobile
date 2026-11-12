@@ -1810,6 +1810,8 @@ class _ChatViewState extends State<ChatView> {
     if (!mounted || picked == null) return;
     switch (picked) {
       case (_Action.react, final emoji?):
+        // A quick reaction counts as a use, as a pick in the picker does; taking one back doesn't.
+        if (!m.reactions.any((r) => r.emoji == emoji && r.users.contains(_me))) EmojiCatalog.used(emoji);
         await _toggleReaction(m, emoji);
       case (_Action.moreReactions, _):
         await _pickReaction(m);
