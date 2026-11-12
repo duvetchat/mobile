@@ -8,6 +8,7 @@ Future<void> loadAppFonts() async {
     'Inter': ['Inter-Regular', 'Inter-Medium', 'Inter-SemiBold', 'Inter-Bold'],
     'Roboto': ['Roboto-Regular', 'Roboto-Medium', 'Roboto-Bold'],
     'Fira Mono': ['FiraMono-Regular'],
+    'Twemoji': ['Twemoji'],
   };
   for (final MapEntry(key: family, value: names) in files.entries) {
     final loader = FontLoader(family);
