@@ -84,6 +84,16 @@ void main() {
         ],
       ),
       BotCommand(id: 'cmd-ping', applicationId: 'app-ballot', appName: 'Ballot', name: 'ping', description: 'Pong'),
+      BotCommand(
+        id: 'cmd-role',
+        applicationId: 'app-ballot',
+        appName: 'Ballot',
+        name: 'role',
+        description: 'Show a member\'s roles',
+        subcommandGroup: 'user',
+        subcommand: 'get',
+        options: [BotCommandOption(type: OptionKind.string, name: 'who', required: true)],
+      ),
     ];
     await tester.pumpWidget(DuvetApp(repository: repository));
     await tester.pumpAndSettle();
@@ -473,6 +483,26 @@ void main() {
     await tester.pumpAndSettle();
     await tapLabel(tester, 'Send');
     expect(repository.interactions.last, 'command ping');
+    semantics.dispose();
+  });
+
+  testWidgets('a subcommand is its own command: found past a space, filled, sent; mentions still suggest', (
+    tester,
+  ) async {
+    final repository = await pumpGeneral(tester);
+    await tester.enterText(find.byType(EditableText), '/role u');
+    await tester.pumpAndSettle();
+    expect(find.bySemanticsLabel(RegExp(r'^Commands, 1')), findsOneWidget);
+    await tapLabel(tester, RegExp(r'^/role user get'));
+    await tester.enterText(find.byType(EditableText).last, 'maya');
+    await tapLabel(tester, 'Send /role user get');
+    expect(repository.interactions, ['command role user get who=maya']);
+
+    // A message that only starts with a slash suggests as any other.
+    await tester.enterText(find.byType(EditableText), '/shrug @ma');
+    await tester.pumpAndSettle();
+    expect(find.bySemanticsLabel(RegExp(r'^Commands')), findsNothing);
+    expect(find.bySemanticsLabel(RegExp(r'^Mention suggestions')), findsOneWidget);
     semantics.dispose();
   });
 

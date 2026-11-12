@@ -674,7 +674,14 @@ class _ChatViewState extends State<ChatView> {
   void _onComposerChanged() {
     final query = _composer.query;
     final text = _composer.text;
-    final slash = _commands.isNotEmpty && _editing == null && _canUseCommands && RegExp(r'^/[^\n]*$').hasMatch(text)
+    // The menu stays while some command, `perms user get` among them, starts
+    // with what's typed; past that, `@`, `#` and emoji suggest as usual.
+    final typed = text.startsWith('/') && !text.contains('\n') ? text.substring(1).toLowerCase() : null;
+    final slash =
+        typed != null &&
+            _editing == null &&
+            _canUseCommands &&
+            _commands.any((c) => c.path.toLowerCase().startsWith(typed))
         ? text.substring(1)
         : null;
     if (query != _query || _canSend != _couldSend || slash != _slash) {
