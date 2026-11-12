@@ -402,6 +402,8 @@ class _ProfileState extends State<_Profile> {
                             boxShadow: tokens.shadowRaised,
                           ),
                           child: Semantics(
+                            // Its own node, not merged into the card's text.
+                            container: gone,
                             label: gone ? 'Not in this Space' : null,
                             child: ExcludeSemantics(
                               // Grey once they've left, been kicked or banned.
