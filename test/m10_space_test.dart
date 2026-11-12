@@ -15,7 +15,7 @@ import 'package:duvet/theme.dart';
 import 'package:duvet/widgets/chrome.dart';
 import 'package:duvet/widgets/color_picker.dart' show ColorPick;
 import 'package:duvet/widgets/glass.dart' show GlassRow;
-import 'package:duvet/widgets/rows.dart' show DuvetChip, DuvetTextField, OwnerCrown;
+import 'package:duvet/widgets/rows.dart' show DuvetButton, DuvetChip, DuvetTextField, OwnerCrown;
 import 'package:duvet/widgets/picture_edit.dart' show takePhoto;
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
@@ -282,7 +282,11 @@ void main() {
   });
 
   // Maya's profile, from # general's members sheet.
-  Future<FakeRepository> pumpMayaProfile(WidgetTester tester, {void Function(FakeRepository r)? setUp}) async {
+  Future<FakeRepository> pumpMayaProfile(
+    WidgetTester tester, {
+    void Function(FakeRepository r)? setUp,
+    String name = 'Maya',
+  }) async {
     semantics = tester.ensureSemantics();
     tester.view.physicalSize = const Size(390 * 3, 844 * 3);
     tester.view.devicePixelRatio = 3;
@@ -301,10 +305,92 @@ void main() {
     await tester.pumpAndSettle();
     await tester.tap(find.bySemanticsLabel('Members').hitTestable().last);
     await tester.pumpAndSettle();
-    await tester.tap(find.text('Maya').hitTestable().last);
+    await tester.tap(find.text(name).hitTestable().last);
     await tester.pumpAndSettle();
     return repository;
   }
+
+  testWidgets('the owner kicks a member from their profile, after asking', (tester) async {
+    final repository = await pumpMayaProfile(tester, name: 'leo');
+    await reveal(tester, find.text('Kick from Space'));
+    await tester.tap(find.text('Kick from Space'));
+    await tester.pumpAndSettle();
+    expect(find.text('Kick leo from Design Guild?'), findsOneWidget);
+    await tester.tap(find.text('Kick'));
+    await tester.pumpAndSettle();
+    expect(repository.kicked, [('s-guild', FakeRepository.leo)]);
+    expect(find.text('Kick from Space'), findsNothing, reason: 'the profile closes');
+    semantics.dispose();
+  });
+
+  testWidgets('a ban sends its reason, trimmed', (tester) async {
+    final repository = await pumpMayaProfile(tester, name: 'leo');
+    await reveal(tester, find.text('Ban from Space'));
+    await tester.tap(find.text('Ban from Space'));
+    await tester.pumpAndSettle();
+    await tester.enterText(find.byType(TextField).last, '  spam  ');
+    await tester.tap(find.text('Ban'));
+    await tester.pumpAndSettle();
+    expect(repository.banned, [('s-guild', FakeRepository.leo, 'spam')]);
+    expect(find.text('Banned leo from Design Guild'), findsOneWidget, reason: 'it says the ban went through');
+    semantics.dispose();
+  });
+
+  testWidgets('a ban made while the profile is open greys leo out, and Kick and Ban with him', (tester) async {
+    final repository = await pumpMayaProfile(tester, name: 'leo');
+    expect(find.bySemanticsLabel('Not in this Space'), findsNothing);
+    // SPACE_MEMBER_REMOVE, then SPACE_BAN_ADD.
+    repository.spaceMembers['s-guild']!.remove(FakeRepository.leo);
+    repository.spaces.value = [...repository.spaces.value];
+    repository.banElsewhere(
+      's-guild',
+      SpaceBan(
+        user: const Member(userId: FakeRepository.leo, username: 'leo'),
+        bannedBy: 'Maya',
+        at: DateTime(2026, 11, 1),
+      ),
+    );
+    await tester.pumpAndSettle();
+    expect(find.bySemanticsLabel('Not in this Space'), findsOneWidget);
+    await reveal(tester, find.text('Banned'));
+    expect(tester.widget<DuvetButton>(find.widgetWithText(DuvetButton, 'Banned')).onPressed, isNull);
+    expect(tester.widget<DuvetButton>(find.widgetWithText(DuvetButton, 'Kick from Space')).onPressed, isNull);
+    semantics.dispose();
+  });
+
+  testWidgets('no Kick or Ban on the Space\'s owner', (tester) async {
+    await pumpMayaProfile(tester);
+    expect(find.text('Kick from Space'), findsNothing);
+    expect(find.text('Ban from Space'), findsNothing);
+    semantics.dispose();
+  });
+
+  testWidgets('no Kick or Ban without the permissions, nor without a role above theirs', (tester) async {
+    await pumpMayaProfile(
+      tester,
+      name: 'leo',
+      setUp: (r) => r
+        ..spaceOwner = false
+        ..spacePerms = Perm.all & ~Perm.kickMembers & ~Perm.banMembers & ~Perm.administrator,
+    );
+    expect(find.text('Kick from Space'), findsNothing);
+    expect(find.text('Ban from Space'), findsNothing);
+    semantics.dispose();
+  });
+
+  testWidgets('a member with Kick Members kicks only below their highest role', (tester) async {
+    await pumpMayaProfile(
+      tester,
+      name: 'leo',
+      setUp: (r) => r
+        ..spaceOwner = false
+        ..spacePerms = Perm.all & ~Perm.banMembers & ~Perm.administrator
+        ..roleTags[FakeRepository.me.id] = [const RoleTag('Moderator', id: 'role-mod', position: 2)],
+    );
+    expect(find.text('Kick from Space'), findsOneWidget);
+    expect(find.text('Ban from Space'), findsNothing);
+    semantics.dispose();
+  });
 
   testWidgets('a member\'s profile gives and takes a role at once', (tester) async {
     final repository = await pumpMayaProfile(tester);
@@ -1248,6 +1334,58 @@ void main() {
     await tapLabel(tester, 'Revoke link');
     expect(repository.admin, ['revoke i1']);
     expect(find.text('No invite links'), findsOneWidget);
+    semantics.dispose();
+  });
+
+  testWidgets('bans: below Invites, with why; unban; a ban made elsewhere shows at once', (tester) async {
+    final repository = await pumpSettings(
+      tester,
+      setUp: (r) => r.banList = [
+        SpaceBan(
+          user: const Member(userId: 'u-troll', username: 'troll', alias: 'Troll'),
+          reason: 'Spam in #general',
+          bannedBy: 'Maya',
+          at: DateTime(2026, 11, 1),
+        ),
+      ],
+    );
+    final rows = [for (final w in tester.widgetList<GlassRow>(find.byType(GlassRow))) w.label];
+    expect(rows.indexOf('Bans'), rows.indexOf('Invites') + 1);
+    await tapLabel(tester, RegExp(r'^Bans, 1 banned'));
+    expect(find.text('@troll · Spam in #general'), findsOneWidget);
+
+    repository.banElsewhere(
+      's-guild',
+      SpaceBan(
+        user: const Member(userId: 'u-spam', username: 'spammer', alias: 'Spammer'),
+        bannedBy: 'Maya',
+        at: DateTime(2026, 11, 2),
+      ),
+    );
+    await tester.pumpAndSettle();
+    expect(find.text('@spammer · No reason given'), findsOneWidget, reason: 'SPACE_BAN_ADD shows it');
+
+    await tester.enterText(find.byType(EditableText).first, 'general');
+    await tester.pumpAndSettle();
+    expect(find.text('Spammer'), findsNothing, reason: 'the search reads reasons');
+    await tester.tap(find.text('Troll'));
+    await tester.pumpAndSettle();
+    expect(find.text('Spam in #general'), findsOneWidget, reason: 'the reason in full');
+    await tapLabel(tester, 'Unban');
+    expect(repository.unbanned, [('s-guild', 'u-troll')]);
+    expect(find.text('Troll'), findsNothing);
+    expect(find.text('No one matches'), findsOneWidget);
+    semantics.dispose();
+  });
+
+  testWidgets('bans: no row without Ban Members', (tester) async {
+    await pumpSettings(
+      tester,
+      setUp: (r) => r
+        ..spaceOwner = false
+        ..spacePerms = Perm.all & ~Perm.banMembers & ~Perm.administrator,
+    );
+    expect(find.bySemanticsLabel(RegExp(r'^Bans')), findsNothing);
     semantics.dispose();
   });
 

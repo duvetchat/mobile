@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/foundation.dart' show ValueListenable;
 import 'package:flutter/material.dart';
 import 'package:forui/forui.dart';
@@ -6,7 +8,7 @@ import 'chat_view.dart';
 import 'data/models.dart';
 import 'data/scope.dart';
 import 'members_sheet.dart' show MemberAction, PresenceAvatar;
-import 'space_admin.dart' show RoleSwatch, adminTry, confirmDestructive, managesRoleAt;
+import 'space_admin.dart' show RoleSwatch, adminTry, confirmDestructive, managesRoleAt, mayRemove;
 import 'theme.dart';
 import 'widgets/avatar.dart';
 import 'widgets/chrome.dart';
@@ -55,6 +57,132 @@ Future<bool> removeBotAsking(
   }
 }
 
+/// Kick and Ban for a person, each only for who may ([mayRemove]), after
+/// [gap]; nothing for a bot, which has Remove from Space. [onGone] once
+/// they're out. Both greyed out once they're [banned].
+List<Widget> removeMemberButtons(
+  BuildContext context, {
+  required String spaceId,
+  required Member member,
+  required String spaceName,
+  required double gap,
+  required VoidCallback onGone,
+  bool banned = false,
+}) {
+  final repository = context.repository;
+  final kick = !member.isBot && mayRemove(repository, spaceId, member.userId, Perm.kickMembers);
+  final ban = !member.isBot && mayRemove(repository, spaceId, member.userId, Perm.banMembers);
+  if (!kick && !ban) return const [];
+  final name = member.displayName;
+  Future<void> remove(String done, String failed, Future<void> Function() call) async {
+    try {
+      await call();
+      // Before onGone closes the sheet: the toaster sits above it.
+      if (context.mounted) showFToast(context: context, title: Text(done), duration: const Duration(seconds: 3));
+      onGone();
+    } catch (e) {
+      if (context.mounted) {
+        showFToast(
+          context: context,
+          title: Text(e is ActionFailed ? e.message : failed),
+          duration: const Duration(seconds: 3),
+        );
+      }
+    }
+  }
+
+  return [
+    SizedBox(height: gap),
+    if (kick)
+      DuvetButton(
+        label: 'Kick from Space',
+        icon: FLucideIcons.userMinus,
+        variant: ButtonVariant.destructive,
+        expand: true,
+        onPressed: banned
+            ? null
+            : () async {
+                final sure = await confirmDestructive(
+                  context,
+                  title: 'Kick $name from $spaceName?',
+                  body: 'They leave the Space and lose their roles. They can join again with an invite.',
+                  action: 'Kick',
+                );
+                if (sure && context.mounted) {
+                  await remove(
+                    'Kicked $name from $spaceName',
+                    'Couldn’t kick $name',
+                    () => repository.kick(spaceId, member.userId),
+                  );
+                }
+              },
+      ),
+    if (kick && ban) const SizedBox(height: 12),
+    if (ban)
+      DuvetButton(
+        label: banned ? 'Banned' : 'Ban from Space',
+        icon: FLucideIcons.ban,
+        variant: ButtonVariant.destructive,
+        expand: true,
+        onPressed: banned
+            ? null
+            : () async {
+                final reason = await _askBanReason(context, title: 'Ban $name from $spaceName?');
+                if (reason != null && context.mounted) {
+                  await remove(
+                    'Banned $name from $spaceName',
+                    'Couldn’t ban $name',
+                    () => repository.ban(spaceId, member.userId, reason: reason),
+                  );
+                }
+              },
+      ),
+  ];
+}
+
+/// Asks before a ban, with a reason or none (empty); null when cancelled.
+Future<String?> _askBanReason(BuildContext context, {required String title}) {
+  var reason = '';
+  return showGlassDialogSheet<String>(
+    context,
+    label: title,
+    builder: (context) => Padding(
+      padding: const EdgeInsets.fromLTRB(24, 16, 24, 24),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Text(title, style: DuvetType.title.copyWith(color: context.theme.colors.foreground)),
+          const SizedBox(height: 12),
+          Text(
+            'They leave the Space, lose their roles and can’t join again while banned.',
+            style: DuvetType.snippet.copyWith(color: context.theme.colors.mutedForeground),
+          ),
+          const SizedBox(height: 16),
+          DuvetTextField(
+            label: 'Reason',
+            hint: 'Optional',
+            maxLines: 3,
+            keyboardType: TextInputType.multiline,
+            // As the API keeps it.
+            maxLength: 512,
+            onChanged: (v) => reason = v,
+          ),
+          const SizedBox(height: 24),
+          DuvetButton(
+            label: 'Ban',
+            variant: ButtonVariant.destructive,
+            expand: true,
+            onPressed: () => Navigator.of(context).pop(reason.trim()),
+          ),
+          const SizedBox(height: 12),
+          DuvetButton(label: 'Cancel', expand: true, onPressed: () => Navigator.of(context).pop()),
+        ],
+      ),
+    ),
+  );
+}
+
 /// Someone's profile, in a glass sheet: banner, avatar, presence, name, what
 /// they wrote, their roles in the Space; Message, Mention, Add friend.
 /// Answers Mention or Message when the caller handles them.
@@ -85,10 +213,47 @@ class _ProfileState extends State<_Profile> {
   bool _asked = false;
   bool _accepting = false;
 
+  // Banned from the Space; only asked by who holds Ban Members, as the API
+  // lists bans only to them.
+  bool _banned = false;
+  StreamSubscription<String>? _bansChanged;
+
   @override
   void didChangeDependencies() {
     super.didChangeDependencies();
-    context.repository.loadFriends().catchError((Object e) => debugPrint('friends: $e'));
+    final repository = context.repository;
+    repository.loadFriends().catchError((Object e) => debugPrint('friends: $e'));
+    if (_bansChanged == null) {
+      _bansChanged = repository.bansChanged.listen((id) {
+        if (id == widget.spaceId) _checkBan();
+      });
+      _checkBan();
+    }
+  }
+
+  @override
+  void dispose() {
+    _bansChanged?.cancel();
+    super.dispose();
+  }
+
+  // shortcut: reads the whole ban list (the API has no single-ban lookup); fine while bans stay few.
+  Future<void> _checkBan() async {
+    final repository = context.repository;
+    final spaceId = widget.spaceId;
+    final userId = widget.member.userId;
+    if (spaceId == null ||
+        widget.member.isBot ||
+        repository.isMember(spaceId, userId) ||
+        !(repository.spaceProfile(spaceId)?.can(Perm.banMembers) ?? false)) {
+      return;
+    }
+    try {
+      final banned = (await repository.bans(spaceId)).any((b) => b.user.userId == userId);
+      if (mounted) setState(() => _banned = banned);
+    } catch (e) {
+      debugPrint('bans: $e');
+    }
   }
 
   Future<void> _removeBot(String spaceId, String spaceName) async {
@@ -198,6 +363,7 @@ class _ProfileState extends State<_Profile> {
         // They asked the user: Accept request, as on the desktop's profile.
         final asking = f.incoming.where((r) => r.person.userId == m.userId).firstOrNull;
         final mutual = repository.spaces.value.where((s) => repository.isMember(s.id, m.userId)).length;
+        final gone = spaceId != null && !repository.isMember(spaceId, m.userId);
         // Between the card's sections, as the hairlines elsewhere.
         final divider = Padding(
           padding: const EdgeInsets.symmetric(vertical: 16),
@@ -235,8 +401,22 @@ class _ProfileState extends State<_Profile> {
                             border: Border.all(color: colors.background, width: 4),
                             boxShadow: tokens.shadowRaised,
                           ),
-                          child: ExcludeSemantics(
-                            child: UserAvatar(name: m.displayName, url: m.avatarUrl, size: 80),
+                          child: Semantics(
+                            // Its own node, not merged into the card's text.
+                            container: gone,
+                            label: gone ? 'Not in this Space' : null,
+                            child: ExcludeSemantics(
+                              // Grey once they've left, been kicked or banned.
+                              child: gone
+                                  ? ColorFiltered(
+                                      colorFilter: const ColorFilter.matrix(_greyscale),
+                                      child: Opacity(
+                                        opacity: 0.6,
+                                        child: UserAvatar(name: m.displayName, url: m.avatarUrl, size: 80),
+                                      ),
+                                    )
+                                  : UserAvatar(name: m.displayName, url: m.avatarUrl, size: 80),
+                            ),
                           ),
                         ),
                         const SizedBox(width: 12),
@@ -425,6 +605,17 @@ class _ProfileState extends State<_Profile> {
                         onPressed: () => _removeBot(widget.spaceId!, spaceName ?? 'this Space'),
                       ),
                     ],
+                    if (spaceId != null)
+                      ...removeMemberButtons(
+                        context,
+                        spaceId: spaceId,
+                        member: m,
+                        spaceName: spaceName ?? 'this Space',
+                        gap: 16,
+                        onGone: Navigator.of(context).pop,
+                        // A ban lifted and the person back in: no longer shown banned.
+                        banned: _banned && gone,
+                      ),
                   ],
                 ),
               ),
@@ -435,6 +626,14 @@ class _ProfileState extends State<_Profile> {
     );
   }
 }
+
+// Luminance only (Rec. 709 weights), as glass.dart's saturate at 0.
+const _greyscale = <double>[
+  0.213, 0.715, 0.072, 0, 0, //
+  0.213, 0.715, 0.072, 0, 0, //
+  0.213, 0.715, 0.072, 0, 0, //
+  0, 0, 0, 1, 0,
+];
 
 class _Label extends StatelessWidget {
   final String text;

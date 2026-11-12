@@ -970,6 +970,10 @@ class DuvetRepository implements ChatRepository {
         _emojis.remove(data.spaceId);
       case duvet.SpaceEmojiDeletedEvent(:final data):
         _emojis.remove(data.spaceId);
+      case duvet.SpaceBanAddedEvent(:final data):
+        _bansChanged.add(data.spaceId);
+      case duvet.SpaceBanRemovedEvent(:final data):
+        _bansChanged.add(data.spaceId);
       case duvet.SpaceStickerCreatedEvent(:final data) || duvet.SpaceStickerUpdatedEvent(:final data):
         _stickers.remove(data.spaceId);
       case duvet.SpaceStickerDeletedEvent(:final data):
@@ -3175,12 +3179,7 @@ class DuvetRepository implements ChatRepository {
 
   @override
   Future<void> setRole(String spaceId, String roleId, String userId, {required bool has}) async {
-    // The API names the member by member ID, which the members list gives.
-    String? memberIdOf() => _memberUsers[spaceId]?.entries.where((e) => e.value == userId).firstOrNull?.key;
-    if (memberIdOf() == null) await _spaceMemberList(spaceId, refresh: true);
-    final memberId = memberIdOf();
-    // What the API answers for someone who isn't in the Space.
-    if (memberId == null) throw const ActionFailed('Member not found');
+    final memberId = await _memberId(spaceId, userId);
     await _explained(
       (api) =>
           has ? api.assignRoleToMember(spaceId, roleId, memberId) : api.removeRoleFromMember(spaceId, roleId, memberId),
@@ -3190,6 +3189,58 @@ class DuvetRepository implements ChatRepository {
     // The user's own roles change what they may do.
     _publishSpaces();
   }
+
+  // The API names a member by member ID, which the members list gives.
+  Future<String> _memberId(String spaceId, String userId) async {
+    String? memberIdOf() => _memberUsers[spaceId]?.entries.where((e) => e.value == userId).firstOrNull?.key;
+    if (memberIdOf() == null) await _spaceMemberList(spaceId, refresh: true);
+    // What the API answers for someone who isn't in the Space.
+    return memberIdOf() ?? (throw const ActionFailed('Member not found'));
+  }
+
+  @override
+  Future<void> kick(String spaceId, String userId) async {
+    final memberId = await _memberId(spaceId, userId);
+    await _explained((api) => api.kickMember(spaceId, memberId));
+  }
+
+  @override
+  Future<void> ban(String spaceId, String userId, {String? reason}) =>
+      _explained((api) => api.banUser(spaceId, userId, reason: reason));
+
+  @override
+  Future<List<SpaceBan>> bans(String spaceId) async {
+    final all = <duvet.SpaceBan>[];
+    // Every page, as the members list: by user ID, a hundred at a time.
+    while (all.length < 5000) {
+      final page = await _call((api) => api.getSpaceBans(spaceId, after: all.lastOrNull?.userId, count: 100));
+      all.addAll(page);
+      if (page.length < 100) break;
+    }
+    return [
+      for (final b in all)
+        SpaceBan(
+          user: Member(
+            userId: b.userId,
+            username: b.user.username,
+            alias: b.user.alias,
+            avatarUrl: avatarUrl(b.user.avatar),
+            isBot: b.user.isBot,
+          ),
+          reason: b.reason,
+          bannedBy: nameOf(b.bannedBy) ?? 'Unknown user',
+          at: b.createdAt.toLocal(),
+        ),
+    ]..sort((a, b) => b.at.compareTo(a.at));
+  }
+
+  @override
+  Future<void> unban(String spaceId, String userId) => _explained((api) => api.unbanUser(spaceId, userId));
+
+  final _bansChanged = StreamController<String>.broadcast();
+
+  @override
+  Stream<String> get bansChanged => _bansChanged.stream;
 
   @override
   Future<List<SpaceInvite>> spaceInvites(String spaceId) async {
@@ -4138,6 +4189,7 @@ class DuvetRepository implements ChatRepository {
     _voiceSignaling.dispose();
     _signedOut.close();
     _resumed.close();
+    _bansChanged.close();
     mentions.dispose();
     for (final timer in _noticeTimers.values) {
       timer.cancel();

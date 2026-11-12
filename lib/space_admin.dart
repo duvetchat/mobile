@@ -17,7 +17,7 @@ import 'account.dart' show BucketMeter, CropPage, FileRow, confirmFileDelete, fo
 import 'data/models.dart';
 import 'data/repository.dart' show ChatRepository;
 import 'data/scope.dart';
-import 'people.dart' show PersonRow, removeBotAsking;
+import 'people.dart' show PersonRow, removeBotAsking, removeMemberButtons;
 import 'spaces.dart' show deleteSpace, inviteRoomOf, pickSpaceIcon, showInviteSheet;
 import 'theme.dart';
 import 'widgets/avatar.dart';
@@ -220,6 +220,7 @@ class SpaceSettingsPage extends StatefulWidget {
 
 class _SpaceSettingsPageState extends State<SpaceSettingsPage> {
   int? _invites;
+  int? _banned;
   (int, int)? _assets;
   int? _webhooks;
   int? _storage;
@@ -239,6 +240,9 @@ class _SpaceSettingsPageState extends State<SpaceSettingsPage> {
     void ignore(Object e) => debugPrint('space settings: $e');
     if (profile.can(Perm.manageInvites)) {
       repository.spaceInvites(id).then((l) => mounted ? setState(() => _invites = l.length) : null, onError: ignore);
+    }
+    if (profile.can(Perm.banMembers)) {
+      repository.bans(id).then((l) => mounted ? setState(() => _banned = l.length) : null, onError: ignore);
     }
     // Any member's to see.
     (
@@ -312,7 +316,10 @@ class _SpaceSettingsPageState extends State<SpaceSettingsPage> {
                   detail: '$roles',
                   onPressed: () => _open(RolesPage(spaceId: id)),
                 ),
-              if (profile.can(Perm.manageRoles) || profile.can(Perm.manageBots))
+              if (profile.can(Perm.manageRoles) ||
+                  profile.can(Perm.manageBots) ||
+                  profile.can(Perm.kickMembers) ||
+                  profile.can(Perm.banMembers))
                 GlassRow(
                   icon: FLucideIcons.users,
                   label: 'Members',
@@ -325,6 +332,13 @@ class _SpaceSettingsPageState extends State<SpaceSettingsPage> {
                   label: 'Invites',
                   detail: _invites == null ? null : '$_invites active',
                   onPressed: () => _open(InvitesAdminPage(spaceId: id)),
+                ),
+              if (profile.can(Perm.banMembers))
+                GlassRow(
+                  icon: FLucideIcons.ban,
+                  label: 'Bans',
+                  detail: _banned == null ? null : '$_banned banned',
+                  onPressed: () => _open(BansAdminPage(spaceId: id)),
                 ),
             ],
           ),
@@ -2976,6 +2990,200 @@ class _InvitesAdminPageState extends State<InvitesAdminPage> {
 }
 
 // -----------------------------------------------------------------------------
+// Bans
+// -----------------------------------------------------------------------------
+
+/// Who's banned from the Space, newest first: searchable by name, ID or
+/// reason, each with why, by whom and since when. One opens to unban. Bans
+/// made or lifted elsewhere show as they happen.
+class BansAdminPage extends StatefulWidget {
+  final String spaceId;
+  const BansAdminPage({required this.spaceId, super.key});
+
+  @override
+  State<BansAdminPage> createState() => _BansAdminPageState();
+}
+
+class _BansAdminPageState extends State<BansAdminPage> {
+  late Future<List<SpaceBan>> _bans;
+  final _search = TextEditingController();
+  StreamSubscription<String>? _changes;
+
+  // Unbanned here: gone from the list at once, until the list comes again.
+  final _lifting = <String>{};
+
+  @override
+  void initState() {
+    super.initState();
+    _search.addListener(() => setState(() {}));
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    final repository = context.repository;
+    _bans = repository.bans(widget.spaceId);
+    _changes ??= repository.bansChanged.where((id) => id == widget.spaceId).listen((_) => _reload());
+  }
+
+  @override
+  void dispose() {
+    _changes?.cancel();
+    _search.dispose();
+    super.dispose();
+  }
+
+  void _reload() {
+    if (!mounted) return;
+    final lifted = {..._lifting};
+    setState(() {
+      _bans = context.repository.bans(widget.spaceId).then((l) {
+        if (mounted) setState(() => _lifting.removeAll(lifted));
+        return l;
+      });
+    });
+  }
+
+  String _date(DateTime t) => MaterialLocalizations.of(context).formatMediumDate(t);
+
+  Future<void> _open(SpaceBan b) async {
+    final name = b.user.displayName;
+    if (!await _askUnban(context, b, _date(b.at)) || !mounted) return;
+    final id = b.user.userId;
+    setState(() => _lifting.add(id));
+    final lifted = await adminTry(context, 'Couldn’t unban $name', () => context.repository.unban(widget.spaceId, id));
+    if (!mounted) return;
+    if (lifted) {
+      adminToast(context, '$name can join again');
+      _reload();
+    } else {
+      setState(() => _lifting.remove(id));
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) => FutureBuilder(
+    future: _bans,
+    builder: (context, snapshot) {
+      final all = snapshot.data;
+      final q = _search.text.trim().toLowerCase();
+      bool matches(SpaceBan b) =>
+          q.isEmpty ||
+          b.user.displayName.toLowerCase().contains(q) ||
+          b.user.username.toLowerCase().contains(q) ||
+          b.user.userId.contains(q) ||
+          (b.reason?.toLowerCase().contains(q) ?? false);
+      final shown = [
+        for (final b in all ?? const <SpaceBan>[])
+          if (!_lifting.contains(b.user.userId) && matches(b)) b,
+      ];
+      return AdminPage(
+        title: 'Bans',
+        children: [
+          SearchField(controller: _search, hint: 'Search by name, ID or reason'),
+          const SizedBox(height: 8),
+          if (snapshot.hasError)
+            const ListNote('Couldn’t load the bans')
+          else if (all == null)
+            const Padding(
+              padding: EdgeInsets.all(24),
+              child: Center(child: FCircularProgress()),
+            )
+          else if (shown.isEmpty)
+            ListNote(q.isEmpty ? 'No one is banned' : 'No one matches')
+          else
+            for (final b in shown)
+              ListRow(
+                leading: ExcludeSemantics(
+                  child: UserAvatar(name: b.user.displayName, url: b.user.avatarUrl, size: 40),
+                ),
+                title: b.user.displayName,
+                snippet: [
+                  if (b.user.username.isNotEmpty) '@${b.user.username}',
+                  b.reason ?? 'No reason given',
+                ].join(' · '),
+                trailing: MaterialLocalizations.of(context).formatCompactDate(b.at),
+                detail: 'Double tap to unban',
+                onTap: () => _open(b),
+              ),
+        ],
+      );
+    },
+  );
+}
+
+/// A ban up close: who, by whom, when and why, in full. True to unban.
+Future<bool> _askUnban(BuildContext context, SpaceBan b, String date) async =>
+    await showGlassDialogSheet<bool>(
+      context,
+      label: '${b.user.displayName}’s ban',
+      builder: (context) {
+        final colors = context.theme.colors;
+        final m = b.user;
+        return Padding(
+          padding: const EdgeInsets.fromLTRB(24, 16, 24, 24),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Row(
+                children: [
+                  ExcludeSemantics(
+                    child: UserAvatar(name: m.displayName, url: m.avatarUrl, size: 48),
+                  ),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(m.displayName, style: DuvetType.title.copyWith(color: colors.foreground)),
+                        Text(
+                          [if (m.username.isNotEmpty) '@${m.username}', 'banned by ${b.bannedBy}', date].join(' · '),
+                          style: DuvetType.caption.copyWith(color: colors.mutedForeground),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 16),
+              Container(
+                padding: const EdgeInsets.all(12),
+                decoration: BoxDecoration(
+                  color: colors.secondary,
+                  borderRadius: BorderRadius.circular(DuvetTokens.radiusField),
+                ),
+                child: Text(
+                  b.reason ?? 'No reason given',
+                  style: DuvetType.body.copyWith(
+                    color: b.reason == null ? colors.mutedForeground : colors.foreground,
+                    fontStyle: b.reason == null ? FontStyle.italic : null,
+                  ),
+                ),
+              ),
+              const SizedBox(height: 12),
+              Text(
+                'Unbanned, they can join again with an invite.',
+                style: DuvetType.snippet.copyWith(color: colors.mutedForeground),
+              ),
+              const SizedBox(height: 24),
+              DuvetButton(
+                label: 'Unban',
+                icon: FLucideIcons.userCheck,
+                variant: ButtonVariant.primary,
+                expand: true,
+                onPressed: () => Navigator.of(context).pop(true),
+              ),
+              const SizedBox(height: 12),
+              DuvetButton(label: 'Cancel', expand: true, onPressed: () => Navigator.of(context).pop(false)),
+            ],
+          ),
+        );
+      },
+    ) ==
+    true;
+
+// -----------------------------------------------------------------------------
 // Members
 // -----------------------------------------------------------------------------
 
@@ -2992,10 +3200,22 @@ bool managesRoleAt(ChatRepository repository, String spaceId, int position) {
   return position < highest;
 }
 
+/// May kick or ban [userId] ([bit]: Kick or Ban Members), as the API rules:
+/// never the owner or themselves and, but for the owner, only someone whose
+/// highest role is below the user's own.
+bool mayRemove(ChatRepository repository, String spaceId, String userId, int bit) {
+  final profile = repository.spaceProfile(spaceId);
+  final me = repository.profile.value?.id;
+  if (profile == null || me == null || userId == me || !profile.can(bit)) return false;
+  if (repository.spaces.value.where((s) => s.id == spaceId).firstOrNull?.ownerId == userId) return false;
+  if (profile.owner) return true;
+  int highest(String id) => repository.rolesOf(spaceId, id).firstOrNull?.position ?? 0;
+  return highest(userId) < highest(me);
+}
+
 /// A Space's members, as the desktop's Members tab lists them: searchable by
 /// name, username or ID, each with their roles. One opens to change their
-/// roles, and a bot's to remove it. Kicking and banning come here once the
-/// API has them (#39).
+/// roles, and to remove a bot or kick or ban a person.
 class MembersAdminPage extends StatefulWidget {
   final String spaceId;
   const MembersAdminPage({required this.spaceId, super.key});
@@ -3151,7 +3371,8 @@ class MemberRoleSwitches extends StatelessWidget {
 }
 
 /// One member, in Space settings: their ID, their roles (those the user
-/// manages can be given and taken) and, for a bot, Remove from Space.
+/// manages can be given and taken) and Remove from Space for a bot, or Kick
+/// and Ban for a person.
 class MemberAdminPage extends StatelessWidget {
   final String spaceId;
   final Member member;
@@ -3220,6 +3441,14 @@ class MemberAdminPage extends StatelessWidget {
                 },
               ),
             ],
+            ...removeMemberButtons(
+              context,
+              spaceId: spaceId,
+              member: m,
+              spaceName: spaceName,
+              gap: 32,
+              onGone: Navigator.of(context).pop,
+            ),
           ],
         );
       },

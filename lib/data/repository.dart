@@ -401,6 +401,23 @@ abstract interface class ChatRepository {
   /// the members list.
   Future<void> removeBot(String spaceId, String botId);
 
+  /// Takes a person out of a Space (Kick Members); they can join it again.
+  /// The gateway's member removal drops them from the members list.
+  Future<void> kick(String spaceId, String userId);
+
+  /// Bans a person from a Space (Ban Members), with [reason] or none: they
+  /// leave it as a kick takes them, and can't join it again.
+  Future<void> ban(String spaceId, String userId, {String? reason});
+
+  /// The Space's bans, newest first (Ban Members).
+  Future<List<SpaceBan>> bans(String spaceId);
+
+  /// Lifts [userId]'s ban from a Space (Ban Members): they can join again.
+  Future<void> unban(String spaceId, String userId);
+
+  /// A Space's ID each time someone, here or elsewhere, bans or unbans in it.
+  Stream<String> get bansChanged;
+
   /// The Space's roles, highest first, but the one everyone has: for role
   /// selects and options.
   List<({String id, String name})> spaceRoles(String spaceId);
