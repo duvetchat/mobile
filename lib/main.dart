@@ -12,6 +12,7 @@ import 'data/appearance.dart';
 import 'data/sounds.dart';
 import 'data/voice_prefs.dart';
 import 'data/launchpad.dart';
+import 'data/recent_emoji.dart';
 import 'data/call_history.dart';
 import 'data/duvet_repository.dart';
 import 'data/models.dart';
@@ -116,6 +117,7 @@ class _DuvetAppState extends State<DuvetApp> {
   @override
   void initState() {
     super.initState();
+    RecentEmoji.instance.load();
     // Back in front, the session catches up on a renewal its timer missed.
     _lifecycle = AppLifecycleListener(onResume: () => widget.repository.cameToFront());
     _voice.addListener(_followEarpiece);
