@@ -141,24 +141,42 @@ class _KeptImage extends ImageProvider<_KeptImage> {
 const _prefetchAtOnce = 4;
 const _prefetchAtMost = 200;
 
+// Every call's pictures wait in one line, fetched by a few at once whoever
+// asked: READY's Spaces each ask on their own, and together they'd be far
+// more than a few.
+final _wanted = <String>{};
+var _fetching = 0;
+
 /// Fetches [urls] ahead of their first frame, skipping nulls and those
 /// already kept: what `READY` names (Space icons, the avatars of recent
 /// chats) is there before its row shows. Each is kept on disk and decoded at
 /// a chat row's avatar size (48), the size `UserAvatar` and `SpaceIcon` there
 /// ask for, so the row shows it on its first frame. Failures are dropped: the
-/// row loads it again itself.
-Future<void> prefetchImages(Iterable<String?> urls) async {
-  if (imageStore == null) return;
+/// row loads it again itself. Completes with the fetchers this call started,
+/// at once when others were already at work.
+Future<void> prefetchImages(Iterable<String?> urls) {
+  if (imageStore == null) return Future.value();
+  _wanted.addAll(urls.nonNulls.take(_prefetchAtMost));
   final width = (48 * (ui.PlatformDispatcher.instance.implicitView?.devicePixelRatio ?? 1)).round();
-  final waiting = urls.nonNulls.toSet().take(_prefetchAtMost).toList();
   // One already decoded answers at once; one on disk is only read.
-  Future<void> next() async {
-    while (waiting.isNotEmpty) {
-      await _resolved(cachedImage(waiting.removeAt(0), cacheWidth: width));
+  Future<void> fetch() async {
+    try {
+      while (_wanted.isNotEmpty) {
+        final url = _wanted.first;
+        _wanted.remove(url);
+        await _resolved(cachedImage(url, cacheWidth: width));
+      }
+    } finally {
+      _fetching--;
     }
   }
 
-  await Future.wait([for (var i = 0; i < _prefetchAtOnce; i++) next()]);
+  final started = <Future<void>>[];
+  while (_wanted.isNotEmpty && _fetching < _prefetchAtOnce) {
+    _fetching++;
+    started.add(fetch());
+  }
+  return Future.wait(started);
 }
 
 // Loads [provider] into the image cache, as precacheImage does without a
@@ -181,6 +199,8 @@ Future<void> clearImageCache() async {
   final store = imageStore;
   if (store == null) return;
   _clears++;
+  // Those still waiting were the account's too: never fetched for the next.
+  _wanted.clear();
   PaintingBinding.instance.imageCache
     ..clear()
     ..clearLiveImages();

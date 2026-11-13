@@ -204,6 +204,56 @@ void main() {
       expect(most, 4);
     });
 
+    testWidgets('pictures asked for in several calls still come 4 at once at most', (tester) async {
+      PaintingBinding.instance.imageCache.clear();
+      final urls = [for (var i = 0; i < 10; i++) 'https://avatars.example/s/$i'];
+      var inFlight = 0;
+      var most = 0;
+      final waiting = <Completer<FileInfo>>[];
+      store.answer = (url, key) {
+        most = max(most, ++inFlight);
+        final answer = Completer<FileInfo>();
+        waiting.add(answer);
+        return answer.future.whenComplete(() => inFlight--);
+      };
+      await tester.runAsync(() async {
+        // As READY's Spaces do: each its own call.
+        final done = prefetchImages([urls.first]);
+        for (final url in urls.skip(1)) {
+          unawaited(prefetchImages([url]));
+        }
+        for (var i = 0; i < urls.length; i++) {
+          await pumpEventQueue();
+          waiting.removeAt(0).completeError(HttpExceptionWithStatus(500, 'Down', uri: Uri.parse(urls[i])));
+        }
+        await done;
+      });
+      expect(store.downloads.map((d) => d.$1), unorderedEquals(urls));
+      expect(most, 4);
+    });
+
+    testWidgets('signing out drops the pictures still waiting to be fetched ahead', (tester) async {
+      PaintingBinding.instance.imageCache.clear();
+      final urls = [for (var i = 0; i < 10; i++) 'https://avatars.example/o/$i'];
+      final waiting = <Completer<FileInfo>>[];
+      store.answer = (url, key) {
+        final answer = Completer<FileInfo>();
+        waiting.add(answer);
+        return answer.future;
+      };
+      await tester.runAsync(() async {
+        final done = prefetchImages(urls);
+        await pumpEventQueue();
+        await clearImageCache();
+        for (final answer in waiting) {
+          answer.completeError(HttpExceptionWithStatus(500, 'Down', uri: Uri.parse(urls.first)));
+        }
+        await done;
+      });
+      // The 4 under way when signing out, and none of the 6 behind them.
+      expect(store.downloads, hasLength(4));
+    });
+
     testWidgets('prefetching skips a picture already decoded', (tester) async {
       PaintingBinding.instance.imageCache.clear();
       await tester.runAsync(() async {
