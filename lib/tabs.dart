@@ -23,6 +23,8 @@ import 'widgets/glass.dart';
 import 'widgets/ghost_art.dart';
 import 'widgets/now.dart';
 import 'widgets/rows.dart';
+import 'widgets/sheets.dart' show LoadingSkeleton, placeholderNames, placeholderRows;
+import 'widgets/skeleton.dart' show Bone;
 
 /// The unified inbox: the recent chats, rooms and DMs alike, then the DMs
 /// never opened here; the newest first.
@@ -46,6 +48,7 @@ class ChatsTab extends StatelessWidget {
         repository.friends,
         repository.pinnedChats,
         repository.typingNow,
+        repository.status,
         voice,
       ]),
       builder: (context, _) {
@@ -121,7 +124,14 @@ class ChatsTab extends StatelessWidget {
           ),
           onRefresh: repository.refreshConversations,
           slivers: [
-            if (rows.isEmpty)
+            if (rows.isEmpty && repository.status.value == LiveStatus.connecting)
+              SliverPadding(
+                padding: const EdgeInsets.only(top: 16),
+                sliver: SliverToBoxAdapter(
+                  child: LoadingSkeleton(label: 'Loading chats', children: placeholderRows(avatar: 48)),
+                ),
+              )
+            else if (rows.isEmpty)
               const SliverFillRemaining(
                 hasScrollBody: false,
                 child: EmptyState(mascot: MascotState.empty, text: 'No conversations yet'),
@@ -359,6 +369,11 @@ class SpacesTab extends StatelessWidget {
             builder: (_) => SpaceDirectory(spaceId: space.id, name: space.name),
           ),
         );
+        // While the first READY comes: the chosen view's own tiles, as bones.
+        final placeholders = [
+          for (final (i, name) in placeholderNames.indexed) Space(id: 'placeholder-$i', name: name, onlineCount: 12),
+        ];
+        void none() {}
         return LargeTitlePage(
           title: 'Spaces',
           titleLeading: const AppIcon(size: 32),
@@ -372,12 +387,61 @@ class SpacesTab extends StatelessWidget {
           ),
           slivers: [
             if (spaces.isEmpty)
-              SliverFillRemaining(
-                hasScrollBody: false,
-                child: repository.status.value == LiveStatus.connecting
-                    ? const Center(child: FCircularProgress())
-                    : const EmptyState(mascot: MascotState.empty, text: 'You’re not in any spaces'),
-              )
+              repository.status.value == LiveStatus.connecting
+                  ? SliverToBoxAdapter(
+                      child: LoadingSkeleton(
+                        label: 'Loading spaces',
+                        children: [
+                          switch (prefs.view) {
+                            SpaceView.grid => Padding(
+                              padding: const EdgeInsets.fromLTRB(16, 16, 16, 0),
+                              child: Column(
+                                spacing: 12,
+                                children: [
+                                  for (var i = 0; i < placeholders.length; i += 2)
+                                    Row(
+                                      spacing: 12,
+                                      children: [
+                                        for (final space in placeholders.skip(i).take(2))
+                                          Expanded(
+                                            child: SpaceCard(space: space, onTap: none),
+                                          ),
+                                      ],
+                                    ),
+                                ],
+                              ),
+                            ),
+                            SpaceView.list => Padding(
+                              padding: const EdgeInsets.only(top: 8),
+                              child: Column(
+                                children: [
+                                  for (final space in placeholders)
+                                    ListRow(
+                                      leading: const Bone.square(
+                                        size: 48,
+                                        borderRadius: BorderRadius.all(Radius.circular(DuvetTokens.radiusField)),
+                                      ),
+                                      title: space.name,
+                                      snippet: '12 online',
+                                    ),
+                                ],
+                              ),
+                            ),
+                            SpaceView.cards => Padding(
+                              padding: const EdgeInsets.fromLTRB(16, 16, 16, 0),
+                              child: Column(
+                                spacing: 12,
+                                children: [for (final space in placeholders) SpaceWideCard(space: space, onTap: none)],
+                              ),
+                            ),
+                          },
+                        ],
+                      ),
+                    )
+                  : const SliverFillRemaining(
+                      hasScrollBody: false,
+                      child: EmptyState(mascot: MascotState.empty, text: 'You’re not in any spaces'),
+                    )
             else
               switch (prefs.view) {
                 SpaceView.grid => SliverPadding(

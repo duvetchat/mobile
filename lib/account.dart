@@ -10,6 +10,7 @@ import 'package:forui/forui.dart';
 import 'package:image_picker/image_picker.dart';
 
 import 'data/appearance.dart';
+import 'data/images.dart';
 import 'data/links.dart';
 import 'data/models.dart';
 import 'data/scope.dart';
@@ -28,6 +29,7 @@ import 'widgets/ghost_art.dart';
 import 'widgets/glass.dart';
 import 'widgets/picture_edit.dart';
 import 'widgets/rows.dart';
+import 'widgets/sheets.dart' show LoadingSkeleton, placeholderNames;
 import 'widgets/unsaved_changes.dart';
 
 void _toast(BuildContext context, String text) {
@@ -862,7 +864,7 @@ class _EditProfilePageState extends State<EditProfilePage> {
                               borderRadius: const BorderRadius.vertical(top: Radius.circular(DuvetTokens.radiusCard)),
                               image: switch (banner) {
                                 final b? => DecorationImage(
-                                  image: b.startsWith('http') ? NetworkImage(b) : FileImage(File(b)) as ImageProvider,
+                                  image: b.startsWith('http') ? cachedImage(b) : FileImage(File(b)),
                                   fit: BoxFit.cover,
                                 ),
                                 null => null,
@@ -1283,6 +1285,22 @@ class _MyFilesPageState extends State<MyFilesPage> {
             child: ListView(
               padding: EdgeInsets.only(top: GlassTopBar.heightOf(context) + 8, bottom: padding.bottom + 24),
               children: [
+                if (files == null)
+                  Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 16),
+                    child: LoadingSkeleton(
+                      label: 'Loading storage',
+                      children: [
+                        StorageMeter(
+                          storage: const StorageInfo(used: 0, max: 1),
+                          images: 0,
+                          files: 0,
+                          voice: 0,
+                          big: true,
+                        ),
+                      ],
+                    ),
+                  ),
                 if (storage != null) ...[
                   // As the desktop: the active bucket first, which keeps the uploads, then the default
                   // storage and every bucket. The files list doesn't say where each file is, so with buckets
@@ -1360,9 +1378,12 @@ class _MyFilesPageState extends State<MyFilesPage> {
                   ),
                 ),
                 if (files == null)
-                  const Padding(
-                    padding: EdgeInsets.all(24),
-                    child: Center(child: FCircularProgress()),
+                  Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 16),
+                    child: LoadingSkeleton(
+                      label: 'Loading files',
+                      children: [for (final f in placeholderFiles) FileRow(file: f)],
+                    ),
                   )
                 else if (shown.isEmpty)
                   const ListNote('No files')
@@ -1421,6 +1442,12 @@ Future<bool> confirmFileDelete(
     ) ==
     true;
 
+/// Files for [FileRow]s while a list of them loads.
+final placeholderFiles = [
+  for (final (i, name) in placeholderNames.indexed)
+    MyFile(id: 'placeholder-$i', name: name, contentType: '', sizeBytes: 0, createdAt: DateTime(2026), url: ''),
+];
+
 /// An uploaded file: its picture or kind, name, size and date, and a trash
 /// button when it can be deleted alone.
 class FileRow extends StatelessWidget {
@@ -1446,10 +1473,9 @@ class FileRow extends StatelessWidget {
               height: 48,
               color: colors.secondary,
               child: f.isImage
-                  ? Image.network(
-                      f.url,
+                  ? Image(
+                      image: cachedImage(f.url, cacheWidth: (48 * MediaQuery.devicePixelRatioOf(context)).round()),
                       fit: BoxFit.cover,
-                      cacheWidth: (48 * MediaQuery.devicePixelRatioOf(context)).round(),
                       errorBuilder: (_, _, _) => Icon(FLucideIcons.image, color: colors.foreground),
                     )
                   : Icon(f.isAudio ? FLucideIcons.mic : FLucideIcons.fileText, color: colors.foreground),

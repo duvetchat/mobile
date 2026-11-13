@@ -8,6 +8,8 @@ import 'theme.dart';
 import 'widgets/avatar.dart';
 import 'widgets/glass.dart';
 import 'widgets/rows.dart';
+import 'widgets/sheets.dart' show LoadingSkeleton, placeholderLines, placeholderNames;
+import 'widgets/skeleton.dart' show Bone;
 
 /// What a member's row can do.
 enum MemberAction { mention, message }
@@ -72,7 +74,42 @@ class _MembersSheetState extends State<_MembersSheet> {
           );
         }
         final all = snapshot.data;
-        if (all == null) return const Center(child: FCircularProgress());
+        if (all == null) {
+          return ListView(
+            controller: widget.scroll,
+            padding: EdgeInsets.zero,
+            children: [
+              const SheetTitle(title: 'Members'),
+              LoadingSkeleton(
+                label: 'Loading members',
+                children: [
+                  const Padding(
+                    padding: EdgeInsets.fromLTRB(16, 0, 16, 8),
+                    child: Bone(
+                      width: double.infinity,
+                      height: 40,
+                      borderRadius: BorderRadius.all(Radius.circular(DuvetTokens.radiusField)),
+                    ),
+                  ),
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(16, 16, 16, 4),
+                    child: Text('LOREM IPSUM — 4', style: DuvetType.overline),
+                  ),
+                  for (final (i, name) in placeholderNames.indexed)
+                    Padding(
+                      padding: const EdgeInsets.symmetric(horizontal: 8),
+                      child: GlassRow(
+                        leading: const Bone.circle(size: 48),
+                        label: name,
+                        detail: placeholderLines[i],
+                        onPressed: () {},
+                      ),
+                    ),
+                ],
+              ),
+            ],
+          );
+        }
         return ListenableBuilder(
           // Presence, and roles: a role hoisted or taken while it's open
           // regroups it.
