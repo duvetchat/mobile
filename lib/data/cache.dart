@@ -19,6 +19,9 @@ abstract interface class ChatCacheStore {
 
   /// The keys of what's kept.
   Future<List<String>> keys();
+
+  /// Deletes the keys starting with [prefix] but the [keep] written last.
+  Future<void> trim(String prefix, int keep);
 }
 
 class FileChatCacheStore implements ChatCacheStore {
@@ -54,18 +57,45 @@ class FileChatCacheStore implements ChatCacheStore {
     await for (final file in (await _dir()).list())
       if (file is File && file.path.endsWith('.json')) file.uri.pathSegments.last.replaceFirst(RegExp(r'\.json$'), ''),
   ];
+
+  @override
+  Future<void> trim(String prefix, int keep) async {
+    final files = [
+      await for (final file in (await _dir()).list())
+        if (file is File && file.uri.pathSegments.last.startsWith(_name(prefix))) (file, await file.lastModified()),
+    ];
+    if (files.length <= keep) return;
+    files.sort((a, b) => a.$2.compareTo(b.$2));
+    for (final (file, _) in files.take(files.length - keep)) {
+      await file.delete();
+    }
+  }
 }
 
 class MemoryChatCacheStore implements ChatCacheStore {
   final data = <String, String>{};
   @override
   Future<String?> read(String key) async => data[key];
+  // Written last, last: as [trim] takes them.
   @override
-  Future<void> write(String key, String json) async => data[key] = json;
+  Future<void> write(String key, String json) async => data
+    ..remove(key)
+    ..[key] = json;
   @override
   Future<void> clear() async => data.clear();
   @override
   Future<List<String>> keys() async => [...data.keys];
+  @override
+  Future<void> trim(String prefix, int keep) async {
+    final pages = [
+      for (final key in data.keys)
+        if (key.startsWith(prefix)) key,
+    ];
+    if (pages.length <= keep) return;
+    for (final key in pages.take(pages.length - keep)) {
+      data.remove(key);
+    }
+  }
 }
 
 // A change of the pages' messages ([ChatCache.changeMessages]).
@@ -74,6 +104,10 @@ typedef _Change = ChatMessage Function(String chatId, ChatMessage m);
 /// The cache over a store, with the models' JSON.
 class ChatCache {
   static const pageSize = 50;
+
+  /// How many chats' pages are kept, those saved last: the recent chats (50)
+  /// and the rooms fetched ahead, each page some tens of KB.
+  static const pagesKept = 100;
   final ChatCacheStore _store;
   ChatCache(this._store);
 
@@ -97,13 +131,19 @@ class ChatCache {
     return turn;
   }
 
-  /// Writes [json] under [key] a moment later, once per burst.
-  void _later(String key, Object? Function() json) {
+  /// Writes [json] under [key] a moment later, once per burst, then runs
+  /// [written].
+  void _later(String key, Object? Function() json, {Future<void> Function()? written}) {
     _pending[key]?.cancel();
     _pending[key] = Timer(const Duration(milliseconds: 500), () {
       _pending.remove(key);
       final data = json();
-      unawaited(_inTurn(key, () => _store.write(key, jsonEncode(data))));
+      unawaited(
+        _inTurn(key, () async {
+          await _store.write(key, jsonEncode(data));
+          await written?.call();
+        }),
+      );
     });
   }
 
@@ -196,12 +236,19 @@ class ChatCache {
     for (final m in j['messages']! as List) messageFromJson(m as Map<String, Object?>),
   ];
 
+  static List<ChatMessage> _newest(List<ChatMessage> page) =>
+      page.length > pageSize ? page.sublist(page.length - pageSize) : page;
+
+  /// Keeps [page] as [chatId]'s, and only the [pagesKept] chats' saved last.
   void savePage(String chatId, List<ChatMessage> page) {
-    _pages[chatId] = page.length > pageSize ? page.sublist(page.length - pageSize) : page;
-    _later('$_page$chatId', () => _pageToJson(_pages.remove(chatId)!));
+    _pages[chatId] = _newest(page);
+    _later('$_page$chatId', () => _pageToJson(_pages.remove(chatId)!), written: () => _store.trim(_page, pagesKept));
   }
 
   Future<List<ChatMessage>?> loadPage(String chatId) async {
+    // Not one being written, half there.
+    if (_writes['$_page$chatId'] case final writing?) await writing;
+    if (_pages[chatId] case final waiting?) return [...waiting];
     final j = await _read('$_page$chatId');
     if (j == null) return null;
     try {
@@ -216,6 +263,33 @@ class ChatCache {
   // nothing after.
   var _clears = 0;
 
+  /// Changes [chatId]'s page, if one is kept, written or not yet: [change]
+  /// answers it as it's to be kept, or the very messages it was given to
+  /// leave it as it is.
+  Future<void> changePage(String chatId, List<ChatMessage> Function(List<ChatMessage> page) change) {
+    final key = '$_page$chatId';
+    final clears = _clears;
+    // One not written yet changes before it is, and that's the one to write.
+    bool changedWaiting() {
+      final page = _pages[chatId];
+      if (page != null) _pages[chatId] = _newest(change(page));
+      return page != null;
+    }
+
+    if (changedWaiting()) return Future.value();
+    // In turn with the page's writes: read once the one under way is done,
+    // and written back before the next.
+    return _inTurn(key, () async {
+      if (clears != _clears || changedWaiting()) return;
+      final raw = await _store.read(key);
+      if (raw == null || clears != _clears || changedWaiting()) return;
+      final page = _pageFromJson(jsonDecode(raw) as Map<String, Object?>);
+      final after = change(page);
+      if (after.length == page.length && after.indexed.every((e) => identical(e.$2, page[e.$1]))) return;
+      await _store.write(key, jsonEncode(_pageToJson(_newest(after))));
+    });
+  }
+
   // The passes over the pages that change them, one after another.
   Future<void> _changes = Future.value();
 
@@ -227,11 +301,12 @@ class ChatCache {
   /// [change] answers each as it's to be kept, given its chat's ID, or the
   /// very message to leave it as it is. Only the pages with [id] in them (a
   /// user's, say) are parsed: no other can change. The changes queued while
-  /// a pass is under way wait for one more pass, which makes the last one
-  /// queued for each ID.
+  /// a pass is under way wait for one more pass, which makes those queued
+  /// for each ID in turn: two reactions to one message both count.
   Future<void> changeMessages(String id, ChatMessage Function(String chatId, ChatMessage m) change) {
     if (_queued case final queued?) {
-      queued[id] = change;
+      final before = queued[id];
+      queued[id] = before == null ? change : (chatId, m) => change(chatId, before(chatId, m));
       return _changes;
     }
     final queued = _queued = {id: change};
