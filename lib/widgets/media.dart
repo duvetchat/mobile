@@ -729,8 +729,7 @@ class _VideoTileState extends State<VideoTile> {
 
   VideoPlayerController? _frame;
   bool _counted = false;
-  bool _failed = false;
-  late final LinkSource _link;
+  late LinkSource _link;
 
   // Only an upload's frame is loaded here: an embed's video is reached only once played (#172).
   bool get _grabs => !widget.embed && widget.poster == null && !widget.attachment.local;
@@ -738,7 +737,18 @@ class _VideoTileState extends State<VideoTile> {
   @override
   void initState() {
     super.initState();
-    if (!_grabs) return;
+    if (_grabs) _queue();
+  }
+
+  @override
+  void didUpdateWidget(VideoTile old) {
+    super.didUpdateWidget(old);
+    // A video sent from here, uploaded now: its message keeps this tile.
+    if (old.attachment.local && _grabs) _queue();
+  }
+
+  // Shows the frame kept for it, or waits for a slot to load it.
+  void _queue() {
     _link = linkSource(context, widget.attachment);
     if (_parked.remove(widget.attachment.id) case final parked?) {
       _frames++;
@@ -812,7 +822,7 @@ class _VideoTileState extends State<VideoTile> {
     _counted = false;
     _frames--;
     _next();
-    setState(() => _failed = true);
+    setState(() {});
   }
 
   @override
@@ -881,7 +891,7 @@ class _VideoTileState extends State<VideoTile> {
                   child: SizedBox.fromSize(size: frame.size, child: VideoPlayer(_frame!)),
                 )
               // Its first frame on its way, or waiting its turn: the desktop's video-skeleton.
-              else if (_grabs && !_failed && !(frame?.isInitialized ?? false))
+              else if ((_counted || _waiting.contains(this)) && !(frame?.isInitialized ?? false))
                 const SkeletonBox(),
               const Center(child: PlayMark()),
             ],

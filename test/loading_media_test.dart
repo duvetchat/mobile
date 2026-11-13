@@ -143,6 +143,25 @@ void main() {
     await tester.pumpWidget(const SizedBox());
   });
 
+  testWidgets('a video sent from here loads its first frame once it\'s uploaded, not before', (tester) async {
+    MessageAttachment video({required bool local}) => MessageAttachment(
+      id: local ? 'local-s0' : 's0',
+      filename: 's0.mp4',
+      contentType: 'video/mp4',
+      url: local ? '/data/user/0/s0.mp4' : 'https://cdn.invalid/s0.mp4',
+      local: local,
+    );
+    // Its message keeps its tile as the send confirms.
+    await tester.pumpWidget(themed(VideoTile(key: const ValueKey('s0'), attachment: video(local: true))));
+    expect(made, isEmpty);
+    expect(find.byType(SkeletonBox), findsNothing);
+
+    await tester.pumpWidget(themed(VideoTile(key: const ValueKey('s0'), attachment: video(local: false))));
+    expect(paths(), ['/s0.mp4']);
+    expect(find.byType(SkeletonBox), findsOneWidget);
+    await tester.pumpWidget(const SizedBox());
+  });
+
   testWidgets('a picture pulses in its own box until it shows', (tester) async {
     await tester.pumpWidget(
       themed(
@@ -174,11 +193,16 @@ void main() {
         spaceName: 'Fieldwork',
         memberCount: 412,
       );
-    Widget scoped(Widget card) => RepositoryScope(repository: repository, child: themed(card));
+    // In a scroll, as in a chat: each card as high as its own content.
+    Widget scoped(Widget card) => RepositoryScope(
+      repository: repository,
+      child: themed(SingleChildScrollView(child: card)),
+    );
 
     await tester.pumpWidget(scoped(InviteCard(code: 'paper', onOpenSpace: (_) {})));
     expect(find.byType(InviteCardSkeleton), findsOneWidget);
     final invite = tester.getSize(find.byType(InviteCard));
+    expect(invite.height, lessThan(200));
     // The fake's answer takes a moment.
     await tester.pump(const Duration(milliseconds: 200));
     expect(find.text('412 members'), findsOneWidget);
@@ -188,6 +212,7 @@ void main() {
     await tester.pumpWidget(scoped(const BotInviteCard(botId: 'b-ballot')));
     expect(find.byType(InviteCardSkeleton), findsOneWidget);
     final bot = tester.getSize(find.byType(BotInviteCard));
+    expect(bot.height, lessThan(200));
     await tester.pump();
     expect(find.text('Ballot'), findsOneWidget);
     expect(tester.getSize(find.byType(BotInviteCard)).width, bot.width);
