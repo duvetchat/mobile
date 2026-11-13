@@ -922,18 +922,20 @@ Widget _image(MessageAttachment a, double width, {BoxFit fit = BoxFit.cover, boo
               ),
             );
           },
-          // The fade keeps its place in the stack as the pulse goes, so it still runs.
-          frameBuilder: (context, child, frame, sync) => Stack(
-            fit: StackFit.passthrough,
-            children: [
-              if (inMessage && frame == null && !sync) const Positioned.fill(child: SkeletonBox()),
-              AnimatedOpacity(
-                opacity: frame == null && !sync ? 0 : 1,
-                duration: const Duration(milliseconds: 200),
-                child: child,
-              ),
-            ],
-          ),
+          frameBuilder: (context, child, frame, sync) {
+            final loading = frame == null && !sync;
+            const fade = Duration(milliseconds: 200);
+            if (!inMessage) return AnimatedOpacity(opacity: loading ? 0 : 1, duration: fade, child: child);
+            // The pulse stays whole under the picture until it has faded in: the box behind is black in the dark
+            // theme, and showed through the fade.
+            return AnimatedSwitcher(
+              duration: fade,
+              layoutBuilder: (current, previous) => Stack(fit: StackFit.passthrough, children: [...previous, ?current]),
+              transitionBuilder: (child, animation) =>
+                  child is SkeletonBox ? child : FadeTransition(opacity: animation, child: child),
+              child: loading ? const SkeletonBox() : child,
+            );
+          },
         ),
       ),
     ),
