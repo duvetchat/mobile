@@ -15,6 +15,7 @@ import 'widgets/avatar.dart';
 import 'widgets/chrome.dart';
 import 'widgets/glass.dart';
 import 'widgets/rows.dart';
+import 'widgets/skeleton.dart';
 
 /// [text] with each place [query]'s words match in Bold `accent-text`: never a
 /// block or a yellow highlight.
@@ -118,6 +119,67 @@ class SearchResultRow extends StatelessWidget {
               ),
             ],
           ),
+        ),
+      ),
+    );
+  }
+}
+
+/// Results on their way: [rows] blocks in [SearchResultRow]'s shape, pulsing.
+class _ResultsSkeleton extends StatelessWidget {
+  final int rows;
+  const _ResultsSkeleton({required this.rows});
+
+  @override
+  Widget build(BuildContext context) {
+    const line = BorderRadius.all(Radius.circular(4));
+    return Semantics(
+      container: true,
+      label: 'Searching',
+      excludeSemantics: true,
+      child: DuvetSkeleton(
+        child: Column(
+          children: [
+            for (var i = 0; i < rows; i++)
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                child: Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Bone.circle(size: 40),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          // The name and the time, on the title's line.
+                          const SizedBox(
+                            height: 22,
+                            child: Row(
+                              children: [
+                                Bone(width: 112, height: 12, borderRadius: line),
+                                Spacer(),
+                                Bone(width: 32, height: 10, borderRadius: line),
+                              ],
+                            ),
+                          ),
+                          // The snippet, every other one on two lines as the desktop's rows alternate.
+                          const SizedBox(height: 5),
+                          FractionallySizedBox(
+                            widthFactor: i.isEven ? 0.9 : 0.55,
+                            child: const Bone(height: 12, borderRadius: line),
+                          ),
+                          if (i.isEven) ...[
+                            const SizedBox(height: 9),
+                            const FractionallySizedBox(widthFactor: 0.6, child: Bone(height: 12, borderRadius: line)),
+                          ],
+                        ],
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+          ],
         ),
       ),
     );
@@ -513,10 +575,7 @@ class _InChatSearchState extends State<InChatSearch> {
                     else
                       ListRow(title: s.room!.name, hash: true, onTap: () => _apply(s))
                 else if (_loading && (hits == null || hits.isEmpty))
-                  const Padding(
-                    padding: EdgeInsets.all(24),
-                    child: Center(child: FCircularProgress()),
-                  )
+                  const _ResultsSkeleton(rows: 6)
                 else if (hits != null && hits.isEmpty)
                   ListNote(_failure ?? 'Nothing found in $where')
                 else ...[
@@ -532,12 +591,13 @@ class _InChatSearchState extends State<InChatSearch> {
                   ],
                   if (hits != null && _failure != null) ListNote(_failure!),
                   if (hits != null && hits.length < _total)
-                    Padding(
-                      padding: const EdgeInsets.all(16),
-                      child: _loading
-                          ? const Center(child: FCircularProgress())
-                          : FButton(onPress: () => _run(more: true), child: const Text('More results')),
-                    ),
+                    if (_loading)
+                      const _ResultsSkeleton(rows: 2)
+                    else
+                      Padding(
+                        padding: const EdgeInsets.all(16),
+                        child: FButton(onPress: () => _run(more: true), child: const Text('More results')),
+                      ),
                 ],
               ],
             ),
