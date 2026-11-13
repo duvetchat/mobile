@@ -66,7 +66,8 @@ abstract interface class ChatRepository {
   /// chat ID: what the Space Directory previews.
   ValueListenable<Map<String, ChatMessage>> get latest;
 
-  /// Fetches the newest message of each of [targets] not in [latest] yet.
+  /// Fetches the newest message of each of [targets] not in [latest] yet,
+  /// and the whole page of the busiest few, kept for [cachedMessages].
   Future<void> loadLatest(Iterable<ChatTarget> targets);
 
   /// A message as a one-line preview, mentions and emoji by name.

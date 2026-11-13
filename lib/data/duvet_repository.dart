@@ -716,12 +716,14 @@ class DuvetRepository implements ChatRepository {
         } else if (me != null && !presence.value.containsKey(me)) {
           presence.value = {...presence.value, me: Presence.online};
         }
-        if (_spaces.isNotEmpty) _publishSpaces();
+        // Kept ones it no longer names go now, not with the first SPACE_CREATE.
+        if (_spaces.isNotEmpty || spaces.value.isNotEmpty) _publishSpaces();
         unread.value = {...?data.unreadRooms, ...?data.unreadConvs};
         _lastRead.addAll(data.lastReadRooms ?? const {});
         _lastMessage.addAll(data.lastMsgRooms ?? const {});
+        // What came while no socket was open never reached the pages kept.
+        _ahead.clear();
         unawaited(_catchUpRooms());
-        if (_preloads) unawaited(_preloadLikeliest());
         if (_api != null) {
           unawaited(
             _call((api) => api.getMentionCounts()).then((counts) {
@@ -740,8 +742,11 @@ class DuvetRepository implements ChatRepository {
         // whose dates tell the DMs' previews behind.
         if (_wasReady) {
           _resumed.add(null);
-          unawaited(refreshConversations().catchError((Object e) => debugPrint('conversations: $e')));
+          unawaited(
+            _conversationsLoaded = refreshConversations().catchError((Object e) => debugPrint('conversations: $e')),
+          );
         }
+        if (_preloads) unawaited(_preloadLikeliest());
         _wasReady = true;
 
       case duvet.MentionCreatedEvent(:final data) when data.authorId != me:
@@ -1514,9 +1519,9 @@ class DuvetRepository implements ChatRepository {
     ]);
   }
 
-  // The chats whose page was fetched ahead, or found to end on the newest
-  // message, this session: live events keep it so ([_keep]), and what a drop
-  // missed is caught up ([_catchUpRooms], [_catchUpConversations]).
+  // The chats whose page kept was fetched, or found to end on the newest
+  // message, since READY: live events keep it so ([_keep]). One kept from
+  // before isn't added to: its page would skip what came between.
   final _ahead = <String>{};
 
   /// How many chats a pass fetches at once, and how many of those it fetches
@@ -1577,7 +1582,7 @@ class DuvetRepository implements ChatRepository {
       for (final m in page) m.id == id ? change(m) : m,
     ];
     switch (event) {
-      case MessageCreated(:final message) when !message.isEphemeral:
+      case MessageCreated(:final message) when !message.isEphemeral && _ahead.contains(chatId):
         unawaited(
           _cache.changePage(
             chatId,
@@ -1694,8 +1699,16 @@ class DuvetRepository implements ChatRepository {
             } on duvet.DuvetApiException catch (e) {
               if (e.statusCode == 429) _waitUntil = clock.now().add(_rateLimitWait);
               debugPrint('latest: $e');
-            } catch (e) {
+            } on SocketException catch (e) {
               unreachable = true;
+              debugPrint('latest: $e');
+            } on http.ClientException catch (e) {
+              unreachable = true;
+              debugPrint('latest: $e');
+            } on TimeoutException catch (e) {
+              unreachable = true;
+              debugPrint('latest: $e');
+            } catch (e) {
               debugPrint('latest: $e');
             } finally {
               _loadingLatest.remove(t.id);
@@ -1981,7 +1994,10 @@ class DuvetRepository implements ChatRepository {
     try {
       final page = await _fetchPage(target, before);
       // Not once signed out: nothing is kept after.
-      if (before == null && identical(api, _api)) _cache.savePage(target.id, page);
+      if (before == null && identical(api, _api)) {
+        _cache.savePage(target.id, page);
+        _ahead.add(target.id);
+      }
       return page;
     } on duvet.DuvetAuthException {
       rethrow;

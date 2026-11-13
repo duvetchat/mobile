@@ -259,6 +259,23 @@ void main() {
     expect(repository.latest.value['c-1']?.id, '4');
   });
 
+  test('a page kept from before isn\'t added to, which would skip what came between: it\'s fetched again', () async {
+    // Kept by an earlier session, days behind.
+    ChatCache(cache).savePage(_dm.id, [
+      ChatMessage(id: '0', authorId: _maya, authorName: 'maya', content: 'old', createdAt: DateTime.utc(2026, 10, 20)),
+    ]);
+    await eventually(() => expect(cache.data.keys, contains('chat_c-1')));
+    await repository.logIn('gaby@duvet.chat', 'secret');
+    repository.handleEvent(_event('DM_MESSAGE_CREATE', _dmMessage('3', 'third')));
+    await pumpEventQueue();
+    expect([for (final m in (await repository.cachedMessages(_dm))!) m.id], ['0']);
+
+    repository.handleEvent(_event('READY', _ready()));
+    await pumpEventQueue();
+    expect(fetched('/api/users/@me/conversations/c-1/messages'), ['${ChatCache.pageSize}']);
+    expect([for (final m in (await repository.cachedMessages(_dm))!) m.content], ['first', 'second']);
+  });
+
   test('a 429 stops fetching ahead for a while', () async {
     await repository.logIn('gaby@duvet.chat', 'secret');
     final rooms = [for (var i = 1; i <= 6; i++) RoomTarget(spaceId: 's-1', roomId: 'r-$i')];
