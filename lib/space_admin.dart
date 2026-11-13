@@ -13,7 +13,8 @@ import 'package:image/image.dart' as img;
 import 'package:image_picker/image_picker.dart';
 import 'package:path_provider/path_provider.dart';
 
-import 'account.dart' show BucketMeter, CropPage, FileRow, confirmFileDelete, formatBytes;
+import 'account.dart' show BucketMeter, CropPage, FileRow, confirmFileDelete, formatBytes, placeholderFiles;
+import 'data/images.dart';
 import 'data/models.dart';
 import 'data/repository.dart' show ChatRepository;
 import 'data/scope.dart';
@@ -29,6 +30,8 @@ import 'widgets/picture_edit.dart';
 import 'widgets/role_name.dart';
 import 'widgets/rows.dart';
 import 'widgets/scrolling.dart' show CarouselPhysics;
+import 'widgets/sheets.dart' show LoadingSkeleton, placeholderNames, placeholderRows;
+import 'widgets/skeleton.dart' show Bone;
 import 'widgets/unsaved_changes.dart';
 
 /// Picks a Space's banner as it is: resized, Android's picker would make a GIF
@@ -2058,9 +2061,22 @@ class _MemberPickerState extends State<_MemberPicker> {
           if (snapshot.hasError)
             const ListNote('Couldn’t load the members. Close this and try again.')
           else if (!snapshot.hasData)
-            const Padding(
-              padding: EdgeInsets.all(24),
-              child: Center(child: FCircularProgress()),
+            LoadingSkeleton(
+              label: 'Loading members',
+              children: [
+                // As a PersonRow without the handle.
+                for (final name in placeholderNames)
+                  Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                    child: Row(
+                      children: [
+                        const Bone.circle(size: 40),
+                        const SizedBox(width: 12),
+                        Text(name, style: DuvetType.rowTitle),
+                      ],
+                    ),
+                  ),
+              ],
             )
           else if (offered.isEmpty)
             Padding(
@@ -2428,8 +2444,7 @@ class _RolesPageState extends State<RolesPage> {
     final sure = await confirmDestructive(
       context,
       title: 'Put admin roles first?',
-      body:
-          'Roles with Administrator go to the top, then those that manage part of the Space. The rest keep their order below them. Everyone sees the new order.',
+      body: 'Roles with Administrator go to the top, then those that manage part of the Space. The rest keep their order below them. Everyone sees the new order.',
       action: 'Reorder',
       destructive: false,
     );
@@ -2969,10 +2984,7 @@ class _InvitesAdminPageState extends State<InvitesAdminPage> {
           if (snapshot.hasError)
             const ListNote('Couldn’t load the invites')
           else if (invites == null)
-            const Padding(
-              padding: EdgeInsets.all(24),
-              child: Center(child: FCircularProgress()),
-            )
+            LoadingSkeleton(label: 'Loading invites', children: placeholderRows())
           else if (invites.isEmpty)
             const ListNote('No invite links')
           else
@@ -3085,10 +3097,7 @@ class _BansAdminPageState extends State<BansAdminPage> {
           if (snapshot.hasError)
             const ListNote('Couldn’t load the bans')
           else if (all == null)
-            const Padding(
-              padding: EdgeInsets.all(24),
-              child: Center(child: FCircularProgress()),
-            )
+            LoadingSkeleton(label: 'Loading bans', children: placeholderRows(avatar: 40))
           else if (shown.isEmpty)
             ListNote(q.isEmpty ? 'No one is banned' : 'No one matches')
           else
@@ -3281,10 +3290,7 @@ class _MembersAdminPageState extends State<MembersAdminPage> {
               if (snapshot.hasError)
                 const ListNote('Couldn’t load the members')
               else if (all == null)
-                const Padding(
-                  padding: EdgeInsets.all(24),
-                  child: Center(child: FCircularProgress()),
-                )
+                LoadingSkeleton(label: 'Loading members', children: placeholderRows(avatar: 40))
               else if (shown.isEmpty)
                 ListNote(q.isEmpty ? 'No members' : 'No one matches')
               else
@@ -3644,9 +3650,27 @@ class _AssetsPageState extends State<AssetsPage> {
             if (snapshot.hasError)
               const ListNote('Couldn’t load them')
             else if (list == null)
-              const Padding(
-                padding: EdgeInsets.all(24),
-                child: Center(child: FCircularProgress()),
+              LoadingSkeleton(
+                label: 'Loading ${_noun}s',
+                children: [
+                  Wrap(
+                    spacing: 12,
+                    runSpacing: 12,
+                    children: [
+                      for (final name in placeholderNames)
+                        SizedBox(
+                          width: size + 24,
+                          child: Column(
+                            children: [
+                              Bone.square(size: size),
+                              const SizedBox(height: 4),
+                              Text(name, maxLines: 1, overflow: TextOverflow.ellipsis, style: DuvetType.caption),
+                            ],
+                          ),
+                        ),
+                    ],
+                  ),
+                ],
               )
             else if (list.isEmpty)
               ListNote('No ${_noun}s yet')
@@ -3670,8 +3694,8 @@ class _AssetsPageState extends State<AssetsPage> {
                           width: size + 24,
                           child: Column(
                             children: [
-                              Image.network(
-                                a.url,
+                              Image(
+                                image: cachedImage(a.url),
                                 width: size,
                                 height: size,
                                 fit: BoxFit.contain,
@@ -3764,9 +3788,8 @@ class _WebhooksPageState extends State<WebhooksPage> {
   Future<void> _avatar(SpaceWebhook w) async {
     final path = await pickSpaceIcon();
     if (path == null || !mounted) return;
-    final crop = await Navigator.of(
-      context,
-    ).push<CropRect>(MaterialPageRoute(fullscreenDialog: true, builder: (_) => CropPage(path: path, aspect: 1)));
+    final crop = await Navigator.of(context)
+        .push<CropRect>(MaterialPageRoute(fullscreenDialog: true, builder: (_) => CropPage(path: path, aspect: 1)));
     if (crop == null || !mounted) return;
     final repository = context.repository;
     await adminTry(context, 'Couldn’t change its picture', () async {
@@ -3868,10 +3891,7 @@ class _WebhooksPageState extends State<WebhooksPage> {
           if (snapshot.hasError)
             const ListNote('Couldn’t load the webhooks')
           else if (list == null)
-            const Padding(
-              padding: EdgeInsets.all(24),
-              child: Center(child: FCircularProgress()),
-            )
+            LoadingSkeleton(label: 'Loading webhooks', children: placeholderRows(avatar: 48))
           else if (list.isEmpty)
             const ListNote('No webhooks. Make one to let another app post in a room.')
           else
@@ -4006,39 +4026,44 @@ class _SpaceStoragePageState extends State<SpaceStoragePage> {
       future: _storage,
       builder: (context, snapshot) {
         final s = snapshot.data;
+        Widget usage(SpaceStorage s) => Container(
+          padding: const EdgeInsets.all(16),
+          decoration: BoxDecoration(
+            color: colors.card,
+            borderRadius: BorderRadius.circular(DuvetTokens.radiusCard),
+            boxShadow: tokens.shadowRaised,
+          ),
+          child: Semantics(
+            label: '${formatBytes(s.used)} used by ${s.files.length} files',
+            excludeSemantics: true,
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(formatBytes(s.used), style: DuvetType.titleSans.copyWith(color: colors.foreground)),
+                Text(
+                  '${s.files.length} ${s.files.length == 1 ? 'file' : 'files'}',
+                  style: DuvetType.caption.copyWith(color: colors.mutedForeground),
+                ),
+              ],
+            ),
+          ),
+        );
         return AdminPage(
           title: 'Storage',
           children: [
             if (snapshot.hasError)
               const ListNote('Couldn’t load the storage')
             else if (s == null)
-              const Padding(
-                padding: EdgeInsets.all(24),
-                child: Center(child: FCircularProgress()),
+              LoadingSkeleton(
+                label: 'Loading the storage',
+                children: [
+                  usage(const SpaceStorage(used: 0)),
+                  const Overline('Files'),
+                  for (final f in placeholderFiles) FileRow(file: f),
+                ],
               )
             else ...[
-              Container(
-                padding: const EdgeInsets.all(16),
-                decoration: BoxDecoration(
-                  color: colors.card,
-                  borderRadius: BorderRadius.circular(DuvetTokens.radiusCard),
-                  boxShadow: tokens.shadowRaised,
-                ),
-                child: Semantics(
-                  label: '${formatBytes(s.used)} used by ${s.files.length} files',
-                  excludeSemantics: true,
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(formatBytes(s.used), style: DuvetType.titleSans.copyWith(color: colors.foreground)),
-                      Text(
-                        '${s.files.length} ${s.files.length == 1 ? 'file' : 'files'}',
-                        style: DuvetType.caption.copyWith(color: colors.mutedForeground),
-                      ),
-                    ],
-                  ),
-                ),
-              ),
+              usage(s),
               if (manageBuckets) ...[
                 const Overline('Buckets'),
                 Padding(
