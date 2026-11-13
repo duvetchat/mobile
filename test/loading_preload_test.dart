@@ -100,6 +100,9 @@ void main() {
   /// While set, the DM's history waits for it.
   Completer<void>? holdDm;
 
+  /// Whose session the API answers `GET /api/users/@me` for.
+  late String me;
+
   http.Response json(Object body) =>
       http.Response(jsonEncode(body), 200, headers: {'content-type': 'application/json'});
 
@@ -125,6 +128,7 @@ void main() {
     sessions = MemorySessionStore();
     cache = MemoryChatCacheStore();
     holdDm = null;
+    me = _me;
     roomAnswers = {
       'r-1': () => json([_roomMessage('7', 'seven'), _roomMessage('6', 'six')]),
     };
@@ -141,7 +145,7 @@ void main() {
       return switch ((request.method, path)) {
         ('POST', '/api/auth/login') => json({'token': 'access-1', 'session_token': 'refresh-1'}),
         ('POST', '/api/auth/logout') => http.Response('', 204),
-        ('GET', '/api/users/@me') => json({..._user(_me, 'gaby'), 'email_verified': true}),
+        ('GET', '/api/users/@me') => json({..._user(me, 'gaby'), 'email_verified': true}),
         ('GET', '/api/users/@me/conversations') => json([
           {
             'id': 'c-1',
@@ -214,21 +218,78 @@ void main() {
     expect(await repository.cachedMessages(_room), isNull);
   });
 
-  test('a kept page that ends on the newest message isn\'t fetched again', () async {
+  group('the next launch, a room whose page was kept', () {
+    // The room's page kept by one session, then the next one's, after a READY
+    // that names [newest] the room's last message.
+    Future<DuvetRepository> launch(String newest) async {
+      await repository.logIn('gaby@duvet.chat', 'secret');
+      repository.handleEvent(_event('READY', _ready()));
+      await repository.loadLatest([_room]);
+      await eventually(() => expect(cache.data.keys, contains('chat_r-1')));
+
+      final next = make();
+      addTearDown(next.dispose);
+      await next.logIn('gaby@duvet.chat', 'secret');
+      next.handleEvent(
+        _event('READY', {
+          ..._ready(),
+          'last_msg_rooms': {'r-1': newest},
+        }),
+      );
+      await pumpEventQueue();
+      requests.clear();
+      await next.loadLatest([_room]);
+      return next;
+    }
+
+    test('isn\'t fetched again when its page ends on the newest message', () async {
+      final next = await launch('7');
+      expect(fetched('/api/rooms/r-1/messages'), isEmpty);
+      expect(next.latest.value['r-1']?.content, 'seven');
+    });
+
+    test('is fetched again when its newest message was deleted meanwhile, which the page still ends on', () async {
+      // By the time the next one asks, 7 is gone and the API names 6.
+      var asked = 0;
+      roomAnswers['r-1'] = () => json([if (asked++ == 0) _roomMessage('7', 'seven'), _roomMessage('6', 'six')]);
+      final next = await launch('6');
+      expect(fetched('/api/rooms/r-1/messages'), ['${ChatCache.pageSize}']);
+      expect(next.latest.value['r-1']?.content, 'six');
+      expect([for (final m in (await next.cachedMessages(_room))!) m.content], ['six']);
+    });
+  });
+
+  test('a conversation\'s page kept from before is fetched again: nothing names its newest message', () async {
     await repository.logIn('gaby@duvet.chat', 'secret');
     repository.handleEvent(_event('READY', _ready()));
     await pumpEventQueue();
     await eventually(() => expect(cache.data.keys, contains('chat_c-1')));
 
-    // The next launch, the DM's newest message as the list of conversations dates it.
     final next = make();
     addTearDown(next.dispose);
     requests.clear();
     await next.logIn('gaby@duvet.chat', 'secret');
     next.handleEvent(_event('READY', _ready()));
     await pumpEventQueue();
-    expect(fetched('/api/users/@me/conversations/c-1/messages'), isEmpty);
-    expect(next.latest.value['c-1']?.content, 'second');
+    expect(fetched('/api/users/@me/conversations/c-1/messages'), ['${ChatCache.pageSize}']);
+  });
+
+  test('a page a message came during the fetch of isn\'t kept, as it may lack it; the next one is', () async {
+    await repository.logIn('gaby@duvet.chat', 'secret');
+    final held = holdDm = Completer<void>();
+    final loading = repository.messages(_dm);
+    await pumpEventQueue();
+    repository.handleEvent(_event('DM_MESSAGE_CREATE', _dmMessage('3', 'third')));
+    held.complete();
+    await loading;
+    await pumpEventQueue();
+    expect(await repository.cachedMessages(_dm), isNull);
+
+    await repository.messages(_dm);
+    repository.handleEvent(_event('DM_MESSAGE_CREATE', _dmMessage('4', 'fourth')));
+    await eventually(
+      () async => expect([for (final m in (await repository.cachedMessages(_dm))!) m.id], ['1', '2', '4']),
+    );
   });
 
   test('the page kept follows new, edited, deleted and pinned messages, and reactions', () async {
@@ -317,6 +378,9 @@ void main() {
     expect(await next.restore(), isTrue);
     expect([for (final s in next.spaces.value) s.name], ['Design Guild', 'Night Owls']);
     expect(next.conversations.value.single.id, 'c-1');
+    // Nor does a list published before READY names them drop any.
+    next.handleEvent(_event('SPACE_CREATE', _space('s-2', 'Night Owls')));
+    expect([for (final s in next.spaces.value) s.name], ['Design Guild', 'Night Owls']);
 
     // The first to come doesn't take the other's place.
     next.handleEvent(_event('READY', _ready(guilds: ['s-1', 's-2'])));
@@ -325,6 +389,26 @@ void main() {
     // One deleted meanwhile goes.
     next.handleEvent(_event('SPACE_DELETE', {'id': 's-1'}));
     expect([for (final s in next.spaces.value) s.name], ['Night Owls 2']);
+  });
+
+  test('a home kept by another account, whose sign-out never cleared it, doesn\'t show under this one', () async {
+    await repository.logIn('gaby@duvet.chat', 'secret');
+    repository.handleEvent(_event('READY', _ready(guilds: ['s-1'])));
+    repository.handleEvent(_event('SPACE_CREATE', _space('s-1', 'Design Guild')));
+    await pumpEventQueue();
+    await eventually(() {
+      expect((jsonDecode(cache.data['home'] ?? '{}') as Map)['spaces'], hasLength(1));
+      expect(cache.data.keys, contains('chat_c-1'));
+    });
+
+    // The session saved is Maya's now.
+    me = _maya;
+    final next = make();
+    addTearDown(next.dispose);
+    expect(await next.restore(), isTrue);
+    expect(next.profile.value?.id, _maya);
+    expect(next.spaces.value, isEmpty);
+    expect(cache.data.keys.where((k) => k.startsWith('chat_')), isEmpty);
   });
 
   test('the pages kept are bounded: the oldest written go', () {

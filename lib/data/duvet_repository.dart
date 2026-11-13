@@ -290,11 +290,13 @@ class DuvetRepository implements ChatRepository {
     if (home != null) {
       conversations.value = home.conversations;
       spaces.value = home.spaces;
+      // Theirs until READY names them: a list published before it keeps them.
+      _spaceOrder = [for (final s in home.spaces) s.id];
     }
     _api = duvet.RestClient(_httpClient(), router: _router, token: saved.token, sessionToken: saved.sessionToken);
     _saved = saved;
     try {
-      await _start();
+      await _start(keptFor: home?.profile.id);
       return true;
     } catch (e) {
       if (e is duvet.DuvetAuthException && _sessionEnded) {
@@ -312,6 +314,7 @@ class DuvetRepository implements ChatRepository {
       profile.value = home.profile;
       conversations.value = home.conversations;
       spaces.value = home.spaces;
+      _spaceOrder = [for (final s in home.spaces) s.id];
       unawaited(_loadCollapsed());
       unawaited(_loadPinned());
       status.value = LiveStatus.offline;
@@ -328,7 +331,7 @@ class DuvetRepository implements ChatRepository {
     if (_comingBack) return;
     _comingBack = true;
     try {
-      await _start();
+      await _start(keptFor: profile.value?.id);
       _retry?.cancel();
       _retry = null;
       if (_wasReady) _resumed.add(null);
@@ -380,13 +383,22 @@ class DuvetRepository implements ChatRepository {
     await _endSession();
   }
 
-  Future<void> _start() async {
+  // [keptFor] is whose home was kept and shows already, if any.
+  Future<void> _start({String? keptFor}) async {
     // Before the gateway connects: a renewal during its identify would revoke
     // the token it identifies with. One that timed out, the server
     // unreachable, throws: the session opens offline then, not once `me()`
     // has timed out too.
     await _renewIfDue(renewInFrontAfter);
     final me = await _call((api) => api.me());
+    // Another account's, left by a sign-out that never cleared it: none of it
+    // shows under this one, nor stays on the device.
+    if (keptFor != null && keptFor != me.id) {
+      conversations.value = const [];
+      spaces.value = const [];
+      _spaceOrder = const [];
+      await _cache.clear();
+    }
     _setProfile(me);
     _names[me.id] = profile.value!.displayName;
     _recentsLoaded = _recents.load(me.id);
@@ -477,6 +489,8 @@ class DuvetRepository implements ChatRepository {
     mobileOnly.value = const {};
     _spaceEntries.clear();
     _ahead.clear();
+    _heard.clear();
+    _lastMessage.clear();
     latest.value = const {};
     unawaited(_recents.close());
     profile.value = null;
@@ -721,8 +735,10 @@ class DuvetRepository implements ChatRepository {
         unread.value = {...?data.unreadRooms, ...?data.unreadConvs};
         _lastRead.addAll(data.lastReadRooms ?? const {});
         _lastMessage.addAll(data.lastMsgRooms ?? const {});
-        // What came while no socket was open never reached the pages kept.
+        // What came while no socket was open never reached the pages kept,
+        // nor will a page asked for before it.
         _ahead.clear();
+        _readies++;
         unawaited(_catchUpRooms());
         if (_api != null) {
           unawaited(
@@ -1529,11 +1545,15 @@ class DuvetRepository implements ChatRepository {
   /// most likely to be opened next, which then open with their messages
   /// there. A phone shows about 8 rows of a list; 4 at a time leave the
   /// network to what the person opens meanwhile, and stay far below the
-  /// API's limits (64 a minute per route and chat, 50 a second in all).
+  /// API's limits (64 a minute per route and chat, 50 a second in all). Each
+  /// pass has its own [_pagesAhead]: READY starts up to three (the likeliest
+  /// chats, the rooms behind, the DMs behind), 24 pages at most, each chat's
+  /// once, still [_fetchingAtOnce] a pass.
   static const _fetchingAtOnce = 4;
   static const _pagesAhead = 8;
 
-  /// After a 429, nothing is fetched ahead for this long.
+  /// After a 429, no chat's newest message or page is fetched for this long,
+  /// fetching ahead or not: the API asked for fewer requests.
   // shortcut: a fixed wait, as the client drops the Retry-After header the API sends; read it once the client gives it.
   static const _rateLimitWait = Duration(minutes: 1);
   DateTime? _waitUntil;
@@ -1561,23 +1581,44 @@ class DuvetRepository implements ChatRepository {
   }
 
   /// [m], a kept page's last, is [target]'s newest message as far as known:
-  /// for a room, no older than the one READY, its Space or a live event named
-  /// (message IDs sort by time); for a conversation, no older than its last
-  /// activity, nor than the one heard.
-  bool _isNewest(ChatTarget target, ChatMessage m) => switch (target) {
-    RoomTarget(:final roomId) => switch ([?_lastMessage[roomId], ?latest.value[roomId]?.id]) {
-      [] => false,
-      final known => known.every((id) => m.id.compareTo(id) >= 0),
-    },
-    ConversationTarget(:final conversationId) =>
-      conversations.value.where((c) => c.id == conversationId).firstOrNull?.updatedAt?.isAfter(m.createdAt) == false &&
-          !(latest.value[conversationId]?.createdAt.isAfter(m.createdAt) ?? false),
-  };
+  /// its page is current since READY ([_ahead]), or, for a room, it's the
+  /// very one READY, its Space or a live event named last (message IDs sort
+  /// by time). Not one newer than that: it was deleted while the app was
+  /// closed, and the API names the one before it. Nothing names a
+  /// conversation's newest message (deleting it leaves its date), so a page
+  /// of one kept from before is always fetched again.
+  // shortcut: READY's last_msg_convs would tell for DMs, which duvet_client 2.7.0 doesn't parse; use it once it does.
+  bool _isNewest(ChatTarget target, ChatMessage m) =>
+      _ahead.contains(target.id) ||
+      switch (target) {
+        RoomTarget(:final roomId) => switch ((_lastMessage[roomId], latest.value[roomId]?.id)) {
+          (final named?, final heard?) => m.id == (named.compareTo(heard) > 0 ? named : heard),
+          (final id, null) || (null, final id) => m.id == id,
+        },
+        ConversationTarget() => false,
+      };
+
+  // How many times READY came, and how many message events each chat had: a
+  // page asked for before one of them and answered after may lack it, or
+  // have what it took away.
+  // shortcut: a reaction's event doesn't say its chat, so one during a fetch isn't counted; the page is fetched again when its chat opens.
+  var _readies = 0;
+  final _heard = <String, int>{};
+
+  /// Answers, later, whether a page of [chatId] asked for now is still what
+  /// the chat holds: no READY and none of its messages' events came since.
+  bool Function() _undisturbed(String chatId) {
+    final (readies, heard) = (_readies, _heard[chatId]);
+    return () => readies == _readies && heard == _heard[chatId];
+  }
 
   /// What a live event does to the page kept of its chat, as the open chat
   /// does it ([AuthorChanged] and [AttachmentRenewed] change them where they
   /// come from): a chat opens on its page as it is now, not as last fetched.
   void _keep(String chatId, MessageEvent event) {
+    // Signed out meanwhile: the cache is cleared, and stays so.
+    if (_api == null) return;
+    _heard[chatId] = (_heard[chatId] ?? 0) + 1;
     List<ChatMessage> each(List<ChatMessage> page, String id, ChatMessage Function(ChatMessage m) change) => [
       for (final m in page) m.id == id ? change(m) : m,
     ];
@@ -1670,8 +1711,11 @@ class DuvetRepository implements ChatRepository {
     bool going() => identical(api, _api) && !unreachable && !(_waitUntil?.isAfter(clock.now()) ?? false);
 
     Future<void> fetch(ChatTarget t) async {
-      if (_preloads) {
-        if (await _cache.loadPage(t.id) case [..., final last] when _isNewest(t, last)) {
+      final current = _undisturbed(t.id);
+      // Only while whole pages are left to fetch: reading a kept one costs
+      // more than asking for the newest message alone.
+      if (pages > 0) {
+        if (await _cache.loadPage(t.id) case [..., final last] when current() && _isNewest(t, last)) {
           if (!identical(api, _api)) return;
           _ahead.add(t.id);
           _newest(t, last);
@@ -1681,7 +1725,9 @@ class DuvetRepository implements ChatRepository {
       final whole = pages-- > 0;
       final page = await _fetchPage(t, null, count: whole ? ChatCache.pageSize : 1);
       if (!identical(api, _api)) return;
-      if (whole) {
+      // Not one something happened to on its way: the page kept, if current,
+      // has that already, and this one may not.
+      if (whole && current()) {
         _ahead.add(t.id);
         _cache.savePage(t.id, page);
         _warm({for (final m in page) m.authorAvatarUrl});
@@ -1991,10 +2037,12 @@ class DuvetRepository implements ChatRepository {
   @override
   Future<List<ChatMessage>> messages(ChatTarget target, {String? before}) async {
     final api = _api;
+    final current = _undisturbed(target.id);
     try {
       final page = await _fetchPage(target, before);
-      // Not once signed out: nothing is kept after.
-      if (before == null && identical(api, _api)) {
+      // Not once signed out: nothing is kept after. Nor one something
+      // happened to on its way ([_undisturbed]).
+      if (before == null && identical(api, _api) && current()) {
         _cache.savePage(target.id, page);
         _ahead.add(target.id);
       }
