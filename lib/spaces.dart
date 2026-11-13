@@ -19,6 +19,7 @@ import 'widgets/chrome.dart';
 import 'widgets/depth.dart';
 import 'widgets/glass.dart';
 import 'widgets/rows.dart';
+import 'widgets/sheets.dart' show LoadingSkeleton, placeholderNames;
 
 /// An invite's code from what was pasted: a link, or the code itself.
 String? inviteCodeOf(String input) {
@@ -147,7 +148,10 @@ class _JoinState extends State<_Join> {
             FutureBuilder(
               future: _preview,
               builder: (context, snapshot) {
-                final invite = snapshot.data;
+                // On its way, the card as it will be, from a placeholder.
+                final invite =
+                    snapshot.data ??
+                    InvitePreview(code: '', spaceId: '', spaceName: placeholderNames.first, memberCount: 12);
                 if (snapshot.hasError) {
                   return Padding(
                     padding: const EdgeInsets.only(top: 16),
@@ -157,80 +161,74 @@ class _JoinState extends State<_Join> {
                     }),
                   );
                 }
-                if (invite == null) {
-                  return const Padding(
-                    padding: EdgeInsets.all(24),
-                    child: Center(child: FCircularProgress()),
-                  );
-                }
-                return Column(
-                  crossAxisAlignment: CrossAxisAlignment.stretch,
-                  children: [
-                    const SizedBox(height: 16),
-                    // Where it leads.
-                    Semantics(
-                      container: true,
-                      label:
-                          '${invite.spaceName}, ${invite.memberCount} members${invite.description.isEmpty ? '' : '. ${invite.description}'}',
-                      excludeSemantics: true,
-                      child: Container(
-                        padding: const EdgeInsets.fromLTRB(16, 24, 16, 16),
-                        decoration: BoxDecoration(
-                          color: colors.card,
-                          borderRadius: BorderRadius.circular(DuvetTokens.radiusCard),
-                          boxShadow: tokens.shadowRaised,
-                        ),
-                        child: Column(
-                          children: [
-                            SpaceIcon(
-                              space: Space(id: invite.spaceId, name: invite.spaceName),
-                              size: 64,
-                            ),
+                final preview = [
+                  const SizedBox(height: 16),
+                  // Where it leads.
+                  Semantics(
+                    container: true,
+                    label:
+                        '${invite.spaceName}, ${invite.memberCount} members${invite.description.isEmpty ? '' : '. ${invite.description}'}',
+                    excludeSemantics: true,
+                    child: Container(
+                      padding: const EdgeInsets.fromLTRB(16, 24, 16, 16),
+                      decoration: BoxDecoration(
+                        color: colors.card,
+                        borderRadius: BorderRadius.circular(DuvetTokens.radiusCard),
+                        boxShadow: tokens.shadowRaised,
+                      ),
+                      child: Column(
+                        children: [
+                          SpaceIcon(
+                            space: Space(id: invite.spaceId, name: invite.spaceName),
+                            size: 64,
+                          ),
+                          const SizedBox(height: 12),
+                          Text(
+                            invite.spaceName,
+                            textAlign: TextAlign.center,
+                            style: DuvetType.title.copyWith(color: colors.foreground),
+                          ),
+                          const SizedBox(height: 4),
+                          Text(
+                            invite.memberCount == 1 ? '1 member' : '${invite.memberCount} members',
+                            style: DuvetType.caption.copyWith(color: colors.mutedForeground),
+                          ),
+                          if (invite.description.isNotEmpty) ...[
                             const SizedBox(height: 12),
                             Text(
-                              invite.spaceName,
+                              invite.description,
                               textAlign: TextAlign.center,
-                              style: DuvetType.title.copyWith(color: colors.foreground),
+                              style: DuvetType.snippet.copyWith(color: colors.mutedForeground),
                             ),
-                            const SizedBox(height: 4),
-                            Text(
-                              invite.memberCount == 1 ? '1 member' : '${invite.memberCount} members',
-                              style: DuvetType.caption.copyWith(color: colors.mutedForeground),
-                            ),
-                            if (invite.description.isNotEmpty) ...[
-                              const SizedBox(height: 12),
-                              Text(
-                                invite.description,
-                                textAlign: TextAlign.center,
-                                style: DuvetType.snippet.copyWith(color: colors.mutedForeground),
-                              ),
-                            ],
                           ],
+                        ],
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 16),
+                  DuvetButton(
+                    label: invite.joined ? 'Open ${invite.spaceName}' : 'Join ${invite.spaceName}',
+                    variant: ButtonVariant.primary,
+                    expand: true,
+                    busy: _joining,
+                    onPressed: () => _join(invite),
+                  ),
+                  if (_error != null)
+                    Padding(
+                      padding: const EdgeInsets.only(top: 12),
+                      child: Semantics(
+                        liveRegion: true,
+                        child: Text(
+                          _error!,
+                          textAlign: TextAlign.center,
+                          style: DuvetType.caption.copyWith(color: colors.destructive),
                         ),
                       ),
                     ),
-                    const SizedBox(height: 16),
-                    DuvetButton(
-                      label: invite.joined ? 'Open ${invite.spaceName}' : 'Join ${invite.spaceName}',
-                      variant: ButtonVariant.primary,
-                      expand: true,
-                      busy: _joining,
-                      onPressed: () => _join(invite),
-                    ),
-                    if (_error != null)
-                      Padding(
-                        padding: const EdgeInsets.only(top: 12),
-                        child: Semantics(
-                          liveRegion: true,
-                          child: Text(
-                            _error!,
-                            textAlign: TextAlign.center,
-                            style: DuvetType.caption.copyWith(color: colors.destructive),
-                          ),
-                        ),
-                      ),
-                  ],
-                );
+                ];
+                return snapshot.data == null
+                    ? LoadingSkeleton(label: 'Loading the invite', children: preview)
+                    : Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: preview);
               },
             ),
         ],
