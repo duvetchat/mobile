@@ -283,9 +283,10 @@ void main() {
 
     testWidgets('a picture that comes after signing out isn\'t kept', (tester) async {
       PaintingBinding.instance.imageCache.clear();
-      final coming = Completer<FileInfo>();
-      store.answer = (url, key) => coming.future;
       final error = await tester.runAsync(() async {
+        // Made in here: one made outside completes on the test's own clock, which nothing runs meanwhile.
+        final coming = Completer<FileInfo>();
+        store.answer = (url, key) => coming.future;
         final load = _load(cachedImage(_newLink)).then<Object?>((_) => null, onError: (Object e) => e);
         await pumpEventQueue();
         await clearImageCache();
