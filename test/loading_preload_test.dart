@@ -389,6 +389,8 @@ void main() {
     // One deleted meanwhile goes.
     next.handleEvent(_event('SPACE_DELETE', {'id': 's-1'}));
     expect([for (final s in next.spaces.value) s.name], ['Night Owls 2']);
+    // What READY asked for lands before the repository goes.
+    await pumpEventQueue();
   });
 
   test('a home kept by another account, whose sign-out never cleared it, doesn\'t show under this one', () async {

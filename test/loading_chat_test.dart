@@ -58,7 +58,8 @@ ChatMessage _said(String id, String text, {int minute = 0}) =>
 void main() {
   late SemanticsHandle semantics;
   final list = find.byWidgetPredicate((w) => w is ListView && w.reverse);
-  final skeleton = find.bySemanticsLabel('Loading messages');
+  // Made when asked for: a semantics finder needs the binding, and semantics on.
+  Finder skeleton() => find.bySemanticsLabel('Loading messages');
 
   /// Opens Maya's chat with its history held back.
   Future<_Fake> openHeld(WidgetTester tester, {Size size = const Size(390, 844), void Function(_Fake r)? setUp}) async {
@@ -90,13 +91,13 @@ void main() {
       testWidgets('blocks in the messages\' shape fill $name until they come, and nothing else', (tester) async {
         final repository = await openHeld(tester, size: size);
         expect(tester.takeException(), isNull);
-        expect(skeleton, findsOneWidget);
+        expect(skeleton(), findsOneWidget);
         expect(find.byType(FCircularProgress), findsNothing);
         expect(list, findsNothing);
         expect(find.text('Hey! Did you see the new tab bar?'), findsNothing);
 
         await release(tester, repository);
-        expect(skeleton, findsNothing);
+        expect(skeleton(), findsNothing);
         expect(find.text('Hey! Did you see the new tab bar?'), findsOneWidget);
         semantics.dispose();
       });
@@ -105,7 +106,7 @@ void main() {
     testWidgets('a history that fails says so, as before', (tester) async {
       final repository = await openHeld(tester, setUp: (r) => r.refuseHistory = const ActionFailed('Offline'));
       await release(tester, repository);
-      expect(skeleton, findsNothing);
+      expect(skeleton(), findsNothing);
       expect(find.text('Couldn’t load messages'), findsOneWidget);
       semantics.dispose();
     });
@@ -120,7 +121,7 @@ void main() {
           r.history['c-maya'] = [_said('k2', 'After the edit', minute: 1), _said('k3', 'Came since', minute: 2)];
         },
       );
-      expect(skeleton, findsNothing);
+      expect(skeleton(), findsNothing);
       expect(find.text('Deleted since'), findsOneWidget);
       expect(find.text('Before the edit'), findsOneWidget);
       // Nothing is read or opened from it: the latest page does that.
