@@ -71,9 +71,10 @@ void main() {
     repository.holdHistory = Completer<void>();
     setUp?.call(repository);
     await tester.tap(find.text('Maya'));
+    // The route in, then the blocks faded in (when nothing is kept), each in a frame of its own.
     await tester.pump();
-    await tester.pump(const Duration(seconds: 1));
-    // The switch from the blocks, if anything was kept, done.
+    await tester.pump(const Duration(milliseconds: 500));
+    await tester.pump(const Duration(milliseconds: 500));
     await tester.pump();
     return repository;
   }
@@ -148,7 +149,7 @@ void main() {
         },
       );
       repository.push('c-maya', MessageCreated(_said('k3', 'Pushed', minute: 2)));
-      await tester.pump();
+      await tester.pumpAndSettle();
       expect(find.text('Pushed'), findsOneWidget);
       expect(repository.reads, isEmpty);
 

@@ -134,6 +134,9 @@ class _ChatViewState extends State<ChatView> with SingleTickerProviderStateMixin
   // where it was placed.
   Set<String>? _kept;
   double? _keptAt;
+  // Until the kept page is looked for (a moment on the device) nothing
+  // shows: not a frame of the skeleton before it.
+  bool _lookedForKept = false;
   // The list fading in when the latest replaces a kept page it has nothing in common with.
   late final AnimationController _reveal;
 
@@ -357,14 +360,24 @@ class _ChatViewState extends State<ChatView> with SingleTickerProviderStateMixin
   }
 
   Future<void> _load() async {
+    // The page kept on the device shows meanwhile; a thread's or a jump's
+    // place isn't on it.
+    final lookForKept = widget.threadOf == null && widget.jumpTo == null && _kept == null;
     setState(() {
       _loading = true;
       _error = null;
+      if (!lookForKept) _lookedForKept = true;
     });
-    // The page kept on the device shows meanwhile; a thread's or a jump's
-    // place isn't on it.
-    if (widget.threadOf == null && widget.jumpTo == null && _kept == null) {
-      _repository.cachedMessages(widget.target).then(_showKept, onError: (Object e) => debugPrint('kept: $e'));
+    if (lookForKept) {
+      _repository
+          .cachedMessages(widget.target)
+          .then(
+            _showKept,
+            onError: (Object e) {
+              debugPrint('kept: $e');
+              _showKept(null);
+            },
+          );
     }
     try {
       final thread = widget.threadOf;
@@ -437,7 +450,11 @@ class _ChatViewState extends State<ChatView> with SingleTickerProviderStateMixin
   /// failed to): under what the gateway pushed meanwhile, with no older pages
   /// from it, as it may be far behind, and nothing read from it.
   void _showKept(List<ChatMessage>? page) {
-    if (page == null || page.isEmpty || !mounted || !(_loading || _error != null)) return;
+    if (!mounted) return;
+    if (page == null || page.isEmpty || !(_loading || _error != null)) {
+      if (!_lookedForKept) setState(() => _lookedForKept = true);
+      return;
+    }
     final ids = {for (final m in page) m.id};
     final ephemeral = [
       for (final m in _repository.ephemeralIn(widget.target))
@@ -450,6 +467,7 @@ class _ChatViewState extends State<ChatView> with SingleTickerProviderStateMixin
           if (!ids.contains(e.message.id)) e,
       ];
       _kept = {...ids, for (final m in ephemeral) m.id};
+      _lookedForKept = true;
     });
     // At the divider, if it shows here, as a load places it; else at the bottom.
     final last = page.indexWhere((m) => m.id == _unreadAfter);
@@ -526,6 +544,8 @@ class _ChatViewState extends State<ChatView> with SingleTickerProviderStateMixin
   /// message here.
   Future<void> _catchUp() async {
     // Still on the kept page: its latest is on the way, or is asked again.
+    // shortcut: only the gateway coming back asks again; a failed fetch with the socket up stays on the kept page
+    // (no reads, no older pages) until the chat is reopened. Upgrade to a retry on a timer or a pull if that's seen.
     if (_kept != null) {
       if (!_loading) _load();
       return;
@@ -2581,7 +2601,7 @@ class _ChatViewState extends State<ChatView> with SingleTickerProviderStateMixin
     duration: MediaQuery.disableAnimationsOf(context) ? Duration.zero : DuvetTokens.panelOut,
     switchInCurve: DuvetTokens.decelerate,
     layoutBuilder: (current, previous) => Stack(fit: StackFit.expand, children: [...previous, ?current]),
-    child: _loading && _entries.isEmpty
+    child: _loading && _entries.isEmpty && _lookedForKept
         ? KeyedSubtree(
             key: const ValueKey('skeleton'),
             child: _MessagesSkeleton(
@@ -2604,6 +2624,7 @@ class _ChatViewState extends State<ChatView> with SingleTickerProviderStateMixin
         action: DuvetButton(label: 'Try again', onPressed: _load),
       );
     }
+    if (_loading && _entries.isEmpty) return const SizedBox.shrink();
     if (_entries.isEmpty) {
       // A new DM: the ghost tucked in, and a first line to start with.
       if (widget.target is ConversationTarget && widget.threadOf == null) {
