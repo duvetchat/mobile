@@ -403,6 +403,89 @@ class _Bubble extends StatelessWidget {
   static String _time(DateTime t) => '${t.hour.toString().padLeft(2, '0')}:${t.minute.toString().padLeft(2, '0')}';
 }
 
+/// A chat's messages while its first page loads, as the desktop draws them
+/// (every third one longer), in [_Bubble]'s places: the avatar beside a run's
+/// last bubble, the name over its first, the time's room under it, and some
+/// runs the user's own on the right. From the bottom up, as many as fill the
+/// screen, the oldest cut off at the top; it never scrolls.
+class _MessagesSkeleton extends StatelessWidget {
+  /// The list's own, so the blocks land where the messages will.
+  final EdgeInsets padding;
+  const _MessagesSkeleton({required this.padding});
+
+  // The shortest run, a lone one-line bubble with its name and time.
+  static const _shortest = 96.0;
+
+  @override
+  Widget build(BuildContext context) {
+    final maxWidth = MediaQuery.sizeOf(context).width * 0.75;
+    // A one-line text bubble: the body's line and its padding.
+    Widget bubble(double share) => Bone(
+      width: maxWidth * share,
+      height: DuvetType.body.fontSize! * DuvetType.body.height! + 16,
+      borderRadius: BorderRadius.circular(DuvetTokens.radiusButton),
+    );
+
+    Widget run(int i) {
+      final wide = i % 3 == 0;
+      final mine = i % 3 == 1;
+      return Padding(
+        padding: const EdgeInsets.only(top: 8),
+        child: Row(
+          mainAxisAlignment: mine ? MainAxisAlignment.end : MainAxisAlignment.start,
+          crossAxisAlignment: CrossAxisAlignment.end,
+          children: [
+            if (!mine) const Padding(padding: EdgeInsets.only(right: 4, bottom: 26), child: Bone.circle(size: 32)),
+            Flexible(
+              child: Padding(
+                padding: const EdgeInsets.all(4),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: mine ? CrossAxisAlignment.end : CrossAxisAlignment.start,
+                  children: [
+                    if (!mine)
+                      const Padding(
+                        padding: EdgeInsets.fromLTRB(4, 3, 0, 7),
+                        child: Bone(width: 96, height: 12, borderRadius: BorderRadius.all(Radius.circular(4))),
+                      ),
+                    bubble(wide ? 0.8 : 0.4),
+                    if (wide) ...[const SizedBox(height: 8), bubble(0.6)],
+                    const SizedBox(height: 22),
+                  ],
+                ),
+              ),
+            ),
+          ],
+        ),
+      );
+    }
+
+    return Semantics(
+      container: true,
+      label: 'Loading messages',
+      excludeSemantics: true,
+      child: LayoutBuilder(
+        builder: (context, constraints) => ClipRect(
+          child: OverflowBox(
+            alignment: Alignment.bottomCenter,
+            minHeight: 0,
+            maxHeight: double.infinity,
+            child: Padding(
+              padding: padding,
+              child: DuvetSkeleton(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [for (var i = (constraints.maxHeight / _shortest).ceil(); i >= 0; i--) run(i)],
+                ),
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
 /// Swiping a message [left] (as in WhatsApp) or right replies to it: the
 /// message follows the finger, the reply icon grows in behind it on the side
 /// it leaves, a tick says a release will reply, and it slides back. Scrollers
@@ -988,11 +1071,13 @@ class _Reactions extends StatelessWidget {
                   mainAxisSize: MainAxisSize.min,
                   children: [
                     if (custom != null)
-                      Image.network(
-                        custom.url,
+                      Image(
+                        image: cachedImage(
+                          custom.url,
+                          cacheWidth: (18 * MediaQuery.devicePixelRatioOf(context)).round(),
+                        ),
                         width: 18,
                         height: 18,
-                        cacheWidth: (18 * MediaQuery.devicePixelRatioOf(context)).round(),
                         excludeFromSemantics: true,
                         // Its name until the image arrives, and if it never does.
                         frameBuilder: (_, child, frame, sync) => frame == null && !sync ? Text(name) : child,
