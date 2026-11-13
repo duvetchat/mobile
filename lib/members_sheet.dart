@@ -85,7 +85,11 @@ class _MembersSheetState extends State<_MembersSheet> {
                 children: [
                   const Padding(
                     padding: EdgeInsets.fromLTRB(16, 0, 16, 8),
-                    child: SearchField(hint: 'Search members'),
+                    child: Bone(
+                      width: double.infinity,
+                      height: 40,
+                      borderRadius: BorderRadius.all(Radius.circular(DuvetTokens.radiusField)),
+                    ),
                   ),
                   Padding(
                     padding: const EdgeInsets.fromLTRB(16, 16, 16, 4),

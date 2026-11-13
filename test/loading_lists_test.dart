@@ -34,13 +34,22 @@ void main() {
     EmojiCatalog.debugUse(await EmojiCatalog.load());
   });
 
-  // A small phone: a skeleton mustn't overflow it.
-  Future<void> pumpSmall(WidgetTester tester, FakeRepository repository) async {
-    tester.view.physicalSize = const Size(320 * 3, 568 * 3);
+  Future<void> pumpApp(WidgetTester tester, FakeRepository repository) async {
+    tester.view.physicalSize = const Size(390 * 3, 844 * 3);
     tester.view.devicePixelRatio = 3;
     addTearDown(tester.view.reset);
     await tester.pumpWidget(DuvetApp(repository: repository));
     await tester.pumpAndSettle();
+  }
+
+  // The skeleton on screen fits a small phone too: no overflow.
+  Future<void> expectFitsSmall(WidgetTester tester) async {
+    expect(tester.takeException(), isNull);
+    tester.view.physicalSize = const Size(320 * 3, 568 * 3);
+    await tester.pump();
+    expect(tester.takeException(), isNull);
+    tester.view.physicalSize = const Size(390 * 3, 844 * 3);
+    await tester.pump();
   }
 
   Future<void> openTab(WidgetTester tester, String name) async {
@@ -53,7 +62,7 @@ void main() {
   testWidgets('the Spaces tab draws its tiles while the first READY comes, not a spinner', (tester) async {
     final semantics = tester.ensureSemantics();
     final repository = FakeRepository();
-    await pumpSmall(tester, repository);
+    await pumpApp(tester, repository);
     final spaces = repository.spaces.value;
     repository
       ..spaces.value = const []
@@ -69,7 +78,7 @@ void main() {
     await tester.tap(find.text('Lorem ipsum'), warnIfMissed: false);
     await tester.pump(const Duration(seconds: 1));
     expect(find.byType(SpaceDirectory), findsNothing);
-    expect(tester.takeException(), isNull);
+    await expectFitsSmall(tester);
 
     repository
       ..spaces.value = spaces
@@ -84,7 +93,7 @@ void main() {
   testWidgets('Chats draws rows while it connects with nothing saved, then says there are none', (tester) async {
     final semantics = tester.ensureSemantics();
     final repository = FakeRepository();
-    await pumpSmall(tester, repository);
+    await pumpApp(tester, repository);
     repository
       ..conversations.value = const []
       ..status.value = LiveStatus.connecting;
@@ -94,7 +103,7 @@ void main() {
     expect(find.bySemanticsLabel('Loading chats'), findsOneWidget);
     expect(find.text('No conversations yet'), findsNothing);
     expect(find.bySemanticsLabel(RegExp('Lorem')), findsNothing);
-    expect(tester.takeException(), isNull);
+    await expectFitsSmall(tester);
 
     repository.status.value = LiveStatus.online;
     await tester.pump();
@@ -107,7 +116,7 @@ void main() {
   testWidgets('the members sheet draws its rows while the members come', (tester) async {
     final semantics = tester.ensureSemantics();
     final repository = _HeldMembers();
-    await pumpSmall(tester, repository);
+    await pumpApp(tester, repository);
     await tester.tap(find.descendant(of: find.byType(DuvetTabBar), matching: find.text('Spaces')));
     await tester.pumpAndSettle();
     await tester.tap(find.text('Design Guild'));
@@ -124,7 +133,7 @@ void main() {
     expect(find.bySemanticsLabel('Loading members'), findsOneWidget);
     expect(find.bySemanticsLabel(RegExp('Lorem')), findsNothing);
     expect(find.text('Lorem ipsum').hitTestable(), findsNothing);
-    expect(tester.takeException(), isNull);
+    await expectFitsSmall(tester);
 
     hold.complete();
     await tester.pumpAndSettle();
@@ -138,7 +147,7 @@ void main() {
     final semantics = tester.ensureSemantics();
     final repository = FakeRepository()
       ..invites['k7Qe2m'] = const InvitePreview(code: 'k7Qe2m', spaceId: 's-x', spaceName: 'Fieldwork');
-    await pumpSmall(tester, repository);
+    await pumpApp(tester, repository);
     await tester.tap(find.descendant(of: find.byType(DuvetTabBar), matching: find.text('Spaces')));
     await tester.pumpAndSettle();
     await tester.tap(find.bySemanticsLabel('Join or create a Space').hitTestable().last);
@@ -152,7 +161,7 @@ void main() {
 
     expect(find.bySemanticsLabel('Loading the invite'), findsOneWidget);
     expect(find.bySemanticsLabel(RegExp('Lorem')), findsNothing);
-    expect(tester.takeException(), isNull);
+    await expectFitsSmall(tester);
 
     await tester.pump(const Duration(milliseconds: 100));
     await tester.pumpAndSettle();
