@@ -692,13 +692,17 @@ class PlayMark extends StatelessWidget {
 }
 
 /// A video in a message: a poster with a play button; tapping plays it full
-/// screen. The poster is [poster] (an embed's picture) or else the video's
-/// first frame, loaded paused.
+/// screen. The poster is [poster] (an embed's picture) or else, for an
+/// upload, the video's first frame, loaded paused.
 class VideoTile extends StatefulWidget {
   final MessageAttachment attachment;
   final double width;
   final String? poster;
-  const VideoTile({required this.attachment, this.width = 248, this.poster, super.key});
+
+  /// An embed's video, from another host: nothing loads from there until
+  /// someone plays it (#172), so it shows [poster] or the play mark alone.
+  final bool embed;
+  const VideoTile({required this.attachment, this.width = 248, this.poster, this.embed = false, super.key});
 
   @override
   State<VideoTile> createState() => _VideoTileState();
@@ -718,7 +722,7 @@ class _VideoTileState extends State<VideoTile> {
   @override
   void initState() {
     super.initState();
-    if (widget.poster != null || widget.attachment.local || _frames >= _maxFrames) return;
+    if (widget.embed || widget.poster != null || widget.attachment.local || _frames >= _maxFrames) return;
     _frames++;
     _counted = true;
     final a = widget.attachment;

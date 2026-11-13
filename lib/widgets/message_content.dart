@@ -1179,6 +1179,7 @@ class EmbedCard extends StatelessWidget {
           ),
           width: w,
           poster: e.imageUrl,
+          embed: true,
         );
       }
       if (youtube != null) {
