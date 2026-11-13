@@ -1576,6 +1576,18 @@ class _ChatViewState extends State<ChatView> with SingleTickerProviderStateMixin
         detail: 'messages will send when you’re back',
       ),
       LiveStatus.offline => const ConnectionBanner(text: 'Offline', detail: '· showing saved messages'),
+      // Connected, yet the latest failed to load: what shows is the page kept.
+      _ when _error != null && _entries.isNotEmpty => Semantics(
+        button: true,
+        child: GestureDetector(
+          onTap: _load,
+          child: const ConnectionBanner(
+            text: 'Couldn’t load the latest messages',
+            detail: '· tap to try again',
+            icon: FLucideIcons.refreshCw,
+          ),
+        ),
+      ),
       _ => null,
     };
     final call = _callable && CallBanner.shows(context.voice, widget.target.id)

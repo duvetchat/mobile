@@ -706,6 +706,10 @@ class VideoTile extends StatefulWidget {
   final bool embed;
   const VideoTile({required this.attachment, this.width = 248, this.poster, this.embed = false, super.key});
 
+  /// Lets go of the players kept for tiles that scrolled away, on signing
+  /// out: they hold the account's links. The tiles still there keep none.
+  static void releaseParked() => _VideoTileState._release();
+
   @override
   State<VideoTile> createState() => _VideoTileState();
 }
@@ -726,6 +730,18 @@ class _VideoTileState extends State<VideoTile> {
 
   // Tiles waiting for a slot, in the order they showed.
   static final _waiting = <_VideoTileState>[];
+
+  // How many times the parked ones were let go: a tile from before parks nothing.
+  static int _releases = 0;
+  int _since = 0;
+
+  static void _release() {
+    _releases++;
+    for (final parked in _parked.values) {
+      unawaited(parked.dispose());
+    }
+    _parked.clear();
+  }
 
   VideoPlayerController? _frame;
   bool _counted = false;
@@ -749,6 +765,7 @@ class _VideoTileState extends State<VideoTile> {
 
   // Shows the frame kept for it, or waits for a slot to load it.
   void _queue() {
+    _since = _releases;
     _link = linkSource(context, widget.attachment);
     if (_parked.remove(widget.attachment.id) case final parked?) {
       _frames++;
@@ -831,7 +848,7 @@ class _VideoTileState extends State<VideoTile> {
     if (_counted) {
       _frames--;
       final frame = _frame;
-      if (frame != null && frame.value.isInitialized) {
+      if (frame != null && frame.value.isInitialized && _since == _releases) {
         unawaited(_parked.remove(widget.attachment.id)?.dispose());
         _parked[widget.attachment.id] = frame;
       } else {

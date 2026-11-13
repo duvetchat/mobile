@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter/material.dart';
@@ -108,6 +109,7 @@ class _DuvetAppState extends State<DuvetApp> {
   Set<String> _mentionsHeard = const {};
 
   late final AppLifecycleListener _lifecycle;
+  late final StreamSubscription<void> _signedOut;
 
   // Android's proximity wake lock (MainActivity.kt), held while the sound
   // plays from the earpiece: the screen goes off at the ear (#81).
@@ -120,6 +122,7 @@ class _DuvetAppState extends State<DuvetApp> {
     RecentEmoji.instance.load();
     // Back in front, the session catches up on a renewal its timer missed.
     _lifecycle = AppLifecycleListener(onResume: () => widget.repository.cameToFront());
+    _signedOut = widget.repository.signedOut.listen((_) => VideoTile.releaseParked());
     _voice.addListener(_followEarpiece);
     _voice.routes.addListener(_followEarpiece);
     _voicePrefs.addListener(_followVoicePrefs);
@@ -152,6 +155,7 @@ class _DuvetAppState extends State<DuvetApp> {
     widget.repository.mentionNotices.removeListener(_soundMentions);
     if (_atEar) _proximity.invokeMethod<void>('hold', false).catchError((Object e) => debugPrint('proximity: $e'));
     _lifecycle.dispose();
+    unawaited(_signedOut.cancel());
     // Before the repository: it listens to it.
     if (widget.voice == null) _voice.dispose();
     widget.repository.dispose();

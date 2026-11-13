@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:duvet/data/models.dart';
 import 'package:duvet/main.dart';
+import 'package:duvet/widgets/chrome.dart' show ConnectionBanner;
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:forui/forui.dart' show FCircularProgress;
@@ -205,6 +206,28 @@ void main() {
       await tester.pumpAndSettle();
       expect(find.text('Fetched'), findsOneWidget);
       expect(repository.reads.last.$2, 'k2');
+      semantics.dispose();
+    });
+
+    testWidgets('connected, a latest that fails says the page isn\'t it, and a tap tries again', (tester) async {
+      final repository = await openHeld(
+        tester,
+        setUp: (r) {
+          r.status.value = LiveStatus.online;
+          r.refuseHistory = const ActionFailed('Server error');
+          r.cachedPages['c-maya'] = [_said('k1', 'Kept')];
+          r.history['c-maya'] = [_said('k1', 'Kept'), _said('k2', 'Fetched', minute: 1)];
+        },
+      );
+      await release(tester, repository);
+      expect(find.text('Kept'), findsOneWidget);
+      expect(find.textContaining('Couldn’t load the latest messages', findRichText: true), findsOneWidget);
+
+      repository.refuseHistory = null;
+      await tester.tap(find.byType(ConnectionBanner));
+      await tester.pumpAndSettle();
+      expect(find.text('Fetched'), findsOneWidget);
+      expect(find.byType(ConnectionBanner), findsNothing);
       semantics.dispose();
     });
   });

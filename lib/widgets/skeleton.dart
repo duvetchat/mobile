@@ -45,9 +45,14 @@ class SkeletonBox extends StatelessWidget {
   final BorderRadiusGeometry borderRadius;
   const SkeletonBox({this.width, this.height, this.borderRadius = BorderRadius.zero, super.key});
 
+  // Hit like the block it draws, which a bone isn't: a picture still loading
+  // opens on a tap, as it did behind the box this replaced.
   @override
-  Widget build(BuildContext context) => Skeletonizer.zone(
-    effect: DuvetSkeleton.effectOf(context),
-    child: Bone(width: width ?? double.infinity, height: height ?? double.infinity, borderRadius: borderRadius),
+  Widget build(BuildContext context) => MetaData(
+    behavior: HitTestBehavior.opaque,
+    child: Skeletonizer.zone(
+      effect: DuvetSkeleton.effectOf(context),
+      child: Bone(width: width ?? double.infinity, height: height ?? double.infinity, borderRadius: borderRadius),
+    ),
   );
 }
