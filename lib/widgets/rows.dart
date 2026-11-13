@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:forui/forui.dart';
 
+import '../data/images.dart';
 import '../data/models.dart';
 import '../theme.dart';
 import 'avatar.dart';
@@ -410,11 +411,10 @@ class SpaceBanner extends StatelessWidget {
       return ExcludeSemantics(
         child: ClipRRect(
           borderRadius: BorderRadius.circular(DuvetTokens.radiusCard),
-          child: Image.network(
-            url,
+          child: Image(
+            image: cachedImage(url, cacheWidth: (width * MediaQuery.devicePixelRatioOf(context)).round()),
             width: width,
             height: height,
-            cacheWidth: (width * MediaQuery.devicePixelRatioOf(context)).round(),
             fit: BoxFit.cover,
             frameBuilder: (context, child, frame, sync) => frame == null && !sync
                 ? SizedBox(
@@ -464,11 +464,10 @@ class SpaceIcon extends StatelessWidget {
     return ExcludeSemantics(
       child: ClipRRect(
         borderRadius: radius,
-        child: Image.network(
-          url,
+        child: Image(
+          image: cachedImage(url, cacheWidth: (size * MediaQuery.devicePixelRatioOf(context)).round()),
           width: size,
           height: size,
-          cacheWidth: (size * MediaQuery.devicePixelRatioOf(context)).round(),
           fit: BoxFit.cover,
           frameBuilder: (context, child, frame, sync) => frame == null && !sync ? monogram : child,
           errorBuilder: (context, error, stackTrace) => monogram,

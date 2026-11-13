@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:forui/forui.dart';
 
+import '../data/images.dart';
 import '../theme.dart';
 import 'facehash.dart';
 
@@ -39,12 +40,11 @@ class UserAvatar extends StatelessWidget {
     final url = this.url;
     if (url == null) return face;
     return ClipOval(
-      child: Image.network(
-        url,
+      child: Image(
+        // Decoded at the size shown, not the upload's.
+        image: cachedImage(url, cacheWidth: (size * MediaQuery.devicePixelRatioOf(context)).round()),
         width: size,
         height: size,
-        // Decoded at the size shown, not the upload's.
-        cacheWidth: (size * MediaQuery.devicePixelRatioOf(context)).round(),
         fit: BoxFit.cover,
         semanticLabel: name,
         frameBuilder: (context, child, frame, wasSynchronouslyLoaded) => frame == null && !wasSynchronouslyLoaded
@@ -112,7 +112,7 @@ DecorationImage? memberBanner(BuildContext context, String? url, {bool offline =
   final width = (MediaQuery.sizeOf(context).width * MediaQuery.devicePixelRatioOf(context) / 2).round();
   if (width <= 0) return null;
   return DecorationImage(
-    image: ResizeImage(NetworkImage(url), width: width, policy: ResizeImagePolicy.fit),
+    image: ResizeImage(cachedImage(url), width: width, policy: ResizeImagePolicy.fit),
     fit: BoxFit.cover,
     alignment: Alignment.centerRight,
     opacity: offline ? 0.09 : 0.15,
