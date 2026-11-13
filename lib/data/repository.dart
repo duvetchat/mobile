@@ -75,6 +75,11 @@ abstract interface class ChatRepository {
   /// The chat's latest messages, the oldest first, or those [before] a message.
   Future<List<ChatMessage>> messages(ChatTarget target, {String? before});
 
+  /// The chat's latest page as it was last seen here, kept on the device, or
+  /// null when it never was: what a chat opens on while [messages] fetches it
+  /// again.
+  Future<List<ChatMessage>?> cachedMessages(ChatTarget target);
+
   /// Live changes to the chat's messages.
   Stream<MessageEvent> messageEvents(ChatTarget target);
 

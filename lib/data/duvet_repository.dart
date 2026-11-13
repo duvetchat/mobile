@@ -1807,6 +1807,9 @@ class DuvetRepository implements ChatRepository {
     }
   }
 
+  @override
+  Future<List<ChatMessage>?> cachedMessages(ChatTarget target) => _cache.loadPage(target.id);
+
   Future<List<ChatMessage>> _fetchPage(ChatTarget target, String? before) async {
     // The API answers the newest first.
     final List<ChatMessage> page = switch (target) {
