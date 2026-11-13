@@ -7,6 +7,7 @@ import 'package:duvet/theme.dart';
 import 'package:duvet/widgets/avatar.dart';
 import 'package:duvet/widgets/facehash.dart';
 import 'package:duvet/widgets/message_content.dart';
+import 'package:duvet/widgets/skeleton.dart';
 import 'package:flutter/gestures.dart' show kDoubleTapTimeout;
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
@@ -146,10 +147,10 @@ void main() {
     expect(tester.widget<GestureDetector>(find.byType(GestureDetector)).onTap, isNull);
   });
 
-  testWidgets('a sticker is a base-sunken square until it loads', (tester) async {
+  testWidgets('a sticker is a pulsing square until it loads', (tester) async {
     await loading(() async {
       await tester.pumpWidget(themed(const StickerView(url: 'https://example.invalid/wave-loading.png', name: 'wave')));
-      final placeholder = sunken(within: find.byType(StickerView));
+      final placeholder = find.descendant(of: find.byType(StickerView), matching: find.byType(SkeletonBox));
       expect(placeholder, findsOneWidget);
       expect(tester.getSize(placeholder), const Size(160, 160));
       expect(find.bySemanticsLabel('Sticker, wave'), findsOneWidget);

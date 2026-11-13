@@ -10,6 +10,7 @@ import 'avatar.dart';
 import 'depth.dart';
 import 'message_content.dart';
 import 'rows.dart';
+import 'skeleton.dart';
 
 /// Duvet's own links in a message's text, each once: message links and
 /// invites, which show as cards under it.
@@ -281,13 +282,7 @@ class _InviteCardState extends State<InviteCard> {
         final invite = snapshot.data;
         // One that doesn't load shows nothing, as on the desktop.
         if (snapshot.hasError) return const SizedBox.shrink();
-        if (invite == null) {
-          return const SizedBox(
-            width: 280,
-            height: 56,
-            child: Center(child: FCircularProgress(size: .sm)),
-          );
-        }
+        if (invite == null) return const InviteCardSkeleton();
         final joined = invite.joined || _joined != null;
         final spaceId = _joined ?? invite.spaceId;
         return Semantics(
@@ -357,6 +352,61 @@ class _InviteCardState extends State<InviteCard> {
           ),
         );
       },
+    );
+  }
+}
+
+/// An invite card while it loads, as the desktop's: pulsing blocks where its
+/// header, icon, name and button go, at the card's own size, so nothing moves
+/// when it lands.
+class InviteCardSkeleton extends StatelessWidget {
+  /// A bot's invite: its rounded square, and its name alone.
+  final bool bot;
+  const InviteCardSkeleton({this.bot = false, super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    const line = BorderRadius.all(Radius.circular(4));
+    return Container(
+      width: 280,
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: context.theme.colors.card,
+        borderRadius: BorderRadius.circular(DuvetTokens.radiusCard),
+        boxShadow: context.duvet.shadowRaised,
+      ),
+      child: DuvetSkeleton(
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            // The header's line is 16.8 high (12 at 1.4).
+            Padding(
+              padding: const EdgeInsets.symmetric(vertical: 2.4),
+              child: Bone(width: bot ? 144 : 176, height: 12, borderRadius: line),
+            ),
+            const SizedBox(height: 12),
+            Row(
+              children: [
+                Bone.square(size: 48, borderRadius: BorderRadius.circular(bot ? 48 * 0.3 : DuvetTokens.radiusField)),
+                const SizedBox(width: 12),
+                Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Bone(width: bot ? 96 : 112, height: 16, borderRadius: line),
+                    if (!bot) ...[const SizedBox(height: 6), const Bone(width: 80, height: 12, borderRadius: line)],
+                  ],
+                ),
+              ],
+            ),
+            const SizedBox(height: 16),
+            const Bone(
+              width: double.infinity,
+              height: 48,
+              borderRadius: BorderRadius.all(Radius.circular(DuvetTokens.radiusButton)),
+            ),
+          ],
+        ),
+      ),
     );
   }
 }
