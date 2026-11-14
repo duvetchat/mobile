@@ -203,7 +203,7 @@ class _ChatViewState extends State<ChatView> with SingleTickerProviderStateMixin
   bool _atBottom = true;
   bool _onTop = true;
   String? _acked;
-  // The unread mentions of the user: each one's gem shines once, as its
+  // The unread mentions of the user: each one's light comes up once, as its
   // bubble first comes all into sight. How many the chat had on opening, until
   // its page comes and tells which they are; then the ones yet to shine.
   int _unreadMentions = 0;
@@ -2618,7 +2618,7 @@ class _ChatViewState extends State<ChatView> with SingleTickerProviderStateMixin
       onUseComponent: (component, values) => _useComponent(m, component, values),
       selectChoices: _selectChoices,
       onDismiss: m.isEphemeral ? () => _dismiss(m) : null,
-      // Not in the pins: a copy there shows the gem at rest.
+      // Not in the pins: a copy there is lit already.
       // Nor one that shone in another view of the chat, a thread over it.
       onShine: !pinned && _unshone.contains(m.id) && !_shone.contains(m.id)
           ? () {
@@ -2697,7 +2697,7 @@ class _ChatViewState extends State<ChatView> with SingleTickerProviderStateMixin
     };
     return FadeTransition(
       opacity: _reveal,
-      // The gems take their light from what shows of the list, between the bars.
+      // The mentions' light goes by what shows of the list, between the bars.
       child: PrismViewport(
         top: top,
         bottom: _composerHeight,

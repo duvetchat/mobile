@@ -194,10 +194,10 @@ void main() {
       ),
     );
 
-    // Prism is dark's alone so far. Animations off: the gem at rest, lit as it is mid-list.
+    // Prism is dark's alone so far. Animations off: the bubble lit as it is mid-list.
     if (b == Brightness.dark) {
       testWidgets(
-        'a mention of the user as a gem, at rest',
+        'a mention of the user lighting its bubble, at rest',
         (tester) => withClock(
           Clock.fixed(DateTime(2026, 10, 23, 12)),
           () => withShadows(() async {

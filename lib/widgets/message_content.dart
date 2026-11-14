@@ -204,14 +204,23 @@ class _MessageTextState extends State<MessageText> {
       final bold = (style ?? const TextStyle()).copyWith(fontWeight: FontWeight.w700);
       final role = widget.onAccent ? null : widget.directory.nameColorsOf(userId);
       final onMention = widget.onMention;
-      // The user themself, in a bubble that mentions them: the gem its bubble cuts.
+      // The user themself, in a bubble that mentions them: the same name, a
+      // box of its own in the line, which the bubble's light centres on.
       if (prism && userId == widget.directory.me) {
         return WidgetSpan(
           alignment: PlaceholderAlignment.baseline,
           baseline: TextBaseline.alphabetic,
           child: GestureDetector(
             onTap: onMention == null ? null : () => onMention(userId),
-            child: PrismChip(name, style: base.merge(style)),
+            child: PrismAnchor(
+              child: switch (role) {
+                (from: _?, via: _, to: _?) => RoleName(name, colors: role, style: base.merge(bold)),
+                _ => Text(
+                  name,
+                  style: base.merge(bold).copyWith(color: roleColorOn(context, role?.from) ?? tokens.violetText),
+                ),
+              },
+            ),
           ),
         );
       }

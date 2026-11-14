@@ -1,4 +1,3 @@
-import 'dart:math' as math;
 import 'dart:typed_data';
 import 'dart:ui' as ui;
 
@@ -6,36 +5,18 @@ import 'package:flutter/material.dart';
 
 import '../theme.dart';
 
-// Prism: a mention of the user is a small cut gem, which throws its light on
-// the bubble around it. The gem shines once as its message first comes into
-// sight, then catches the light as the list scrolls. The numbers are the
-// design's; its angles are degrees clockwise from 12 o'clock.
+// Prism: a mention of the user throws a soft violet light on the bubble around
+// it. The light comes up once as the message first comes into sight, then its
+// side lights slide as the list scrolls. The mention itself stays as it is
+// anywhere else, in its member's role colors. The numbers are the design's.
 
-/// The light on a bubble whose centre is [t] of the way down its list (0 at the
-/// top, 1 at the bottom): the gradients' angle, and how far the spill's side
-/// lights have slid.
-({double angle, double slide}) prismLight(double t) => (angle: -124 + (0.5 - t) * 220, slide: 1 - t);
+/// How long the arrival is: the spill waits 250 ms, then comes up over 900.
+const prismArrival = Duration(milliseconds: 1150);
 
-/// How long the arrival is: its last track, the gradients' turn, ends then.
-const prismArrival = Duration(milliseconds: 1580);
+/// How much of the spill shows [ms] into the arrival, 0 to 1.
+double prismSpillAt(double ms) => const Cubic(0.2, 0.9, 0.3, 1.0).transform(((ms - 250) / 900).clamp(0.0, 1.0));
 
-const _ease = Cubic(0.2, 0.9, 0.3, 1.0);
-
-/// The arrival [ms] in: the turn the gradients still have to make (degrees),
-/// where the glint is (in its band's widths) and how opaque, and how much of
-/// the spill shows (0 to 1). At rest from [prismArrival] on.
-({double offset, double glintAt, double glint, double spill}) prismArrivalAt(double ms) {
-  double track(double delay, double length) => ((ms - delay) / length).clamp(0.0, 1.0);
-  final glint = track(150, 900);
-  return (
-    offset: -200 * (1 - _ease.transform(track(80, 1500))),
-    glintAt: -1.6 + 4.4 * _ease.transform(glint),
-    glint: glint < 0.15 ? _ease.transform(glint / 0.15) : 1 - _ease.transform((glint - 0.15) / 0.85),
-    spill: _ease.transform(track(250, 900)),
-  );
-}
-
-/// The gem's light under its bubble, after the bubble's own shadows.
+/// The mention's light under its bubble, after the bubble's own shadows.
 BoxShadow prismShadow(PrismPalette palette) => BoxShadow(
   color: palette.gem.withValues(alpha: 0.45),
   blurRadius: 26,
@@ -43,7 +24,7 @@ BoxShadow prismShadow(PrismPalette palette) => BoxShadow(
   offset: const Offset(0, 8),
 );
 
-/// Whether what's built here is in a [PrismBubble]: its mentions of the user are [PrismChip]s.
+/// Whether what's built here is in a [PrismBubble]: its mentions of the user go in a [PrismAnchor].
 bool inPrism(BuildContext context) => context.dependOnInheritedWidgetOfExactType<_PrismScope>() != null;
 
 /// The part of a list its Prism bubbles take their light from: the list's own
@@ -59,7 +40,7 @@ class PrismViewport extends InheritedWidget {
 
 /// The light of a bubble that mentions the user, between the bubble's fill and
 /// its [child], which it covers edge to edge (the bubble's padding goes in
-/// [child]): the spill, the rim, and the gem under each [PrismChip].
+/// [child]): the spill, centred on the first [PrismAnchor], and the rim.
 class PrismBubble extends StatefulWidget {
   final PrismPalette palette;
 
@@ -78,8 +59,8 @@ class PrismBubble extends StatefulWidget {
 }
 
 class _PrismBubbleState extends State<PrismBubble> with SingleTickerProviderStateMixin {
-  final _chips = _Chips();
-  // At 0 until the arrival plays, so the gem waits unlit; at 1 at rest.
+  final _anchors = _Anchors();
+  // At 0 until the arrival plays, so the bubble waits unlit; at 1 at rest.
   late final _arrival = AnimationController(
     vsync: this,
     duration: prismArrival,
@@ -121,7 +102,7 @@ class _PrismBubbleState extends State<PrismBubble> with SingleTickerProviderStat
   @override
   void dispose() {
     _arrival.dispose();
-    _chips.dispose();
+    _anchors.dispose();
     super.dispose();
   }
 
@@ -161,7 +142,7 @@ class _PrismBubbleState extends State<PrismBubble> with SingleTickerProviderStat
         Positioned.fill(
           child: RepaintBoundary(
             child: CustomPaint(
-              painter: _PrismPainter(this, Listenable.merge([_chips, _arrival, if (!_still) ?_list?.position])),
+              painter: _PrismPainter(this, Listenable.merge([_anchors, _arrival, if (!_still) ?_list?.position])),
             ),
           ),
         ),
@@ -179,61 +160,52 @@ class _PrismScope extends InheritedWidget {
   bool updateShouldNotify(_PrismScope old) => old.bubble != bubble;
 }
 
-/// The chips in a bubble's text: the painter finds them where the text laid them out.
-class _Chips extends ChangeNotifier {
+/// The mentions of the user in a bubble's text: the painter finds them where the text laid them out.
+class _Anchors extends ChangeNotifier {
   final boxes = <BuildContext>[];
 
-  void add(BuildContext chip) {
-    boxes.add(chip);
+  void add(BuildContext anchor) {
+    boxes.add(anchor);
     notifyListeners();
   }
 
-  void remove(BuildContext chip) {
-    if (boxes.remove(chip)) notifyListeners();
+  void remove(BuildContext anchor) {
+    if (boxes.remove(anchor)) notifyListeners();
   }
 }
 
-/// A mention of the user in a [PrismBubble]'s text: their [name] in white, a
-/// box in the line that wraps as a word does. The bubble cuts the gem under it.
-class PrismChip extends StatefulWidget {
-  final String name;
-
-  /// The message's text style, here.
-  final TextStyle style;
-  const PrismChip(this.name, {required this.style, super.key});
+/// A mention of the user in a [PrismBubble]'s text, as [child] shows it: where
+/// the bubble's light comes from. It draws nothing of its own.
+class PrismAnchor extends StatefulWidget {
+  final Widget child;
+  const PrismAnchor({required this.child, super.key});
 
   @override
-  State<PrismChip> createState() => _PrismChipState();
+  State<PrismAnchor> createState() => _PrismAnchorState();
 }
 
-class _PrismChipState extends State<PrismChip> {
-  _Chips? _chips;
+class _PrismAnchorState extends State<PrismAnchor> {
+  _Anchors? _anchors;
 
   @override
   void didChangeDependencies() {
     super.didChangeDependencies();
-    final chips = context.dependOnInheritedWidgetOfExactType<_PrismScope>()?.bubble._chips;
-    if (chips == _chips) return;
-    _chips?.remove(context);
-    (_chips = chips)?.add(context);
+    final anchors = context.dependOnInheritedWidgetOfExactType<_PrismScope>()?.bubble._anchors;
+    if (anchors == _anchors) return;
+    _anchors?.remove(context);
+    (_anchors = anchors)?.add(context);
   }
 
-  // Out of the tree before its box is: the painter only looks for chips still in it.
+  // Out of the tree before its box is: the painter only looks for those still in it.
   @override
   void deactivate() {
-    _chips?.remove(context);
-    _chips = null;
+    _anchors?.remove(context);
+    _anchors = null;
     super.deactivate();
   }
 
   @override
-  Widget build(BuildContext context) => Padding(
-    padding: const EdgeInsets.symmetric(horizontal: 7),
-    child: Text(
-      widget.name,
-      style: widget.style.copyWith(color: Colors.white, fontWeight: FontWeight.w500),
-    ),
-  );
+  Widget build(BuildContext context) => widget.child;
 }
 
 class _PrismPainter extends CustomPainter {
@@ -249,19 +221,19 @@ class _PrismPainter extends CustomPainter {
     final p = bubble.widget.palette;
     final place = bubble._still ? (t: 0.5, sighted: false) : bubble._place(box);
     if (place.sighted && bubble._due) bubble._arrive();
-    final light = prismLight(place.t);
-    final arrival = prismArrivalAt(bubble._still ? 1580 : bubble._arrival.value * 1580);
+    // The side lights slide across as the bubble moves up the list.
+    final slide = 1 - place.t;
     final all = Offset.zero & size;
     final shape = RRect.fromRectAndRadius(all, Radius.circular(bubble.widget.radius));
     // In reading order: the spill centres on the first.
-    final chips = [
-      for (final at in bubble._chips.boxes)
-        if (at.findRenderObject() case final RenderBox chip when chip.attached && chip.hasSize)
-          MatrixUtils.transformRect(chip.getTransformTo(box), Offset.zero & chip.size),
+    final mentions = [
+      for (final at in bubble._anchors.boxes)
+        if (at.findRenderObject() case final RenderBox anchor when anchor.attached && anchor.hasSize)
+          MatrixUtils.transformRect(anchor.getTransformTo(box), Offset.zero & anchor.size),
     ]..sort((a, b) => a.top != b.top ? a.top.compareTo(b.top) : a.left.compareTo(b.left));
 
     // The spill: three soft ellipses, each its color at the centre to nothing at its edge.
-    final shows = p.intensity * arrival.spill;
+    final shows = p.intensity * (bubble._still ? 1 : prismSpillAt(bubble._arrival.value * prismArrival.inMilliseconds));
     void spill(Color color, double alpha, Offset centre, double rx, double ry) {
       final squash = ry / rx;
       canvas.drawRect(
@@ -282,10 +254,10 @@ class _PrismPainter extends CustomPainter {
     if (shows > 0) {
       canvas.save();
       canvas.clipRRect(shape);
-      // No chip shows (the mention is in code, or under a spoiler): no light of its own.
-      if (chips.firstOrNull case final first?) spill(p.gem, 0.36, first.center, 170, 80);
-      spill(p.cool, 0.14, Offset(70 + light.slide * 150, size.height * 0.7), 120, 50);
-      spill(p.warm, 0.12, Offset(30 + light.slide * 90, size.height), 90, 40);
+      // No mention shows (it's in code, or under a spoiler): no light of its own.
+      if (mentions.firstOrNull case final first?) spill(p.gem, 0.36, first.center, 170, 80);
+      spill(p.cool, 0.14, Offset(70 + slide * 150, size.height * 0.7), 120, 50);
+      spill(p.warm, 0.12, Offset(30 + slide * 90, size.height), 90, 40);
       canvas.restore();
     }
 
@@ -308,94 +280,9 @@ class _PrismPainter extends CustomPainter {
           const [0, 0.42, 0.70, 1],
         ),
     );
-
-    // A sweep starts at 3 o'clock: a quarter turn back, to the design's 12.
-    final turn = (light.angle + arrival.offset - 90) * math.pi / 180;
-    final cos = math.cos(turn), sin = math.sin(turn);
-    for (final chip in chips) {
-      final gem = RRect.fromRectAndRadius(chip, const Radius.circular(8));
-      final c = chip.center;
-      final turned = Float64List.fromList([
-        ...[cos, sin, 0, 0],
-        ...[-sin, cos, 0, 0],
-        ...[0, 0, 1, 0],
-        ...[c.dx - cos * c.dx + sin * c.dy, c.dy - sin * c.dx - cos * c.dy, 0, 1],
-      ]);
-      Shader sweep(List<(Color, double)> stops) => ui.Gradient.sweep(
-        c,
-        [for (final (color, _) in stops) color],
-        [for (final (_, degrees) in stops) degrees / 360],
-        TileMode.clamp,
-        0,
-        math.pi * 2,
-        turned,
-      );
-      final glow = BoxShadow(color: p.gem.withValues(alpha: 0.7), blurRadius: 14, spreadRadius: -2);
-      canvas.drawRRect(gem.inflate(glow.spreadRadius), glow.toPaint());
-      canvas.drawRRect(
-        gem,
-        Paint()
-          ..shader = sweep([
-            (p.deep, 0),
-            (p.body, 50),
-            (p.band, 70),
-            (p.body, 100),
-            (p.deep, 180),
-            (p.body, 225),
-            (p.band, 248),
-            (p.body, 275),
-            (p.deep, 360),
-          ]),
-      );
-      if (arrival.glint > 0) {
-        // The glint: a leaning band of light across the gem, once.
-        final width = chip.width * 0.6;
-        canvas.save();
-        canvas.clipRRect(gem);
-        canvas.translate(chip.left + width / 2 + arrival.glintAt * width, c.dy);
-        canvas.skew(math.tan(-22 * math.pi / 180), 0);
-        canvas.drawRect(
-          Rect.fromCenter(center: Offset.zero, width: width, height: chip.height * 2.2),
-          Paint()
-            ..shader = ui.Gradient.linear(
-              Offset(-width / 2, 0),
-              Offset(width / 2, 0),
-              [
-                _white.withValues(alpha: 0),
-                _white.withValues(alpha: 0.10 * arrival.glint),
-                _white.withValues(alpha: 0.38 * arrival.glint),
-                p.cool.withValues(alpha: 0.40 * arrival.glint),
-                p.cool.withValues(alpha: 0),
-              ],
-              const [0, 0.30, 0.50, 0.56, 1],
-            ),
-        );
-        canvas.restore();
-      }
-      canvas.drawRRect(
-        gem.deflate(0.5),
-        Paint()
-          ..style = PaintingStyle.stroke
-          ..strokeWidth = 1
-          ..shader = sweep([
-            (p.deep, 0),
-            (p.gem, 38),
-            (p.hi, 58),
-            (_white, 66),
-            (p.cool, 76),
-            (p.gem, 104),
-            (p.deep, 170),
-            (p.gem, 214),
-            (p.warm, 238),
-            (p.hi, 248),
-            (p.gem, 276),
-            (p.deep, 360),
-          ]),
-      );
-    }
   }
 
-  // The bubble moves, its chips too, with nothing here to tell: each new painter paints.
+  // The bubble moves, its mentions too, with nothing here to tell: each new painter paints.
   @override
   bool shouldRepaint(_PrismPainter old) => true;
 }

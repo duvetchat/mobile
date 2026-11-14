@@ -208,37 +208,20 @@ abstract final class DuvetType {
   static const code = TextStyle(fontFamily: mono, fontFamilyFallback: fallback, fontSize: 14, height: 1.4);
 }
 
-/// Prism's colors: the gem a mention of the user is cut into, and its light on
-/// the bubble. Opaque; each layer takes its own share of them.
+/// Prism's colors: the light a mention of the user throws on its bubble.
+/// Opaque; each layer takes its own share of them.
 class PrismPalette {
-  /// The gem itself: its glow, the spill round it, the rims.
+  /// The light itself: the spill round the mention, the rim, the shadow.
   final Color gem;
 
-  /// The rim's highlight, by its white hot spot.
-  final Color hi;
-
-  /// The gem's fill, from its shadowed facets ([deep]) up to the lit ones ([band]).
-  final Color deep;
-  final Color body;
-  final Color band;
-
-  /// The blue and the pink the gem splits its light into.
+  /// The blue and the pink it splits into, to the sides.
   final Color cool;
   final Color warm;
 
   /// How much of the spill shows, 0 to 1.
   final double intensity;
 
-  const PrismPalette({
-    required this.gem,
-    required this.hi,
-    required this.deep,
-    required this.body,
-    required this.band,
-    required this.cool,
-    required this.warm,
-    required this.intensity,
-  });
+  const PrismPalette({required this.gem, required this.cool, required this.warm, required this.intensity});
 }
 
 /// The Duvet design-system tokens forui has no slot for: Liquid Glass, the
@@ -294,8 +277,8 @@ class DuvetTokens {
   /// Inset: the resting recess of fields.
   final List<BoxShadow> shadowWell;
 
-  /// A mention of the user as a gem. Null where it isn't designed yet (light):
-  /// the mention keeps its violet outline there.
+  /// The light of a mention of the user. Null where it isn't designed yet
+  /// (light): the bubble keeps its violet outline there.
   final PrismPalette? prism;
 
   const DuvetTokens._({
@@ -391,16 +374,7 @@ class DuvetTokens {
       BoxShadow(color: Color(0x4D000000), blurRadius: 2, offset: Offset(0, 1)),
     ],
     shadowWell: [BoxShadow(color: Color(0x66000000), blurRadius: 3, offset: Offset(0, 1))],
-    prism: PrismPalette(
-      gem: Color(0xFF8B6CFF),
-      hi: Color(0xFFCFCAFF),
-      deep: Color(0xFF3D3072),
-      body: Color(0xFF5744A0),
-      band: Color(0xFF6F56CC),
-      cool: Color(0xFF7B9DFF),
-      warm: Color(0xFFBF7CEF),
-      intensity: 0.7,
-    ),
+    prism: PrismPalette(gem: Color(0xFF8B6CFF), cool: Color(0xFF7B9DFF), warm: Color(0xFFBF7CEF), intensity: 0.7),
   );
 
   // Backdrop blur: bars, and overlays (dropdowns, sheets).

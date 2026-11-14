@@ -79,8 +79,8 @@ class _Bubble extends StatelessWidget {
   /// Dismisses a bot's answer to the user alone.
   final VoidCallback? onDismiss;
 
-  /// An unread mention of the user, its gem yet to shine: called when it does,
-  /// as all of the bubble first comes into sight.
+  /// An unread mention of the user, its light yet to come up: called when it
+  /// does, as all of the bubble first comes into sight.
   final VoidCallback? onShine;
 
   const _Bubble({
@@ -127,7 +127,7 @@ class _Bubble extends StatelessWidget {
     final text = withoutPreviewedLinks(m.content, m.embeds, cards: !lifted);
     final textBubble = text.isNotEmpty && !isJumboEmoji(text);
     // Prism, where it's designed (dark): the mention in the bubble's own text
-    // is a gem, lighting the bubble. Any other mention keeps the outline.
+    // lights the bubble. Any other mention keeps the outline.
     final prism = mentionsMe && textBubble && mentionedIn(text).contains(directory.me) ? tokens.prism : null;
     const bubblePadding = EdgeInsets.symmetric(horizontal: 12, vertical: 8);
     final maxWidth = MediaQuery.sizeOf(context).width * 0.75;
@@ -196,7 +196,7 @@ class _Bubble extends StatelessWidget {
                     child: message,
                   );
                 }
-                // The same bubble, the gem's light between its fill and its
+                // The same bubble, the mention's light between its fill and its
                 // text: the padding goes inside, so the light reaches the edges.
                 return Container(
                   constraints: BoxConstraints(maxWidth: maxWidth),
@@ -208,7 +208,7 @@ class _Bubble extends StatelessWidget {
                   child: PrismBubble(
                     palette: prism,
                     radius: DuvetTokens.radiusButton,
-                    // A copy held up shows the gem at rest.
+                    // A copy held up is lit already.
                     onArrive: lifted ? null : onShine,
                     child: Padding(padding: bubblePadding, child: message),
                   ),

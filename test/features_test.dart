@@ -142,7 +142,7 @@ void main() {
       await tester.pumpAndSettle();
     }
 
-    testWidgets('in dark, a mention of you is a gem with no outline, which shines once', (tester) async {
+    testWidgets('in dark, a mention of you lights its bubble, with no outline, once', (tester) async {
       tester.platformDispatcher.platformBrightnessTestValue = Brightness.dark;
       addTearDown(tester.platformDispatcher.clearPlatformBrightnessTestValue);
       final repository = await openGeneral(tester);
@@ -150,14 +150,14 @@ void main() {
           FakeRepository.message(id, author: FakeRepository.leo, name: 'leo', text: text);
       repository.push('r-general', MessageCreated(from('m-gem', 'ping <@${FakeRepository.me.id}>')));
       await tester.pump();
-      expect(find.byType(PrismChip), findsOneWidget);
+      expect(find.byType(PrismAnchor), findsOneWidget);
       expect(
         find.byWidgetPredicate(
           (w) => w is Container && ((w.decoration as BoxDecoration?)?.border as Border?)?.top.width == 1.5,
         ),
         findsNothing,
       );
-      // Come in sight as it arrived, its arrival is due, and plays: through the glint, to rest.
+      // Come in sight as it arrived, its arrival is due, and plays through.
       expect(tester.widget<PrismBubble>(find.byType(PrismBubble)).onArrive, isNotNull);
       await tester.pump(const Duration(milliseconds: 400));
       await tester.pump(const Duration(milliseconds: 400));
@@ -170,7 +170,7 @@ void main() {
       semantics.dispose();
     });
 
-    testWidgets('in dark, the gem\'s light turns as the list scrolls, and a bubble held up doesn\'t shine again', (
+    testWidgets('in dark, a mention\'s light moves as the list scrolls, and a bubble held up isn\'t lit again', (
       tester,
     ) async {
       tester.platformDispatcher.platformBrightnessTestValue = Brightness.dark;
@@ -192,7 +192,7 @@ void main() {
       }
       await tester.pumpAndSettle();
 
-      // The gem's own layer, which holds nothing but its light.
+      // The light's own layer, which holds nothing else.
       Future<List<int>> light() async {
         final layer = tester.renderObject<RenderRepaintBoundary>(
           find.descendant(of: find.byType(PrismBubble), matching: find.byType(RepaintBoundary)).first,
@@ -209,8 +209,8 @@ void main() {
       // The pictures took real time, in which the deep links' plugin, absent here, fails: not this test's.
       expect(tester.takeException(), anyOf(isNull, isA<MissingPluginException>()));
 
-      // Held up: a copy over the list, with its gem, neither of them due.
-      await tester.longPress(find.byType(PrismChip));
+      // Held up: a copy over the list, lit too, neither of them due.
+      await tester.longPress(find.byType(PrismAnchor));
       await tester.pumpAndSettle();
       expect(tester.takeException(), isNull);
       final bubbles = tester.widgetList<PrismBubble>(find.byType(PrismBubble));
@@ -219,7 +219,7 @@ void main() {
       semantics.dispose();
     });
 
-    testWidgets('in dark, an unread mention shines as its chat opens, and not when it opens again', (tester) async {
+    testWidgets('in dark, an unread mention lights up as its chat opens, and not when it opens again', (tester) async {
       tester.platformDispatcher.platformBrightnessTestValue = Brightness.dark;
       addTearDown(tester.platformDispatcher.clearPlatformBrightnessTestValue);
       final repository = await openGeneral(tester);
@@ -248,7 +248,7 @@ void main() {
       await reopen();
       expect(due(), isTrue);
       await tester.pumpAndSettle();
-      // Still counted unread, say: it has shone, and doesn't again.
+      // Still counted unread, say: it has lit up, and doesn't again.
       await reopen();
       await tester.pumpAndSettle();
       expect(find.byType(PrismBubble), findsOneWidget);
