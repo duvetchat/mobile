@@ -79,7 +79,12 @@ class DuvetRepository implements ChatRepository {
   DuvetRepository({
     SessionStore? store,
     RecentChatsStore? recentsStore,
-    ApiRouter router = const ApiRouter(),
+    // Picked at build time (README, Build flags); production by default.
+    ApiRouter router = const ApiRouter(
+      api: String.fromEnvironment('DUVET_API', defaultValue: 'api.duvet.chat'),
+      ws: String.fromEnvironment('DUVET_GATEWAY', defaultValue: 'ws.duvet.chat'),
+      secure: bool.fromEnvironment('DUVET_SECURE', defaultValue: true),
+    ),
     http.Client Function()? httpClient,
     @visibleForTesting bool connectGateway = true,
     @visibleForTesting bool? preload,
@@ -3589,7 +3594,7 @@ class DuvetRepository implements ChatRepository {
     ]..sort((a, b) => a.name.toLowerCase().compareTo(b.name.toLowerCase()));
   }
 
-  String _webhookUrl(String id, String token) => 'https://${_router.api}/api/webhooks/$id/$token';
+  String _webhookUrl(String id, String token) => '$_origin/api/webhooks/$id/$token';
 
   @override
   Future<String> createWebhook(String spaceId, String roomId, String name) async {
@@ -4385,7 +4390,7 @@ class DuvetRepository implements ChatRepository {
   // made whole.
   String _absolute(String? url, String attachmentId) => switch (url) {
     final url? when url.startsWith('http') => url,
-    final url? when url.startsWith('/') => 'https://${_router.api}$url',
+    final url? when url.startsWith('/') => '$_origin$url',
     _ => attachmentUrl(attachmentId),
   };
 
@@ -4442,7 +4447,10 @@ class DuvetRepository implements ChatRepository {
   ]..removeWhere((e) => e.isEmpty);
 
   /// An attachment's URL, served outside `/api`.
-  String attachmentUrl(String id) => 'https://${_router.api}/attachments/$id';
+  String attachmentUrl(String id) => '$_origin/attachments/$id';
+
+  // The API's scheme and host, as the client reaches it.
+  String get _origin => '${_router.secure ? 'https' : 'http'}://${_router.api}';
 
   static final _uuid = RegExp(r'^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$', caseSensitive: false);
 
@@ -4452,7 +4460,7 @@ class DuvetRepository implements ChatRepository {
   String? avatarUrl(String? avatar) {
     if (avatar == null || avatar.isEmpty) return null;
     if (avatar.startsWith('https://') || avatar.startsWith('http://')) return avatar;
-    return _uuid.hasMatch(avatar) ? 'https://${_router.api}/attachments/$avatar' : null;
+    return _uuid.hasMatch(avatar) ? attachmentUrl(avatar) : null;
   }
 
   @override

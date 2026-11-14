@@ -9,6 +9,7 @@ import 'package:duvet/data/models.dart';
 import 'package:duvet/data/recent_chats.dart';
 import 'package:duvet/data/session_store.dart';
 import 'package:duvet_client/duvet.dart' as duvet;
+import 'package:duvet_client/http/router.dart' show ApiRouter;
 import 'package:fake_async/fake_async.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
@@ -407,6 +408,19 @@ void main() {
     expect(chat.isGroup, isFalse);
     expect(chat.avatarUrl, 'https://api.duvet.chat/attachments/$_avatar');
     expect(chat.otherUserId, _maya);
+  });
+
+  test('an API picked at build time without TLS gives its pictures over http, on its host (#22)', () {
+    final local = DuvetRepository(
+      store: store,
+      recentsStore: MemoryRecentChatsStore(),
+      router: const ApiRouter(api: '192.168.1.20:8080', ws: '192.168.1.20:8081', secure: false),
+      connectGateway: false,
+    );
+    addTearDown(local.dispose);
+    expect(local.avatarUrl(_avatar), 'http://192.168.1.20:8080/attachments/$_avatar');
+    // Production by default.
+    expect(repository.avatarUrl(_avatar), 'https://api.duvet.chat/attachments/$_avatar');
   });
 
   test('a conversation\'s members come with their bio and banner, for their profiles', () async {
