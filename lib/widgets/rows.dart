@@ -544,7 +544,8 @@ class SpaceWideCard extends StatelessWidget {
   final Space space;
   final bool unread;
   final VoidCallback onTap;
-  const SpaceWideCard({required this.space, required this.onTap, this.unread = false, super.key});
+  final VoidCallback? onLongPress;
+  const SpaceWideCard({required this.space, required this.onTap, this.unread = false, this.onLongPress, super.key});
 
   @override
   Widget build(BuildContext context) {
@@ -556,8 +557,10 @@ class SpaceWideCard extends StatelessWidget {
       label: [space.name, if (unread) 'unread', ?online].join(', '),
       excludeSemantics: true,
       onTap: onTap,
+      onLongPress: onLongPress,
       child: Pressable(
         onTap: onTap,
+        onLongPress: onLongPress,
         scale: 0.98,
         builder: (context, pressed) => AnimatedContainer(
           duration: pressed ? DuvetTokens.pressIn : DuvetTokens.pressOut,

@@ -1146,6 +1146,13 @@ class RoomSection {
   const RoomSection({this.id, required this.name, required this.rooms});
 }
 
+/// What the user is notified of in a place: every message, only the messages that mention them, or nothing, which
+/// also takes away the place's unread mark and its mention count (`ChatRepository.quiet`).
+enum NotificationLevel { all, mentions, nothing }
+
+/// The kind of place a notification level is for.
+enum NotificationTarget { space, room, conversation }
+
 class Space {
   final String id;
   final String name;

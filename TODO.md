@@ -35,6 +35,8 @@ Desktop: `MessageList`, `ChatInput`, `MessagePreview`.
 - [x] **Catch-up after reconnect:** `getMessagesAfter` / `getDirectMessagesAfter` from the newest known message when the gateway resumes.
 - [x] **Jump to the first unread:** with a "New messages" divider; unread counts from `READY` and `getMentionCounts`.
 - [x] **Mention notifications:** handle `MENTION_CREATE`; show a mention count on the Chats row (weight and count only, never a blue dot).
+- [x] **Notification levels:** every message, only mentions or nothing, for each Space, room and chat, as the desktop's.
+  _A long press on a Space or a room, the Space's menu and a chat's menu choose it (`showNotificationMenu`); a Space or a room also offers its default, a room's being its Space's level and a Space's what its owner chose in its Overview (Default notifications), only mentions until they do. Nothing takes away the place's unread mark, its mention count, its mention notice and their sound; the repository keeps the marks, so they come back with the level. READY loads the levels and NOTIFICATION_SETTINGS_UPDATE keeps them current (`notificationLevels`, duvet-client 2.7.0)._
 - [x] **Draft per chat:** keep the unsent text, files and reply target when leaving a chat.
 - [x] **Failed send:** keep the files with a retry action (done); add "Delete" for a failed message.
 
@@ -102,7 +104,7 @@ Desktop: `UserSettings`, the `(auth)` routes, `UserStatusBar`.
 - [x] **Edit profile:** alias and bio (`updateUser`); avatar and banner with a cropper (`uploadProfileImage`, as `ImageCropModal`).
   _Alias, avatar and banner are done (a pure-Dart cropper; the phone uploads only the part picked). The bio is an "About me" field with a counter, as desktop's `UserSettings`: 190 characters counted as code points, so an emoji is one, trimmed, and empty clears it. It goes only when changed (`updateUser(custom:)`, duvet-client). The page no longer breaks when the keyboard opens (its fields were made again on every padding change: a `LateInitializationError`)._
 - [x] **Status:** online or do not disturb. `updateUser` has no status field, so check how desktop's `UserStatusBar` sets it and add the call to `duvet_client` if it's missing.
-  _A Status control on the You tab, Online or Do not disturb (`setStatus`, duvet-client: `PUT /api/users/@me/status`). The user's own status comes from READY and from USER_STATUS_UPDATE about them, so a change on another device shows. Do not disturb was already drawn wherever presence shows (the dot with a bar, "Do not disturb"). The app makes no sounds or alerts of its own for messages and mentions yet, so there's nothing to silence. M8's incoming call must show without ringing in do not disturb (`Profile.status`), as desktop's `callRings` does._
+  _A Status control on the You tab, Online or Do not disturb (`setStatus`, duvet-client: `PUT /api/users/@me/status`). The user's own status comes from READY and from USER_STATUS_UPDATE about them, so a change on another device shows. Do not disturb was already drawn wherever presence shows (the dot with a bar, "Do not disturb"). In do not disturb a mention shows no notice and plays no sound, and an incoming call shows without buzzing, as desktop's `callRings` doesn't ring._
 - [x] **Change email:** `changeEmail` / `sendChangeEmail`.
 - [x] **My files:** list and delete my attachments and see storage use (`getMyAttachments`, `deleteMyAttachment`, `getMyStorageStatus`).
 - [x] **Appearance:** system, light or dark.

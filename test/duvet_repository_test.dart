@@ -152,6 +152,12 @@ void main() {
   Map<String, int>? mayaPlatformsInConversation;
   // The friends' client statuses, by user ID, as the friends list gives them.
   late Map<String, Map<String, int>> friendPlatforms;
+
+  /// The notification levels the API has for the user.
+  late List<Map<String, dynamic>> savedLevels;
+
+  /// While set, holds the levels' answer, as it was when asked.
+  Completer<void>? holdLevels;
   // An API since api#63 gives the friends list their banners.
   late bool friendBanners;
 
@@ -199,6 +205,8 @@ void main() {
     mayaInConversation = null;
     mayaPlatformsInConversation = null;
     friendPlatforms = {};
+    savedLevels = [];
+    holdLevels = null;
     friendBanners = false;
     holdAsking = null;
     pictureRefusal = null;
@@ -231,6 +239,11 @@ void main() {
       if (request.url.path == '/api/users/@me/team-invites') {
         final answer = jsonEncode(teamInviting);
         if (holdInvites case final hold?) await hold.future;
+        return http.Response(answer, 200, headers: {'content-type': 'application/json'});
+      }
+      if (request.method == 'GET' && request.url.path == '/api/users/@me/notification-settings') {
+        final answer = jsonEncode(savedLevels);
+        if (holdLevels case final hold?) await hold.future;
         return http.Response(answer, 200, headers: {'content-type': 'application/json'});
       }
       final json = switch ((request.method, request.url.path)) {
@@ -309,6 +322,20 @@ void main() {
           nonce: (jsonDecode(request.body) as Map)['nonce'] as String?,
         ),
         ('GET', '/api/users/@me/mentions/counts') => {'r-general': 2, 'c-1': 0},
+        // A room that's gone, and a clear the network drops.
+        ('PUT', '/api/users/@me/notification-settings/r-gone') => http.Response(
+          jsonEncode({'error': 'room not found'}),
+          404,
+        ),
+        ('DELETE', '/api/users/@me/notification-settings/s-gone') => throw const SocketException('no network'),
+        ('PUT', _) when request.url.path.startsWith('/api/users/@me/notification-settings/') => {
+          'target_id': request.url.pathSegments.last,
+          ...body(),
+        },
+        ('DELETE', _) when request.url.path.startsWith('/api/users/@me/notification-settings/') => http.Response(
+          '',
+          204,
+        ),
         ('GET', '/api/users/@me/friends') => [
           for (final (id, name, status) in [(_maya, 'maya', 2), (_leo, 'leo', 0)])
             {
@@ -2355,6 +2382,172 @@ void main() {
       const p = Profile(id: _me, username: 'gaby', status: Presence.doNotDisturb);
       expect(profileFromJson(profileToJson(p)).status, Presence.doNotDisturb);
       expect(profileFromJson(profileToJson(const Profile(id: _me, username: 'gaby'))).status, Presence.online);
+    });
+  });
+
+  // What the user is notified of in each place: a room's own level, else its Space's, else the Space's default
+  // (only mentions without one); a conversation's own, else every message.
+  group('notification levels', () {
+    Map<String, dynamic> space({int? defaultLevel}) => {
+      'space': {
+        'id': 's-1',
+        'name': 'Design Guild',
+        'owner_id': _maya,
+        'default_notifications': ?defaultLevel,
+        'created_at': _at,
+        'updated_at': _at,
+      },
+      'rooms': {
+        for (final (id, position) in [('r-general', 0), ('r-other', 1)])
+          id: {
+            'id': id,
+            'space_id': 's-1',
+            'type': 1,
+            'name': id,
+            'position': position,
+            'created_at': _at,
+            'updated_at': _at,
+          },
+      },
+      'roles_permissions': <String, dynamic>{},
+      'owner_id': _maya,
+    };
+    Future<void> ready() async {
+      await repository.logIn('gaby@duvet.chat', 'secret');
+      repository.handleEvent(_event('READY', {'user': _user(_me, 'gaby'), 'sessionToken': 'ws'}));
+      await pumpEventQueue();
+    }
+
+    void update(String id, int type, int? level) => repository.handleEvent(
+      _event('NOTIFICATION_SETTINGS_UPDATE', {'target_id': id, 'target_type': type, 'level': level}),
+    );
+
+    test('READY loads them, and NOTIFICATION_SETTINGS_UPDATE keeps them current', () async {
+      savedLevels = [
+        {'target_id': 'r-general', 'target_type': 1, 'level': 2},
+      ];
+      await ready();
+      expect(repository.notificationLevels.value, {'r-general': NotificationLevel.nothing});
+
+      update('c-1', 2, 1);
+      update('r-general', 1, null);
+      expect(repository.notificationLevels.value, {'c-1': NotificationLevel.mentions});
+    });
+
+    test('a room\'s own level wins over its Space\'s, which wins over the Space\'s default', () async {
+      await ready();
+      repository.handleEvent(_event('SPACE_CREATE', space(defaultLevel: 0)));
+      expect(
+        (repository.spaceLevel('s-1'), repository.roomLevel('r-other')),
+        (NotificationLevel.all, NotificationLevel.all),
+      );
+
+      update('s-1', 0, 2);
+      update('r-general', 1, 0);
+      expect(repository.roomLevel('r-general'), NotificationLevel.all);
+      expect(repository.roomLevel('r-other'), NotificationLevel.nothing);
+      expect((repository.quiet('r-general'), repository.quiet('r-other')), (false, true));
+
+      // Back to the Space's default: every message.
+      update('s-1', 0, null);
+      expect((repository.roomLevel('r-other'), repository.quiet('r-other')), (NotificationLevel.all, false));
+    });
+
+    test('a Space without a default notifies only mentions, a conversation every message', () async {
+      await ready();
+      repository.handleEvent(_event('SPACE_CREATE', space()));
+      expect(repository.spaceLevel('s-1'), NotificationLevel.mentions);
+      expect(repository.roomLevel('r-general'), NotificationLevel.mentions);
+      expect((repository.conversationLevel('c-1'), repository.quiet('c-1')), (NotificationLevel.all, false));
+
+      update('c-1', 2, 2);
+      expect(repository.quiet('c-1'), isTrue);
+    });
+
+    test('SPACE_UPDATE brings the Space\'s new default', () async {
+      await ready();
+      repository.handleEvent(_event('SPACE_CREATE', space(defaultLevel: 1)));
+      repository.handleEvent(
+        _event('SPACE_UPDATE', {...space()['space'] as Map<String, dynamic>, 'default_notifications': 0}),
+      );
+      expect(repository.roomLevel('r-general'), NotificationLevel.all);
+    });
+
+    test('setNotificationLevel puts a place\'s level, and null clears it', () async {
+      await ready();
+      await repository.setNotificationLevel('r-general', NotificationTarget.room, NotificationLevel.nothing);
+      await repository.setNotificationLevel('s-1', NotificationTarget.space, null);
+      final sent = requests.where((r) => r.url.path.startsWith('/api/users/@me/notification-settings/')).toList();
+      expect(sent.map((r) => '${r.method} ${r.url.path}'), [
+        'PUT /api/users/@me/notification-settings/r-general',
+        'DELETE /api/users/@me/notification-settings/s-1',
+      ]);
+      expect(jsonDecode(sent.first.body), {'target_type': 1, 'level': 2});
+    });
+
+    test('signing out forgets them', () async {
+      savedLevels = [
+        {'target_id': 'c-1', 'target_type': 2, 'level': 2},
+      ];
+      await ready();
+      await repository.logOut();
+      expect(repository.notificationLevels.value, isEmpty);
+    });
+
+    test('READY\'s answer keeps the changes that came while it was on its way', () async {
+      savedLevels = [
+        {'target_id': 'r-general', 'target_type': 1, 'level': 2},
+        {'target_id': 'c-1', 'target_type': 2, 'level': 2},
+      ];
+      final hold = holdLevels = Completer<void>();
+      await ready();
+      // The answer was read before these: the Space's level set on another device, and the chat's cleared.
+      update('s-1', 0, 1);
+      update('c-1', 2, null);
+      hold.complete();
+      await pumpEventQueue();
+      expect(repository.notificationLevels.value, {
+        'r-general': NotificationLevel.nothing,
+        's-1': NotificationLevel.mentions,
+      });
+    });
+
+    test('an older READY\'s answer, or one that comes after signing out, changes nothing', () async {
+      savedLevels = [
+        {'target_id': 'r-general', 'target_type': 1, 'level': 2},
+      ];
+      final older = holdLevels = Completer<void>();
+      await ready();
+      // READY again, after a drop: its answer comes first.
+      savedLevels = [
+        {'target_id': 'r-general', 'target_type': 1, 'level': 1},
+      ];
+      holdLevels = null;
+      repository.handleEvent(_event('READY', {'user': _user(_me, 'gaby'), 'sessionToken': 'ws'}));
+      await pumpEventQueue();
+      older.complete();
+      await pumpEventQueue();
+      expect(repository.notificationLevels.value, {'r-general': NotificationLevel.mentions});
+
+      final last = holdLevels = Completer<void>();
+      repository.handleEvent(_event('READY', {'user': _user(_me, 'gaby'), 'sessionToken': 'ws'}));
+      await pumpEventQueue();
+      await repository.logOut();
+      last.complete();
+      await pumpEventQueue();
+      expect(repository.notificationLevels.value, isEmpty);
+    });
+
+    test('a change the server refuses, or that never reaches it, says why', () async {
+      await ready();
+      await expectLater(
+        repository.setNotificationLevel('r-gone', NotificationTarget.room, NotificationLevel.nothing),
+        throwsA(isA<ActionFailed>().having((e) => e.message, 'message', 'Room not found')),
+      );
+      await expectLater(
+        repository.setNotificationLevel('s-gone', NotificationTarget.space, null),
+        throwsA(isA<ActionFailed>().having((e) => e.message, 'message', 'No connection. Check it and try again.')),
+      );
     });
   });
 }

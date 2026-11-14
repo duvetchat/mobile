@@ -696,6 +696,28 @@ void main() {
     });
 
     test(
+      'shows nothing for a room at nothing, its own level or its Space\'s, and shows again once it isn\'t',
+      () async {
+        void level(String id, int type, int? level) => repository.handleEvent(
+          _event('NOTIFICATION_SETTINGS_UPDATE', {'target_id': id, 'target_type': type, 'level': level}),
+        );
+        level('r-1', 1, 2);
+        repository.handleEvent(_event('MESSAGE_CREATE', _roomMessage('7', 'quiet room')));
+        mention('7');
+        level('r-1', 1, null);
+        level('s-1', 0, 2);
+        repository.handleEvent(_event('MESSAGE_CREATE', _roomMessage('8', 'quiet Space')));
+        mention('8');
+        expect(shown(), isEmpty);
+
+        level('s-1', 0, null);
+        repository.handleEvent(_event('MESSAGE_CREATE', _roomMessage('9', 'heard')));
+        mention('9');
+        expect(shown(), ['9']);
+      },
+    );
+
+    test(
       'opening a chat takes its notices away; one below the chat on screen going hidden leaves that on screen',
       () async {
         repository.handleEvent(_event('MESSAGE_CREATE', _roomMessage('7', 'look')));

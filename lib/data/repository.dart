@@ -7,6 +7,14 @@ import 'voice_signaling.dart';
 
 /// Everything the app asks of a Duvet server. The UI depends on this alone;
 /// [DuvetRepository] talks to the real API, and tests pass a fake.
+/// The marks the UI shows: a chat at nothing ([ChatRepository.quiet]) shows neither, though [ChatRepository.unread]
+/// and [ChatRepository.mentions] keep them, so they come back with its level. What shows them listens to
+/// [ChatRepository.notificationLevels] too.
+extension ShownMarks on ChatRepository {
+  bool shownUnread(String chatId) => unread.value.contains(chatId) && !quiet(chatId);
+  int shownMentions(String chatId) => quiet(chatId) ? 0 : mentions.value[chatId] ?? 0;
+}
+
 abstract interface class ChatRepository {
   /// The signed-in user, or null when signed out.
   ValueListenable<Profile?> get profile;
@@ -239,7 +247,8 @@ abstract interface class ChatRepository {
 
   /// Changes the Space; [removeBanner] takes its banner away, as no
   /// [bannerPath] can. With pictures, [onProgress] follows their upload (0 to
-  /// 1). An empty [locale] clears it.
+  /// 1). An empty [locale] clears it. [defaultNotifications] is what its members
+  /// are notified of until they choose: every message or only mentions.
   Future<void> updateSpace(
     String spaceId, {
     String? name,
@@ -249,6 +258,7 @@ abstract interface class ChatRepository {
     String? bannerPath,
     bool removeBanner = false,
     bool removeIcon = false,
+    NotificationLevel? defaultNotifications,
     void Function(double progress)? onProgress,
   });
 
@@ -469,6 +479,31 @@ abstract interface class ChatRepository {
 
   /// Unread mentions of the user, by chat ID.
   ValueListenable<Map<String, int>> get mentions;
+
+  /// The notification levels the user chose, by place: a Space's, a room's or a conversation's ID. READY loads them
+  /// and NOTIFICATION_SETTINGS_UPDATE keeps them current; a place without one notifies by its default.
+  ValueListenable<Map<String, NotificationLevel>> get notificationLevels;
+
+  /// What a Space notifies of: the user's level for it, else its default ([spaceDefault]).
+  NotificationLevel spaceLevel(String spaceId);
+
+  /// What a Space notifies its members of until they choose: every message or only mentions, which its owner and
+  /// Administrators set (only mentions until they do, and from a server without it).
+  NotificationLevel spaceDefault(String spaceId);
+
+  /// What a room notifies of: the user's level for it, else its Space's.
+  NotificationLevel roomLevel(String roomId);
+
+  /// What a conversation notifies of: the user's level for it, else every message.
+  NotificationLevel conversationLevel(String conversationId);
+
+  /// Whether a chat (a room's or a conversation's ID) notifies of nothing: no notice, no sound, no unread mark and no
+  /// mention count. [unread] and [mentions] still hold it, so its marks come back as its level changes.
+  bool quiet(String chatId);
+
+  /// Sets the user's level for a place, or clears it ([level] null) so the place notifies by its default. The levels
+  /// change once NOTIFICATION_SETTINGS_UPDATE comes back.
+  Future<void> setNotificationLevel(String targetId, NotificationTarget target, NotificationLevel? level);
 
   /// The notices of mentions of the user in chats that aren't on screen, the
   /// newest first, a few at most, each for a few seconds. None in do not

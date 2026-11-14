@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:forui/forui.dart';
 
 import '../data/models.dart';
+import '../data/repository.dart';
 import '../data/scope.dart';
 import '../theme.dart';
 import 'glass.dart';
@@ -66,9 +67,8 @@ Future<Room?> showChannelSwitcher(BuildContext context, {required Space space, r
             if (r.kind == RoomKind.text) r.target,
         ]);
         return ListenableBuilder(
-          listenable: Listenable.merge([repository.unread, repository.latest]),
+          listenable: Listenable.merge([repository.unread, repository.notificationLevels, repository.latest]),
           builder: (context, _) {
-            final unread = repository.unread.value;
             final latest = repository.latest.value;
             final me = repository.profile.value?.id;
             return ListView(
@@ -85,7 +85,7 @@ Future<Room?> showChannelSwitcher(BuildContext context, {required Space space, r
                           title: room.name,
                           hash: true,
                           selected: room.id == current,
-                          unread: unread.contains(room.id),
+                          unread: repository.shownUnread(room.id),
                           snippet: switch (latest[room.id]) {
                             final m? => '${m.authorId == me ? 'You' : m.authorName}: ${repository.previewOf(m)}',
                             null => null,

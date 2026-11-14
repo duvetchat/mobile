@@ -18,6 +18,7 @@ import 'theme.dart';
 import 'widgets/chrome.dart';
 import 'widgets/depth.dart';
 import 'widgets/glass.dart';
+import 'widgets/notification_menu.dart';
 import 'widgets/rows.dart';
 import 'widgets/sheets.dart' show LoadingSkeleton, placeholderNames;
 
@@ -899,6 +900,7 @@ Future<void> showSpaceMenu(BuildContext anchor, {required Space space}) async {
       else
         const GlassMenuItem(icon: FLucideIcons.smile, label: 'Emojis and stickers', value: 'assets'),
       const GlassMenuItem(icon: FLucideIcons.checkCheck, label: 'Mark all as read', value: 'read'),
+      const GlassMenuItem(icon: FLucideIcons.bell, label: 'Notifications', value: 'notifications'),
       // Its owner can't leave it: they delete it.
       if (anchor.repository.spaceProfile(space.id)?.owner ?? false)
         const GlassMenuItem(icon: FLucideIcons.trash2, label: 'Delete Space', value: 'delete', destructive: true)
@@ -927,6 +929,8 @@ Future<void> showSpaceMenu(BuildContext anchor, {required Space space}) async {
       await Navigator.of(anchor).push(MaterialPageRoute<void>(builder: (_) => AssetsPage(spaceId: space.id)));
     case 'read':
       repository.markSpaceRead(space.id);
+    case 'notifications':
+      await showNotificationMenu(anchor, targetId: space.id, target: NotificationTarget.space);
     case 'leave':
       final sure = await showGlassDialogSheet<bool>(
         anchor,
