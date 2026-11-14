@@ -766,6 +766,7 @@ class _ProfileActivitiesState extends State<ProfileActivities> {
                             children: [
                               // No track ID to link the song itself: a search for it, as the desktop's.
                               Semantics(
+                                container: true,
                                 link: true,
                                 label: 'Find $song on Spotify',
                                 excludeSemantics: true,
