@@ -100,6 +100,7 @@ class ChatsTab extends StatelessWidget {
             builder: (context, status, _) => Column(
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
+                const OnlineFriends(),
                 const GlobalSearch(),
                 // Opened from what's saved: says so, in the chrome of the list.
                 if (status == LiveStatus.offline)
