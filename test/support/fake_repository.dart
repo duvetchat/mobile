@@ -323,6 +323,9 @@ class FakeRepository implements ChatRepository {
   List<MyFile> files = [];
   StorageInfo usage = const StorageInfo(used: 0, max: 5 * 1024 * 1024 * 1024);
 
+  /// Why the server refuses a sign-up, if it does.
+  String? signUpRefused;
+
   @override
   Future<void> signUp({
     required String username,
@@ -330,7 +333,8 @@ class FakeRepository implements ChatRepository {
     required String password,
     String? alias,
   }) async {
-    account.add('signup $username $email');
+    if (signUpRefused != null) throw ActionFailed(signUpRefused!);
+    account.add(['signup', username, email, ?alias].join(' '));
     _seed();
     profile.value = Profile(id: me.id, username: username, alias: alias, emailVerified: false);
   }

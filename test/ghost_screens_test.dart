@@ -39,6 +39,8 @@ void main() {
     await tap(tester, 'Create account');
     expect(find.text('Create your account'), findsOneWidget);
     // Sign up's "Sign in" swaps in the sign-in form; Back skips past both.
+    await tester.ensureVisible(find.text('Sign in'));
+    await tester.pumpAndSettle();
     await tap(tester, 'Sign in');
     expect(find.text('Sign in to Duvet'), findsOneWidget);
     await tap(tester, 'Create an account');

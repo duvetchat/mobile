@@ -179,7 +179,8 @@ abstract interface class ChatRepository {
   bool isMember(String spaceId, String userId);
 
   /// Makes an account, then signs in to it; the API emails a link to verify
-  /// the address.
+  /// the address. A refusal the API explains (a username taken, say) throws
+  /// an [ActionFailed] with its reason.
   Future<void> signUp({required String username, required String email, required String password, String? alias});
   Future<void> sendVerificationEmail();
 

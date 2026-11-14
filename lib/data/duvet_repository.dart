@@ -2871,6 +2871,11 @@ class DuvetRepository implements ChatRepository {
       await api.signIn(username: username, alias: alias, password: password, email: email);
       await api.logIn(email, password);
       await _start();
+    } on duvet.DuvetApiException catch (e) {
+      _closeSession();
+      // The API's own reason for a username or an email it refuses.
+      if (_refusal(e) case final reason? when e.statusCode < 500) throw ActionFailed(reason);
+      rethrow;
     } catch (_) {
       _closeSession();
       rethrow;

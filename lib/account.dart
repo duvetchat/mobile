@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert' show utf8;
 import 'dart:io';
 import 'dart:math' as math;
 import 'dart:ui' as ui;
@@ -124,56 +125,103 @@ class SignUpScreen extends StatefulWidget {
 }
 
 class _SignUpScreenState extends State<SignUpScreen> {
+  final _alias = TextEditingController();
   final _username = TextEditingController();
   final _email = TextEditingController();
   final _password = TextEditingController();
+  final _confirm = TextEditingController();
   bool _show = false;
+  bool _terms = false;
   bool _busy = false;
   String? _failure;
 
   @override
   void initState() {
     super.initState();
-    for (final c in [_username, _email, _password]) {
+    for (final c in [_alias, _username, _email, _password, _confirm]) {
       c.addListener(() => setState(() {}));
     }
   }
 
   @override
   void dispose() {
-    _username.dispose();
-    _email.dispose();
-    _password.dispose();
+    for (final c in [_alias, _username, _email, _password, _confirm]) {
+      c.dispose();
+    }
     super.dispose();
   }
 
-  String get _name => _username.text.trim().replaceFirst('@', '');
-  bool get _validName => RegExp(r'^[a-zA-Z0-9_.]{2,32}$').hasMatch(_name);
+  // The API's rules: a username trimmed, not empty, of 32 characters at most
+  // (code points, as its column counts them), as the display name; a
+  // password of 8 to 72 bytes, as bcrypt takes it.
+  String get _name => _username.text.trim();
+  int get _nameLength => _name.runes.length;
+  int get _aliasLength => _alias.text.trim().runes.length;
+  int get _passwordBytes => utf8.encode(_password.text).length;
   bool get _validEmail => RegExp(r'^[^@\s]+@[^@\s]+\.[^@\s]+$').hasMatch(_email.text.trim());
+  bool get _matches => _confirm.text == _password.text;
 
   Future<void> _create() async {
     final navigator = Navigator.of(context);
+    final alias = _alias.text.trim();
     setState(() {
       _busy = true;
       _failure = null;
     });
     try {
-      await context.repository.signUp(username: _name, email: _email.text.trim(), password: _password.text);
+      await context.repository.signUp(
+        username: _name,
+        email: _email.text.trim(),
+        password: _password.text,
+        alias: alias.isEmpty ? null : alias,
+      );
       // Signed in: the app shows; the verify screen goes over it.
       navigator.popUntil((r) => r.isFirst);
       unawaited(navigator.push(MaterialPageRoute<void>(builder: (_) => VerifyEmailPage(email: _email.text.trim()))));
     } catch (e) {
-      if (mounted) setState(() => _failure = _error(e));
+      if (mounted) setState(() => _failure = e is ActionFailed ? e.message : _error(e));
     } finally {
       if (mounted) setState(() => _busy = false);
     }
   }
 
+  // As the desktop's.
+  void _showTerms() => showGlassDialogSheet<void>(
+    context,
+    label: 'Terms of use',
+    builder: (context) => Padding(
+      padding: const EdgeInsets.fromLTRB(24, 16, 24, 24),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Text('Terms of use', style: DuvetType.title.copyWith(color: context.theme.colors.foreground)),
+          const SizedBox(height: 12),
+          Text(
+            'By creating an account, you agree to follow community guidelines and use Duvet respectfully.',
+            style: DuvetType.snippet.copyWith(color: context.theme.colors.mutedForeground),
+          ),
+          const SizedBox(height: 24),
+          DuvetButton(label: 'Close', expand: true, onPressed: () => Navigator.of(context).pop()),
+        ],
+      ),
+    ),
+  );
+
   @override
   Widget build(BuildContext context) {
     final colors = context.theme.colors;
     final strength = passwordStrength(_password.text);
-    final ready = _validName && _validEmail && _password.text.length >= 8;
+    final ready =
+        _name.isNotEmpty &&
+        _nameLength <= maxUsernameLength &&
+        _aliasLength <= maxDisplayNameLength &&
+        _validEmail &&
+        _password.text.length >= 8 &&
+        _passwordBytes <= 72 &&
+        _matches &&
+        _terms;
+    void toggleTerms() => setState(() => _terms = !_terms);
     return _FormPage(
       title: 'Create your account',
       lead: 'One account for every Space you join.',
@@ -201,12 +249,23 @@ class _SignUpScreenState extends State<SignUpScreen> {
       ],
       children: [
         DuvetTextField(
+          label: 'Display name (optional)',
+          controller: _alias,
+          autofocus: true,
+          autofillHints: const [AutofillHints.name],
+          textInputAction: TextInputAction.next,
+          error: _aliasLength > maxDisplayNameLength
+              ? 'Too long: $_aliasLength of $maxDisplayNameLength characters'
+              : null,
+        ),
+        const SizedBox(height: 16),
+        DuvetTextField(
           label: 'Username',
           controller: _username,
-          autofocus: true,
           autofillHints: const [AutofillHints.newUsername],
           textInputAction: TextInputAction.next,
-          error: _username.text.isNotEmpty && !_validName ? 'Letters, numbers, dots and _, 2 to 32' : null,
+          helper: 'It’s how people mention you.',
+          error: _nameLength > maxUsernameLength ? 'Too long: $_nameLength of $maxUsernameLength characters' : null,
         ),
         const SizedBox(height: 16),
         DuvetTextField(
@@ -223,6 +282,8 @@ class _SignUpScreenState extends State<SignUpScreen> {
           controller: _password,
           obscure: !_show,
           autofillHints: const [AutofillHints.newPassword],
+          textInputAction: TextInputAction.next,
+          error: _passwordBytes > 72 ? 'Too long: 72 characters at most, fewer with accents or emoji' : null,
           trailing: IconAction(
             icon: _show ? FLucideIcons.eyeOff : FLucideIcons.eye,
             label: _show ? 'Hide password' : 'Show password',
@@ -254,6 +315,41 @@ class _SignUpScreenState extends State<SignUpScreen> {
         ),
         const SizedBox(height: 8),
         Text(strength.hint, style: DuvetType.caption.copyWith(color: colors.mutedForeground)),
+        const SizedBox(height: 16),
+        DuvetTextField(
+          label: 'Confirm password',
+          controller: _confirm,
+          obscure: !_show,
+          autofillHints: const [AutofillHints.newPassword],
+          error: _confirm.text.isNotEmpty && !_matches ? 'Passwords don’t match' : null,
+        ),
+        const SizedBox(height: 16),
+        Row(
+          children: [
+            Semantics(
+              container: true,
+              checked: _terms,
+              label: 'I agree to the Terms of use',
+              excludeSemantics: true,
+              onTap: toggleTerms,
+              child: GestureDetector(
+                behavior: HitTestBehavior.opaque,
+                onTap: toggleTerms,
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(vertical: 10),
+                  child: Row(
+                    children: [
+                      SquareCheck(checked: _terms),
+                      const SizedBox(width: 12),
+                      Text('I agree to the', style: DuvetType.body.copyWith(color: colors.foreground)),
+                    ],
+                  ),
+                ),
+              ),
+            ),
+            TextAction(label: 'Terms of use', onPressed: _showTerms),
+          ],
+        ),
         if (_failure != null) ...[
           const SizedBox(height: 16),
           Semantics(
@@ -662,6 +758,9 @@ class EditProfilePage extends StatefulWidget {
 
 /// The longest display name the API takes, in characters.
 const maxDisplayNameLength = 32;
+
+/// The longest username the API takes, counted the same way.
+const maxUsernameLength = 32;
 
 class _EditProfilePageState extends State<EditProfilePage> {
   late final TextEditingController _alias;
