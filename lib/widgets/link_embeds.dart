@@ -188,11 +188,11 @@ class _MessageLinkCardState extends State<MessageLinkCard> {
             onTap: m == null ? null : () => widget.onOpen(link),
             child: Container(
               width: 280,
-              padding: const EdgeInsets.all(12),
               decoration: BoxDecoration(color: colors.secondary, borderRadius: radius),
               child: InsetShadow(
                 shadows: tokens.shadowWell,
                 borderRadius: radius,
+                padding: const EdgeInsets.all(12),
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [

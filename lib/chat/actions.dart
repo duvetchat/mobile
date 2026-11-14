@@ -323,7 +323,6 @@ Future<bool?> _showDeleteSheet(
           const SizedBox(height: 16),
           // The message itself, in a recess.
           Container(
-            padding: const EdgeInsets.all(16),
             decoration: BoxDecoration(
               color: colors.secondary,
               borderRadius: BorderRadius.circular(DuvetTokens.radiusButton),
@@ -331,6 +330,7 @@ Future<bool?> _showDeleteSheet(
             child: InsetShadow(
               shadows: tokens.shadowWell,
               borderRadius: BorderRadius.circular(DuvetTokens.radiusButton),
+              padding: const EdgeInsets.all(16),
               // Its bubble as the chat shows it: the user's own on the accent.
               child: Align(
                 alignment: mine ? Alignment.centerRight : Alignment.centerLeft,
