@@ -208,8 +208,8 @@ abstract final class DuvetType {
   static const code = TextStyle(fontFamily: mono, fontFamilyFallback: fallback, fontSize: 14, height: 1.4);
 }
 
-/// Prism's colors: the light a mention of the user throws on its bubble.
-/// Opaque; each layer takes its own share of them.
+/// Prism: the light a mention of the user throws on its bubble, as each theme
+/// has it. The colors are opaque; each layer takes its own share of them.
 class PrismPalette {
   /// The light itself: the spill round the mention, the rim, the shadow.
   final Color gem;
@@ -221,7 +221,34 @@ class PrismPalette {
   /// How much of the spill shows, 0 to 1.
   final double intensity;
 
-  const PrismPalette({required this.gem, required this.cool, required this.warm, required this.intensity});
+  /// How strong each of the spill's lights is at its centre: the mention's own, the blue, the pink.
+  final double mainSpill;
+  final double coolSpill;
+  final double warmSpill;
+
+  /// The blur and the spread of the light's shadow under the bubble.
+  final double shadowBlur;
+  final double shadowSpread;
+
+  /// The rim's gradient, across the bubble at 135°: each color, its share, and where it sits.
+  final List<(Color, double, double)> rim;
+
+  /// The bubble where the spill is strongest behind a name: the names in it are made readable on this.
+  final Color behindName;
+
+  const PrismPalette({
+    required this.gem,
+    required this.cool,
+    required this.warm,
+    required this.intensity,
+    required this.mainSpill,
+    required this.coolSpill,
+    required this.warmSpill,
+    required this.shadowBlur,
+    required this.shadowSpread,
+    required this.rim,
+    required this.behindName,
+  });
 }
 
 /// The Duvet design-system tokens forui has no slot for: Liquid Glass, the
@@ -277,9 +304,8 @@ class DuvetTokens {
   /// Inset: the resting recess of fields.
   final List<BoxShadow> shadowWell;
 
-  /// The light of a mention of the user. Null where it isn't designed yet
-  /// (light): the bubble keeps its violet outline there.
-  final PrismPalette? prism;
+  /// The light of a mention of the user.
+  final PrismPalette prism;
 
   const DuvetTokens._({
     required this.glass,
@@ -300,7 +326,7 @@ class DuvetTokens {
     required this.shadowRaised,
     required this.shadowPressed,
     required this.shadowWell,
-    this.prism,
+    required this.prism,
   });
 
   static const light = DuvetTokens._(
@@ -338,6 +364,29 @@ class DuvetTokens {
       BoxShadow(color: Color(0x1415172B), blurRadius: 2, offset: Offset(0, 1)),
     ],
     shadowWell: [BoxShadow(color: Color(0x0F15172B), blurRadius: 3, offset: Offset(0, 1))],
+    // Stronger than dark's, to show on white: the names carry the contrast
+    // (behindName). The violet is the app's own, not a purer one, which glows
+    // like neon on white.
+    prism: PrismPalette(
+      gem: Color(0xFF7A68E8),
+      cool: Color(0xFF2F8CFF),
+      warm: Color(0xFFE44FCB),
+      intensity: 0.7,
+      mainSpill: 0.26,
+      coolSpill: 0.16,
+      warmSpill: 0.14,
+      shadowBlur: 24,
+      shadowSpread: -8,
+      // A rim of light, strongest where the light comes from: as strong all
+      // the way round it reads as a gradient outline.
+      rim: [
+        (Color(0xFF7A68E8), 0.70, 0),
+        (Color(0xFF7A68E8), 0.20, 0.42),
+        (Color(0xFF2F8CFF), 0.20, 0.70),
+        (Color(0xFF2F8CFF), 0.50, 1),
+      ],
+      behindName: Color(0xFFD3D0FD),
+    ),
   );
 
   static const dark = DuvetTokens._(
@@ -374,7 +423,24 @@ class DuvetTokens {
       BoxShadow(color: Color(0x4D000000), blurRadius: 2, offset: Offset(0, 1)),
     ],
     shadowWell: [BoxShadow(color: Color(0x66000000), blurRadius: 3, offset: Offset(0, 1))],
-    prism: PrismPalette(gem: Color(0xFF8B6CFF), cool: Color(0xFF7B9DFF), warm: Color(0xFFBF7CEF), intensity: 0.7),
+    prism: PrismPalette(
+      gem: Color(0xFF8B6CFF),
+      cool: Color(0xFF7B9DFF),
+      warm: Color(0xFFBF7CEF),
+      intensity: 0.7,
+      mainSpill: 0.36,
+      coolSpill: 0.14,
+      warmSpill: 0.12,
+      shadowBlur: 26,
+      shadowSpread: -14,
+      rim: [
+        (Color(0xFF8B6CFF), 0.8, 0),
+        (Color(0xFFFFFFFF), 0.08, 0.42),
+        (Color(0xFFFFFFFF), 0.08, 0.70),
+        (Color(0xFF7B9DFF), 0.35, 1),
+      ],
+      behindName: Color(0xFF413A66),
+    ),
   );
 
   // Backdrop blur: bars, and overlays (dropdowns, sheets).

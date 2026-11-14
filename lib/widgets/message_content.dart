@@ -204,6 +204,9 @@ class _MessageTextState extends State<MessageText> {
       final bold = (style ?? const TextStyle()).copyWith(fontWeight: FontWeight.w700);
       final role = widget.onAccent ? null : widget.directory.nameColorsOf(userId);
       final onMention = widget.onMention;
+      // In a lit bubble the names are read on its light at its strongest, not on the page.
+      final on = prism ? tokens.prism.behindName : null;
+      final violet = on == null ? tokens.violetText : readableOn(tokens.violetText, on);
       // The user themself, in a bubble that mentions them: the same name, a
       // box of its own in the line, which the bubble's light centres on.
       if (prism && userId == widget.directory.me) {
@@ -214,10 +217,10 @@ class _MessageTextState extends State<MessageText> {
             onTap: onMention == null ? null : () => onMention(userId),
             child: PrismAnchor(
               child: switch (role) {
-                (from: _?, via: _, to: _?) => RoleName(name, colors: role, style: base.merge(bold)),
+                (from: _?, via: _, to: _?) => RoleName(name, colors: role, style: base.merge(bold), on: on),
                 _ => Text(
                   name,
-                  style: base.merge(bold).copyWith(color: roleColorOn(context, role?.from) ?? tokens.violetText),
+                  style: base.merge(bold).copyWith(color: roleColorOn(context, role?.from, on: on) ?? violet),
                 ),
               },
             ),
@@ -231,14 +234,14 @@ class _MessageTextState extends State<MessageText> {
           baseline: TextBaseline.alphabetic,
           child: GestureDetector(
             onTap: onMention == null ? null : () => onMention(userId),
-            child: RoleName(name, colors: role, style: base.merge(bold)),
+            child: RoleName(name, colors: role, style: base.merge(bold), on: on),
           ),
         );
       }
       return TextSpan(
         text: name,
         recognizer: onMention == null ? null : _tap(() => onMention(userId)),
-        style: bold.copyWith(color: widget.onAccent ? null : roleColorOn(context, role?.from) ?? tokens.violetText),
+        style: bold.copyWith(color: widget.onAccent ? null : roleColorOn(context, role?.from, on: on) ?? violet),
       );
     }
 
