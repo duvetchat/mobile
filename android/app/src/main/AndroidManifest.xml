@@ -37,7 +37,7 @@
     <application
         android:label="duvet"
         android:name="${applicationName}"
-        android:icon="@mipmap/ic_launcher">
+        android:icon="@mipmap/ic_launcher_violet">
         <activity
             android:name=".MainActivity"
             android:exported="true"
@@ -55,10 +55,6 @@
               android:name="io.flutter.embedding.android.NormalTheme"
               android:resource="@style/NormalTheme"
               />
-            <intent-filter>
-                <action android:name="android.intent.action.MAIN"/>
-                <category android:name="android.intent.category.LAUNCHER"/>
-            </intent-filter>
             <!-- Duvet's own links: duvet:// and duvet.chat invites and messages. -->
             <intent-filter>
                 <action android:name="android.intent.action.VIEW"/>
@@ -78,6 +74,36 @@
                 <data android:scheme="https" android:host="duvet.chat" android:pathPrefix="/change-email"/>
             </intent-filter>
         </activity>
+        <!-- The launcher's entries, one for each icon to pick in Appearance
+             (LauncherIcon.kt): the violet one unless the black one is on. Both
+             open MainActivity, which keeps the links. -->
+        <activity-alias
+            android:name=".IconViolet"
+            android:targetActivity=".MainActivity"
+            android:icon="@mipmap/ic_launcher_violet"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN"/>
+                <category android:name="android.intent.category.LAUNCHER"/>
+            </intent-filter>
+        </activity-alias>
+        <activity-alias
+            android:name=".IconBlack"
+            android:targetActivity=".MainActivity"
+            android:icon="@mipmap/ic_launcher"
+            android:enabled="false"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN"/>
+                <category android:name="android.intent.category.LAUNCHER"/>
+            </intent-filter>
+        </activity-alias>
+        <!-- Changes the launcher icon picked once the app is swiped away, which
+             it outlives for that (LauncherIcon.kt). -->
+        <service
+            android:name=".LauncherIconService"
+            android:stopWithTask="false"
+            android:exported="false"/>
         <!-- Keeps voice going in the background (flutter_background): started
              once the microphone is granted, stopped when the voice ends or the
              app is swiped away. -->
