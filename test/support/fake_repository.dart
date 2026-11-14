@@ -4,6 +4,7 @@ import 'package:duvet/data/models.dart';
 import 'package:duvet/data/recent_chats.dart';
 import 'package:duvet/data/recent_chats.dart' as recent show previewOf;
 import 'package:duvet/data/repository.dart';
+import 'package:duvet_client/duvet.dart' show Activity;
 import 'package:flutter/foundation.dart';
 
 import 'fake_voice.dart';
@@ -1410,6 +1411,9 @@ class FakeRepository implements ChatRepository {
   final ValueNotifier<Map<String, Presence>> presence = ValueNotifier({maya: Presence.online});
   @override
   final ValueNotifier<Set<String>> mobileOnly = ValueNotifier(const {});
+
+  @override
+  final ValueNotifier<Map<String, List<Activity>>> activities = ValueNotifier(const {});
   final reads = <(ChatTarget, String)>[];
 
   /// Completes sends when set; otherwise they answer at once.
@@ -1751,5 +1755,6 @@ class FakeRepository implements ChatRepository {
     recentChats.dispose();
     presence.dispose();
     mobileOnly.dispose();
+    activities.dispose();
   }
 }

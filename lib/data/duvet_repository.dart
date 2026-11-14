@@ -242,6 +242,9 @@ class DuvetRepository implements ChatRepository {
   @override
   final ValueNotifier<Set<String>> mobileOnly = ValueNotifier(const {});
 
+  @override
+  final ValueNotifier<Map<String, List<duvet.Activity>>> activities = ValueNotifier(const {});
+
   // Fetched once per session, by space or conversation ID.
   final _spaceMembers = <String, Future<List<Member>>>{};
   final _conversationMembers = <String, List<Member>>{};
@@ -492,6 +495,7 @@ class DuvetRepository implements ChatRepository {
     _uploadLimit = null;
     presence.value = const {};
     mobileOnly.value = const {};
+    activities.value = const {};
     _spaceEntries.clear();
     _ahead.clear();
     _heard.clear();
@@ -722,6 +726,8 @@ class DuvetRepository implements ChatRepository {
         if (mobileOnly.value.any((id) => id != me)) {
           mobileOnly.value = {if (me != null && mobileOnly.value.contains(me)) me};
         }
+        // What they're doing comes again with them too.
+        activities.value = const {};
         _spaceEntries.clear();
         // Profile changes made with no session went unheard: anyone's next
         // one reaches their messages, even with the name and avatar the one
@@ -849,6 +855,13 @@ class DuvetRepository implements ChatRepository {
         // status everywhere is now the one it gives; the others keep theirs.
         _keepPlatforms({for (final id in data.memberStatuses.keys) id: data.memberClientStatus[id]});
         presence.value = next;
+        // What those it has connected are doing; its other members, nothing.
+        activities.value = {
+          for (final e in activities.value.entries)
+            if (!members.contains(e.key)) e.key: e.value,
+          for (final e in data.activities.entries)
+            if (e.value.isNotEmpty) e.key: e.value,
+        };
         _readStates(data.readStates);
         _publishSpaces();
       case duvet.SpaceUpdateEvent(:final data):
@@ -1017,6 +1030,16 @@ class DuvetRepository implements ChatRepository {
           _choose(chosen);
         }
         if (_spaceMemberIds.values.any((ids) => ids.contains(data.userId))) _publishSpaces();
+        // Gone offline, they lose their activities with no USER_ACTIVITY_UPDATE.
+        if (status == Presence.offline && data.spaceId == null && activities.value.containsKey(data.userId)) {
+          activities.value = {...activities.value}..remove(data.userId);
+        }
+      case duvet.UserActivityUpdatedEvent(:final data):
+        activities.value = {
+          for (final e in activities.value.entries)
+            if (e.key != data.userId) e.key: e.value,
+          if (data.activities.isNotEmpty) data.userId: data.activities,
+        };
       case duvet.SpaceEmojiCreatedEvent(:final data) || duvet.SpaceEmojiUpdatedEvent(:final data):
         _emojis.remove(data.spaceId);
       case duvet.SpaceEmojiDeletedEvent(:final data):
@@ -4495,6 +4518,7 @@ class DuvetRepository implements ChatRepository {
     _recents.dispose();
     presence.dispose();
     mobileOnly.dispose();
+    activities.dispose();
     collapsedCategories.dispose();
     pinnedChats.dispose();
   }

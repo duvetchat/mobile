@@ -1,3 +1,4 @@
+import 'package:duvet_client/duvet.dart' show Activity;
 import 'package:flutter/foundation.dart';
 
 import 'models.dart';
@@ -532,6 +533,11 @@ abstract interface class ChatRepository {
   /// platforms are the same in every Space, and a bot's connections all count
   /// as a computer's.
   ValueListenable<Set<String>> get mobileOnly;
+
+  /// What people are doing (a game, the song Spotify plays), by user ID, as
+  /// the gateway tells it of those the user shares a Space with; someone
+  /// missing is doing nothing it knows of.
+  ValueListenable<Map<String, List<Activity>>> get activities;
 
   /// The emoji the chat can use beyond Unicode's: its space's. None in DMs.
   Future<List<CustomEmoji>> customEmojis(ChatTarget target);

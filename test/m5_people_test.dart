@@ -2,10 +2,12 @@ import 'package:duvet/data/emoji_catalog.dart';
 import 'package:duvet/data/models.dart';
 import 'package:duvet/main.dart';
 import 'package:duvet/members_sheet.dart';
+import 'package:duvet/people.dart' show ProfileActivities, inlineActivityImage, playbackTime;
 import 'package:duvet/theme.dart';
 import 'package:duvet/widgets/chrome.dart';
 import 'package:duvet/widgets/role_name.dart';
 import 'package:duvet/widgets/rows.dart';
+import 'package:duvet_client/duvet.dart' as duvet;
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
@@ -68,6 +70,81 @@ void main() {
     await tapLabel(tester, 'Mention leo');
     expect(find.text('@leo '), findsOneWidget);
     semantics.dispose();
+  });
+
+  testWidgets('a profile shows what they\'re doing: a game with its picture, Spotify\'s song (#22)', (tester) async {
+    const png = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=';
+    final now = DateTime.now().millisecondsSinceEpoch;
+    await pumpApp(
+      tester,
+      setUp: (r) => r.activities.value = {
+        _leo: [
+          duvet.Activity(
+            name: 'Celeste',
+            details: 'Chapter 7',
+            state: 'B-side',
+            timestamps: duvet.ActivityTimestamps(start: now - 65000),
+            assets: const duvet.ActivityAssets(largeImage: 'data:image/png;base64,$png'),
+          ),
+          // A picture by URL isn't loaded: its host would learn who looks.
+          const duvet.Activity(
+            name: 'Tracker',
+            assets: duvet.ActivityAssets(largeImage: 'https://example.com/tracker.png'),
+          ),
+          duvet.Activity(
+            type: duvet.ActivityType.listening,
+            name: 'Spotify',
+            details: 'Clair de Lune',
+            state: 'Debussy',
+            timestamps: duvet.ActivityTimestamps(start: now - 60000, end: now + 240000),
+            assets: const duvet.ActivityAssets(largeText: 'Suite bergamasque'),
+          ),
+          // Ended minutes ago: its app stopped updating it.
+          duvet.Activity(
+            type: duvet.ActivityType.listening,
+            name: 'Spotify',
+            details: 'Old song',
+            timestamps: duvet.ActivityTimestamps(start: now - 600000, end: now - 300000),
+          ),
+        ],
+      },
+    );
+    await tester.tap(find.descendant(of: find.byType(DuvetTabBar), matching: find.text('Spaces')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Design Guild'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('# general'));
+    await tester.pumpAndSettle();
+    await tapLabel(tester, 'Leo’s profile');
+
+    expect(find.text('ACTIVITIES'), findsOneWidget);
+    expect(find.text('Celeste'), findsOneWidget);
+    expect(find.text('Chapter 7'), findsOneWidget);
+    expect(find.text('B-side'), findsOneWidget);
+    expect(find.textContaining('elapsed'), findsOneWidget);
+    expect(find.descendant(of: find.byType(ProfileActivities), matching: find.byType(Image)), findsOneWidget);
+    expect(find.text('Tracker'), findsOneWidget);
+    expect(find.text('?'), findsOneWidget);
+
+    expect(find.text('Listening to Spotify'), findsOneWidget);
+    expect(find.text('Clair de Lune'), findsOneWidget);
+    expect(find.text('by Debussy'), findsOneWidget);
+    expect(find.text('on Suite bergamasque'), findsOneWidget);
+    expect(find.text('5:00'), findsOneWidget);
+    expect(find.bySemanticsLabel('Find Clair de Lune on Spotify'), findsOneWidget);
+    expect(find.text('Old song'), findsNothing);
+    semantics.dispose();
+  });
+
+  test('activity pictures draw only from data URIs of the types the gateway keeps; times read as m:ss', () {
+    expect(inlineActivityImage('data:image/png;base64,iVBORw0KGgo=')?.type, 'image/png');
+    expect(inlineActivityImage('data:image/svg+xml,%3Csvg%2F%3E')?.type, 'image/svg+xml');
+    expect(inlineActivityImage('https://example.com/a.png'), isNull);
+    expect(inlineActivityImage('data:text/html,<b>hi</b>'), isNull);
+    expect(inlineActivityImage(null), isNull);
+    expect(playbackTime(const Duration(seconds: 65)), '1:05');
+    expect(playbackTime(const Duration(hours: 1, minutes: 2, seconds: 3)), '1:02:03');
+    expect(playbackTime(const Duration(seconds: -5)), '0:00');
   });
 
   // #general of Design Guild, with [text] from Leo as its newest message.
