@@ -2762,7 +2762,7 @@ class DuvetRepository implements ChatRepository {
 
   @override
   Future<void> sendFriendRequest(String userId) async {
-    await _call((api) => api.sendFriendRequest(userId));
+    await _attempt((api) => api.sendFriendRequest(userId));
     await _reloadFriends();
   }
 

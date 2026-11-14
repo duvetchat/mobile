@@ -9,6 +9,7 @@ import 'package:duvet/widgets/rows.dart';
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:forui/forui.dart';
 
@@ -520,7 +521,7 @@ void main() {
     semantics.dispose();
   });
 
-  testWidgets('friends: requests in and out, accept, decline, cancel, add by username', (tester) async {
+  testWidgets('friends: requests in and out, accept, decline, cancel, add by username or user ID', (tester) async {
     final repository = await pumpApp(
       tester,
       setUp: (r) => r.friendsOnServer = Friends(
@@ -559,9 +560,37 @@ void main() {
     await tapLabel(tester, 'Add');
     expect(find.text('No one called @nobody shares a Space or a chat with you'), findsOneWidget);
 
+    // Anyone, by the user ID they share, as on the desktop; the server says why it won't.
+    const stranger = '0a0a0a0a-0000-4000-8000-0000000000ff';
+    repository.friendRequestRefused = 'User not found';
+    await tester.enterText(find.byType(EditableText), stranger);
+    await tapLabel(tester, 'Add');
+    expect(find.text('User not found'), findsOneWidget);
+    repository.friendRequestRefused = null;
+    await tapLabel(tester, 'Add');
+    expect(repository.friendCalls.last, 'send $stranger');
+    expect(find.text('Friend request sent'), findsOneWidget);
+
     await tapLabel(tester, 'Sent 1');
     expect(find.text('WANTS TO BE FRIENDS'), findsNothing);
     expect(find.text('YOU ASKED'), findsOneWidget);
+    await tester.pump(const Duration(seconds: 4));
+    semantics.dispose();
+  });
+
+  testWidgets('Friends copies the user\'s own ID, to share', (tester) async {
+    String? copied;
+    tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(SystemChannels.platform, (call) async {
+      if (call.method == 'Clipboard.setData') copied = (call.arguments as Map)['text'] as String;
+      return null;
+    });
+    addTearDown(() => tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(SystemChannels.platform, null));
+    await pumpApp(tester);
+    await tester.tap(find.bySemanticsLabel('Friends').hitTestable().first);
+    await tester.pumpAndSettle();
+    await tapLabel(tester, 'Copy your ID');
+    expect(copied, FakeRepository.me.id);
+    expect(find.text('ID copied'), findsOneWidget);
     await tester.pump(const Duration(seconds: 4));
     semantics.dispose();
   });

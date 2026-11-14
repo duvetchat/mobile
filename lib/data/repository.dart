@@ -157,6 +157,9 @@ abstract interface class ChatRepository {
   /// The user's friends and friend requests; [loadFriends] fetches them.
   ValueListenable<Friends> get friends;
   Future<void> loadFriends();
+
+  /// Asks [userId] to be friends. A refusal the API explains (no such user,
+  /// a bot, friends already) throws an [ActionFailed] with its reason.
   Future<void> sendFriendRequest(String userId);
   Future<void> acceptFriendRequest(String requestId);
 

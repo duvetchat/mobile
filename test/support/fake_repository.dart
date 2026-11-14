@@ -267,7 +267,13 @@ class FakeRepository implements ChatRepository {
   }
 
   @override
-  Future<void> sendFriendRequest(String userId) async => friendCalls.add('send $userId');
+  Future<void> sendFriendRequest(String userId) async {
+    if (friendRequestRefused != null) throw ActionFailed(friendRequestRefused!);
+    friendCalls.add('send $userId');
+  }
+
+  /// Why the server refuses a friend request, if it does.
+  String? friendRequestRefused;
 
   @override
   Future<void> acceptFriendRequest(String requestId) async => friendCalls.add('accept $requestId');

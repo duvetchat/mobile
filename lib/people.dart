@@ -2,10 +2,12 @@ import 'dart:async';
 
 import 'package:flutter/foundation.dart' show ValueListenable;
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:forui/forui.dart';
 
 import 'chat_view.dart';
 import 'data/images.dart';
+import 'data/links.dart' show isDuvetId;
 import 'data/models.dart';
 import 'data/scope.dart';
 import 'members_sheet.dart' show MemberAction, PresenceAvatar;
@@ -858,8 +860,8 @@ class PersonRow extends StatelessWidget {
 
 enum _FriendsTab { all, pending, sent }
 
-/// Friends: add one by username, then everyone, the requests to the user,
-/// and theirs.
+/// Friends: add one by user ID or username, then everyone, the requests to
+/// the user, and theirs.
 class FriendsPage extends StatefulWidget {
   const FriendsPage({super.key});
 
@@ -892,24 +894,31 @@ class _FriendsPageState extends State<FriendsPage> {
     super.dispose();
   }
 
-  Future<void> _addByName() async {
+  Future<void> _addFriend() async {
     final repository = context.repository;
-    final name = _add.text.trim().replaceFirst('@', '').toLowerCase();
+    final typed = _add.text.trim();
+    final name = typed.replaceFirst('@', '').toLowerCase();
     if (name.isEmpty) return;
+    // A username only among the people the app knows; a user ID, anyone's.
     final person = repository.people.where((p) => p.username.toLowerCase() == name).firstOrNull;
-    if (person == null) {
+    final userId = person?.userId ?? (isDuvetId(typed) ? typed : null);
+    if (userId == null) {
       setState(() => _addError = 'No one called @$name shares a Space or a chat with you');
       return;
     }
     try {
-      await repository.sendFriendRequest(person.userId);
+      await repository.sendFriendRequest(userId);
       _add.clear();
       setState(() => _addError = null);
       if (mounted) {
-        showFToast(context: context, title: Text('Asked ${person.displayName}'), duration: const Duration(seconds: 3));
+        showFToast(
+          context: context,
+          title: Text(person == null ? 'Friend request sent' : 'Asked ${person.displayName}'),
+          duration: const Duration(seconds: 3),
+        );
       }
-    } catch (_) {
-      setState(() => _addError = 'Couldn’t send the request');
+    } catch (e) {
+      if (mounted) setState(() => _addError = e is ActionFailed ? e.message : 'Couldn’t send the request');
     }
   }
 
@@ -965,13 +974,13 @@ class _FriendsPageState extends State<FriendsPage> {
                           Expanded(
                             child: SearchField(
                               controller: _add,
-                              hint: 'Add a friend by username',
+                              hint: 'Add a friend by user ID or username',
                               onChanged: (_) {
                                 if (_addError != null) setState(() => _addError = null);
                               },
                             ),
                           ),
-                          TextAction(label: 'Add', onPressed: _addByName),
+                          TextAction(label: 'Add', onPressed: _addFriend),
                         ],
                       ),
                     ),
@@ -983,6 +992,31 @@ class _FriendsPageState extends State<FriendsPage> {
                           child: Text(_addError!, style: DuvetType.caption.copyWith(color: colors.destructive)),
                         ),
                       ),
+                    // As the desktop adds friends: by the ID they share.
+                    Padding(
+                      padding: const EdgeInsets.fromLTRB(16, 4, 4, 0),
+                      child: Row(
+                        children: [
+                          Expanded(
+                            child: Text(
+                              'Friends add you by your user ID.',
+                              style: DuvetType.caption.copyWith(color: colors.mutedForeground),
+                            ),
+                          ),
+                          TextAction(
+                            label: 'Copy your ID',
+                            onPressed: () {
+                              Clipboard.setData(ClipboardData(text: repository.profile.value!.id));
+                              showFToast(
+                                context: context,
+                                title: const Text('ID copied'),
+                                duration: const Duration(seconds: 3),
+                              );
+                            },
+                          ),
+                        ],
+                      ),
+                    ),
                     // Edge to edge: the tabs scroll to the screen's edge, 16 in at rest.
                     Padding(
                       padding: const EdgeInsets.only(top: 8),
