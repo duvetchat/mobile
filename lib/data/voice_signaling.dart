@@ -44,7 +44,8 @@ abstract interface class VoiceSignaling {
   bool leaveVoice(String roomId);
 
   /// The client's whole voice state: the gateway turns off whatever a sync
-  /// leaves out, so every field is required.
+  /// leaves out, so every field is required. [watching] is whose screen
+  /// share the user watches there, by user ID.
   bool syncVoice(
     String roomId, {
     required bool muted,
@@ -52,6 +53,7 @@ abstract interface class VoiceSignaling {
     required bool screenSharing,
     required bool camera,
     required bool videoOff,
+    required List<String> watching,
   });
   bool sendIceCandidate(String roomId, duvet.IceCandidateInit candidate);
   bool sendAnswer(String roomId, duvet.SessionDescription answer);
@@ -159,6 +161,7 @@ class GatewayVoiceSignaling implements VoiceSignaling {
     required bool screenSharing,
     required bool camera,
     required bool videoOff,
+    required List<String> watching,
   }) =>
       _rtc?.syncVoice(
         roomId,
@@ -167,6 +170,7 @@ class GatewayVoiceSignaling implements VoiceSignaling {
         screenSharing: screenSharing,
         camera: camera,
         videoOff: videoOff,
+        watching: watching,
       ) ??
       false;
 

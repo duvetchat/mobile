@@ -21,7 +21,7 @@ Future<void> openVoiceRoom(BuildContext context, Room room) => Navigator.of(cont
 
 /// Who's in [roomId]'s voice (a room, or a call's conversation), named from
 /// what the app knows; the user too while their voice is there, with their
-/// own mute as it is here, before the gateway echoes it.
+/// own mute and watching as they are here, before the gateway echoes them.
 List<VoicePerson> voicePeople(ChatRepository repository, VoiceController voice, String roomId) {
   final me = repository.profile.value;
   final known = {for (final m in repository.people) m.userId: m};
@@ -35,6 +35,7 @@ List<VoicePerson> voicePeople(ChatRepository repository, VoiceController voice, 
     deafened: voice.deafened,
     camera: voice.cameraOn,
     screenSharing: voice.screenSharing,
+    watching: voice.incomingVideo ? voice.watching : const [],
     isMe: true,
   );
   final people = [
@@ -51,6 +52,7 @@ List<VoicePerson> voicePeople(ChatRepository repository, VoiceController voice, 
           deafened: p.deafened,
           camera: p.camera,
           screenSharing: p.screenSharing,
+          watching: p.watching,
           isMe: p.userId == me?.id,
         ),
   ];

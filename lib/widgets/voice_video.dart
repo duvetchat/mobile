@@ -29,6 +29,9 @@ class VoicePerson {
   final bool deafened;
   final bool camera;
   final bool screenSharing;
+
+  /// Whose screen share they watch, by user ID.
+  final List<String> watching;
   final bool isMe;
   const VoicePerson({
     required this.id,
@@ -39,6 +42,7 @@ class VoicePerson {
     this.deafened = false,
     this.camera = false,
     this.screenSharing = false,
+    this.watching = const [],
     this.isMe = false,
   });
 }
@@ -115,12 +119,24 @@ class VoiceStage extends StatefulWidget {
 class _VoiceStageState extends State<VoiceStage> {
   String? _focused;
 
-  // The sharers whose screens the user chose to watch: only this screen's,
-  // never kept.
-  final _watching = <String>{};
-
   // A global key per tile's video, by tile key.
   final _videos = <String, GlobalKey>{};
+
+  // For dispose, where the context can't look it up.
+  late VoiceController _voice;
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    _voice = context.voice;
+  }
+
+  @override
+  void dispose() {
+    // What the user watches is what this screen shows: none once it's closed.
+    if (widget.here) _voice.stopWatching();
+    super.dispose();
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -131,7 +147,6 @@ class _VoiceStageState extends State<VoiceStage> {
       for (final p in people)
         if (p.screenSharing) (key: 'screen:${p.id}', person: p, screen: true),
     ];
-    _watching.retainWhere((id) => people.any((p) => p.id == id && p.screenSharing));
     _videos.removeWhere((key, _) => tiles.every((t) => t.key != key));
     // A focused tile that's gone (its person left, or stopped sharing) is forgotten: back, it shows in the grid.
     final focused = tiles.where((t) => t.key == _focused).firstOrNull;
@@ -300,8 +315,12 @@ class _VoiceStageState extends State<VoiceStage> {
 
   Widget _screenTile(VoicePerson p, {required bool focused, required VoidCallback onTap, Key? key}) {
     final voice = context.voice;
-    final watching = _watching.contains(p.id);
-    void watch(bool on) => setState(() => on ? _watching.add(p.id) : _watching.remove(p.id));
+    final watching = voice.watching.contains(p.id);
+    void watch(bool on) => voice.watch(p.id, on: on);
+    final viewers = [
+      for (final v in widget.people)
+        if (v.id != p.id && v.watching.contains(p.id)) v,
+    ];
     final Widget content;
     var media = false;
     if (!widget.here) {
@@ -347,10 +366,38 @@ class _VoiceStageState extends State<VoiceStage> {
       focused: focused,
       onTap: onTap,
       buttonsInside: true,
+      trailing: _MediaChip(
+        icon: FLucideIcons.eye,
+        label: '${viewers.length}',
+        semanticLabel: '${viewers.length} watching',
+        hint: 'Show who',
+        media: media,
+        onTap: () => _showViewers(context, name, viewers),
+      ),
       child: content,
     );
   }
 }
+
+/// Who watches a screen share: the eye's tap on its tile.
+Future<void> _showViewers(BuildContext context, String screen, List<VoicePerson> viewers) => showGlassSheet<void>(
+  context,
+  label: 'Watching',
+  initialSize: 0.4,
+  builder: (context, scroll) => ListView(
+    controller: scroll,
+    children: [
+      SheetTitle(title: 'Watching', caption: screen),
+      if (viewers.isEmpty) const ListNote('No one is watching yet'),
+      for (final v in viewers)
+        ListRow(
+          leading: UserAvatar(name: v.name, url: v.avatarUrl, size: 48),
+          title: v.isMe ? '${v.name} (you)' : v.name,
+          banner: v.bannerUrl,
+        ),
+    ],
+  ),
+);
 
 /// A tile: `base-raised`, `radius-card`, `shadow-raised`, its content
 /// clipped to it, its name on a pill, and the `accent-text` ring while its
@@ -373,6 +420,9 @@ class _TileFrame extends StatelessWidget {
 
   /// Whether screen readers reach the buttons in it (Watch).
   final bool buttonsInside;
+
+  /// After the name pill, which gives way to it: a screen's viewers.
+  final Widget? trailing;
   final Widget child;
   const _TileFrame({
     required this.label,
@@ -385,6 +435,7 @@ class _TileFrame extends StatelessWidget {
     this.bannerUrl,
     this.media = false,
     this.buttonsInside = false,
+    this.trailing,
     super.key,
   });
 
@@ -432,29 +483,41 @@ class _TileFrame extends StatelessWidget {
                   alignment: Alignment.bottomLeft,
                   child: Padding(
                     padding: const EdgeInsets.all(8),
-                    child: ExcludeSemantics(
-                      child: Container(
-                        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                        decoration: BoxDecoration(
-                          color: media ? DuvetTokens.mediaScrim : colors.secondary,
-                          borderRadius: BorderRadius.circular(DuvetTokens.radiusChip),
-                          border: media ? Border.all(color: DuvetTokens.mediaScrimEdge) : null,
-                        ),
-                        child: Row(
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            for (final m in marks) ...[Icon(m, size: 16, color: ink), const SizedBox(width: 4)],
-                            Flexible(
-                              child: Text(
-                                name,
-                                maxLines: 1,
-                                overflow: TextOverflow.ellipsis,
-                                style: DuvetType.caption.copyWith(color: ink),
+                    child: Row(
+                      crossAxisAlignment: CrossAxisAlignment.end,
+                      children: [
+                        Expanded(
+                          child: Align(
+                            alignment: Alignment.bottomLeft,
+                            heightFactor: 1,
+                            child: ExcludeSemantics(
+                              child: Container(
+                                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                                decoration: BoxDecoration(
+                                  color: media ? DuvetTokens.mediaScrim : colors.secondary,
+                                  borderRadius: BorderRadius.circular(DuvetTokens.radiusChip),
+                                  border: media ? Border.all(color: DuvetTokens.mediaScrimEdge) : null,
+                                ),
+                                child: Row(
+                                  mainAxisSize: MainAxisSize.min,
+                                  children: [
+                                    for (final m in marks) ...[Icon(m, size: 16, color: ink), const SizedBox(width: 4)],
+                                    Flexible(
+                                      child: Text(
+                                        name,
+                                        maxLines: 1,
+                                        overflow: TextOverflow.ellipsis,
+                                        style: DuvetType.caption.copyWith(color: ink),
+                                      ),
+                                    ),
+                                  ],
+                                ),
                               ),
                             ),
-                          ],
+                          ),
                         ),
-                      ),
+                        if (trailing case final trailing?) ...[const SizedBox(width: 8), trailing],
+                      ],
                     ),
                   ),
                 ),
@@ -469,27 +532,60 @@ class _TileFrame extends StatelessWidget {
 
 /// A small button over a video, as the name pill is: light ink on the media
 /// scrim, so it reads on a dark or a light picture and never crowds the tile.
+/// Off [media], it's the name pill's `secondary`.
 class _MediaChip extends StatelessWidget {
   final String label;
+  final IconData? icon;
+
+  /// Read by screen readers in place of [label].
+  final String? semanticLabel;
+  final String? hint;
+  final bool media;
   final VoidCallback onTap;
-  const _MediaChip({required this.label, required this.onTap});
+  const _MediaChip({
+    required this.label,
+    required this.onTap,
+    this.icon,
+    this.semanticLabel,
+    this.hint,
+    this.media = true,
+  });
 
   @override
-  Widget build(BuildContext context) => Semantics(
-    button: true,
-    child: Pressable(
-      onTap: onTap,
-      builder: (context, _) => Container(
-        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-        decoration: BoxDecoration(
-          color: DuvetTokens.mediaScrim,
-          borderRadius: BorderRadius.circular(DuvetTokens.radiusChip),
-          border: Border.all(color: DuvetTokens.mediaScrimEdge),
+  Widget build(BuildContext context) {
+    final colors = context.theme.colors;
+    final ink = media ? DuvetTokens.mediaInk : colors.foreground;
+    return Semantics(
+      container: semanticLabel != null,
+      button: true,
+      label: semanticLabel,
+      hint: hint,
+      // Excluded, the Pressable's own tap goes with it.
+      onTap: semanticLabel == null ? null : onTap,
+      excludeSemantics: semanticLabel != null,
+      child: Pressable(
+        onTap: onTap,
+        builder: (context, _) => Container(
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+          decoration: BoxDecoration(
+            color: media ? DuvetTokens.mediaScrim : colors.secondary,
+            borderRadius: BorderRadius.circular(DuvetTokens.radiusChip),
+            border: media ? Border.all(color: DuvetTokens.mediaScrimEdge) : null,
+          ),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              if (icon case final icon?) ...[Icon(icon, size: 16, color: ink), const SizedBox(width: 4)],
+              // Wraps in a narrow tile, as it did before the chip had a Row.
+              Flexible(
+                child: Text(label, style: DuvetType.caption.copyWith(color: ink)),
+              ),
+            ],
+          ),
         ),
-        child: Text(label, style: DuvetType.caption.copyWith(color: DuvetTokens.mediaInk)),
       ),
-    ),
-  );
+    );
+  }
 }
 
 /// A quiet line in a tile, in `ink-secondary`, with an optional button under it.

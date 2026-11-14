@@ -46,6 +46,7 @@ class _App {
 }
 
 const _maya = FakeRepository.maya;
+const _leo = FakeRepository.leo;
 
 duvet.VoiceStateUpdatedEvent _state(
   String user,
@@ -53,6 +54,7 @@ duvet.VoiceStateUpdatedEvent _state(
   String room = 'r-lounge',
   bool camera = false,
   bool screen = false,
+  List<String> watching = const [],
 }) => duvet.VoiceStateUpdatedEvent(
   duvet.VoiceStateEvent(
     roomId: room,
@@ -61,6 +63,7 @@ duvet.VoiceStateUpdatedEvent _state(
     camera: camera,
     screenSharing: screen,
     version: version,
+    watching: watching,
   ),
 );
 
@@ -432,6 +435,49 @@ void main() {
     await settle(tester);
     expect(app.voice.incomingVideo, isTrue);
     expect(find.text('Watch'), findsOneWidget);
+    semantics.dispose();
+    await finish(tester, app);
+  });
+
+  testWidgets('Watch says so in VOICE_SYNC, a screen\'s eye lists who watches it, and closing stops it', (
+    tester,
+  ) async {
+    final semantics = tester.ensureSemantics();
+    final app = await pumpApp(tester);
+    await joinLounge(tester, app);
+    app.gateway.push(_state(_leo, 3, screen: true));
+    app.gateway.push(_state(_maya, 4, watching: [_leo]));
+    app.engine.peer.remoteVideos.value = [_video(_leo, VideoKind.screen)];
+    await settle(tester);
+    expect(find.bySemanticsLabel('1 watching'), findsOneWidget);
+
+    await tester.tap(find.text('Watch'));
+    await settle(tester);
+    expect(app.gateway.last('VOICE_SYNC')!['watching'], [_leo]);
+    // The user counts at once, before the gateway's echo.
+    expect(tester.getSemantics(find.bySemanticsLabel('2 watching')).hint, 'Show who');
+
+    await tester.tap(find.bySemanticsLabel('2 watching'));
+    await settle(tester);
+    expect(find.text('Watching'), findsOneWidget);
+    expect(find.widgetWithText(ListRow, 'Maya'), findsOneWidget);
+    expect(find.widgetWithText(ListRow, 'Gaby (you)'), findsOneWidget);
+    Navigator.of(tester.element(find.byType(ListRow).first)).pop();
+    await settle(tester);
+
+    await tester.tap(find.text('Stop watching'));
+    await settle(tester);
+    expect(app.gateway.last('VOICE_SYNC')!['watching'], isEmpty);
+    expect(find.bySemanticsLabel('1 watching'), findsOneWidget);
+
+    // Still in voice, the room's screen closed: it shows no screen, so none is watched.
+    await tester.tap(find.text('Watch'));
+    await settle(tester);
+    await tester.tap(find.bySemanticsLabel('Back'));
+    await settle(tester);
+    expect(app.voice.target, isNotNull);
+    expect(app.voice.watching, isEmpty);
+    expect(app.gateway.last('VOICE_SYNC')!['watching'], isEmpty);
     semantics.dispose();
     await finish(tester, app);
   });
