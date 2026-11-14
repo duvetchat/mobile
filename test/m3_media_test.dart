@@ -12,6 +12,7 @@ import 'package:duvet/main.dart';
 import 'package:duvet/theme.dart';
 import 'package:duvet/widgets/apng.dart';
 import 'package:duvet/widgets/attachment_link.dart';
+import 'package:duvet/widgets/link_embeds.dart';
 import 'package:duvet/widgets/media.dart';
 import 'package:duvet/widgets/media_actions.dart';
 import 'package:duvet/widgets/message_content.dart';
@@ -378,6 +379,40 @@ void main() {
       expect(parseInviteCode('https://duvet.chat/invite'), isNull);
       expect(parseDeepLink('duvet://invite/x'), isA<OpenInvite>());
       expect(parseDeepLink('https://example.com'), isNull);
+    });
+
+    // #234: the closing markers of emphasis around a link were the card's, which asked for invite `abc**`.
+    test('a card names the link the text shows, emphasis around it or not', () {
+      const invite = 'https://duvet.chat/invite/abc';
+      for (final text in [
+        '**$invite**',
+        '*$invite*',
+        '__${invite}__',
+        '_${invite}_',
+        '~~$invite~~',
+        '***$invite***',
+        '**join us: $invite**',
+        '**$invite**.',
+        '**$invite**!',
+        '(**$invite**)',
+        '**$invite.**',
+        '[join us]($invite)',
+        '[$invite](https://example.org)',
+        '`$invite`',
+        '**_${invite}_**',
+        '~~**$invite**~~',
+      ]) {
+        expect(duvetLinksIn(text), [invite], reason: text);
+      }
+      const bot = 'https://duvet.chat/invite?bot=$_room';
+      expect(duvetLinksIn('_${bot}_'), [bot]);
+      const message = 'https://duvet.chat/channels/$_space/$_room/$_linked';
+      expect(duvetLinksIn('~~$message~~ and **$bot**'), [message, bot]);
+      // A URL's own * and _, which nothing before it opens, stay.
+      expect(duvetLinksIn('**https://duvet.chat/invite/a_b**'), ['https://duvet.chat/invite/a_b']);
+      expect(duvetLinksIn('see https://duvet.chat/invite/a*b*'), ['https://duvet.chat/invite/a*b*']);
+      expect(duvetLinksIn('see https://duvet.chat/invite/x**'), ['https://duvet.chat/invite/x**']);
+      expect(duvetLinksIn('snake_https://duvet.chat/invite/y_'), ['https://duvet.chat/invite/y_']);
     });
 
     test('KLIPY results, upload shares, fallback waveforms', () {
