@@ -194,6 +194,38 @@ void main() {
       ),
     );
 
+    // Prism is dark's alone so far. Animations off: the bubble lit as it is mid-list.
+    if (b == Brightness.dark) {
+      testWidgets(
+        'a mention of the user lighting its bubble, at rest',
+        (tester) => withClock(
+          Clock.fixed(DateTime(2026, 10, 23, 12)),
+          () => withShadows(() async {
+            phone(tester);
+            tester.platformDispatcher.accessibilityFeaturesTestValue = const FakeAccessibilityFeatures(
+              disableAnimations: true,
+            );
+            addTearDown(tester.platformDispatcher.clearAccessibilityFeaturesTestValue);
+            final repository = FakeRepository();
+            final appearance = Appearance(MemoryAppearanceStore())..value = ThemeMode.dark;
+            await tester.pumpWidget(DuvetApp(repository: repository, appearance: appearance));
+            await tester.pumpAndSettle();
+            repository.history['c-maya']!.add(
+              FakeRepository.message(
+                'm5',
+                author: FakeRepository.maya,
+                name: 'Maya',
+                text: '<@${FakeRepository.me.id}> can you check the bubble shadows before we ship Friday?',
+              ),
+            );
+            await tester.tap(find.text('Maya'));
+            await tester.pumpAndSettle();
+            await expectLater(find.byType(DuvetApp), matchesGoldenFile('goldens/prism_dark.png'));
+          }),
+        ),
+      );
+    }
+
     // The ghost in the screens: Welcome, a tab root's night sky, a new DM.
     Future<FakeRepository> app(WidgetTester tester, {bool signedIn = true}) async {
       phone(tester);

@@ -208,6 +208,22 @@ abstract final class DuvetType {
   static const code = TextStyle(fontFamily: mono, fontFamilyFallback: fallback, fontSize: 14, height: 1.4);
 }
 
+/// Prism's colors: the light a mention of the user throws on its bubble.
+/// Opaque; each layer takes its own share of them.
+class PrismPalette {
+  /// The light itself: the spill round the mention, the rim, the shadow.
+  final Color gem;
+
+  /// The blue and the pink it splits into, to the sides.
+  final Color cool;
+  final Color warm;
+
+  /// How much of the spill shows, 0 to 1.
+  final double intensity;
+
+  const PrismPalette({required this.gem, required this.cool, required this.warm, required this.intensity});
+}
+
 /// The Duvet design-system tokens forui has no slot for: Liquid Glass, the
 /// accent as text, shadows, radii and motion.
 class DuvetTokens {
@@ -261,6 +277,10 @@ class DuvetTokens {
   /// Inset: the resting recess of fields.
   final List<BoxShadow> shadowWell;
 
+  /// The light of a mention of the user. Null where it isn't designed yet
+  /// (light): the bubble keeps its violet outline there.
+  final PrismPalette? prism;
+
   const DuvetTokens._({
     required this.glass,
     required this.glassEdge,
@@ -280,6 +300,7 @@ class DuvetTokens {
     required this.shadowRaised,
     required this.shadowPressed,
     required this.shadowWell,
+    this.prism,
   });
 
   static const light = DuvetTokens._(
@@ -353,6 +374,7 @@ class DuvetTokens {
       BoxShadow(color: Color(0x4D000000), blurRadius: 2, offset: Offset(0, 1)),
     ],
     shadowWell: [BoxShadow(color: Color(0x66000000), blurRadius: 3, offset: Offset(0, 1))],
+    prism: PrismPalette(gem: Color(0xFF8B6CFF), cool: Color(0xFF7B9DFF), warm: Color(0xFFBF7CEF), intensity: 0.7),
   );
 
   // Backdrop blur: bars, and overlays (dropdowns, sheets).

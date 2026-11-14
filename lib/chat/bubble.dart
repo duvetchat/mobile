@@ -1,5 +1,20 @@
 part of '../chat_view.dart';
 
+/// Whether [m] mentions the user [me], as the desktop has it: its text (a v2
+/// message's text displays) names them, or it replies to them and mentions
+/// them. Never their own message.
+bool _mentionsUser(ChatMessage m, String? me) =>
+    me != null &&
+    m.authorId != me &&
+    (mentionedIn(m.text).contains(me) || (m.reply?.mentionAuthor == true && m.reply?.authorId == me));
+
+/// The unread mentions of [me] among [messages] (oldest first): the newest
+/// [count] that mention them, [count] being how many the app has unread there.
+Set<String> unreadMentions(Iterable<ChatMessage> messages, String? me, int count) => {
+  if (count > 0)
+    for (final m in messages.toList().reversed.where((m) => _mentionsUser(m, me)).take(count)) m.id,
+};
+
 /// One message: the sender's name over a run's first bubble, the reply it
 /// quotes, the bubble, its reactions, and the time under a run's last one.
 ///
@@ -64,6 +79,10 @@ class _Bubble extends StatelessWidget {
   /// Dismisses a bot's answer to the user alone.
   final VoidCallback? onDismiss;
 
+  /// An unread mention of the user, its light yet to come up: called when it
+  /// does, as all of the bubble first comes into sight.
+  final VoidCallback? onShine;
+
   const _Bubble({
     required this.entry,
     required this.mine,
@@ -95,6 +114,7 @@ class _Bubble extends StatelessWidget {
     required this.onUseComponent,
     required this.selectChoices,
     this.onDismiss,
+    this.onShine,
     super.key,
   });
 
@@ -103,15 +123,14 @@ class _Bubble extends StatelessWidget {
     final colors = context.theme.colors;
     final tokens = context.duvet;
     final m = entry.message;
-    // Mentioning the user, as the desktop has it: the text (a v2 message's
-    // text displays) names them, or it replies to them and mentions them.
-    final mentionsMe =
-        !mine &&
-        directory.me != null &&
-        (mentionedIn(m.text).contains(directory.me) ||
-            (m.reply?.mentionAuthor == true && m.reply?.authorId == directory.me));
+    final mentionsMe = !mine && _mentionsUser(m, directory.me);
     final text = withoutPreviewedLinks(m.content, m.embeds, cards: !lifted);
     final textBubble = text.isNotEmpty && !isJumboEmoji(text);
+    // Prism, where it's designed (dark): a text bubble that mentions the user,
+    // in its text or as a reply to them, is lit. With no text bubble to light
+    // (a sticker, a bot's components), the mention keeps the outline.
+    final prism = mentionsMe && textBubble ? tokens.prism : null;
+    const bubblePadding = EdgeInsets.symmetric(horizontal: 12, vertical: 8);
     final maxWidth = MediaQuery.sizeOf(context).width * 0.75;
     final secondary = DuvetType.caption.copyWith(color: colors.mutedForeground);
     final faded = entry.delivery != _Delivery.sent;
@@ -154,17 +173,8 @@ class _Bubble extends StatelessWidget {
             Pressable(
               scale: 0.98,
               onDoubleTap: onDoubleTap,
-              builder: (context, _) => Container(
-                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-                constraints: BoxConstraints(maxWidth: maxWidth),
-                decoration: BoxDecoration(
-                  color: mine ? ownBubble(context).fill : colors.card,
-                  borderRadius: BorderRadius.circular(DuvetTokens.radiusButton),
-                  boxShadow: editing ? null : (lifted ? tokens.shadowFloat : tokens.shadowRest),
-                  // Mentioning the user: the accent as an outline, never a fill.
-                  border: mentionsMe ? Border.all(color: tokens.violetText, width: 1.5) : null,
-                ),
-                child: MessageText(
+              builder: (context, _) {
+                final message = MessageText(
                   content: text,
                   directory: directory,
                   onAccent: mine,
@@ -172,8 +182,39 @@ class _Bubble extends StatelessWidget {
                   onMention: onOpenMention,
                   onRoom: onOpenRoom,
                   messageActions: anchor == null ? const {} : actionsAt(anchor),
-                ),
-              ),
+                );
+                if (prism == null) {
+                  return Container(
+                    padding: bubblePadding,
+                    constraints: BoxConstraints(maxWidth: maxWidth),
+                    decoration: BoxDecoration(
+                      color: mine ? ownBubble(context).fill : colors.card,
+                      borderRadius: BorderRadius.circular(DuvetTokens.radiusButton),
+                      boxShadow: editing ? null : (lifted ? tokens.shadowFloat : tokens.shadowRest),
+                      // Mentioning the user: the accent as an outline, never a fill.
+                      border: mentionsMe ? Border.all(color: tokens.violetText, width: 1.5) : null,
+                    ),
+                    child: message,
+                  );
+                }
+                // The same bubble, the mention's light between its fill and its
+                // text: the padding goes inside, so the light reaches the edges.
+                return Container(
+                  constraints: BoxConstraints(maxWidth: maxWidth),
+                  decoration: BoxDecoration(
+                    color: colors.card,
+                    borderRadius: BorderRadius.circular(DuvetTokens.radiusButton),
+                    boxShadow: [...(lifted ? tokens.shadowFloat : tokens.shadowRest), prismShadow(prism)],
+                  ),
+                  child: PrismBubble(
+                    palette: prism,
+                    radius: DuvetTokens.radiusButton,
+                    // A copy held up is lit already.
+                    onArrive: lifted ? null : onShine,
+                    child: Padding(padding: bubblePadding, child: message),
+                  ),
+                );
+              },
             ),
         if (m.isVoice && m.attachments.isNotEmpty)
           VoiceNotePlayer(

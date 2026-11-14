@@ -4,8 +4,10 @@ import 'package:duvet/data/message_tokens.dart';
 import 'package:duvet/data/models.dart';
 import 'package:duvet/main.dart';
 import 'package:duvet/widgets/composer_controller.dart';
+import 'package:duvet/widgets/prism.dart';
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 
@@ -139,6 +141,156 @@ void main() {
       await tester.tap(find.bySemanticsLabel('Send'));
       await tester.pumpAndSettle();
     }
+
+    testWidgets('in dark, a mention of you lights its bubble, with no outline, once', (tester) async {
+      tester.platformDispatcher.platformBrightnessTestValue = Brightness.dark;
+      addTearDown(tester.platformDispatcher.clearPlatformBrightnessTestValue);
+      final repository = await openGeneral(tester);
+      ChatMessage from(String id, String text) =>
+          FakeRepository.message(id, author: FakeRepository.leo, name: 'leo', text: text);
+      repository.push('r-general', MessageCreated(from('m-gem', 'ping <@${FakeRepository.me.id}>')));
+      await tester.pump();
+      expect(find.byType(PrismAnchor), findsOneWidget);
+      expect(
+        find.byWidgetPredicate(
+          (w) => w is Container && ((w.decoration as BoxDecoration?)?.border as Border?)?.top.width == 1.5,
+        ),
+        findsNothing,
+      );
+      // Come in sight as it arrived, its arrival is due, and plays through.
+      expect(tester.widget<PrismBubble>(find.byType(PrismBubble)).onArrive, isNotNull);
+      await tester.pump(const Duration(milliseconds: 400));
+      await tester.pump(const Duration(milliseconds: 400));
+      expect(tester.takeException(), isNull);
+      await tester.pumpAndSettle();
+      // The chat built again, it isn't due anymore.
+      repository.push('r-general', MessageCreated(from('m-after', 'thanks')));
+      await tester.pumpAndSettle();
+      expect(tester.widget<PrismBubble>(find.byType(PrismBubble)).onArrive, isNull);
+      semantics.dispose();
+    });
+
+    testWidgets('in dark, a reply that pings you lights its bubble too, with no outline', (tester) async {
+      tester.platformDispatcher.platformBrightnessTestValue = Brightness.dark;
+      addTearDown(tester.platformDispatcher.clearPlatformBrightnessTestValue);
+      final repository = await openGeneral(tester);
+      repository.push(
+        'r-general',
+        MessageCreated(
+          FakeRepository.message(
+            'm-reply',
+            author: FakeRepository.leo,
+            name: 'leo',
+            text: 'A loud reply',
+            reply: MessageReply(
+              messageId: 'm0',
+              authorId: FakeRepository.me.id,
+              authorName: 'Gaby',
+              content: 'hm',
+              mentionAuthor: true,
+            ),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+      // Its text names nobody: the light comes from the bubble's corner.
+      expect(find.ancestor(of: find.text('A loud reply'), matching: find.byType(PrismBubble)), findsOneWidget);
+      expect(find.byType(PrismAnchor), findsNothing);
+      expect(
+        find.byWidgetPredicate(
+          (w) => w is Container && ((w.decoration as BoxDecoration?)?.border as Border?)?.top.width == 1.5,
+        ),
+        findsNothing,
+      );
+      expect(tester.takeException(), isNull);
+      semantics.dispose();
+    });
+
+    testWidgets('in dark, a mention\'s light moves as the list scrolls, and a bubble held up isn\'t lit again', (
+      tester,
+    ) async {
+      tester.platformDispatcher.platformBrightnessTestValue = Brightness.dark;
+      addTearDown(tester.platformDispatcher.clearPlatformBrightnessTestValue);
+      final repository = await openGeneral(tester);
+      void push(String id, String text) => repository.push(
+        'r-general',
+        MessageCreated(FakeRepository.message(id, author: FakeRepository.leo, name: 'leo', text: text)),
+      );
+      // Enough to scroll, the mention a few lines up from the bottom.
+      for (var i = 0; i < 14; i++) {
+        push('m-before-$i', 'line $i');
+      }
+      await tester.pumpAndSettle();
+      push('m-lit', 'ping <@${FakeRepository.me.id}>');
+      await tester.pumpAndSettle();
+      for (var i = 0; i < 4; i++) {
+        push('m-after-$i', 'reply $i');
+      }
+      await tester.pumpAndSettle();
+
+      // The light's own layer, which holds nothing else.
+      Future<List<int>> light() async {
+        final layer = tester.renderObject<RenderRepaintBoundary>(
+          find.descendant(of: find.byType(PrismBubble), matching: find.byType(RepaintBoundary)).first,
+        );
+        final bytes = await tester.runAsync(() async => (await (await layer.toImage()).toByteData())!);
+        return bytes!.buffer.asUint8List();
+      }
+
+      final before = await light();
+      await tester.drag(find.byType(PrismBubble), const Offset(0, 100));
+      await tester.pumpAndSettle();
+      expect(find.byType(PrismBubble), findsOneWidget);
+      expect(await light(), isNot(equals(before)));
+      // The pictures took real time, in which the deep links' plugin, absent here, fails: not this test's.
+      expect(tester.takeException(), anyOf(isNull, isA<MissingPluginException>()));
+
+      // Held up: a copy over the list, lit too, neither of them due.
+      await tester.longPress(find.byType(PrismAnchor));
+      await tester.pumpAndSettle();
+      expect(tester.takeException(), isNull);
+      final bubbles = tester.widgetList<PrismBubble>(find.byType(PrismBubble));
+      expect(bubbles, hasLength(2));
+      expect(bubbles.map((b) => b.onArrive), everyElement(isNull));
+      semantics.dispose();
+    });
+
+    testWidgets('in dark, an unread mention lights up as its chat opens, and not when it opens again', (tester) async {
+      tester.platformDispatcher.platformBrightnessTestValue = Brightness.dark;
+      addTearDown(tester.platformDispatcher.clearPlatformBrightnessTestValue);
+      final repository = await openGeneral(tester);
+      bool due() =>
+          find.byType(PrismBubble).evaluate().isNotEmpty &&
+          tester.widget<PrismBubble>(find.byType(PrismBubble)).onArrive != null;
+      Future<void> reopen() async {
+        await tester.tap(find.bySemanticsLabel('Back').last);
+        await tester.pumpAndSettle();
+        // Unread, as the app counts it, on the way in.
+        repository.mentions.value = {'r-general': 1};
+        await tester.tap(find.text('# general'));
+        for (var i = 0; i < 20 && !due(); i++) {
+          await tester.pump(const Duration(milliseconds: 20));
+        }
+      }
+
+      repository.history['r-general']!.add(
+        FakeRepository.message(
+          'm-unread',
+          author: FakeRepository.leo,
+          name: 'leo',
+          text: 'ping <@${FakeRepository.me.id}>',
+        ),
+      );
+      await reopen();
+      expect(due(), isTrue);
+      await tester.pumpAndSettle();
+      // Still counted unread, say: it has lit up, and doesn't again.
+      await reopen();
+      await tester.pumpAndSettle();
+      expect(find.byType(PrismBubble), findsOneWidget);
+      expect(due(), isFalse);
+      semantics.dispose();
+    });
 
     testWidgets('mentions show as names, and a mention of you is outlined', (tester) async {
       final repository = await openGeneral(tester);

@@ -46,6 +46,7 @@ import 'widgets/glass.dart';
 import 'widgets/link_embeds.dart';
 import 'widgets/media.dart';
 import 'widgets/message_content.dart';
+import 'widgets/prism.dart';
 import 'widgets/rows.dart';
 import 'widgets/sheets.dart';
 import 'widgets/skeleton.dart';
@@ -202,6 +203,14 @@ class _ChatViewState extends State<ChatView> with SingleTickerProviderStateMixin
   bool _atBottom = true;
   bool _onTop = true;
   String? _acked;
+  // The unread mentions of the user: each one's light comes up once, as its
+  // bubble first comes all into sight. How many the chat had on opening, until
+  // its page comes and tells which they are; then the ones yet to shine.
+  int _unreadMentions = 0;
+  final _unshone = <String>{};
+  // Shone already, this visit or an earlier one: a chat left unread and opened
+  // again doesn't shine them twice.
+  static final _shone = <String>{};
   late final AppLifecycleListener _lifecycle;
 
   @override
@@ -240,6 +249,8 @@ class _ChatViewState extends State<ChatView> with SingleTickerProviderStateMixin
     if (widget.threadOf == null && _repository.unread.value.contains(widget.target.id)) {
       _unreadAfter = _repository.lastReadOf(widget.target);
     }
+    // Before reading the chat takes the count away. A thread has none of its own.
+    if (widget.threadOf == null) _unreadMentions = _repository.mentions.value[widget.target.id] ?? 0;
     _restoreDraft();
     _composer.addListener(_onComposerChanged);
     _scroll.addListener(_onScroll);
@@ -414,6 +425,10 @@ class _ChatViewState extends State<ChatView> with SingleTickerProviderStateMixin
         _hasOlder = thread == null && page.length >= _pageSize;
         _loading = false;
         _kept = null;
+        // shortcut: this page's only, an unread mention further back doesn't
+        // shine; count on through the older pages if it should.
+        _unshone.addAll(unreadMentions(_entries.map((e) => e.message), _me, _unreadMentions).difference(_shone));
+        _unreadMentions = 0;
         // Nothing after the last read: no divider.
         if (_unreadAfter != null && page.lastOrNull?.id == _unreadAfter) _unreadAfter = null;
         // The last read not loaded: the first message after it is, as message
@@ -642,6 +657,8 @@ class _ChatViewState extends State<ChatView> with SingleTickerProviderStateMixin
         case MessageCreated(:final message):
           _stopTyping(message.authorId);
           _markUnreadFrom(message);
+          // One that comes with the chat open shines too, in sight already or not.
+          if (_mentionsUser(message, _me) && !_shone.contains(message.id)) _unshone.add(message.id);
           _upsert(message);
         case MessageUpdated(:final message):
           _applyUpdate(message);
@@ -1904,7 +1921,12 @@ class _ChatViewState extends State<ChatView> with SingleTickerProviderStateMixin
     final picked = await _showMessageActions(
       context,
       bubble: box.localToGlobal(Offset.zero) & box.size,
-      lifted: _bubbleFor(entry, lifted: true),
+      // Lit as in the list, which it's held up from.
+      lifted: PrismViewport(
+        top: _topHeight == 0 ? GlassTopBar.heightOf(context) : _topHeight,
+        bottom: _composerHeight,
+        child: _bubbleFor(entry, lifted: true),
+      ),
       me: _me,
       reactions: sent ? m.reactions : null,
       catalog: _catalog,
@@ -2596,6 +2618,14 @@ class _ChatViewState extends State<ChatView> with SingleTickerProviderStateMixin
       onUseComponent: (component, values) => _useComponent(m, component, values),
       selectChoices: _selectChoices,
       onDismiss: m.isEphemeral ? () => _dismiss(m) : null,
+      // Not in the pins: a copy there is lit already.
+      // Nor one that shone in another view of the chat, a thread over it.
+      onShine: !pinned && _unshone.contains(m.id) && !_shone.contains(m.id)
+          ? () {
+              _unshone.remove(m.id);
+              _shone.add(m.id);
+            }
+          : null,
     );
   }
 
@@ -2667,63 +2697,71 @@ class _ChatViewState extends State<ChatView> with SingleTickerProviderStateMixin
     };
     return FadeTransition(
       opacity: _reveal,
-      child: ListView.builder(
-        controller: _scroll,
-        reverse: true,
-        findChildIndexCallback: (key) => indexOf[key],
-        // A list with its own controller only scrolls once full: a short chat bounces too.
-        physics: const AlwaysScrollableScrollPhysics(),
-        keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
-        padding: EdgeInsets.fromLTRB(16, top + 8, 16, _composerHeight + 8),
-        itemCount: count,
-        itemBuilder: (context, index) {
-          if (index == items.length) {
-            return const Padding(
-              padding: EdgeInsets.all(12),
-              child: Center(child: FCircularProgress(size: .sm)),
-            );
-          }
-          return switch (items[items.length - 1 - index]) {
-            _Day(:final day) => _DaySeparator(day: day),
-            _NewMessages(:final count) => _NewMessagesDivider(
-              key: _dividerKey,
-              text: count == 1 ? '1 new message' : '$count new messages',
-            ),
-            _Replies(:final count) => _NewMessagesDivider(text: count == 1 ? '1 reply' : '$count replies', quiet: true),
-            _Message(:final entry, :final first, :final last) =>
-              entry.message.isNotice
-                  ? switch (callNoticeLine(entry.message, _me)) {
-                      final line? => _CallNoticeRow(
-                        line: line,
-                        onHold: _canDeleteNotices ? (anchor) => _noticeActions(anchor, entry.message) : null,
-                      ),
-                      null => _Notice(
-                        who: entry.message.authorName,
-                        where: widget.target is RoomTarget ? 'room' : 'conversation',
-                        onJump: switch (entry.message.reply?.messageId) {
-                          final id? => () => _jumpTo(id),
-                          null => null,
-                        },
-                        onPins: _openPins,
-                        onHold: _canDeleteNotices ? (anchor) => _noticeActions(anchor, entry.message) : null,
-                      ),
-                    }
-                  : KeyedSubtree(
-                      key: _keyFor(entry.message.id),
-                      // Its own layer, for the picture a delete breaks up.
-                      child: RepaintBoundary(
-                        child: CompositedTransformTarget(
-                          link: _linkFor(entry.message.id),
-                          child: _Vanish(
-                            hidden: _vanishing.contains(entry.message.id),
-                            closed: _closing.contains(entry.message.id),
-                            child: _bubbleFor(entry, first: first, last: last),
+      // The mentions' light goes by what shows of the list, between the bars.
+      child: PrismViewport(
+        top: top,
+        bottom: _composerHeight,
+        child: ListView.builder(
+          controller: _scroll,
+          reverse: true,
+          findChildIndexCallback: (key) => indexOf[key],
+          // A list with its own controller only scrolls once full: a short chat bounces too.
+          physics: const AlwaysScrollableScrollPhysics(),
+          keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
+          padding: EdgeInsets.fromLTRB(16, top + 8, 16, _composerHeight + 8),
+          itemCount: count,
+          itemBuilder: (context, index) {
+            if (index == items.length) {
+              return const Padding(
+                padding: EdgeInsets.all(12),
+                child: Center(child: FCircularProgress(size: .sm)),
+              );
+            }
+            return switch (items[items.length - 1 - index]) {
+              _Day(:final day) => _DaySeparator(day: day),
+              _NewMessages(:final count) => _NewMessagesDivider(
+                key: _dividerKey,
+                text: count == 1 ? '1 new message' : '$count new messages',
+              ),
+              _Replies(:final count) => _NewMessagesDivider(
+                text: count == 1 ? '1 reply' : '$count replies',
+                quiet: true,
+              ),
+              _Message(:final entry, :final first, :final last) =>
+                entry.message.isNotice
+                    ? switch (callNoticeLine(entry.message, _me)) {
+                        final line? => _CallNoticeRow(
+                          line: line,
+                          onHold: _canDeleteNotices ? (anchor) => _noticeActions(anchor, entry.message) : null,
+                        ),
+                        null => _Notice(
+                          who: entry.message.authorName,
+                          where: widget.target is RoomTarget ? 'room' : 'conversation',
+                          onJump: switch (entry.message.reply?.messageId) {
+                            final id? => () => _jumpTo(id),
+                            null => null,
+                          },
+                          onPins: _openPins,
+                          onHold: _canDeleteNotices ? (anchor) => _noticeActions(anchor, entry.message) : null,
+                        ),
+                      }
+                    : KeyedSubtree(
+                        key: _keyFor(entry.message.id),
+                        // Its own layer, for the picture a delete breaks up.
+                        child: RepaintBoundary(
+                          child: CompositedTransformTarget(
+                            link: _linkFor(entry.message.id),
+                            child: _Vanish(
+                              hidden: _vanishing.contains(entry.message.id),
+                              closed: _closing.contains(entry.message.id),
+                              child: _bubbleFor(entry, first: first, last: last),
+                            ),
                           ),
                         ),
                       ),
-                    ),
-          };
-        },
+            };
+          },
+        ),
       ),
     );
   }
