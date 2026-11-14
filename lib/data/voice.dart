@@ -369,6 +369,43 @@ class VoiceController extends ChangeNotifier {
   // The peer whose videos [remoteVideos] shows.
   VoicePeer? _watched;
 
+  List<String> _watching = const [];
+
+  /// Whose screen share the user watches in their voice, by user ID, in the
+  /// order they opened them: VOICE_SYNC's `watching`, none while
+  /// [incomingVideo] is off.
+  List<String> get watching => _watching;
+
+  /// Watches [userId]'s screen share in the user's voice, or stops.
+  void watch(String userId, {required bool on}) {
+    if (_target == null || on == _watching.contains(userId)) return;
+    _watching = on ? [..._watching, userId] : [..._watching.where((id) => id != userId)];
+    _sync();
+    notifyListeners();
+  }
+
+  /// Watches no screen share, as when the voice screen closes. It doesn't
+  /// notify: a widget calls it as it's disposed.
+  void stopWatching() {
+    if (_watching.isEmpty) return;
+    _watching = const [];
+    _sync();
+  }
+
+  // A sharer who stopped sharing, or left the user's voice, is watched no more.
+  void _keepWatching() {
+    final target = _target;
+    if (target == null || _watching.isEmpty) return;
+    final sharing = {
+      for (final p in _states.participantsIn(target.id))
+        if (p.screenSharing) p.userId,
+    };
+    final kept = [..._watching.where(sharing.contains)];
+    if (kept.length == _watching.length) return;
+    _watching = kept;
+    _sync();
+  }
+
   bool _noiseSuppression = true;
 
   /// Where the sound plays.
@@ -660,6 +697,8 @@ class VoiceController extends ChangeNotifier {
       screenSharing: _screen != null,
       camera: _camera != null,
       videoOff: !_incomingVideo,
+      // The gateway sends no screen while video is off: the list stays for when it's back.
+      watching: _incomingVideo ? _watching : const [],
     );
   }
 
@@ -959,6 +998,7 @@ class VoiceController extends ChangeNotifier {
   // joins.
   Future<void> _begin(VoiceTarget target, {required bool speaker}) async {
     final session = ++_session;
+    if (target != _target) _watching = const [];
     _target = target;
     _link = VoiceLink.starting;
     _joining = false;
@@ -1181,6 +1221,7 @@ class VoiceController extends ChangeNotifier {
         _onReady(data);
       case duvet.SpaceCreateEvent(:final data):
         _states.space(data);
+        _keepWatching();
         notifyListeners();
       case duvet.SpaceDeletedEvent(:final data):
         if (_target case RoomVoice(:final spaceId) when spaceId == data.id) {
@@ -1200,6 +1241,7 @@ class VoiceController extends ChangeNotifier {
         if (_states.apply(data)) {
           if (data.userId == _me && data.roomId == _target?.id) _checkPerms();
           if (data.userId != _me && data.roomId == _target?.id) _cue(before, data);
+          _keepWatching();
           notifyListeners();
         }
       case duvet.VoiceVideoRefusedPayloadEvent(:final data):
@@ -1677,6 +1719,7 @@ class VoiceController extends ChangeNotifier {
   void _onOngoing(duvet.CallOngoingEvent data) {
     _calls = {..._calls, data.conversationId};
     _states.ongoing(data);
+    _keepWatching();
     if (_call case final c? when c.phase == CallPhase.ringing && c.conversationId == data.conversationId) {
       // Answered on none of the user's devices: missed.
       _record(c);
@@ -1980,6 +2023,7 @@ class VoiceController extends ChangeNotifier {
     final target = _target;
     if (sendLeave && target != null) _signaling.leaveVoice(target.id);
     _target = null;
+    _watching = const [];
     _link = null;
     _joining = false;
     _joinedOn = null;

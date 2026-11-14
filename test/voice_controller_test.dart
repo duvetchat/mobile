@@ -28,6 +28,7 @@ Map<String, Object?> _sync({
   bool screen = false,
   bool camera = false,
   bool videoOff = false,
+  List<String> watching = const [],
   String room = 'r-lounge',
 }) => {
   'room_id': room,
@@ -36,6 +37,7 @@ Map<String, Object?> _sync({
   'screen_sharing': screen,
   'camera': camera,
   'video_off': videoOff,
+  'watching': watching,
 };
 
 duvet.VoiceJoinedPayloadEvent _joined(String room, String sdp) => duvet.VoiceJoinedPayloadEvent(
@@ -1858,6 +1860,50 @@ void main() {
       for (final (type, data) in h.gateway.sent)
         if (type == 'WEBRTC_RENEGOTIATE_OFFER') data['offer'] as String,
     ];
+
+    _voice('every VOICE_SYNC carries whose screen share the user watches, until it ends or they leave', (async, h) {
+      const maya = FakeRepository.maya;
+      const leo = FakeRepository.leo;
+      connected(async, h);
+      h.gateway.push(_state('r-lounge', maya, 3, screen: true));
+      h.gateway.push(_state('r-lounge', leo, 4, screen: true));
+      async.flushMicrotasks();
+
+      // Each watch is a sync, in the order they were opened.
+      h.voice.watch(maya, on: true);
+      expect(h.gateway.last('VOICE_SYNC'), _sync(watching: [maya]));
+      h.voice.watch(leo, on: true);
+      expect(h.gateway.last('VOICE_SYNC'), _sync(watching: [maya, leo]));
+      // Any other sync carries it too: VOICE_SYNC is the whole state.
+      h.voice.toggleMute();
+      async.flushMicrotasks();
+      expect(h.gateway.last('VOICE_SYNC'), _sync(muted: true, watching: [maya, leo]));
+      h.voice.toggleMute();
+      async.flushMicrotasks();
+
+      // With video off no screen comes in: none, and the list back with it.
+      h.voice.setIncomingVideo(false);
+      expect(h.gateway.last('VOICE_SYNC'), _sync(videoOff: true));
+      h.voice.setIncomingVideo(true);
+      expect(h.gateway.last('VOICE_SYNC'), _sync(watching: [maya, leo]));
+
+      // A sharer who stops is watched no more.
+      h.gateway.push(_state('r-lounge', maya, 5));
+      async.flushMicrotasks();
+      expect(h.voice.watching, [leo]);
+      expect(h.gateway.last('VOICE_SYNC'), _sync(watching: [leo]));
+      h.voice.watch(leo, on: false);
+      expect(h.gateway.last('VOICE_SYNC'), _sync());
+
+      // Leaving keeps nothing for the next join.
+      h.voice.watch(leo, on: true);
+      h.voice.leave();
+      async.flushMicrotasks();
+      expect(h.voice.watching, isEmpty);
+      h.voice.joinRoom(_lounge);
+      async.flushMicrotasks();
+      expect(h.gateway.last('VOICE_SYNC'), _sync());
+    });
 
     _voice('the camera swaps its track and says so in VOICE_SYNC: it never renegotiates', (async, h) {
       connected(async, h);

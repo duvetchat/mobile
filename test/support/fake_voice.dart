@@ -105,6 +105,7 @@ class FakeVoiceSignaling implements VoiceSignaling {
     required bool screenSharing,
     required bool camera,
     required bool videoOff,
+    required List<String> watching,
   }) => _send('VOICE_SYNC', {
     'room_id': roomId,
     'muted': muted,
@@ -112,6 +113,7 @@ class FakeVoiceSignaling implements VoiceSignaling {
     'screen_sharing': screenSharing,
     'camera': camera,
     'video_off': videoOff,
+    'watching': watching,
   });
 
   @override
