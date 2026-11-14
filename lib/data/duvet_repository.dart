@@ -2919,11 +2919,16 @@ class DuvetRepository implements ChatRepository {
   Future<void> changeEmail(String token, String email) => _anonymous((api) => api.changeEmail(token, email));
 
   @override
-  Future<void> updateProfile({required String alias, String? bio}) async {
+  Future<void> updateProfile({required String alias, String? bio, String? username}) async {
     final trimmed = alias.trim();
     final about = bio?.trim();
     final me = await _attempt(
-      (api) => api.updateUser(alias: trimmed.isEmpty ? null : trimmed, clearAlias: trimmed.isEmpty, custom: about),
+      (api) => api.updateUser(
+        username: username?.trim(),
+        alias: trimmed.isEmpty ? null : trimmed,
+        clearAlias: trimmed.isEmpty,
+        custom: about,
+      ),
     );
     _setProfile(me);
     // An API from before bios saves the rest, and answers the bio it had.

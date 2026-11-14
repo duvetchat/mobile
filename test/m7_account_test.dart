@@ -735,6 +735,43 @@ void main() {
     semantics.dispose();
   });
 
+  testWidgets('edit profile changes the username: 32 characters at most, as the API takes it; a taken one says so', (
+    tester,
+  ) async {
+    final repository = await pumpApp(tester);
+    await openYou(tester);
+    await tapLabel(tester, 'Edit');
+    bool saveEnabled() =>
+        tester.getSemantics(find.bySemanticsLabel('Save').last).flagsCollection.isEnabled.toString().contains('isTrue');
+    // Display name, about me, username.
+    final name = find.byType(EditableText).at(2);
+    await tester.ensureVisible(name);
+    await tester.pumpAndSettle();
+
+    await tester.enterText(name, 'g' * 33);
+    await tester.pump();
+    expect(find.text('Too long: 33 of 32 characters'), findsOneWidget);
+    expect(saveEnabled(), isFalse);
+    // Empty keeps the one there: nothing to save.
+    await tester.enterText(name, '  ');
+    await tester.pump();
+    expect(saveEnabled(), isFalse);
+
+    // Any the API takes, trimmed; the preview shows it before Save.
+    await tester.enterText(name, '  Gaby R.  ');
+    await tester.pump();
+    expect(find.text('@Gaby R.'), findsOneWidget);
+    repository.profileRefused = 'That username is taken';
+    await tapLabel(tester, 'Save');
+    expect(find.text('That username is taken'), findsOneWidget);
+    repository.profileRefused = null;
+    await tester.pump(const Duration(seconds: 4));
+    await tapLabel(tester, 'Save');
+    expect(repository.account, ['alias Gaby', 'username Gaby R.']);
+    expect(repository.profile.value!.username, 'Gaby R.');
+    semantics.dispose();
+  });
+
   testWidgets('the display name takes 32 characters at most, as the API does', (tester) async {
     final repository = await pumpApp(tester);
     await openYou(tester);

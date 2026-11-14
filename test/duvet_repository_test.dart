@@ -244,9 +244,13 @@ void main() {
           jsonEncode({'error': 'display name must be at most 32 characters'}),
           400,
         ),
+        ('PATCH', '/api/users/@me') when body()['username'] == 'maya' => http.Response(
+          jsonEncode({'error': 'that username is taken'}),
+          409,
+        ),
         // An API from before bios ignores `custom`, and answers the bio it had.
         ('PATCH', '/api/users/@me') => {
-          ..._user(_me, 'gaby', alias: body()['alias'] as String?),
+          ..._user(_me, body()['username'] as String? ?? 'gaby', alias: body()['alias'] as String?),
           'custom': bio = apiHasBios ? (body()['custom'] as String? ?? bio).trim() : bio,
         },
         ('PUT', '/api/users/@me/status') when apiHasStatus => {..._user(_me, 'gaby'), 'status': body()['status']},
@@ -2259,6 +2263,18 @@ void main() {
         repository.uploadProfileImage(ProfileImage.banner, path),
         throwsA(isA<ActionFailed>().having((e) => e.message, 'message', 'File is too large')),
       );
+    });
+
+    test('the username goes only when given, trimmed; a taken one says so, as the API says it (#22)', () async {
+      await repository.logIn('gaby@duvet.chat', 'secret');
+      await repository.updateProfile(alias: 'Gaby', username: ' gaby.r ');
+      expect(jsonDecode(requests.last.body), {'username': 'gaby.r', 'alias': 'Gaby'});
+      expect(repository.profile.value!.username, 'gaby.r');
+      await expectLater(
+        repository.updateProfile(alias: 'Gaby', username: 'maya'),
+        throwsA(isA<ActionFailed>().having((e) => e.message, 'message', 'That username is taken')),
+      );
+      expect(repository.profile.value!.username, 'gaby.r');
     });
 
     test('an API from before bios saves the rest, and says it needs the latest API', () async {

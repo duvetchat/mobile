@@ -203,8 +203,10 @@ abstract interface class ChatRepository {
   Future<void> changeEmail(String token, String email);
 
   /// The user's display name: empty clears it, back to the username. A [bio]
-  /// replaces theirs (empty clears it); left out, it stays.
-  Future<void> updateProfile({required String alias, String? bio});
+  /// replaces theirs (empty clears it), as a [username] does; left out, each
+  /// stays. A refusal the API explains (a username taken, say) throws an
+  /// [ActionFailed] with its reason.
+  Future<void> updateProfile({required String alias, String? bio, String? username});
 
   /// Chooses the user's status, [Presence.online] or
   /// [Presence.doNotDisturb]: what others see while they're connected.

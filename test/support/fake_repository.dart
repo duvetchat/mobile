@@ -385,14 +385,15 @@ class FakeRepository implements ChatRepository {
   String? pictureRefused;
 
   @override
-  Future<void> updateProfile({required String alias, String? bio}) async {
+  Future<void> updateProfile({required String alias, String? bio, String? username}) async {
     if (profileRefused != null) throw ActionFailed(profileRefused!);
     account.add('alias $alias');
     if (bio != null) account.add('bio $bio');
+    if (username != null) account.add('username $username');
     final p = profile.value!;
     profile.value = Profile(
       id: p.id,
-      username: p.username,
+      username: username ?? p.username,
       alias: alias.isEmpty ? null : alias,
       bio: bio == null ? p.bio : (bio.trim().isEmpty ? null : bio.trim()),
       status: p.status,

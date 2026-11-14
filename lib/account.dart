@@ -765,6 +765,7 @@ const maxUsernameLength = 32;
 class _EditProfilePageState extends State<EditProfilePage> {
   late final TextEditingController _alias;
   late final TextEditingController _bio;
+  late final TextEditingController _username;
   bool _fieldsMade = false;
   bool _saving = false;
 
@@ -784,6 +785,12 @@ class _EditProfilePageState extends State<EditProfilePage> {
   int get _aliasLength => _alias.text.trim().runes.length;
   bool get _aliasTooLong => _aliasLength > maxDisplayNameLength;
 
+  /// The username as the API takes it: trimmed; empty keeps the one there.
+  String get _name => _username.text.trim();
+  int get _nameLength => _name.runes.length;
+  bool get _nameTooLong => _nameLength > maxUsernameLength;
+  bool _renamed(Profile profile) => _name.isNotEmpty && _name != profile.username;
+
   @override
   void didChangeDependencies() {
     super.didChangeDependencies();
@@ -794,12 +801,14 @@ class _EditProfilePageState extends State<EditProfilePage> {
     final profile = context.repository.profile.value;
     _alias = TextEditingController(text: profile?.alias ?? '')..addListener(() => setState(() {}));
     _bio = TextEditingController(text: profile?.bio ?? '')..addListener(() => setState(() {}));
+    _username = TextEditingController(text: profile?.username ?? '')..addListener(() => setState(() {}));
   }
 
   @override
   void dispose() {
     _alias.dispose();
     _bio.dispose();
+    _username.dispose();
     _upload.dispose();
     super.dispose();
   }
@@ -870,6 +879,7 @@ class _EditProfilePageState extends State<EditProfilePage> {
     // The bio goes only when it changed: left out, it stays.
     final bio = _bio.text.trim();
     final changed = bio != (repository.profile.value?.bio ?? '').trim();
+    final renamed = _renamed(repository.profile.value!);
     setState(() => _saving = true);
     var failure = 'Couldn’t save your profile';
     try {
@@ -896,7 +906,7 @@ class _EditProfilePageState extends State<EditProfilePage> {
         _banner = null;
       }
       failure = 'Couldn’t save your profile';
-      await repository.updateProfile(alias: _alias.text, bio: changed ? bio : null);
+      await repository.updateProfile(alias: _alias.text, bio: changed ? bio : null, username: renamed ? _name : null);
       // Cancelled meanwhile: the page is gone, and the route under it stays.
       if (mounted) navigator.pop();
     } catch (e) {
@@ -924,7 +934,9 @@ class _EditProfilePageState extends State<EditProfilePage> {
     final banner = _banner ?? bannerNow;
     final hasAvatar = _avatar != null || avatarNow != null;
     final alias = _alias.text.trim();
+    final username = _name.isEmpty ? profile.username : _name;
     final dirty =
+        _renamed(profile) ||
         _avatar != null ||
         _banner != null ||
         _removeAvatar ||
@@ -1054,13 +1066,13 @@ class _EditProfilePageState extends State<EditProfilePage> {
                             crossAxisAlignment: CrossAxisAlignment.start,
                             children: [
                               Text(
-                                alias.isEmpty ? profile.username : alias,
+                                alias.isEmpty ? username : alias,
                                 maxLines: 1,
                                 overflow: TextOverflow.ellipsis,
                                 style: DuvetType.label.copyWith(color: colors.foreground),
                               ),
                               Text(
-                                '@${profile.username}',
+                                '@$username',
                                 maxLines: 1,
                                 overflow: TextOverflow.ellipsis,
                                 style: DuvetType.caption.copyWith(color: colors.mutedForeground),
@@ -1084,7 +1096,7 @@ class _EditProfilePageState extends State<EditProfilePage> {
                   DuvetTextField(
                     label: 'Display name',
                     controller: _alias,
-                    hint: profile.username,
+                    hint: username,
                     error: _aliasTooLong ? 'Too long: $_aliasLength of $maxDisplayNameLength characters' : null,
                   ),
                   const SizedBox(height: 16),
@@ -1099,20 +1111,15 @@ class _EditProfilePageState extends State<EditProfilePage> {
                     error: _bioTooLong ? 'Too long: $_bioLength of $maxBioLength characters' : null,
                   ),
                   const SizedBox(height: 16),
-                  Text(
-                    'Username',
-                    style: DuvetType.caption.copyWith(color: colors.foreground, fontWeight: FontWeight.w500),
-                  ),
-                  const SizedBox(height: 8),
-                  Container(
-                    height: 48,
-                    padding: const EdgeInsets.symmetric(horizontal: 16),
-                    alignment: Alignment.centerLeft,
-                    decoration: BoxDecoration(
-                      color: colors.secondary,
-                      borderRadius: BorderRadius.circular(DuvetTokens.radiusField),
-                    ),
-                    child: Text('@${profile.username}', style: DuvetType.body.copyWith(color: colors.mutedForeground)),
+                  // As the API takes it, and only that: 32 characters at most,
+                  // trimmed; empty keeps the one there.
+                  DuvetTextField(
+                    label: 'Username',
+                    controller: _username,
+                    hint: profile.username,
+                    autofillHints: const [AutofillHints.newUsername],
+                    helper: 'It’s how people mention you.',
+                    error: _nameTooLong ? 'Too long: $_nameLength of $maxUsernameLength characters' : null,
                   ),
                 ],
               ),
@@ -1127,7 +1134,7 @@ class _EditProfilePageState extends State<EditProfilePage> {
                 actions: [
                   TextAction(
                     label: 'Save',
-                    onPressed: _saving || !dirty || _bioTooLong || _aliasTooLong ? null : _save,
+                    onPressed: _saving || !dirty || _bioTooLong || _aliasTooLong || _nameTooLong ? null : _save,
                   ),
                 ],
               ),
