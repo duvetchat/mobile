@@ -2508,7 +2508,7 @@ class _LauncherIconPickerState extends State<_LauncherIconPicker> {
         Padding(
           padding: const EdgeInsets.fromLTRB(4, 8, 4, 0),
           child: Text(
-            'Your home screen shows it once you close Duvet.',
+            'Your home screen shows it once you close Duvet. Some launchers need a restart first.',
             style: DuvetType.caption.copyWith(color: colors.mutedForeground),
           ),
         ),
