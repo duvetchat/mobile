@@ -8,6 +8,7 @@ import 'package:duvet/deep_links.dart';
 import 'package:duvet/main.dart';
 import 'package:duvet/widgets/avatar.dart';
 import 'package:duvet/widgets/chrome.dart';
+import 'package:duvet/widgets/prism.dart';
 import 'package:duvet/widgets/rows.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
@@ -547,13 +548,9 @@ void main() {
   });
 
   group('mentions', () {
-    Finder outlined() => find.byWidgetPredicate(
-      (w) => w is Container && ((w.decoration as BoxDecoration?)?.border as Border?)?.top.width == 1.5,
-    );
+    Finder lit() => find.byType(PrismBubble);
 
-    testWidgets('a reply to the user that mentions them is outlined; one sent without the mention isn\'t', (
-      tester,
-    ) async {
+    testWidgets('a reply to the user that mentions them is lit; one sent without the mention isn\'t', (tester) async {
       final repository = await openMaya(tester);
       MessageReply toMe({required bool mention}) => MessageReply(
         messageId: 'm2',
@@ -575,12 +572,12 @@ void main() {
         ),
       );
       await tester.pumpAndSettle();
-      expect(outlined(), findsOneWidget);
-      expect(find.ancestor(of: find.text('A loud reply'), matching: outlined()), findsOneWidget);
+      expect(lit(), findsOneWidget);
+      expect(find.ancestor(of: find.text('A loud reply'), matching: lit()), findsOneWidget);
       semantics.dispose();
     });
 
-    testWidgets('a v2 message whose text displays mention the user is outlined', (tester) async {
+    testWidgets('a v2 message whose text displays mention the user is framed in the same light', (tester) async {
       final repository = await openGeneral(tester);
       repository.push(
         'r-general',
@@ -605,7 +602,9 @@ void main() {
         ),
       );
       await tester.pumpAndSettle();
-      expect(find.ancestor(of: find.text('Your turn, @Gaby'), matching: outlined()), findsOneWidget);
+      // No text bubble to light: the frame goes round the message, lit from the mention.
+      expect(lit(), findsOneWidget);
+      expect(find.descendant(of: lit(), matching: find.text('@Gaby')), findsOneWidget);
       semantics.dispose();
     });
   });

@@ -551,8 +551,9 @@ void main() {
     expect(tester.widget<RoleName>(maya).colors, gradient.colors);
     expect(find.descendant(of: maya, matching: find.byType(ShaderMask)), findsOneWidget);
 
-    // The others stay text in the line: Leo in his role's color, made
-    // readable; the user, with no colored role, in violet.
+    // The others stay names in the line: Leo in his role's color, the user,
+    // with no colored role, in violet; both made readable on the light the
+    // mention throws on its bubble, at its strongest.
     final spans = <String, Color?>{};
     for (final text in tester.widgetList<RichText>(find.byType(RichText))) {
       text.text.visitChildren((span) {
@@ -561,8 +562,10 @@ void main() {
       });
     }
     final context = tester.element(maya);
-    expect(spans['@leo'], readableOn(const Color(0xFFE5484D), FTheme.of(context).colors.background));
-    expect(spans.values.where((c) => c == context.duvet.violetText), hasLength(1));
+    final light = context.duvet.prism.behindName;
+    expect(spans['@leo'], readableOn(const Color(0xFFE5484D), light));
+    expect(spans['@Gaby'], readableOn(context.duvet.violetText, light));
+    expect(contrastOf(spans['@Gaby']!, light), greaterThanOrEqualTo(4.5));
 
     // Still a mention: tapped, it opens Maya.
     await tester.tap(maya);

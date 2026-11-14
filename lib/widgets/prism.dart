@@ -19,8 +19,8 @@ double prismSpillAt(double ms) => const Cubic(0.2, 0.9, 0.3, 1.0).transform(((ms
 /// The mention's light under its bubble, after the bubble's own shadows.
 BoxShadow prismShadow(PrismPalette palette) => BoxShadow(
   color: palette.gem.withValues(alpha: 0.45),
-  blurRadius: 26,
-  spreadRadius: -14,
+  blurRadius: palette.shadowBlur,
+  spreadRadius: palette.shadowSpread,
   offset: const Offset(0, 8),
 );
 
@@ -40,7 +40,8 @@ class PrismViewport extends InheritedWidget {
 
 /// The light of a bubble that mentions the user, between the bubble's fill and
 /// its [child], which it covers edge to edge (the bubble's padding goes in
-/// [child]): the spill, centred on the first [PrismAnchor] if there's one, and the rim.
+/// [child]); with no bubble to light (a sticker, a bot's components), a frame
+/// of the same light round [child], with no fill: the spill, centred on the first [PrismAnchor] if there's one, and the rim.
 class PrismBubble extends StatefulWidget {
   final PrismPalette palette;
 
@@ -212,8 +213,6 @@ class _PrismPainter extends CustomPainter {
   final _PrismBubbleState bubble;
   _PrismPainter(this.bubble, Listenable repaint) : super(repaint: repaint);
 
-  static const _white = Color(0xFFFFFFFF);
-
   @override
   void paint(Canvas canvas, Size size) {
     final box = bubble.context.findRenderObject();
@@ -256,9 +255,9 @@ class _PrismPainter extends CustomPainter {
       canvas.clipRRect(shape);
       // No mention shows (a reply to the user, or it's in code, or under a
       // spoiler): from where a line's first word would be, as the design has it.
-      spill(p.gem, 0.36, mentions.firstOrNull?.center ?? const Offset(40, 20), 170, 80);
-      spill(p.cool, 0.14, Offset(70 + slide * 150, size.height * 0.7), 120, 50);
-      spill(p.warm, 0.12, Offset(30 + slide * 90, size.height), 90, 40);
+      spill(p.gem, p.mainSpill, mentions.firstOrNull?.center ?? const Offset(40, 20), 170, 80);
+      spill(p.cool, p.coolSpill, Offset(70 + slide * 150, size.height * 0.7), 120, 50);
+      spill(p.warm, p.warmSpill, Offset(30 + slide * 90, size.height), 90, 40);
       canvas.restore();
     }
 
@@ -272,13 +271,8 @@ class _PrismPainter extends CustomPainter {
         ..shader = ui.Gradient.linear(
           all.center - Offset(reach, reach),
           all.center + Offset(reach, reach),
-          [
-            p.gem.withValues(alpha: 0.8),
-            _white.withValues(alpha: 0.08),
-            _white.withValues(alpha: 0.08),
-            p.cool.withValues(alpha: 0.35),
-          ],
-          const [0, 0.42, 0.70, 1],
+          [for (final (color, share, _) in p.rim) color.withValues(alpha: share)],
+          [for (final (_, _, at) in p.rim) at],
         ),
     );
   }

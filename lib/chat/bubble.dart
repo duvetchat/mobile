@@ -126,9 +126,9 @@ class _Bubble extends StatelessWidget {
     final mentionsMe = !mine && _mentionsUser(m, directory.me);
     final text = withoutPreviewedLinks(m.content, m.embeds, cards: !lifted);
     final textBubble = text.isNotEmpty && !isJumboEmoji(text);
-    // Prism, where it's designed (dark): a text bubble that mentions the user,
-    // in its text or as a reply to them, is lit. With no text bubble to light
-    // (a sticker, a bot's components), the mention keeps the outline.
+    // Prism: a text bubble that mentions the user, in its text or as a reply
+    // to them, is lit. With no text bubble (a sticker, a bot's components),
+    // the light frames the whole message.
     final prism = mentionsMe && textBubble ? tokens.prism : null;
     const bubblePadding = EdgeInsets.symmetric(horizontal: 12, vertical: 8);
     final maxWidth = MediaQuery.sizeOf(context).width * 0.75;
@@ -191,8 +191,6 @@ class _Bubble extends StatelessWidget {
                       color: mine ? ownBubble(context).fill : colors.card,
                       borderRadius: BorderRadius.circular(DuvetTokens.radiusButton),
                       boxShadow: editing ? null : (lifted ? tokens.shadowFloat : tokens.shadowRest),
-                      // Mentioning the user: the accent as an outline, never a fill.
-                      border: mentionsMe ? Border.all(color: tokens.violetText, width: 1.5) : null,
                     ),
                     child: message,
                   );
@@ -256,16 +254,15 @@ class _Bubble extends StatelessWidget {
             ),
         ],
       );
-      // A mention with no text bubble to outline (a bot's components, a
-      // sticker): the outline goes round the whole message.
+      // A mention with no text bubble to light (a bot's components, a
+      // sticker): a frame of the same light round the whole message, 8 out
+      // from it, with no fill and no shadow, which would show through it.
       if (mentionsMe && !textBubble) {
-        content = Container(
-          padding: const EdgeInsets.all(4),
-          decoration: BoxDecoration(
-            border: Border.all(color: tokens.violetText, width: 1.5),
-            borderRadius: BorderRadius.circular(DuvetTokens.radiusButton),
-          ),
-          child: content,
+        content = PrismBubble(
+          palette: tokens.prism,
+          radius: DuvetTokens.radiusButton,
+          onArrive: lifted ? null : onShine,
+          child: Padding(padding: const EdgeInsets.all(8), child: content),
         );
       }
       return Opacity(opacity: editing ? 0.55 : (faded ? 0.7 : 1), child: content);

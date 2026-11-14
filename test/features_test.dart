@@ -292,7 +292,7 @@ void main() {
       semantics.dispose();
     });
 
-    testWidgets('mentions show as names, and a mention of you is outlined', (tester) async {
+    testWidgets('mentions show as names, and a mention of you lights its bubble', (tester) async {
       final repository = await openGeneral(tester);
       repository.push(
         'r-general',
@@ -303,13 +303,9 @@ void main() {
       await tester.pumpAndSettle();
       // Read with its time, which closes the run.
       expect(find.bySemanticsLabel(RegExp(r'^ping @Maya and @Gaby\n09:00$')), findsOneWidget);
-      // Only the bubble that mentions the user is outlined.
-      expect(
-        find.byWidgetPredicate(
-          (w) => w is Container && ((w.decoration as BoxDecoration?)?.border as Border?)?.top.width == 1.5,
-        ),
-        findsOneWidget,
-      );
+      // Only the bubble that mentions the user is lit, from the mention.
+      expect(find.byType(PrismBubble), findsOneWidget);
+      expect(find.descendant(of: find.byType(PrismBubble), matching: find.byType(PrismAnchor)), findsOneWidget);
       semantics.dispose();
     });
 
