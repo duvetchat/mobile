@@ -205,15 +205,17 @@ class _MentionCount extends StatelessWidget {
     const radius = BorderRadius.all(Radius.circular(DuvetTokens.radiusChip));
     return Container(
       height: 20,
-      padding: const EdgeInsets.symmetric(horizontal: 6),
-      alignment: Alignment.center,
       decoration: BoxDecoration(color: colors.secondary, borderRadius: radius),
       child: InsetShadow(
         shadows: context.duvet.shadowWell,
         borderRadius: radius,
-        child: Text(
-          '@${count > 99 ? '99+' : count}',
-          style: DuvetType.overline.copyWith(color: colors.foreground, fontWeight: FontWeight.w700, letterSpacing: 0),
+        padding: const EdgeInsets.symmetric(horizontal: 6),
+        child: Center(
+          widthFactor: 1,
+          child: Text(
+            '@${count > 99 ? '99+' : count}',
+            style: DuvetType.overline.copyWith(color: colors.foreground, fontWeight: FontWeight.w700, letterSpacing: 0),
+          ),
         ),
       ),
     );
@@ -659,7 +661,6 @@ class DuvetButton extends StatelessWidget {
           builder: (context, pressed) => AnimatedContainer(
             duration: pressed ? DuvetTokens.pressIn : DuvetTokens.pressOut,
             height: 48,
-            padding: const EdgeInsets.symmetric(horizontal: 24),
             decoration: BoxDecoration(
               color: switch (variant) {
                 ButtonVariant.primary => Duvet.accent,
@@ -672,6 +673,7 @@ class DuvetButton extends StatelessWidget {
             child: InsetShadow(
               shadows: pressed ? tokens.shadowPressed : const [],
               borderRadius: radius,
+              padding: const EdgeInsets.symmetric(horizontal: 24),
               child: Row(
                 mainAxisSize: expand ? MainAxisSize.max : MainAxisSize.min,
                 mainAxisAlignment: MainAxisAlignment.center,
@@ -1121,11 +1123,11 @@ class Segmented<T> extends StatelessWidget {
       child: Container(
         // 44 inside the recess: each choice a full tap target.
         height: 48,
-        padding: const EdgeInsets.all(2),
         decoration: const BoxDecoration(borderRadius: radius).copyWith(color: colors.secondary),
         child: InsetShadow(
           shadows: tokens.shadowWell,
           borderRadius: radius,
+          padding: const EdgeInsets.all(2),
           child: Row(
             children: [
               for (final MapEntry(:key, value: text) in options.entries)

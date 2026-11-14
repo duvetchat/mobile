@@ -272,11 +272,11 @@ class ConnectionBanner extends StatelessWidget {
       liveRegion: true,
       child: Container(
         height: 36,
-        padding: const EdgeInsets.symmetric(horizontal: 12),
         decoration: BoxDecoration(color: colors.secondary, borderRadius: radius),
         child: InsetShadow(
           shadows: context.duvet.shadowWell,
           borderRadius: radius,
+          padding: const EdgeInsets.symmetric(horizontal: 12),
           child: Row(
             children: [
               ExcludeSemantics(child: Icon(icon, size: 16, color: colors.foreground)),

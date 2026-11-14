@@ -5,16 +5,29 @@ import '../theme.dart';
 /// Inner shadows inside [borderRadius], over [child]: `shadow-well` (a field's
 /// resting recess) and `shadow-pressed` (a control pushed into the screen).
 /// Flutter's [BoxShadow] only falls outward, so these are painted.
+///
+/// They fall from this widget's own edge, so it fills its surface: the
+/// surface's padding goes in [padding], never round this widget, or the shadow
+/// is drawn that far in.
 class InsetShadow extends StatelessWidget {
   final List<BoxShadow> shadows;
   final BorderRadius borderRadius;
+  final EdgeInsetsGeometry padding;
   final Widget? child;
 
-  const InsetShadow({required this.shadows, required this.borderRadius, this.child, super.key});
+  const InsetShadow({
+    required this.shadows,
+    required this.borderRadius,
+    this.padding = EdgeInsets.zero,
+    this.child,
+    super.key,
+  });
 
   @override
-  Widget build(BuildContext context) =>
-      CustomPaint(foregroundPainter: _InsetPainter(shadows, borderRadius), child: child);
+  Widget build(BuildContext context) => CustomPaint(
+    foregroundPainter: _InsetPainter(shadows, borderRadius),
+    child: Padding(padding: padding, child: child),
+  );
 }
 
 class _InsetPainter extends CustomPainter {

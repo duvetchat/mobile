@@ -790,11 +790,11 @@ class CallBanner extends StatelessWidget {
     const radius = BorderRadius.all(Radius.circular(DuvetTokens.radiusField));
     return Container(
       height: 36,
-      padding: EdgeInsets.only(left: 12, right: elsewhere ? 12 : 0),
       decoration: BoxDecoration(color: colors.secondary, borderRadius: radius),
       child: InsetShadow(
         shadows: context.duvet.shadowWell,
         borderRadius: radius,
+        padding: EdgeInsets.only(left: 12, right: elsewhere ? 12 : 0),
         child: Row(
           children: [
             ExcludeSemantics(child: Icon(FLucideIcons.phoneCall, size: 16, color: colors.foreground)),
