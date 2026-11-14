@@ -9,6 +9,49 @@ import '../theme.dart';
 import 'glass.dart';
 import 'message_content.dart';
 import 'rows.dart';
+import 'skeleton.dart';
+
+/// Names and lines of plausible lengths, for a list's rows while it loads:
+/// only their shapes show.
+const placeholderNames = ['Lorem ipsum', 'Dolor sit amet', 'Consectetur', 'Adipiscing elit'];
+const placeholderLines = [
+  'Sed do eiusmod incididunt ut labore',
+  'Ut enim ad minim veniam',
+  'Quis nostrud exercitation ullamco laboris',
+  'Duis aute irure dolor',
+];
+
+/// What a list shows while it loads, as the desktop draws it: [children],
+/// the list's own rows built from placeholder data, as pulsing blocks.
+/// Screen readers hear [label] alone, and none of it takes a tap or focus.
+class LoadingSkeleton extends StatelessWidget {
+  final String label;
+  final List<Widget> children;
+  const LoadingSkeleton({required this.label, required this.children, super.key});
+
+  @override
+  Widget build(BuildContext context) => Semantics(
+    container: true,
+    label: label,
+    excludeSemantics: true,
+    child: ExcludeFocus(
+      child: DuvetSkeleton(
+        child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: children),
+      ),
+    ),
+  );
+}
+
+/// [ListRow]s for a [LoadingSkeleton]: a name over a line, after a picture
+/// [avatar] wide when the real rows have one.
+List<Widget> placeholderRows({double? avatar}) => [
+  for (final (i, name) in placeholderNames.indexed)
+    ListRow(
+      leading: avatar == null ? null : Bone.circle(size: avatar),
+      title: name,
+      snippet: placeholderLines[i],
+    ),
+];
 
 /// The Channel Switcher: the Space's directory in a glass sheet, the current
 /// room selected. Answers the room picked.
@@ -176,9 +219,39 @@ class _PinsState extends State<_Pins> {
         if (_error != null)
           const ListNote('Couldn’t load the pinned messages')
         else if (pins == null)
-          const Padding(
-            padding: EdgeInsets.all(24),
-            child: Center(child: FCircularProgress()),
+          LoadingSkeleton(
+            label: 'Loading pinned messages',
+            children: [
+              for (final (i, line) in placeholderLines.take(3).indexed)
+                Padding(
+                  padding: const EdgeInsets.only(bottom: 12),
+                  child: Container(
+                    padding: const EdgeInsets.all(12),
+                    decoration: BoxDecoration(
+                      color: colors.card,
+                      borderRadius: BorderRadius.circular(DuvetTokens.radiusButton),
+                      boxShadow: tokens.shadowRest,
+                    ),
+                    child: Row(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        const Bone.circle(size: 40),
+                        const SizedBox(width: 12),
+                        Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(placeholderNames[i], style: DuvetType.rowTitle),
+                              const SizedBox(height: 4),
+                              Text(line, style: DuvetType.body),
+                            ],
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+            ],
           )
         else if (pins.isEmpty)
           const ListNote('Nothing pinned yet')

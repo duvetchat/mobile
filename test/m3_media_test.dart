@@ -26,6 +26,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:forui/forui.dart';
 import 'package:image/image.dart' as img;
 import 'package:image_picker/image_picker.dart';
+import 'package:video_player/video_player.dart';
 
 import 'support/fake_repository.dart';
 
@@ -131,6 +132,14 @@ class _Actions extends MediaActions {
 
   @override
   Future<void> share(String url, String name, String contentType) async => calls.add('share $name');
+}
+
+/// A player that never finishes loading: its slot stays taken.
+class _PendingVideo extends VideoPlayerController {
+  _PendingVideo(super.url) : super.networkUrl();
+
+  @override
+  Future<void> initialize() => Completer<void>().future;
 }
 
 class _Gifs implements GifSource {
@@ -314,7 +323,8 @@ void main() {
     final build = VideoPage.controllerFor;
     VideoPage.controllerFor = (url) {
       made++;
-      return build(url);
+      // One that failed would free its slot for the next.
+      return _PendingVideo(url);
     };
     addTearDown(() => VideoPage.controllerFor = build);
     Widget tiles(int count) => MaterialApp(

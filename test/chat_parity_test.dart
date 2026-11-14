@@ -762,7 +762,7 @@ void main() {
     testWidgets('a chat that opens as the app goes to the background is read once it comes back', (tester) async {
       final repository = await pumpApp(tester, (r) => r.holdHistory = Completer<void>());
       await tester.tap(find.text('Maya'));
-      // Its history is loading: a spinner, which never settles.
+      // Its history is loading: a skeleton, still in tests.
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 500));
       for (final state in [AppLifecycleState.inactive, AppLifecycleState.hidden, AppLifecycleState.paused]) {

@@ -12,12 +12,14 @@ import 'package:path_provider/path_provider.dart';
 import 'package:record/record.dart' as rec;
 import 'package:video_player/video_player.dart';
 
+import '../data/images.dart';
 import '../data/models.dart';
 import '../data/ogg.dart';
 import '../data/appearance.dart' show ownBubble;
 import '../theme.dart';
 import 'attachment_link.dart';
 import 'depth.dart';
+import 'skeleton.dart';
 
 // -----------------------------------------------------------------------------
 // Playback
@@ -692,42 +694,109 @@ class PlayMark extends StatelessWidget {
 }
 
 /// A video in a message: a poster with a play button; tapping plays it full
-/// screen. The poster is [poster] (an embed's picture) or else the video's
-/// first frame, loaded paused.
+/// screen. The poster is [poster] (an embed's picture) or else, for an
+/// upload, the video's first frame, loaded paused.
 class VideoTile extends StatefulWidget {
   final MessageAttachment attachment;
   final double width;
   final String? poster;
-  const VideoTile({required this.attachment, this.width = 248, this.poster, super.key});
+
+  /// An embed's video, from another host: nothing loads from there until
+  /// someone plays it (#172), so it shows [poster] or the play mark alone.
+  final bool embed;
+  const VideoTile({required this.attachment, this.width = 248, this.poster, this.embed = false, super.key});
+
+  /// Lets go of the players kept for tiles that scrolled away, on signing
+  /// out: they hold the account's links. The tiles still there keep none.
+  static void releaseParked() => _VideoTileState._release();
 
   @override
   State<VideoTile> createState() => _VideoTileState();
 }
 
 class _VideoTileState extends State<VideoTile> {
-  // Each first frame is a player and a decoder of its own.
-  // shortcut: at most 3 load at once, the rest show the play mark only; upgrade when the API sends a poster for
-  // uploaded videos.
+  // Each first frame is a paused player and a decoder of its own, so at most 3 are kept, shown or not; the rest wait
+  // their turn, pulsing, and take the next slot that frees.
+  // shortcut: the frame is the paused player itself, as video_player hands out no picture of it; upgrade when the API
+  // sends a poster for uploaded videos.
   static const _maxFrames = 3;
+
+  // Players loading a frame or showing one.
   static int _frames = 0;
 
-  // Only while on screen: the list drops (and so disposes) a tile scrolled away.
+  // The players of frames whose tiles scrolled away, oldest first, by file: scrolled back, a tile shows its frame at
+  // once; a tile waiting for a slot takes the oldest one's.
+  static final _parked = <String, VideoPlayerController>{};
+
+  // Tiles waiting for a slot, in the order they showed.
+  static final _waiting = <_VideoTileState>[];
+
+  // How many times the parked ones were let go: a tile from before parks nothing.
+  static int _releases = 0;
+  int _since = 0;
+
+  static void _release() {
+    _releases++;
+    for (final parked in _parked.values) {
+      unawaited(parked.dispose());
+    }
+    _parked.clear();
+  }
+
   VideoPlayerController? _frame;
   bool _counted = false;
+  late LinkSource _link;
+
+  // Only an upload's frame is loaded here: an embed's video is reached only once played (#172).
+  bool get _grabs => !widget.embed && widget.poster == null && !widget.attachment.local;
 
   @override
   void initState() {
     super.initState();
-    if (widget.poster != null || widget.attachment.local || _frames >= _maxFrames) return;
+    if (_grabs) _queue();
+  }
+
+  @override
+  void didUpdateWidget(VideoTile old) {
+    super.didUpdateWidget(old);
+    // A video sent from here, uploaded now: its message keeps this tile.
+    if (old.attachment.local && _grabs) _queue();
+  }
+
+  // Shows the frame kept for it, or waits for a slot to load it.
+  void _queue() {
+    _since = _releases;
+    _link = linkSource(context, widget.attachment);
+    if (_parked.remove(widget.attachment.id) case final parked?) {
+      _frames++;
+      _counted = true;
+      _frame = parked;
+      return;
+    }
+    _waiting.add(this);
+    _next();
+  }
+
+  // Starts the tiles waiting while there's a slot, or a parked player to give up for one.
+  static void _next() {
+    while (_waiting.isNotEmpty) {
+      if (_frames + _parked.length >= _maxFrames) {
+        if (_parked.isEmpty) return;
+        unawaited(_parked.remove(_parked.keys.first)!.dispose());
+      }
+      _waiting.removeAt(0)._start();
+    }
+  }
+
+  void _start() {
     _frames++;
     _counted = true;
     final a = widget.attachment;
-    final link = linkSource(context, a);
     // Its link renewed first when it's about to expire.
     if (a.linkDueAt(time.clock.now())) {
-      link().then((url) => _load(url, link));
+      _link().then((url) => _load(url, _link), onError: (Object _) => _fail());
     } else {
-      _load(a.url, link);
+      _load(a.url, _link);
     }
   }
 
@@ -741,20 +810,53 @@ class _VideoTileState extends State<VideoTile> {
         if (mounted) setState(() {});
       },
       onError: (Object _) async {
-        if (!retry || !mounted || widget.attachment.linkExpires == null) return;
-        final next = await link(failed: url);
+        if (!mounted || !identical(_frame, frame)) return;
+        if (!retry || widget.attachment.linkExpires == null) {
+          _fail();
+          return;
+        }
+        final String next;
+        try {
+          next = await link(failed: url);
+        } catch (_) {
+          _fail();
+          return;
+        }
         if (!mounted || !identical(_frame, frame)) return;
         _frame = null;
-        await frame.dispose();
+        // Not awaited: a player that failed to start never finishes disposing.
+        unawaited(frame.dispose());
         _load(next, link, retry: false);
       },
     );
   }
 
+  // Its frame won't load: the play mark alone, and its slot to the next.
+  void _fail() {
+    if (!mounted) return;
+    unawaited(_frame?.dispose());
+    _frame = null;
+    _counted = false;
+    _frames--;
+    _next();
+    setState(() {});
+  }
+
   @override
   void dispose() {
-    if (_counted) _frames--;
-    _frame?.dispose();
+    _waiting.remove(this);
+    if (_counted) {
+      _frames--;
+      final frame = _frame;
+      if (frame != null && frame.value.isInitialized && _since == _releases) {
+        unawaited(_parked.remove(widget.attachment.id)?.dispose());
+        _parked[widget.attachment.id] = frame;
+      } else {
+        unawaited(frame?.dispose());
+      }
+      // Once this frame's other tiles have gone too: one going mustn't start.
+      scheduleMicrotask(_next);
+    }
     super.dispose();
   }
 
@@ -789,11 +891,14 @@ class _VideoTileState extends State<VideoTile> {
             fit: StackFit.expand,
             children: [
               if (widget.poster case final poster?)
-                Image.network(
-                  poster,
+                Image(
+                  image: cachedImage(
+                    poster,
+                    cacheWidth: math.max(1, (width * MediaQuery.devicePixelRatioOf(context)).round()),
+                  ),
                   fit: BoxFit.cover,
-                  cacheWidth: math.max(1, (width * MediaQuery.devicePixelRatioOf(context)).round()),
                   excludeFromSemantics: true,
+                  frameBuilder: (_, child, shown, sync) => shown == null && !sync ? const SkeletonBox() : child,
                   errorBuilder: (_, _, _) => const SizedBox.shrink(),
                 )
               else if (frame != null && frame.isInitialized && !frame.size.isEmpty)
@@ -801,7 +906,10 @@ class _VideoTileState extends State<VideoTile> {
                   fit: BoxFit.cover,
                   clipBehavior: Clip.hardEdge,
                   child: SizedBox.fromSize(size: frame.size, child: VideoPlayer(_frame!)),
-                ),
+                )
+              // Its first frame on its way, or waiting its turn: the desktop's video-skeleton.
+              else if ((_counted || _waiting.contains(this)) && !(frame?.isInitialized ?? false))
+                const SkeletonBox(),
               const Center(child: PlayMark()),
             ],
           ),

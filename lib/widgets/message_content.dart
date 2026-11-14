@@ -15,6 +15,7 @@ import 'package:youtube_player_iframe/youtube_player_iframe.dart'
 import '../data/appearance.dart';
 import '../data/code_theme.dart';
 import '../data/emoji_catalog.dart';
+import '../data/images.dart';
 import '../data/links.dart';
 import '../data/markdown.dart';
 import '../deep_links.dart';
@@ -29,6 +30,7 @@ import 'glass.dart';
 import 'media.dart';
 import 'media_actions.dart';
 import 'role_name.dart';
+import 'skeleton.dart';
 import 'youtube_dock.dart';
 
 /// What a bubble needs to show names and custom emoji.
@@ -258,11 +260,13 @@ class _MessageTextState extends State<MessageText> {
               alignment: PlaceholderAlignment.middle,
               child: Padding(
                 padding: const EdgeInsets.symmetric(horizontal: 1),
-                child: Image.network(
-                  emoji.url,
+                child: Image(
+                  image: cachedImage(
+                    emoji.url,
+                    cacheWidth: (emojiSize * MediaQuery.devicePixelRatioOf(context)).round(),
+                  ),
                   width: emojiSize,
                   height: emojiSize,
-                  cacheWidth: (emojiSize * MediaQuery.devicePixelRatioOf(context)).round(),
                   fit: BoxFit.contain,
                   excludeFromSemantics: true,
                   errorBuilder: (_, _, _) => Text(':${emoji.name}:'),
@@ -876,16 +880,18 @@ Widget _image(MessageAttachment a, double width, {BoxFit fit = BoxFit.cover, boo
       Image.file(File(a.url), fit: fit, cacheWidth: fit == BoxFit.cover ? cache : null, errorBuilder: broken),
     );
   }
+  // In a message (covered), a pulse in its box until it shows, as the desktop's; not full screen in the viewer.
+  final inMessage = fit == BoxFit.cover;
   // Reloading starts its link over too: an expired one is asked for anew.
   return _Reloadable(
     builder: (context, reload) => AttachmentLinkBuilder(
       attachment: a,
+      waiting: inMessage ? const SkeletonBox() : const SizedBox.expand(),
       builder: (context, url, refused) => played(
         url,
-        Image.network(
-          url,
+        Image(
+          image: cachedImage(url, cacheWidth: inMessage ? cache : null),
           fit: fit,
-          cacheWidth: fit == BoxFit.cover ? cache : null,
           errorBuilder: (context, error, stack) {
             // Its link expired: the API refuses it.
             if (error is NetworkImageLoadException && error.statusCode == 403) refused();
@@ -916,11 +922,20 @@ Widget _image(MessageAttachment a, double width, {BoxFit fit = BoxFit.cover, boo
               ),
             );
           },
-          frameBuilder: (context, child, frame, sync) => AnimatedOpacity(
-            opacity: frame == null && !sync ? 0 : 1,
-            duration: const Duration(milliseconds: 200),
-            child: child,
-          ),
+          frameBuilder: (context, child, frame, sync) {
+            final loading = frame == null && !sync;
+            const fade = Duration(milliseconds: 200);
+            if (!inMessage) return AnimatedOpacity(opacity: loading ? 0 : 1, duration: fade, child: child);
+            // The pulse stays whole under the picture until it has faded in: the box behind is black in the dark
+            // theme, and showed through the fade.
+            return AnimatedSwitcher(
+              duration: fade,
+              layoutBuilder: (current, previous) => Stack(fit: StackFit.passthrough, children: [...previous, ?current]),
+              transitionBuilder: (child, animation) =>
+                  child is SkeletonBox ? child : FadeTransition(opacity: animation, child: child),
+              child: loading ? const SkeletonBox() : child,
+            );
+          },
         ),
       ),
     ),
@@ -1070,7 +1085,7 @@ Future<void> _fileMenu(BuildContext anchor, MessageAttachment a) async {
   }
 }
 
-/// A sticker: large, with no bubble; a `base-sunken` square until it loads.
+/// A sticker: large, with no bubble; a pulsing square until it loads.
 class StickerView extends StatelessWidget {
   final String url;
   final String? name;
@@ -1095,21 +1110,17 @@ class StickerView extends StatelessWidget {
     child: GestureDetector(onTap: zoomable ? () => _open(context) : null, child: _sticker(context)),
   );
 
-  Widget _sticker(BuildContext context) => Image.network(
-    url,
+  Widget _sticker(BuildContext context) => Image(
+    image: cachedImage(url, cacheWidth: (160 * MediaQuery.devicePixelRatioOf(context)).round()),
     width: 160,
     height: 160,
-    cacheWidth: (160 * MediaQuery.devicePixelRatioOf(context)).round(),
     fit: BoxFit.contain,
     // Not behind the sticker once it's there: stickers are see-through.
     frameBuilder: (context, child, frame, sync) => frame == null && !sync
-        ? Container(
+        ? const SkeletonBox(
             width: 160,
             height: 160,
-            decoration: BoxDecoration(
-              color: context.theme.colors.secondary,
-              borderRadius: BorderRadius.circular(DuvetTokens.radiusButton),
-            ),
+            borderRadius: BorderRadius.all(Radius.circular(DuvetTokens.radiusButton)),
           )
         : child,
     errorBuilder: (context, _, _) => SizedBox(
@@ -1143,15 +1154,17 @@ class EmbedCard extends StatelessWidget {
     Widget picture(double w) {
       final ratio = (e.imageWidth ?? 0) > 0 && (e.imageHeight ?? 0) > 0 ? e.imageWidth! / e.imageHeight! : null;
       final height = ratio == null ? 140.0 : math.min(w / ratio, 320.0);
+      final width = ratio == null ? w : math.min(w, height * ratio);
       return ClipRRect(
         borderRadius: BorderRadius.circular(DuvetTokens.radiusButton),
-        child: Image.network(
-          e.imageUrl!,
-          width: ratio == null ? w : math.min(w, height * ratio),
+        child: Image(
+          image: cachedImage(e.imageUrl!, cacheWidth: (w * dpr).round()),
+          width: width,
           height: height,
-          cacheWidth: (w * dpr).round(),
           fit: ratio == null ? BoxFit.cover : BoxFit.contain,
           excludeFromSemantics: true,
+          frameBuilder: (_, child, frame, sync) =>
+              frame == null && !sync ? SkeletonBox(width: width, height: height) : child,
           errorBuilder: (_, _, _) => const SizedBox.shrink(),
         ),
       );
@@ -1179,6 +1192,7 @@ class EmbedCard extends StatelessWidget {
           ),
           width: w,
           poster: e.imageUrl,
+          embed: true,
         );
       }
       if (youtube != null) {
@@ -1231,11 +1245,10 @@ class EmbedCard extends StatelessWidget {
                 children: [
                   if (e.authorIconUrl != null) ...[
                     ClipOval(
-                      child: Image.network(
-                        e.authorIconUrl!,
+                      child: Image(
+                        image: cachedImage(e.authorIconUrl!, cacheWidth: (16 * dpr).round()),
                         width: 16,
                         height: 16,
-                        cacheWidth: (16 * dpr).round(),
                         fit: BoxFit.cover,
                         excludeFromSemantics: true,
                         errorBuilder: (_, _, _) => const SizedBox.shrink(),
@@ -1351,13 +1364,14 @@ class EmbedCard extends StatelessWidget {
                             const SizedBox(width: 12),
                             ClipRRect(
                               borderRadius: BorderRadius.circular(DuvetTokens.radiusField),
-                              child: Image.network(
-                                e.thumbnailUrl!,
+                              child: Image(
+                                image: cachedImage(e.thumbnailUrl!, cacheWidth: (64 * dpr).round()),
                                 width: 64,
                                 height: 64,
-                                cacheWidth: (64 * dpr).round(),
                                 fit: BoxFit.cover,
                                 excludeFromSemantics: true,
+                                frameBuilder: (_, child, frame, sync) =>
+                                    frame == null && !sync ? const SkeletonBox(width: 64, height: 64) : child,
                                 errorBuilder: (_, _, _) => const SizedBox.shrink(),
                               ),
                             ),
@@ -1460,11 +1474,14 @@ class _YouTubeTileState extends State<_YouTubeTile> with AutomaticKeepAliveClien
       fit: StackFit.expand,
       children: [
         if (widget.poster case final poster?)
-          Image.network(
-            poster,
+          Image(
+            image: cachedImage(
+              poster,
+              cacheWidth: math.max(1, (width * MediaQuery.devicePixelRatioOf(context)).round()),
+            ),
             fit: BoxFit.cover,
-            cacheWidth: math.max(1, (width * MediaQuery.devicePixelRatioOf(context)).round()),
             excludeFromSemantics: true,
+            frameBuilder: (_, child, frame, sync) => frame == null && !sync ? const SkeletonBox() : child,
             errorBuilder: (_, _, _) => const SizedBox.shrink(),
           ),
         if (!playing) const Center(child: PlayMark()),

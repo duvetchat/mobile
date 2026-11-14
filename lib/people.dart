@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import 'package:forui/forui.dart';
 
 import 'chat_view.dart';
+import 'data/images.dart';
 import 'data/models.dart';
 import 'data/scope.dart';
 import 'members_sheet.dart' show MemberAction, PresenceAvatar;
@@ -17,6 +18,7 @@ import 'widgets/glass.dart';
 import 'widgets/message_content.dart';
 import 'widgets/role_name.dart';
 import 'widgets/rows.dart';
+import 'widgets/sheets.dart' show LoadingSkeleton, placeholderRows;
 
 /// What a presence reads as; nothing when it isn't known.
 String presenceText(Presence? p) => switch (p) {
@@ -379,8 +381,8 @@ class _ProfileState extends State<_Profile> {
               aspectRatio: bannerAspect,
               child: m.bannerUrl == null
                   ? ColoredBox(color: colors.secondary)
-                  : Image.network(
-                      m.bannerUrl!,
+                  : Image(
+                      image: cachedImage(m.bannerUrl!),
                       fit: BoxFit.cover,
                       errorBuilder: (_, _, _) => ColoredBox(color: colors.secondary),
                     ),
@@ -1021,9 +1023,9 @@ class _FriendsPageState extends State<FriendsPage> {
                       ),
                     ),
                     if (_loading && f.friends.isEmpty && f.incoming.isEmpty)
-                      const Padding(
-                        padding: EdgeInsets.all(24),
-                        child: Center(child: FCircularProgress()),
+                      LoadingSkeleton(
+                        label: 'Loading friends',
+                        children: [const Overline('Lorem ipsum'), ...placeholderRows(avatar: 48)],
                       ),
                     if (_tab != _FriendsTab.sent && f.incoming.isNotEmpty) ...[
                       const Overline('Wants to be friends'),

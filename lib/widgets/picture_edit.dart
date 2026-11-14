@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:forui/forui.dart';
 import 'package:image_picker/image_picker.dart';
 
+import '../data/images.dart';
 import 'glass.dart';
 
 /// Takes a picture with the camera, for an icon, an avatar or a banner.
@@ -110,10 +111,9 @@ class PictureThumb extends StatelessWidget {
           height: height,
           child: switch (picture) {
             null => none,
-            final p when p.startsWith('http') => Image.network(
-              p,
+            final p when p.startsWith('http') => Image(
+              image: cachedImage(p, cacheWidth: cacheWidth),
               fit: BoxFit.cover,
-              cacheWidth: cacheWidth,
               errorBuilder: failed,
             ),
             final p => Image.file(File(p), fit: BoxFit.cover, cacheWidth: cacheWidth, errorBuilder: failed),

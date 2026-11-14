@@ -8,6 +8,7 @@ import 'theme.dart';
 import 'widgets/chrome.dart';
 import 'widgets/glass.dart';
 import 'widgets/rows.dart';
+import 'widgets/sheets.dart' show LoadingSkeleton, placeholderRows;
 import 'widgets/unsaved_changes.dart';
 
 /// The API's limits (`internal/domain/commands/validate.go`): a name's
@@ -106,10 +107,7 @@ class _CommandsPageState extends State<CommandsPage> {
           if (snapshot.hasError)
             const ListNote('Couldn’t load the commands')
           else if (commands == null)
-            const Padding(
-              padding: EdgeInsets.all(24),
-              child: Center(child: FCircularProgress()),
-            )
+            LoadingSkeleton(label: 'Loading commands', children: placeholderRows())
           else if (commands.isEmpty)
             const ListNote('No commands yet. Members of a Space with the bot use them by typing /.')
           else

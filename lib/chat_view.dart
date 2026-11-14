@@ -16,6 +16,7 @@ import 'package:image_picker/image_picker.dart';
 import 'calls.dart';
 import 'data/appearance.dart' show AppearanceScope, ReplyGesture, ownBubble;
 import 'data/call_notices.dart';
+import 'data/images.dart';
 import 'data/emoji_catalog.dart';
 import 'data/links.dart';
 import 'data/message_tokens.dart';
@@ -46,6 +47,7 @@ import 'widgets/media.dart';
 import 'widgets/message_content.dart';
 import 'widgets/rows.dart';
 import 'widgets/sheets.dart';
+import 'widgets/skeleton.dart';
 
 part 'chat/actions.dart';
 part 'chat/bubble.dart';
@@ -106,7 +108,7 @@ class ChatView extends StatefulWidget {
   State<ChatView> createState() => _ChatViewState();
 }
 
-class _ChatViewState extends State<ChatView> {
+class _ChatViewState extends State<ChatView> with SingleTickerProviderStateMixin {
   static const _pageSize = 100;
   // As the desktop: a notice every 3 s while typing, shown for 5 s.
   static const _typingFor = Duration(seconds: 5);
@@ -128,6 +130,15 @@ class _ChatViewState extends State<ChatView> {
   Object? _error;
   bool _loadingOlder = false;
   bool _hasOlder = false;
+  // The kept page's messages while it shows in place of the latest, and
+  // where it was placed.
+  Set<String>? _kept;
+  double? _keptAt;
+  // Until the kept page is looked for (a moment on the device) nothing
+  // shows: not a frame of the skeleton before it.
+  bool _lookedForKept = false;
+  // The list fading in when the latest replaces a kept page it has nothing in common with.
+  late final AnimationController _reveal;
 
   final _typing = <String, ({String name, bool recording, Timer expiry})>{};
   DateTime _lastTypingSent = DateTime.fromMillisecondsSinceEpoch(0);
@@ -195,6 +206,7 @@ class _ChatViewState extends State<ChatView> {
   @override
   void initState() {
     super.initState();
+    _reveal = AnimationController(vsync: this, duration: DuvetTokens.panelOut, value: 1);
     EmojiCatalog.load().then((c) {
       if (mounted) setState(() => _catalog = c);
     }, onError: (Object e) => debugPrint('emoji: $e'));
@@ -268,6 +280,7 @@ class _ChatViewState extends State<ChatView> {
     _composer.dispose();
     _scroll.dispose();
     _focus.dispose();
+    _reveal.dispose();
     super.dispose();
   }
 
@@ -347,10 +360,25 @@ class _ChatViewState extends State<ChatView> {
   }
 
   Future<void> _load() async {
+    // The page kept on the device shows meanwhile; a thread's or a jump's
+    // place isn't on it.
+    final lookForKept = widget.threadOf == null && widget.jumpTo == null && _kept == null;
     setState(() {
       _loading = true;
       _error = null;
+      if (!lookForKept) _lookedForKept = true;
     });
+    if (lookForKept) {
+      _repository
+          .cachedMessages(widget.target)
+          .then(
+            _showKept,
+            onError: (Object e) {
+              debugPrint('kept: $e');
+              _showKept(null);
+            },
+          );
+    }
     try {
       final thread = widget.threadOf;
       final page = thread == null
@@ -358,10 +386,20 @@ class _ChatViewState extends State<ChatView> {
           : await _repository.thread(widget.target, thread);
       if (!mounted) return;
       final loaded = {for (final m in page) m.id};
-      // Keep what the gateway pushed while the page loaded.
+      final kept = _kept ?? const {};
+      // Not one message in common: the kept page is from before all of these,
+      // with a gap between that older pages would skip. It goes, faded over.
+      if (kept.isNotEmpty && !loaded.any(kept.contains) && !MediaQuery.disableAnimationsOf(context)) {
+        _reveal.forward(from: 0);
+      }
+      // Where the kept page was placed: if the reader has scrolled since,
+      // the fetched one isn't placed again.
+      final moved = _keptAt != null && _scroll.hasClients && _scroll.offset != _keptAt;
+      // Keep what the gateway pushed while the page loaded. What was kept
+      // and isn't on the page anymore (deleted, or older than it) goes.
       final pushed = [
         for (final e in _entries)
-          if (!loaded.contains(e.message.id)) e,
+          if (!loaded.contains(e.message.id) && !kept.contains(e.message.id)) e,
       ];
       final shown = {...loaded, for (final e in pushed) e.message.id};
       // The bots' answers to the user alone, which no history has, show among
@@ -374,6 +412,7 @@ class _ChatViewState extends State<ChatView> {
         _entries = [for (final m in _byTime(page, ephemeral)) (message: m, delivery: _Delivery.sent), ...pushed];
         _hasOlder = thread == null && page.length >= _pageSize;
         _loading = false;
+        _kept = null;
         // Nothing after the last read: no divider.
         if (_unreadAfter != null && page.lastOrNull?.id == _unreadAfter) _unreadAfter = null;
         // The last read not loaded: the first message after it is, as message
@@ -390,7 +429,7 @@ class _ChatViewState extends State<ChatView> {
       // scrolling down reads it.
       if (widget.jumpTo case final id?) {
         WidgetsBinding.instance.addPostFrameCallback((_) => _jumpTo(id).whenComplete(_readIfSeen));
-      } else if (_unreadAfter != null) {
+      } else if (_unreadAfter != null && !moved) {
         WidgetsBinding.instance.addPostFrameCallback((_) => _showDivider().whenComplete(_readIfSeen));
       } else {
         _readIfSeen();
@@ -404,6 +443,42 @@ class _ChatViewState extends State<ChatView> {
           _loading = false;
         });
       }
+    }
+  }
+
+  /// The chat's page as it was last seen here, while its latest loads (or
+  /// failed to): under what the gateway pushed meanwhile, with no older pages
+  /// from it, as it may be far behind, and nothing read from it.
+  void _showKept(List<ChatMessage>? page) {
+    if (!mounted) return;
+    if (page == null || page.isEmpty || !(_loading || _error != null)) {
+      if (!_lookedForKept) setState(() => _lookedForKept = true);
+      return;
+    }
+    final ids = {for (final m in page) m.id};
+    final ephemeral = [
+      for (final m in _repository.ephemeralIn(widget.target))
+        if (!ids.contains(m.id)) m,
+    ];
+    setState(() {
+      _entries = [
+        for (final m in _byTime(page, ephemeral)) (message: m, delivery: _Delivery.sent),
+        for (final e in _entries)
+          if (!ids.contains(e.message.id)) e,
+      ];
+      _kept = {...ids, for (final m in ephemeral) m.id};
+      _lookedForKept = true;
+    });
+    // At the divider, if it shows here, as a load places it; else at the bottom.
+    final last = page.indexWhere((m) => m.id == _unreadAfter);
+    if (last < 0 || last == page.length - 1) {
+      _keptAt = 0;
+    } else {
+      WidgetsBinding.instance.addPostFrameCallback(
+        (_) => _showDivider().whenComplete(() {
+          if (mounted && _scroll.hasClients) _keptAt = _scroll.offset;
+        }),
+      );
     }
   }
 
@@ -468,6 +543,13 @@ class _ChatViewState extends State<ChatView> {
   /// What came while the socket was down: everything after the newest
   /// message here.
   Future<void> _catchUp() async {
+    // Still on the kept page: its latest is on the way, or is asked again.
+    // shortcut: only the gateway coming back asks again; a failed fetch with the socket up stays on the kept page
+    // (no reads, no older pages) until the chat is reopened. Upgrade to a retry on a timer or a pull if that's seen.
+    if (_kept != null) {
+      if (!_loading) _load();
+      return;
+    }
     final newest = _history.lastOrNull;
     if (newest == null) return;
     try {
@@ -508,7 +590,8 @@ class _ChatViewState extends State<ChatView> {
   /// Reads the chat up to its newest message.
   void _markRead() {
     final newest = _history.lastOrNull;
-    if (newest == null || newest.id == _acked) return;
+    // A kept page's newest may not be the chat's: the latest page reads it.
+    if (newest == null || newest.id == _acked || _kept != null) return;
     _acked = newest.id;
     _repository.markRead(widget.target, newest.id);
   }
@@ -1493,6 +1576,18 @@ class _ChatViewState extends State<ChatView> {
         detail: 'messages will send when you’re back',
       ),
       LiveStatus.offline => const ConnectionBanner(text: 'Offline', detail: '· showing saved messages'),
+      // Connected, yet the latest failed to load: what shows is the page kept.
+      _ when _error != null && _entries.isNotEmpty => Semantics(
+        button: true,
+        child: GestureDetector(
+          onTap: _load,
+          child: const ConnectionBanner(
+            text: 'Couldn’t load the latest messages',
+            detail: '· tap to try again',
+            icon: FLucideIcons.refreshCw,
+          ),
+        ),
+      ),
       _ => null,
     };
     final call = _callable && CallBanner.shows(context.voice, widget.target.id)
@@ -2125,11 +2220,10 @@ class _ChatViewState extends State<ChatView> {
         GlassRow(
           label: ':${e.name}:',
           hint: 'Double tap to insert',
-          leading: Image.network(
-            e.url,
+          leading: Image(
+            image: cachedImage(e.url, cacheWidth: (28 * MediaQuery.devicePixelRatioOf(context)).round()),
             width: 28,
             height: 28,
-            cacheWidth: (28 * MediaQuery.devicePixelRatioOf(context)).round(),
             excludeFromSemantics: true,
             errorBuilder: (_, _, _) => const SizedBox.square(dimension: 28),
           ),
@@ -2513,8 +2607,28 @@ class _ChatViewState extends State<ChatView> {
     _focus.requestFocus();
   }
 
-  Widget _body(BuildContext context) {
-    if (_loading && _entries.isEmpty) return const Center(child: FCircularProgress());
+  // Nothing to show yet: messages drawn as blocks, crossed into the list once
+  // it comes. Only that change fades; the list itself is updated in place.
+  Widget _body(BuildContext context) => AnimatedSwitcher(
+    duration: MediaQuery.disableAnimationsOf(context) ? Duration.zero : DuvetTokens.panelOut,
+    switchInCurve: DuvetTokens.decelerate,
+    layoutBuilder: (current, previous) => Stack(fit: StackFit.expand, children: [...previous, ?current]),
+    child: _loading && _entries.isEmpty && _lookedForKept
+        ? KeyedSubtree(
+            key: const ValueKey('skeleton'),
+            child: _MessagesSkeleton(
+              padding: EdgeInsets.fromLTRB(
+                16,
+                (_topHeight == 0 ? GlassTopBar.heightOf(context) : _topHeight) + 8,
+                16,
+                _composerHeight + 8,
+              ),
+            ),
+          )
+        : KeyedSubtree(key: const ValueKey('messages'), child: _messages(context)),
+  );
+
+  Widget _messages(BuildContext context) {
     if (_error != null && _entries.isEmpty) {
       return EmptyState(
         mascot: MascotState.oops,
@@ -2522,6 +2636,7 @@ class _ChatViewState extends State<ChatView> {
         action: DuvetButton(label: 'Try again', onPressed: _load),
       );
     }
+    if (_loading && _entries.isEmpty) return const SizedBox.shrink();
     if (_entries.isEmpty) {
       // A new DM: the ghost tucked in, and a first line to start with.
       if (widget.target is ConversationTarget && widget.threadOf == null) {
@@ -2549,63 +2664,66 @@ class _ChatViewState extends State<ChatView> {
       for (final (i, item) in items.indexed)
         if (item case _Message(:final entry)) ?_keys[entry.message.id]: items.length - 1 - i,
     };
-    return ListView.builder(
-      controller: _scroll,
-      reverse: true,
-      findChildIndexCallback: (key) => indexOf[key],
-      // A list with its own controller only scrolls once full: a short chat bounces too.
-      physics: const AlwaysScrollableScrollPhysics(),
-      keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
-      padding: EdgeInsets.fromLTRB(16, top + 8, 16, _composerHeight + 8),
-      itemCount: count,
-      itemBuilder: (context, index) {
-        if (index == items.length) {
-          return const Padding(
-            padding: EdgeInsets.all(12),
-            child: Center(child: FCircularProgress(size: .sm)),
-          );
-        }
-        return switch (items[items.length - 1 - index]) {
-          _Day(:final day) => _DaySeparator(day: day),
-          _NewMessages(:final count) => _NewMessagesDivider(
-            key: _dividerKey,
-            text: count == 1 ? '1 new message' : '$count new messages',
-          ),
-          _Replies(:final count) => _NewMessagesDivider(text: count == 1 ? '1 reply' : '$count replies', quiet: true),
-          _Message(:final entry, :final first, :final last) =>
-            entry.message.isNotice
-                ? switch (callNoticeLine(entry.message, _me)) {
-                    final line? => _CallNoticeRow(
-                      line: line,
-                      onHold: _canDeleteNotices ? (anchor) => _noticeActions(anchor, entry.message) : null,
-                    ),
-                    null => _Notice(
-                      who: entry.message.authorName,
-                      where: widget.target is RoomTarget ? 'room' : 'conversation',
-                      onJump: switch (entry.message.reply?.messageId) {
-                        final id? => () => _jumpTo(id),
-                        null => null,
-                      },
-                      onPins: _openPins,
-                      onHold: _canDeleteNotices ? (anchor) => _noticeActions(anchor, entry.message) : null,
-                    ),
-                  }
-                : KeyedSubtree(
-                    key: _keyFor(entry.message.id),
-                    // Its own layer, for the picture a delete breaks up.
-                    child: RepaintBoundary(
-                      child: CompositedTransformTarget(
-                        link: _linkFor(entry.message.id),
-                        child: _Vanish(
-                          hidden: _vanishing.contains(entry.message.id),
-                          closed: _closing.contains(entry.message.id),
-                          child: _bubbleFor(entry, first: first, last: last),
+    return FadeTransition(
+      opacity: _reveal,
+      child: ListView.builder(
+        controller: _scroll,
+        reverse: true,
+        findChildIndexCallback: (key) => indexOf[key],
+        // A list with its own controller only scrolls once full: a short chat bounces too.
+        physics: const AlwaysScrollableScrollPhysics(),
+        keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
+        padding: EdgeInsets.fromLTRB(16, top + 8, 16, _composerHeight + 8),
+        itemCount: count,
+        itemBuilder: (context, index) {
+          if (index == items.length) {
+            return const Padding(
+              padding: EdgeInsets.all(12),
+              child: Center(child: FCircularProgress(size: .sm)),
+            );
+          }
+          return switch (items[items.length - 1 - index]) {
+            _Day(:final day) => _DaySeparator(day: day),
+            _NewMessages(:final count) => _NewMessagesDivider(
+              key: _dividerKey,
+              text: count == 1 ? '1 new message' : '$count new messages',
+            ),
+            _Replies(:final count) => _NewMessagesDivider(text: count == 1 ? '1 reply' : '$count replies', quiet: true),
+            _Message(:final entry, :final first, :final last) =>
+              entry.message.isNotice
+                  ? switch (callNoticeLine(entry.message, _me)) {
+                      final line? => _CallNoticeRow(
+                        line: line,
+                        onHold: _canDeleteNotices ? (anchor) => _noticeActions(anchor, entry.message) : null,
+                      ),
+                      null => _Notice(
+                        who: entry.message.authorName,
+                        where: widget.target is RoomTarget ? 'room' : 'conversation',
+                        onJump: switch (entry.message.reply?.messageId) {
+                          final id? => () => _jumpTo(id),
+                          null => null,
+                        },
+                        onPins: _openPins,
+                        onHold: _canDeleteNotices ? (anchor) => _noticeActions(anchor, entry.message) : null,
+                      ),
+                    }
+                  : KeyedSubtree(
+                      key: _keyFor(entry.message.id),
+                      // Its own layer, for the picture a delete breaks up.
+                      child: RepaintBoundary(
+                        child: CompositedTransformTarget(
+                          link: _linkFor(entry.message.id),
+                          child: _Vanish(
+                            hidden: _vanishing.contains(entry.message.id),
+                            closed: _closing.contains(entry.message.id),
+                            child: _bubbleFor(entry, first: first, last: last),
+                          ),
                         ),
                       ),
                     ),
-                  ),
-        };
-      },
+          };
+        },
+      ),
     );
   }
 

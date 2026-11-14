@@ -7,11 +7,13 @@ import 'package:forui/forui.dart';
 
 import '../data/emoji_catalog.dart';
 import '../data/gifs.dart';
+import '../data/images.dart';
 import '../data/models.dart';
 import '../data/recent_emoji.dart';
 import '../theme.dart';
 import 'glass.dart';
 import 'rows.dart';
+import 'skeleton.dart';
 
 sealed class PickerChoice {
   const PickerChoice();
@@ -161,7 +163,13 @@ class _PickerState extends State<_Picker> {
 
   Widget _emojiTab(BuildContext context) {
     final catalog = _catalog;
-    if (catalog == null) return const Center(child: FCircularProgress());
+    if (catalog == null) {
+      return _loadingGrid(
+        48,
+        Center(child: Bone.square(size: 30, borderRadius: BorderRadius.circular(DuvetTokens.radiusField))),
+        padding: const EdgeInsets.fromLTRB(12, 8, 12, 0),
+      );
+    }
     final query = _search.text.trim();
     final colors = context.theme.colors;
 
@@ -320,11 +328,10 @@ class _PickerState extends State<_Picker> {
     label: e.name,
     onTap: () => _pick(PickedCustomEmoji(e)),
     onRemove: recent ? () => _forget(e.code) : null,
-    child: Image.network(
-      e.url,
+    child: Image(
+      image: cachedImage(e.url, cacheWidth: (30 * MediaQuery.devicePixelRatioOf(context)).round()),
       width: 30,
       height: 30,
-      cacheWidth: (30 * MediaQuery.devicePixelRatioOf(context)).round(),
       fit: BoxFit.contain,
       excludeFromSemantics: true,
       errorBuilder: (_, _, _) => Text(':${e.name}:', maxLines: 1, overflow: TextOverflow.fade, softWrap: false),
@@ -346,7 +353,17 @@ class _PickerState extends State<_Picker> {
     if (!widget.inSpace) return message('Stickers belong to spaces. Send one from a space’s room.');
     if (_stickersError != null) return message('Couldn’t load stickers');
     final stickers = _stickers;
-    if (stickers == null) return const Center(child: FCircularProgress());
+    if (stickers == null) {
+      return _loadingGrid(
+        112,
+        Padding(
+          padding: const EdgeInsets.all(6),
+          child: Bone(borderRadius: BorderRadius.circular(DuvetTokens.radiusField)),
+        ),
+        spacing: 8,
+        padding: const EdgeInsets.fromLTRB(12, 4, 12, 24),
+      );
+    }
     final query = _search.text.trim().toLowerCase();
     final shown = query.isEmpty ? stickers : stickers.where((s) => s.name.toLowerCase().contains(query)).toList();
     return Column(
@@ -378,9 +395,8 @@ class _PickerState extends State<_Picker> {
                       onTap: () => _pick(PickedSticker(s)),
                       child: Padding(
                         padding: const EdgeInsets.all(6),
-                        child: Image.network(
-                          s.url,
-                          cacheWidth: (100 * MediaQuery.devicePixelRatioOf(context)).round(),
+                        child: Image(
+                          image: cachedImage(s.url, cacheWidth: (100 * MediaQuery.devicePixelRatioOf(context)).round()),
                           fit: BoxFit.contain,
                           excludeFromSemantics: true,
                           errorBuilder: (_, _, _) => Center(child: Text(s.name, textAlign: TextAlign.center)),
@@ -393,6 +409,71 @@ class _PickerState extends State<_Picker> {
       ],
     );
   }
+}
+
+/// Where a spinner was: [cell] in each place of a grid of cells at most
+/// [extent] wide, as the one coming lays them out, under one pulse.
+Widget _loadingGrid(double extent, Widget cell, {double spacing = 0, EdgeInsetsGeometry? padding}) => Semantics(
+  label: 'Loading',
+  child: ExcludeSemantics(
+    child: DuvetSkeleton(
+      child: GridView.builder(
+        physics: const NeverScrollableScrollPhysics(),
+        padding: padding,
+        gridDelegate: SliverGridDelegateWithMaxCrossAxisExtent(
+          maxCrossAxisExtent: extent,
+          mainAxisSpacing: spacing,
+          crossAxisSpacing: spacing,
+        ),
+        itemBuilder: (_, _) => cell,
+      ),
+    ),
+  ),
+);
+
+/// The GIFs' two columns while they come: tiles of a few shapes, as GIFs are.
+class _LoadingGifs extends StatelessWidget {
+  const _LoadingGifs();
+
+  static const _ratios = [
+    [1.0, 0.75, 1.33, 1.0],
+    [0.8, 1.33, 1.0, 0.75],
+  ];
+
+  @override
+  Widget build(BuildContext context) => Semantics(
+    label: 'Loading',
+    child: ExcludeSemantics(
+      child: DuvetSkeleton(
+        child: SingleChildScrollView(
+          physics: const NeverScrollableScrollPhysics(),
+          padding: const EdgeInsets.fromLTRB(16, 4, 16, 8),
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              for (final (i, column) in _ratios.indexed) ...[
+                if (i > 0) const SizedBox(width: 8),
+                Expanded(
+                  child: Column(
+                    children: [
+                      for (final ratio in column)
+                        Padding(
+                          padding: const EdgeInsets.only(bottom: 8),
+                          child: AspectRatio(
+                            aspectRatio: ratio,
+                            child: Bone(borderRadius: BorderRadius.circular(DuvetTokens.radiusField)),
+                          ),
+                        ),
+                    ],
+                  ),
+                ),
+              ],
+            ],
+          ),
+        ),
+      ),
+    ),
+  );
 }
 
 /// A picker cell: sinks while pressed. No implicit animations: a grid holds
@@ -645,7 +726,7 @@ class _GifTabState extends State<_GifTab> {
                 );
               }
               final gifs = snapshot.data;
-              if (gifs == null) return const Center(child: FCircularProgress());
+              if (gifs == null) return const _LoadingGifs();
               if (gifs.isEmpty) {
                 return Center(
                   child: Text('No GIFs found', style: DuvetType.body.copyWith(color: colors.mutedForeground)),
@@ -736,10 +817,9 @@ class _GifTile extends StatelessWidget {
               fit: StackFit.expand,
               children: [
                 ColoredBox(color: context.theme.colors.secondary),
-                Image.network(
-                  gif.preview,
+                Image(
+                  image: cachedImage(gif.preview, cacheWidth: (180 * MediaQuery.devicePixelRatioOf(context)).round()),
                   fit: BoxFit.cover,
-                  cacheWidth: (180 * MediaQuery.devicePixelRatioOf(context)).round(),
                   errorBuilder: (_, _, _) => const SizedBox.shrink(),
                 ),
                 Positioned(

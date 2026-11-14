@@ -3,15 +3,18 @@ import 'dart:ui' show ImageFilter;
 import 'package:flutter/material.dart';
 import 'package:forui/forui.dart';
 
+import '../data/images.dart';
 import '../data/models.dart';
 import '../data/scope.dart';
 import '../theme.dart';
 import 'depth.dart';
 import 'glass.dart';
 import 'attachment_link.dart';
+import 'link_embeds.dart' show InviteCardSkeleton;
 import 'media.dart';
 import 'message_content.dart';
 import 'rows.dart';
+import 'skeleton.dart';
 
 /// The choices a select offers: its own options, or the chat's members,
 /// rooms or roles.
@@ -345,12 +348,14 @@ class _MediaImage extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    Widget image(String url, VoidCallback? refused) => Image.network(
-      url,
+    // A pulse in its box until it shows: a Wrap's height is unbounded, so the box is sized.
+    final loading = SkeletonBox(width: broken ?? width, height: broken ?? height ?? width);
+    Widget image(String url, VoidCallback? refused) => Image(
+      image: cachedImage(url, cacheWidth: cacheWidth),
       width: width,
       height: height,
       fit: fit,
-      cacheWidth: cacheWidth,
+      frameBuilder: (_, child, frame, sync) => frame == null && !sync ? loading : child,
       errorBuilder: (_, error, _) {
         if (error is NetworkImageLoadException && error.statusCode == 403) refused?.call();
         return SizedBox(width: broken ?? width, height: broken ?? height ?? width);
@@ -360,8 +365,8 @@ class _MediaImage extends StatelessWidget {
     if (picture.id == picture.url) return image(picture.url, null);
     return AttachmentLinkBuilder(
       attachment: picture,
-      // Its own box while a new link comes: a Wrap's height is unbounded.
-      waiting: SizedBox(width: broken ?? width, height: broken ?? height ?? width),
+      // Its own box while a new link comes.
+      waiting: loading,
       builder: (context, url, refused) => image(url, refused),
     );
   }
@@ -1242,7 +1247,7 @@ class _BotInviteCardState extends State<BotInviteCard> {
       builder: (context, snapshot) {
         final bot = snapshot.data;
         if (bot == null) {
-          return snapshot.hasError ? const SizedBox.shrink() : const SizedBox(width: 280, height: 56);
+          return snapshot.hasError ? const SizedBox.shrink() : const InviteCardSkeleton(bot: true);
         }
         return Semantics(
           container: true,

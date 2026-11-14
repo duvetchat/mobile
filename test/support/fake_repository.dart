@@ -1587,6 +1587,12 @@ class FakeRepository implements ChatRepository {
   @override
   String previewOf(ChatMessage message) => recent.previewOf(message, (c) => c);
 
+  /// What [cachedMessages] answers, by chat ID.
+  final cachedPages = <String, List<ChatMessage>>{};
+
+  @override
+  Future<List<ChatMessage>?> cachedMessages(ChatTarget target) async => cachedPages[target.id];
+
   @override
   Future<List<ChatMessage>> messages(ChatTarget target, {String? before}) async {
     if (before == null) return [...?history[target.id]];

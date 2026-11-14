@@ -79,6 +79,10 @@ dependencies:
   # The YouTube dock shows a playing tile's own webview: no reload on the handoff.
   webview_flutter: ^4.14.1
   flex_color_picker: ^4.0.0
+  # What loads shows as pulsing bones, as the desktop's skeletons (lib/widgets/skeleton.dart).
+  skeletonizer: ^3.0.0
+  # Pictures kept on disk between runs (lib/data/images.dart); already here through audio_service.
+  flutter_cache_manager: ^3.5.0
 
 dev_dependencies:
   flutter_test:
