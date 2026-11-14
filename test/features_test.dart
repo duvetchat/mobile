@@ -4,6 +4,7 @@ import 'package:duvet/data/message_tokens.dart';
 import 'package:duvet/data/models.dart';
 import 'package:duvet/main.dart';
 import 'package:duvet/widgets/composer_controller.dart';
+import 'package:duvet/widgets/prism.dart';
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -139,6 +140,34 @@ void main() {
       await tester.tap(find.bySemanticsLabel('Send'));
       await tester.pumpAndSettle();
     }
+
+    testWidgets('in dark, a mention of you is a gem with no outline, which shines once', (tester) async {
+      tester.platformDispatcher.platformBrightnessTestValue = Brightness.dark;
+      addTearDown(tester.platformDispatcher.clearPlatformBrightnessTestValue);
+      final repository = await openGeneral(tester);
+      ChatMessage from(String id, String text) =>
+          FakeRepository.message(id, author: FakeRepository.leo, name: 'leo', text: text);
+      repository.push('r-general', MessageCreated(from('m-gem', 'ping <@${FakeRepository.me.id}>')));
+      await tester.pump();
+      expect(find.byType(PrismChip), findsOneWidget);
+      expect(
+        find.byWidgetPredicate(
+          (w) => w is Container && ((w.decoration as BoxDecoration?)?.border as Border?)?.top.width == 1.5,
+        ),
+        findsNothing,
+      );
+      // Come in sight as it arrived, its arrival is due, and plays: through the glint, to rest.
+      expect(tester.widget<PrismBubble>(find.byType(PrismBubble)).onArrive, isNotNull);
+      await tester.pump(const Duration(milliseconds: 400));
+      await tester.pump(const Duration(milliseconds: 400));
+      expect(tester.takeException(), isNull);
+      await tester.pumpAndSettle();
+      // The chat built again, it isn't due anymore.
+      repository.push('r-general', MessageCreated(from('m-after', 'thanks')));
+      await tester.pumpAndSettle();
+      expect(tester.widget<PrismBubble>(find.byType(PrismBubble)).onArrive, isNull);
+      semantics.dispose();
+    });
 
     testWidgets('mentions show as names, and a mention of you is outlined', (tester) async {
       final repository = await openGeneral(tester);
