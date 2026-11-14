@@ -112,6 +112,7 @@ flutter:
     - assets/mascot/light/
     - assets/mascot/dark/
     - assets/logo/app-icon-rounded.svg
+    - assets/logo/app-icon-colored.svg
     - assets/logo/mark-on-light.svg
     - assets/sounds/
 

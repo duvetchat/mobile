@@ -7,11 +7,13 @@ import 'dart:ui' as ui;
 import 'package:duvet_client/duvet.dart' show maxBioLength;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:flutter_svg/flutter_svg.dart';
 import 'package:forui/forui.dart';
 import 'package:image_picker/image_picker.dart';
 
 import 'data/appearance.dart';
 import 'data/images.dart';
+import 'data/launcher_icon.dart';
 import 'data/links.dart';
 import 'data/models.dart';
 import 'data/scope.dart';
@@ -2022,6 +2024,7 @@ class _YouTabState extends State<YouTab> {
                     _ReplyGesturePicker(value: appearance.replyGesture, onChanged: appearance.setReplyGesture),
                     const Overline('Your bubbles'),
                     _BubbleColorPicker(value: appearance.bubbleColor, onChanged: appearance.setBubbleColor),
+                    const _LauncherIconPicker(),
                     if (voicePrefs != null) ...[
                       const Overline('Voice'),
                       ListenableBuilder(
@@ -2404,6 +2407,112 @@ class _ReplyGesturePickerState extends State<_ReplyGesturePicker> with SingleTic
           ],
         ],
       ),
+    );
+  }
+}
+
+/// The app's icon on the home screen, each one a tile to pick it by, under its
+/// own heading. Nothing where it can't be changed (anywhere but Android).
+class _LauncherIconPicker extends StatefulWidget {
+  const _LauncherIconPicker();
+
+  @override
+  State<_LauncherIconPicker> createState() => _LauncherIconPickerState();
+}
+
+class _LauncherIconPickerState extends State<_LauncherIconPicker> {
+  LauncherIcon? _picked;
+
+  @override
+  void initState() {
+    super.initState();
+    LauncherIcon.picked().then((icon) {
+      if (mounted && icon != null) setState(() => _picked = icon);
+    });
+  }
+
+  Future<void> _pick(LauncherIcon icon) async {
+    if (icon == _picked) return;
+    final before = _picked;
+    HapticFeedback.selectionClick();
+    setState(() => _picked = icon);
+    try {
+      await icon.pick();
+    } catch (e) {
+      debugPrint('launcher icon: $e');
+      if (mounted) setState(() => _picked = before);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final picked = _picked;
+    if (picked == null) return const SizedBox.shrink();
+    final colors = context.theme.colors;
+    final tokens = context.duvet;
+    final still = MediaQuery.disableAnimationsOf(context);
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        const Overline('App icon'),
+        Semantics(
+          label: 'App icon',
+          explicitChildNodes: true,
+          child: Row(
+            children: [
+              for (final (i, icon) in LauncherIcon.values.indexed) ...[
+                if (i > 0) const SizedBox(width: 8),
+                Expanded(
+                  child: Semantics(
+                    container: true,
+                    button: true,
+                    inMutuallyExclusiveGroup: true,
+                    checked: icon == picked,
+                    label: icon.label,
+                    excludeSemantics: true,
+                    onTap: () => _pick(icon),
+                    child: GestureDetector(
+                      behavior: HitTestBehavior.opaque,
+                      onTap: () => _pick(icon),
+                      child: AnimatedContainer(
+                        duration: still ? Duration.zero : DuvetTokens.pressOut,
+                        height: 104,
+                        padding: const EdgeInsets.fromLTRB(8, 12, 8, 10),
+                        decoration: BoxDecoration(
+                          color: icon == picked ? tokens.selectedFill : colors.secondary,
+                          borderRadius: const BorderRadius.all(Radius.circular(DuvetTokens.radiusButton)),
+                          boxShadow: icon == picked ? tokens.shadowControl : null,
+                        ),
+                        child: Column(
+                          children: [
+                            Expanded(child: SvgPicture.asset(icon.asset, excludeFromSemantics: true)),
+                            const SizedBox(height: 8),
+                            Text(
+                              icon.label,
+                              maxLines: 1,
+                              style: DuvetType.label.copyWith(
+                                fontSize: 14,
+                                color: icon == picked ? colors.foreground : colors.mutedForeground,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+              ],
+            ],
+          ),
+        ),
+        Padding(
+          padding: const EdgeInsets.fromLTRB(4, 8, 4, 0),
+          child: Text(
+            'Your home screen shows it once you close Duvet. Some launchers need a restart first.',
+            style: DuvetType.caption.copyWith(color: colors.mutedForeground),
+          ),
+        ),
+      ],
     );
   }
 }

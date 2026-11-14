@@ -34,6 +34,18 @@ class MainActivity : AudioServiceActivity() {
                 else -> result.notImplemented()
             }
         }
+        // The launcher icon picked in Appearance (LauncherIcon).
+        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "chat.duvet/icon").setMethodCallHandler { call, result ->
+            when (call.method) {
+                "get" -> result.success(LauncherIcon.picked(this))
+                "pick" -> {
+                    LauncherIcon.pick(this, call.arguments as String)
+                    result.success(null)
+                }
+                else -> result.notImplemented()
+            }
+        }
+        LauncherIcon.resume(this)
         // A screen share's foreground service (ScreenCaptureService): "start"
         // answers once it is in the foreground.
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "chat.duvet/screen").setMethodCallHandler { call, result ->
