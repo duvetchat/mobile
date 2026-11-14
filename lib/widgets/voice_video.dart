@@ -576,7 +576,10 @@ class _MediaChip extends StatelessWidget {
             mainAxisSize: MainAxisSize.min,
             children: [
               if (icon case final icon?) ...[Icon(icon, size: 16, color: ink), const SizedBox(width: 4)],
-              Text(label, style: DuvetType.caption.copyWith(color: ink)),
+              // Wraps in a narrow tile, as it did before the chip had a Row.
+              Flexible(
+                child: Text(label, style: DuvetType.caption.copyWith(color: ink)),
+              ),
             ],
           ),
         ),
