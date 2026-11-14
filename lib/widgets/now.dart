@@ -68,7 +68,7 @@ String pinKey(ChatTarget target) => switch (target) {
   ConversationTarget() => 'conv:${target.id}',
 };
 
-/// The voice rooms with people in them, and the friends online: nothing when there are none.
+/// The voice rooms with people in them: nothing when there are none.
 class NowBlock extends StatefulWidget {
   const NowBlock({super.key});
 
@@ -104,77 +104,96 @@ class _NowBlockState extends State<NowBlock> {
       max: 1 << 30,
     );
     final rooms = sorted.take(_all ? sorted.length : nowRooms).toList();
-    final presence = repository.presence.value;
-    final online = [
-      for (final f in repository.friends.value.friends)
-        if (!isOffline(presenceIn(presence, f.userId))) f,
-    ];
-    if (rooms.isEmpty && online.isEmpty) return const SizedBox.shrink();
-    final friends = fitFaces(online, nowFriends);
-    final colors = context.theme.colors;
+    if (rooms.isEmpty) return const SizedBox.shrink();
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        if (rooms.isNotEmpty) ...[
-          const Overline('In voice now'),
-          for (final (room, space) in rooms)
-            Padding(
-              padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
-              child: _RoomCard(key: ValueKey('now-${room.id}'), room: room, space: space),
-            ),
-          if (sorted.length > nowRooms)
-            Align(
-              alignment: Alignment.centerLeft,
-              child: Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 8),
-                child: TextAction(
-                  label: _all ? 'Show fewer rooms' : '${sorted.length - nowRooms} more rooms',
-                  onPressed: () => setState(() => _all = !_all),
-                ),
+        const Overline('In voice now'),
+        for (final (room, space) in rooms)
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
+            child: _RoomCard(key: ValueKey('now-${room.id}'), room: room, space: space),
+          ),
+        if (sorted.length > nowRooms)
+          Align(
+            alignment: Alignment.centerLeft,
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 8),
+              child: TextAction(
+                label: _all ? 'Show fewer rooms' : '${sorted.length - nowRooms} more rooms',
+                onPressed: () => setState(() => _all = !_all),
               ),
             ),
-        ],
-        if (online.isNotEmpty) ...[
-          const Overline('Online friends'),
-          Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 12),
-            child: Wrap(
-              children: [
-                for (final f in friends.faces) _FriendFace(friend: f),
-                if (friends.more > 0)
-                  Semantics(
-                    button: true,
-                    label: '${friends.more} more friends online, open Friends',
-                    excludeSemantics: true,
-                    child: GestureDetector(
-                      behavior: HitTestBehavior.opaque,
-                      onTap: () => Navigator.of(
-                        context,
-                        rootNavigator: true,
-                      ).push(MaterialPageRoute<void>(builder: (_) => const FriendsPage())),
-                      child: SizedBox.square(
-                        dimension: 44,
-                        child: Center(
-                          child: Container(
-                            width: 40,
-                            height: 40,
-                            alignment: Alignment.center,
-                            decoration: BoxDecoration(color: colors.secondary, shape: BoxShape.circle),
-                            child: Text(
-                              '+${friends.more}',
-                              style: DuvetType.caption.copyWith(color: colors.foreground),
+          ),
+        const SizedBox(height: 4),
+      ],
+    );
+  }
+}
+
+/// The friends online, above the Chats search: nothing when there are none.
+/// Apart from [NowBlock]: room cards over the search would leave its dropdown no room above the keyboard.
+class OnlineFriends extends StatelessWidget {
+  const OnlineFriends({super.key});
+
+  // Chats rebuilds this const row without running it again: it listens itself.
+  @override
+  Widget build(BuildContext context) {
+    final repository = context.repository;
+    return ListenableBuilder(
+      listenable: Listenable.merge([repository.presence, repository.friends]),
+      builder: (context, _) {
+        final presence = repository.presence.value;
+        final online = [
+          for (final f in repository.friends.value.friends)
+            if (!isOffline(presenceIn(presence, f.userId))) f,
+        ];
+        if (online.isEmpty) return const SizedBox.shrink();
+        final friends = fitFaces(online, nowFriends);
+        final colors = context.theme.colors;
+        return Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            const Overline('Online friends'),
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 12),
+              child: Wrap(
+                children: [
+                  for (final f in friends.faces) _FriendFace(friend: f),
+                  if (friends.more > 0)
+                    Semantics(
+                      button: true,
+                      label: '${friends.more} more friends online, open Friends',
+                      excludeSemantics: true,
+                      child: GestureDetector(
+                        behavior: HitTestBehavior.opaque,
+                        onTap: () => Navigator.of(
+                          context,
+                          rootNavigator: true,
+                        ).push(MaterialPageRoute<void>(builder: (_) => const FriendsPage())),
+                        child: SizedBox.square(
+                          dimension: 44,
+                          child: Center(
+                            child: Container(
+                              width: 40,
+                              height: 40,
+                              alignment: Alignment.center,
+                              decoration: BoxDecoration(color: colors.secondary, shape: BoxShape.circle),
+                              child: Text(
+                                '+${friends.more}',
+                                style: DuvetType.caption.copyWith(color: colors.foreground),
+                              ),
                             ),
                           ),
                         ),
                       ),
                     ),
-                  ),
-              ],
+                ],
+              ),
             ),
-          ),
-        ],
-        const SizedBox(height: 4),
-      ],
+          ],
+        );
+      },
     );
   }
 }
