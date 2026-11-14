@@ -125,16 +125,7 @@ class _MessageTextState extends State<MessageText> {
 
   List<MdBlock> _parse() {
     if (!widget.singleLine) return parseMarkdown(widget.content);
-    // Code blocks as inline code; headings, quotes and lists as plain text.
-    final line = widget.content
-        .replaceAllMapped(
-          RegExp(r'```[\w+#-]*\n?([\s\S]*?)```'),
-          (m) => '`${m.group(1)!.trim().replaceAll(RegExp(r'\s+'), ' ')}`',
-        )
-        .split('\n')
-        .map((l) => l.replaceFirst(RegExp(r'^(?:#{1,3} |-# |>>> |> |\s*[-*]\s+|\s*\d+[.)]\s+)'), ''))
-        .join(' ');
-    return [MdParagraph(parseInline(line))];
+    return [MdParagraph(parseLine(widget.content))];
   }
 
   @override

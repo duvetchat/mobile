@@ -19,6 +19,7 @@ import 'data/call_notices.dart';
 import 'data/images.dart';
 import 'data/emoji_catalog.dart';
 import 'data/links.dart';
+import 'data/markdown.dart' show parseLine, plainInline;
 import 'data/message_tokens.dart';
 import 'data/models.dart';
 import 'data/repository.dart';
