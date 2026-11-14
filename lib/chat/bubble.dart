@@ -882,12 +882,11 @@ class _ReplyRef extends StatelessWidget {
       );
     }
     final text = readableContent(
-      reply.content,
+      plainInline(parseLine(reply.content)),
       nameOf: directory.nameOf,
       emojiNameOf: (id) => directory.emojiOf(id)?.name,
       roomNameOf: (id) => directory.roomOf(id)?.name,
-      // A heading's #s go, a room's #name stays.
-    ).replaceAll(RegExp(r'[*_~|`>]+|#+(?!\S)'), '').replaceAll('\n', ' ').trim();
+    ).trim();
     final shown = text.isEmpty ? 'a message' : text;
     return Semantics(
       container: true,

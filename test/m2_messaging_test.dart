@@ -119,6 +119,72 @@ void main() {
       expect(parseMarkdown('a | b\nc').map((b) => b.runtimeType), [MdParagraph]);
     });
 
+    // Backslash escapes, as the desktop reads them (its #297). In r'…', each \ is one backslash.
+    test('a backslash before punctuation makes it text, which opens and closes nothing (#239)', () {
+      expect(shape(parseInline(r'\*xd*')), '*xd*');
+      expect(shape(parseInline(r'\_x_')), '_x_');
+      expect(shape(parseInline(r'\*\*bold\*\*')), '**bold**');
+      expect(shape(parseInline(r'\_\_init\_\_')), '__init__');
+      expect(shape(parseInline(r'\~~struck~~')), '~~struck~~');
+      expect(shape(parseInline(r'\|\|shown\|\|')), '||shown||');
+      // Inside emphasis, it's the emphasis's text.
+      expect(shape(parseInline(r'*a\*b*')), 'italic(a*b)');
+      expect(shape(parseInline(r'**2\*3**')), 'bold(2*3)');
+      // An escaped backslash is one, and what follows it reads as written.
+      expect(shape(parseInline(r'\\*xd*')), r'\italic(xd)');
+      // An escaped [ starts no link; a link's text takes escapes.
+      expect(shape(parseInline(r'\[x](https://a.example)')), '[x](link(https://a.example, https://a.example))');
+      expect(shape(parseInline(r'[a\*b*](https://a.example)')), 'link(https://a.example, a*b*)');
+      // The escaped * opens nothing, so the link keeps its own *.
+      expect(shape(parseInline(r'\*https://a.example/x*')), '*link(https://a.example/x*, https://a.example/x*)');
+      // Before anything else, as in a path, the backslash stays.
+      expect(shape(parseInline(r'C:\Users\Admin')), r'C:\Users\Admin');
+      expect(shape(parseInline('ends with \\')), 'ends with \\');
+      // A message's own placeholder character can't pass for an escape.
+      expect(shape(parseInline('a\uFDD0b')), 'ab');
+    });
+
+    test('a mention after a backslash is still one, as the API notifies it; an escaped @ makes none (#239)', () {
+      expect(parseInline('\\<@$_maya>').map((i) => (i as MdText).text), ['\\<@$_maya>']);
+      expect(parseInline('<\\@$_maya>').map((i) => (i as MdText).text), ['<', '@', '$_maya>']);
+    });
+
+    test("an escaped ` opens no code, and in code a backslash is the code's (#239)", () {
+      expect(parseInline(r'\`not code\`').whereType<MdCode>(), isEmpty);
+      expect(plainInline(parseInline(r'\`not code\`')), '`not code`');
+      expect(parseInline(r'\\`code`').map((i) => i.runtimeType), [MdText, MdCode]);
+      expect((parseInline(r'`\*x*`').single as MdCode).code, r'\*x*');
+      expect((parseInline('`C:\\`').single as MdCode).code, 'C:\\');
+      expect((parseMarkdown('```\n\\*x*\n```').single as MdCodeBlock).code, r'\*x*');
+      expect(parseMarkdown('\\```a```').whereType<MdCodeBlock>(), isEmpty);
+      expect(
+        plainInline((parseMarkdown('\\`\\`\\`not a block\\`\\`\\`').single as MdParagraph).inlines),
+        '```not a block```',
+      );
+    });
+
+    test('an escaped marker starts no block (#239)', () {
+      for (final (typed, shown) in [
+        (r'\# not a heading', '# not a heading'),
+        (r'\> not a quote', '> not a quote'),
+        (r'\- not a list', '- not a list'),
+        (r'1\. not a list', '1. not a list'),
+        (r'\-# not subtext', '-# not subtext'),
+      ]) {
+        final blocks = parseMarkdown(typed);
+        expect(blocks.map((b) => b.runtimeType), [MdParagraph], reason: typed);
+        expect(plainInline((blocks.single as MdParagraph).inlines), shown);
+      }
+      // An escaped | is a table cell's text, not its edge.
+      expect((parseMarkdown('a | b \\| c\n--|--\nd | e').single as MdTable).header.map(plainInline), ['a', 'b | c']);
+    });
+
+    test("a reply's one-line quote reads them too (#239)", () {
+      expect(plainInline(parseLine(r'\*xd*')), '*xd*');
+      expect(plainInline(parseLine(r'\# not a heading')), '# not a heading');
+      expect(plainInline(parseLine('\\`\\`\\`a\\`\\`\\`')), '```a```');
+    });
+
     test('code blocks in the desktop\'s languages are colored, by name or alias; others stay plain (#26)', () {
       const base = TextStyle(color: Color(0xFF000000));
       List<(String, Color?)> runs(TextSpan span) => [
