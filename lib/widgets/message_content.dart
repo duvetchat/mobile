@@ -29,6 +29,7 @@ import 'depth.dart';
 import 'glass.dart';
 import 'media.dart';
 import 'media_actions.dart';
+import 'prism.dart';
 import 'role_name.dart';
 import 'skeleton.dart';
 import 'youtube_dock.dart';
@@ -194,6 +195,7 @@ class _MessageTextState extends State<MessageText> {
     // The rooms mentioned where they show, each once.
     final rooms = <String, Room>{};
     var spoilers = false;
+    final prism = inPrism(context);
 
     // A mention in its member's role colors, as their name shows in the
     // member list; violet without a colored role. On your azure bubble, bold
@@ -202,6 +204,17 @@ class _MessageTextState extends State<MessageText> {
       final bold = (style ?? const TextStyle()).copyWith(fontWeight: FontWeight.w700);
       final role = widget.onAccent ? null : widget.directory.nameColorsOf(userId);
       final onMention = widget.onMention;
+      // The user themself, in a bubble that mentions them: the gem its bubble cuts.
+      if (prism && userId == widget.directory.me) {
+        return WidgetSpan(
+          alignment: PlaceholderAlignment.baseline,
+          baseline: TextBaseline.alphabetic,
+          child: GestureDetector(
+            onTap: onMention == null ? null : () => onMention(userId),
+            child: PrismChip(name, style: base.merge(style)),
+          ),
+        );
+      }
       if (role case (from: _?, via: _, to: _?)) {
         // A gradient spans the name, so the name is a box of its own in the line.
         return WidgetSpan(
