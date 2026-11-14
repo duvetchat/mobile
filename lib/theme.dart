@@ -364,9 +364,11 @@ class DuvetTokens {
       BoxShadow(color: Color(0x1415172B), blurRadius: 2, offset: Offset(0, 1)),
     ],
     shadowWell: [BoxShadow(color: Color(0x0F15172B), blurRadius: 3, offset: Offset(0, 1))],
-    // Stronger than dark's, to show on white: the names carry the contrast (behindName).
+    // Stronger than dark's, to show on white: the names carry the contrast
+    // (behindName). The violet is the app's own, not a purer one, which glows
+    // like neon on white.
     prism: PrismPalette(
-      gem: Color(0xFF6A3DFF),
+      gem: Color(0xFF7A68E8),
       cool: Color(0xFF2F8CFF),
       warm: Color(0xFFE44FCB),
       intensity: 0.7,
@@ -375,11 +377,13 @@ class DuvetTokens {
       warmSpill: 0.14,
       shadowBlur: 24,
       shadowSpread: -8,
+      // A rim of light, strongest where the light comes from: as strong all
+      // the way round it reads as a gradient outline.
       rim: [
-        (Color(0xFF6A3DFF), 0.95, 0),
-        (Color(0xFF6A3DFF), 0.45, 0.42),
-        (Color(0xFF2F8CFF), 0.45, 0.70),
-        (Color(0xFF2F8CFF), 0.9, 1),
+        (Color(0xFF7A68E8), 0.70, 0),
+        (Color(0xFF7A68E8), 0.20, 0.42),
+        (Color(0xFF2F8CFF), 0.20, 0.70),
+        (Color(0xFF2F8CFF), 0.50, 1),
       ],
       behindName: Color(0xFFD3D0FD),
     ),

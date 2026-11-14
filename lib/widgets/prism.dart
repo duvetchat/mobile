@@ -233,8 +233,12 @@ class _PrismPainter extends CustomPainter {
 
     // The spill: three soft ellipses, each its color at the centre to nothing at its edge.
     final shows = p.intensity * (bubble._still ? 1 : prismSpillAt(bubble._arrival.value * prismArrival.inMilliseconds));
+    // Drawn for a bubble a full line wide: in a shorter one the lights shrink
+    // with it, or they'd flood it edge to edge.
+    final scale = (size.width / 270).clamp(0.4, 1.0);
     void spill(Color color, double alpha, Offset centre, double rx, double ry) {
       final squash = ry / rx;
+      rx *= scale;
       canvas.drawRect(
         all,
         Paint()
@@ -256,8 +260,8 @@ class _PrismPainter extends CustomPainter {
       // No mention shows (a reply to the user, or it's in code, or under a
       // spoiler): from where a line's first word would be, as the design has it.
       spill(p.gem, p.mainSpill, mentions.firstOrNull?.center ?? const Offset(40, 20), 170, 80);
-      spill(p.cool, p.coolSpill, Offset(70 + slide * 150, size.height * 0.7), 120, 50);
-      spill(p.warm, p.warmSpill, Offset(30 + slide * 90, size.height), 90, 40);
+      spill(p.cool, p.coolSpill, Offset((70 + slide * 150) * scale, size.height * 0.7), 120, 50);
+      spill(p.warm, p.warmSpill, Offset((30 + slide * 90) * scale, size.height), 90, 40);
       canvas.restore();
     }
 
