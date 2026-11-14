@@ -2175,6 +2175,46 @@ void main() {
       expect(presenceIn(presence, _maya, spaceId: 's-1'), Presence.doNotDisturb);
       expect(presenceIn(presence, _leo, spaceId: 's-1'), Presence.online);
     });
+
+    test('activities: a Space\'s come with it, updates replace them, and offline takes them away (#22)', () async {
+      await signIn();
+      List<String> doing(String id) => [for (final a in repository.activities.value[id] ?? const []) a.name];
+      repository.handleEvent(
+        _event('SPACE_CREATE', {
+          ...withMembers(_space(), {_maya: 1, _leo: 1}),
+          'activities': {
+            _maya: [
+              {
+                'name': 'Celeste',
+                'details': 'Chapter 7',
+                'timestamps': {'start': 1700000000000},
+              },
+            ],
+          },
+        }),
+      );
+      expect(doing(_maya), ['Celeste']);
+      expect(repository.activities.value[_maya]!.single.timestamps!.start, 1700000000000);
+      expect(repository.activities.value.containsKey(_leo), isFalse);
+
+      repository.handleEvent(
+        _event('USER_ACTIVITY_UPDATE', {
+          'user_id': _leo,
+          'activities': [
+            {'type': 2, 'name': 'Spotify', 'details': 'Song', 'state': 'Artist'},
+          ],
+        }),
+      );
+      expect(doing(_leo), ['Spotify']);
+      expect(repository.activities.value[_leo]!.single.type, duvet.ActivityType.listening);
+      // Cleared: an empty list.
+      repository.handleEvent(_event('USER_ACTIVITY_UPDATE', {'user_id': _leo, 'activities': <Object>[]}));
+      expect(repository.activities.value.containsKey(_leo), isFalse);
+
+      // Offline, with no update of its own.
+      repository.handleEvent(_event('USER_STATUS_UPDATE', {'user_id': _maya, 'status_id': 0}));
+      expect(repository.activities.value, isEmpty);
+    });
   });
 
   group('read states after READY', () {

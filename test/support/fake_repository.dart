@@ -4,6 +4,7 @@ import 'package:duvet/data/models.dart';
 import 'package:duvet/data/recent_chats.dart';
 import 'package:duvet/data/recent_chats.dart' as recent show previewOf;
 import 'package:duvet/data/repository.dart';
+import 'package:duvet_client/duvet.dart' show Activity;
 import 'package:flutter/foundation.dart';
 
 import 'fake_voice.dart';
@@ -267,7 +268,13 @@ class FakeRepository implements ChatRepository {
   }
 
   @override
-  Future<void> sendFriendRequest(String userId) async => friendCalls.add('send $userId');
+  Future<void> sendFriendRequest(String userId) async {
+    if (friendRequestRefused != null) throw ActionFailed(friendRequestRefused!);
+    friendCalls.add('send $userId');
+  }
+
+  /// Why the server refuses a friend request, if it does.
+  String? friendRequestRefused;
 
   @override
   Future<void> acceptFriendRequest(String requestId) async => friendCalls.add('accept $requestId');
@@ -323,6 +330,9 @@ class FakeRepository implements ChatRepository {
   List<MyFile> files = [];
   StorageInfo usage = const StorageInfo(used: 0, max: 5 * 1024 * 1024 * 1024);
 
+  /// Why the server refuses a sign-up, if it does.
+  String? signUpRefused;
+
   @override
   Future<void> signUp({
     required String username,
@@ -330,7 +340,8 @@ class FakeRepository implements ChatRepository {
     required String password,
     String? alias,
   }) async {
-    account.add('signup $username $email');
+    if (signUpRefused != null) throw ActionFailed(signUpRefused!);
+    account.add(['signup', username, email, ?alias].join(' '));
     _seed();
     profile.value = Profile(id: me.id, username: username, alias: alias, emailVerified: false);
   }
@@ -375,14 +386,15 @@ class FakeRepository implements ChatRepository {
   String? pictureRefused;
 
   @override
-  Future<void> updateProfile({required String alias, String? bio}) async {
+  Future<void> updateProfile({required String alias, String? bio, String? username}) async {
     if (profileRefused != null) throw ActionFailed(profileRefused!);
     account.add('alias $alias');
     if (bio != null) account.add('bio $bio');
+    if (username != null) account.add('username $username');
     final p = profile.value!;
     profile.value = Profile(
       id: p.id,
-      username: p.username,
+      username: username ?? p.username,
       alias: alias.isEmpty ? null : alias,
       bio: bio == null ? p.bio : (bio.trim().isEmpty ? null : bio.trim()),
       status: p.status,
@@ -1399,6 +1411,9 @@ class FakeRepository implements ChatRepository {
   final ValueNotifier<Map<String, Presence>> presence = ValueNotifier({maya: Presence.online});
   @override
   final ValueNotifier<Set<String>> mobileOnly = ValueNotifier(const {});
+
+  @override
+  final ValueNotifier<Map<String, List<Activity>>> activities = ValueNotifier(const {});
   final reads = <(ChatTarget, String)>[];
 
   /// Completes sends when set; otherwise they answer at once.
@@ -1740,5 +1755,6 @@ class FakeRepository implements ChatRepository {
     recentChats.dispose();
     presence.dispose();
     mobileOnly.dispose();
+    activities.dispose();
   }
 }

@@ -9,6 +9,7 @@ import 'package:duvet/data/models.dart';
 import 'package:duvet/data/recent_chats.dart';
 import 'package:duvet/data/session_store.dart';
 import 'package:duvet_client/duvet.dart' as duvet;
+import 'package:duvet_client/http/router.dart' show ApiRouter;
 import 'package:fake_async/fake_async.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
@@ -243,9 +244,13 @@ void main() {
           jsonEncode({'error': 'display name must be at most 32 characters'}),
           400,
         ),
+        ('PATCH', '/api/users/@me') when body()['username'] == 'maya' => http.Response(
+          jsonEncode({'error': 'that username is taken'}),
+          409,
+        ),
         // An API from before bios ignores `custom`, and answers the bio it had.
         ('PATCH', '/api/users/@me') => {
-          ..._user(_me, 'gaby', alias: body()['alias'] as String?),
+          ..._user(_me, body()['username'] as String? ?? 'gaby', alias: body()['alias'] as String?),
           'custom': bio = apiHasBios ? (body()['custom'] as String? ?? bio).trim() : bio,
         },
         ('PUT', '/api/users/@me/status') when apiHasStatus => {..._user(_me, 'gaby'), 'status': body()['status']},
@@ -407,6 +412,19 @@ void main() {
     expect(chat.isGroup, isFalse);
     expect(chat.avatarUrl, 'https://api.duvet.chat/attachments/$_avatar');
     expect(chat.otherUserId, _maya);
+  });
+
+  test('an API picked at build time without TLS gives its pictures over http, on its host (#22)', () {
+    final local = DuvetRepository(
+      store: store,
+      recentsStore: MemoryRecentChatsStore(),
+      router: const ApiRouter(api: '192.168.1.20:8080', ws: '192.168.1.20:8081', secure: false),
+      connectGateway: false,
+    );
+    addTearDown(local.dispose);
+    expect(local.avatarUrl(_avatar), 'http://192.168.1.20:8080/attachments/$_avatar');
+    // Production by default.
+    expect(repository.avatarUrl(_avatar), 'https://api.duvet.chat/attachments/$_avatar');
   });
 
   test('a conversation\'s members come with their bio and banner, for their profiles', () async {
@@ -2245,6 +2263,18 @@ void main() {
         repository.uploadProfileImage(ProfileImage.banner, path),
         throwsA(isA<ActionFailed>().having((e) => e.message, 'message', 'File is too large')),
       );
+    });
+
+    test('the username goes only when given, trimmed; a taken one says so, as the API says it (#22)', () async {
+      await repository.logIn('gaby@duvet.chat', 'secret');
+      await repository.updateProfile(alias: 'Gaby', username: ' gaby.r ');
+      expect(jsonDecode(requests.last.body), {'username': 'gaby.r', 'alias': 'Gaby'});
+      expect(repository.profile.value!.username, 'gaby.r');
+      await expectLater(
+        repository.updateProfile(alias: 'Gaby', username: 'maya'),
+        throwsA(isA<ActionFailed>().having((e) => e.message, 'message', 'That username is taken')),
+      );
+      expect(repository.profile.value!.username, 'gaby.r');
     });
 
     test('an API from before bios saves the rest, and says it needs the latest API', () async {

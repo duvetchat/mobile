@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert' show utf8;
 import 'dart:io';
 import 'dart:math' as math;
 import 'dart:ui' as ui;
@@ -124,56 +125,103 @@ class SignUpScreen extends StatefulWidget {
 }
 
 class _SignUpScreenState extends State<SignUpScreen> {
+  final _alias = TextEditingController();
   final _username = TextEditingController();
   final _email = TextEditingController();
   final _password = TextEditingController();
+  final _confirm = TextEditingController();
   bool _show = false;
+  bool _terms = false;
   bool _busy = false;
   String? _failure;
 
   @override
   void initState() {
     super.initState();
-    for (final c in [_username, _email, _password]) {
+    for (final c in [_alias, _username, _email, _password, _confirm]) {
       c.addListener(() => setState(() {}));
     }
   }
 
   @override
   void dispose() {
-    _username.dispose();
-    _email.dispose();
-    _password.dispose();
+    for (final c in [_alias, _username, _email, _password, _confirm]) {
+      c.dispose();
+    }
     super.dispose();
   }
 
-  String get _name => _username.text.trim().replaceFirst('@', '');
-  bool get _validName => RegExp(r'^[a-zA-Z0-9_.]{2,32}$').hasMatch(_name);
+  // The API's rules: a username trimmed, not empty, of 32 characters at most
+  // (code points, as its column counts them), as the display name; a
+  // password of 8 to 72 bytes, as bcrypt takes it.
+  String get _name => _username.text.trim();
+  int get _nameLength => _name.runes.length;
+  int get _aliasLength => _alias.text.trim().runes.length;
+  int get _passwordBytes => utf8.encode(_password.text).length;
   bool get _validEmail => RegExp(r'^[^@\s]+@[^@\s]+\.[^@\s]+$').hasMatch(_email.text.trim());
+  bool get _matches => _confirm.text == _password.text;
 
   Future<void> _create() async {
     final navigator = Navigator.of(context);
+    final alias = _alias.text.trim();
     setState(() {
       _busy = true;
       _failure = null;
     });
     try {
-      await context.repository.signUp(username: _name, email: _email.text.trim(), password: _password.text);
+      await context.repository.signUp(
+        username: _name,
+        email: _email.text.trim(),
+        password: _password.text,
+        alias: alias.isEmpty ? null : alias,
+      );
       // Signed in: the app shows; the verify screen goes over it.
       navigator.popUntil((r) => r.isFirst);
       unawaited(navigator.push(MaterialPageRoute<void>(builder: (_) => VerifyEmailPage(email: _email.text.trim()))));
     } catch (e) {
-      if (mounted) setState(() => _failure = _error(e));
+      if (mounted) setState(() => _failure = e is ActionFailed ? e.message : _error(e));
     } finally {
       if (mounted) setState(() => _busy = false);
     }
   }
 
+  // As the desktop's.
+  void _showTerms() => showGlassDialogSheet<void>(
+    context,
+    label: 'Terms of use',
+    builder: (context) => Padding(
+      padding: const EdgeInsets.fromLTRB(24, 16, 24, 24),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Text('Terms of use', style: DuvetType.title.copyWith(color: context.theme.colors.foreground)),
+          const SizedBox(height: 12),
+          Text(
+            'By creating an account, you agree to follow community guidelines and use Duvet respectfully.',
+            style: DuvetType.snippet.copyWith(color: context.theme.colors.mutedForeground),
+          ),
+          const SizedBox(height: 24),
+          DuvetButton(label: 'Close', expand: true, onPressed: () => Navigator.of(context).pop()),
+        ],
+      ),
+    ),
+  );
+
   @override
   Widget build(BuildContext context) {
     final colors = context.theme.colors;
     final strength = passwordStrength(_password.text);
-    final ready = _validName && _validEmail && _password.text.length >= 8;
+    final ready =
+        _name.isNotEmpty &&
+        _nameLength <= maxUsernameLength &&
+        _aliasLength <= maxDisplayNameLength &&
+        _validEmail &&
+        _password.text.length >= 8 &&
+        _passwordBytes <= 72 &&
+        _matches &&
+        _terms;
+    void toggleTerms() => setState(() => _terms = !_terms);
     return _FormPage(
       title: 'Create your account',
       lead: 'One account for every Space you join.',
@@ -201,12 +249,23 @@ class _SignUpScreenState extends State<SignUpScreen> {
       ],
       children: [
         DuvetTextField(
+          label: 'Display name (optional)',
+          controller: _alias,
+          autofocus: true,
+          autofillHints: const [AutofillHints.name],
+          textInputAction: TextInputAction.next,
+          error: _aliasLength > maxDisplayNameLength
+              ? 'Too long: $_aliasLength of $maxDisplayNameLength characters'
+              : null,
+        ),
+        const SizedBox(height: 16),
+        DuvetTextField(
           label: 'Username',
           controller: _username,
-          autofocus: true,
           autofillHints: const [AutofillHints.newUsername],
           textInputAction: TextInputAction.next,
-          error: _username.text.isNotEmpty && !_validName ? 'Letters, numbers, dots and _, 2 to 32' : null,
+          helper: 'It’s how people mention you.',
+          error: _nameLength > maxUsernameLength ? 'Too long: $_nameLength of $maxUsernameLength characters' : null,
         ),
         const SizedBox(height: 16),
         DuvetTextField(
@@ -223,6 +282,8 @@ class _SignUpScreenState extends State<SignUpScreen> {
           controller: _password,
           obscure: !_show,
           autofillHints: const [AutofillHints.newPassword],
+          textInputAction: TextInputAction.next,
+          error: _passwordBytes > 72 ? 'Too long: 72 characters at most, fewer with accents or emoji' : null,
           trailing: IconAction(
             icon: _show ? FLucideIcons.eyeOff : FLucideIcons.eye,
             label: _show ? 'Hide password' : 'Show password',
@@ -254,6 +315,46 @@ class _SignUpScreenState extends State<SignUpScreen> {
         ),
         const SizedBox(height: 8),
         Text(strength.hint, style: DuvetType.caption.copyWith(color: colors.mutedForeground)),
+        const SizedBox(height: 16),
+        DuvetTextField(
+          label: 'Confirm password',
+          controller: _confirm,
+          obscure: !_show,
+          autofillHints: const [AutofillHints.newPassword],
+          error: _confirm.text.isNotEmpty && !_matches ? 'Passwords don’t match' : null,
+        ),
+        const SizedBox(height: 16),
+        // Wraps on a narrow screen or at a large text size: the link goes under the box.
+        Wrap(
+          crossAxisAlignment: WrapCrossAlignment.center,
+          children: [
+            Semantics(
+              container: true,
+              checked: _terms,
+              label: 'I agree to the Terms of use',
+              excludeSemantics: true,
+              onTap: toggleTerms,
+              child: GestureDetector(
+                behavior: HitTestBehavior.opaque,
+                onTap: toggleTerms,
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(vertical: 10),
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      SquareCheck(checked: _terms),
+                      const SizedBox(width: 12),
+                      Flexible(
+                        child: Text('I agree to the', style: DuvetType.body.copyWith(color: colors.foreground)),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ),
+            TextAction(label: 'Terms of use', onPressed: _showTerms),
+          ],
+        ),
         if (_failure != null) ...[
           const SizedBox(height: 16),
           Semantics(
@@ -663,9 +764,13 @@ class EditProfilePage extends StatefulWidget {
 /// The longest display name the API takes, in characters.
 const maxDisplayNameLength = 32;
 
+/// The longest username the API takes, counted the same way.
+const maxUsernameLength = 32;
+
 class _EditProfilePageState extends State<EditProfilePage> {
   late final TextEditingController _alias;
   late final TextEditingController _bio;
+  late final TextEditingController _username;
   bool _fieldsMade = false;
   bool _saving = false;
 
@@ -685,6 +790,12 @@ class _EditProfilePageState extends State<EditProfilePage> {
   int get _aliasLength => _alias.text.trim().runes.length;
   bool get _aliasTooLong => _aliasLength > maxDisplayNameLength;
 
+  /// The username as the API takes it: trimmed; empty keeps the one there.
+  String get _name => _username.text.trim();
+  int get _nameLength => _name.runes.length;
+  bool get _nameTooLong => _nameLength > maxUsernameLength;
+  bool _renamed(Profile profile) => _name.isNotEmpty && _name != profile.username;
+
   @override
   void didChangeDependencies() {
     super.didChangeDependencies();
@@ -695,12 +806,14 @@ class _EditProfilePageState extends State<EditProfilePage> {
     final profile = context.repository.profile.value;
     _alias = TextEditingController(text: profile?.alias ?? '')..addListener(() => setState(() {}));
     _bio = TextEditingController(text: profile?.bio ?? '')..addListener(() => setState(() {}));
+    _username = TextEditingController(text: profile?.username ?? '')..addListener(() => setState(() {}));
   }
 
   @override
   void dispose() {
     _alias.dispose();
     _bio.dispose();
+    _username.dispose();
     _upload.dispose();
     super.dispose();
   }
@@ -771,6 +884,7 @@ class _EditProfilePageState extends State<EditProfilePage> {
     // The bio goes only when it changed: left out, it stays.
     final bio = _bio.text.trim();
     final changed = bio != (repository.profile.value?.bio ?? '').trim();
+    final renamed = _renamed(repository.profile.value!);
     setState(() => _saving = true);
     var failure = 'Couldn’t save your profile';
     try {
@@ -797,7 +911,7 @@ class _EditProfilePageState extends State<EditProfilePage> {
         _banner = null;
       }
       failure = 'Couldn’t save your profile';
-      await repository.updateProfile(alias: _alias.text, bio: changed ? bio : null);
+      await repository.updateProfile(alias: _alias.text, bio: changed ? bio : null, username: renamed ? _name : null);
       // Cancelled meanwhile: the page is gone, and the route under it stays.
       if (mounted) navigator.pop();
     } catch (e) {
@@ -825,7 +939,9 @@ class _EditProfilePageState extends State<EditProfilePage> {
     final banner = _banner ?? bannerNow;
     final hasAvatar = _avatar != null || avatarNow != null;
     final alias = _alias.text.trim();
+    final username = _name.isEmpty ? profile.username : _name;
     final dirty =
+        _renamed(profile) ||
         _avatar != null ||
         _banner != null ||
         _removeAvatar ||
@@ -955,13 +1071,13 @@ class _EditProfilePageState extends State<EditProfilePage> {
                             crossAxisAlignment: CrossAxisAlignment.start,
                             children: [
                               Text(
-                                alias.isEmpty ? profile.username : alias,
+                                alias.isEmpty ? username : alias,
                                 maxLines: 1,
                                 overflow: TextOverflow.ellipsis,
                                 style: DuvetType.label.copyWith(color: colors.foreground),
                               ),
                               Text(
-                                '@${profile.username}',
+                                '@$username',
                                 maxLines: 1,
                                 overflow: TextOverflow.ellipsis,
                                 style: DuvetType.caption.copyWith(color: colors.mutedForeground),
@@ -985,7 +1101,7 @@ class _EditProfilePageState extends State<EditProfilePage> {
                   DuvetTextField(
                     label: 'Display name',
                     controller: _alias,
-                    hint: profile.username,
+                    hint: username,
                     error: _aliasTooLong ? 'Too long: $_aliasLength of $maxDisplayNameLength characters' : null,
                   ),
                   const SizedBox(height: 16),
@@ -1000,20 +1116,15 @@ class _EditProfilePageState extends State<EditProfilePage> {
                     error: _bioTooLong ? 'Too long: $_bioLength of $maxBioLength characters' : null,
                   ),
                   const SizedBox(height: 16),
-                  Text(
-                    'Username',
-                    style: DuvetType.caption.copyWith(color: colors.foreground, fontWeight: FontWeight.w500),
-                  ),
-                  const SizedBox(height: 8),
-                  Container(
-                    height: 48,
-                    padding: const EdgeInsets.symmetric(horizontal: 16),
-                    alignment: Alignment.centerLeft,
-                    decoration: BoxDecoration(
-                      color: colors.secondary,
-                      borderRadius: BorderRadius.circular(DuvetTokens.radiusField),
-                    ),
-                    child: Text('@${profile.username}', style: DuvetType.body.copyWith(color: colors.mutedForeground)),
+                  // As the API takes it, and only that: 32 characters at most,
+                  // trimmed; empty keeps the one there.
+                  DuvetTextField(
+                    label: 'Username',
+                    controller: _username,
+                    hint: profile.username,
+                    autofillHints: const [AutofillHints.newUsername],
+                    helper: 'It’s how people mention you.',
+                    error: _nameTooLong ? 'Too long: $_nameLength of $maxUsernameLength characters' : null,
                   ),
                 ],
               ),
@@ -1028,7 +1139,7 @@ class _EditProfilePageState extends State<EditProfilePage> {
                 actions: [
                   TextAction(
                     label: 'Save',
-                    onPressed: _saving || !dirty || _bioTooLong || _aliasTooLong ? null : _save,
+                    onPressed: _saving || !dirty || _bioTooLong || _aliasTooLong || _nameTooLong ? null : _save,
                   ),
                 ],
               ),

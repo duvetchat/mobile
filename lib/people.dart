@@ -1,11 +1,17 @@
 import 'dart:async';
+import 'dart:math' as math;
+
+import 'package:duvet_client/duvet.dart' as duvet;
 
 import 'package:flutter/foundation.dart' show ValueListenable;
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
+import 'package:flutter_svg/flutter_svg.dart';
 import 'package:forui/forui.dart';
 
 import 'chat_view.dart';
 import 'data/images.dart';
+import 'data/links.dart' show isDuvetId;
 import 'data/models.dart';
 import 'data/scope.dart';
 import 'members_sheet.dart' show MemberAction, PresenceAvatar;
@@ -344,7 +350,13 @@ class _ProfileState extends State<_Profile> {
         m.isBot && widget.spaceId != null && (repository.spaceProfile(widget.spaceId!)?.can(Perm.manageBots) ?? false);
     return ListenableBuilder(
       // spaces: a role given or taken here shows at once.
-      listenable: Listenable.merge([repository.presence, repository.mobileOnly, repository.friends, repository.spaces]),
+      listenable: Listenable.merge([
+        repository.presence,
+        repository.mobileOnly,
+        repository.friends,
+        repository.spaces,
+        repository.activities,
+      ]),
       builder: (context, _) {
         final spaceId = widget.spaceId;
         final roles = spaceId == null ? const <RoleTag>[] : repository.rolesOf(spaceId, m.userId);
@@ -546,6 +558,8 @@ class _ProfileState extends State<_Profile> {
                             )
                           else
                             Text('Nothing here yet.', style: DuvetType.body.copyWith(color: colors.mutedForeground)),
+                          if (repository.activities.value[m.userId] case final doing? when doing.isNotEmpty)
+                            ProfileActivities(doing, divider: divider),
                           if (roles.isNotEmpty || assignsRoles) ...[
                             divider,
                             _Label('Roles in ${spaceName ?? 'this Space'}'),
@@ -626,6 +640,280 @@ class _ProfileState extends State<_Profile> {
         );
       },
     );
+  }
+}
+
+// -----------------------------------------------------------------------------
+// Activities
+// -----------------------------------------------------------------------------
+
+/// Spotify's activity, as the desktop app shares it: the song in details, the
+/// artist in state, the album in the large image's text, and the song's start
+/// and end. It has no cover.
+bool isSpotify(duvet.Activity a) => a.type == duvet.ActivityType.listening && a.name == 'Spotify';
+
+/// The activities worth showing, as the desktop's: all but a Spotify song that
+/// ended over 30 seconds ago, whose app stopped updating it (closed, asleep).
+List<duvet.Activity> shownActivities(List<duvet.Activity> list, DateTime now) => [
+  for (final a in list)
+    if (!isSpotify(a) || a.timestamps?.end == null || now.millisecondsSinceEpoch <= a.timestamps!.end! + 30000) a,
+];
+
+/// A playback time as m:ss, or h:mm:ss from an hour on.
+String playbackTime(Duration d) {
+  final s = d.isNegative ? 0 : d.inSeconds;
+  final ss = '${s % 60}'.padLeft(2, '0');
+  return s >= 3600 ? '${s ~/ 3600}:${'${s % 3600 ~/ 60}'.padLeft(2, '0')}:$ss' : '${s ~/ 60}:$ss';
+}
+
+// The image types the gateway keeps an activity's pictures in.
+const _activityImageTypes = {'image/png', 'image/jpeg', 'image/gif', 'image/webp', 'image/svg+xml'};
+
+/// [value] when it's a picture an activity may show: a data URI of a type the
+/// gateway keeps, which draws without loading anything; null for any other,
+/// one by URL above all, whose host would learn who views it.
+({String type, Uint8List bytes})? inlineActivityImage(String? value) {
+  if (value == null || !value.startsWith('data:')) return null;
+  try {
+    final data = UriData.parse(value);
+    final type = data.mimeType.toLowerCase();
+    return _activityImageTypes.contains(type) ? (type: type, bytes: data.contentAsBytes()) : null;
+  } on FormatException {
+    return null;
+  }
+}
+
+const _spotifyLogo =
+    '<svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path fill="#1ED760" d="M12 0C5.4 0 0 5.4 0 12s5.4 12 12 12 12-5.4 12-12S18.66 0 12 0zm5.521 17.34c-.24.359-.66.48-1.021.24-2.82-1.74-6.36-2.101-10.561-1.141-.418.122-.779-.179-.899-.539-.12-.421.18-.78.54-.9 4.56-1.021 8.52-.6 11.64 1.32.42.18.479.659.301 1.02zm1.44-3.3c-.301.42-.841.6-1.262.3-3.239-1.98-8.159-2.58-11.939-1.38-.479.12-1.02-.12-1.14-.6-.12-.48.12-1.021.6-1.141C9.6 9.9 15 10.561 18.72 12.84c.361.181.54.78.241 1.2zm.12-3.36C15.24 8.4 8.82 8.16 5.16 9.301c-.6.179-1.2-.181-1.38-.721-.18-.601.18-1.2.72-1.381 4.26-1.26 11.28-1.02 15.721 1.621.539.3.719 1.02.419 1.56-.299.421-1.02.599-1.559.3z"/></svg>';
+
+/// What someone is doing, on their profile, as the desktop's ActivityList:
+/// Spotify's song with its progress, any other with its pictures and how long
+/// it has been going. Ticks each second; nothing once none is worth showing.
+class ProfileActivities extends StatefulWidget {
+  final List<duvet.Activity> activities;
+
+  /// Above the section, between it and the one before.
+  final Widget divider;
+  const ProfileActivities(this.activities, {required this.divider, super.key});
+
+  @override
+  State<ProfileActivities> createState() => _ProfileActivitiesState();
+}
+
+class _ProfileActivitiesState extends State<ProfileActivities> {
+  late final Timer _tick;
+
+  @override
+  void initState() {
+    super.initState();
+    _tick = Timer.periodic(const Duration(seconds: 1), (_) => setState(() {}));
+  }
+
+  @override
+  void dispose() {
+    _tick.cancel();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = context.theme.colors;
+    final now = DateTime.now();
+    final shown = shownActivities(widget.activities, now);
+    if (shown.isEmpty) return const SizedBox.shrink();
+    final muted = DuvetType.caption.copyWith(color: colors.mutedForeground);
+    Widget line(String text, TextStyle style) => Text(text, maxLines: 1, overflow: TextOverflow.ellipsis, style: style);
+    Widget tile(Widget child) => Container(
+      width: 40,
+      height: 40,
+      alignment: Alignment.center,
+      decoration: BoxDecoration(color: colors.secondary, borderRadius: BorderRadius.circular(DuvetTokens.radiusChip)),
+      child: child,
+    );
+    final unknown = tile(Text('?', style: DuvetType.label.copyWith(color: colors.mutedForeground)));
+    DateTime at(int ms) => DateTime.fromMillisecondsSinceEpoch(ms);
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        widget.divider,
+        _Label(shown.length == 1 ? 'Activity' : 'Activities'),
+        for (final a in shown) ...[
+          const SizedBox(height: 8),
+          if (isSpotify(a))
+            Builder(
+              builder: (context) {
+                final start = a.timestamps?.start ?? now.millisecondsSinceEpoch;
+                final length = Duration(milliseconds: math.max((a.timestamps?.end ?? start) - start, 0));
+                final elapsed = Duration(
+                  milliseconds: (now.millisecondsSinceEpoch - start).clamp(0, length.inMilliseconds),
+                );
+                final song = a.details ?? '';
+                final query = [song, ?a.state].where((t) => t.isNotEmpty).join(' ');
+                void find() =>
+                    MessageText.launch(Uri.parse('https://open.spotify.com/search/${Uri.encodeComponent(query)}'));
+                return Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    line('Listening to Spotify', muted.copyWith(fontWeight: FontWeight.w600)),
+                    const SizedBox(height: 6),
+                    Row(
+                      children: [
+                        ExcludeSemantics(child: tile(SvgPicture.string(_spotifyLogo, width: 24, height: 24))),
+                        const SizedBox(width: 8),
+                        Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              // No track ID to link the song itself: a search for it, as the desktop's.
+                              Semantics(
+                                container: true,
+                                link: true,
+                                label: 'Find $song on Spotify',
+                                excludeSemantics: true,
+                                onTap: find,
+                                child: GestureDetector(
+                                  onTap: find,
+                                  child: line(song, DuvetType.label.copyWith(color: colors.foreground)),
+                                ),
+                              ),
+                              if (a.state case final artist?) line('by $artist', muted),
+                              if (a.assets?.largeText case final album?) line('on $album', muted),
+                            ],
+                          ),
+                        ),
+                      ],
+                    ),
+                    if (length > Duration.zero) ...[
+                      const SizedBox(height: 6),
+                      Semantics(
+                        label: '${playbackTime(elapsed)} of ${playbackTime(length)}',
+                        excludeSemantics: true,
+                        child: Row(
+                          children: [
+                            Text(playbackTime(elapsed), style: muted),
+                            const SizedBox(width: 8),
+                            Expanded(
+                              // `ink` on its track, as the password's strength.
+                              child: Container(
+                                height: 4,
+                                alignment: Alignment.centerLeft,
+                                decoration: BoxDecoration(
+                                  color: colors.secondary,
+                                  borderRadius: BorderRadius.circular(2),
+                                ),
+                                child: FractionallySizedBox(
+                                  widthFactor: elapsed.inMilliseconds / length.inMilliseconds,
+                                  child: DecoratedBox(
+                                    decoration: BoxDecoration(
+                                      color: colors.foreground,
+                                      borderRadius: BorderRadius.circular(2),
+                                    ),
+                                  ),
+                                ),
+                              ),
+                            ),
+                            const SizedBox(width: 8),
+                            Text(playbackTime(length), style: muted),
+                          ],
+                        ),
+                      ),
+                    ],
+                  ],
+                );
+              },
+            )
+          else
+            Row(
+              children: [
+                ExcludeSemantics(
+                  child: Stack(
+                    clipBehavior: Clip.none,
+                    children: [
+                      _ActivityImage(a.assets?.largeImage, size: 40, fallback: unknown),
+                      if (inlineActivityImage(a.assets?.smallImage) != null)
+                        Positioned(
+                          right: -4,
+                          bottom: -4,
+                          child: Container(
+                            width: 20,
+                            height: 20,
+                            padding: const EdgeInsets.all(2),
+                            decoration: BoxDecoration(
+                              color: colors.secondary,
+                              borderRadius: BorderRadius.circular(4),
+                              border: Border.all(color: colors.card),
+                            ),
+                            child: _ActivityImage(a.assets?.smallImage, size: 14, fallback: const SizedBox.shrink()),
+                          ),
+                        ),
+                    ],
+                  ),
+                ),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      line(a.name, DuvetType.label.copyWith(color: colors.foreground)),
+                      if (a.details case final details?) line(details, muted.copyWith(color: colors.foreground)),
+                      if (a.state case final state?) line(state, muted),
+                      if (a.timestamps?.start case final start?)
+                        line('${playbackTime(now.difference(at(start)))} elapsed', muted),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+        ],
+      ],
+    );
+  }
+}
+
+/// An activity's picture, decoded once: only from a data URI
+/// ([inlineActivityImage]), else [fallback].
+class _ActivityImage extends StatefulWidget {
+  final String? value;
+  final double size;
+  final Widget fallback;
+  const _ActivityImage(this.value, {required this.size, required this.fallback});
+
+  @override
+  State<_ActivityImage> createState() => _ActivityImageState();
+}
+
+class _ActivityImageState extends State<_ActivityImage> {
+  late var _image = inlineActivityImage(widget.value);
+
+  @override
+  void didUpdateWidget(_ActivityImage old) {
+    super.didUpdateWidget(old);
+    if (old.value != widget.value) _image = inlineActivityImage(widget.value);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final size = widget.size;
+    final picture = switch (_image) {
+      null => null,
+      (type: 'image/svg+xml', :final bytes) => SvgPicture.memory(
+        bytes,
+        width: size,
+        height: size,
+        errorBuilder: (_, _, _) => widget.fallback,
+      ),
+      (:final bytes, type: _) => Image.memory(
+        bytes,
+        width: size,
+        height: size,
+        fit: BoxFit.cover,
+        gaplessPlayback: true,
+        errorBuilder: (_, _, _) => widget.fallback,
+      ),
+    };
+    return picture == null
+        ? widget.fallback
+        : ClipRRect(borderRadius: BorderRadius.circular(size / 10), child: picture);
   }
 }
 
@@ -858,8 +1146,8 @@ class PersonRow extends StatelessWidget {
 
 enum _FriendsTab { all, pending, sent }
 
-/// Friends: add one by username, then everyone, the requests to the user,
-/// and theirs.
+/// Friends: add one by user ID or username, then everyone, the requests to
+/// the user, and theirs.
 class FriendsPage extends StatefulWidget {
   const FriendsPage({super.key});
 
@@ -892,24 +1180,31 @@ class _FriendsPageState extends State<FriendsPage> {
     super.dispose();
   }
 
-  Future<void> _addByName() async {
+  Future<void> _addFriend() async {
     final repository = context.repository;
-    final name = _add.text.trim().replaceFirst('@', '').toLowerCase();
+    final typed = _add.text.trim();
+    final name = typed.replaceFirst('@', '').toLowerCase();
     if (name.isEmpty) return;
+    // A username only among the people the app knows; a user ID, anyone's.
     final person = repository.people.where((p) => p.username.toLowerCase() == name).firstOrNull;
-    if (person == null) {
+    final userId = person?.userId ?? (isDuvetId(typed) ? typed : null);
+    if (userId == null) {
       setState(() => _addError = 'No one called @$name shares a Space or a chat with you');
       return;
     }
     try {
-      await repository.sendFriendRequest(person.userId);
+      await repository.sendFriendRequest(userId);
       _add.clear();
       setState(() => _addError = null);
       if (mounted) {
-        showFToast(context: context, title: Text('Asked ${person.displayName}'), duration: const Duration(seconds: 3));
+        showFToast(
+          context: context,
+          title: Text(person == null ? 'Friend request sent' : 'Asked ${person.displayName}'),
+          duration: const Duration(seconds: 3),
+        );
       }
-    } catch (_) {
-      setState(() => _addError = 'Couldn’t send the request');
+    } catch (e) {
+      if (mounted) setState(() => _addError = e is ActionFailed ? e.message : 'Couldn’t send the request');
     }
   }
 
@@ -965,13 +1260,13 @@ class _FriendsPageState extends State<FriendsPage> {
                           Expanded(
                             child: SearchField(
                               controller: _add,
-                              hint: 'Add a friend by username',
+                              hint: 'Add a friend by user ID or username',
                               onChanged: (_) {
                                 if (_addError != null) setState(() => _addError = null);
                               },
                             ),
                           ),
-                          TextAction(label: 'Add', onPressed: _addByName),
+                          TextAction(label: 'Add', onPressed: _addFriend),
                         ],
                       ),
                     ),
@@ -983,6 +1278,31 @@ class _FriendsPageState extends State<FriendsPage> {
                           child: Text(_addError!, style: DuvetType.caption.copyWith(color: colors.destructive)),
                         ),
                       ),
+                    // As the desktop adds friends: by the ID they share.
+                    Padding(
+                      padding: const EdgeInsets.fromLTRB(16, 4, 4, 0),
+                      child: Row(
+                        children: [
+                          Expanded(
+                            child: Text(
+                              'Friends add you by your user ID.',
+                              style: DuvetType.caption.copyWith(color: colors.mutedForeground),
+                            ),
+                          ),
+                          TextAction(
+                            label: 'Copy your ID',
+                            onPressed: () {
+                              Clipboard.setData(ClipboardData(text: repository.profile.value!.id));
+                              showFToast(
+                                context: context,
+                                title: const Text('ID copied'),
+                                duration: const Duration(seconds: 3),
+                              );
+                            },
+                          ),
+                        ],
+                      ),
+                    ),
                     // Edge to edge: the tabs scroll to the screen's edge, 16 in at rest.
                     Padding(
                       padding: const EdgeInsets.only(top: 8),

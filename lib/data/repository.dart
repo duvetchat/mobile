@@ -1,3 +1,4 @@
+import 'package:duvet_client/duvet.dart' show Activity;
 import 'package:flutter/foundation.dart';
 
 import 'models.dart';
@@ -157,6 +158,9 @@ abstract interface class ChatRepository {
   /// The user's friends and friend requests; [loadFriends] fetches them.
   ValueListenable<Friends> get friends;
   Future<void> loadFriends();
+
+  /// Asks [userId] to be friends. A refusal the API explains (no such user,
+  /// a bot, friends already) throws an [ActionFailed] with its reason.
   Future<void> sendFriendRequest(String userId);
   Future<void> acceptFriendRequest(String requestId);
 
@@ -179,7 +183,8 @@ abstract interface class ChatRepository {
   bool isMember(String spaceId, String userId);
 
   /// Makes an account, then signs in to it; the API emails a link to verify
-  /// the address.
+  /// the address. A refusal the API explains (a username taken, say) throws
+  /// an [ActionFailed] with its reason.
   Future<void> signUp({required String username, required String email, required String password, String? alias});
   Future<void> sendVerificationEmail();
 
@@ -199,8 +204,10 @@ abstract interface class ChatRepository {
   Future<void> changeEmail(String token, String email);
 
   /// The user's display name: empty clears it, back to the username. A [bio]
-  /// replaces theirs (empty clears it); left out, it stays.
-  Future<void> updateProfile({required String alias, String? bio});
+  /// replaces theirs (empty clears it), as a [username] does; left out, each
+  /// stays. A refusal the API explains (a username taken, say) throws an
+  /// [ActionFailed] with its reason.
+  Future<void> updateProfile({required String alias, String? bio, String? username});
 
   /// Chooses the user's status, [Presence.online] or
   /// [Presence.doNotDisturb]: what others see while they're connected.
@@ -526,6 +533,11 @@ abstract interface class ChatRepository {
   /// platforms are the same in every Space, and a bot's connections all count
   /// as a computer's.
   ValueListenable<Set<String>> get mobileOnly;
+
+  /// What people are doing (a game, the song Spotify plays), by user ID, as
+  /// the gateway tells it of those the user shares a Space with; someone
+  /// missing is doing nothing it knows of.
+  ValueListenable<Map<String, List<Activity>>> get activities;
 
   /// The emoji the chat can use beyond Unicode's: its space's. None in DMs.
   Future<List<CustomEmoji>> customEmojis(ChatTarget target);
