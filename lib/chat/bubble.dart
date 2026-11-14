@@ -126,9 +126,10 @@ class _Bubble extends StatelessWidget {
     final mentionsMe = !mine && _mentionsUser(m, directory.me);
     final text = withoutPreviewedLinks(m.content, m.embeds, cards: !lifted);
     final textBubble = text.isNotEmpty && !isJumboEmoji(text);
-    // Prism, where it's designed (dark): the mention in the bubble's own text
-    // lights the bubble. Any other mention keeps the outline.
-    final prism = mentionsMe && textBubble && mentionedIn(text).contains(directory.me) ? tokens.prism : null;
+    // Prism, where it's designed (dark): a text bubble that mentions the user,
+    // in its text or as a reply to them, is lit. With no text bubble to light
+    // (a sticker, a bot's components), the mention keeps the outline.
+    final prism = mentionsMe && textBubble ? tokens.prism : null;
     const bubblePadding = EdgeInsets.symmetric(horizontal: 12, vertical: 8);
     final maxWidth = MediaQuery.sizeOf(context).width * 0.75;
     final secondary = DuvetType.caption.copyWith(color: colors.mutedForeground);

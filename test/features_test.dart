@@ -170,6 +170,42 @@ void main() {
       semantics.dispose();
     });
 
+    testWidgets('in dark, a reply that pings you lights its bubble too, with no outline', (tester) async {
+      tester.platformDispatcher.platformBrightnessTestValue = Brightness.dark;
+      addTearDown(tester.platformDispatcher.clearPlatformBrightnessTestValue);
+      final repository = await openGeneral(tester);
+      repository.push(
+        'r-general',
+        MessageCreated(
+          FakeRepository.message(
+            'm-reply',
+            author: FakeRepository.leo,
+            name: 'leo',
+            text: 'A loud reply',
+            reply: MessageReply(
+              messageId: 'm0',
+              authorId: FakeRepository.me.id,
+              authorName: 'Gaby',
+              content: 'hm',
+              mentionAuthor: true,
+            ),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+      // Its text names nobody: the light comes from the bubble's corner.
+      expect(find.ancestor(of: find.text('A loud reply'), matching: find.byType(PrismBubble)), findsOneWidget);
+      expect(find.byType(PrismAnchor), findsNothing);
+      expect(
+        find.byWidgetPredicate(
+          (w) => w is Container && ((w.decoration as BoxDecoration?)?.border as Border?)?.top.width == 1.5,
+        ),
+        findsNothing,
+      );
+      expect(tester.takeException(), isNull);
+      semantics.dispose();
+    });
+
     testWidgets('in dark, a mention\'s light moves as the list scrolls, and a bubble held up isn\'t lit again', (
       tester,
     ) async {

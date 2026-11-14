@@ -40,7 +40,7 @@ class PrismViewport extends InheritedWidget {
 
 /// The light of a bubble that mentions the user, between the bubble's fill and
 /// its [child], which it covers edge to edge (the bubble's padding goes in
-/// [child]): the spill, centred on the first [PrismAnchor], and the rim.
+/// [child]): the spill, centred on the first [PrismAnchor] if there's one, and the rim.
 class PrismBubble extends StatefulWidget {
   final PrismPalette palette;
 
@@ -254,8 +254,9 @@ class _PrismPainter extends CustomPainter {
     if (shows > 0) {
       canvas.save();
       canvas.clipRRect(shape);
-      // No mention shows (it's in code, or under a spoiler): no light of its own.
-      if (mentions.firstOrNull case final first?) spill(p.gem, 0.36, first.center, 170, 80);
+      // No mention shows (a reply to the user, or it's in code, or under a
+      // spoiler): from where a line's first word would be, as the design has it.
+      spill(p.gem, 0.36, mentions.firstOrNull?.center ?? const Offset(40, 20), 170, 80);
       spill(p.cool, 0.14, Offset(70 + slide * 150, size.height * 0.7), 120, 50);
       spill(p.warm, 0.12, Offset(30 + slide * 90, size.height), 90, 40);
       canvas.restore();
