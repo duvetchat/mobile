@@ -2619,7 +2619,8 @@ class _ChatViewState extends State<ChatView> with SingleTickerProviderStateMixin
       selectChoices: _selectChoices,
       onDismiss: m.isEphemeral ? () => _dismiss(m) : null,
       // Not in the pins: a copy there shows the gem at rest.
-      onShine: !pinned && _unshone.contains(m.id)
+      // Nor one that shone in another view of the chat, a thread over it.
+      onShine: !pinned && _unshone.contains(m.id) && !_shone.contains(m.id)
           ? () {
               _unshone.remove(m.id);
               _shone.add(m.id);
