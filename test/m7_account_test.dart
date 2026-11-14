@@ -140,6 +140,9 @@ void main() {
     final create = find.bySemanticsLabel('Create account');
     bool createEnabled() =>
         tester.getSemantics(create).getSemanticsData().flagsCollection.isEnabled.toString().contains('isTrue');
+    // The button is past the screen's end: built, and in the semantics tree, once scrolled to.
+    await tester.scrollUntilVisible(create, 200, scrollable: find.byType(Scrollable).first);
+    await tester.pumpAndSettle();
     expect(createEnabled(), isFalse);
 
     // Display name, username, email, password, and the password again.
@@ -765,7 +768,9 @@ void main() {
     await tapLabel(tester, 'Save');
     expect(find.text('That username is taken'), findsOneWidget);
     repository.profileRefused = null;
+    // The toast gone, Save is there to tap again.
     await tester.pump(const Duration(seconds: 4));
+    await tester.pumpAndSettle();
     await tapLabel(tester, 'Save');
     expect(repository.account, ['alias Gaby', 'username Gaby R.']);
     expect(repository.profile.value!.username, 'Gaby R.');

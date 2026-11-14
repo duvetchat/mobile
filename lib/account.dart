@@ -324,7 +324,9 @@ class _SignUpScreenState extends State<SignUpScreen> {
           error: _confirm.text.isNotEmpty && !_matches ? 'Passwords don’t match' : null,
         ),
         const SizedBox(height: 16),
-        Row(
+        // Wraps on a narrow screen or at a large text size: the link goes under the box.
+        Wrap(
+          crossAxisAlignment: WrapCrossAlignment.center,
           children: [
             Semantics(
               container: true,
@@ -338,10 +340,13 @@ class _SignUpScreenState extends State<SignUpScreen> {
                 child: Padding(
                   padding: const EdgeInsets.symmetric(vertical: 10),
                   child: Row(
+                    mainAxisSize: MainAxisSize.min,
                     children: [
                       SquareCheck(checked: _terms),
                       const SizedBox(width: 12),
-                      Text('I agree to the', style: DuvetType.body.copyWith(color: colors.foreground)),
+                      Flexible(
+                        child: Text('I agree to the', style: DuvetType.body.copyWith(color: colors.foreground)),
+                      ),
                     ],
                   ),
                 ),
