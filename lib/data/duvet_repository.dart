@@ -4525,16 +4525,11 @@ class DuvetRepository implements ChatRepository {
   bool quiet(String chatId) =>
       (_spaceOfRoom(chatId) == null ? conversationLevel(chatId) : roomLevel(chatId)) == NotificationLevel.nothing;
 
-  // duvet_client 2.9.0's setPushRegistration and deletePushRegistration send these, and aren't published yet: 2.8.0's
-  // request sends the same.
   @override
-  Future<void> setPushRegistration(String fid) => _call(
-    (api) => api.request('PUT', '/api/users/@me/push-registration', 'set push registration', json: {'fid': fid}),
-  );
+  Future<void> setPushRegistration(String fid) => _call((api) => api.setPushRegistration(fid));
 
   @override
-  Future<void> deletePushRegistration() =>
-      _call((api) => api.request('DELETE', '/api/users/@me/push-registration', 'delete push registration'));
+  Future<void> deletePushRegistration() => _call((api) => api.deletePushRegistration());
 
   @override
   Future<void> setNotificationLevel(String targetId, NotificationTarget target, NotificationLevel? level) =>
