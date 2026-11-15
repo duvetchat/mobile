@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:app_links/app_links.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 
 import 'package:forui/forui.dart';
@@ -23,6 +24,42 @@ abstract interface class DeepLinkSource {
   /// Duvet's own links tapped in a message's text, opened in the app rather
   /// than handed to the browser.
   static final tapped = StreamController<Uri>.broadcast();
+}
+
+/// How long a notification's tap waits for a sign-in, as one can start the app: past it, it opens nothing.
+const tapWait = Duration(seconds: 30);
+
+// The links of the taps waiting for a sign-in, and the link a tap opened last: a tap that starts the app comes as its
+// launch's details and as its response.
+final _waitingTaps = <String>{};
+String? _lastTapped;
+
+/// Opens a notification's [link] once the user is signed in ([profile] not null): at once, or once the session
+/// restores, [tapWait] at most. The same link opens once; one that waited in vain opens when it's tapped again.
+Future<void> openWhenSignedIn(ValueListenable<Profile?> profile, Uri link) async {
+  final tap = link.toString();
+  if (tap == _lastTapped || !_waitingTaps.add(tap)) return;
+  try {
+    if (profile.value == null) {
+      final signedIn = Completer<void>();
+      void follow() {
+        if (profile.value != null && !signedIn.isCompleted) signedIn.complete();
+      }
+
+      profile.addListener(follow);
+      try {
+        await signedIn.future.timeout(tapWait);
+      } on TimeoutException {
+        return;
+      } finally {
+        profile.removeListener(follow);
+      }
+    }
+    _lastTapped = tap;
+    DeepLinkSource.tapped.add(link);
+  } finally {
+    _waitingTaps.remove(tap);
+  }
 }
 
 class AppLinksSource implements DeepLinkSource {

@@ -225,6 +225,32 @@ void main() {
     expect(repository.cameToFrontTimes, 1);
   });
 
+  // FCM counts the app in front from the moment it shows, and hands it messages from then (lib/push): its own notices
+  // come back then too, not once it's resumed.
+  testWidgets('in sight again, the app is in front at once; out of sight, in the background', (tester) async {
+    final repository = await pumpApp(tester);
+    for (final state in [AppLifecycleState.inactive, AppLifecycleState.hidden, AppLifecycleState.paused]) {
+      tester.binding.handleAppLifecycleStateChanged(state);
+    }
+    expect((repository.wentToBackTimes, repository.cameToFrontTimes), (1, 0));
+    for (final state in [AppLifecycleState.hidden, AppLifecycleState.inactive]) {
+      tester.binding.handleAppLifecycleStateChanged(state);
+    }
+    expect(repository.cameToFrontTimes, 1);
+  });
+
+  // audio_service starts an engine of its own for its media service, which runs main() with no state and no screen:
+  // its notices keep quiet, as the phone's notifications tell of what comes, until a screen shows it.
+  test('the app shows as it starts when its state says so, or before any state with a screen to show on', () {
+    expect(shownAtStart(AppLifecycleState.resumed, Size.zero), isTrue);
+    expect(shownAtStart(AppLifecycleState.inactive, Size.zero), isTrue);
+    expect(shownAtStart(null, const Size(1080, 2400)), isTrue);
+    expect(shownAtStart(null, Size.zero), isFalse);
+    for (final state in [AppLifecycleState.hidden, AppLifecycleState.paused, AppLifecycleState.detached]) {
+      expect(shownAtStart(state, const Size(1080, 2400)), isFalse, reason: '$state');
+    }
+  });
+
   testWidgets('signing out returns to the login screen', (tester) async {
     await pumpApp(tester);
     await tester.tap(find.text('You').last);

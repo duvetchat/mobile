@@ -167,14 +167,26 @@ void main() {
   late DuvetRepository repository;
   late List<String> requests;
   late bool sessionDead;
+  late MemorySessionStore store;
+
+  /// The background renewal (lib/push/renewal.dart) rotated the session away from the app's tokens: the API refuses
+  /// its session token, and a request with no token.
+  late bool rotated;
 
   setUp(() async {
     gateway = await _Gateway.start();
     requests = [];
     sessionDead = false;
+    store = MemorySessionStore();
+    rotated = false;
     final api = MockClient((request) async {
       requests.add('${request.method} ${request.url.path}');
       if (sessionDead && request.url.path != '/api/auth/login') return http.Response('', 401);
+      if (rotated &&
+          (request.headers['X-Session-Token'] == 'refresh-1' && request.url.path == '/api/auth/refresh' ||
+              request.headers['Authorization'] == null && !request.url.path.startsWith('/api/auth/'))) {
+        return http.Response('', 401);
+      }
       if (request.url.path == '/api/auth/refresh') {
         // The session's renewed at once, which revokes the old access token;
         // the answer takes a moment.
@@ -197,7 +209,7 @@ void main() {
       return http.Response(jsonEncode(json), 200, headers: {'content-type': 'application/json'});
     });
     repository = DuvetRepository(
-      store: MemorySessionStore(),
+      store: store,
       recentsStore: MemoryRecentChatsStore(),
       router: gateway.router,
       httpClient: () => api,
@@ -364,6 +376,30 @@ void main() {
       expect(gateway.received.where((r) => r.$2 == 'VOICE_JOIN'), hasLength(2));
     },
   );
+
+  // The background renewal rotated the session while the app held the old tokens, and no app answered it: on the
+  // next 401 the app takes up the stored tokens, with a new gateway, whose READY is a new session voice joins again.
+  // Its sockets are counted from 1 too, which mustn't pass for the old gateway's first.
+  test('a session taken up from the store connects a new gateway, where voice joins again', () async {
+    gateway.sendsSpace = true;
+    await signIn();
+    final voice = VoiceController(
+      repository: repository,
+      engine: FakeVoiceEngine(),
+      historyStore: MemoryCallHistoryStore(),
+      inFront: () => true,
+    );
+    addTearDown(voice.dispose);
+    await voice.joinRoom(const Room(id: 'r-voice', spaceId: 's-1', name: 'lounge', kind: RoomKind.voice, position: 0));
+    await _until(() => gateway.received.contains((1, 'VOICE_JOIN')));
+
+    await store.write((token: 'access-9', sessionToken: 'refresh-9', refreshedAt: DateTime.now().toUtc()));
+    rotated = true;
+    gateway.revoked.add('access-1');
+    await repository.refreshConversations();
+    await _until(() => gateway.upgrades.contains('access-9'));
+    await _until(() => gateway.received.contains((2, 'VOICE_JOIN')));
+  });
 
   test(
     'a call placed just as the socket dropped is placed again once the session resumes, unless the gateway had it',

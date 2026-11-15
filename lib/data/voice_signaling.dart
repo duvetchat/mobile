@@ -79,9 +79,16 @@ class GatewayVoiceSignaling implements VoiceSignaling {
   duvet.WebRTCController? _rtc;
   StreamSubscription<duvet.GatewayResume>? _resumed;
 
+  // Socket numbers go on from one gateway to the next ([connection]): each counts its own from 1, and a join made on
+  // one's first socket mustn't pass for one made on the next one's (taking up a session the background renewed makes
+  // a new gateway).
+  int _offset = 0;
+  int _highest = 0;
+
   /// The gateway of a new session.
   void attach(duvet.GatewayManager manager) {
     detach();
+    _offset = _highest;
     _manager = manager;
     _rtc = duvet.WebRTCController(manager);
     _resumed = manager.onResume.listen((_) {
@@ -131,7 +138,13 @@ class GatewayVoiceSignaling implements VoiceSignaling {
   Stream<duvet.GatewayEventPayload> get events => _events.stream;
 
   @override
-  int? get connection => _manager?.connection;
+  int? get connection {
+    final socket = _manager?.connection;
+    if (socket == null) return null;
+    final connection = _offset + socket;
+    if (connection > _highest) _highest = connection;
+    return connection;
+  }
 
   @override
   Duration get silenceBeforeReady => _manager?.silenceBeforeReady ?? Duration.zero;

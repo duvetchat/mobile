@@ -113,6 +113,24 @@ class FakeRepository implements ChatRepository {
       (spaces.value.any((s) => s.rooms.any((r) => r.id == chatId)) ? roomLevel(chatId) : conversationLevel(chatId)) ==
       NotificationLevel.nothing;
 
+  /// The FIDs the app registered, in order, and how many times it deleted its registration; and how many of the
+  /// next registrations fail.
+  final pushRegistrations = <String>[];
+  int pushDeletes = 0;
+  int pushRegistrationFailures = 0;
+
+  @override
+  Future<void> setPushRegistration(String fid) async {
+    if (pushRegistrationFailures > 0) {
+      pushRegistrationFailures--;
+      throw Exception('the API is unreachable');
+    }
+    pushRegistrations.add(fid);
+  }
+
+  @override
+  Future<void> deletePushRegistration() async => pushDeletes++;
+
   @override
   Future<void> setNotificationLevel(String targetId, NotificationTarget target, NotificationLevel? level) async {
     levelChoices.add('$targetId ${target.name} ${level?.name ?? 'default'}');
@@ -1547,6 +1565,12 @@ class FakeRepository implements ChatRepository {
 
   @override
   void cameToFront() => cameToFrontTimes++;
+
+  /// How many times the app went to the background.
+  int wentToBackTimes = 0;
+
+  @override
+  void wentToBack() => wentToBackTimes++;
 
   @override
   Future<void> logIn(String email, String password) async {

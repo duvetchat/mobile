@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "764755825352",
+    "project_id": "duvet-216f9",
+    "storage_bucket": "duvet-216f9.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:764755825352:android:4e6f5df4760cb2d97f0bfd",
+        "android_client_info": {
+          "package_name": "chat.duvet"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyBlsBzls9d4iPy3li5zFgLHrOtJQCmvDAk"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
