@@ -3,6 +3,7 @@ import 'dart:io';
 
 import 'package:duvet/data/session_store.dart';
 import 'package:duvet/push/background.dart';
+import 'package:duvet/push/call_decline.dart';
 import 'package:duvet/push/notifications.dart';
 import 'package:duvet/push/push_message.dart';
 import 'package:flutter/foundation.dart';
@@ -46,6 +47,9 @@ void main() {
   late Directory dir;
   // What the app asked of Android's notifications, and when.
   late List<(DateTime, MethodCall)> calls;
+  // The notifications Android shows, as getActiveNotifications gives them, and whether Duvet's are allowed.
+  late List<Map<String, Object?>> active;
+  late bool allowed;
   // The photos fetched, and a wait each fetch takes while it's set.
   late List<Uri> fetched;
   Completer<void>? photoHeld;
@@ -56,11 +60,17 @@ void main() {
     debugDefaultTargetPlatformOverride = TargetPlatform.android;
     FlutterLocalNotificationsPlatform.instance = AndroidFlutterLocalNotificationsPlugin();
     calls = [];
+    active = [];
+    allowed = true;
     fetched = [];
     photoHeld = null;
     TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger.setMockMethodCallHandler(_plugin, (call) async {
       calls.add((DateTime.now(), call));
-      return null;
+      return switch (call.method) {
+        'getActiveNotifications' => active,
+        'areNotificationsEnabled' => allowed,
+        _ => null,
+      };
     });
   });
 
@@ -151,5 +161,185 @@ void main() {
     final session = (token: 'access-1', sessionToken: 'refresh-1', refreshedAt: null);
     await showWhileSignedIn(data, MemorySessionStore(session), (push) async => shown.add(push));
     expect(shown, hasLength(1));
+  });
+
+  // A call that started [ago] and rings [window] in all, by the server's clock.
+  CallPush call(
+    int conversation, {
+    Duration ago = const Duration(seconds: 5),
+    Duration window = const Duration(seconds: 30),
+    String place = 'Friday raid',
+  }) {
+    final started = DateTime.now().subtract(ago);
+    return CallPush(
+      conversationId: _id(conversation),
+      initiatorId: _id(900),
+      initiatorName: 'Maya',
+      initiatorAvatar: '',
+      place: place,
+      startedAt: started,
+      ringUntil: started.add(window),
+    );
+  }
+
+  List<Map<Object?, Object?>> shows() => [
+    for (final (_, c) in calls)
+      if (c.method == 'show') c.arguments as Map<Object?, Object?>,
+  ];
+  List<(Object?, Object?)> cancels() => [
+    for (final (_, c) in calls)
+      if (c.method == 'cancel') ((c.arguments as Map)['id'], (c.arguments as Map)['tag']),
+  ];
+  int timeoutOf(Map<Object?, Object?> show) => (show['platformSpecifics'] as Map)['timeoutAfter'] as int;
+
+  // A call rings at once, not behind the messages' spacing: Android's call category, shown whole on the lock screen,
+  // the calls channel's ringtone over and over (FLAG_INSISTENT) until its ring window ends, Decline and Answer.
+  test('a call shows at once as a ringing call, until its ring window ends', () async {
+    final ringing = call(7);
+    final started = ringing.startedAt.millisecondsSinceEpoch;
+    await withPhotos(() => showPush(ringing));
+    final show = shows().single;
+    final android = show['platformSpecifics'] as Map<Object?, Object?>;
+    expect(show['id'], callNotificationIdOf(_id(7)));
+    // Tagged with the call's start, which its payload names too: the end of another call of the conversation leaves it.
+    expect(android['tag'], '$started');
+    expect(
+      (show['title'], show['body'], show['payload']),
+      ('Maya', 'Incoming call · Friday raid', 'call:${_id(7)}:$started'),
+    );
+    // Not full screen: without showing over the lock screen, which the app doesn't, Android would launch the app behind
+    // it, which then took the notification away as if it showed.
+    expect((android['channelId'], android['category'], android['fullScreenIntent']), ('calls', 'call', false));
+    expect(android['ongoing'], isTrue);
+    expect(android['additionalFlags'], [4]);
+    expect(timeoutOf(show), inInclusiveRange(23000, 25000));
+    final actions = [for (final a in android['actions'] as List) a as Map<Object?, Object?>];
+    expect([for (final a in actions) (a['id'], a['showsUserInterface'])], [('decline', false), ('answer', true)]);
+  });
+
+  test('a call in a direct message says only who calls', () async {
+    await withPhotos(() => showPush(call(7, place: '')));
+    expect(shows().single['body'], 'Incoming call');
+  });
+
+  // A ring comes only within its window, as its time to live ends with it: one the phone's clock puts past its window,
+  // or beyond it, is the phone's clock being off, and it rings the window's length.
+  test("a phone whose clock is off rings a call its window's length", () async {
+    await withPhotos(() => showPush(call(7, ago: const Duration(seconds: 80))));
+    await withPhotos(() => showPush(call(8, ago: const Duration(seconds: -60))));
+    expect([for (final show in shows()) timeoutOf(show)], everyElement(inInclusiveRange(28000, 30000)));
+    expect(shows(), hasLength(2));
+  });
+
+  test("a call's end takes away its call's notification, not another call's of the conversation", () async {
+    await showPush(CallEndPush(conversationId: _id(7), startedAt: 1794702917695));
+    // Also the one the app put up itself, which doesn't know the call's start.
+    expect(cancels(), [(callNotificationIdOf(_id(7)), '1794702917695'), (callNotificationIdOf(_id(7)), '0')]);
+  });
+
+  test('a ring that comes after its call ended shows nothing', () async {
+    final late = call(7);
+    await showPush(CallEndPush(conversationId: _id(7), startedAt: late.startedAt.millisecondsSinceEpoch));
+    await withPhotos(() => showPush(late));
+    expect(shows(), isEmpty);
+    // Another call of the conversation rings.
+    await withPhotos(() => showPush(call(7, ago: const Duration(seconds: 1))));
+    expect(shows(), hasLength(1));
+  });
+
+  test("a call whose notification shows already isn't put up again, which would start its ringtone over", () async {
+    active = [
+      {'id': callNotificationIdOf(_id(7)), 'tag': '0', 'channelId': 'calls'},
+    ];
+    await withPhotos(() => showPush(call(7)));
+    expect(shows(), isEmpty);
+  });
+
+  test(
+    "the app puts a call's notification up itself, not knowing its start, while notifications are allowed",
+    () async {
+      final ringing = CallPush(
+        conversationId: _id(7),
+        initiatorId: _id(900),
+        initiatorName: 'Maya',
+        initiatorAvatar: '',
+        place: '',
+        startedAt: DateTime.now(),
+        ringUntil: DateTime.now().add(const Duration(seconds: 30)),
+      );
+      expect(await withPhotos(() => ringCallAway(ringing)), isTrue);
+      final show = shows().single;
+      expect(((show['platformSpecifics'] as Map)['tag'], show['payload']), ('0', 'call:${_id(7)}:0'));
+
+      allowed = false;
+      expect(await withPhotos(() => ringCallAway(ringing)), isFalse);
+      expect(shows(), hasLength(1));
+    },
+  );
+
+  test("the app takes a call's notification away, whichever call it was put up for", () async {
+    active = [
+      {'id': callNotificationIdOf(_id(7)), 'tag': '1794702917695'},
+      {'id': callNotificationIdOf(_id(7)), 'tag': '0'},
+      {'id': notificationIdOf(_id(7)), 'tag': null},
+    ];
+    await hideCallNotification(_id(7));
+    expect(cancels(), [(callNotificationIdOf(_id(7)), '1794702917695'), (callNotificationIdOf(_id(7)), '0')]);
+  });
+
+  test("Decline on a call's notification declines it through the API, with the session the phone keeps", () async {
+    final sent = <http.Request>[];
+    final client = MockClient((request) async {
+      sent.add(request);
+      return http.Response('', 204);
+    });
+    final store = MemorySessionStore((token: 'access', sessionToken: 'session', refreshedAt: null));
+    await declineFromNotification(_id(7), startedAt: 1794702917695, store: store, client: client);
+    expect(sent.single.method, 'POST');
+    expect(sent.single.url.path, '/api/users/@me/conversations/${_id(7)}/call/decline');
+    expect(sent.single.headers['X-Session-Token'], 'session');
+    // The call it rang for: a later call of the conversation isn't declined.
+    expect(sent.single.body, '{"started_at":1794702917695}');
+    // Without its start (the app put the notification up), whatever call goes on there.
+    await declineFromNotification(_id(7), startedAt: 0, store: store, client: client);
+    expect(sent.last.body, '');
+
+    // Signed out, or with a conversation that isn't one, it sends nothing.
+    await declineFromNotification(_id(7), startedAt: 0, store: MemorySessionStore(), client: client);
+    await declineFromNotification('../x', startedAt: 0, store: store, client: client);
+    expect(sent, hasLength(2));
+  });
+
+  // The plugin's own manifest declares none of its receivers: without the app's, a call's Decline goes nowhere.
+  test("the app declares the receiver of its notifications' buttons", () {
+    final manifest = File('android/app/src/main/AndroidManifest.xml').readAsStringSync();
+    expect(manifest, contains('android:name="com.dexterous.flutterlocalnotifications.ActionBroadcastReceiver"'));
+  });
+
+  test("a call's notification goes to the app: a tap or Answer opens it, Answer answers, Decline declines", () {
+    final opened = <(String, bool)>[];
+    final declined = <(String, int)>[];
+    final links = <String?>[];
+    void route(String? action, String? payload) => routeNotificationResponse(
+      NotificationResponse(
+        notificationResponseType: action == null
+            ? NotificationResponseType.selectedNotification
+            : NotificationResponseType.selectedNotificationAction,
+        actionId: action,
+        payload: payload,
+      ),
+      onTap: links.add,
+      onCall: (conversation, {required answer}) => opened.add((conversation, answer)),
+      decline: (conversation, startedAt) async => declined.add((conversation, startedAt)),
+    );
+    route(null, 'call:${_id(7)}:1794702917695');
+    route('answer', 'call:${_id(7)}:1794702917695');
+    route('decline', 'call:${_id(7)}:1794702917695');
+    route('decline', 'call:${_id(7)}:0');
+    route('decline', 'call:${_id(7)}:soon');
+    route(null, 'https://duvet.chat/conversations/${_id(7)}/${_id(8)}');
+    expect(opened, [(_id(7), false), (_id(7), true)]);
+    expect(declined, [(_id(7), 1794702917695), (_id(7), 0)]);
+    expect(links, ['https://duvet.chat/conversations/${_id(7)}/${_id(8)}']);
   });
 }

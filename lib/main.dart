@@ -29,6 +29,7 @@ import 'deep_links.dart';
 import 'mention_notices.dart';
 import 'push/background.dart';
 import 'push/notifications.dart';
+import 'push/push_message.dart';
 import 'push/registration.dart';
 import 'push/renewal.dart';
 import 'account.dart';
@@ -85,14 +86,28 @@ Future<void> main() async {
     if (link != null) unawaited(openWhenSignedIn(repository.profile, Uri.parse(link)));
   }
 
+  // A call's notification opens the app, where the call rings once the gateway lists it; its Answer answers it then.
+  void openCall(String conversationId, {required bool answer}) {
+    if (answer) callAnswered.value = conversationId;
+  }
+
   try {
-    await initNotifications(onTap: openTapped);
+    await initNotifications(onTap: openTapped, onCall: openCall);
   } catch (e) {
     debugPrint('push: notifications: $e');
   }
-  runApp(DuvetApp(repository: repository, push: push));
-  // Neither holds the first frame back.
-  unawaited(launchedWith().then(openTapped, onError: (Object e) => debugPrint('push: notifications: $e')));
+  runApp(
+    DuvetApp(
+      repository: repository,
+      push: push,
+      // It doesn't hold the first frame back.
+      readLaunch: () => unawaited(
+        launchedWith().then((response) {
+          if (response != null) routeNotificationResponse(response, onTap: openTapped, onCall: openCall);
+        }, onError: (Object e) => debugPrint('push: notifications: $e')),
+      ),
+    ),
+  );
   unawaited(_renewInBackground());
 }
 
@@ -140,6 +155,10 @@ class DuvetApp extends StatefulWidget {
 
   /// Registers the phone for push notifications; tests pass none, which registers nothing.
   final PushRegistrar? push;
+
+  /// Reads the notification whose tap or button started the app, and does what it asks (main), once the app shows:
+  /// audio_service's engine may run main() with no screen before the activity a tap launches comes to it.
+  final void Function()? readLaunch;
   const DuvetApp({
     required this.repository,
     this.appearance,
@@ -148,6 +167,7 @@ class DuvetApp extends StatefulWidget {
     this.sounds,
     this.voicePrefs,
     this.push,
+    this.readLaunch,
     super.key,
   });
 
@@ -169,6 +189,36 @@ class _DuvetAppState extends State<DuvetApp> {
         engine: WebRtcVoiceEngine(),
         historyStore: const SecureCallHistoryStore(),
         sounds: _sounds,
+        // A call ringing here rings through its notification off screen, which the app puts up when no push did, and
+        // takes away on screen, where it rings itself.
+        callNotices: (
+          show: (call) =>
+              ringCallAway(
+                CallPush(
+                  conversationId: call.conversationId,
+                  initiatorId: call.initiatorId,
+                  initiatorName: call.initiatorName,
+                  initiatorAvatar: call.initiatorAvatar ?? '',
+                  // A group's own name, as the API's push gives it.
+                  place:
+                      widget.repository.conversations.value
+                          .where((c) => c.id == call.conversationId)
+                          .firstOrNull
+                          ?.name ??
+                      '',
+                  startedAt: call.startedAt,
+                  ringUntil: call.startedAt.add(VoiceController.ringWindow),
+                ),
+              ).catchError((Object e) {
+                debugPrint('push: a call\'s notification: $e');
+                return false;
+              }),
+          hide: (conversationId) => unawaited(
+            hideCallNotification(
+              conversationId,
+            ).catchError((Object e) => debugPrint('push: a call\'s notification: $e')),
+          ),
+        ),
       );
 
   // The mentions already sounded: the list keeps a notice until it is dismissed.
@@ -200,14 +250,22 @@ class _DuvetAppState extends State<DuvetApp> {
       binding.platformDispatcher.implicitView?.physicalSize ?? Size.zero,
     );
     if (!shown) widget.repository.wentToBack();
+    var launchRead = shown;
+    if (shown) widget.readLaunch?.call();
     _lifecycle = AppLifecycleListener(
       onStateChange: (state) {
         if (_shows(state) == shown) return;
         shown = !shown;
         shown ? widget.repository.cameToFront() : widget.repository.wentToBack();
+        if (shown && !launchRead) {
+          launchRead = true;
+          widget.readLaunch?.call();
+        }
       },
     );
     _signedOut = widget.repository.signedOut.listen((_) => VideoTile.releaseParked());
+    callAnswered.addListener(_answerFromNotification);
+    _answerFromNotification();
     _voice.addListener(_followEarpiece);
     _voice.routes.addListener(_followEarpiece);
     _voicePrefs.addListener(_followVoicePrefs);
@@ -218,6 +276,14 @@ class _DuvetAppState extends State<DuvetApp> {
   }
 
   void _followVoicePrefs() => _voice.setNoiseSuppression(_voicePrefs.noiseSuppression);
+
+  // A call's notification's Answer: the call is answered as it rings here (lib/push).
+  void _answerFromNotification() {
+    final conversationId = callAnswered.value;
+    if (conversationId == null) return;
+    callAnswered.value = null;
+    _voice.answerWhenRinging(conversationId);
+  }
 
   // A new mention notice comes with the mention sound (#23).
   void _soundMentions() {
@@ -235,6 +301,7 @@ class _DuvetAppState extends State<DuvetApp> {
 
   @override
   void dispose() {
+    callAnswered.removeListener(_answerFromNotification);
     _voice.removeListener(_followEarpiece);
     _voice.routes.removeListener(_followEarpiece);
     _voicePrefs.removeListener(_followVoicePrefs);

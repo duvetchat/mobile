@@ -112,6 +112,8 @@ void main() {
     tester.view.physicalSize = const Size(390 * 3, 844 * 3);
     tester.view.devicePixelRatio = 3;
     addTearDown(tester.view.reset);
+    // On screen, as Android says of the app it shows: voice reads levels and video only there.
+    tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.resumed);
     final app = _App();
     await tester.pumpWidget(DuvetApp(repository: app.repository, voice: app.voice, voicePrefs: prefs));
     await tester.pumpAndSettle();

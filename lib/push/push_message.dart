@@ -14,9 +14,84 @@ sealed class Push {
   static Push? fromData(Map<String, dynamic> data) => switch (data['type']) {
     'message' => MessagePush._fromData(data),
     'signed_out' => const SignedOutPush(),
+    'call' => CallPush._fromData(data),
+    'call_end' => CallEndPush._fromData(data),
     _ => null,
   };
 }
+
+String? _field(Map<String, dynamic> data, String key) => switch (data[key]) {
+  final String value => value,
+  _ => null,
+};
+
+DateTime? _millis(Map<String, dynamic> data, String key) => switch (int.tryParse(_field(data, key) ?? '')) {
+  final int ms => DateTime.fromMillisecondsSinceEpoch(ms, isUtc: true),
+  null => null,
+};
+
+/// A call that rings the user (duvetchat/api#276): who calls, from where (a group's name, or nothing in a direct
+/// message), and when it started and stops ringing, which the phone does by itself then.
+final class CallPush extends Push {
+  final String conversationId;
+  final String initiatorId;
+  final String initiatorName;
+
+  /// The caller's avatar as the API gives it: an attachment's ID, a URL, or empty.
+  final String initiatorAvatar;
+  final String place;
+  final DateTime startedAt;
+  final DateTime ringUntil;
+
+  const CallPush({
+    required this.conversationId,
+    required this.initiatorId,
+    required this.initiatorName,
+    required this.initiatorAvatar,
+    required this.place,
+    required this.startedAt,
+    required this.ringUntil,
+  });
+
+  static CallPush? _fromData(Map<String, dynamic> data) {
+    final conversation = _field(data, 'conversation_id');
+    final initiator = _field(data, 'initiator_id');
+    final startedAt = _millis(data, 'started_at');
+    final ringUntil = _millis(data, 'ring_until');
+    if (conversation == null || !isDuvetId(conversation) || initiator == null || !isDuvetId(initiator)) return null;
+    if (startedAt == null || ringUntil == null) return null;
+    return CallPush(
+      conversationId: conversation,
+      initiatorId: initiator,
+      initiatorName: _field(data, 'initiator_name') ?? '',
+      initiatorAvatar: _field(data, 'initiator_avatar') ?? '',
+      place: _field(data, 'place') ?? '',
+      startedAt: startedAt,
+      ringUntil: ringUntil,
+    );
+  }
+}
+
+/// The call of a conversation stopped ringing the user: answered or declined on any device, hung up, or rung out.
+final class CallEndPush extends Push {
+  final String conversationId;
+
+  /// When the call started, in Unix milliseconds, as its ring gave it: 0 is whatever call of the conversation shows.
+  final int startedAt;
+
+  const CallEndPush({required this.conversationId, this.startedAt = 0});
+
+  static CallEndPush? _fromData(Map<String, dynamic> data) => switch (_field(data, 'conversation_id')) {
+    final String conversation when isDuvetId(conversation) => CallEndPush(
+      conversationId: conversation,
+      startedAt: int.tryParse(_field(data, 'started_at') ?? '') ?? 0,
+    ),
+    _ => null,
+  };
+}
+
+/// A conversation's call's notification ID, apart from its messages' ([notificationIdOf]).
+int callNotificationIdOf(String conversationId) => notificationIdOf('call:$conversationId');
 
 /// A message that notifies the user: who wrote it, where, and its text as the API words it (names, not IDs; each
 /// spoiler hidden).

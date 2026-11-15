@@ -65,4 +65,53 @@ void main() {
     // FNV-1a's own check value, masked to 31 bits: the same in every isolate and every run.
     expect(notificationIdOf('a'), 0xe40c292c & 0x7fffffff);
   });
+
+  test('fromData reads a call that rings, and its end', () {
+    final call =
+        Push.fromData({
+              'type': 'call',
+              'conversation_id': _conversation,
+              'initiator_id': _maya,
+              'initiator_name': 'Maya',
+              'initiator_avatar': 'avatar-id',
+              'place': 'Friday raid',
+              'started_at': '1794702917695',
+              'ring_until': '1794702947695',
+            })
+            as CallPush;
+    expect(
+      (call.conversationId, call.initiatorId, call.initiatorName, call.initiatorAvatar, call.place),
+      (_conversation, _maya, 'Maya', 'avatar-id', 'Friday raid'),
+    );
+    expect(call.startedAt, DateTime.fromMillisecondsSinceEpoch(1794702917695, isUtc: true));
+    expect(call.ringUntil, DateTime.fromMillisecondsSinceEpoch(1794702947695, isUtc: true));
+
+    final end =
+        Push.fromData({'type': 'call_end', 'conversation_id': _conversation, 'started_at': '1794702917695'})
+            as CallEndPush;
+    expect((end.conversationId, end.startedAt), (_conversation, 1794702917695));
+    // Without its start, an end is of whatever call of the conversation shows.
+    final anyCall = Push.fromData({'type': 'call_end', 'conversation_id': _conversation}) as CallEndPush;
+    expect(anyCall.startedAt, 0);
+  });
+
+  test('fromData reads no call without a conversation it can trust or the times of its ring', () {
+    final call = {
+      'type': 'call',
+      'conversation_id': _conversation,
+      'initiator_id': _maya,
+      'started_at': '1794702917695',
+      'ring_until': '1794702947695',
+    };
+    expect(Push.fromData({...call, 'conversation_id': '../x'}), isNull);
+    expect(Push.fromData({...call}..remove('ring_until')), isNull);
+    expect(Push.fromData({...call, 'started_at': 'soon'}), isNull);
+    expect(Push.fromData({'type': 'call_end', 'conversation_id': 'x'}), isNull);
+  });
+
+  test("a call's notification has an ID of its own, apart from its conversation's messages", () {
+    expect(callNotificationIdOf(_conversation), isNot(notificationIdOf(_conversation)));
+    expect(callNotificationIdOf(_conversation), callNotificationIdOf(_conversation));
+    expect(callNotificationIdOf(_conversation), greaterThanOrEqualTo(0));
+  });
 }

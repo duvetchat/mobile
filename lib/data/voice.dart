@@ -96,6 +96,10 @@ enum CallPhase {
   connected,
 }
 
+/// What the app does with a call's notification (lib/push) while a call rings here: [show] puts it up as Duvet leaves
+/// the screen, and answers whether it shows; [hide] takes it away.
+typedef CallNotices = ({Future<bool> Function(ActiveCall call) show, void Function(String conversationId) hide});
+
 /// The call this device rings for, places or is in.
 class ActiveCall {
   final String conversationId;
@@ -183,6 +187,7 @@ class VoiceController extends ChangeNotifier {
     @visibleForTesting Stream<AppLifecycleState>? lifecycle,
     @visibleForTesting Future<bool> Function()? cameraRefused,
     Sounds? sounds,
+    CallNotices? callNotices,
   }) : _repository = repository,
        _signaling = repository.voiceSignaling,
        _engine = engine,
@@ -191,6 +196,7 @@ class VoiceController extends ChangeNotifier {
        _lifecycle = lifecycle ?? _appLifecycle(),
        _cameraRefused = cameraRefused ?? _cameraPermissionRefused,
        _sounds = sounds,
+       _callNotices = callNotices,
        history = CallHistory(historyStore) {
     _events = _signaling.events.listen(_onEvent);
     _resumes = _signaling.resumes.listen((_) => _onResume());
@@ -201,6 +207,25 @@ class VoiceController extends ChangeNotifier {
     _onProfile();
   }
 
+  /// How long an Answer from a call's notification waits for the call to ring here, as the app starts and connects:
+  /// a call rings 30 s at most.
+  static const answerWait = Duration(seconds: 30);
+
+  final CallNotices? _callNotices;
+
+  // While a call rings here, whether Duvet comes on screen or leaves it, which decides where it rings.
+  StreamSubscription<AppLifecycleState>? _ringFollowsScreen;
+
+  // The conversation whose call rings here, which its notification is of; whether the app put that notification up
+  // since Duvet left the screen, and whether it could; and, on screen, the timer that takes it away again.
+  String? _ringingIn;
+  bool _shownAway = false;
+  bool _noNotice = false;
+  Timer? _hideAgain;
+
+  // An Answer from a call's notification, for the call of that conversation once it rings here, until then.
+  ({String conversationId, DateTime until})? _answerFor;
+
   final ChatRepository _repository;
   final VoiceSignaling _signaling;
   final VoiceEngine _engine;
@@ -209,10 +234,11 @@ class VoiceController extends ChangeNotifier {
   late final StreamSubscription<void> _resumes;
   late final StreamSubscription<void> _signedOut;
 
-  // Duvet on screen: not behind another app, nor under a locked screen.
+  // Duvet on screen: not behind another app, nor under a locked screen. Before Flutter says, it isn't: a start with no
+  // screen (audio_service's engine) has said nothing yet.
   final bool Function() _inFront;
   static bool _appInFront() => switch (SchedulerBinding.instance.lifecycleState) {
-    null || AppLifecycleState.resumed || AppLifecycleState.inactive => true,
+    AppLifecycleState.resumed || AppLifecycleState.inactive => true,
     _ => false,
   };
 
@@ -437,8 +463,8 @@ class VoiceController extends ChangeNotifier {
   // going on for the others.
   String? _cancelledIn;
 
-  // The gateway ends a call nobody answered this long after it rang.
-  static const _ringTimeout = Duration(seconds: 30);
+  /// The gateway ends a call nobody answered this long after it rang.
+  static const ringWindow = Duration(seconds: 30);
 
   final _notices = StreamController<String>.broadcast();
 
@@ -1343,6 +1369,11 @@ class VoiceController extends ChangeNotifier {
 
     // An answer the gateway may have lost with the socket it went on.
     _answerAgain();
+    // An Answer from a notification of a call this session doesn't ring: it ended meanwhile.
+    if (_answerFor case final wanted?
+        when !calls.any((c) => c.conversationId == wanted.conversationId && c.ringing == true)) {
+      _answerFor = null;
+    }
 
     final target = _target;
     // A join sent on this session's own socket went out after its identify:
@@ -1362,6 +1393,7 @@ class VoiceController extends ChangeNotifier {
       }
     }
     notifyListeners();
+    _answerIfWanted();
   }
 
   // A call answered here on an older socket, whose answer the gateway hasn't
@@ -1374,7 +1406,7 @@ class VoiceController extends ChangeNotifier {
             !c.outgoing &&
             !_answerHeard &&
             _callOn != _signaling.connection &&
-            _now().difference(c.startedAt) < _ringTimeout) {
+            _now().difference(c.startedAt) < ringWindow) {
       _signaling.acceptCall(c.conversationId);
       _callOn = _signaling.connection;
     }
@@ -1395,6 +1427,7 @@ class VoiceController extends ChangeNotifier {
       _callOn = connection;
     }
     _answerAgain();
+    _answerIfWanted();
     if (_joining && _target != null && _joinedOn != null && _joinedOn != connection && !_answered) {
       unawaited(_connect());
       return;
@@ -1646,6 +1679,7 @@ class VoiceController extends ChangeNotifier {
       _notice('Missed a call from ${data.initiatorName}');
     }
     notifyListeners();
+    _answerIfWanted();
   }
 
   // Every member's sessions get it, whoever answered: the user themselves on
@@ -1729,6 +1763,7 @@ class VoiceController extends ChangeNotifier {
   }
 
   void _onEnded(String conversationId) {
+    if (_answerFor?.conversationId == conversationId) _answerFor = null;
     _calls = {..._calls}..remove(conversationId);
     _unanswered = {..._unanswered}..remove(conversationId);
     if (conversationId == _cancelledIn) _cancelledIn = null;
@@ -1858,26 +1893,60 @@ class VoiceController extends ChangeNotifier {
     await _joinCallVoice(conversationId);
   }
 
+  /// Answers the call of [conversationId] from its notification's Answer, which
+  /// opened the app: at once when it rings here already, else as it does
+  /// (READY or CALL_INCOMING, once the app connects), within [answerWait].
+  void answerWhenRinging(String conversationId) {
+    _answerFor = (conversationId: conversationId, until: _now().add(answerWait));
+    _answerIfWanted();
+  }
+
+  // Answers the call ringing here when the notification's Answer was for it. Kept until the answer goes: the gateway may
+  // be out of reach yet (READY and resumes try it again); a call of that conversation that ends, or that a READY doesn't
+  // list as ringing, drops it.
+  void _answerIfWanted() {
+    final wanted = _answerFor;
+    if (wanted == null) return;
+    if (!_now().isBefore(wanted.until)) {
+      _answerFor = null;
+      return;
+    }
+    final call = _call;
+    if (call == null || call.phase != CallPhase.ringing || call.conversationId != wanted.conversationId) return;
+    final answered = _sendAnswer(offlineNotice: false);
+    if (answered == null) return;
+    _answerFor = null;
+    unawaited(_joinCallVoice(answered));
+  }
+
   /// Answers the call ringing here.
   Future<void> acceptCall() async {
+    final answered = _sendAnswer(offlineNotice: true);
+    if (answered != null) await _joinCallVoice(answered);
+  }
+
+  // Sends the answer to the call ringing here, whose conversation it returns: null when none rings, or the gateway is
+  // out of reach, which [offlineNotice] tells the user.
+  String? _sendAnswer({required bool offlineNotice}) {
     final call = _call;
-    if (call == null || call.phase != CallPhase.ringing) return;
+    if (call == null || call.phase != CallPhase.ringing) return null;
     if (!_signaling.acceptCall(call.conversationId)) {
-      _notice('You’re offline: the call can’t be answered');
-      return;
+      if (offlineNotice) _notice('You’re offline: the call can’t be answered');
+      return null;
     }
     _callOn = _signaling.connection;
     _answerHeard = false;
     _call = call.answered();
     notifyListeners();
-    await _joinCallVoice(call.conversationId);
+    return call.conversationId;
   }
 
   /// Turns down the call ringing here.
   void declineCall() {
     final call = _call;
     if (call == null || call.phase != CallPhase.ringing) return;
-    // Sent even offline: the gateway takes a dropped session for a decline.
+    // Offline it goes nowhere: the call rings out on the user's other devices, as the gateway takes a dropped session
+    // for no answer while the call rings it (it may ring the phone through its notification).
     _signaling.declineCall(call.conversationId);
     _record(call, CallOutcome.declined);
     _call = null;
@@ -2091,13 +2160,62 @@ class VoiceController extends ChangeNotifier {
   bool _ringing = false;
 
   // Rings while a call rings here, and stops the moment it doesn't:
-  // answered, declined, cancelled, ended, replaced.
+  // answered, declined, cancelled, ended, replaced. Off screen the call's
+  // notification rings it (lib/push), unless the phone shows none of Duvet's.
   void _followRing() {
-    final ringing = _call?.phase == CallPhase.ringing;
+    final call = _call;
+    final rings = call != null && call.phase == CallPhase.ringing;
+    if (rings) {
+      _ringFollowsScreen ??= _lifecycle.listen((_) => _followRing());
+    } else if (_ringFollowsScreen case final screen?) {
+      _ringFollowsScreen = null;
+      unawaited(screen.cancel());
+    }
+    final onScreen = rings && _inFront();
+    _followCallNotice(rings ? call : null, onScreen: onScreen);
+    final ringing = rings && (onScreen || _callNotices == null || _noNotice);
     if (ringing == _ringing) return;
     _ringing = ringing;
     final sounds = _sounds;
     if (sounds != null) unawaited(ringing ? sounds.startRing() : sounds.stopRing());
+  }
+
+  // The notification of the call [ringing] here: on screen the app rings the
+  // call, and takes the notification away, now and every 2 s, for a push that
+  // was on its way; off screen the notification rings it, which the app puts
+  // up as Duvet leaves the screen; and it goes once the call rings here no
+  // more.
+  void _followCallNotice(ActiveCall? ringing, {required bool onScreen}) {
+    final notices = _callNotices;
+    if (notices == null) return;
+    final conversationId = ringing?.conversationId;
+    if (_ringingIn case final was? when was != conversationId) {
+      notices.hide(was);
+      _shownAway = _noNotice = false;
+    }
+    _ringingIn = conversationId;
+    if (ringing == null || !onScreen) {
+      _hideAgain?.cancel();
+      _hideAgain = null;
+    }
+    if (ringing == null) return;
+    if (onScreen) {
+      _shownAway = false;
+      if (_hideAgain == null) {
+        notices.hide(ringing.conversationId);
+        _hideAgain = Timer.periodic(const Duration(seconds: 2), (_) => notices.hide(ringing.conversationId));
+      }
+    } else if (!_shownAway) {
+      _shownAway = true;
+      unawaited(
+        notices.show(ringing).then((shown) {
+          if (_ringingIn != ringing.conversationId || _noNotice != shown) return;
+          // Without the notification, the app rings on itself.
+          _noNotice = !shown;
+          _followRing();
+        }),
+      );
+    }
   }
 
   // The session ended for good, its gateway still there: voice and calls tell
@@ -2141,6 +2259,8 @@ class VoiceController extends ChangeNotifier {
     unawaited(_signedOut.cancel());
     _repository.profile.removeListener(_onProfile);
     _repository.spaces.removeListener(_checkPerms);
+    unawaited(_ringFollowsScreen?.cancel());
+    _hideAgain?.cancel();
     if (_ringing) unawaited(_sounds?.stopRing());
     unawaited(_notices.close());
     levels.dispose();
