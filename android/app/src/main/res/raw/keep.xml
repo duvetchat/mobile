@@ -1,0 +1,4 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The messages channel sounds res/raw/message_notification (lib/push/notifications.dart), which only Android names:
+     resource shrinking would take it out of a release build. -->
+<resources xmlns:tools="http://schemas.android.com/tools" tools:keep="@raw/message_notification" />

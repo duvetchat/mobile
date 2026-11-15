@@ -101,6 +101,23 @@ const _command = <String, dynamic>{
   ],
 };
 
+/// A session store kept in memory whose reads fail while [failing], and whose next read waits for [holdNext].
+class _TestStore extends MemorySessionStore {
+  bool failing = false;
+  Completer<void>? holdNext;
+  int reads = 0;
+
+  @override
+  Future<StoredSession?> read() async {
+    reads++;
+    final hold = holdNext;
+    holdNext = null;
+    await hold?.future;
+    if (failing) throw const FileSystemException('the keystore is locked');
+    return super.read();
+  }
+}
+
 void main() {
   late List<http.Request> requests;
   late MockClient client;
@@ -140,6 +157,12 @@ void main() {
 
   /// An access token the API no longer takes, though the session lives.
   String? expiredToken;
+
+  /// Session tokens a renewal elsewhere (the background's) rotated away: the API refuses them.
+  late Set<String> rotatedAway;
+
+  /// Requests held before the API looks at them, by method and path, until their completer completes.
+  late Map<String, Completer<void>> holds;
 
   /// The friend requests to the user, as `GET …/friends/requests` answers.
   late List<Map<String, dynamic>> asking;
@@ -199,6 +222,8 @@ void main() {
     renewalsBroken = false;
     sessionDead = false;
     expiredToken = null;
+    rotatedAway = {};
+    holds = {};
     asking = [];
     teamInviting = [];
     moreSpaceMembers = [];
@@ -215,11 +240,14 @@ void main() {
     moveReply = Completer();
     client = MockClient((request) async {
       requests.add(request);
+      if (holds['${request.method} ${request.url.path}'] case final hold?) await hold.future;
       if (blackHoled) await Completer<void>().future;
       if (request.method == 'PATCH' && request.url.path.startsWith('/api/spaces/s-m/rooms/')) return moveReply.future;
       Map<String, dynamic> body() => jsonDecode(request.body) as Map<String, dynamic>;
       if (request.url.path == '/api/auth/refresh') {
-        if (sessionDead) return http.Response('{"error":"invalid or expired session"}', 401);
+        if (sessionDead || rotatedAway.contains(request.headers['X-Session-Token'])) {
+          return http.Response('{"error":"invalid or expired session"}', 401);
+        }
         if (renewalsBroken) return http.Response('{"error":"internal server error"}', 500);
         final n = renewed[request.headers['X-Session-Token']] ??= ++refreshes + 1;
         if (renewalAnswersLost > 0) {
@@ -229,7 +257,9 @@ void main() {
         return http.Response(jsonEncode({'token': 'access-$n', 'session_token': 'refresh-$n'}), 200);
       }
       if (meUnreachable && request.url.path == '/api/users/@me') throw const SocketException('connection reset');
-      final refused = sessionDead || request.headers['Authorization'] == 'Bearer $expiredToken';
+      final auth = request.headers['Authorization'];
+      // With no token too, while one expires: a client whose renewal was refused sends that, which the API refuses.
+      final refused = sessionDead || expiredToken != null && (auth == 'Bearer $expiredToken' || auth == null);
       if (refused && !request.url.path.startsWith('/api/auth/')) return http.Response('', 401);
       if (request.url.path == '/api/users/@me/friends/requests') {
         final answer = jsonEncode(asking);
@@ -268,6 +298,8 @@ void main() {
         },
         ('PUT', '/api/users/@me/status') when apiHasStatus => {..._user(_me, 'gaby'), 'status': body()['status']},
         ('DELETE', '/api/spaces/s-1') => deleteReply,
+        ('PUT', '/api/users/@me/push-registration') => http.Response('', 204),
+        ('DELETE', '/api/users/@me/push-registration') => http.Response('', 204),
         // Between friends alone; and a server error.
         ('POST', '/api/users/@me/conversations') => http.Response(
           jsonEncode({'error': 'you must be friends with $_leo'}),
@@ -1165,6 +1197,162 @@ void main() {
   });
 
   group('session', () {
+    // The background renewal (lib/push/renewal.dart) rotated the session while the app held the old tokens: on the
+    // 401 the app takes up the stored ones, and goes on.
+    test('a session the background renewed is taken up on a 401', () async {
+      await repository.logIn('gaby@duvet.chat', 'secret');
+      var signedOut = 0;
+      final sub = repository.signedOut.listen((_) => signedOut++);
+      addTearDown(sub.cancel);
+      final renewed = (token: 'access-9', sessionToken: 'refresh-9', refreshedAt: DateTime.now().toUtc());
+      await store.write(renewed);
+      expiredToken = 'access-1';
+      rotatedAway = {'refresh-1'};
+
+      await repository.setPushRegistration('fid-1');
+      final put = requests.where((r) => r.url.path == '/api/users/@me/push-registration').toList();
+      expect([for (final r in put) r.headers['Authorization']], ['Bearer access-1', 'Bearer access-9']);
+      expect((signedOut, repository.profile.value?.id), (0, _me));
+      expect(await store.read(), renewed);
+    });
+
+    test('a 401 with the same stored session still signs out', () async {
+      await repository.logIn('gaby@duvet.chat', 'secret');
+      var signedOut = 0;
+      final sub = repository.signedOut.listen((_) => signedOut++);
+      addTearDown(sub.cancel);
+      expiredToken = 'access-1';
+      rotatedAway = {'refresh-1'};
+
+      await expectLater(repository.setPushRegistration('fid-1'), throwsA(isA<duvet.DuvetAuthException>()));
+      expect((signedOut, repository.profile.value), (1, null));
+      expect(await store.read(), isNull);
+    });
+
+    // A repository of its own on [kept], which tests set up to fail or hold.
+    DuvetRepository onStore(SessionStore kept) {
+      final local = DuvetRepository(
+        store: kept,
+        recentsStore: MemoryRecentChatsStore(),
+        httpClient: () => client,
+        connectGateway: false,
+        cacheStore: MemoryChatCacheStore(),
+      );
+      addTearDown(local.dispose);
+      return local;
+    }
+
+    test('two requests refused together share one look at the stored session, and both go on', () async {
+      final kept = _TestStore();
+      final local = onStore(kept);
+      await local.logIn('gaby@duvet.chat', 'secret');
+      await kept.write((token: 'access-9', sessionToken: 'refresh-9', refreshedAt: DateTime.now().toUtc()));
+      kept.reads = 0;
+      expiredToken = 'access-1';
+      rotatedAway = {'refresh-1'};
+
+      await Future.wait([local.setPushRegistration('fid-1'), local.deletePushRegistration()]);
+      expect(kept.reads, 1);
+      expect(
+        [
+          for (final r in requests)
+            if (r.url.path == '/api/users/@me/push-registration') '${r.method} ${r.headers['Authorization']}',
+        ],
+        unorderedEquals([
+          'PUT Bearer access-1',
+          'DELETE Bearer access-1',
+          'PUT Bearer access-9',
+          'DELETE Bearer access-9',
+        ]),
+      );
+    });
+
+    // Its answer came once the client it went with was replaced: the stored session's goes on with it.
+    test('a request refused after another one took up the stored session goes once more with it', () async {
+      await repository.logIn('gaby@duvet.chat', 'secret');
+      await store.write((token: 'access-9', sessionToken: 'refresh-9', refreshedAt: DateTime.now().toUtc()));
+      expiredToken = 'access-1';
+      rotatedAway = {'refresh-1'};
+      final held = holds['DELETE /api/users/@me/push-registration'] = Completer();
+      final deleting = repository.deletePushRegistration();
+      await pumpEventQueue();
+
+      await repository.setPushRegistration('fid-1');
+      held.complete();
+      await deleting;
+      // In between, duvet_client sends it again with the old client's tokens, gone with its refused renewal.
+      final deletes = [
+        for (final r in requests)
+          if (r.method == 'DELETE') r.headers['Authorization'],
+      ];
+      expect((deletes.first, deletes.last), ('Bearer access-1', 'Bearer access-9'));
+    });
+
+    test('a 401 whose look at the stored session fails ends the session', () async {
+      final kept = _TestStore();
+      final local = onStore(kept);
+      await local.logIn('gaby@duvet.chat', 'secret');
+      var signedOut = 0;
+      final sub = local.signedOut.listen((_) => signedOut++);
+      addTearDown(sub.cancel);
+      kept.failing = true;
+      expiredToken = 'access-1';
+      rotatedAway = {'refresh-1'};
+
+      await expectLater(local.setPushRegistration('fid-1'), throwsA(isA<duvet.DuvetAuthException>()));
+      expect((signedOut, local.profile.value), (1, null));
+    });
+
+    test('a sign-in made while a 401 looks at the stored session stays', () async {
+      final kept = _TestStore();
+      final local = onStore(kept);
+      await local.logIn('gaby@duvet.chat', 'secret');
+      expiredToken = 'access-1';
+      rotatedAway = {'refresh-1'};
+      final held = kept.holdNext = Completer();
+      final refused = expectLater(local.setPushRegistration('fid-1'), throwsA(isA<duvet.DuvetAuthException>()));
+      await pumpEventQueue();
+
+      // Out and in again meanwhile.
+      await local.logOut();
+      expiredToken = null;
+      rotatedAway = {};
+      await local.logIn('gaby@duvet.chat', 'secret');
+      held.complete();
+      await refused;
+      expect(local.profile.value?.id, _me);
+      expect(await kept.read(), isNotNull);
+    });
+
+    test('a stored session whose session token alone changed is taken up', () async {
+      await repository.logIn('gaby@duvet.chat', 'secret');
+      await store.write((token: 'access-1', sessionToken: 'refresh-9', refreshedAt: DateTime.now().toUtc()));
+      expiredToken = 'access-1';
+      rotatedAway = {'refresh-1'};
+
+      await repository.setPushRegistration('fid-1');
+      expect(repository.profile.value?.id, _me);
+      expect(
+        [
+          for (final r in requests)
+            if (r.url.path == '/api/auth/refresh') r.headers['X-Session-Token'],
+        ],
+        ['refresh-1', 'refresh-9'],
+      );
+    });
+
+    test('signing out after the background renewed the session alone ends that session', () async {
+      await repository.logIn('gaby@duvet.chat', 'secret');
+      await store.write((token: 'access-9', sessionToken: 'refresh-9', refreshedAt: DateTime.now().toUtc()));
+
+      await repository.logOut();
+      expect([
+        for (final r in requests)
+          if (r.url.path == '/api/auth/logout') r.headers['X-Session-Token'],
+      ], contains('refresh-9'));
+      expect(await store.read(), isNull);
+    });
+
     // Another repository on the same API and stores; made in a fake clock's
     // zone, its timers run on that clock.
     DuvetRepository newRepository() => DuvetRepository(
@@ -1205,6 +1393,87 @@ void main() {
         async.elapse(const Duration(minutes: 1));
         expect(refreshes, 2);
         expect(saved(async)!.token, 'access-3');
+        repository.dispose();
+        async.flushMicrotasks();
+      }, initialTime: DateTime(2026, 10, 24, 9));
+    });
+
+    // The background task asks the app's isolate first (lib/push/renewal.dart): its own client renews the session, so
+    // nothing takes up the stored tokens, and the gateway follows the renewal.
+    test("the background task's renewal goes through the app's own client once its tokens are 4 hours old", () {
+      fakeAsync((async) {
+        final repository = newRepository();
+        repository.logIn('gaby@duvet.chat', 'secret');
+        async.flushMicrotasks();
+        async.elapse(const Duration(hours: 3, minutes: 59));
+        repository.renewForBackground(const Duration(hours: 4));
+        async.flushMicrotasks();
+        expect(refreshes, 0);
+
+        async.elapse(const Duration(minutes: 1));
+        var done = false;
+        repository.renewForBackground(const Duration(hours: 4)).then((_) => done = true);
+        async.flushMicrotasks();
+        expect((refreshes, done), (1, true));
+        expect(saved(async), (token: 'access-2', sessionToken: 'refresh-2', refreshedAt: clock.now()));
+        repository.setPushRegistration('fid-1');
+        async.flushMicrotasks();
+        expect(requests.last.headers['Authorization'], 'Bearer access-2');
+        repository.dispose();
+        async.flushMicrotasks();
+      }, initialTime: DateTime(2026, 10, 24, 9));
+    });
+
+    test("a background task's renewal that got no answer goes once more 3 s later, and the task waits for it", () {
+      fakeAsync((async) {
+        final repository = newRepository();
+        repository.logIn('gaby@duvet.chat', 'secret');
+        async.flushMicrotasks();
+        async.elapse(const Duration(hours: 4));
+        renewalAnswersLost = 1;
+        var done = false;
+        repository.renewForBackground(const Duration(hours: 4)).then((_) => done = true);
+        async.flushMicrotasks();
+        expect((refreshes, done), (1, false));
+
+        async.elapse(DuvetRepository.renewalRetry);
+        expect(done, isTrue);
+        expect(
+          [
+            for (final r in requests)
+              if (r.url.path == '/api/auth/refresh') r.headers['X-Session-Token'],
+          ],
+          ['refresh-1', 'refresh-1'],
+        );
+        expect(saved(async)!.token, 'access-2');
+        repository.dispose();
+        async.flushMicrotasks();
+      }, initialTime: DateTime(2026, 10, 24, 9));
+    });
+
+    // The stored session it takes up was renewed just now.
+    test("a renewal that takes up the session the background renewed isn't sent again", () {
+      fakeAsync((async) {
+        final repository = newRepository();
+        repository.logIn('gaby@duvet.chat', 'secret');
+        async.flushMicrotasks();
+        async.elapse(const Duration(hours: 22, minutes: 55));
+        final renewed = (token: 'access-9', sessionToken: 'refresh-9', refreshedAt: clock.now());
+        store.write(renewed);
+        expiredToken = 'access-1';
+        rotatedAway = {'refresh-1'};
+
+        // The 10-minute check past 23 hours.
+        async.elapse(const Duration(minutes: 10));
+        expect(
+          [
+            for (final r in requests)
+              if (r.url.path == '/api/auth/refresh') r.headers['X-Session-Token'],
+          ],
+          ['refresh-1'],
+        );
+        expect(saved(async), renewed);
+        expect(repository.profile.value?.id, _me);
         repository.dispose();
         async.flushMicrotasks();
       }, initialTime: DateTime(2026, 10, 24, 9));

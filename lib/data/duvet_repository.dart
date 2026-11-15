@@ -23,6 +23,23 @@ import 'voice_signaling.dart';
 // Someone who joined a Space, with their user ID, or left it (null).
 typedef _MemberMove = ({String memberId, String? userId});
 
+/// The API and the gateway the app reaches, picked at build time (README, Build flags); production by default.
+const duvetRouter = ApiRouter(
+  api: String.fromEnvironment('DUVET_API', defaultValue: 'api.duvet.chat'),
+  ws: String.fromEnvironment('DUVET_GATEWAY', defaultValue: 'ws.duvet.chat'),
+  secure: bool.fromEnvironment('DUVET_SECURE', defaultValue: true),
+);
+
+final _uuid = RegExp(r'^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$', caseSensitive: false);
+
+/// An avatar's or icon's URL on [router]'s API: the API names an attachment by its ID, served outside `/api`, as the
+/// desktop app's `getAvatarURL` does, and a webhook's avatar may be a URL. Null for none, or for anything else.
+String? avatarUrlOn(ApiRouter router, String? avatar) {
+  if (avatar == null || avatar.isEmpty) return null;
+  if (avatar.startsWith('https://') || avatar.startsWith('http://')) return avatar;
+  return _uuid.hasMatch(avatar) ? '${router.secure ? 'https' : 'http'}://${router.api}/attachments/$avatar' : null;
+}
+
 /// [ChatRepository] over the Duvet API (`duvet_client`): REST for history and
 /// sending, the gateway for everything live.
 ///
@@ -76,26 +93,26 @@ class DuvetRepository implements ChatRepository {
   /// don't expect.
   final bool _preloads;
 
+  // Takes a chat's phone notification away as the chat shows (lib/push); none in tests that don't ask.
+  final Future<void> Function(String chatId)? _forgetNotifications;
+
   DuvetRepository({
     SessionStore? store,
     RecentChatsStore? recentsStore,
-    // Picked at build time (README, Build flags); production by default.
-    ApiRouter router = const ApiRouter(
-      api: String.fromEnvironment('DUVET_API', defaultValue: 'api.duvet.chat'),
-      ws: String.fromEnvironment('DUVET_GATEWAY', defaultValue: 'ws.duvet.chat'),
-      secure: bool.fromEnvironment('DUVET_SECURE', defaultValue: true),
-    ),
+    ApiRouter router = duvetRouter,
     http.Client Function()? httpClient,
     @visibleForTesting bool connectGateway = true,
     @visibleForTesting bool? preload,
     ChatCacheStore? cacheStore,
+    Future<void> Function(String chatId)? forgetNotifications,
   }) : _cache = ChatCache(cacheStore ?? FileChatCacheStore()),
        _store = store ?? const SecureSessionStore(),
        _recentsStore = recentsStore ?? const SecureRecentChatsStore(),
        _router = router,
        _httpClient = httpClient ?? http.Client.new,
        _connectsGateway = connectGateway,
-       _preloads = preload ?? connectGateway {
+       _preloads = preload ?? connectGateway,
+       _forgetNotifications = forgetNotifications {
     _typing.stream.listen((e) => _setTyping(e.$1, e.$2.userId, e.$2));
     _messageEvents.stream.listen((e) {
       if (e.$2 case MessageCreated(message: ChatMessage(:final authorId?))) _setTyping(e.$1, authorId);
@@ -389,6 +406,26 @@ class DuvetRepository implements ChatRepository {
 
   @override
   Future<void> logOut() async {
+    // The background task renews the stored session itself when the app
+    // doesn't answer it (lib/push/renewal.dart): its tokens are the session's
+    // then, and the client's would end nothing.
+    final stored = await _store.read().catchError((Object e) {
+      debugPrint('session: the stored session: $e');
+      return null;
+    });
+    if ((_api, stored) case (
+      final api?,
+      final stored?,
+    ) when stored.sessionToken.isNotEmpty && stored.sessionToken != api.sessionToken) {
+      final renewed = duvet.RestClient(
+        _httpClient(),
+        router: _router,
+        token: stored.token,
+        sessionToken: stored.sessionToken,
+      );
+      await renewed.logout();
+      renewed.client.close();
+    }
     await _api?.logout();
     await _endSession();
   }
@@ -475,6 +512,8 @@ class DuvetRepository implements ChatRepository {
     }
     _gateway = null;
     _api = null;
+    _adoptedFrom = null;
+    _adoptedInto = null;
     _spaces.clear();
     _spaceOrder = const [];
     _nicknames.clear();
@@ -514,18 +553,85 @@ class DuvetRepository implements ChatRepository {
   }
 
   /// Runs a request, then saves the tokens if the client renewed them on the
-  /// way (it does so silently on a 401). A rejected renewal ends the session.
-  Future<T> _call<T>(Future<T> Function(duvet.RestClient api) request) async {
+  /// way (it does so silently on a 401). A rejected renewal ends the session,
+  /// unless the stored session is another one: the background renewal
+  /// (lib/push/renewal.dart) rotated it while this client held the old tokens,
+  /// and the request goes once more with the stored ones. A renewal
+  /// ([renews]) doesn't: the session it takes up was renewed just now. A
+  /// request still on its way with the client such a look replaced goes once
+  /// more too, refused or cut off as that client closed.
+  Future<T> _call<T>(
+    Future<T> Function(duvet.RestClient api) request, {
+    bool again = false,
+    bool renews = false,
+  }) async {
+    assert(!renews || null is T, 'a renewal gives nothing back');
     final api = _rest;
     try {
       return await request(api);
     } on duvet.DuvetAuthException {
-      if (!api.isAuthenticated && identical(api, _api)) await _endSession();
+      if (!api.isAuthenticated && identical(api, _api)) {
+        if (!again && await _adoptStoredSession(api)) return renews ? null as T : _call(request, again: true);
+        // Unless a sign-in started another session during the look.
+        if (identical(api, _api)) await _endSession();
+      } else if (!again && _adoptedAway(api)) {
+        return renews ? null as T : _call(request, again: true);
+      }
+      rethrow;
+    } on http.RequestAbortedException {
+      rethrow;
+    } on http.ClientException {
+      if (!again && _adoptedAway(api)) return renews ? null as T : _call(request, again: true);
       rethrow;
     } finally {
       if (identical(api, _api)) await _persist(api);
     }
   }
+
+  // Requests refused at once share one look at the stored session.
+  Future<bool>? _adopting;
+
+  // The client the last look replaced, and the one it made.
+  duvet.RestClient? _adoptedFrom;
+  duvet.RestClient? _adoptedInto;
+
+  bool _adoptedAway(duvet.RestClient api) => identical(api, _adoptedFrom) && identical(_api, _adoptedInto);
+
+  // Takes up the stored session when it isn't the one this isolate kept: a new client with its tokens, and, as the
+  // gateway is built on the client, a gateway that connects again with it. False when it's the same, or none (the
+  // session ended), when the store can't be read, and when [failed] isn't the session's client any more: a sign-in
+  // came meanwhile.
+  Future<bool> _adoptStoredSession(duvet.RestClient failed) => _adopting ??= () async {
+    final stored = await _store.read().catchError((Object e) {
+      debugPrint('session: the stored session: $e');
+      return null;
+    });
+    final kept = _saved;
+    if (!identical(failed, _api) || stored == null || stored.sessionToken.isEmpty) return false;
+    if (kept != null && stored.token == kept.token && stored.sessionToken == kept.sessionToken) return false;
+    _saved = stored;
+    final adopted = _api = duvet.RestClient(
+      _httpClient(),
+      router: _router,
+      token: stored.token,
+      sessionToken: stored.sessionToken,
+    );
+    _adoptedFrom = failed;
+    _adoptedInto = adopted;
+    if (_gateway case final gateway?) {
+      for (final sub in [_events, _states, _resumes, _closes, _failures]) {
+        unawaited(sub?.cancel());
+      }
+      _voiceSignaling.detach();
+      // Destroying it closes the old client's HTTP client too.
+      gateway.destroy();
+      _gateway = null;
+      _connectGateway();
+    } else {
+      failed.client.close();
+    }
+    return true;
+  }().whenComplete(() => _adopting = null);
 
   // Saves the client's tokens when they changed: the API issued them just now
   // (a login, or a renewal), which dates them for [_renewIfDue].
@@ -573,16 +679,10 @@ class DuvetRepository implements ChatRepository {
   // out: the server can't be reached. Any other failure waits for the next
   // check.
   Future<void> _renewIfDue(Duration after, {bool retry = true}) async {
-    final api = _api;
-    final saved = _saved;
-    if (api == null || saved == null || saved.token != api.token || api.sessionToken.isEmpty) return;
-    final now = clock.now();
-    if (saved.refreshedAt case final at? when !at.isAfter(now) && now.difference(at) < after) return;
     try {
-      await _call((api) => api.refreshSession());
-    } on duvet.DuvetApiException catch (e) {
-      if (e is duvet.DuvetAuthException) rethrow;
-      debugPrint('session: $e');
+      await _renewOnce(after);
+    } on duvet.DuvetAuthException {
+      rethrow;
     } catch (e) {
       if (retry) {
         _renewalRetry ??= Timer(renewalRetry, () {
@@ -595,12 +695,53 @@ class DuvetRepository implements ChatRepository {
     }
   }
 
+  // One renewal, once due as [_renewIfDue] has it. A refusal ends the session
+  // ([_call]) and is thrown, as is a renewal that got no answer; an error the
+  // API answered is only logged.
+  Future<void> _renewOnce(Duration after) async {
+    final api = _api;
+    final saved = _saved;
+    if (api == null || saved == null || saved.token != api.token || api.sessionToken.isEmpty) return;
+    final now = clock.now();
+    if (saved.refreshedAt case final at? when !at.isAfter(now) && now.difference(at) < after) return;
+    try {
+      await _call<void>((api) => api.refreshSession(), renews: true);
+    } on duvet.DuvetApiException catch (e) {
+      if (e is duvet.DuvetAuthException) rethrow;
+      debugPrint('session: $e');
+    }
+  }
+
   // From the timer, or the app coming to the front: a refusal has ended the
   // session already. Settles once the renewal, if one was due, is done.
   Future<void> _renewQuietly(Duration after) => _renewIfDue(after).catchError((Object e) => debugPrint('session: $e'));
 
+  /// Renews the session in this isolate, for the background task
+  /// (lib/push/renewal.dart), which asks the app before it renews the stored
+  /// tokens itself, so the session keeps one owner and the gateway follows the
+  /// renewal: once its tokens are [after] old, as [_renewIfDue] has it. A
+  /// renewal that got no answer goes once more [renewalRetry] later, and this
+  /// waits for it: the task keeps the phone awake until it ends.
+  Future<void> renewForBackground(Duration after) async {
+    try {
+      await _renewOnce(after);
+    } on duvet.DuvetAuthException {
+      // The session ended ([_call]).
+    } catch (_) {
+      await Future<void>.delayed(renewalRetry);
+      await _renewOnce(after).catchError((Object e) => debugPrint('session: $e'));
+    }
+  }
+
+  // Whether the app is in front: in the background its own notices keep quiet.
+  bool _inFront = true;
+
+  @override
+  void wentToBack() => _inFront = false;
+
   @override
   void cameToFront() {
+    _inFront = true;
     final renewing = _renewQuietly(renewInFrontAfter);
     if (status.value == LiveStatus.online) return;
     // Cut off while away. Connecting goes again now, not at the end of its
@@ -1301,6 +1442,10 @@ class DuvetRepository implements ChatRepository {
   @override
   void chatShown(ChatTarget target, {String? threadOf, bool opened = true}) {
     _onScreen = (chatId: target.id, threadOf: threadOf);
+    // Its phone notification tells of nothing the chat doesn't show.
+    if (threadOf == null) {
+      unawaited(_forgetNotifications?.call(target.id).catchError((Object e) => debugPrint('push: $e')));
+    }
     // The chat itself is here now: its notices would only open it again.
     if (opened && threadOf == null) {
       for (final notice in [...mentionNotices.value.where((n) => n.target == target)]) {
@@ -1352,6 +1497,8 @@ class DuvetRepository implements ChatRepository {
   }
 
   void _showNotice(ChatTarget target, ChatMessage message) {
+    // In the background the phone's notification tells of it (lib/push): this one, settled, never shows.
+    if (!_inFront) return _settle(message.id);
     // Nor for a chat at nothing ([quiet]): no notice, so no sound either.
     if (_settled.contains(message.id) || profile.value?.status == Presence.doNotDisturb || quiet(target.id)) return;
     // The chat on screen shows it already; a thread of it, its replies.
@@ -4378,6 +4525,17 @@ class DuvetRepository implements ChatRepository {
   bool quiet(String chatId) =>
       (_spaceOfRoom(chatId) == null ? conversationLevel(chatId) : roomLevel(chatId)) == NotificationLevel.nothing;
 
+  // duvet_client 2.9.0's setPushRegistration and deletePushRegistration send these, and aren't published yet: 2.8.0's
+  // request sends the same.
+  @override
+  Future<void> setPushRegistration(String fid) => _call(
+    (api) => api.request('PUT', '/api/users/@me/push-registration', 'set push registration', json: {'fid': fid}),
+  );
+
+  @override
+  Future<void> deletePushRegistration() =>
+      _call((api) => api.request('DELETE', '/api/users/@me/push-registration', 'delete push registration'));
+
   @override
   Future<void> setNotificationLevel(String targetId, NotificationTarget target, NotificationLevel? level) =>
       switch (level) {
@@ -4606,16 +4764,9 @@ class DuvetRepository implements ChatRepository {
   // The API's scheme and host, as the client reaches it.
   String get _origin => '${_router.secure ? 'https' : 'http'}://${_router.api}';
 
-  static final _uuid = RegExp(r'^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$', caseSensitive: false);
-
-  /// An avatar's or icon's URL: the API names an attachment by its ID, served
-  /// outside `/api`, as the desktop app's `getAvatarURL` does.
+  /// An avatar's or icon's URL ([avatarUrlOn]).
   @override
-  String? avatarUrl(String? avatar) {
-    if (avatar == null || avatar.isEmpty) return null;
-    if (avatar.startsWith('https://') || avatar.startsWith('http://')) return avatar;
-    return _uuid.hasMatch(avatar) ? attachmentUrl(avatar) : null;
-  }
+  String? avatarUrl(String? avatar) => avatarUrlOn(_router, avatar);
 
   @override
   void dispose() {

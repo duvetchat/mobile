@@ -64,6 +64,10 @@ abstract interface class ChatRepository {
   /// stands.
   void cameToFront();
 
+  /// The app went to the background: its own notices and their sound keep quiet there, as the phone's notifications
+  /// tell of what comes (lib/push).
+  void wentToBack();
+
   Future<void> logIn(String email, String password);
 
   Future<void> logOut();
@@ -504,6 +508,13 @@ abstract interface class ChatRepository {
   /// Sets the user's level for a place, or clears it ([level] null) so the place notifies by its default. The levels
   /// change once NOTIFICATION_SETTINGS_UPDATE comes back.
   Future<void> setNotificationLevel(String targetId, NotificationTarget target, NotificationLevel? level);
+
+  /// Makes [fid], this phone's Firebase installation ID, the session's push registration: the user's messages that
+  /// notify come to the phone while they have no computer with Duvet open (lib/push).
+  Future<void> setPushRegistration(String fid);
+
+  /// Deletes the session's push registration: the phone gets no pushes any more.
+  Future<void> deletePushRegistration();
 
   /// The notices of mentions of the user in chats that aren't on screen, the
   /// newest first, a few at most, each for a few seconds. None in do not

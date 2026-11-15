@@ -31,3 +31,7 @@ flutter run --dart-define=DUVET_API=192.168.1.20:8080 --dart-define=DUVET_GATEWA
 ```
 
 Links to Duvet (`duvet.chat` invites and messages, and the `duvet://` ones) stay on the web domain whatever these say.
+
+## Push notifications
+
+The app gets its notifications through Firebase Cloud Messaging (`lib/push`): Firebase gives the phone an installation ID (FID), which the app hands the API, and the API sends it the messages that notify the user. The Firebase project's `android/app/google-services.json` is in the repo (it holds no secret), and the `com.google.gms.google-services` Gradle plugin reads it: Android builds need it. The background work (a push shown while the app isn't in front, the session's renewal) runs on Flutter engines of its own in the app's process, so `flutter_webrtc` comes from a fork that keeps one audio manager for all of them (`dependency_overrides` in `pubspec.yaml`): with the package as published, such an engine starting during a call took the call's audio output switching, and its release as the call ended.

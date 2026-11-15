@@ -1,6 +1,8 @@
 import 'dart:async';
 import 'dart:io';
 
+import 'package:firebase_core/firebase_core.dart';
+import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_localizations/flutter_localizations.dart';
@@ -8,6 +10,7 @@ import 'package:forui/forui.dart';
 import 'package:image_picker_android/image_picker_android.dart';
 import 'package:image_picker_platform_interface/image_picker_platform_interface.dart';
 import 'package:audio_service/audio_service.dart';
+import 'package:workmanager/workmanager.dart';
 
 import 'data/appearance.dart';
 import 'data/sounds.dart';
@@ -24,6 +27,10 @@ import 'data/webrtc_engine.dart';
 import 'calls.dart';
 import 'deep_links.dart';
 import 'mention_notices.dart';
+import 'push/background.dart';
+import 'push/notifications.dart';
+import 'push/registration.dart';
+import 'push/renewal.dart';
 import 'account.dart';
 import 'welcome.dart';
 import 'tabs.dart';
@@ -55,7 +62,62 @@ Future<void> main() async {
   } catch (e) {
     debugPrint('AudioService.init failed: $e');
   }
-  runApp(DuvetApp(repository: DuvetRepository()));
+  final repository = DuvetRepository(forgetNotifications: forgetChat);
+  // The background renewal asks this isolate first: the session keeps one owner while the app runs
+  // (lib/push/renewal.dart).
+  answerRenewals(() => repository.renewForBackground(renewalEvery));
+  // Push notifications (lib/push). Without Firebase set up (no android/app/google-services.json) the app runs without
+  // them, and asks nothing of the user for them: a failure here costs the push, never the app's start.
+  PushRegistrar? push;
+  try {
+    await Firebase.initializeApp();
+    FirebaseMessaging.onBackgroundMessage(firebaseMessagingBackgroundHandler);
+    push = const FirebasePushRegistrar();
+  } catch (e) {
+    debugPrint("push: Firebase isn't set up: $e");
+  }
+  // Signing out leaves none of the account's notifications on the phone.
+  repository.signedOut.listen(
+    (_) => unawaited(forgetAllNotifications().catchError((Object e) => debugPrint('push: forgetting: $e'))),
+  );
+  // A notification's tap opens its message, once signed in; one that started the app too.
+  void openTapped(String? link) {
+    if (link != null) unawaited(openWhenSignedIn(repository.profile, Uri.parse(link)));
+  }
+
+  try {
+    await initNotifications(onTap: openTapped);
+  } catch (e) {
+    debugPrint('push: notifications: $e');
+  }
+  runApp(DuvetApp(repository: repository, push: push));
+  // Neither holds the first frame back.
+  unawaited(launchedWith().then(openTapped, onError: (Object e) => debugPrint('push: notifications: $e')));
+  unawaited(_renewInBackground());
+}
+
+/// Whether the app shows as it starts: in a state that shows it, or, before any state comes, with a screen to show on.
+/// An engine audio_service starts for its media service runs main() with neither.
+@visibleForTesting
+bool shownAtStart(AppLifecycleState? state, Size viewSize) => state == null ? !viewSize.isEmpty : _shows(state);
+
+// Resumed, or inactive (a dialog or the notification shade over it): on screen.
+bool _shows(AppLifecycleState state) => state == AppLifecycleState.resumed || state == AppLifecycleState.inactive;
+
+// The session renews every few hours while the app sits closed, so the pushes keep coming (lib/push/renewal.dart).
+Future<void> _renewInBackground() async {
+  try {
+    await Workmanager().initialize(callbackDispatcher);
+    await Workmanager().registerPeriodicTask(
+      renewalTask,
+      renewalTask,
+      frequency: renewalEvery,
+      constraints: Constraints(networkType: NetworkType.connected),
+      existingWorkPolicy: ExistingPeriodicWorkPolicy.keep,
+    );
+  } catch (e) {
+    debugPrint('session: the background renewal: $e');
+  }
 }
 
 class DuvetApp extends StatefulWidget {
@@ -75,6 +137,9 @@ class DuvetApp extends StatefulWidget {
   /// suppression); tests pass ones kept in memory.
   final Sounds? sounds;
   final VoicePrefs? voicePrefs;
+
+  /// Registers the phone for push notifications; tests pass none, which registers nothing.
+  final PushRegistrar? push;
   const DuvetApp({
     required this.repository,
     this.appearance,
@@ -82,6 +147,7 @@ class DuvetApp extends StatefulWidget {
     this.voice,
     this.sounds,
     this.voicePrefs,
+    this.push,
     super.key,
   });
 
@@ -110,6 +176,10 @@ class _DuvetAppState extends State<DuvetApp> {
 
   late final AppLifecycleListener _lifecycle;
   late final StreamSubscription<void> _signedOut;
+  late final PushRegistration? _pushRegistration = switch (widget.push) {
+    final registrar? => PushRegistration(widget.repository, registrar),
+    null => null,
+  };
 
   // Android's proximity wake lock (MainActivity.kt), held while the sound
   // plays from the earpiece: the screen goes off at the ear (#81).
@@ -120,8 +190,23 @@ class _DuvetAppState extends State<DuvetApp> {
   void initState() {
     super.initState();
     RecentEmoji.instance.load();
-    // Back in front, the session catches up on a renewal its timer missed.
-    _lifecycle = AppLifecycleListener(onResume: () => widget.repository.cameToFront());
+    // Back in sight, the session catches up on a renewal its timer missed.
+    // Out of sight the phone's notifications tell of what comes, and the app's own notices keep quiet: in sight is
+    // in front for FCM too, which hands the app its messages from then (lib/push). It starts out of sight when
+    // nothing shows it: audio_service runs main() on an engine of its own for its media service.
+    final binding = WidgetsBinding.instance;
+    var shown = shownAtStart(
+      binding.lifecycleState,
+      binding.platformDispatcher.implicitView?.physicalSize ?? Size.zero,
+    );
+    if (!shown) widget.repository.wentToBack();
+    _lifecycle = AppLifecycleListener(
+      onStateChange: (state) {
+        if (_shows(state) == shown) return;
+        shown = !shown;
+        shown ? widget.repository.cameToFront() : widget.repository.wentToBack();
+      },
+    );
     _signedOut = widget.repository.signedOut.listen((_) => VideoTile.releaseParked());
     _voice.addListener(_followEarpiece);
     _voice.routes.addListener(_followEarpiece);
@@ -129,6 +214,7 @@ class _DuvetAppState extends State<DuvetApp> {
     _followVoicePrefs();
     _mentionsHeard = {for (final n in widget.repository.mentionNotices.value) n.messageId};
     widget.repository.mentionNotices.addListener(_soundMentions);
+    _pushRegistration;
   }
 
   void _followVoicePrefs() => _voice.setNoiseSuppression(_voicePrefs.noiseSuppression);
@@ -156,6 +242,7 @@ class _DuvetAppState extends State<DuvetApp> {
     if (_atEar) _proximity.invokeMethod<void>('hold', false).catchError((Object e) => debugPrint('proximity: $e'));
     _lifecycle.dispose();
     unawaited(_signedOut.cancel());
+    _pushRegistration?.dispose();
     // Before the repository: it listens to it.
     if (widget.voice == null) _voice.dispose();
     widget.repository.dispose();

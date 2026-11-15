@@ -178,6 +178,8 @@ void main() {
   late _HeldWrites cache;
   // A message fetch that waits for it, while it's set.
   Completer<void>? heldFetch;
+  // The chats whose phone notification the repository took away.
+  late List<String> forgotten;
 
   setUp(() {
     heldFetch = null;
@@ -265,7 +267,9 @@ void main() {
       if (json == null) return http.Response('not found', 404);
       return http.Response(jsonEncode(json), 200, headers: {'content-type': 'application/json'});
     });
+    forgotten = [];
     repository = DuvetRepository(
+      forgetNotifications: (chatId) async => forgotten.add(chatId),
       store: MemorySessionStore(),
       recentsStore: MemoryRecentChatsStore(),
       httpClient: () => client,
@@ -787,6 +791,41 @@ void main() {
         (notice.target, notice.where, notice.authorName, notice.text),
         (_dm, 'in a direct message', 'Maya', 'fetched in the DM'),
       );
+    });
+  });
+
+  // In the background the phone's notifications tell of messages (lib/push): the app's own notices and their sound
+  // keep quiet, and a chat opened takes its notification away.
+  group("the phone's notifications", () {
+    void mention(String messageId) => repository.handleEvent(
+      _event('MENTION_CREATE', {'message_id': messageId, 'room_id': 'r-1', 'author_id': _maya}),
+    );
+    List<String> shown() => [for (final n in repository.mentionNotices.value) n.messageId];
+
+    setUp(() async {
+      await listen(_room);
+      repository.handleEvent(_event('SPACE_CREATE', _space()));
+    });
+
+    test('no notice and no sound while the app is in the background', () async {
+      repository.wentToBack();
+      repository.handleEvent(_event('MESSAGE_CREATE', _roomMessage('7', 'Hey <@$_me>')));
+      mention('7');
+      await pumpEventQueue();
+      expect(shown(), isEmpty);
+
+      repository.cameToFront();
+      repository.handleEvent(_event('MESSAGE_CREATE', _roomMessage('8', 'Hey again <@$_me>')));
+      mention('8');
+      await pumpEventQueue();
+      expect(shown(), ['8']);
+    });
+
+    test("opening a chat forgets its phone notification, and a thread of it doesn't", () async {
+      repository.chatShown(_room);
+      repository.chatShown(_dm, threadOf: '5');
+      repository.chatShown(_dm, opened: false);
+      expect(forgotten, ['r-1', 'c-1']);
     });
   });
 
