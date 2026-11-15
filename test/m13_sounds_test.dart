@@ -174,7 +174,7 @@ void main() {
         ),
       ),
     );
-    for (final label in ['Master Volume', 'Mentions', 'Join Voice', 'Leave Voice', 'Incoming Call']) {
+    for (final label in ['Master Volume', 'Notifications', 'Join Voice', 'Leave Voice', 'Incoming Call']) {
       expect(find.text(label), findsOneWidget);
     }
     expect(find.bySemanticsLabel('Play Master Volume'), findsNothing);

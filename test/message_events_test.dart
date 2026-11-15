@@ -790,6 +790,114 @@ void main() {
     });
   });
 
+  // With the app open, a message of a place at every message gets the notice
+  // a mention gets, with its sound: as on the desktop, for a chat that isn't
+  // on screen.
+  group('every message', () {
+    void level(String id, int type, int? level) => repository.handleEvent(
+      _event('NOTIFICATION_SETTINGS_UPDATE', {'target_id': id, 'target_type': type, 'level': level}),
+    );
+    void mention(String messageId) => repository.handleEvent(
+      _event('MENTION_CREATE', {'message_id': messageId, 'room_id': 'r-1', 'author_id': _maya}),
+    );
+    List<String> shown() => [for (final n in repository.mentionNotices.value) n.messageId];
+
+    setUp(() async {
+      await listen(_room);
+      repository.handleEvent(_event('SPACE_CREATE', _space()));
+    });
+
+    test('a message in a room at every message shows a notice', () async {
+      level('r-1', 1, 0);
+      repository.handleEvent(_event('MESSAGE_CREATE', _roomMessage('7', 'lunch?')));
+      final notice = repository.mentionNotices.value.single;
+      expect(
+        (notice.messageId, notice.target, notice.authorName, notice.where, notice.text),
+        ('7', _room, 'Maya', 'in #general · Design Guild', 'lunch?'),
+      );
+    });
+
+    test('a room whose Space is at every message, and the Space\'s default, show one too', () async {
+      level('s-1', 0, 0);
+      repository.handleEvent(_event('MESSAGE_CREATE', _roomMessage('7', 'Space at every message')));
+      level('s-1', 0, null);
+      repository.handleEvent(
+        _event('SPACE_CREATE', {
+          ..._space(),
+          'space': {...(_space()['space'] as Map<String, dynamic>), 'default_notifications': 0},
+        }),
+      );
+      repository.handleEvent(_event('MESSAGE_CREATE', _roomMessage('8', 'every message by default')));
+      expect(shown(), ['8', '7']);
+    });
+
+    test('not in a room at only mentions', () async {
+      repository.handleEvent(_event('MESSAGE_CREATE', _roomMessage('7', 'only mentions by default')));
+      level('r-1', 1, 1);
+      level('s-1', 0, 0);
+      repository.handleEvent(_event('MESSAGE_CREATE', _roomMessage('8', 'the room at only mentions')));
+      expect(shown(), isEmpty);
+    });
+
+    test('not one\'s own', () async {
+      level('r-1', 1, 0);
+      repository.handleEvent(
+        _event('MESSAGE_CREATE', {
+          ..._roomMessage('7', 'mine'),
+          'author_id': _me,
+          'user': _user(_me, 'gaby', alias: 'Gaby'),
+        }),
+      );
+      expect(shown(), isEmpty);
+    });
+
+    test('not a pin or call notice, nor a bot\'s answer to the user alone', () async {
+      level('r-1', 1, 0);
+      repository.handleEvent(_event('MESSAGE_CREATE', {..._roomMessage('7', ''), 'type': 2}));
+      repository.handleEvent(_event('MESSAGE_CREATE', _answer('8', 'only you see this')));
+      repository.handleEvent(
+        _event('DM_MESSAGE_CREATE', {
+          ..._dmMessage('9', ''),
+          'type': 3,
+          'call': {
+            'participants': [_maya, _me],
+            'started_at': _at,
+            'ended_at': _at,
+          },
+        }),
+      );
+      expect(shown(), isEmpty);
+    });
+
+    test('not in the chat on screen', () async {
+      level('r-1', 1, 0);
+      repository.chatShown(_room);
+      repository.handleEvent(_event('MESSAGE_CREATE', _roomMessage('7', 'here')));
+      repository.chatShown(_dm);
+      repository.handleEvent(_event('DM_MESSAGE_CREATE', _dmMessage('8', 'here too')));
+      expect(shown(), isEmpty);
+    });
+
+    test('a DM shows one (conversations default to every message), but not one at only mentions', () async {
+      repository.handleEvent(_event('DM_MESSAGE_CREATE', _dmMessage('8', 'hi there')));
+      final notice = repository.mentionNotices.value.single;
+      expect((notice.target, notice.where, notice.text), (_dm, 'in a direct message', 'hi there'));
+      level('c-1', 2, 1);
+      repository.handleEvent(_event('DM_MESSAGE_CREATE', _dmMessage('9', 'not this one')));
+      expect(shown(), ['8']);
+    });
+
+    test('a message that also mentions the user shows one notice, whichever event comes first', () async {
+      level('r-1', 1, 0);
+      repository.handleEvent(_event('MESSAGE_CREATE', _roomMessage('7', 'Hey <@$_me>')));
+      mention('7');
+      mention('8');
+      repository.handleEvent(_event('MESSAGE_CREATE', _roomMessage('8', 'Hey again <@$_me>')));
+      await pumpEventQueue();
+      expect(shown(), ['8', '7']);
+    });
+  });
+
   // A file's link expires a day after the API signed it; it signs it again
   // (#182).
   group('file links', () {

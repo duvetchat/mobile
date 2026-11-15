@@ -945,6 +945,9 @@ class DuvetRepository implements ChatRepository {
           _recents.roomMessage(data.roomId, message);
           _setLatest(data.roomId, message);
           _arrivedForNotice(message);
+          if (_spaceOfRoom(data.roomId) case final spaceId?) {
+            _noticeEveryMessage(RoomTarget(spaceId: spaceId, roomId: data.roomId), message);
+          }
         }
         _messageEvents.add((data.roomId, MessageCreated(message)));
       case duvet.MessageUpdateEvent(:final data):
@@ -986,6 +989,7 @@ class DuvetRepository implements ChatRepository {
         _recents.conversationMessage(id, message, title: known?.title);
         _setLatest(id, message);
         _arrivedForNotice(message);
+        _noticeEveryMessage(ConversationTarget(id), message);
         _messageEvents.add((id, MessageCreated(message)));
       case duvet.DMMessageUpdatedEvent(:final data):
         if (data.conversationId case final id?) _updated(id, _directMessage(data));
@@ -1333,6 +1337,18 @@ class DuvetRepository implements ChatRepository {
     _arrived[message.id] = message;
     if (_arrived.length > _arrivedKept) _arrived.remove(_arrived.keys.first);
     if (_awaited.remove(message.id) case final target?) _showNotice(target, message);
+  }
+
+  // A place at every message shows each message as a mention: not the user's
+  // own, nor one of Duvet's notices (a pin's, a call's). A mention of it
+  // shows once all the same ([_settled]).
+  void _noticeEveryMessage(ChatTarget target, ChatMessage message) {
+    if (message.authorId == profile.value?.id || message.isNotice) return;
+    final level = switch (target) {
+      RoomTarget(:final roomId) => roomLevel(roomId),
+      ConversationTarget(:final conversationId) => conversationLevel(conversationId),
+    };
+    if (level == NotificationLevel.all) _showNotice(target, message);
   }
 
   void _showNotice(ChatTarget target, ChatMessage message) {
