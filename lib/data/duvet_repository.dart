@@ -209,6 +209,8 @@ class DuvetRepository implements ChatRepository {
   @override
   final ValueNotifier<Map<String, int>> mentions = ValueNotifier(const {});
   @override
+  final ValueNotifier<Map<String, NotificationLevel>> notificationLevels = ValueNotifier(const {});
+  @override
   final drafts = <String, ChatDraft>{};
 
   // The last message read in each room, from READY, then as the user reads.
@@ -461,6 +463,8 @@ class DuvetRepository implements ChatRepository {
     _renewing.clear();
     _linksSession++;
     mentions.value = const {};
+    _levelsChangedMeanwhile = null;
+    notificationLevels.value = const {};
     _forgetMentionNotices();
     _voiceSignaling.detach();
     // Destroying the gateway closes the REST client's HTTP client too.
@@ -760,6 +764,7 @@ class DuvetRepository implements ChatRepository {
               };
             }, onError: (Object e) => debugPrint('mentions: $e')),
           );
+          unawaited(_loadNotificationLevels());
           // The friends and the requests, as the desktop fetches them on each
           // READY; FRIEND_* events keep them current.
           unawaited(_reloadFriends());
@@ -1116,6 +1121,17 @@ class DuvetRepository implements ChatRepository {
           }, onError: (_) {});
         }
 
+      case duvet.NotificationSettingsUpdatedEvent(:final data):
+        final level = switch (data.level) {
+          final level? => _level(level),
+          null => null,
+        };
+        _levelsChangedMeanwhile?[data.targetId] = level;
+        notificationLevels.value = switch (level) {
+          final level? => {...notificationLevels.value, data.targetId: level},
+          null => {...notificationLevels.value}..remove(data.targetId),
+        };
+
       default:
     }
     _trackMembers(event, reconnected: reconnected);
@@ -1320,7 +1336,8 @@ class DuvetRepository implements ChatRepository {
   }
 
   void _showNotice(ChatTarget target, ChatMessage message) {
-    if (_settled.contains(message.id) || profile.value?.status == Presence.doNotDisturb) return;
+    // Nor for a chat at nothing ([quiet]): no notice, so no sound either.
+    if (_settled.contains(message.id) || profile.value?.status == Presence.doNotDisturb || quiet(target.id)) return;
     // The chat on screen shows it already; a thread of it, its replies.
     if (_onScreen case (
       :final chatId,
@@ -3126,6 +3143,7 @@ class DuvetRepository implements ChatRepository {
     String? bannerPath,
     bool removeBanner = false,
     bool removeIcon = false,
+    NotificationLevel? defaultNotifications,
     void Function(double progress)? onProgress,
   }) async {
     final removesBanner = removeBanner && bannerPath == null;
@@ -3152,6 +3170,13 @@ class DuvetRepository implements ChatRepository {
           banner: bannerPath == null ? null : File(bannerPath),
           removeBanner: removesBanner,
           removeIcon: removesIcon,
+          defaultNotifications: switch (defaultNotifications) {
+            NotificationLevel.all => duvet.NotificationLevel.all,
+            NotificationLevel.mentions => duvet.NotificationLevel.mentions,
+            // Not a default: the client refuses it before sending anything.
+            NotificationLevel.nothing => duvet.NotificationLevel.nothing,
+            null => null,
+          },
           // Pictures' alone: taking the banner away goes as a form too, whose
           // few bytes would say "Uploading · 100%" with nothing going up.
           onProgress: iconPath != null || bannerPath != null ? _bytesSent(onProgress) : null,
@@ -4313,6 +4338,86 @@ class DuvetRepository implements ChatRepository {
 
   String? _spaceOfRoom(String roomId) =>
       _spaces.entries.where((e) => e.value.rooms.containsKey(roomId)).firstOrNull?.key;
+
+  @override
+  NotificationLevel spaceLevel(String spaceId) => notificationLevels.value[spaceId] ?? spaceDefault(spaceId);
+
+  @override
+  NotificationLevel spaceDefault(String spaceId) =>
+      _level(_spaces[spaceId]?.space.defaultNotifications ?? duvet.NotificationLevel.mentions);
+
+  @override
+  NotificationLevel roomLevel(String roomId) =>
+      notificationLevels.value[roomId] ??
+      switch (_spaceOfRoom(roomId)) {
+        final spaceId? => spaceLevel(spaceId),
+        null => NotificationLevel.mentions,
+      };
+
+  @override
+  NotificationLevel conversationLevel(String conversationId) =>
+      notificationLevels.value[conversationId] ?? NotificationLevel.all;
+
+  @override
+  bool quiet(String chatId) =>
+      (_spaceOfRoom(chatId) == null ? conversationLevel(chatId) : roomLevel(chatId)) == NotificationLevel.nothing;
+
+  @override
+  Future<void> setNotificationLevel(String targetId, NotificationTarget target, NotificationLevel? level) =>
+      switch (level) {
+        final level? => _explained(
+          (api) => api.setNotificationLevel(
+            targetId,
+            switch (target) {
+              NotificationTarget.space => duvet.NotificationTarget.space,
+              NotificationTarget.room => duvet.NotificationTarget.room,
+              NotificationTarget.conversation => duvet.NotificationTarget.conversation,
+            },
+            switch (level) {
+              NotificationLevel.all => duvet.NotificationLevel.all,
+              NotificationLevel.mentions => duvet.NotificationLevel.mentions,
+              NotificationLevel.nothing => duvet.NotificationLevel.nothing,
+            },
+          ),
+        ),
+        null => _explained((api) => api.clearNotificationLevel(targetId)),
+      };
+
+  // READY's load of the levels the user chose. One that answers after a newer load, or once the session ended, is
+  // dropped; the changes that came while it was on its way go back on top of its answer, which may have been read
+  // before them. One that fails keeps those it had, as the desktop does: they rarely change.
+  int _levelsLoads = 0;
+  Map<String, NotificationLevel?>? _levelsChangedMeanwhile;
+
+  Future<void> _loadNotificationLevels() async {
+    final api = _api;
+    final load = ++_levelsLoads;
+    final meanwhile = _levelsChangedMeanwhile = {};
+    try {
+      final settings = await _call((api) => api.getNotificationSettings());
+      if (!identical(api, _api) || load != _levelsLoads) return;
+      final levels = {for (final s in settings) s.targetId: _level(s.level)};
+      for (final MapEntry(key: targetId, value: level) in meanwhile.entries) {
+        if (level == null) {
+          levels.remove(targetId);
+        } else {
+          levels[targetId] = level;
+        }
+      }
+      notificationLevels.value = levels;
+    } catch (e) {
+      debugPrint('notification levels: $e');
+    } finally {
+      if (identical(_levelsChangedMeanwhile, meanwhile)) _levelsChangedMeanwhile = null;
+    }
+  }
+
+  // A server's level; one a later server adds notifies of every message, as a level it can't name.
+  static NotificationLevel _level(duvet.NotificationLevel level) => switch (level) {
+    duvet.NotificationLevel.mentions => NotificationLevel.mentions,
+    duvet.NotificationLevel.nothing => NotificationLevel.nothing,
+    _ => NotificationLevel.all,
+  };
 
   ChatMessage _roomMessageNamed(duvet.GatewayMessage m, String authorName) => ChatMessage(
     id: m.id,

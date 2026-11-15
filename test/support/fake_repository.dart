@@ -82,6 +82,47 @@ class FakeRepository implements ChatRepository {
   final ValueNotifier<Map<String, int>> mentions = ValueNotifier(const {});
 
   @override
+  final ValueNotifier<Map<String, NotificationLevel>> notificationLevels = ValueNotifier(const {});
+
+  /// Each Space's default, as its owner set it: only mentions when it isn't here.
+  final spaceDefaults = <String, NotificationLevel>{};
+
+  /// The levels chosen in the app, as `<target ID> <kind> <level, or default>`.
+  final levelChoices = <String>[];
+
+  @override
+  NotificationLevel spaceLevel(String spaceId) => notificationLevels.value[spaceId] ?? spaceDefault(spaceId);
+
+  @override
+  NotificationLevel spaceDefault(String spaceId) => spaceDefaults[spaceId] ?? NotificationLevel.mentions;
+
+  @override
+  NotificationLevel roomLevel(String roomId) =>
+      notificationLevels.value[roomId] ??
+      switch (spaces.value.where((s) => s.rooms.any((r) => r.id == roomId)).firstOrNull) {
+        final space? => spaceLevel(space.id),
+        null => NotificationLevel.mentions,
+      };
+
+  @override
+  NotificationLevel conversationLevel(String conversationId) =>
+      notificationLevels.value[conversationId] ?? NotificationLevel.all;
+
+  @override
+  bool quiet(String chatId) =>
+      (spaces.value.any((s) => s.rooms.any((r) => r.id == chatId)) ? roomLevel(chatId) : conversationLevel(chatId)) ==
+      NotificationLevel.nothing;
+
+  @override
+  Future<void> setNotificationLevel(String targetId, NotificationTarget target, NotificationLevel? level) async {
+    levelChoices.add('$targetId ${target.name} ${level?.name ?? 'default'}');
+    // As the server's NOTIFICATION_SETTINGS_UPDATE would.
+    notificationLevels.value = level == null
+        ? ({...notificationLevels.value}..remove(targetId))
+        : {...notificationLevels.value, targetId: level};
+  }
+
+  @override
   final ValueNotifier<List<MentionNotice>> mentionNotices = ValueNotifier(const []);
 
   @override
@@ -534,12 +575,14 @@ class FakeRepository implements ChatRepository {
     String? bannerPath,
     bool removeBanner = false,
     bool removeIcon = false,
+    NotificationLevel? defaultNotifications,
     void Function(double progress)? onProgress,
   }) async {
     if (iconPath != null || bannerPath != null) await _upload(onProgress);
     if (locale != null) spaceLocale = locale;
+    if (defaultNotifications != null) spaceDefaults[spaceId] = defaultNotifications;
     admin.add(
-      'space ${[if (name != null) 'name=$name', if (description != null) 'about=$description', if (locale != null) 'locale=$locale', if (iconPath != null) 'icon=$iconPath', if (removeIcon && iconPath == null) 'icon=none', if (bannerPath != null) 'banner=$bannerPath', if (removeBanner && bannerPath == null) 'banner=none'].join(' ')}',
+      'space ${[if (name != null) 'name=$name', if (description != null) 'about=$description', if (locale != null) 'locale=$locale', if (iconPath != null) 'icon=$iconPath', if (removeIcon && iconPath == null) 'icon=none', if (bannerPath != null) 'banner=$bannerPath', if (removeBanner && bannerPath == null) 'banner=none', if (defaultNotifications != null) 'notifications=${defaultNotifications.name}'].join(' ')}',
     );
     if (name != null || iconPath != null || bannerPath != null || removeBanner || removeIcon) {
       spaces.value = [

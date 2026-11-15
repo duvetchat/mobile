@@ -473,6 +473,30 @@ void main() {
     semantics.dispose();
   });
 
+  testWidgets('overview: set the default notifications, only mentions until its owner chooses', (tester) async {
+    final repository = await pumpSettings(tester);
+    await tapLabel(tester, RegExp(r'^Overview'));
+    final every = find.bySemanticsLabel('All messages');
+    await reveal(tester, every);
+    expect(
+      tester.getSemantics(find.bySemanticsLabel('Only mentions')),
+      matchesSemantics(
+        label: 'Only mentions',
+        isButton: true,
+        hasCheckedState: true,
+        isChecked: true,
+        hasTapAction: true,
+        isInMutuallyExclusiveGroup: true,
+      ),
+    );
+    await tester.tap(every);
+    await tester.pumpAndSettle();
+    await tapLabel(tester, 'Save');
+    expect(repository.admin, ['space notifications=all']);
+    expect(repository.spaceDefault('s-guild'), NotificationLevel.all);
+    semantics.dispose();
+  });
+
   testWidgets('overview: a banner, cropped 5:2 as the desktop does, shown; then removed', (tester) async {
     final path = await picture(tester);
     pickSpaceImage = () async => path;

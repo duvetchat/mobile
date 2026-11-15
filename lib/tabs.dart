@@ -21,6 +21,7 @@ import 'widgets/chrome.dart';
 import 'widgets/duvet_mascot.dart';
 import 'widgets/glass.dart';
 import 'widgets/ghost_art.dart';
+import 'widgets/notification_menu.dart';
 import 'widgets/now.dart';
 import 'widgets/rows.dart';
 import 'widgets/sheets.dart' show LoadingSkeleton, placeholderNames, placeholderRows;
@@ -42,6 +43,7 @@ class ChatsTab extends StatelessWidget {
         repository.spaces,
         repository.unread,
         repository.mentions,
+        repository.notificationLevels,
         repository.profile,
         repository.presence,
         repository.mobileOnly,
@@ -52,7 +54,6 @@ class ChatsTab extends StatelessWidget {
         voice,
       ]),
       builder: (context, _) {
-        final mentions = repository.mentions.value;
         final rows = _rows(
           repository.recents.value,
           repository.conversations.value,
@@ -62,7 +63,6 @@ class ChatsTab extends StatelessWidget {
           repository.mobileOnly.value,
           repository.pinnedChats.value,
         );
-        final unread = repository.unread.value;
         // The requests to the user, counted on Friends as on the desktop's.
         final asking = repository.friends.value.incoming.length;
         return LargeTitlePage(
@@ -142,6 +142,12 @@ class ChatsTab extends StatelessWidget {
                 padding: const EdgeInsets.only(top: 16),
                 sliver: SliverList.builder(
                   itemCount: rows.length,
+                  // Rows keep their elements as the list moves (a message elsewhere), so a menu open on one keeps its
+                  // anchor.
+                  findChildIndexCallback: (key) {
+                    final i = rows.indexWhere((r) => key == ValueKey(r.target.id));
+                    return i < 0 ? null : i;
+                  },
                   itemBuilder: (context, i) {
                     final row = rows[i];
                     // The row's own context anchors its menu.
@@ -154,26 +160,45 @@ class ChatsTab extends StatelessWidget {
                         titleSuffix: row.space == null ? null : '· ${row.space}',
                         snippet: typingSentence(repository.typingNow.value[row.target.id] ?? const []) ?? row.snippet,
                         trailing: row.at == null ? null : shortTime(row.at!),
-                        unread: unread.contains(row.target.id),
-                        mentions: mentions[row.target.id] ?? 0,
+                        unread: repository.shownUnread(row.target.id),
+                        mentions: repository.shownMentions(row.target.id),
                         detail: row.pinned ? 'pinned' : null,
                         titleIcon: row.pinned
                             ? Icon(FLucideIcons.pin, size: 14, color: context.theme.colors.mutedForeground)
                             : null,
                         onTap: () => openChat(context, row.target, row.chatTitle),
                         onLongPress: () async {
-                          final pin = await showGlassMenu<bool>(
+                          final action = await showGlassMenu<String>(
                             rowContext,
                             label: row.title,
                             items: [
                               GlassMenuItem(
                                 icon: row.pinned ? FLucideIcons.pinOff : FLucideIcons.pin,
                                 label: row.pinned ? 'Unpin' : 'Pin to top',
-                                value: !row.pinned,
+                                value: 'pin',
+                              ),
+                              const GlassMenuItem(
+                                icon: FLucideIcons.bell,
+                                label: 'Notifications',
+                                value: 'notifications',
                               ),
                             ],
                           );
-                          if (pin != null) repository.setChatPinned(pinKey(row.target), pin);
+                          if (action == 'pin') repository.setChatPinned(pinKey(row.target), !row.pinned);
+                          if (action == 'notifications' && rowContext.mounted) {
+                            await showNotificationMenu(
+                              rowContext,
+                              targetId: row.target.id,
+                              target: switch (row.target) {
+                                RoomTarget() => NotificationTarget.room,
+                                ConversationTarget() => NotificationTarget.conversation,
+                              },
+                              spaceId: switch (row.target) {
+                                RoomTarget(:final spaceId) => spaceId,
+                                ConversationTarget() => null,
+                              },
+                            );
+                          }
                         },
                       ),
                     );
@@ -359,12 +384,19 @@ class SpacesTab extends StatelessWidget {
   Widget build(BuildContext context) {
     final repository = context.repository;
     return ListenableBuilder(
-      listenable: Listenable.merge([repository.spaces, repository.unread, repository.status]),
+      listenable: Listenable.merge([
+        repository.spaces,
+        repository.unread,
+        repository.notificationLevels,
+        repository.status,
+      ]),
       builder: (context, _) {
         final prefs = LaunchpadScope.of(context).value;
         final spaces = sortedSpaces(repository.spaces.value, prefs.sort);
-        final unread = repository.unread.value;
-        bool news(Space space) => space.rooms.any((r) => unread.contains(r.id));
+        bool news(Space space) => space.rooms.any((r) => repository.shownUnread(r.id));
+        // A long press chooses the Space's notifications, under its own card or row.
+        void notifications(BuildContext anchor, Space space) =>
+            showNotificationMenu(anchor, targetId: space.id, target: NotificationTarget.space);
         void open(Space space) => Navigator.of(context).push(
           MaterialPageRoute<void>(
             builder: (_) => SpaceDirectory(spaceId: space.id, name: space.name),
@@ -455,11 +487,14 @@ class SpacesTab extends StatelessWidget {
                       mainAxisExtent: 160,
                     ),
                     itemCount: spaces.length,
-                    itemBuilder: (context, i) => SpaceCard(
+                    itemBuilder: (context, i) => Builder(
                       key: ValueKey(spaces[i].id),
-                      space: spaces[i],
-                      unread: news(spaces[i]),
-                      onTap: () => open(spaces[i]),
+                      builder: (cardContext) => SpaceCard(
+                        space: spaces[i],
+                        unread: news(spaces[i]),
+                        onTap: () => open(spaces[i]),
+                        onLongPress: () => notifications(cardContext, spaces[i]),
+                      ),
                     ),
                   ),
                 ),
@@ -467,16 +502,19 @@ class SpacesTab extends StatelessWidget {
                   padding: const EdgeInsets.only(top: 8),
                   sliver: SliverList.builder(
                     itemCount: spaces.length,
-                    itemBuilder: (context, i) => ListRow(
+                    itemBuilder: (context, i) => Builder(
                       key: ValueKey(spaces[i].id),
-                      leading: SpaceIcon(space: spaces[i]),
-                      title: spaces[i].name,
-                      snippet: switch (spaces[i].onlineCount) {
-                        final n? => '$n online',
-                        null => null,
-                      },
-                      unread: news(spaces[i]),
-                      onTap: () => open(spaces[i]),
+                      builder: (rowContext) => ListRow(
+                        leading: SpaceIcon(space: spaces[i]),
+                        title: spaces[i].name,
+                        snippet: switch (spaces[i].onlineCount) {
+                          final n? => '$n online',
+                          null => null,
+                        },
+                        unread: news(spaces[i]),
+                        onTap: () => open(spaces[i]),
+                        onLongPress: () => notifications(rowContext, spaces[i]),
+                      ),
                     ),
                   ),
                 ),
@@ -485,11 +523,14 @@ class SpacesTab extends StatelessWidget {
                   sliver: SliverList.separated(
                     itemCount: spaces.length,
                     separatorBuilder: (_, _) => const SizedBox(height: 12),
-                    itemBuilder: (context, i) => SpaceWideCard(
+                    itemBuilder: (context, i) => Builder(
                       key: ValueKey(spaces[i].id),
-                      space: spaces[i],
-                      unread: news(spaces[i]),
-                      onTap: () => open(spaces[i]),
+                      builder: (cardContext) => SpaceWideCard(
+                        space: spaces[i],
+                        unread: news(spaces[i]),
+                        onTap: () => open(spaces[i]),
+                        onLongPress: () => notifications(cardContext, spaces[i]),
+                      ),
                     ),
                   ),
                 ),
@@ -569,6 +610,7 @@ class _SpaceDirectoryState extends State<SpaceDirectory> {
       listenable: Listenable.merge([
         repository.spaces,
         repository.unread,
+        repository.notificationLevels,
         repository.latest,
         repository.profile,
         repository.collapsedCategories,
@@ -578,7 +620,6 @@ class _SpaceDirectoryState extends State<SpaceDirectory> {
       builder: (context, _) {
         final space = repository.spaces.value.where((s) => s.id == widget.spaceId).firstOrNull;
         final collapsed = repository.collapsedCategories.value;
-        final unread = repository.unread.value;
         final latest = repository.latest.value;
         final me = repository.profile.value?.id;
         final barHeight = GlassTopBar.heightOf(context);
@@ -639,7 +680,7 @@ class _SpaceDirectoryState extends State<SpaceDirectory> {
                                 key: ValueKey('category-$id'),
                                 name: section.name ?? '',
                                 collapsed: collapsed.contains(id),
-                                unread: section.rooms.any((r) => unread.contains(r.id)),
+                                unread: section.rooms.any((r) => repository.shownUnread(r.id)),
                                 onToggle: () => repository.setCategoryCollapsed(id, !collapsed.contains(id)),
                               )
                             else if (section.rooms.isNotEmpty)
@@ -652,19 +693,28 @@ class _SpaceDirectoryState extends State<SpaceDirectory> {
                                 children: [
                                   for (final room in section.rooms)
                                     switch (room.kind) {
-                                      RoomKind.text => ListRow(
+                                      // A long press chooses its notifications, under its own row.
+                                      RoomKind.text => Builder(
                                         key: ValueKey(room.id),
-                                        title: room.name,
-                                        hash: true,
-                                        snippet:
-                                            typingSentence(repository.typingNow.value[room.id] ?? const []) ??
-                                            switch (latest[room.id]) {
-                                              final m? =>
-                                                '${m.authorId == me ? 'You' : m.authorName}: ${repository.previewOf(m)}',
-                                              null => null,
-                                            },
-                                        unread: unread.contains(room.id),
-                                        onTap: () => openChat(context, room.target, '# ${room.name}'),
+                                        builder: (rowContext) => ListRow(
+                                          title: room.name,
+                                          hash: true,
+                                          snippet:
+                                              typingSentence(repository.typingNow.value[room.id] ?? const []) ??
+                                              switch (latest[room.id]) {
+                                                final m? =>
+                                                  '${m.authorId == me ? 'You' : m.authorName}: ${repository.previewOf(m)}',
+                                                null => null,
+                                              },
+                                          unread: repository.shownUnread(room.id),
+                                          onTap: () => openChat(context, room.target, '# ${room.name}'),
+                                          onLongPress: () => showNotificationMenu(
+                                            rowContext,
+                                            targetId: room.id,
+                                            target: NotificationTarget.room,
+                                            spaceId: room.spaceId,
+                                          ),
+                                        ),
                                       ),
                                       // Who's in, the user first when their voice is here (no
                                       // accent: the tab bar has the screen's).

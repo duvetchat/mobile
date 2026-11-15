@@ -837,6 +837,10 @@ class _SpaceOverviewPageState extends State<SpaceOverviewPage> {
   late final _locale = TextEditingController(text: _profile?.locale)..addListener(_changed);
   void _changed() => setState(() {});
 
+  // What its members are notified of until they choose: every message or only mentions.
+  late final NotificationLevel _defaultWas = context.repository.spaceDefault(widget.spaceId);
+  late NotificationLevel _default = _defaultWas;
+
   /// The new icon and banner, cropped; or [_removeIcon] and [_removeBanner]
   /// to take the ones there away.
   String? _icon;
@@ -929,6 +933,7 @@ class _SpaceOverviewPageState extends State<SpaceOverviewPage> {
         bannerPath: _banner,
         removeBanner: _removeBanner,
         removeIcon: _removeIcon,
+        defaultNotifications: _default == _defaultWas ? null : _default,
         onProgress: (p) {
           // Left mid-upload, the page is gone, and its note with it.
           if (mounted) _upload.value = p;
@@ -956,7 +961,8 @@ class _SpaceOverviewPageState extends State<SpaceOverviewPage> {
             _removeBanner ||
             _name.text.trim() != p.name ||
             _about.text.trim() != (p.description ?? '').trim() ||
-            _locale.text.trim() != (p.locale ?? '').trim());
+            _locale.text.trim() != (p.locale ?? '').trim() ||
+            _default != _defaultWas);
     return UnsavedChanges(
       dirty: dirty,
       child: AdminPage(
@@ -1013,6 +1019,20 @@ class _SpaceOverviewPageState extends State<SpaceOverviewPage> {
             const SizedBox(height: 16),
             // Free text, as the desktop takes it.
             DuvetTextField(label: 'Locale', controller: _locale, hint: 'en', maxLength: 4),
+            const Overline('Default notifications'),
+            Segmented<NotificationLevel>(
+              label: 'Default notifications',
+              value: _default,
+              options: const {NotificationLevel.all: 'All messages', NotificationLevel.mentions: 'Only mentions'},
+              onChanged: (level) => setState(() => _default = level),
+            ),
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 8, 16, 0),
+              child: Text(
+                'Members are notified of this until they choose for themselves.',
+                style: DuvetType.caption.copyWith(color: colors.mutedForeground),
+              ),
+            ),
           ],
         ],
       ),
