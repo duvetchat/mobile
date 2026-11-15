@@ -129,6 +129,8 @@ void main() {
   for (final b in Brightness.values) {
     Future<_App> pumpApp(WidgetTester tester) async {
       phone(tester);
+      // On screen, as Android says of the app it shows: voice reads levels only there.
+      tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.resumed);
       final app = _App();
       await tester.pumpWidget(
         DuvetApp(

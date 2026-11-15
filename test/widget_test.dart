@@ -251,6 +251,15 @@ void main() {
     }
   });
 
+  testWidgets('a notification that started the app on screen is read at once', (tester) async {
+    for (final state in [AppLifecycleState.hidden, AppLifecycleState.inactive, AppLifecycleState.resumed]) {
+      tester.binding.handleAppLifecycleStateChanged(state);
+    }
+    var reads = 0;
+    await tester.pumpWidget(DuvetApp(repository: FakeRepository(), readLaunch: () => reads++));
+    expect(reads, 1);
+  });
+
   testWidgets('signing out returns to the login screen', (tester) async {
     await pumpApp(tester);
     await tester.tap(find.text('You').last);
