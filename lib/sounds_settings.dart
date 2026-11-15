@@ -21,7 +21,7 @@ class _SoundsPageState extends State<SoundsPage> {
 
   // The desktop's order and names, not the enum's.
   static const _labels = [
-    (Sound.mention, 'Mentions'),
+    (Sound.mention, 'Notifications'),
     (Sound.voiceJoin, 'Join Voice'),
     (Sound.voiceLeave, 'Leave Voice'),
     (Sound.incomingCall, 'Incoming Call'),
