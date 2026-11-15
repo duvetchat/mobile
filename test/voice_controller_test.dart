@@ -126,6 +126,13 @@ class _Harness {
   final player = _Player();
   late final sounds = Sounds(player: player, ringer: _Ringer());
 
+  /// The calls whose notification the app put up itself, off screen, and those whose notification it took away.
+  final shownAway = <String>[];
+  final hidden = <String>[];
+
+  /// Whether the phone shows Duvet's notifications.
+  bool notificationsOn = true;
+
   FakeVoiceSignaling get gateway => repository.voiceSignaling;
 
   _Harness(FakeAsync async) {
@@ -139,6 +146,13 @@ class _Harness {
       lifecycle: lifecycle.stream,
       cameraRefused: () async => !engine.cameraAllowed,
       sounds: sounds,
+      callNotices: (
+        show: (call) async {
+          shownAway.add(call.conversationId);
+          return notificationsOn;
+        },
+        hide: hidden.add,
+      ),
     );
     voice.notices.listen(notices.add);
     async.flushMicrotasks();
@@ -2446,6 +2460,156 @@ void main() {
       async.flushMicrotasks();
       expect(h.player.stopped, hasLength(3));
     });
+
+    // Off screen, the call's notification rings (lib/push/notifications.dart), which the app puts up when no push
+    // did: the app's own ring would ring with it. On screen, the app rings, and takes the notification away, again
+    // every 2 s while it rings, for a push that was on its way; and it goes once the call rings here no more.
+    _voice('off screen a call rings through its notification; on screen the app rings it, and takes that away', (
+      async,
+      h,
+    ) {
+      const incoming = duvet.CallIncomingPayloadEvent(
+        duvet.CallIncomingEvent(conversationId: 'c-leo', initiatorId: FakeRepository.leo, initiatorName: 'Leo'),
+      );
+      h.inFront = false;
+      h.gateway.push(incoming);
+      async.flushMicrotasks();
+      expect(h.player.played, isEmpty);
+      expect(h.shownAway, ['c-leo']);
+
+      h.inFront = true;
+      h.lifecycle.add(AppLifecycleState.resumed);
+      async.flushMicrotasks();
+      expect(h.player.played, [(Sound.incomingCall, true)]);
+      expect(h.hidden, ['c-leo']);
+      async.elapse(const Duration(seconds: 2));
+      expect(h.hidden, ['c-leo', 'c-leo']);
+
+      h.inFront = false;
+      h.lifecycle.add(AppLifecycleState.paused);
+      async.flushMicrotasks();
+      expect(h.player.stopped, [Sound.incomingCall]);
+      expect(h.shownAway, ['c-leo', 'c-leo']);
+      async.elapse(const Duration(seconds: 4));
+      expect(h.hidden, hasLength(2));
+
+      h.gateway.push(const duvet.CallEndedPayloadEvent(duvet.CallEndedEvent(conversationId: 'c-leo')));
+      async.flushMicrotasks();
+      expect(h.hidden, ['c-leo', 'c-leo', 'c-leo']);
+    });
+
+    _voice('with notifications off, the app rings a call off screen itself', (async, h) {
+      h.notificationsOn = false;
+      h.inFront = false;
+      h.gateway.push(
+        const duvet.CallIncomingPayloadEvent(
+          duvet.CallIncomingEvent(conversationId: 'c-leo', initiatorId: FakeRepository.leo, initiatorName: 'Leo'),
+        ),
+      );
+      async.flushMicrotasks();
+      expect(h.shownAway, ['c-leo']);
+      expect(h.player.played, [(Sound.incomingCall, true)]);
+    });
+
+    int answers(FakeVoiceSignaling gateway) => gateway.types.where((t) => t == 'CALL_ACCEPT').length;
+    const fromLeo = duvet.CallIncomingPayloadEvent(
+      duvet.CallIncomingEvent(conversationId: 'c-leo', initiatorId: FakeRepository.leo, initiatorName: 'Leo'),
+    );
+
+    _voice("Answer on a call's notification accepts it once it rings here", (async, h) {
+      h.gateway.ready(number: 1);
+      async.flushMicrotasks();
+      h.voice.answerWhenRinging('c-leo');
+      h.gateway.push(fromLeo);
+      async.flushMicrotasks();
+      expect(answers(h.gateway), 1);
+      expect(h.voice.call?.phase, CallPhase.connected);
+    });
+
+    _voice('an Answer for the call ringing here already accepts it at once', (async, h) {
+      h.gateway.ready(number: 1);
+      h.gateway.push(fromLeo);
+      async.flushMicrotasks();
+      h.voice.answerWhenRinging('c-leo');
+      async.flushMicrotasks();
+      expect(answers(h.gateway), 1);
+      expect(h.voice.call?.phase, CallPhase.connected);
+    });
+
+    _voice("an Answer while the gateway is out of reach answers once it's back", (async, h) {
+      h.gateway.ready(number: 1);
+      h.gateway.push(fromLeo);
+      async.flushMicrotasks();
+      h.gateway.socket = null;
+      h.voice.answerWhenRinging('c-leo');
+      async.flushMicrotasks();
+      expect(answers(h.gateway), 0);
+      expect(h.voice.call?.phase, CallPhase.ringing);
+      h.gateway.resumed();
+      async.flushMicrotasks();
+      expect(answers(h.gateway), 1);
+      expect(h.voice.call?.phase, CallPhase.connected);
+      expect(h.notices, isEmpty);
+    });
+
+    _voice('an Answer for the call a READY lists as ringing answers it', (async, h) {
+      h.voice.answerWhenRinging('c-leo');
+      h.gateway.ready(
+        number: 1,
+        calls: const [
+          duvet.GatewayReadyActiveCall(
+            conversationId: 'c-leo',
+            initiatorId: FakeRepository.leo,
+            initiatorName: 'Leo',
+            ringing: true,
+            answered: false,
+          ),
+        ],
+      );
+      async.flushMicrotasks();
+      expect(answers(h.gateway), 1);
+    });
+
+    _voice("an Answer for a call that ended, or that a READY doesn't list, doesn't answer the next one there", (
+      async,
+      h,
+    ) {
+      h.gateway.ready(number: 1);
+      async.flushMicrotasks();
+      h.voice.answerWhenRinging('c-leo');
+      h.gateway.push(const duvet.CallEndedPayloadEvent(duvet.CallEndedEvent(conversationId: 'c-leo')));
+      h.gateway.push(fromLeo);
+      async.flushMicrotasks();
+      expect(answers(h.gateway), 0);
+      h.voice.declineCall();
+      async.flushMicrotasks();
+
+      h.voice.answerWhenRinging('c-leo');
+      h.gateway.ready(number: 2);
+      h.gateway.push(fromLeo);
+      async.flushMicrotasks();
+      expect(answers(h.gateway), 0);
+      expect(h.voice.call?.phase, CallPhase.ringing);
+    });
+
+    _voice('an Answer for another call, or older than a ring lasts, accepts nothing', (async, h) {
+      h.gateway.ready(number: 1);
+      async.flushMicrotasks();
+      h.voice.answerWhenRinging('c-maya');
+      h.gateway.push(fromLeo);
+      async.flushMicrotasks();
+      expect(answers(h.gateway), 0);
+      expect(h.voice.call?.phase, CallPhase.ringing);
+      h.voice.declineCall();
+      async.flushMicrotasks();
+
+      h.voice.answerWhenRinging('c-leo');
+      h.now = h.now.add(const Duration(seconds: 31));
+      h.gateway.push(fromLeo);
+      async.flushMicrotasks();
+      expect(answers(h.gateway), 0);
+      expect(h.voice.call?.phase, CallPhase.ringing);
+    });
   });
 
   test('the ring stops when the controller goes', () {
@@ -2457,6 +2621,9 @@ void main() {
         engine: FakeVoiceEngine(),
         historyStore: MemoryCallHistoryStore(),
         sounds: Sounds(player: player, ringer: _Ringer()),
+        // A ring asks whether Duvet is on screen, which the app's binding says.
+        inFront: () => true,
+        lifecycle: const Stream.empty(),
       );
       async.flushMicrotasks();
       repository.voiceSignaling.push(
