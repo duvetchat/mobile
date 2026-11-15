@@ -89,6 +89,21 @@ final class ConversationTarget extends ChatTarget {
   int get hashCode => Object.hash(ConversationTarget, conversationId);
 }
 
+/// Over a bot's answer, as on the desktop: "Jon used /ping".
+class MessageInteraction {
+  final String userName;
+  final String? userAvatarUrl;
+
+  /// The command with its group and subcommand (`permissions user get`); null
+  /// for a component's interaction.
+  final String? command;
+
+  /// The message whose component was used: tapping the header goes there.
+  final String? interactedMessageId;
+
+  const MessageInteraction({required this.userName, this.userAvatarUrl, this.command, this.interactedMessageId});
+}
+
 class ChatMessage {
   final String id;
   final String? authorId;
@@ -104,7 +119,15 @@ class ChatMessage {
   /// Pins and other notices: no author bubble.
   final bool isNotice;
 
+  /// A call notice's call (an [isNotice] the API posts once a call in a
+  /// conversation ends); null on any other message.
+  final CallNotice? call;
+
   final List<MessageAttachment> attachments;
+
+  /// Its files deleted since it was sent: placeholders, apart from
+  /// [attachments] so nothing loads, renews or opens them.
+  final List<MessageAttachment> deletedAttachments;
 
   /// The sticker it is, if it's one: a sticker message has no text.
   final String? stickerUrl;
@@ -151,6 +174,9 @@ class ChatMessage {
   /// text displays.
   final bool isComponentsV2;
 
+  /// A bot's answer to a command or a component: who used which.
+  final MessageInteraction? interaction;
+
   const ChatMessage({
     required this.id,
     required this.authorId,
@@ -161,7 +187,9 @@ class ChatMessage {
     this.edited = false,
     this.nonce,
     this.isNotice = false,
+    this.call,
     this.attachments = const [],
+    this.deletedAttachments = const [],
     this.stickerUrl,
     this.embeds = const [],
     this.reply,
@@ -176,6 +204,7 @@ class ChatMessage {
     this.isEphemeral = false,
     this.isLoading = false,
     this.isComponentsV2 = false,
+    this.interaction,
   });
 
   int get attachmentCount => attachments.length;
@@ -208,7 +237,9 @@ class ChatMessage {
     edited: edited ?? this.edited,
     nonce: nonce ?? this.nonce,
     isNotice: isNotice,
+    call: call,
     attachments: attachments,
+    deletedAttachments: deletedAttachments,
     stickerUrl: stickerUrl,
     embeds: embeds,
     reply: reply ?? this.reply,
@@ -223,6 +254,7 @@ class ChatMessage {
     isEphemeral: isEphemeral,
     isLoading: isLoading,
     isComponentsV2: isComponentsV2,
+    interaction: interaction,
   );
 
   /// This message as an edit, or a link preview that came late, leaves it.
@@ -241,7 +273,9 @@ class ChatMessage {
     edited: update.edited,
     nonce: nonce,
     isNotice: isNotice,
+    call: call,
     attachments: attachments,
+    deletedAttachments: deletedAttachments,
     stickerUrl: update.stickerUrl,
     embeds: update.embeds,
     reply: reply,
@@ -256,6 +290,7 @@ class ChatMessage {
     isEphemeral: isEphemeral,
     isLoading: update.isLoading,
     isComponentsV2: update.isComponentsV2,
+    interaction: update.interaction ?? interaction,
   );
 
   /// This message once [change] took place: the name and avatar of its
@@ -280,7 +315,9 @@ class ChatMessage {
       edited: edited,
       nonce: nonce,
       isNotice: isNotice,
+      call: call,
       attachments: attachments,
+      deletedAttachments: deletedAttachments,
       stickerUrl: stickerUrl,
       embeds: embeds,
       reply: quote ?? reply,
@@ -295,6 +332,42 @@ class ChatMessage {
       isEphemeral: isEphemeral,
       isLoading: isLoading,
       isComponentsV2: isComponentsV2,
+      interaction: interaction,
+    );
+  }
+
+  /// This message with its file [attachmentId] at [url], a new link to it.
+  /// Itself when it has no such file, or has it there already.
+  ChatMessage withAttachmentLink(String attachmentId, String url) {
+    if (!attachments.any((a) => a.id == attachmentId && a.url != url)) return this;
+    return ChatMessage(
+      id: id,
+      authorId: authorId,
+      authorName: authorName,
+      authorAvatarUrl: authorAvatarUrl,
+      content: content,
+      createdAt: createdAt,
+      edited: edited,
+      nonce: nonce,
+      isNotice: isNotice,
+      call: call,
+      attachments: [for (final a in attachments) a.id == attachmentId ? a.withUrl(url) : a],
+      deletedAttachments: deletedAttachments,
+      stickerUrl: stickerUrl,
+      embeds: embeds,
+      reply: reply,
+      reactions: reactions,
+      isVoice: isVoice,
+      pinned: pinned,
+      components: components,
+      rawComponents: rawComponents,
+      fromBot: fromBot,
+      fromWebhook: fromWebhook,
+      webhookId: webhookId,
+      isEphemeral: isEphemeral,
+      isLoading: isLoading,
+      isComponentsV2: isComponentsV2,
+      interaction: interaction,
     );
   }
 
@@ -318,6 +391,20 @@ class ChatMessage {
     }
     return copyWith(reactions: list);
   }
+}
+
+/// What a call notice says about its call: who was in it, by user ID, its
+/// caller first, then each member who joined its voice; and when it started
+/// ringing and when it ended. The caller alone is a call nobody else got
+/// into.
+class CallNotice {
+  final List<String> participants;
+  final DateTime startedAt;
+  final DateTime endedAt;
+  const CallNotice({required this.participants, required this.startedAt, required this.endedAt});
+
+  /// How long the call lasted, ringing included.
+  Duration get duration => endedAt.difference(startedAt);
 }
 
 /// What a reply shows of the message it answers.
@@ -361,6 +448,16 @@ class MessageReply {
     content: '',
     mentionAuthor: mentionAuthor,
     deleted: true,
+  );
+
+  /// The same quote, mentioning its author or not.
+  MessageReply withMentionAuthor(bool mentionAuthor) => MessageReply(
+    messageId: messageId,
+    authorId: authorId,
+    authorName: authorName,
+    content: content,
+    mentionAuthor: mentionAuthor,
+    deleted: deleted,
   );
 
   /// The same quote, its author named [authorName].
@@ -410,6 +507,40 @@ class MessageAttachment {
     this.local = false,
   });
 
+  /// When its link stops working: the `exp` of a link the API signed (for 24
+  /// hours). Null for one that doesn't expire: a file still on this device,
+  /// a link preview's video.
+  DateTime? get linkExpires {
+    if (local) return null;
+    final query = Uri.tryParse(url)?.queryParameters;
+    final exp = int.tryParse(query?['exp'] ?? '');
+    if (exp == null || query?['sig'] == null) return null;
+    return DateTime.fromMillisecondsSinceEpoch(exp * 1000, isUtc: true);
+  }
+
+  /// How long before its link expires a file gets a new one, before it
+  /// loads, as the desktop's voice notes do.
+  static const renewBefore = Duration(minutes: 30);
+
+  /// Whether its link expires within [renewBefore] of [now]: it's renewed
+  /// before it loads.
+  bool linkDueAt(DateTime now) => switch (linkExpires) {
+    final at? => at.difference(now) < renewBefore,
+    null => false,
+  };
+
+  /// The same file, at [url].
+  MessageAttachment withUrl(String url) => MessageAttachment(
+    id: id,
+    filename: filename,
+    contentType: contentType,
+    url: url,
+    width: width,
+    height: height,
+    sizeBytes: sizeBytes,
+    local: local,
+  );
+
   bool get isImage => contentType.startsWith('image/');
   bool get isVideo => contentType.startsWith('video/');
   bool get isAudio => contentType.startsWith('audio/');
@@ -450,6 +581,23 @@ class MessageEmbed {
   final String? videoContentType;
   final String? provider;
 
+  /// Its stripe down the left side, as `0xRRGGBB`: one color, or a gradient
+  /// from [colors]' first, through the middle one when there are three, to
+  /// its last. Empty for none.
+  final List<int> colors;
+
+  /// Above the title: who it's from, their icon and their link.
+  final String? authorName;
+  final String? authorUrl;
+  final String? authorIconUrl;
+
+  /// Name and value pairs; an inline one shares its line with the next.
+  final List<({String name, String value, bool inline})> fields;
+
+  /// Under the rest: its footer, then its date.
+  final String? footer;
+  final DateTime? timestamp;
+
   const MessageEmbed({
     this.title,
     this.description,
@@ -461,13 +609,22 @@ class MessageEmbed {
     this.videoUrl,
     this.videoContentType,
     this.provider,
+    this.colors = const [],
+    this.authorName,
+    this.authorUrl,
+    this.authorIconUrl,
+    this.fields = const [],
+    this.footer,
+    this.timestamp,
   });
 
-  bool get isEmpty =>
-      title == null && description == null && imageUrl == null && thumbnailUrl == null && videoUrl == null;
+  /// Nothing but a picture, a video or a provider: no words of its own.
+  bool get isWordless => title == null && description == null && authorName == null && fields.isEmpty && footer == null;
+
+  bool get isEmpty => isWordless && imageUrl == null && thumbnailUrl == null && videoUrl == null;
 
   /// Only a picture, as a GIF link's embed is: shown bare, not on a card.
-  bool get isBareImage => title == null && description == null && imageUrl != null;
+  bool get isBareImage => isWordless && imageUrl != null;
 
   /// The video plays as a file when its page says it is one, or, with no
   /// type, when its URL looks like one; anything else is a player page.
@@ -558,6 +715,25 @@ class OutgoingFile {
     this.height,
     this.sizeBytes,
   });
+
+  /// Sent as a spoiler: named as [MessageAttachment.isSpoiler] reads it.
+  bool get isSpoiler => name.startsWith(MessageAttachment.spoilerPrefix) && name != MessageAttachment.spoilerPrefix;
+
+  /// The name shown in the tray, without the spoiler prefixes.
+  String get displayName {
+    final shown = name.replaceFirst(RegExp('^(?:${MessageAttachment.spoilerPrefix})+'), '');
+    return shown.isEmpty ? name : shown;
+  }
+
+  /// This file, renamed to be a spoiler or not, as the desktop's toggle does.
+  OutgoingFile withSpoiler(bool spoiler) => OutgoingFile(
+    path: path,
+    name: spoiler ? (isSpoiler ? name : '${MessageAttachment.spoilerPrefix}$name') : displayName,
+    contentType: contentType,
+    width: width,
+    height: height,
+    sizeBytes: sizeBytes,
+  );
 }
 
 /// The user's friends and the requests between them and others.
@@ -613,7 +789,7 @@ class RoleTag {
 /// desktop picks it, from roles highest first as [ChatRepository.rolesOf] gives them.
 RoleColors? nameColorsOf(Iterable<RoleTag> roles) => roles.where((r) => r.color != null).firstOrNull?.colors;
 
-/// One of the user's uploaded files.
+/// An uploaded file: one of the user's, or of a Space's.
 class MyFile {
   final String id;
   final String name;
@@ -621,6 +797,10 @@ class MyFile {
   final int sizeBytes;
   final DateTime createdAt;
   final String url;
+
+  /// Posted in a message: a Space's admins can't delete it alone, only with
+  /// all the Space's files.
+  final bool inMessage;
   const MyFile({
     required this.id,
     required this.name,
@@ -628,6 +808,7 @@ class MyFile {
     required this.sizeBytes,
     required this.createdAt,
     required this.url,
+    this.inMessage = false,
   });
 
   bool get isImage => contentType.startsWith('image/');
@@ -664,27 +845,68 @@ class SearchHit {
   const SearchHit({required this.target, required this.message});
 }
 
-/// What a message search looks for, where.
+/// What a message search looks for, where: the desktop's filters.
 class SearchQuery {
   final String text;
 
-  /// In a Space (its rooms, or just [roomId]), or in a conversation.
+  /// In a Space (its rooms, or just [roomIds]), or in a conversation.
   final String? spaceId;
-  final String? roomId;
   final String? conversationId;
-  final bool hasFile;
-  final bool pinned;
-  final String? authorId;
+  final List<String> roomIds;
+  final List<String> authorIds;
+  final List<String> mentionIds;
+
+  /// `link`, `embed`, `file`, `image`, `video`, `sound` or `sticker`.
+  final List<String> has;
+  final bool? pinned;
+  final DateTime? before;
+  final DateTime? after;
+
+  /// The last message of the page before: the next page starts after it.
+  final String? cursor;
   const SearchQuery(
     this.text, {
     this.spaceId,
-    this.roomId,
     this.conversationId,
-    this.hasFile = false,
-    this.pinned = false,
-    this.authorId,
+    this.roomIds = const [],
+    this.authorIds = const [],
+    this.mentionIds = const [],
+    this.has = const [],
+    this.pinned,
+    this.before,
+    this.after,
+    this.cursor,
   });
+
+  /// Nothing to look for: the API refuses it.
+  bool get isEmpty =>
+      text.isEmpty &&
+      roomIds.isEmpty &&
+      authorIds.isEmpty &&
+      mentionIds.isEmpty &&
+      has.isEmpty &&
+      pinned == null &&
+      before == null &&
+      after == null;
+
+  /// The same search, from the page after [cursor].
+  SearchQuery from(String cursor) => SearchQuery(
+    text,
+    spaceId: spaceId,
+    conversationId: conversationId,
+    roomIds: roomIds,
+    authorIds: authorIds,
+    mentionIds: mentionIds,
+    has: has,
+    pinned: pinned,
+    before: before,
+    after: after,
+    cursor: cursor,
+  );
 }
+
+/// A page of a message search, and how many it found in all (up to 1000).
+typedef SearchPage = ({List<SearchHit> hits, int total});
 
 /// A file the server refused as too large (HTTP 413).
 class UploadTooLarge implements Exception {
@@ -760,6 +982,14 @@ final class AuthorChanged extends MessageEvent {
   const AuthorChanged(this.userId, {required this.name, this.avatarUrl});
 }
 
+/// A file's link expired, or was about to, and the API signed it again: the
+/// messages with the file [attachmentId] load it from [url] now.
+final class AttachmentRenewed extends MessageEvent {
+  final String attachmentId;
+  final String url;
+  const AttachmentRenewed(this.attachmentId, this.url);
+}
+
 /// Someone reacted to a message, or took a reaction back. The gateway doesn't
 /// say in which chat: a chat applies it if it has the message.
 final class ReactionChanged extends MessageEvent {
@@ -774,6 +1004,36 @@ final class ReactionChanged extends MessageEvent {
     required this.emoji,
     required this.added,
     this.emojiId,
+  });
+}
+
+/// A notice at the top of the app that someone mentioned the user in a chat
+/// that isn't on screen: who, where, and what they wrote. Tapping it opens
+/// the message.
+class MentionNotice {
+  final String messageId;
+  final ChatTarget target;
+
+  /// The chat's title, as its screen has it: `# general`, a person's name.
+  final String title;
+  final String authorName;
+  final String? authorAvatarUrl;
+
+  /// Where, after the author: "in #general · Design Guild", "in Weekend" (a
+  /// group), "in a direct message".
+  final String where;
+
+  /// The message on one line, as a chat's preview has it.
+  final String text;
+
+  const MentionNotice({
+    required this.messageId,
+    required this.target,
+    required this.title,
+    required this.authorName,
+    required this.where,
+    required this.text,
+    this.authorAvatarUrl,
   });
 }
 
@@ -886,6 +1146,13 @@ class RoomSection {
   const RoomSection({this.id, required this.name, required this.rooms});
 }
 
+/// What the user is notified of in a place: every message, only the messages that mention them, or nothing, which
+/// also takes away the place's unread mark and its mention count (`ChatRepository.quiet`).
+enum NotificationLevel { all, mentions, nothing }
+
+/// The kind of place a notification level is for.
+enum NotificationTarget { space, room, conversation }
+
 class Space {
   final String id;
   final String name;
@@ -898,6 +1165,9 @@ class Space {
   /// Its banner, or null: atop its directory, as the desktop's sidebar has it.
   final String? bannerUrl;
 
+  /// Its owner's user ID, for the crown; null from a cache that predates it.
+  final String? ownerId;
+
   const Space({
     required this.id,
     required this.name,
@@ -905,6 +1175,7 @@ class Space {
     this.sections = const [],
     this.onlineCount,
     this.bannerUrl,
+    this.ownerId,
   });
 
   Iterable<Room> get rooms => sections.expand((s) => s.rooms);

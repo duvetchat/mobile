@@ -1,5 +1,7 @@
 import 'dart:ui' show Tristate;
 
+import 'package:duvet/data/call_notices.dart';
+import 'package:duvet/data/emoji_catalog.dart';
 import 'package:duvet/data/markdown.dart';
 import 'package:duvet/data/models.dart';
 import 'package:duvet/data/appearance.dart';
@@ -11,6 +13,7 @@ import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:forui/forui.dart' show FLucideIcons;
 
 import 'support/fake_repository.dart';
 
@@ -25,13 +28,18 @@ void main() {
     WidgetTester tester, {
     void Function(FakeRepository r)? setUp,
     ReplyGesture reply = ReplyGesture.swipeLeft,
+    int? bubble,
   }) async {
     semantics = tester.ensureSemantics();
     tester.view.physicalSize = const Size(390 * 3, 844 * 3);
     tester.view.devicePixelRatio = 3;
     addTearDown(tester.view.reset);
     final repository = FakeRepository();
-    final appearance = Appearance(MemoryAppearanceStore()..replyGesture = reply.name);
+    final appearance = Appearance(
+      MemoryAppearanceStore()
+        ..replyGesture = reply.name
+        ..bubbleColor = bubble?.toString(),
+    );
     await appearance.load();
     addTearDown(appearance.dispose);
     await tester.pumpWidget(DuvetApp(repository: repository, appearance: appearance));
@@ -109,6 +117,72 @@ void main() {
       ]);
       // A | without the line under it is text.
       expect(parseMarkdown('a | b\nc').map((b) => b.runtimeType), [MdParagraph]);
+    });
+
+    // Backslash escapes, as the desktop reads them (its #297). In r'…', each \ is one backslash.
+    test('a backslash before punctuation makes it text, which opens and closes nothing (#239)', () {
+      expect(shape(parseInline(r'\*xd*')), '*xd*');
+      expect(shape(parseInline(r'\_x_')), '_x_');
+      expect(shape(parseInline(r'\*\*bold\*\*')), '**bold**');
+      expect(shape(parseInline(r'\_\_init\_\_')), '__init__');
+      expect(shape(parseInline(r'\~~struck~~')), '~~struck~~');
+      expect(shape(parseInline(r'\|\|shown\|\|')), '||shown||');
+      // Inside emphasis, it's the emphasis's text.
+      expect(shape(parseInline(r'*a\*b*')), 'italic(a*b)');
+      expect(shape(parseInline(r'**2\*3**')), 'bold(2*3)');
+      // An escaped backslash is one, and what follows it reads as written.
+      expect(shape(parseInline(r'\\*xd*')), r'\italic(xd)');
+      // An escaped [ starts no link; a link's text takes escapes.
+      expect(shape(parseInline(r'\[x](https://a.example)')), '[x](link(https://a.example, https://a.example))');
+      expect(shape(parseInline(r'[a\*b*](https://a.example)')), 'link(https://a.example, a*b*)');
+      // The escaped * opens nothing, so the link keeps its own *.
+      expect(shape(parseInline(r'\*https://a.example/x*')), '*link(https://a.example/x*, https://a.example/x*)');
+      // Before anything else, as in a path, the backslash stays.
+      expect(shape(parseInline(r'C:\Users\Admin')), r'C:\Users\Admin');
+      expect(shape(parseInline('ends with \\')), 'ends with \\');
+      // A message's own placeholder character can't pass for an escape.
+      expect(shape(parseInline('a\uFDD0b')), 'ab');
+    });
+
+    test('a mention after a backslash is still one, as the API notifies it; an escaped @ makes none (#239)', () {
+      expect(parseInline('\\<@$_maya>').map((i) => (i as MdText).text), ['\\<@$_maya>']);
+      expect(parseInline('<\\@$_maya>').map((i) => (i as MdText).text), ['<', '@', '$_maya>']);
+    });
+
+    test("an escaped ` opens no code, and in code a backslash is the code's (#239)", () {
+      expect(parseInline(r'\`not code\`').whereType<MdCode>(), isEmpty);
+      expect(plainInline(parseInline(r'\`not code\`')), '`not code`');
+      expect(parseInline(r'\\`code`').map((i) => i.runtimeType), [MdText, MdCode]);
+      expect((parseInline(r'`\*x*`').single as MdCode).code, r'\*x*');
+      expect((parseInline('`C:\\`').single as MdCode).code, 'C:\\');
+      expect((parseMarkdown('```\n\\*x*\n```').single as MdCodeBlock).code, r'\*x*');
+      expect(parseMarkdown('\\```a```').whereType<MdCodeBlock>(), isEmpty);
+      expect(
+        plainInline((parseMarkdown('\\`\\`\\`not a block\\`\\`\\`').single as MdParagraph).inlines),
+        '```not a block```',
+      );
+    });
+
+    test('an escaped marker starts no block (#239)', () {
+      for (final (typed, shown) in [
+        (r'\# not a heading', '# not a heading'),
+        (r'\> not a quote', '> not a quote'),
+        (r'\- not a list', '- not a list'),
+        (r'1\. not a list', '1. not a list'),
+        (r'\-# not subtext', '-# not subtext'),
+      ]) {
+        final blocks = parseMarkdown(typed);
+        expect(blocks.map((b) => b.runtimeType), [MdParagraph], reason: typed);
+        expect(plainInline((blocks.single as MdParagraph).inlines), shown);
+      }
+      // An escaped | is a table cell's text, not its edge.
+      expect((parseMarkdown('a | b \\| c\n--|--\nd | e').single as MdTable).header.map(plainInline), ['a', 'b | c']);
+    });
+
+    test("a reply's one-line quote reads them too (#239)", () {
+      expect(plainInline(parseLine(r'\*xd*')), '*xd*');
+      expect(plainInline(parseLine(r'\# not a heading')), '# not a heading');
+      expect(plainInline(parseLine('\\`\\`\\`a\\`\\`\\`')), '```a```');
     });
 
     test('code blocks in the desktop\'s languages are colored, by name or alias; others stay plain (#26)', () {
@@ -212,8 +286,54 @@ void main() {
     await tester.pump();
     await tapLabel(tester, 'Send');
     expect(repository.sent.last.replyTo, 'm1');
+    expect(repository.sent.last.mentionRepliedUser, isTrue);
     expect(find.textContaining('Replying to Maya —'), findsNothing);
     expect(find.bySemanticsLabel('Replying to Maya: Hey! Did you see the new tab bar?. Jump to message'), findsOne);
+    semantics.dispose();
+  });
+
+  testWidgets('@ ON/OFF on the reply strip: a reply can leave its author unpinged, and yours has no toggle', (
+    tester,
+  ) async {
+    final repository = await openMaya(tester, reply: ReplyGesture.doubleTap);
+    Future<void> doubleTap(String text) async {
+      await tester.tap(find.text(text).last);
+      await tester.pump(const Duration(milliseconds: 50));
+      await tester.tap(find.text(text).last);
+      await tester.pumpAndSettle();
+    }
+
+    await doubleTap('Hey! Did you see the new tab bar?');
+    expect(find.text('@ ON'), findsOneWidget);
+    await tapLabel(tester, 'Mention Maya');
+    expect(find.text('@ OFF'), findsOneWidget);
+    await tester.enterText(find.byType(EditableText), 'quietly');
+    await tester.pump();
+    await tapLabel(tester, 'Send');
+    expect((repository.sent.last.replyTo, repository.sent.last.mentionRepliedUser), ('m1', false));
+
+    await doubleTap('quietly');
+    expect(find.textContaining('Replying to'), findsOneWidget);
+    expect(find.text('@ ON'), findsNothing);
+    expect(find.text('@ OFF'), findsNothing);
+    semantics.dispose();
+  });
+
+  testWidgets('your bubbles take your color; on a pale one, the text is dark', (tester) async {
+    await openMaya(tester, bubble: 0xD6A400);
+    await tester.enterText(find.byType(EditableText), 'sunny side');
+    await tester.pump();
+    await tapLabel(tester, 'Send');
+    expect(
+      find.byWidgetPredicate(
+        (w) =>
+            w is Container &&
+            w.decoration is BoxDecoration &&
+            (w.decoration! as BoxDecoration).color == const Color(0xFFD6A400),
+      ),
+      findsWidgets,
+    );
+    expect(tester.widget<Text>(find.text('sunny side').last).textSpan?.style?.color, bubbleDarkInk);
     semantics.dispose();
   });
 
@@ -437,6 +557,62 @@ void main() {
     semantics.dispose();
   });
 
+  testWidgets('call notices say who called and for how long, or that the call was missed (#158)', (tester) async {
+    ChatMessage notice(String id, String author, String name, List<String> participants, Duration lasted) {
+      final start = DateTime(2026, 10, 23, 9, 5);
+      return ChatMessage(
+        id: id,
+        authorId: author,
+        authorName: name,
+        content: '',
+        createdAt: start.add(lasted),
+        isNotice: true,
+        call: CallNotice(participants: participants, startedAt: start, endedAt: start.add(lasted)),
+      );
+    }
+
+    final repository = await openMaya(
+      tester,
+      setUp: (r) => r.history['c-maya']!.addAll([
+        notice('n1', _maya, 'Maya', [_maya, _me], const Duration(minutes: 12)),
+        notice('n2', _maya, 'Maya', [_maya], const Duration(seconds: 30)),
+        notice('n3', _me, 'Gaby', [_me, _maya], const Duration(hours: 1, minutes: 3)),
+        notice('n4', _me, 'Gaby', [_me], const Duration(seconds: 40)),
+      ]),
+    );
+    expect(find.text('Maya started a call that lasted 12 minutes.'), findsOneWidget);
+    expect(find.text('You missed a call from Maya.'), findsOneWidget);
+    expect(find.text('You started a call that lasted 1 hour 3 minutes.'), findsOneWidget);
+    expect(find.text('You started a call. No one answered.'), findsOneWidget);
+    expect(find.byIcon(FLucideIcons.phoneMissed), findsOneWidget);
+
+    // Either of a DM's two may delete one; it can't be replied to or pinned.
+    await longPress(tester, 'You missed a call from Maya.');
+    expect(find.bySemanticsLabel('Reply'), findsNothing);
+    expect(find.bySemanticsLabel('Pin'), findsNothing);
+    await tapLabel(tester, 'Delete');
+    await tapLabel(tester, 'Delete');
+    expect(repository.deletes, ['n2']);
+    expect(find.text('You missed a call from Maya.'), findsNothing);
+    semantics.dispose();
+  });
+
+  test('a call notice\'s case for each reader, and its length in words', () {
+    final call = CallNotice(participants: const ['a', 'b'], startedAt: DateTime(2026), endedAt: DateTime(2026));
+    final alone = CallNotice(participants: const ['a'], startedAt: DateTime(2026), endedAt: DateTime(2026));
+    expect(callNoticeCase(call, 'a', 'b'), CallNoticeCase.joined);
+    expect(callNoticeCase(call, 'a', 'a'), CallNoticeCase.joined);
+    expect(callNoticeCase(call, 'a', 'c'), CallNoticeCase.missed);
+    expect(callNoticeCase(alone, 'a', 'a'), CallNoticeCase.unanswered);
+    expect(callNoticeCase(alone, 'a', 'b'), CallNoticeCase.missedUnanswered);
+    expect(callNoticeCase(alone, 'a', null), CallNoticeCase.missedUnanswered);
+    expect(callDuration(const Duration(seconds: 59)), 'a few seconds');
+    expect(callDuration(const Duration(minutes: 1, seconds: 59)), '1 minute');
+    expect(callDuration(const Duration(minutes: 59)), '59 minutes');
+    expect(callDuration(const Duration(hours: 1)), '1 hour');
+    expect(callDuration(const Duration(hours: 2, minutes: 1)), '2 hours 1 minute');
+  });
+
   testWidgets('editing your own message: the strip, Save, and "edited"', (tester) async {
     final repository = await openMaya(tester);
     await longPress(tester, 'Yes, way better than the side panels.');
@@ -610,6 +786,18 @@ void main() {
     semantics.dispose();
   });
 
+  testWidgets('the quick bar leads with your most used emoji, and a quick reaction counts as a use', (tester) async {
+    EmojiCatalog.used('🔥');
+    await openMaya(tester);
+    await longPress(tester, 'Hey! Did you see the new tab bar?');
+    // 🔥 takes the last default's place.
+    expect(find.bySemanticsLabel(RegExp('^React (fire|🔥)')), findsOneWidget);
+    expect(find.bySemanticsLabel(RegExp('^React clapping')), findsNothing);
+    await tapLabel(tester, RegExp('^React heart'));
+    expect(EmojiCatalog.recent, contains('❤️'));
+    semantics.dispose();
+  });
+
   testWidgets('who reacted: held chip or options, each emoji, oldest first, the API for anyone else (#94)', (
     tester,
   ) async {
@@ -697,7 +885,7 @@ void main() {
     semantics.dispose();
   });
 
-  testWidgets('an unread chat opens at a "New messages" divider after the last read', (tester) async {
+  testWidgets('an unread chat opens at a "2 new messages" divider after the last read', (tester) async {
     await openMaya(
       tester,
       setUp: (r) {
@@ -705,7 +893,7 @@ void main() {
         r.history['c-maya']!.add(FakeRepository.message('m3', author: _maya, name: 'Maya', text: 'Hello?'));
       },
     );
-    final divider = find.text('New messages');
+    final divider = find.text('2 new messages');
     expect(divider, findsOneWidget);
     expect(
       tester.getTopLeft(divider).dy,

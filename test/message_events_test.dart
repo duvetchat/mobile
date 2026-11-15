@@ -143,6 +143,21 @@ class _HeldWrites extends MemoryChatCacheStore {
   }
 }
 
+/// When the links the API signs again expire: 2100.
+const _renewedExp = 4102444800;
+const _renewed = 'https://api.duvet.chat/attachments/a-9?sig=new&exp=$_renewedExp';
+
+/// The picture [id], its link signed until [left] from now; an unsigned link
+/// with no [left].
+MessageAttachment _signed(String id, [Duration? left]) => MessageAttachment(
+  id: id,
+  filename: 'cat.png',
+  contentType: 'image/png',
+  url: left == null
+      ? 'https://api.duvet.chat/attachments/$id'
+      : 'https://api.duvet.chat/attachments/$id?sig=old&exp=${DateTime.now().add(left).millisecondsSinceEpoch ~/ 1000}',
+);
+
 /// A message of [authorId]'s as a page kept has it.
 ChatMessage _keptMessage(String id, String authorId, String name) =>
     ChatMessage(id: id, authorId: authorId, authorName: name, content: id, createdAt: DateTime(2026, 10, 23));
@@ -161,12 +176,18 @@ void main() {
   late List<http.Request> requests;
   late DuvetRepository repository;
   late _HeldWrites cache;
+  // A message fetch that waits for it, while it's set.
+  Completer<void>? heldFetch;
+  // The chats whose phone notification the repository took away.
+  late List<String> forgotten;
 
   setUp(() {
+    heldFetch = null;
     requests = [];
     cache = _HeldWrites();
     final client = MockClient((request) async {
       requests.add(request);
+      if (request.url.path == '/api/rooms/r-1/messages/9') await heldFetch?.future;
       final json = switch ((request.method, request.url.path)) {
         ('POST', '/api/auth/login') => {'token': 'access-1', 'session_token': 'refresh-1'},
         ('GET', '/api/users/@me') => {..._user(_me, 'gaby', alias: 'Gaby'), 'email_verified': true},
@@ -233,13 +254,22 @@ void main() {
           400,
         ),
         ('PUT', '/api/rooms/r-1/pins/8') => http.Response('upstream timed out', 504),
+        // Messages a mention's notice fetches: 10 was deleted first.
+        ('GET', '/api/rooms/r-1/messages/8') => _roomMessage('8', 'fetched'),
+        ('GET', '/api/rooms/r-1/messages/9') => _roomMessage('9', 'soon gone'),
+        ('GET', '/api/users/@me/conversations/c-1/messages/31') => _dmMessage('31', 'fetched in the DM'),
+        // A file's link signed again, outside /api; a-gone's message is gone.
+        ('POST', '/attachments/a-9/resign') => {'url': '/attachments/a-9?sig=new&exp=$_renewedExp'},
+        ('POST', '/attachments/a-gone/resign') => http.Response(jsonEncode({'error': 'attachment not found'}), 404),
         _ => null,
       };
       if (json is http.Response) return json;
       if (json == null) return http.Response('not found', 404);
       return http.Response(jsonEncode(json), 200, headers: {'content-type': 'application/json'});
     });
+    forgotten = [];
     repository = DuvetRepository(
+      forgetNotifications: (chatId) async => forgotten.add(chatId),
       store: MemorySessionStore(),
       recentsStore: MemoryRecentChatsStore(),
       httpClient: () => client,
@@ -593,6 +623,407 @@ void main() {
     });
   });
 
+  // A mention of the user in a chat that isn't on screen shows a notice at the
+  // top: who, where, and what they wrote (#80).
+  group('mention notices', () {
+    void mention(String messageId) => repository.handleEvent(
+      _event('MENTION_CREATE', {'message_id': messageId, 'room_id': 'r-1', 'author_id': _maya}),
+    );
+    List<String> shown() => [for (final n in repository.mentionNotices.value) n.messageId];
+    Iterable<String> fetched() => [
+      for (final r in requests)
+        if (r.method == 'GET' && RegExp(r'/messages/[^/]+$').hasMatch(r.url.path)) r.url.path,
+    ];
+
+    setUp(() async {
+      await listen(_room);
+      repository.handleEvent(_event('SPACE_CREATE', _space()));
+    });
+
+    test('shows who mentioned the user, where, and their message, which its MESSAGE_CREATE brought', () async {
+      repository.handleEvent(_event('MESSAGE_CREATE', _roomMessage('7', 'Hey <@$_me>, look')));
+      mention('7');
+      final notice = repository.mentionNotices.value.single;
+      expect(
+        (notice.messageId, notice.target, notice.title, notice.authorName, notice.where, notice.text),
+        ('7', _room, '# general', 'Maya', 'in #general · Design Guild', 'Hey @Gaby, look'),
+      );
+      expect(fetched(), isEmpty);
+
+      // Once per message.
+      mention('7');
+      expect(shown(), ['7']);
+    });
+
+    test('fetches a message whose MESSAGE_CREATE hasn\'t come, and takes the event if it comes first', () async {
+      mention('8');
+      expect(shown(), isEmpty);
+      await pumpEventQueue();
+      expect(fetched(), ['/api/rooms/r-1/messages/8']);
+      expect(repository.mentionNotices.value.single.text, 'fetched');
+
+      heldFetch = Completer();
+      mention('9');
+      repository.handleEvent(_event('MESSAGE_CREATE', _roomMessage('9', 'came first')));
+      heldFetch!.complete();
+      await pumpEventQueue();
+      expect(repository.mentionNotices.value.first.text, 'came first');
+      expect(shown(), ['9', '8']);
+    });
+
+    test('shows nothing for the chat on screen, nor in do not disturb; a thread of it, for its replies only', () async {
+      repository.chatShown(_room);
+      repository.handleEvent(_event('MESSAGE_CREATE', _roomMessage('7', 'here')));
+      mention('7');
+      expect(shown(), isEmpty);
+
+      // A thread of the room shows its replies only.
+      repository.chatShown(_room, threadOf: 'root');
+      repository.chatHidden(_room);
+      repository.handleEvent(_event('MESSAGE_CREATE', _roomMessage('11', 'elsewhere in the room')));
+      mention('11');
+      expect(shown(), ['11']);
+      repository.handleEvent(
+        _event('MESSAGE_CREATE', {
+          ..._roomMessage('12', 'in the thread'),
+          'referenced_message': {'message_id': 'root', 'author_id': _me, 'content': 'root'},
+        }),
+      );
+      mention('12');
+      expect(shown(), ['11']);
+      repository.chatHidden(_room, threadOf: 'root');
+
+      repository.handleEvent(_event('USER_STATUS_UPDATE', {'user_id': _me, 'status_id': 2}));
+      repository.handleEvent(_event('MESSAGE_CREATE', _roomMessage('13', 'busy')));
+      mention('13');
+      expect(shown(), ['11']);
+    });
+
+    test(
+      'shows nothing for a room at nothing, its own level or its Space\'s, and shows again once it isn\'t',
+      () async {
+        void level(String id, int type, int? level) => repository.handleEvent(
+          _event('NOTIFICATION_SETTINGS_UPDATE', {'target_id': id, 'target_type': type, 'level': level}),
+        );
+        level('r-1', 1, 2);
+        repository.handleEvent(_event('MESSAGE_CREATE', _roomMessage('7', 'quiet room')));
+        mention('7');
+        level('r-1', 1, null);
+        level('s-1', 0, 2);
+        repository.handleEvent(_event('MESSAGE_CREATE', _roomMessage('8', 'quiet Space')));
+        mention('8');
+        expect(shown(), isEmpty);
+
+        level('s-1', 0, null);
+        repository.handleEvent(_event('MESSAGE_CREATE', _roomMessage('9', 'heard')));
+        mention('9');
+        expect(shown(), ['9']);
+      },
+    );
+
+    test(
+      'opening a chat takes its notices away; one below the chat on screen going hidden leaves that on screen',
+      () async {
+        repository.handleEvent(_event('MESSAGE_CREATE', _roomMessage('7', 'look')));
+        mention('7');
+        expect(shown(), ['7']);
+        repository.chatShown(_room, threadOf: '7');
+        expect(shown(), ['7']);
+        repository.chatShown(_room);
+        expect(shown(), isEmpty);
+
+        // Back from the background, a notice that came meanwhile stays.
+        repository.chatHidden(_room);
+        repository.handleEvent(_event('MESSAGE_CREATE', _roomMessage('8', 'while away')));
+        mention('8');
+        repository.chatShown(_room, opened: false);
+        expect(shown(), ['8']);
+        repository.chatHidden(_room);
+
+        // The DM opened over the room: the room, under it, says it's hidden.
+        repository.chatShown(_dm);
+        repository.chatHidden(_room);
+        repository.handleEvent(_event('DM_MESSAGE_CREATE', _dmMessage('40', 'hi')));
+        repository.handleEvent(
+          _event('DM_MENTION_CREATE', {'message_id': '40', 'conversation_id': 'c-1', 'author_id': _maya}),
+        );
+        expect(shown(), ['8']);
+      },
+    );
+
+    test('a deleted message takes its notice away, and one deleted while it was fetched never shows', () async {
+      repository.handleEvent(_event('MESSAGE_CREATE', _roomMessage('7', 'oops')));
+      mention('7');
+      expect(shown(), ['7']);
+      repository.handleEvent(_event('MESSAGE_DELETE', {'id': '7', 'room_id': 'r-1'}));
+      expect(shown(), isEmpty);
+
+      heldFetch = Completer();
+      mention('9');
+      repository.handleEvent(_event('MESSAGE_DELETE', {'id': '9', 'room_id': 'r-1'}));
+      heldFetch!.complete();
+      await pumpEventQueue();
+      expect(shown(), isEmpty);
+
+      // Deleted first, which the API no longer has: nothing.
+      mention('10');
+      await pumpEventQueue();
+      expect(shown(), isEmpty);
+    });
+
+    test('three show at most, the newest first, and each goes when dismissed', () async {
+      for (final id in ['21', '22', '23', '24']) {
+        repository.handleEvent(_event('MESSAGE_CREATE', _roomMessage(id, 'number $id')));
+        mention(id);
+      }
+      expect(shown(), ['24', '23', '22']);
+      repository.dismissMentionNotice('23');
+      expect(shown(), ['24', '22']);
+    });
+
+    test('in a conversation, a DM says it\'s a direct message', () async {
+      repository.handleEvent(
+        _event('DM_MENTION_CREATE', {'message_id': '31', 'conversation_id': 'c-1', 'author_id': _maya}),
+      );
+      await pumpEventQueue();
+      final notice = repository.mentionNotices.value.single;
+      expect(
+        (notice.target, notice.where, notice.authorName, notice.text),
+        (_dm, 'in a direct message', 'Maya', 'fetched in the DM'),
+      );
+    });
+  });
+
+  // In the background the phone's notifications tell of messages (lib/push): the app's own notices and their sound
+  // keep quiet, and a chat opened takes its notification away.
+  group("the phone's notifications", () {
+    void mention(String messageId) => repository.handleEvent(
+      _event('MENTION_CREATE', {'message_id': messageId, 'room_id': 'r-1', 'author_id': _maya}),
+    );
+    List<String> shown() => [for (final n in repository.mentionNotices.value) n.messageId];
+
+    setUp(() async {
+      await listen(_room);
+      repository.handleEvent(_event('SPACE_CREATE', _space()));
+    });
+
+    test('no notice and no sound while the app is in the background', () async {
+      repository.wentToBack();
+      repository.handleEvent(_event('MESSAGE_CREATE', _roomMessage('7', 'Hey <@$_me>')));
+      mention('7');
+      await pumpEventQueue();
+      expect(shown(), isEmpty);
+
+      repository.cameToFront();
+      repository.handleEvent(_event('MESSAGE_CREATE', _roomMessage('8', 'Hey again <@$_me>')));
+      mention('8');
+      await pumpEventQueue();
+      expect(shown(), ['8']);
+    });
+
+    test("opening a chat forgets its phone notification, and a thread of it doesn't", () async {
+      repository.chatShown(_room);
+      repository.chatShown(_dm, threadOf: '5');
+      repository.chatShown(_dm, opened: false);
+      expect(forgotten, ['r-1', 'c-1']);
+    });
+  });
+
+  // With the app open, a message of a place at every message gets the notice
+  // a mention gets, with its sound: as on the desktop, for a chat that isn't
+  // on screen.
+  group('every message', () {
+    void level(String id, int type, int? level) => repository.handleEvent(
+      _event('NOTIFICATION_SETTINGS_UPDATE', {'target_id': id, 'target_type': type, 'level': level}),
+    );
+    void mention(String messageId) => repository.handleEvent(
+      _event('MENTION_CREATE', {'message_id': messageId, 'room_id': 'r-1', 'author_id': _maya}),
+    );
+    List<String> shown() => [for (final n in repository.mentionNotices.value) n.messageId];
+
+    setUp(() async {
+      await listen(_room);
+      repository.handleEvent(_event('SPACE_CREATE', _space()));
+    });
+
+    test('a message in a room at every message shows a notice', () async {
+      level('r-1', 1, 0);
+      repository.handleEvent(_event('MESSAGE_CREATE', _roomMessage('7', 'lunch?')));
+      final notice = repository.mentionNotices.value.single;
+      expect(
+        (notice.messageId, notice.target, notice.authorName, notice.where, notice.text),
+        ('7', _room, 'Maya', 'in #general · Design Guild', 'lunch?'),
+      );
+    });
+
+    test('a room whose Space is at every message, and the Space\'s default, show one too', () async {
+      level('s-1', 0, 0);
+      repository.handleEvent(_event('MESSAGE_CREATE', _roomMessage('7', 'Space at every message')));
+      level('s-1', 0, null);
+      repository.handleEvent(
+        _event('SPACE_CREATE', {
+          ..._space(),
+          'space': {...(_space()['space'] as Map<String, dynamic>), 'default_notifications': 0},
+        }),
+      );
+      repository.handleEvent(_event('MESSAGE_CREATE', _roomMessage('8', 'every message by default')));
+      expect(shown(), ['8', '7']);
+    });
+
+    test('not in a room at only mentions', () async {
+      repository.handleEvent(_event('MESSAGE_CREATE', _roomMessage('7', 'only mentions by default')));
+      level('r-1', 1, 1);
+      level('s-1', 0, 0);
+      repository.handleEvent(_event('MESSAGE_CREATE', _roomMessage('8', 'the room at only mentions')));
+      expect(shown(), isEmpty);
+    });
+
+    test('not one\'s own', () async {
+      level('r-1', 1, 0);
+      repository.handleEvent(
+        _event('MESSAGE_CREATE', {
+          ..._roomMessage('7', 'mine'),
+          'author_id': _me,
+          'user': _user(_me, 'gaby', alias: 'Gaby'),
+        }),
+      );
+      expect(shown(), isEmpty);
+    });
+
+    test('not a pin or call notice, nor a bot\'s answer to the user alone', () async {
+      level('r-1', 1, 0);
+      repository.handleEvent(_event('MESSAGE_CREATE', {..._roomMessage('7', ''), 'type': 2}));
+      repository.handleEvent(_event('MESSAGE_CREATE', _answer('8', 'only you see this')));
+      repository.handleEvent(
+        _event('DM_MESSAGE_CREATE', {
+          ..._dmMessage('9', ''),
+          'type': 3,
+          'call': {
+            'participants': [_maya, _me],
+            'started_at': _at,
+            'ended_at': _at,
+          },
+        }),
+      );
+      expect(shown(), isEmpty);
+    });
+
+    test('not in the chat on screen', () async {
+      level('r-1', 1, 0);
+      repository.chatShown(_room);
+      repository.handleEvent(_event('MESSAGE_CREATE', _roomMessage('7', 'here')));
+      repository.chatShown(_dm);
+      repository.handleEvent(_event('DM_MESSAGE_CREATE', _dmMessage('8', 'here too')));
+      expect(shown(), isEmpty);
+    });
+
+    test('a DM shows one (conversations default to every message), but not one at only mentions', () async {
+      repository.handleEvent(_event('DM_MESSAGE_CREATE', _dmMessage('8', 'hi there')));
+      final notice = repository.mentionNotices.value.single;
+      expect((notice.target, notice.where, notice.text), (_dm, 'in a direct message', 'hi there'));
+      level('c-1', 2, 1);
+      repository.handleEvent(_event('DM_MESSAGE_CREATE', _dmMessage('9', 'not this one')));
+      expect(shown(), ['8']);
+    });
+
+    test('a message that also mentions the user shows one notice, whichever event comes first', () async {
+      level('r-1', 1, 0);
+      repository.handleEvent(_event('MESSAGE_CREATE', _roomMessage('7', 'Hey <@$_me>')));
+      mention('7');
+      mention('8');
+      repository.handleEvent(_event('MESSAGE_CREATE', _roomMessage('8', 'Hey again <@$_me>')));
+      await pumpEventQueue();
+      expect(shown(), ['8', '7']);
+    });
+  });
+
+  // A file's link expires a day after the API signed it; it signs it again
+  // (#182).
+  group('file links', () {
+    Iterable<http.Request> resigns() => requests.where((r) => r.url.path.endsWith('/resign'));
+
+    test('one about to expire is signed again, once for two asking at once, and its messages load it from the new '
+        'one, the pages kept for offline too', () async {
+      final events = await listen(_dm);
+      final file = _signed('a-9', const Duration(minutes: 10));
+      ChatCache(cache).savePage('c-1', [
+        ChatMessage(
+          id: '5',
+          authorId: _maya,
+          authorName: 'Maya',
+          content: '',
+          createdAt: DateTime(2026, 10, 23),
+          attachments: [file],
+        ),
+      ]);
+      await eventually(() => expect(cache.data.keys, contains('chat_c-1')));
+
+      expect(await Future.wait([repository.attachmentLink(file), repository.attachmentLink(file)]), [
+        _renewed,
+        _renewed,
+      ]);
+      expect([for (final r in resigns()) (r.method, r.url.path)], [('POST', '/attachments/a-9/resign')]);
+      await pumpEventQueue();
+      final renewed = events.whereType<AttachmentRenewed>().single;
+      expect((renewed.attachmentId, renewed.url), ('a-9', _renewed));
+      await eventually(() async {
+        expect((await ChatCache(cache).loadPage('c-1'))!.single.attachments.single.url, _renewed);
+      });
+
+      // A copy of the message from before (a gallery open since) gets the new
+      // one, with no new request.
+      expect(await repository.attachmentLink(file), _renewed);
+      expect(resigns(), hasLength(1));
+
+      // The new one failing too (a file that won't decode, say) isn't signed
+      // again within the minute: it would spend the API's 64 a minute.
+      expect(await repository.attachmentLink(file.withUrl(_renewed), refused: true), _renewed);
+      expect(resigns(), hasLength(1));
+    });
+
+    test('one with time left is its own, unless it failed to load', () async {
+      await listen(_dm);
+      final file = _signed('a-9', const Duration(hours: 5));
+      expect(await repository.attachmentLink(file), file.url);
+      expect(resigns(), isEmpty);
+      expect(await repository.attachmentLink(file, refused: true), _renewed);
+      expect(resigns(), hasLength(1));
+    });
+
+    test('one the API won\'t sign again, and one that doesn\'t expire, are their own', () async {
+      final events = await listen(_dm);
+      final gone = _signed('a-gone', const Duration(minutes: 1));
+      expect(await repository.attachmentLink(gone), gone.url);
+      final unsigned = _signed('a-9');
+      expect(await repository.attachmentLink(unsigned, refused: true), unsigned.url);
+      expect(resigns(), hasLength(1));
+      await pumpEventQueue();
+      expect(events.whereType<AttachmentRenewed>(), isEmpty);
+    });
+  });
+
+  test('a file\'s link expires at its exp, and a message takes a new one for its file alone', () {
+    final file = _signed('a-9', const Duration(minutes: 10));
+    final now = DateTime.now();
+    expect(file.linkDueAt(now), isTrue);
+    expect(file.linkDueAt(now.subtract(const Duration(minutes: 30))), isFalse);
+    expect(_signed('a-9').linkExpires, isNull);
+    expect(file.withUrl(_renewed).linkExpires, DateTime.fromMillisecondsSinceEpoch(_renewedExp * 1000, isUtc: true));
+
+    final m = ChatMessage(
+      id: '5',
+      authorId: _maya,
+      authorName: 'Maya',
+      content: '',
+      createdAt: now,
+      attachments: [file, _signed('a-2', const Duration(minutes: 10))],
+    );
+    expect(identical(m.withAttachmentLink('a-3', _renewed), m), isTrue);
+    final changed = m.withAttachmentLink('a-9', _renewed);
+    expect([for (final a in changed.attachments) a.url], [_renewed, m.attachments.last.url]);
+    expect(identical(changed.withAttachmentLink('a-9', _renewed), changed), isTrue);
+  });
+
   group('bots\' answers', () {
     test('one to the user alone is kept apart: the room stays read, and it isn\'t the preview', () async {
       final events = await listen(_room);
@@ -697,6 +1128,45 @@ void main() {
     expect(replyBack.reply!.mentionAuthor, isTrue);
   });
 
+  test('a bot\'s answer says who used which command, and the offline cache keeps it', () async {
+    final events = await listen(_room);
+    repository.handleEvent(
+      _event('MESSAGE_CREATE', {
+        ..._answer('13', 'pong', flags: 0),
+        'interaction_metadata': {
+          'id': 'i-1',
+          'type': 2,
+          'user': {'id': _maya, 'username': 'maya', 'alias': 'Maya'},
+          'name': 'permissions user get',
+        },
+      }),
+    );
+    repository.handleEvent(
+      _event('MESSAGE_CREATE', {
+        ..._answer('14', 'voted', flags: 0),
+        'interaction_metadata': {
+          'id': 'i-2',
+          'type': 3,
+          'user': {'id': _maya, 'username': 'maya'},
+          'interacted_message_id': '13',
+        },
+      }),
+    );
+    await pumpEventQueue();
+    final command = (events[0] as MessageCreated).message.interaction!;
+    expect((command.userName, command.command, command.interactedMessageId), ('Maya', 'permissions user get', null));
+    final component = (events[1] as MessageCreated).message;
+    expect((component.interaction!.userName, component.interaction!.command), ('maya', null));
+    final reread = messageFromJson(jsonDecode(jsonEncode(messageToJson(component))) as Map<String, Object?>);
+    expect(reread.interaction!.interactedMessageId, '13');
+    expect(
+      messageFromJson(
+        jsonDecode(jsonEncode(messageToJson((events[0] as MessageCreated).message))),
+      ).interaction!.command,
+      'permissions user get',
+    );
+  });
+
   test('a webhook\'s message keeps its webhook, which tells it from another\'s', () async {
     final events = await listen(_room);
     repository.handleEvent(
@@ -718,10 +1188,138 @@ void main() {
     expect(messageFromJson(jsonDecode(jsonEncode(messageToJson(m))) as Map<String, Object?>).webhookId, 'w-1');
   });
 
+  test('a deleted file is kept apart from the rest, and the offline cache keeps both', () async {
+    final events = await listen(_room);
+    final message = _roomMessage('15', 'files');
+    repository.handleEvent(
+      _event('MESSAGE_CREATE', {
+        ...message,
+        'attachments': [
+          ...message['attachments'] as List,
+          {
+            'id': 'a-2',
+            'filename': 'cat.png',
+            'content_type': 'image/png',
+            'size_bytes': 4096,
+            'width': 800,
+            'height': 600,
+            'created_at': _at,
+            'deleted_at': _at,
+          },
+        ],
+      }),
+    );
+    await pumpEventQueue();
+    final m = (events.single as MessageCreated).message;
+    expect(m.attachments.map((a) => a.id), ['a-1']);
+    expect([for (final a in m.deletedAttachments) (a.id, a.width)], [('a-2', 800)]);
+    final reread = messageFromJson(jsonDecode(jsonEncode(messageToJson(m))) as Map<String, Object?>);
+    expect((reread.attachments.single.id, reread.deletedAttachments.single.id), ('a-1', 'a-2'));
+  });
+
+  test('the offline cache keeps a call notice\'s call (#158)', () {
+    final m = ChatMessage(
+      id: 'n-1',
+      authorId: _maya,
+      authorName: 'Maya',
+      content: '',
+      createdAt: DateTime(2026, 10, 23, 9, 5),
+      isNotice: true,
+      call: CallNotice(
+        participants: const [_maya, _me],
+        startedAt: DateTime(2026, 10, 23, 9),
+        endedAt: DateTime(2026, 10, 23, 9, 5),
+      ),
+    );
+    final back = messageFromJson(jsonDecode(jsonEncode(messageToJson(m))) as Map<String, Object?>);
+    expect(back.isNotice, isTrue);
+    expect(back.call!.participants, [_maya, _me]);
+    expect(back.call!.duration, const Duration(minutes: 5));
+  });
+
+  test('a v2 file the message carries, a path on the API\'s host, gets a whole link', () async {
+    final events = await listen(_room);
+    repository.handleEvent(
+      _event('MESSAGE_CREATE', {
+        ..._answer('16', '', flags: 1 << 15),
+        'components': [
+          {
+            'type': 13,
+            'name': 'report.pdf',
+            'file': {'url': '/attachments/f-1?sig=abc', 'attachment_id': 'f-1'},
+          },
+          {
+            'type': 12,
+            'items': [
+              {
+                'media': {'url': '/attachments/p-1?sig=abc'},
+              },
+              {
+                'media': {'url': 'https://cdn.example/cat.png'},
+              },
+            ],
+          },
+        ],
+      }),
+    );
+    await pumpEventQueue();
+    final m = (events.single as MessageCreated).message;
+    expect(m.components[0].mediaUrl, 'https://api.duvet.chat/attachments/f-1?sig=abc');
+    expect(m.components[1].gallery.map((i) => i.url), [
+      'https://api.duvet.chat/attachments/p-1?sig=abc',
+      'https://cdn.example/cat.png',
+    ]);
+    // The offline cache keeps the whole links.
+    final reread = messageFromJson(jsonDecode(jsonEncode(messageToJson(m))) as Map<String, Object?>);
+    expect(reread.components[0].mediaUrl, 'https://api.duvet.chat/attachments/f-1?sig=abc');
+  });
+
   test('a command\'s room option keeps the room types it takes', () async {
     await repository.logIn('gaby@duvet.chat', 'secret');
     final go = (await repository.commands('s-1')).single;
     expect(go.options.single.roomTypes, [1, 3]);
+  });
+
+  test('an embed keeps its colors, author, fields, footer and date, and the offline cache keeps them', () async {
+    final events = await listen(_room);
+    repository.handleEvent(
+      _event('MESSAGE_CREATE', {
+        ..._answer('17', 'deployed', flags: 0),
+        'embeds': [
+          {
+            'type': 'rich',
+            'color': {'color_from': 0x22C55E, 'color_via': 0x14B8A6, 'color_to': 0x3B82F6},
+            'author': {'name': 'CI', 'url': 'https://ci.example', 'icon_url': 'https://ci.example/i.png'},
+            'fields': [
+              {'name': 'Branch', 'value': 'dev', 'inline': true},
+            ],
+            'footer': {'text': 'GitHub'},
+            'timestamp': _at,
+          },
+          {
+            'type': 'rich',
+            'title': 'One color',
+            'color': {'color_from': 0xEF4444, 'color_via': 0x000000},
+          },
+        ],
+      }),
+    );
+    await pumpEventQueue();
+    final [rich, plain] = (events.single as MessageCreated).message.embeds;
+    expect(rich.title, isNull, reason: 'the author shows as itself, not as the title');
+    expect((rich.authorName, rich.authorUrl, rich.footer), ('CI', 'https://ci.example', 'GitHub'));
+    expect(rich.colors, [0x22C55E, 0x14B8A6, 0x3B82F6]);
+    expect(rich.fields.single, (name: 'Branch', value: 'dev', inline: true));
+    expect(rich.timestamp, DateTime.parse(_at).toLocal());
+    // Without its end, only its start: as the desktop's border.
+    expect(plain.colors, [0xEF4444]);
+
+    final reread = messageFromJson(
+      jsonDecode(jsonEncode(messageToJson((events.single as MessageCreated).message))) as Map<String, Object?>,
+    ).embeds.first;
+    expect((reread.authorName, reread.footer), ('CI', 'GitHub'));
+    expect(reread.colors, [0x22C55E, 0x14B8A6, 0x3B82F6]);
+    expect((reread.fields.single.name, reread.timestamp), ('Branch', DateTime.parse(_at).toLocal()));
   });
 
   test('a send or a pin the API refuses says why, as the desktop shows it', () async {

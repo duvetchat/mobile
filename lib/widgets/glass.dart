@@ -274,6 +274,9 @@ class GlassRow extends StatefulWidget {
   /// has one, in place of `ink`.
   final RoleColors? labelColors;
 
+  /// Right after the label, kept when a long label is cut: [OwnerCrown].
+  final Widget? labelIcon;
+
   /// A member's banner, faintly behind the row: see [memberBanner].
   final String? banner;
   final bool bannerOffline;
@@ -289,6 +292,7 @@ class GlassRow extends StatefulWidget {
     this.destructive = false,
     this.selected = false,
     this.labelColors,
+    this.labelIcon,
     this.banner,
     this.bannerOffline = false,
     super.key,
@@ -359,15 +363,22 @@ class _GlassRowState extends State<GlassRow> {
                     mainAxisSize: MainAxisSize.min,
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      if (widget.labelColors case final role?)
-                        RoleName(widget.label, colors: role, style: DuvetType.label)
-                      else
-                        Text(
-                          widget.label,
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                          style: DuvetType.label.copyWith(color: ink),
-                        ),
+                      Row(
+                        children: [
+                          Flexible(
+                            child: switch (widget.labelColors) {
+                              final role? => RoleName(widget.label, colors: role, style: DuvetType.label),
+                              null => Text(
+                                widget.label,
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                                style: DuvetType.label.copyWith(color: ink),
+                              ),
+                            },
+                          ),
+                          if (widget.labelIcon case final icon?) ...[const SizedBox(width: 4), icon],
+                        ],
+                      ),
                       if (widget.detail != null)
                         Text(
                           widget.detail!,

@@ -1,3 +1,4 @@
+import 'package:duvet_client/duvet.dart' show Activity;
 import 'package:flutter/foundation.dart';
 
 import 'models.dart';
@@ -6,6 +7,14 @@ import 'voice_signaling.dart';
 
 /// Everything the app asks of a Duvet server. The UI depends on this alone;
 /// [DuvetRepository] talks to the real API, and tests pass a fake.
+/// The marks the UI shows: a chat at nothing ([ChatRepository.quiet]) shows neither, though [ChatRepository.unread]
+/// and [ChatRepository.mentions] keep them, so they come back with its level. What shows them listens to
+/// [ChatRepository.notificationLevels] too.
+extension ShownMarks on ChatRepository {
+  bool shownUnread(String chatId) => unread.value.contains(chatId) && !quiet(chatId);
+  int shownMentions(String chatId) => quiet(chatId) ? 0 : mentions.value[chatId] ?? 0;
+}
+
 abstract interface class ChatRepository {
   /// The signed-in user, or null when signed out.
   ValueListenable<Profile?> get profile;
@@ -26,6 +35,12 @@ abstract interface class ChatRepository {
   /// this device, for this account. A category not here is open.
   ValueListenable<Set<String>> get collapsedCategories;
   void setCategoryCollapsed(String categoryId, bool collapsed);
+
+  /// The chats pinned to the top of Chats, as `room:<id>` or `conv:<id>`
+  /// (see `pinKey`): kept on this device, for this account, as neither the
+  /// API nor the desktop has pins.
+  ValueListenable<Set<String>> get pinnedChats;
+  void setChatPinned(String key, bool pinned);
 
   ValueListenable<LiveStatus> get status;
 
@@ -49,6 +64,10 @@ abstract interface class ChatRepository {
   /// stands.
   void cameToFront();
 
+  /// The app went to the background: its own notices and their sound keep quiet there, as the phone's notifications
+  /// tell of what comes (lib/push).
+  void wentToBack();
+
   Future<void> logIn(String email, String password);
 
   Future<void> logOut();
@@ -60,7 +79,8 @@ abstract interface class ChatRepository {
   /// chat ID: what the Space Directory previews.
   ValueListenable<Map<String, ChatMessage>> get latest;
 
-  /// Fetches the newest message of each of [targets] not in [latest] yet.
+  /// Fetches the newest message of each of [targets] not in [latest] yet,
+  /// and the whole page of the busiest few, kept for [cachedMessages].
   Future<void> loadLatest(Iterable<ChatTarget> targets);
 
   /// A message as a one-line preview, mentions and emoji by name.
@@ -68,6 +88,11 @@ abstract interface class ChatRepository {
 
   /// The chat's latest messages, the oldest first, or those [before] a message.
   Future<List<ChatMessage>> messages(ChatTarget target, {String? before});
+
+  /// The chat's latest page as it was last seen here, kept on the device, or
+  /// null when it never was: what a chat opens on while [messages] fetches it
+  /// again.
+  Future<List<ChatMessage>?> cachedMessages(ChatTarget target);
 
   /// Live changes to the chat's messages.
   Stream<MessageEvent> messageEvents(ChatTarget target);
@@ -98,6 +123,7 @@ abstract interface class ChatRepository {
     List<OutgoingFile> files = const [],
     Sticker? sticker,
     String? replyTo,
+    bool? mentionRepliedUser,
     void Function(double progress)? onProgress,
     Future<void>? cancel,
   });
@@ -112,8 +138,8 @@ abstract interface class ChatRepository {
   /// The largest file the user may upload, in bytes; null when unknown.
   Future<int?> uploadLimit();
 
-  /// Messages matching [query], the newest first.
-  Future<List<SearchHit>> search(SearchQuery query);
+  /// A page of the messages matching [query], the newest first.
+  Future<SearchPage> search(SearchQuery query);
 
   /// The chat's pinned messages, the last pinned first.
   Future<List<ChatMessage>> pins(ChatTarget target);
@@ -144,6 +170,9 @@ abstract interface class ChatRepository {
   /// The user's friends and friend requests; [loadFriends] fetches them.
   ValueListenable<Friends> get friends;
   Future<void> loadFriends();
+
+  /// Asks [userId] to be friends. A refusal the API explains (no such user,
+  /// a bot, friends already) throws an [ActionFailed] with its reason.
   Future<void> sendFriendRequest(String userId);
   Future<void> acceptFriendRequest(String requestId);
 
@@ -166,9 +195,14 @@ abstract interface class ChatRepository {
   bool isMember(String spaceId, String userId);
 
   /// Makes an account, then signs in to it; the API emails a link to verify
-  /// the address.
+  /// the address. A refusal the API explains (a username taken, say) throws
+  /// an [ActionFailed] with its reason.
   Future<void> signUp({required String username, required String email, required String password, String? alias});
   Future<void> sendVerificationEmail();
+
+  /// Emails the signed-in user a link to set a new password, as Forgot
+  /// password does when signed out.
+  Future<void> sendResetPasswordEmail();
 
   /// Verifies the email with the token from the emailed link.
   Future<void> verifyEmail(String token);
@@ -182,8 +216,10 @@ abstract interface class ChatRepository {
   Future<void> changeEmail(String token, String email);
 
   /// The user's display name: empty clears it, back to the username. A [bio]
-  /// replaces theirs (empty clears it); left out, it stays.
-  Future<void> updateProfile({required String alias, String? bio});
+  /// replaces theirs (empty clears it), as a [username] does; left out, each
+  /// stays. A refusal the API explains (a username taken, say) throws an
+  /// [ActionFailed] with its reason.
+  Future<void> updateProfile({required String alias, String? bio, String? username});
 
   /// Chooses the user's status, [Presence.online] or
   /// [Presence.doNotDisturb]: what others see while they're connected.
@@ -215,15 +251,18 @@ abstract interface class ChatRepository {
 
   /// Changes the Space; [removeBanner] takes its banner away, as no
   /// [bannerPath] can. With pictures, [onProgress] follows their upload (0 to
-  /// 1).
+  /// 1). An empty [locale] clears it. [defaultNotifications] is what its members
+  /// are notified of until they choose: every message or only mentions.
   Future<void> updateSpace(
     String spaceId, {
     String? name,
     String? description,
+    String? locale,
     String? iconPath,
     String? bannerPath,
     bool removeBanner = false,
     bool removeIcon = false,
+    NotificationLevel? defaultNotifications,
     void Function(double progress)? onProgress,
   });
 
@@ -296,6 +335,22 @@ abstract interface class ChatRepository {
 
   Future<SpaceStorage> spaceStorage(String spaceId);
 
+  /// A bucket for the Space's files; while one is active, the uploads go to it.
+  Future<void> createSpaceBucket(String spaceId, BucketDraft draft);
+
+  /// Sends every field: a null limit removes it, an empty secret keeps it.
+  Future<void> updateSpaceBucket(String spaceId, String bucketId, BucketDraft draft);
+
+  /// Refused while it holds files, said with how many.
+  Future<void> deleteSpaceBucket(String spaceId, String bucketId);
+  Future<void> setSpaceBucketActive(String spaceId, String bucketId, bool active);
+
+  /// A file posted in no message: the API won't delete one that is.
+  Future<void> deleteSpaceFile(String spaceId, String fileId);
+
+  /// Every file of the Space's, those in messages too.
+  Future<void> deleteAllSpaceFiles(String spaceId);
+
   /// The team invites waiting on the user: fetched on READY, and again when
   /// TEAM_INVITE_CREATE brings one.
   ValueListenable<List<TeamInvite>> get teamInvites;
@@ -319,6 +374,15 @@ abstract interface class ChatRepository {
   Future<DevApp> createApplication(String teamId, String name, {String? description});
   Future<DevApp> updateApplication(DevApp app, {String? name, String? description, bool? public});
   Future<void> deleteApplication(DevApp app);
+
+  /// An application's slash commands, by name.
+  Future<List<BotCommand>> appCommands(DevApp app);
+
+  /// Registers [command] when its id is empty, else replaces its name,
+  /// description and options; answers it as saved. Refusals carry the API's
+  /// reason (a name it doesn't take, an option's rules).
+  Future<BotCommand> saveAppCommand(DevApp app, BotCommand command);
+  Future<void> deleteAppCommand(DevApp app, String commandId);
 
   /// Gives [app] a bot, and answers its token: shown once, never again.
   Future<String> createBot(DevApp app);
@@ -360,6 +424,27 @@ abstract interface class ChatRepository {
   Future<BotInfo> bot(String userId);
   Future<void> addBot(String spaceId, String botId);
 
+  /// Takes a bot out of a Space; the gateway's member removal drops it from
+  /// the members list.
+  Future<void> removeBot(String spaceId, String botId);
+
+  /// Takes a person out of a Space (Kick Members); they can join it again.
+  /// The gateway's member removal drops them from the members list.
+  Future<void> kick(String spaceId, String userId);
+
+  /// Bans a person from a Space (Ban Members), with [reason] or none: they
+  /// leave it as a kick takes them, and can't join it again.
+  Future<void> ban(String spaceId, String userId, {String? reason});
+
+  /// The Space's bans, newest first (Ban Members).
+  Future<List<SpaceBan>> bans(String spaceId);
+
+  /// Lifts [userId]'s ban from a Space (Ban Members): they can join again.
+  Future<void> unban(String spaceId, String userId);
+
+  /// A Space's ID each time someone, here or elsewhere, bans or unbans in it.
+  Stream<String> get bansChanged;
+
   /// The Space's roles, highest first, but the one everyone has: for role
   /// selects and options.
   List<({String id, String name})> spaceRoles(String spaceId);
@@ -383,12 +468,73 @@ abstract interface class ChatRepository {
   /// One message, e.g. the original of a reply that isn't loaded.
   Future<ChatMessage> fetchMessage(ChatTarget target, String messageId);
 
+  /// A link to [attachment] that works now. Its own while it has more than
+  /// [MessageAttachment.renewBefore] left (or one renewed here since), else a
+  /// new one the API signs, which the messages with the file then carry
+  /// ([AttachmentRenewed]), the pages kept for offline included. [refused]:
+  /// its link, the one [attachment] has, failed to load, so a new one even if
+  /// it hasn't expired, but not within a minute of the last one
+  /// signed. Its own when the API can't sign one.
+  Future<String> attachmentLink(MessageAttachment attachment, {bool refused = false});
+
   /// The messages after [messageId], the oldest first: what was missed while
   /// the socket was down.
   Future<List<ChatMessage>> messagesAfter(ChatTarget target, String messageId);
 
   /// Unread mentions of the user, by chat ID.
   ValueListenable<Map<String, int>> get mentions;
+
+  /// The notification levels the user chose, by place: a Space's, a room's or a conversation's ID. READY loads them
+  /// and NOTIFICATION_SETTINGS_UPDATE keeps them current; a place without one notifies by its default.
+  ValueListenable<Map<String, NotificationLevel>> get notificationLevels;
+
+  /// What a Space notifies of: the user's level for it, else its default ([spaceDefault]).
+  NotificationLevel spaceLevel(String spaceId);
+
+  /// What a Space notifies its members of until they choose: every message or only mentions, which its owner and
+  /// Administrators set (only mentions until they do, and from a server without it).
+  NotificationLevel spaceDefault(String spaceId);
+
+  /// What a room notifies of: the user's level for it, else its Space's.
+  NotificationLevel roomLevel(String roomId);
+
+  /// What a conversation notifies of: the user's level for it, else every message.
+  NotificationLevel conversationLevel(String conversationId);
+
+  /// Whether a chat (a room's or a conversation's ID) notifies of nothing: no notice, no sound, no unread mark and no
+  /// mention count. [unread] and [mentions] still hold it, so its marks come back as its level changes.
+  bool quiet(String chatId);
+
+  /// Sets the user's level for a place, or clears it ([level] null) so the place notifies by its default. The levels
+  /// change once NOTIFICATION_SETTINGS_UPDATE comes back.
+  Future<void> setNotificationLevel(String targetId, NotificationTarget target, NotificationLevel? level);
+
+  /// Makes [fid], this phone's Firebase installation ID, the session's push registration: the user's messages that
+  /// notify come to the phone while they have no computer with Duvet open (lib/push).
+  Future<void> setPushRegistration(String fid);
+
+  /// Deletes the session's push registration: the phone gets no pushes any more.
+  Future<void> deletePushRegistration();
+
+  /// The notices of mentions of the user in chats that aren't on screen, the
+  /// newest first, a few at most, each for a few seconds. None in do not
+  /// disturb; a message deleted takes its notice away, and opening its chat
+  /// ([chatShown]) does too.
+  ValueListenable<List<MentionNotice>> get mentionNotices;
+
+  /// Takes a message's notice away: it was opened, or swiped off.
+  void dismissMentionNotice(String messageId);
+
+  /// The chat on screen ([threadOf]: a thread of it, showing the replies to
+  /// that message), whose mentions show no notice: a chat's screen says so
+  /// while it's on top with the app in front, then [chatHidden]. A chat
+  /// [opened] (not a thread, nor only back from the background) takes its
+  /// notices away.
+  void chatShown(ChatTarget target, {String? threadOf, bool opened = true});
+
+  /// The chat stopped being on screen; nothing changes when another is on
+  /// screen by now.
+  void chatHidden(ChatTarget target, {String? threadOf});
 
   /// The last message the user read in a room, as the server knows it; null
   /// when it doesn't (and in conversations).
@@ -433,6 +579,11 @@ abstract interface class ChatRepository {
   /// platforms are the same in every Space, and a bot's connections all count
   /// as a computer's.
   ValueListenable<Set<String>> get mobileOnly;
+
+  /// What people are doing (a game, the song Spotify plays), by user ID, as
+  /// the gateway tells it of those the user shares a Space with; someone
+  /// missing is doing nothing it knows of.
+  ValueListenable<Map<String, List<Activity>>> get activities;
 
   /// The emoji the chat can use beyond Unicode's: its space's. None in DMs.
   Future<List<CustomEmoji>> customEmojis(ChatTarget target);

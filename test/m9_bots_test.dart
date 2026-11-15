@@ -7,6 +7,8 @@ import 'package:duvet/data/models.dart';
 import 'package:duvet/deep_links.dart';
 import 'package:duvet/main.dart';
 import 'package:duvet/widgets/chrome.dart';
+import 'package:duvet/widgets/media.dart';
+import 'package:duvet/widgets/message_content.dart' show ImageViewer;
 import 'package:duvet/widgets/rows.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
@@ -82,6 +84,16 @@ void main() {
         ],
       ),
       BotCommand(id: 'cmd-ping', applicationId: 'app-ballot', appName: 'Ballot', name: 'ping', description: 'Pong'),
+      BotCommand(
+        id: 'cmd-role',
+        applicationId: 'app-ballot',
+        appName: 'Ballot',
+        name: 'role',
+        description: 'Show a member\'s roles',
+        subcommandGroup: 'user',
+        subcommand: 'get',
+        options: [BotCommandOption(type: OptionKind.string, name: 'who', required: true)],
+      ),
     ];
     await tester.pumpWidget(DuvetApp(repository: repository));
     await tester.pumpAndSettle();
@@ -226,6 +238,201 @@ void main() {
     semantics.dispose();
   });
 
+  const videoUrl = 'https://api.duvet.chat/api/proxy/video?exp=1&sig=abc&url=https%3A%2F%2Fcdn.example%2Fclip.mp4';
+  const pictureUrl = 'https://cdn.example/cat.png';
+  List<Map<String, Object?>> gallery() => [
+    {
+      'type': 12,
+      'items': [
+        {
+          'media': {'url': pictureUrl, 'content_type': 'image/png'},
+        },
+        {
+          'media': {'url': videoUrl, 'content_type': 'video/mp4'},
+        },
+        {
+          'media': {'url': 'javascript:alert(1)'},
+        },
+      ],
+    },
+  ];
+
+  test('a gallery keeps each item\'s content type (#176)', () {
+    final items = componentsFromJson(gallery()).single.gallery;
+    expect([for (final i in items) (i.url, i.contentType)], [(pictureUrl, 'image/png'), (videoUrl, 'video/mp4')]);
+  });
+
+  const fileUrl = 'https://api.duvet.chat/attachments/f-1?sig=abc';
+  List<Map<String, Object?>> v2() => [
+    {
+      'type': 17,
+      'accent_color': 0x5865F2,
+      'spoiler': true,
+      'components': [
+        {'type': 10, 'content': 'The butler did it'},
+      ],
+    },
+    {
+      'type': 13,
+      'name': 'report.pdf',
+      'size': 2048,
+      'file': {'url': fileUrl, 'attachment_id': 'f-1'},
+    },
+    {
+      'type': 12,
+      'items': [
+        {
+          'media': {'url': pictureUrl, 'content_type': 'image/png'},
+          'description': 'A cat',
+          'spoiler': true,
+        },
+      ],
+    },
+    // Last, by the composer: a tap reaches it, not the top bar.
+    {
+      'type': 9,
+      'components': [
+        {'type': 10, 'content': 'Cover art'},
+      ],
+      'accessory': {
+        'type': 11,
+        'description': 'Cover',
+        'media': {'url': pictureUrl},
+      },
+    },
+  ];
+
+  test('v2 components keep their accent color, spoilers, a file\'s name and size, and a gallery item\'s', () {
+    final [container, file, gallery, _] = componentsFromJson(v2());
+    expect((container.accentColor, container.spoiler), (0x5865F2, true));
+    expect((file.mediaUrl, file.mediaAttachmentId, file.fileName, file.fileSize), (fileUrl, 'f-1', 'report.pdf', 2048));
+    final item = gallery.gallery.single;
+    expect((item.description, item.spoiler), ('A cat', true));
+  });
+
+  testWidgets('v2: a spoiler stays covered until tapped, a file is a file, and a thumbnail enlarges', (tester) async {
+    final message = ChatMessage(
+      id: 'v2',
+      authorId: _ballot,
+      authorName: 'Ballot',
+      fromBot: true,
+      content: '',
+      createdAt: DateTime(2026, 10, 23, 9),
+      isComponentsV2: true,
+      components: componentsFromJson(v2()),
+    );
+    await pumpGeneral(tester, history: [message]);
+    // The container's and the gallery item's.
+    expect(find.bySemanticsLabel('Spoiler'), findsNWidgets(2));
+    expect(find.byWidgetPredicate((w) => w is ColoredBox && w.color == const Color(0xFF5865F2)), findsOneWidget);
+    expect(find.bySemanticsLabel(RegExp(r'report\.pdf')), findsOneWidget);
+
+    await tester.tap(find.bySemanticsLabel('Spoiler').first);
+    await tester.pumpAndSettle();
+    expect(find.bySemanticsLabel('Spoiler'), findsOneWidget);
+
+    await tapLabel(tester, 'Cover');
+    expect(find.byType(ImageViewer), findsOneWidget);
+    semantics.dispose();
+  });
+
+  testWidgets('a gallery\'s video item is a play tile, not a picture (#176)', (tester) async {
+    final message = ChatMessage(
+      id: 'clips',
+      authorId: _ballot,
+      authorName: 'Ballot',
+      fromBot: true,
+      content: '',
+      createdAt: DateTime(2026, 10, 23, 9),
+      components: componentsFromJson(gallery()),
+    );
+    await pumpGeneral(tester, history: [message]);
+    bool network(Widget w, String url) => w is Image && w.image is NetworkImage && (w.image as NetworkImage).url == url;
+    expect(find.byWidgetPredicate((w) => network(w, pictureUrl)), findsOneWidget);
+    expect(find.byWidgetPredicate((w) => network(w, videoUrl)), findsNothing);
+    expect(find.byType(PlayMark), findsOneWidget);
+    expect(find.bySemanticsLabel('Video'), findsOneWidget);
+    semantics.dispose();
+  });
+
+  testWidgets('a gallery opens a repeated picture at its own place, and swipes past no spoiler', (tester) async {
+    Map<String, Object?> item(String description, String url, {bool spoiler = false}) => {
+      'media': {'url': url, 'content_type': 'image/png'},
+      'description': description,
+      'spoiler': spoiler,
+    };
+    final message = ChatMessage(
+      id: 'shots',
+      authorId: _ballot,
+      authorName: 'Ballot',
+      fromBot: true,
+      content: '',
+      createdAt: DateTime(2026, 10, 23, 9),
+      components: componentsFromJson([
+        {
+          'type': 12,
+          'items': [
+            item('First', pictureUrl),
+            item('Again', pictureUrl),
+            item('Hidden', 'https://cdn.example/dog.png', spoiler: true),
+          ],
+        },
+      ]),
+    );
+    await pumpGeneral(tester, history: [message]);
+    await tapLabel(tester, 'Again');
+    expect(find.bySemanticsLabel('Photo, Again, 2 of 2'), findsOneWidget);
+    expect(find.bySemanticsLabel(RegExp('Hidden')), findsNothing);
+    semantics.dispose();
+  });
+
+  testWidgets('a bot\'s profile removes it from the Space, after asking, for those who manage bots', (tester) async {
+    final repository = await pumpGeneral(tester, history: [poll()]);
+    await tapLabel(tester, 'Ballot, bot,’s profile');
+    await tapLabel(tester, 'Remove from Space');
+    expect(find.text('Remove Ballot from Design Guild?'), findsOneWidget);
+    expect(repository.botsRemoved, isEmpty);
+    await tapLabel(tester, 'Remove from Space');
+    expect(repository.botsRemoved, [('s-guild', _ballot)]);
+    expect(find.bySemanticsLabel('Remove from Space'), findsNothing);
+    semantics.dispose();
+  });
+
+  testWidgets('a bot removed from the members list leaves it', (tester) async {
+    final repository = await pumpGeneral(tester);
+    repository.extraRoomMembers.add(const Member(userId: _ballot, username: 'ballot', alias: 'Ballot', isBot: true));
+    await tapLabel(tester, 'More');
+    await tapLabel(tester, 'Members');
+    await tester.tap(find.text('Ballot').last);
+    await tester.pumpAndSettle();
+    // Below the profile's roles.
+    await tester.ensureVisible(find.bySemanticsLabel('Remove from Space').last);
+    await tester.pumpAndSettle();
+    await tapLabel(tester, 'Remove from Space');
+    await tapLabel(tester, 'Remove from Space');
+    expect(repository.botsRemoved, [('s-guild', _ballot)]);
+    expect(find.text('Ballot'), findsNothing);
+    semantics.dispose();
+  });
+
+  testWidgets('without Manage bots, a bot\'s profile has no Remove from Space', (tester) async {
+    final repository = await pumpGeneral(tester, history: [poll()]);
+    repository
+      ..spaceOwner = false
+      ..spacePerms = Perm.all & ~Perm.manageBots & ~Perm.administrator;
+    await tapLabel(tester, 'Ballot, bot,’s profile');
+    expect(find.bySemanticsLabel('Remove from Space'), findsNothing);
+    semantics.dispose();
+  });
+
+  testWidgets('a failed interaction says the desktop\'s text', (tester) async {
+    final repository = await pumpGeneral(tester, history: [poll()]);
+    repository.refusals['useComponent'] = 'The application did not respond';
+    await tapLabel(tester, 'Dune');
+    expect(find.text('The application did not respond'), findsOneWidget);
+    semantics.dispose();
+  });
+
   testWidgets('a button that opens a modal: a glass sheet that checks, then submits', (tester) async {
     final repository = await pumpGeneral(tester, history: [poll()]);
     repository.nextModal = _meetup();
@@ -276,6 +483,26 @@ void main() {
     await tester.pumpAndSettle();
     await tapLabel(tester, 'Send');
     expect(repository.interactions.last, 'command ping');
+    semantics.dispose();
+  });
+
+  testWidgets('a subcommand is its own command: found past a space, filled, sent; mentions still suggest', (
+    tester,
+  ) async {
+    final repository = await pumpGeneral(tester);
+    await tester.enterText(find.byType(EditableText), '/role u');
+    await tester.pumpAndSettle();
+    expect(find.bySemanticsLabel(RegExp(r'^Commands, 1')), findsOneWidget);
+    await tapLabel(tester, RegExp(r'^/role user get'));
+    await tester.enterText(find.byType(EditableText).last, 'maya');
+    await tapLabel(tester, 'Send /role user get');
+    expect(repository.interactions, ['command role user get who=maya']);
+
+    // A message that only starts with a slash suggests as any other.
+    await tester.enterText(find.byType(EditableText), '/shrug @ma');
+    await tester.pumpAndSettle();
+    expect(find.bySemanticsLabel(RegExp(r'^Commands')), findsNothing);
+    expect(find.bySemanticsLabel(RegExp(r'^Mention suggestions')), findsOneWidget);
     semantics.dispose();
   });
 

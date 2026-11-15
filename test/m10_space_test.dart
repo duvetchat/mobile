@@ -8,11 +8,14 @@ import 'package:duvet/data/models.dart';
 import 'package:duvet/data/scope.dart';
 import 'package:duvet/deep_links.dart';
 import 'package:duvet/main.dart';
+import 'package:duvet/people.dart' show RoleChip;
 import 'package:duvet/space_admin.dart';
 import 'package:duvet/spaces.dart' show pickSpaceIcon;
 import 'package:duvet/theme.dart';
 import 'package:duvet/widgets/chrome.dart';
-import 'package:duvet/widgets/rows.dart' show DuvetChip;
+import 'package:duvet/widgets/color_picker.dart' show ColorPick;
+import 'package:duvet/widgets/glass.dart' show GlassRow;
+import 'package:duvet/widgets/rows.dart' show DuvetButton, DuvetChip, DuvetTextField, OwnerCrown;
 import 'package:duvet/widgets/picture_edit.dart' show takePhoto;
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
@@ -225,6 +228,215 @@ void main() {
     semantics.dispose();
   });
 
+  testWidgets('members: below Roles; a member\'s roles change; a bot is removed; no kick or ban', (tester) async {
+    const helper = Member(userId: 'u-helper', username: 'helper', alias: 'Helper', isBot: true);
+    final repository = await pumpSettings(tester, setUp: (r) => r.extraRoomMembers.add(helper));
+    final rows = [for (final w in tester.widgetList<GlassRow>(find.byType(GlassRow))) w.label];
+    expect(rows.indexOf('Members'), rows.indexOf('Roles') + 1);
+    await tapLabel(tester, RegExp(r'^Members'));
+    expect(find.text('Helper'), findsOneWidget);
+    expect(find.textContaining('No roles'), findsWidgets);
+    expect(find.byType(OwnerCrown), findsOneWidget, reason: 'Maya owns the Space');
+    expect(find.bySemanticsLabel(RegExp(r'^Maya, .*owner')), findsOneWidget);
+
+    await tester.enterText(find.byType(EditableText).first, 'may');
+    await tester.pumpAndSettle();
+    expect(find.text('Helper'), findsNothing);
+    await tester.tap(find.text('Maya'));
+    await tester.pumpAndSettle();
+    expect(find.text(FakeRepository.maya), findsOneWidget, reason: 'the ID shows');
+    expect(find.bySemanticsLabel('Remove from Space'), findsNothing, reason: 'Maya is no bot');
+    expect(find.bySemanticsLabel(RegExp('Kick|Ban')), findsNothing);
+    await tapLabel(tester, 'Moderator');
+    expect(repository.admin, ['give role-mod Maya']);
+    await tapLabel(tester, 'Back');
+    expect(find.textContaining('Moderator'), findsOneWidget, reason: 'her row shows the role');
+
+    await tester.enterText(find.byType(EditableText).first, '');
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Helper'));
+    await tester.pumpAndSettle();
+    await tapLabel(tester, 'Remove from Space');
+    await tapLabel(tester, 'Remove from Space');
+    expect(repository.botsRemoved, [('s-guild', 'u-helper')]);
+    expect(find.text('Members'), findsWidgets, reason: 'back on the list');
+    expect(find.text('Helper'), findsNothing);
+    semantics.dispose();
+  });
+
+  testWidgets('members: without Manage roles, roles show but don\'t change', (tester) async {
+    final repository = await pumpSettings(
+      tester,
+      setUp: (r) => r
+        ..spaceOwner = false
+        ..spacePerms = Perm.manageBots,
+    );
+    expect(find.bySemanticsLabel(RegExp(r'^Roles')), findsNothing);
+    await tapLabel(tester, RegExp(r'^Members'));
+    await tester.tap(find.text('Maya'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.bySemanticsLabel('Moderator').last);
+    await tester.pumpAndSettle();
+    expect(repository.admin, isEmpty);
+    semantics.dispose();
+  });
+
+  // Maya's profile, from # general's members sheet.
+  Future<FakeRepository> pumpMayaProfile(
+    WidgetTester tester, {
+    void Function(FakeRepository r)? setUp,
+    String name = 'Maya',
+  }) async {
+    semantics = tester.ensureSemantics();
+    tester.view.physicalSize = const Size(390 * 3, 844 * 3);
+    tester.view.devicePixelRatio = 3;
+    addTearDown(tester.view.reset);
+    final repository = FakeRepository();
+    setUp?.call(repository);
+    await tester.pumpWidget(DuvetApp(repository: repository));
+    await tester.pumpAndSettle();
+    await tester.tap(find.descendant(of: find.byType(DuvetTabBar), matching: find.text('Spaces')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Design Guild'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('# general'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.bySemanticsLabel('More').hitTestable().last);
+    await tester.pumpAndSettle();
+    await tester.tap(find.bySemanticsLabel('Members').hitTestable().last);
+    await tester.pumpAndSettle();
+    await tester.tap(find.text(name).hitTestable().last);
+    await tester.pumpAndSettle();
+    return repository;
+  }
+
+  testWidgets('the owner kicks a member from their profile, after asking', (tester) async {
+    final repository = await pumpMayaProfile(tester, name: 'leo');
+    await reveal(tester, find.text('Kick from Space'));
+    await tester.tap(find.text('Kick from Space'));
+    await tester.pumpAndSettle();
+    expect(find.text('Kick leo from Design Guild?'), findsOneWidget);
+    await tester.tap(find.text('Kick'));
+    await tester.pumpAndSettle();
+    expect(repository.kicked, [('s-guild', FakeRepository.leo)]);
+    expect(find.text('Kick from Space'), findsNothing, reason: 'the profile closes');
+    semantics.dispose();
+  });
+
+  testWidgets('a ban sends its reason, trimmed', (tester) async {
+    final repository = await pumpMayaProfile(tester, name: 'leo');
+    await reveal(tester, find.text('Ban from Space'));
+    await tester.tap(find.text('Ban from Space'));
+    await tester.pumpAndSettle();
+    await tester.enterText(find.byType(TextField).last, '  spam  ');
+    await tester.tap(find.text('Ban'));
+    await tester.pumpAndSettle();
+    expect(repository.banned, [('s-guild', FakeRepository.leo, 'spam')]);
+    expect(find.text('Banned leo from Design Guild'), findsOneWidget, reason: 'it says the ban went through');
+    semantics.dispose();
+  });
+
+  testWidgets('a ban made while the profile is open greys leo out, and Kick and Ban with him', (tester) async {
+    final repository = await pumpMayaProfile(tester, name: 'leo');
+    expect(find.bySemanticsLabel('Not in this Space'), findsNothing);
+    // SPACE_MEMBER_REMOVE, then SPACE_BAN_ADD.
+    repository.spaceMembers['s-guild']!.remove(FakeRepository.leo);
+    repository.spaces.value = [...repository.spaces.value];
+    repository.banElsewhere(
+      's-guild',
+      SpaceBan(
+        user: const Member(userId: FakeRepository.leo, username: 'leo'),
+        bannedBy: 'Maya',
+        at: DateTime(2026, 11, 1),
+      ),
+    );
+    await tester.pumpAndSettle();
+    expect(find.bySemanticsLabel('Not in this Space'), findsOneWidget);
+    await reveal(tester, find.text('Banned'));
+    expect(tester.widget<DuvetButton>(find.widgetWithText(DuvetButton, 'Banned')).onPressed, isNull);
+    expect(tester.widget<DuvetButton>(find.widgetWithText(DuvetButton, 'Kick from Space')).onPressed, isNull);
+    semantics.dispose();
+  });
+
+  testWidgets('no Kick or Ban on the Space\'s owner', (tester) async {
+    await pumpMayaProfile(tester);
+    expect(find.text('Kick from Space'), findsNothing);
+    expect(find.text('Ban from Space'), findsNothing);
+    semantics.dispose();
+  });
+
+  testWidgets('no Kick or Ban without the permissions, nor without a role above theirs', (tester) async {
+    await pumpMayaProfile(
+      tester,
+      name: 'leo',
+      setUp: (r) => r
+        ..spaceOwner = false
+        ..spacePerms = Perm.all & ~Perm.kickMembers & ~Perm.banMembers & ~Perm.administrator,
+    );
+    expect(find.text('Kick from Space'), findsNothing);
+    expect(find.text('Ban from Space'), findsNothing);
+    semantics.dispose();
+  });
+
+  testWidgets('a member with Kick Members kicks only below their highest role', (tester) async {
+    await pumpMayaProfile(
+      tester,
+      name: 'leo',
+      setUp: (r) => r
+        ..spaceOwner = false
+        ..spacePerms = Perm.all & ~Perm.banMembers & ~Perm.administrator
+        ..roleTags[FakeRepository.me.id] = [const RoleTag('Moderator', id: 'role-mod', position: 2)],
+    );
+    expect(find.text('Kick from Space'), findsOneWidget);
+    expect(find.text('Ban from Space'), findsNothing);
+    semantics.dispose();
+  });
+
+  testWidgets('a member\'s profile gives and takes a role at once', (tester) async {
+    final repository = await pumpMayaProfile(tester);
+    final moderator = find.widgetWithText(RoleChip, 'Moderator');
+    expect(tester.widget<RoleChip>(moderator).held, isFalse, reason: 'a role Maya lacks shows grey');
+    await reveal(tester, moderator);
+    await tester.tap(moderator);
+    await tester.pumpAndSettle();
+    expect(repository.admin, ['give role-mod Maya']);
+    expect(tester.widget<RoleChip>(moderator).held, isTrue, reason: 'it shows live');
+    await tester.tap(moderator);
+    await tester.pumpAndSettle();
+    expect(repository.admin, ['give role-mod Maya', 'take role-mod Maya']);
+    expect(tester.widget<RoleChip>(moderator).held, isFalse);
+    semantics.dispose();
+  });
+
+  testWidgets('without Manage roles, a member\'s profile has no Roles to change', (tester) async {
+    await pumpMayaProfile(
+      tester,
+      setUp: (r) => r
+        ..spaceOwner = false
+        ..spacePerms = Perm.all & ~Perm.manageRoles & ~Perm.administrator,
+    );
+    expect(find.text('ROLES IN DESIGN GUILD'), findsNothing);
+    expect(find.byType(RoleChip), findsNothing);
+    semantics.dispose();
+  });
+
+  testWidgets('on a member\'s profile, a role above the user\'s highest shows but doesn\'t change', (tester) async {
+    final repository = await pumpMayaProfile(
+      tester,
+      setUp: (r) => r
+        ..spaceOwner = false
+        ..spacePerms = Perm.all & ~Perm.administrator,
+    );
+    expect(find.text('ROLES IN DESIGN GUILD'), findsOneWidget);
+    final moderator = find.widgetWithText(RoleChip, 'Moderator');
+    expect(tester.widget<RoleChip>(moderator).onTap, isNull, reason: 'the user has no role above it');
+    await reveal(tester, moderator);
+    await tester.tap(moderator);
+    await tester.pumpAndSettle();
+    expect(repository.admin, isEmpty);
+    semantics.dispose();
+  });
+
   testWidgets('overview: rename the Space', (tester) async {
     final repository = await pumpSettings(tester);
     expect(find.textContaining('you own it'), findsOneWidget);
@@ -234,6 +446,54 @@ void main() {
     await tapLabel(tester, 'Save');
     expect(repository.admin, ['space name=Design Guild 2']);
     expect(find.text('Design Guild 2'), findsWidgets);
+    semantics.dispose();
+  });
+
+  testWidgets('overview: set the locale', (tester) async {
+    final repository = await pumpSettings(tester);
+    final locale = find.descendant(
+      of: find.widgetWithText(DuvetTextField, 'Locale'),
+      matching: find.byType(EditableText),
+    );
+    await tapLabel(tester, RegExp(r'^Overview'));
+    await reveal(tester, locale);
+    await tester.enterText(locale, 'fr');
+    await tester.pump();
+    await tapLabel(tester, 'Save');
+    expect(repository.admin, ['space locale=fr']);
+
+    // Shown when the page opens again; cleared, it is sent empty.
+    await tapLabel(tester, RegExp(r'^Overview'));
+    await reveal(tester, locale);
+    expect(tester.widget<EditableText>(locale).controller.text, 'fr');
+    await tester.enterText(locale, '');
+    await tester.pump();
+    await tapLabel(tester, 'Save');
+    expect(repository.admin.last, 'space locale=');
+    semantics.dispose();
+  });
+
+  testWidgets('overview: set the default notifications, only mentions until its owner chooses', (tester) async {
+    final repository = await pumpSettings(tester);
+    await tapLabel(tester, RegExp(r'^Overview'));
+    final every = find.bySemanticsLabel('All messages');
+    await reveal(tester, every);
+    expect(
+      tester.getSemantics(find.bySemanticsLabel('Only mentions')),
+      matchesSemantics(
+        label: 'Only mentions',
+        isButton: true,
+        hasCheckedState: true,
+        isChecked: true,
+        hasTapAction: true,
+        isInMutuallyExclusiveGroup: true,
+      ),
+    );
+    await tester.tap(every);
+    await tester.pumpAndSettle();
+    await tapLabel(tester, 'Save');
+    expect(repository.admin, ['space notifications=all']);
+    expect(repository.spaceDefault('s-guild'), NotificationLevel.all);
     semantics.dispose();
   });
 
@@ -759,7 +1019,8 @@ void main() {
     await tapLabel(tester, 'Done');
     await tapLabel(tester, RegExp(r'^0 members'));
     await tapLabel(tester, 'Maya');
-    expect(repository.admin.last, 'give role-Hosts Maya');
+    // Staged: shown, but nothing given until Save.
+    expect(repository.admin.last, 'role+ Hosts');
     await tester.tapAt(const Offset(195, 60));
     await tester.pumpAndSettle();
     expect(find.text('1 member'), findsOneWidget);
@@ -769,7 +1030,10 @@ void main() {
     await tapLabel(tester, 'Pin messages');
     expect(tester.getSemantics(pin).flagsCollection.isToggled.toString(), contains('isTrue'));
     await tapLabel(tester, 'Save');
-    expect(repository.admin.last, 'role~ role-Hosts color=30a46c perms=${Perm.pinMessages}');
+    expect(repository.admin.sublist(repository.admin.length - 2), [
+      'role~ role-Hosts color=30a46c perms=${Perm.pinMessages}',
+      'give role-Hosts Maya',
+    ]);
     expect(find.text('Hosts'), findsOneWidget);
 
     await tapLabel(tester, RegExp(r'^Hosts'));
@@ -777,6 +1041,26 @@ void main() {
     await tapLabel(tester, 'Delete role');
     expect(repository.admin.last, 'role- role-Hosts');
     expect(find.text('Hosts'), findsNothing);
+    semantics.dispose();
+  });
+
+  testWidgets('a role\'s Save is greyed out until something changes', (tester) async {
+    final repository = await pumpSettings(tester);
+    await tapLabel(tester, RegExp(r'^Roles'));
+    await tapLabel(tester, RegExp(r'^Moderator'));
+    bool saveEnabled() =>
+        tester.getSemantics(find.bySemanticsLabel('Save').last).flagsCollection.isEnabled.toString().contains('isTrue');
+    expect(saveEnabled(), isFalse);
+
+    await tester.enterText(find.byType(EditableText).first, 'Mods');
+    await tester.pumpAndSettle();
+    expect(saveEnabled(), isTrue);
+
+    // Back to how it was: nothing to save again.
+    await tester.enterText(find.byType(EditableText).first, 'Moderator');
+    await tester.pumpAndSettle();
+    expect(saveEnabled(), isFalse);
+    expect(repository.admin.where((a) => a.startsWith('role~')), isEmpty);
     semantics.dispose();
   });
 
@@ -808,6 +1092,63 @@ void main() {
     semantics.dispose();
   });
 
+  testWidgets('a role\'s members change on Save, and leaving first asks and changes nothing', (tester) async {
+    final repository = await pumpSettings(tester);
+    await tapLabel(tester, RegExp(r'^Roles'));
+    await tapLabel(tester, RegExp(r'^Moderator'));
+    bool saveEnabled() =>
+        tester.getSemantics(find.bySemanticsLabel('Save').last).flagsCollection.isEnabled.toString().contains('isTrue');
+    bool given() => repository.admin.any((a) => a.startsWith('give') || a.startsWith('take'));
+
+    // Picked and unpicked: back to how it was, nothing to save.
+    await tapLabel(tester, RegExp(r'^0 members'));
+    await tapLabel(tester, 'Maya');
+    await tapLabel(tester, 'Maya');
+    await tester.tapAt(const Offset(195, 60));
+    await tester.pumpAndSettle();
+    expect(find.text('0 members'), findsOneWidget);
+    expect(saveEnabled(), isFalse);
+
+    await tapLabel(tester, RegExp(r'^0 members'));
+    await tapLabel(tester, 'Maya');
+    await tester.tapAt(const Offset(195, 60));
+    await tester.pumpAndSettle();
+    expect(find.text('1 member'), findsOneWidget);
+    expect(saveEnabled(), isTrue);
+    expect(given(), isFalse);
+
+    await tester.binding.handlePopRoute();
+    await tester.pumpAndSettle();
+    expect(find.text('Unsaved changes'), findsOneWidget);
+    await tapLabel(tester, 'Discard');
+    expect(find.text('Edit role'), findsNothing);
+    expect(given(), isFalse);
+    expect(repository.roleMembers('s-guild', 'role-mod'), isEmpty);
+
+    // Again, saved: only the member change goes, no role~.
+    await tapLabel(tester, RegExp(r'^Moderator'));
+    await tapLabel(tester, RegExp(r'^0 members'));
+    await tapLabel(tester, 'Maya');
+    await tester.tapAt(const Offset(195, 60));
+    await tester.pumpAndSettle();
+    await tapLabel(tester, 'Save');
+    expect(find.text('Edit role'), findsNothing);
+    expect(repository.admin.last, 'give role-mod Maya');
+    expect(repository.admin.where((a) => a.startsWith('role~')), isEmpty);
+
+    // Taken off: the same, on Save.
+    await tapLabel(tester, RegExp(r'^Moderator'));
+    await tapLabel(tester, RegExp(r'^1 member'));
+    await tapLabel(tester, 'Maya');
+    await tester.tapAt(const Offset(195, 60));
+    await tester.pumpAndSettle();
+    expect(find.text('0 members'), findsOneWidget);
+    expect(repository.admin.last, 'give role-mod Maya');
+    await tapLabel(tester, 'Save');
+    expect(repository.admin.last, 'take role-mod Maya');
+    semantics.dispose();
+  });
+
   testWidgets('a role\'s name color can be a gradient: from its color to another, a middle stop optional', (
     tester,
   ) async {
@@ -830,6 +1171,41 @@ void main() {
     await tapLabel(tester, 'Done');
     await tapLabel(tester, 'Save');
     expect(repository.admin.last, 'role~ role-mod color=30a46c');
+    semantics.dispose();
+  });
+
+  testWidgets('a role\'s name color can be any color, typed as #RRGGBB, solid or a gradient\'s stop', (tester) async {
+    final repository = await pumpSettings(tester);
+    await tapLabel(tester, RegExp(r'^Roles'));
+    await tapLabel(tester, RegExp(r'^Moderator'));
+    await tapLabel(tester, 'Name color: #30A46C');
+    await tapLabel(tester, 'Custom color');
+    final hex = find.descendant(of: find.byType(ColorPick), matching: find.byType(EditableText));
+    const error = 'Use #RRGGBB, as #30A46C';
+
+    // Half a code waits; a wrong one is turned down and changes nothing.
+    await tester.enterText(hex, '#12345');
+    await tester.pump();
+    expect(find.text(error), findsNothing);
+    await tester.enterText(hex, '#12345G');
+    await tester.pump();
+    expect(find.text(error), findsOneWidget);
+    expect(find.bySemanticsLabel('Preview: Moderator, #30A46C'), findsOneWidget);
+
+    await tester.enterText(hex, '#123456');
+    await tester.pumpAndSettle();
+    expect(find.text(error), findsNothing);
+    expect(find.bySemanticsLabel('Preview: Moderator, #123456'), findsOneWidget);
+    expect(find.bySemanticsLabel('Custom color, #123456'), findsOneWidget);
+
+    await tapLabel(tester, 'Gradient');
+    await tapLabel(tester, 'End');
+    await tester.enterText(hex, '#ABCDEF');
+    await tester.pumpAndSettle();
+    expect(find.bySemanticsLabel('Preview: Moderator, gradient, #123456 to #ABCDEF'), findsOneWidget);
+    await tapLabel(tester, 'Done');
+    await tapLabel(tester, 'Save');
+    expect(repository.admin.last, 'role~ role-mod color=123456..abcdef');
     semantics.dispose();
   });
 
@@ -977,11 +1353,63 @@ void main() {
       ],
     );
     await tapLabel(tester, RegExp(r'^Invites, 1 active'));
-    expect(find.text('#general · Maya · never expires'), findsOneWidget);
+    expect(find.text('#general · Maya · Never expires'), findsOneWidget);
     await tapLabel(tester, RegExp(r'^crit-night'));
     await tapLabel(tester, 'Revoke link');
     expect(repository.admin, ['revoke i1']);
     expect(find.text('No invite links'), findsOneWidget);
+    semantics.dispose();
+  });
+
+  testWidgets('bans: below Invites, with why; unban; a ban made elsewhere shows at once', (tester) async {
+    final repository = await pumpSettings(
+      tester,
+      setUp: (r) => r.banList = [
+        SpaceBan(
+          user: const Member(userId: 'u-troll', username: 'troll', alias: 'Troll'),
+          reason: 'Spam in #general',
+          bannedBy: 'Maya',
+          at: DateTime(2026, 11, 1),
+        ),
+      ],
+    );
+    final rows = [for (final w in tester.widgetList<GlassRow>(find.byType(GlassRow))) w.label];
+    expect(rows.indexOf('Bans'), rows.indexOf('Invites') + 1);
+    await tapLabel(tester, RegExp(r'^Bans, 1 banned'));
+    expect(find.text('@troll · Spam in #general'), findsOneWidget);
+
+    repository.banElsewhere(
+      's-guild',
+      SpaceBan(
+        user: const Member(userId: 'u-spam', username: 'spammer', alias: 'Spammer'),
+        bannedBy: 'Maya',
+        at: DateTime(2026, 11, 2),
+      ),
+    );
+    await tester.pumpAndSettle();
+    expect(find.text('@spammer · No reason given'), findsOneWidget, reason: 'SPACE_BAN_ADD shows it');
+
+    await tester.enterText(find.byType(EditableText).first, 'general');
+    await tester.pumpAndSettle();
+    expect(find.text('Spammer'), findsNothing, reason: 'the search reads reasons');
+    await tester.tap(find.text('Troll'));
+    await tester.pumpAndSettle();
+    expect(find.text('Spam in #general'), findsOneWidget, reason: 'the reason in full');
+    await tapLabel(tester, 'Unban');
+    expect(repository.unbanned, [('s-guild', 'u-troll')]);
+    expect(find.text('Troll'), findsNothing);
+    expect(find.text('No one matches'), findsOneWidget);
+    semantics.dispose();
+  });
+
+  testWidgets('bans: no row without Ban Members', (tester) async {
+    await pumpSettings(
+      tester,
+      setUp: (r) => r
+        ..spaceOwner = false
+        ..spacePerms = Perm.all & ~Perm.banMembers & ~Perm.administrator,
+    );
+    expect(find.bySemanticsLabel(RegExp(r'^Bans')), findsNothing);
     semantics.dispose();
   });
 
@@ -1315,7 +1743,8 @@ void main() {
     await tapLabel(tester, RegExp(r'^CI'));
     await tapLabel(tester, RegExp(r'^New URL'));
     expect(repository.admin.last, 'hook~ w-CI');
-    await tapLabel(tester, 'Copy URL');
+    await tapLabel(tester, 'Copy GitHub URL');
+    expect(copied, 'https://api.duvet.chat/api/webhooks/w-CI/fresh/github');
     await tapLabel(tester, RegExp(r'^CI'));
     await tapLabel(tester, 'Delete');
     await tapLabel(tester, 'Delete webhook');
@@ -1410,16 +1839,148 @@ void main() {
       tester,
       setUp: (r) => r.storageOfSpace = SpaceStorage(
         used: 3 * 1024 * 1024,
-        buckets: const [(name: 'Guild bucket', used: 3 * 1024 * 1024, max: 50 * 1024 * 1024 * 1024, active: true)],
+        buckets: const [
+          Bucket(id: 'b-1', name: 'Guild bucket', used: 3 * 1024 * 1024, max: 50 * 1024 * 1024 * 1024, active: true),
+        ],
         files: [
-          (name: 'poster.png', contentType: 'image/png', size: 3 * 1024 * 1024, createdAt: DateTime(2026, 10, 1)),
+          MyFile(
+            id: 'a-1',
+            name: 'poster.png',
+            contentType: 'image/png',
+            sizeBytes: 3 * 1024 * 1024,
+            createdAt: DateTime(2026, 10, 1),
+            url: 'https://example.invalid/poster.png',
+          ),
         ],
       ),
     );
     await tapLabel(tester, RegExp(r'^Storage, 3\.0 MB used'));
     expect(find.bySemanticsLabel('3.0 MB used by 1 files'), findsOneWidget);
-    expect(find.text('3.0 MB of 50.0 GB'), findsOneWidget);
+    expect(find.bySemanticsLabel('Active, Guild bucket: 3.0 MB of 50.0 GB used'), findsOneWidget);
     expect(find.text('poster.png'), findsOneWidget);
+    semantics.dispose();
+  });
+
+  // A form field by its label, scrolled into the list's build.
+  Future<void> fill(WidgetTester tester, String label, String text) async {
+    final field = find.widgetWithText(DuvetTextField, label);
+    await tester.scrollUntilVisible(
+      field,
+      200,
+      scrollable: find.descendant(of: find.byType(ListView).last, matching: find.byType(Scrollable)).first,
+    );
+    await tester.enterText(find.descendant(of: field, matching: find.byType(EditableText)), text);
+    await tester.pump();
+  }
+
+  testWidgets('storage: a bucket added, edited with its limits kept, turned off, and refused while it holds files', (
+    tester,
+  ) async {
+    final repository = await pumpSettings(
+      tester,
+      setUp: (r) => r
+        ..refusals['deleteSpaceBucket'] = 'This bucket still holds 2 files. Delete them first.'
+        ..storageOfSpace = const SpaceStorage(
+          used: 3 * 1024 * 1024,
+          buckets: [
+            Bucket(
+              id: 'b-1',
+              name: 'Guild bucket',
+              region: 'auto',
+              endpoint: 'https://s3.example.com',
+              bucketName: 'guild',
+              accessKey: 'key',
+              active: true,
+              used: 3 * 1024 * 1024,
+              max: 50 * 1024 * 1024 * 1024,
+              uploadLimit: 25 * 1024 * 1024,
+            ),
+          ],
+        ),
+    );
+    await tapLabel(tester, RegExp(r'^Storage, 3\.0 MB used'));
+
+    // Edited: every field as it was but the name, so the limits stay and the secret is kept.
+    await tapLabel(tester, 'Options for Guild bucket');
+    await tapLabel(tester, 'Edit');
+    expect(find.text('Leave it empty to keep the current one'), findsOneWidget);
+    await fill(tester, 'Name', 'Guild R2');
+    await tapLabel(tester, 'Save');
+    expect(repository.admin.last, 'bucket* b-1 Guild R2 region=auto path=false max=53687091200 limit=26214400 secret=');
+    expect(find.bySemanticsLabel(RegExp(r'^Active, Guild R2')), findsOneWidget);
+
+    await tapLabel(tester, 'Options for Guild R2');
+    await tapLabel(tester, 'Deactivate');
+    expect(repository.admin.last, 'bucket off b-1');
+    expect(find.bySemanticsLabel(RegExp(r'^Off, Guild R2')), findsOneWidget);
+    await tapLabel(tester, 'Options for Guild R2');
+    await tapLabel(tester, 'Activate');
+    expect(repository.admin.last, 'bucket on b-1');
+    expect(find.bySemanticsLabel(RegExp(r'^Active, Guild R2')), findsOneWidget);
+
+    await tapLabel(tester, 'Options for Guild R2');
+    await tapLabel(tester, 'Delete');
+    await tapLabel(tester, 'Delete bucket');
+    expect(repository.admin.last, 'bucket- b-1');
+    expect(find.text('This bucket still holds 2 files. Delete them first.'), findsOneWidget);
+    await tester.pump(const Duration(seconds: 4));
+
+    // Added: the secret is needed, and the owner's trust asked first.
+    await tapLabel(tester, 'Add a bucket');
+    await fill(tester, 'Name', 'Backups');
+    await fill(tester, 'Endpoint', 'https://minio.example.com');
+    await fill(tester, 'Bucket name', 'backups');
+    await fill(tester, 'Access key ID', 'minio');
+    await fill(tester, 'Total (MB)', '0');
+    expect(find.text('A number above 0'), findsOneWidget);
+    await fill(tester, 'Total (MB)', '100');
+    await tapLabel(tester, 'Save');
+    expect(repository.admin.last, 'bucket- b-1', reason: 'no secret yet');
+    await fill(tester, 'Secret access key', 's3cret');
+    await tapLabel(tester, 'Save');
+    expect(find.textContaining('Whoever owns the bucket can read'), findsOneWidget);
+    await tapLabel(tester, 'Yes, add bucket');
+    expect(repository.admin.last, 'bucket+ Backups region= path=false max=104857600 limit=null secret=s3cret');
+    expect(find.bySemanticsLabel(RegExp(r'^Off, Backups')), findsOneWidget);
+    semantics.dispose();
+  });
+
+  testWidgets('storage: a file alone only when it\'s in no message; all of them, those in messages too', (
+    tester,
+  ) async {
+    MyFile file(String id, String name, {bool inMessage = false}) => MyFile(
+      id: id,
+      name: name,
+      contentType: 'application/pdf',
+      sizeBytes: 1024,
+      createdAt: DateTime(2026, 10, 1),
+      url: 'https://example.invalid/$name',
+      inMessage: inMessage,
+    );
+    final repository = await pumpSettings(
+      tester,
+      setUp: (r) => r.storageOfSpace = SpaceStorage(
+        used: 2048,
+        files: [file('a-1', 'notes.pdf'), file('a-2', 'posted.pdf', inMessage: true)],
+      ),
+    );
+    await tapLabel(tester, RegExp(r'^Storage, '));
+    expect(find.bySemanticsLabel('Delete posted.pdf'), findsNothing);
+    expect(find.textContaining('In a message'), findsOneWidget);
+
+    await tapLabel(tester, 'Delete notes.pdf');
+    await tapLabel(tester, 'Delete file');
+    expect(repository.admin.last, 'file- a-1');
+    expect(find.text('notes.pdf'), findsNothing);
+
+    await tapLabel(tester, 'Delete all files');
+    expect(
+      find.text('Delete all 1 file in this Space, including ones posted in messages? This can’t be undone.'),
+      findsOneWidget,
+    );
+    await tapLabel(tester, 'Delete all files');
+    expect(repository.admin.last, 'files-');
+    expect(find.text('No files yet'), findsOneWidget);
     semantics.dispose();
   });
 }

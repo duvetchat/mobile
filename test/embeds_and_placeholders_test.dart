@@ -7,6 +7,8 @@ import 'package:duvet/theme.dart';
 import 'package:duvet/widgets/avatar.dart';
 import 'package:duvet/widgets/facehash.dart';
 import 'package:duvet/widgets/message_content.dart';
+import 'package:duvet/widgets/skeleton.dart';
+import 'package:flutter/gestures.dart' show kDoubleTapTimeout;
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -75,6 +77,43 @@ void main() {
     expect(paragraph.didExceedMaxLines, isFalse);
   });
 
+  testWidgets('a bot\'s embed shows its author, fields, footer and date, under its colors\' stripe', (tester) async {
+    await loading(() async {
+      await tester.pumpWidget(
+        themed(
+          EmbedCard(
+            embed: MessageEmbed(
+              title: 'Deploy finished',
+              authorName: 'CI',
+              authorIconUrl: 'https://example.invalid/ci.png',
+              fields: const [
+                (name: 'Branch', value: 'dev', inline: true),
+                (name: 'Took', value: '2m', inline: true),
+                (name: 'Log', value: 'all green', inline: false),
+              ],
+              footer: 'GitHub',
+              timestamp: DateTime(2026, 10, 21, 3, 2),
+              colors: const [0x22C55E, 0x3B82F6],
+            ),
+          ),
+        ),
+      );
+      expect(find.text('CI'), findsOneWidget);
+      expect(find.text('BRANCH'), findsOneWidget);
+      expect(find.text('all green'), findsOneWidget);
+      expect(find.textContaining('GitHub • '), findsOneWidget);
+      // The two inline fields share a line; the other takes its own.
+      expect(tester.getTopLeft(find.text('TOOK')).dy, tester.getTopLeft(find.text('BRANCH')).dy);
+      expect(tester.getTopLeft(find.text('LOG')).dy, greaterThan(tester.getTopLeft(find.text('BRANCH')).dy));
+      final stripe = tester.widget<DecoratedBox>(
+        find.byWidgetPredicate(
+          (w) => w is DecoratedBox && w.decoration is BoxDecoration && (w.decoration as BoxDecoration).gradient != null,
+        ),
+      );
+      expect((stripe.decoration as BoxDecoration).gradient!.colors, const [Color(0xFF22C55E), Color(0xFF3B82F6)]);
+    });
+  });
+
   testWidgets('a GIF link\'s embed is its picture alone, at its own ratio; a card keeps its thumbnail small', (
     tester,
   ) async {
@@ -108,10 +147,10 @@ void main() {
     expect(tester.widget<GestureDetector>(find.byType(GestureDetector)).onTap, isNull);
   });
 
-  testWidgets('a sticker is a base-sunken square until it loads', (tester) async {
+  testWidgets('a sticker is a pulsing square until it loads', (tester) async {
     await loading(() async {
       await tester.pumpWidget(themed(const StickerView(url: 'https://example.invalid/wave-loading.png', name: 'wave')));
-      final placeholder = sunken(within: find.byType(StickerView));
+      final placeholder = find.descendant(of: find.byType(StickerView), matching: find.byType(SkeletonBox));
       expect(placeholder, findsOneWidget);
       expect(tester.getSize(placeholder), const Size(160, 160));
       expect(find.bySemanticsLabel('Sticker, wave'), findsOneWidget);
@@ -134,6 +173,63 @@ void main() {
     expect(find.byType(Facehash), findsOneWidget);
     expect(sunken(within: find.byType(UserAvatar)), findsNothing);
     await tester.pump(const Duration(seconds: 7));
+  });
+
+  testWidgets('the viewer turns a photo a quarter at a time, and loads a broken one again on a tap', (tester) async {
+    const photo = MessageAttachment(
+      id: 'ph',
+      filename: 'wide.png',
+      contentType: 'image/png',
+      url: 'https://example.invalid/wide-broken.png',
+      width: 400,
+      height: 200,
+    );
+    await tester.pumpWidget(themed(const ImageViewer(gallery: [photo])));
+    // The test binding's own client refuses every request.
+    Future<void> untilBroken() async {
+      for (var i = 0; i < 10 && find.text('Tap to try again').evaluate().isEmpty; i++) {
+        await tester.runAsync(() => Future<void>.delayed(const Duration(milliseconds: 20)));
+        await tester.pump();
+      }
+    }
+
+    await untilBroken();
+    expect(find.text('Tap to try again'), findsOneWidget);
+    // A screen reader reaches it too, under the photo's own label.
+    expect(find.bySemanticsLabel('Couldn’t load the picture. Try again'), findsOneWidget);
+    expect(find.bySemanticsLabel('Photo, wide.png, 1 of 1'), findsOneWidget);
+    await tester.tap(find.text('Tap to try again'));
+    await tester.pump(kDoubleTapTimeout);
+    expect(find.text('Tap to try again'), findsNothing, reason: 'it loads anew');
+    await untilBroken();
+    expect(find.text('Tap to try again'), findsOneWidget);
+
+    RotatedBox turned() => tester.widget<RotatedBox>(find.byType(RotatedBox));
+    expect(turned().quarterTurns, 0);
+    for (final turns in [1, 2, 3, 0]) {
+      await tester.tap(find.bySemanticsLabel('Rotate'));
+      await tester.pump();
+      expect(turned().quarterTurns, turns);
+    }
+    await tester.pump(const Duration(seconds: 7));
+  });
+
+  testWidgets('a sticker in a message opens full screen on a tap; elsewhere it doesn\'t', (tester) async {
+    await loading(() async {
+      await tester.pumpWidget(themed(const StickerView(url: 'https://example.invalid/wave.png', name: 'wave')));
+      expect(
+        tester.getSemantics(find.bySemanticsLabel('Sticker, wave')).getSemanticsData().hasAction(SemanticsAction.tap),
+        isFalse,
+      );
+
+      await tester.pumpWidget(
+        themed(const StickerView(url: 'https://example.invalid/wave.png', name: 'wave', zoomable: true)),
+      );
+      await tester.tap(find.bySemanticsLabel('Sticker, wave'));
+      await tester.pumpAndSettle();
+      expect(find.byType(ImageViewer), findsOneWidget);
+      expect(find.text('wave'), findsOneWidget);
+    });
   });
 
   testWidgets('a custom emoji\'s reaction shows its name until the image arrives', (tester) async {

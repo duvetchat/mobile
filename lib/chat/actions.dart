@@ -267,7 +267,12 @@ class _QuickReactions extends StatelessWidget {
           child: Row(
             mainAxisSize: MainAxisSize.min,
             children: [
-              for (final emoji in _quickReactions)
+              // Your most used first, the defaults after, five in all; custom
+              // emoji stay in the picker.
+              for (final emoji in {
+                ...EmojiCatalog.recent.where((e) => !e.startsWith('<:')),
+                ..._quickReactions,
+              }.take(_quickReactions.length))
                 Padding(
                   padding: const EdgeInsets.only(right: 2),
                   child: button(
@@ -275,7 +280,7 @@ class _QuickReactions extends StatelessWidget {
                         'React ${catalog?.nameOf(emoji) ?? _quickNames[emoji] ?? emoji}${mine.contains(emoji) ? ', you reacted' : ''}',
                     on: mine.contains(emoji),
                     value: (_Action.react, emoji),
-                    child: Text(emoji, style: const TextStyle(fontSize: 24, height: 1.1)),
+                    child: Text(emoji, style: const TextStyle(fontFamily: DuvetType.emoji, fontSize: 24, height: 1.1)),
                   ),
                 ),
               button(
@@ -318,7 +323,6 @@ Future<bool?> _showDeleteSheet(
           const SizedBox(height: 16),
           // The message itself, in a recess.
           Container(
-            padding: const EdgeInsets.all(16),
             decoration: BoxDecoration(
               color: colors.secondary,
               borderRadius: BorderRadius.circular(DuvetTokens.radiusButton),
@@ -326,26 +330,27 @@ Future<bool?> _showDeleteSheet(
             child: InsetShadow(
               shadows: tokens.shadowWell,
               borderRadius: BorderRadius.circular(DuvetTokens.radiusButton),
+              padding: const EdgeInsets.all(16),
               // Its bubble as the chat shows it: the user's own on the accent.
               child: Align(
                 alignment: mine ? Alignment.centerRight : Alignment.centerLeft,
                 child: Container(
                   padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
                   decoration: BoxDecoration(
-                    color: mine ? Duvet.azure : colors.card,
+                    color: mine ? ownBubble(context).fill : colors.card,
                     borderRadius: BorderRadius.circular(DuvetTokens.radiusButton),
                   ),
                   child: message.content.isEmpty
                       ? Text(
                           readableAttachments(message),
-                          style: DuvetType.body.copyWith(color: mine ? colors.primaryForeground : colors.foreground),
+                          style: DuvetType.body.copyWith(color: mine ? ownBubble(context).ink : colors.foreground),
                         )
                       : MessageText(
                           content: message.content,
                           directory: directory,
                           onAccent: mine,
                           singleLine: true,
-                          style: DuvetType.body.copyWith(color: mine ? colors.primaryForeground : colors.foreground),
+                          style: DuvetType.body.copyWith(color: mine ? ownBubble(context).ink : colors.foreground),
                         ),
                 ),
               ),

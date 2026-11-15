@@ -9,6 +9,7 @@ import 'package:duvet/data/models.dart';
 import 'package:duvet/data/recent_chats.dart';
 import 'package:duvet/data/session_store.dart';
 import 'package:duvet_client/duvet.dart' as duvet;
+import 'package:duvet_client/http/router.dart' show ApiRouter;
 import 'package:fake_async/fake_async.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
@@ -64,6 +65,59 @@ duvet.GatewayEventPayload _event(String type, Map<String, dynamic> data) => duve
   'd': {'type': type, 'data': data},
 }).d!;
 
+/// A command with a group of subcommands, as the API lists it.
+const _command = <String, dynamic>{
+  'id': 'cmd-1',
+  'type': 1,
+  'application_id': 'a-1',
+  'name': 'perms',
+  'description': 'Permissions',
+  'version': '1',
+  'options': [
+    {
+      'type': 2,
+      'name': 'user',
+      'description': 'A user\'s',
+      'options': [
+        {
+          'type': 1,
+          'name': 'get',
+          'description': 'Show them',
+          'options': [
+            {
+              'type': 3,
+              'name': 'id',
+              'description': 'Whose',
+              'required': true,
+              'max_length': 40,
+              'choices': [
+                {'name': 'Me', 'value': 'me'},
+              ],
+            },
+          ],
+        },
+      ],
+    },
+  ],
+};
+
+/// A session store kept in memory whose reads fail while [failing], and whose next read waits for [holdNext].
+class _TestStore extends MemorySessionStore {
+  bool failing = false;
+  Completer<void>? holdNext;
+  int reads = 0;
+
+  @override
+  Future<StoredSession?> read() async {
+    reads++;
+    final hold = holdNext;
+    holdNext = null;
+    await hold?.future;
+    if (failing) throw const FileSystemException('the keystore is locked');
+    return super.read();
+  }
+}
+
 void main() {
   late List<http.Request> requests;
   late MockClient client;
@@ -104,6 +158,12 @@ void main() {
   /// An access token the API no longer takes, though the session lives.
   String? expiredToken;
 
+  /// Session tokens a renewal elsewhere (the background's) rotated away: the API refuses them.
+  late Set<String> rotatedAway;
+
+  /// Requests held before the API looks at them, by method and path, until their completer completes.
+  late Map<String, Completer<void>> holds;
+
   /// The friend requests to the user, as `GET …/friends/requests` answers.
   late List<Map<String, dynamic>> asking;
 
@@ -115,6 +175,12 @@ void main() {
   Map<String, int>? mayaPlatformsInConversation;
   // The friends' client statuses, by user ID, as the friends list gives them.
   late Map<String, Map<String, int>> friendPlatforms;
+
+  /// The notification levels the API has for the user.
+  late List<Map<String, dynamic>> savedLevels;
+
+  /// While set, holds the levels' answer, as it was when asked.
+  Completer<void>? holdLevels;
   // An API since api#63 gives the friends list their banners.
   late bool friendBanners;
 
@@ -156,12 +222,16 @@ void main() {
     renewalsBroken = false;
     sessionDead = false;
     expiredToken = null;
+    rotatedAway = {};
+    holds = {};
     asking = [];
     teamInviting = [];
     moreSpaceMembers = [];
     mayaInConversation = null;
     mayaPlatformsInConversation = null;
     friendPlatforms = {};
+    savedLevels = [];
+    holdLevels = null;
     friendBanners = false;
     holdAsking = null;
     pictureRefusal = null;
@@ -170,11 +240,14 @@ void main() {
     moveReply = Completer();
     client = MockClient((request) async {
       requests.add(request);
+      if (holds['${request.method} ${request.url.path}'] case final hold?) await hold.future;
       if (blackHoled) await Completer<void>().future;
       if (request.method == 'PATCH' && request.url.path.startsWith('/api/spaces/s-m/rooms/')) return moveReply.future;
       Map<String, dynamic> body() => jsonDecode(request.body) as Map<String, dynamic>;
       if (request.url.path == '/api/auth/refresh') {
-        if (sessionDead) return http.Response('{"error":"invalid or expired session"}', 401);
+        if (sessionDead || rotatedAway.contains(request.headers['X-Session-Token'])) {
+          return http.Response('{"error":"invalid or expired session"}', 401);
+        }
         if (renewalsBroken) return http.Response('{"error":"internal server error"}', 500);
         final n = renewed[request.headers['X-Session-Token']] ??= ++refreshes + 1;
         if (renewalAnswersLost > 0) {
@@ -184,7 +257,9 @@ void main() {
         return http.Response(jsonEncode({'token': 'access-$n', 'session_token': 'refresh-$n'}), 200);
       }
       if (meUnreachable && request.url.path == '/api/users/@me') throw const SocketException('connection reset');
-      final refused = sessionDead || request.headers['Authorization'] == 'Bearer $expiredToken';
+      final auth = request.headers['Authorization'];
+      // With no token too, while one expires: a client whose renewal was refused sends that, which the API refuses.
+      final refused = sessionDead || expiredToken != null && (auth == 'Bearer $expiredToken' || auth == null);
       if (refused && !request.url.path.startsWith('/api/auth/')) return http.Response('', 401);
       if (request.url.path == '/api/users/@me/friends/requests') {
         final answer = jsonEncode(asking);
@@ -194,6 +269,11 @@ void main() {
       if (request.url.path == '/api/users/@me/team-invites') {
         final answer = jsonEncode(teamInviting);
         if (holdInvites case final hold?) await hold.future;
+        return http.Response(answer, 200, headers: {'content-type': 'application/json'});
+      }
+      if (request.method == 'GET' && request.url.path == '/api/users/@me/notification-settings') {
+        final answer = jsonEncode(savedLevels);
+        if (holdLevels case final hold?) await hold.future;
         return http.Response(answer, 200, headers: {'content-type': 'application/json'});
       }
       final json = switch ((request.method, request.url.path)) {
@@ -207,13 +287,19 @@ void main() {
           jsonEncode({'error': 'display name must be at most 32 characters'}),
           400,
         ),
+        ('PATCH', '/api/users/@me') when body()['username'] == 'maya' => http.Response(
+          jsonEncode({'error': 'that username is taken'}),
+          409,
+        ),
         // An API from before bios ignores `custom`, and answers the bio it had.
         ('PATCH', '/api/users/@me') => {
-          ..._user(_me, 'gaby', alias: body()['alias'] as String?),
+          ..._user(_me, body()['username'] as String? ?? 'gaby', alias: body()['alias'] as String?),
           'custom': bio = apiHasBios ? (body()['custom'] as String? ?? bio).trim() : bio,
         },
         ('PUT', '/api/users/@me/status') when apiHasStatus => {..._user(_me, 'gaby'), 'status': body()['status']},
         ('DELETE', '/api/spaces/s-1') => deleteReply,
+        ('PUT', '/api/users/@me/push-registration') => http.Response('', 204),
+        ('DELETE', '/api/users/@me/push-registration') => http.Response('', 204),
         // Between friends alone; and a server error.
         ('POST', '/api/users/@me/conversations') => http.Response(
           jsonEncode({'error': 'you must be friends with $_leo'}),
@@ -254,6 +340,13 @@ void main() {
         ],
         // The API answers the newest first.
         ('GET', '/api/users/@me/conversations/c-1/messages') => [_dm('2', _me, 'second'), _dm('1', _maya, 'first')],
+        ('GET', '/api/users/@me/conversations/c-1/messages/search') => {
+          'total_results': 40,
+          'messages': [_dm('2', _me, 'second')],
+        },
+        ('POST', '/api/users/@me/conversations/c-1/messages')
+            when (request.headers['content-type'] ?? '').startsWith('multipart/') =>
+          _dm('3', _me, ''),
         ('POST', '/api/users/@me/conversations/c-1/messages') => _dm(
           '3',
           _me,
@@ -261,6 +354,20 @@ void main() {
           nonce: (jsonDecode(request.body) as Map)['nonce'] as String?,
         ),
         ('GET', '/api/users/@me/mentions/counts') => {'r-general': 2, 'c-1': 0},
+        // A room that's gone, and a clear the network drops.
+        ('PUT', '/api/users/@me/notification-settings/r-gone') => http.Response(
+          jsonEncode({'error': 'room not found'}),
+          404,
+        ),
+        ('DELETE', '/api/users/@me/notification-settings/s-gone') => throw const SocketException('no network'),
+        ('PUT', _) when request.url.path.startsWith('/api/users/@me/notification-settings/') => {
+          'target_id': request.url.pathSegments.last,
+          ...body(),
+        },
+        ('DELETE', _) when request.url.path.startsWith('/api/users/@me/notification-settings/') => http.Response(
+          '',
+          204,
+        ),
         ('GET', '/api/users/@me/friends') => [
           for (final (id, name, status) in [(_maya, 'maya', 2), (_leo, 'leo', 0)])
             {
@@ -277,7 +384,33 @@ void main() {
         ('GET', '/api/users/@me/friends/requests/sent') => <Object>[],
         ('POST', '/api/users/@me/team-invites/ti-1/accept') => http.Response('', 204),
         ('POST', '/api/users/@me/teams/t-1/applications/a-1/bot') => {'token': 'bot-token'},
+        ('GET', '/api/users/@me/teams/t-1/applications/a-1/commands') => [_command],
+        ('POST' || 'PATCH', _) when request.url.path.startsWith('/api/users/@me/teams/t-1/applications/a-1/commands') =>
+          {..._command, ...jsonDecode(request.body) as Map<String, dynamic>, 'id': 'cmd-1'},
+        ('DELETE', '/api/users/@me/teams/t-1/applications/a-1/commands/cmd-1') => http.Response('', 204),
         ('GET', '/api/rooms/r-general/messages') => [roomNewest],
+        ('GET', '/api/spaces/s-1/commands') => {
+          'applications': [
+            {
+              'id': 'a-1',
+              'name': 'Helper',
+              'bot': {'id': 'b-1', 'username': 'helper'},
+            },
+          ],
+          'commands': [
+            _command,
+            {
+              ..._command,
+              'id': 'cmd-2',
+              'name': 'ping',
+              'description': 'Pong',
+              'options': [
+                {'type': 4, 'name': 'times', 'description': 'How many'},
+              ],
+            },
+          ],
+        },
+        ('POST', '/api/interactions') => {'type': 5},
         ('GET', '/api/spaces/s-1/members') => [
           {
             'id': 'm-maya',
@@ -338,6 +471,19 @@ void main() {
     expect(chat.isGroup, isFalse);
     expect(chat.avatarUrl, 'https://api.duvet.chat/attachments/$_avatar');
     expect(chat.otherUserId, _maya);
+  });
+
+  test('an API picked at build time without TLS gives its pictures over http, on its host (#22)', () {
+    final local = DuvetRepository(
+      store: store,
+      recentsStore: MemoryRecentChatsStore(),
+      router: const ApiRouter(api: '192.168.1.20:8080', ws: '192.168.1.20:8081', secure: false),
+      connectGateway: false,
+    );
+    addTearDown(local.dispose);
+    expect(local.avatarUrl(_avatar), 'http://192.168.1.20:8080/attachments/$_avatar');
+    // Production by default.
+    expect(repository.avatarUrl(_avatar), 'https://api.duvet.chat/attachments/$_avatar');
   });
 
   test('a conversation\'s members come with their bio and banner, for their profiles', () async {
@@ -597,6 +743,114 @@ void main() {
     expect(await repository.createBot(const DevApp(id: 'a-1', teamId: 't-1', name: 'Helper')), 'bot-token');
   });
 
+  test('a space\'s commands: one entry per subcommand, used through it; a flat one as before', () async {
+    const general = RoomTarget(spaceId: 's-1', roomId: 'r-general');
+    await repository.logIn('gaby@duvet.chat', 'secret');
+    final listed = await repository.commands('s-1');
+    expect(
+      [for (final c in listed) '${c.path} · ${c.description} · ${c.options.map((o) => o.name).join(',')}'],
+      ['perms user get · Show them · id', 'ping · Pong · times'],
+    );
+
+    Future<Object?> used(BotCommand command, Map<String, Object> options) async {
+      requests.clear();
+      await repository.useCommand(general, command, options);
+      return (jsonDecode(requests.single.body) as Map)['data'];
+    }
+
+    expect(await used(listed.first, {'id': 'me'}), {
+      'id': 'cmd-1',
+      'name': 'perms',
+      'type': 1,
+      'options': [
+        {
+          'name': 'user',
+          'type': 2,
+          'options': [
+            {
+              'name': 'get',
+              'type': 1,
+              'options': [
+                {'name': 'id', 'type': 3, 'value': 'me'},
+              ],
+            },
+          ],
+        },
+      ],
+    });
+    expect(await used(listed.last, {'times': 2}), {
+      'id': 'cmd-2',
+      'name': 'ping',
+      'type': 1,
+      'options': [
+        {'name': 'times', 'type': 4, 'value': 2},
+      ],
+    });
+  });
+
+  test('an application\'s commands: subcommands kept both ways; saved new or changed; deleted', () async {
+    const app = DevApp(id: 'a-1', teamId: 't-1', name: 'Helper');
+    await repository.logIn('gaby@duvet.chat', 'secret');
+    final listed = await repository.appCommands(app);
+    final user = listed.single.options.single;
+    expect((user.type, user.name), (OptionKind.subcommandGroup, 'user'));
+    final get = user.options.single.options.single;
+    expect((get.name, get.required, get.maxLength, get.choices.single.value), ('id', true, 40, 'me'));
+
+    requests.clear();
+    final created = await repository.saveAppCommand(
+      app,
+      BotCommand(
+        id: '',
+        applicationId: 'a-1',
+        appName: 'Helper',
+        name: 'poll',
+        description: 'Vote',
+        options: [
+          const BotCommandOption(type: OptionKind.room, name: 'where', description: 'Room', roomTypes: [1]),
+        ],
+      ),
+    );
+    expect(created.id, 'cmd-1');
+    expect(
+      (requests.single.method, requests.single.url.path),
+      ('POST', '/api/users/@me/teams/t-1/applications/a-1/commands'),
+    );
+    expect(jsonDecode(requests.single.body), {
+      'type': 1,
+      'name': 'poll',
+      'description': 'Vote',
+      'options': [
+        {
+          'type': 7,
+          'name': 'where',
+          'description': 'Room',
+          'room_types': [1],
+        },
+      ],
+    });
+
+    // A command read back goes back as it came.
+    requests.clear();
+    await repository.saveAppCommand(app, listed.single);
+    expect(
+      (requests.single.method, requests.single.url.path),
+      ('PATCH', '/api/users/@me/teams/t-1/applications/a-1/commands/cmd-1'),
+    );
+    expect(jsonDecode(requests.single.body), {
+      'name': 'perms',
+      'description': 'Permissions',
+      'options': _command['options'],
+    });
+
+    requests.clear();
+    await repository.deleteAppCommand(app, 'cmd-1');
+    expect(
+      (requests.single.method, requests.single.url.path),
+      ('DELETE', '/api/users/@me/teams/t-1/applications/a-1/commands/cmd-1'),
+    );
+  });
+
   test('a saved session resumes; a rejected one is forgotten', () async {
     await store.write((token: 'access-1', sessionToken: 'refresh-1', refreshedAt: DateTime.now()));
     expect(await repository.restore(), isTrue);
@@ -646,6 +900,29 @@ void main() {
     final sent = await repository.send(target, 'hello', nonce: 'n-1');
     expect(sent.content, 'hello');
     expect(sent.nonce, 'n-1');
+  });
+
+  test('a file marked as a spoiler uploads under its SPOILER_ name, and the picked file stays', () async {
+    await repository.logIn('gaby@duvet.chat', 'secret');
+    final dir = await Directory.systemTemp.createTemp('picked');
+    addTearDown(() => dir.delete(recursive: true));
+    final picked = await File('${dir.path}/scaled_1.jpg').writeAsBytes([1, 2, 3]);
+
+    await repository.send(
+      const ConversationTarget('c-1'),
+      '',
+      nonce: 'n-1',
+      files: [OutgoingFile(path: picked.path, name: 'SPOILER_cat.jpg', contentType: 'image/jpeg')],
+    );
+    final upload = requests.lastWhere((r) => r.method == 'POST');
+    expect(latin1.decode(upload.bodyBytes), contains('filename="SPOILER_cat.jpg"'));
+    expect(picked.existsSync(), isTrue);
+    // The link it went up through is gone, folder and all.
+    final links = [
+      for (final d in Directory.systemTemp.listSync().whereType<Directory>())
+        if (File('${d.path}/SPOILER_cat.jpg').existsSync()) d.path,
+    ];
+    expect(links, isEmpty);
   });
 
   test('gateway events build spaces, unread state and live messages', () async {
@@ -702,6 +979,53 @@ void main() {
     expect(repository.unread.value, isNot(contains('c-1')));
   });
 
+  test('a call notice leaves the conversation read for whoever saw the call, unread for the rest (#158)', () async {
+    await repository.logIn('gaby@duvet.chat', 'secret');
+    repository.handleEvent(_event('READY', {'user': _user(_me, 'gaby'), 'sessionToken': 'ws'}));
+    // What READY fetches, before the test ends.
+    await pumpEventQueue();
+    Map<String, dynamic> notice(String id, List<String> participants) => {
+      ..._dm(id, _maya, ''),
+      'content': null,
+      'type': 3,
+      'call': {'participants': participants, 'started_at': '2026-10-23T09:00:00Z', 'ended_at': '2026-10-23T09:05:30Z'},
+    };
+
+    // Maya's call nobody answered: missed.
+    repository.handleEvent(_event('DM_MESSAGE_CREATE', notice('10', [_maya])));
+    expect(repository.unread.value, contains('c-1'));
+    final missed = repository.latest.value['c-1']!;
+    expect(missed.isNotice, isTrue);
+    expect(missed.call!.duration, const Duration(minutes: 5, seconds: 30));
+    expect(repository.previewOf(missed), 'started a call. No one answered.');
+
+    // One the user was in: read up to it.
+    repository.handleEvent(_event('DM_MESSAGE_CREATE', notice('11', [_maya, _me])));
+    expect(repository.unread.value, isNot(contains('c-1')));
+    expect(repository.previewOf(repository.latest.value['c-1']!), 'started a call that lasted 5 minutes');
+
+    // One they declined from another device: read too, and the answer is used up.
+    repository.handleEvent(_event('CALL_DECLINED', {'conversation_id': 'c-1', 'user_id': _me}));
+    repository.handleEvent(_event('DM_MESSAGE_CREATE', notice('12', [_maya])));
+    expect(repository.unread.value, isNot(contains('c-1')));
+    repository.handleEvent(_event('DM_MESSAGE_CREATE', notice('13', [_maya])));
+    expect(repository.unread.value, contains('c-1'));
+    repository.markRead(const ConversationTarget('c-1'), '13');
+
+    // An answer to an earlier call doesn't count for a new one that rings them.
+    repository.handleEvent(_event('CALL_ACCEPTED', {'conversation_id': 'c-1', 'user_id': _me}));
+    repository.handleEvent(
+      _event('CALL_INCOMING', {'conversation_id': 'c-1', 'initiator_id': _maya, 'initiator_name': 'maya'}),
+    );
+    repository.handleEvent(_event('DM_MESSAGE_CREATE', notice('14', [_maya])));
+    expect(repository.unread.value, contains('c-1'));
+
+    // A call the user saw, posted after a newer message they haven't read, leaves it unread.
+    repository.handleEvent(_event('DM_MESSAGE_CREATE', _dm('20', _maya, 'later')));
+    repository.handleEvent(_event('DM_MESSAGE_CREATE', notice('15', [_maya, _me])));
+    expect(repository.unread.value, contains('c-1'));
+  });
+
   test('who\'s typing, outside the open chat: 6 seconds after each says so, or until their message (#92)', () {
     fakeAsync((async) {
       // Made in the fake clock's zone, so its timers run on that clock.
@@ -727,7 +1051,7 @@ void main() {
         'c-1': ['maya', 'leo (recording)'],
       });
 
-      // Typing again starts the 6 seconds over.
+      // Typing again starts the 5 seconds over.
       async.elapse(const Duration(seconds: 4));
       typed('DM_TYPING', _maya, 'maya');
       async.elapse(const Duration(seconds: 2));
@@ -873,6 +1197,162 @@ void main() {
   });
 
   group('session', () {
+    // The background renewal (lib/push/renewal.dart) rotated the session while the app held the old tokens: on the
+    // 401 the app takes up the stored ones, and goes on.
+    test('a session the background renewed is taken up on a 401', () async {
+      await repository.logIn('gaby@duvet.chat', 'secret');
+      var signedOut = 0;
+      final sub = repository.signedOut.listen((_) => signedOut++);
+      addTearDown(sub.cancel);
+      final renewed = (token: 'access-9', sessionToken: 'refresh-9', refreshedAt: DateTime.now().toUtc());
+      await store.write(renewed);
+      expiredToken = 'access-1';
+      rotatedAway = {'refresh-1'};
+
+      await repository.setPushRegistration('fid-1');
+      final put = requests.where((r) => r.url.path == '/api/users/@me/push-registration').toList();
+      expect([for (final r in put) r.headers['Authorization']], ['Bearer access-1', 'Bearer access-9']);
+      expect((signedOut, repository.profile.value?.id), (0, _me));
+      expect(await store.read(), renewed);
+    });
+
+    test('a 401 with the same stored session still signs out', () async {
+      await repository.logIn('gaby@duvet.chat', 'secret');
+      var signedOut = 0;
+      final sub = repository.signedOut.listen((_) => signedOut++);
+      addTearDown(sub.cancel);
+      expiredToken = 'access-1';
+      rotatedAway = {'refresh-1'};
+
+      await expectLater(repository.setPushRegistration('fid-1'), throwsA(isA<duvet.DuvetAuthException>()));
+      expect((signedOut, repository.profile.value), (1, null));
+      expect(await store.read(), isNull);
+    });
+
+    // A repository of its own on [kept], which tests set up to fail or hold.
+    DuvetRepository onStore(SessionStore kept) {
+      final local = DuvetRepository(
+        store: kept,
+        recentsStore: MemoryRecentChatsStore(),
+        httpClient: () => client,
+        connectGateway: false,
+        cacheStore: MemoryChatCacheStore(),
+      );
+      addTearDown(local.dispose);
+      return local;
+    }
+
+    test('two requests refused together share one look at the stored session, and both go on', () async {
+      final kept = _TestStore();
+      final local = onStore(kept);
+      await local.logIn('gaby@duvet.chat', 'secret');
+      await kept.write((token: 'access-9', sessionToken: 'refresh-9', refreshedAt: DateTime.now().toUtc()));
+      kept.reads = 0;
+      expiredToken = 'access-1';
+      rotatedAway = {'refresh-1'};
+
+      await Future.wait([local.setPushRegistration('fid-1'), local.deletePushRegistration()]);
+      expect(kept.reads, 1);
+      expect(
+        [
+          for (final r in requests)
+            if (r.url.path == '/api/users/@me/push-registration') '${r.method} ${r.headers['Authorization']}',
+        ],
+        unorderedEquals([
+          'PUT Bearer access-1',
+          'DELETE Bearer access-1',
+          'PUT Bearer access-9',
+          'DELETE Bearer access-9',
+        ]),
+      );
+    });
+
+    // Its answer came once the client it went with was replaced: the stored session's goes on with it.
+    test('a request refused after another one took up the stored session goes once more with it', () async {
+      await repository.logIn('gaby@duvet.chat', 'secret');
+      await store.write((token: 'access-9', sessionToken: 'refresh-9', refreshedAt: DateTime.now().toUtc()));
+      expiredToken = 'access-1';
+      rotatedAway = {'refresh-1'};
+      final held = holds['DELETE /api/users/@me/push-registration'] = Completer();
+      final deleting = repository.deletePushRegistration();
+      await pumpEventQueue();
+
+      await repository.setPushRegistration('fid-1');
+      held.complete();
+      await deleting;
+      // In between, duvet_client sends it again with the old client's tokens, gone with its refused renewal.
+      final deletes = [
+        for (final r in requests)
+          if (r.method == 'DELETE') r.headers['Authorization'],
+      ];
+      expect((deletes.first, deletes.last), ('Bearer access-1', 'Bearer access-9'));
+    });
+
+    test('a 401 whose look at the stored session fails ends the session', () async {
+      final kept = _TestStore();
+      final local = onStore(kept);
+      await local.logIn('gaby@duvet.chat', 'secret');
+      var signedOut = 0;
+      final sub = local.signedOut.listen((_) => signedOut++);
+      addTearDown(sub.cancel);
+      kept.failing = true;
+      expiredToken = 'access-1';
+      rotatedAway = {'refresh-1'};
+
+      await expectLater(local.setPushRegistration('fid-1'), throwsA(isA<duvet.DuvetAuthException>()));
+      expect((signedOut, local.profile.value), (1, null));
+    });
+
+    test('a sign-in made while a 401 looks at the stored session stays', () async {
+      final kept = _TestStore();
+      final local = onStore(kept);
+      await local.logIn('gaby@duvet.chat', 'secret');
+      expiredToken = 'access-1';
+      rotatedAway = {'refresh-1'};
+      final held = kept.holdNext = Completer();
+      final refused = expectLater(local.setPushRegistration('fid-1'), throwsA(isA<duvet.DuvetAuthException>()));
+      await pumpEventQueue();
+
+      // Out and in again meanwhile.
+      await local.logOut();
+      expiredToken = null;
+      rotatedAway = {};
+      await local.logIn('gaby@duvet.chat', 'secret');
+      held.complete();
+      await refused;
+      expect(local.profile.value?.id, _me);
+      expect(await kept.read(), isNotNull);
+    });
+
+    test('a stored session whose session token alone changed is taken up', () async {
+      await repository.logIn('gaby@duvet.chat', 'secret');
+      await store.write((token: 'access-1', sessionToken: 'refresh-9', refreshedAt: DateTime.now().toUtc()));
+      expiredToken = 'access-1';
+      rotatedAway = {'refresh-1'};
+
+      await repository.setPushRegistration('fid-1');
+      expect(repository.profile.value?.id, _me);
+      expect(
+        [
+          for (final r in requests)
+            if (r.url.path == '/api/auth/refresh') r.headers['X-Session-Token'],
+        ],
+        ['refresh-1', 'refresh-9'],
+      );
+    });
+
+    test('signing out after the background renewed the session alone ends that session', () async {
+      await repository.logIn('gaby@duvet.chat', 'secret');
+      await store.write((token: 'access-9', sessionToken: 'refresh-9', refreshedAt: DateTime.now().toUtc()));
+
+      await repository.logOut();
+      expect([
+        for (final r in requests)
+          if (r.url.path == '/api/auth/logout') r.headers['X-Session-Token'],
+      ], contains('refresh-9'));
+      expect(await store.read(), isNull);
+    });
+
     // Another repository on the same API and stores; made in a fake clock's
     // zone, its timers run on that clock.
     DuvetRepository newRepository() => DuvetRepository(
@@ -913,6 +1393,87 @@ void main() {
         async.elapse(const Duration(minutes: 1));
         expect(refreshes, 2);
         expect(saved(async)!.token, 'access-3');
+        repository.dispose();
+        async.flushMicrotasks();
+      }, initialTime: DateTime(2026, 10, 24, 9));
+    });
+
+    // The background task asks the app's isolate first (lib/push/renewal.dart): its own client renews the session, so
+    // nothing takes up the stored tokens, and the gateway follows the renewal.
+    test("the background task's renewal goes through the app's own client once its tokens are 4 hours old", () {
+      fakeAsync((async) {
+        final repository = newRepository();
+        repository.logIn('gaby@duvet.chat', 'secret');
+        async.flushMicrotasks();
+        async.elapse(const Duration(hours: 3, minutes: 59));
+        repository.renewForBackground(const Duration(hours: 4));
+        async.flushMicrotasks();
+        expect(refreshes, 0);
+
+        async.elapse(const Duration(minutes: 1));
+        var done = false;
+        repository.renewForBackground(const Duration(hours: 4)).then((_) => done = true);
+        async.flushMicrotasks();
+        expect((refreshes, done), (1, true));
+        expect(saved(async), (token: 'access-2', sessionToken: 'refresh-2', refreshedAt: clock.now()));
+        repository.setPushRegistration('fid-1');
+        async.flushMicrotasks();
+        expect(requests.last.headers['Authorization'], 'Bearer access-2');
+        repository.dispose();
+        async.flushMicrotasks();
+      }, initialTime: DateTime(2026, 10, 24, 9));
+    });
+
+    test("a background task's renewal that got no answer goes once more 3 s later, and the task waits for it", () {
+      fakeAsync((async) {
+        final repository = newRepository();
+        repository.logIn('gaby@duvet.chat', 'secret');
+        async.flushMicrotasks();
+        async.elapse(const Duration(hours: 4));
+        renewalAnswersLost = 1;
+        var done = false;
+        repository.renewForBackground(const Duration(hours: 4)).then((_) => done = true);
+        async.flushMicrotasks();
+        expect((refreshes, done), (1, false));
+
+        async.elapse(DuvetRepository.renewalRetry);
+        expect(done, isTrue);
+        expect(
+          [
+            for (final r in requests)
+              if (r.url.path == '/api/auth/refresh') r.headers['X-Session-Token'],
+          ],
+          ['refresh-1', 'refresh-1'],
+        );
+        expect(saved(async)!.token, 'access-2');
+        repository.dispose();
+        async.flushMicrotasks();
+      }, initialTime: DateTime(2026, 10, 24, 9));
+    });
+
+    // The stored session it takes up was renewed just now.
+    test("a renewal that takes up the session the background renewed isn't sent again", () {
+      fakeAsync((async) {
+        final repository = newRepository();
+        repository.logIn('gaby@duvet.chat', 'secret');
+        async.flushMicrotasks();
+        async.elapse(const Duration(hours: 22, minutes: 55));
+        final renewed = (token: 'access-9', sessionToken: 'refresh-9', refreshedAt: clock.now());
+        store.write(renewed);
+        expiredToken = 'access-1';
+        rotatedAway = {'refresh-1'};
+
+        // The 10-minute check past 23 hours.
+        async.elapse(const Duration(minutes: 10));
+        expect(
+          [
+            for (final r in requests)
+              if (r.url.path == '/api/auth/refresh') r.headers['X-Session-Token'],
+          ],
+          ['refresh-1'],
+        );
+        expect(saved(async), renewed);
+        expect(repository.profile.value?.id, _me);
         repository.dispose();
         async.flushMicrotasks();
       }, initialTime: DateTime(2026, 10, 24, 9));
@@ -1715,6 +2276,39 @@ void main() {
       final send = requests.lastWhere((r) => r.method == 'POST');
       final body = jsonDecode(send.body) as Map;
       expect((body['message_reference'] as Map)['message_id'], '9');
+      expect(body.containsKey('allowed_mentions'), isFalse);
+
+      await repository.send(
+        const ConversationTarget('c-1'),
+        'quietly',
+        nonce: 'n2',
+        replyTo: '9',
+        mentionRepliedUser: false,
+      );
+      final quiet = jsonDecode(requests.lastWhere((r) => r.method == 'POST').body) as Map;
+      expect(quiet['allowed_mentions'], {'replied_user': false});
+    });
+
+    test('a search sends the desktop\'s filters and a cursor, and answers the total', () async {
+      await repository.logIn('gaby@duvet.chat', 'secret');
+      final page = await repository.search(
+        SearchQuery(
+          'second',
+          conversationId: 'c-1',
+          authorIds: const [_me],
+          has: const ['image', 'link'],
+          pinned: false,
+          after: DateTime.utc(2026, 11, 8),
+          cursor: '9',
+        ),
+      );
+      expect((page.total, page.hits.single.message.content), (40, 'second'));
+      final url = requests.lastWhere((r) => r.url.path.endsWith('/messages/search')).url;
+      expect(url.queryParametersAll['has'], ['image', 'link']);
+      expect(url.queryParameters['author_id'], _me);
+      expect(url.queryParameters['pinned'], 'false');
+      expect(url.queryParameters['after'], startsWith('2026-11-08T00:00:00'));
+      expect(url.queryParameters['cursor'], '9');
     });
 
     test('the newest message of a room is fetched alone, and kept live', () async {
@@ -1967,6 +2561,18 @@ void main() {
       );
     });
 
+    test('the username goes only when given, trimmed; a taken one says so, as the API says it (#22)', () async {
+      await repository.logIn('gaby@duvet.chat', 'secret');
+      await repository.updateProfile(alias: 'Gaby', username: ' gaby.r ');
+      expect(jsonDecode(requests.last.body), {'username': 'gaby.r', 'alias': 'Gaby'});
+      expect(repository.profile.value!.username, 'gaby.r');
+      await expectLater(
+        repository.updateProfile(alias: 'Gaby', username: 'maya'),
+        throwsA(isA<ActionFailed>().having((e) => e.message, 'message', 'That username is taken')),
+      );
+      expect(repository.profile.value!.username, 'gaby.r');
+    });
+
     test('an API from before bios saves the rest, and says it needs the latest API', () async {
       await repository.logIn('gaby@duvet.chat', 'secret');
       apiHasBios = false;
@@ -2045,6 +2651,172 @@ void main() {
       const p = Profile(id: _me, username: 'gaby', status: Presence.doNotDisturb);
       expect(profileFromJson(profileToJson(p)).status, Presence.doNotDisturb);
       expect(profileFromJson(profileToJson(const Profile(id: _me, username: 'gaby'))).status, Presence.online);
+    });
+  });
+
+  // What the user is notified of in each place: a room's own level, else its Space's, else the Space's default
+  // (only mentions without one); a conversation's own, else every message.
+  group('notification levels', () {
+    Map<String, dynamic> space({int? defaultLevel}) => {
+      'space': {
+        'id': 's-1',
+        'name': 'Design Guild',
+        'owner_id': _maya,
+        'default_notifications': ?defaultLevel,
+        'created_at': _at,
+        'updated_at': _at,
+      },
+      'rooms': {
+        for (final (id, position) in [('r-general', 0), ('r-other', 1)])
+          id: {
+            'id': id,
+            'space_id': 's-1',
+            'type': 1,
+            'name': id,
+            'position': position,
+            'created_at': _at,
+            'updated_at': _at,
+          },
+      },
+      'roles_permissions': <String, dynamic>{},
+      'owner_id': _maya,
+    };
+    Future<void> ready() async {
+      await repository.logIn('gaby@duvet.chat', 'secret');
+      repository.handleEvent(_event('READY', {'user': _user(_me, 'gaby'), 'sessionToken': 'ws'}));
+      await pumpEventQueue();
+    }
+
+    void update(String id, int type, int? level) => repository.handleEvent(
+      _event('NOTIFICATION_SETTINGS_UPDATE', {'target_id': id, 'target_type': type, 'level': level}),
+    );
+
+    test('READY loads them, and NOTIFICATION_SETTINGS_UPDATE keeps them current', () async {
+      savedLevels = [
+        {'target_id': 'r-general', 'target_type': 1, 'level': 2},
+      ];
+      await ready();
+      expect(repository.notificationLevels.value, {'r-general': NotificationLevel.nothing});
+
+      update('c-1', 2, 1);
+      update('r-general', 1, null);
+      expect(repository.notificationLevels.value, {'c-1': NotificationLevel.mentions});
+    });
+
+    test('a room\'s own level wins over its Space\'s, which wins over the Space\'s default', () async {
+      await ready();
+      repository.handleEvent(_event('SPACE_CREATE', space(defaultLevel: 0)));
+      expect(
+        (repository.spaceLevel('s-1'), repository.roomLevel('r-other')),
+        (NotificationLevel.all, NotificationLevel.all),
+      );
+
+      update('s-1', 0, 2);
+      update('r-general', 1, 0);
+      expect(repository.roomLevel('r-general'), NotificationLevel.all);
+      expect(repository.roomLevel('r-other'), NotificationLevel.nothing);
+      expect((repository.quiet('r-general'), repository.quiet('r-other')), (false, true));
+
+      // Back to the Space's default: every message.
+      update('s-1', 0, null);
+      expect((repository.roomLevel('r-other'), repository.quiet('r-other')), (NotificationLevel.all, false));
+    });
+
+    test('a Space without a default notifies only mentions, a conversation every message', () async {
+      await ready();
+      repository.handleEvent(_event('SPACE_CREATE', space()));
+      expect(repository.spaceLevel('s-1'), NotificationLevel.mentions);
+      expect(repository.roomLevel('r-general'), NotificationLevel.mentions);
+      expect((repository.conversationLevel('c-1'), repository.quiet('c-1')), (NotificationLevel.all, false));
+
+      update('c-1', 2, 2);
+      expect(repository.quiet('c-1'), isTrue);
+    });
+
+    test('SPACE_UPDATE brings the Space\'s new default', () async {
+      await ready();
+      repository.handleEvent(_event('SPACE_CREATE', space(defaultLevel: 1)));
+      repository.handleEvent(
+        _event('SPACE_UPDATE', {...space()['space'] as Map<String, dynamic>, 'default_notifications': 0}),
+      );
+      expect(repository.roomLevel('r-general'), NotificationLevel.all);
+    });
+
+    test('setNotificationLevel puts a place\'s level, and null clears it', () async {
+      await ready();
+      await repository.setNotificationLevel('r-general', NotificationTarget.room, NotificationLevel.nothing);
+      await repository.setNotificationLevel('s-1', NotificationTarget.space, null);
+      final sent = requests.where((r) => r.url.path.startsWith('/api/users/@me/notification-settings/')).toList();
+      expect(sent.map((r) => '${r.method} ${r.url.path}'), [
+        'PUT /api/users/@me/notification-settings/r-general',
+        'DELETE /api/users/@me/notification-settings/s-1',
+      ]);
+      expect(jsonDecode(sent.first.body), {'target_type': 1, 'level': 2});
+    });
+
+    test('signing out forgets them', () async {
+      savedLevels = [
+        {'target_id': 'c-1', 'target_type': 2, 'level': 2},
+      ];
+      await ready();
+      await repository.logOut();
+      expect(repository.notificationLevels.value, isEmpty);
+    });
+
+    test('READY\'s answer keeps the changes that came while it was on its way', () async {
+      savedLevels = [
+        {'target_id': 'r-general', 'target_type': 1, 'level': 2},
+        {'target_id': 'c-1', 'target_type': 2, 'level': 2},
+      ];
+      final hold = holdLevels = Completer<void>();
+      await ready();
+      // The answer was read before these: the Space's level set on another device, and the chat's cleared.
+      update('s-1', 0, 1);
+      update('c-1', 2, null);
+      hold.complete();
+      await pumpEventQueue();
+      expect(repository.notificationLevels.value, {
+        'r-general': NotificationLevel.nothing,
+        's-1': NotificationLevel.mentions,
+      });
+    });
+
+    test('an older READY\'s answer, or one that comes after signing out, changes nothing', () async {
+      savedLevels = [
+        {'target_id': 'r-general', 'target_type': 1, 'level': 2},
+      ];
+      final older = holdLevels = Completer<void>();
+      await ready();
+      // READY again, after a drop: its answer comes first.
+      savedLevels = [
+        {'target_id': 'r-general', 'target_type': 1, 'level': 1},
+      ];
+      holdLevels = null;
+      repository.handleEvent(_event('READY', {'user': _user(_me, 'gaby'), 'sessionToken': 'ws'}));
+      await pumpEventQueue();
+      older.complete();
+      await pumpEventQueue();
+      expect(repository.notificationLevels.value, {'r-general': NotificationLevel.mentions});
+
+      final last = holdLevels = Completer<void>();
+      repository.handleEvent(_event('READY', {'user': _user(_me, 'gaby'), 'sessionToken': 'ws'}));
+      await pumpEventQueue();
+      await repository.logOut();
+      last.complete();
+      await pumpEventQueue();
+      expect(repository.notificationLevels.value, isEmpty);
+    });
+
+    test('a change the server refuses, or that never reaches it, says why', () async {
+      await ready();
+      await expectLater(
+        repository.setNotificationLevel('r-gone', NotificationTarget.room, NotificationLevel.nothing),
+        throwsA(isA<ActionFailed>().having((e) => e.message, 'message', 'Room not found')),
+      );
+      await expectLater(
+        repository.setNotificationLevel('s-gone', NotificationTarget.space, null),
+        throwsA(isA<ActionFailed>().having((e) => e.message, 'message', 'No connection. Check it and try again.')),
+      );
     });
   });
 }

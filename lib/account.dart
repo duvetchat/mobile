@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert' show utf8;
 import 'dart:io';
 import 'dart:math' as math;
 import 'dart:ui' as ui;
@@ -6,25 +7,32 @@ import 'dart:ui' as ui;
 import 'package:duvet_client/duvet.dart' show maxBioLength;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:flutter_svg/flutter_svg.dart';
 import 'package:forui/forui.dart';
 import 'package:image_picker/image_picker.dart';
 
 import 'data/appearance.dart';
+import 'data/images.dart';
+import 'data/launcher_icon.dart';
 import 'data/links.dart';
 import 'data/models.dart';
 import 'data/scope.dart';
 import 'developer.dart' show DeveloperPage;
 import 'login.dart';
 import 'people.dart';
-import 'space_admin.dart' show avatarSide, saveBannerImage, saveSquareImage;
+import 'sounds_settings.dart';
+import 'space_admin.dart' show avatarSide, confirmDestructive, saveBannerImage, saveSquareImage;
 import 'tabs.dart' show LiveIndicator;
 import 'theme.dart';
 import 'widgets/avatar.dart';
 import 'widgets/chrome.dart';
+import 'widgets/code_highlight.dart';
+import 'widgets/color_picker.dart';
 import 'widgets/ghost_art.dart';
 import 'widgets/glass.dart';
 import 'widgets/picture_edit.dart';
 import 'widgets/rows.dart';
+import 'widgets/sheets.dart' show LoadingSkeleton, placeholderNames;
 import 'widgets/unsaved_changes.dart';
 
 void _toast(BuildContext context, String text) {
@@ -119,56 +127,103 @@ class SignUpScreen extends StatefulWidget {
 }
 
 class _SignUpScreenState extends State<SignUpScreen> {
+  final _alias = TextEditingController();
   final _username = TextEditingController();
   final _email = TextEditingController();
   final _password = TextEditingController();
+  final _confirm = TextEditingController();
   bool _show = false;
+  bool _terms = false;
   bool _busy = false;
   String? _failure;
 
   @override
   void initState() {
     super.initState();
-    for (final c in [_username, _email, _password]) {
+    for (final c in [_alias, _username, _email, _password, _confirm]) {
       c.addListener(() => setState(() {}));
     }
   }
 
   @override
   void dispose() {
-    _username.dispose();
-    _email.dispose();
-    _password.dispose();
+    for (final c in [_alias, _username, _email, _password, _confirm]) {
+      c.dispose();
+    }
     super.dispose();
   }
 
-  String get _name => _username.text.trim().replaceFirst('@', '');
-  bool get _validName => RegExp(r'^[a-zA-Z0-9_.]{2,32}$').hasMatch(_name);
+  // The API's rules: a username trimmed, not empty, of 32 characters at most
+  // (code points, as its column counts them), as the display name; a
+  // password of 8 to 72 bytes, as bcrypt takes it.
+  String get _name => _username.text.trim();
+  int get _nameLength => _name.runes.length;
+  int get _aliasLength => _alias.text.trim().runes.length;
+  int get _passwordBytes => utf8.encode(_password.text).length;
   bool get _validEmail => RegExp(r'^[^@\s]+@[^@\s]+\.[^@\s]+$').hasMatch(_email.text.trim());
+  bool get _matches => _confirm.text == _password.text;
 
   Future<void> _create() async {
     final navigator = Navigator.of(context);
+    final alias = _alias.text.trim();
     setState(() {
       _busy = true;
       _failure = null;
     });
     try {
-      await context.repository.signUp(username: _name, email: _email.text.trim(), password: _password.text);
+      await context.repository.signUp(
+        username: _name,
+        email: _email.text.trim(),
+        password: _password.text,
+        alias: alias.isEmpty ? null : alias,
+      );
       // Signed in: the app shows; the verify screen goes over it.
       navigator.popUntil((r) => r.isFirst);
       unawaited(navigator.push(MaterialPageRoute<void>(builder: (_) => VerifyEmailPage(email: _email.text.trim()))));
     } catch (e) {
-      if (mounted) setState(() => _failure = _error(e));
+      if (mounted) setState(() => _failure = e is ActionFailed ? e.message : _error(e));
     } finally {
       if (mounted) setState(() => _busy = false);
     }
   }
 
+  // As the desktop's.
+  void _showTerms() => showGlassDialogSheet<void>(
+    context,
+    label: 'Terms of use',
+    builder: (context) => Padding(
+      padding: const EdgeInsets.fromLTRB(24, 16, 24, 24),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Text('Terms of use', style: DuvetType.title.copyWith(color: context.theme.colors.foreground)),
+          const SizedBox(height: 12),
+          Text(
+            'By creating an account, you agree to follow community guidelines and use Duvet respectfully.',
+            style: DuvetType.snippet.copyWith(color: context.theme.colors.mutedForeground),
+          ),
+          const SizedBox(height: 24),
+          DuvetButton(label: 'Close', expand: true, onPressed: () => Navigator.of(context).pop()),
+        ],
+      ),
+    ),
+  );
+
   @override
   Widget build(BuildContext context) {
     final colors = context.theme.colors;
     final strength = passwordStrength(_password.text);
-    final ready = _validName && _validEmail && _password.text.length >= 8;
+    final ready =
+        _name.isNotEmpty &&
+        _nameLength <= maxUsernameLength &&
+        _aliasLength <= maxDisplayNameLength &&
+        _validEmail &&
+        _password.text.length >= 8 &&
+        _passwordBytes <= 72 &&
+        _matches &&
+        _terms;
+    void toggleTerms() => setState(() => _terms = !_terms);
     return _FormPage(
       title: 'Create your account',
       lead: 'One account for every Space you join.',
@@ -196,12 +251,23 @@ class _SignUpScreenState extends State<SignUpScreen> {
       ],
       children: [
         DuvetTextField(
+          label: 'Display name (optional)',
+          controller: _alias,
+          autofocus: true,
+          autofillHints: const [AutofillHints.name],
+          textInputAction: TextInputAction.next,
+          error: _aliasLength > maxDisplayNameLength
+              ? 'Too long: $_aliasLength of $maxDisplayNameLength characters'
+              : null,
+        ),
+        const SizedBox(height: 16),
+        DuvetTextField(
           label: 'Username',
           controller: _username,
-          autofocus: true,
           autofillHints: const [AutofillHints.newUsername],
           textInputAction: TextInputAction.next,
-          error: _username.text.isNotEmpty && !_validName ? 'Letters, numbers, dots and _, 2 to 32' : null,
+          helper: 'It’s how people mention you.',
+          error: _nameLength > maxUsernameLength ? 'Too long: $_nameLength of $maxUsernameLength characters' : null,
         ),
         const SizedBox(height: 16),
         DuvetTextField(
@@ -218,6 +284,8 @@ class _SignUpScreenState extends State<SignUpScreen> {
           controller: _password,
           obscure: !_show,
           autofillHints: const [AutofillHints.newPassword],
+          textInputAction: TextInputAction.next,
+          error: _passwordBytes > 72 ? 'Too long: 72 characters at most, fewer with accents or emoji' : null,
           trailing: IconAction(
             icon: _show ? FLucideIcons.eyeOff : FLucideIcons.eye,
             label: _show ? 'Hide password' : 'Show password',
@@ -249,6 +317,46 @@ class _SignUpScreenState extends State<SignUpScreen> {
         ),
         const SizedBox(height: 8),
         Text(strength.hint, style: DuvetType.caption.copyWith(color: colors.mutedForeground)),
+        const SizedBox(height: 16),
+        DuvetTextField(
+          label: 'Confirm password',
+          controller: _confirm,
+          obscure: !_show,
+          autofillHints: const [AutofillHints.newPassword],
+          error: _confirm.text.isNotEmpty && !_matches ? 'Passwords don’t match' : null,
+        ),
+        const SizedBox(height: 16),
+        // Wraps on a narrow screen or at a large text size: the link goes under the box.
+        Wrap(
+          crossAxisAlignment: WrapCrossAlignment.center,
+          children: [
+            Semantics(
+              container: true,
+              checked: _terms,
+              label: 'I agree to the Terms of use',
+              excludeSemantics: true,
+              onTap: toggleTerms,
+              child: GestureDetector(
+                behavior: HitTestBehavior.opaque,
+                onTap: toggleTerms,
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(vertical: 10),
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      SquareCheck(checked: _terms),
+                      const SizedBox(width: 12),
+                      Flexible(
+                        child: Text('I agree to the', style: DuvetType.body.copyWith(color: colors.foreground)),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ),
+            TextAction(label: 'Terms of use', onPressed: _showTerms),
+          ],
+        ),
         if (_failure != null) ...[
           const SizedBox(height: 16),
           Semantics(
@@ -658,9 +766,13 @@ class EditProfilePage extends StatefulWidget {
 /// The longest display name the API takes, in characters.
 const maxDisplayNameLength = 32;
 
+/// The longest username the API takes, counted the same way.
+const maxUsernameLength = 32;
+
 class _EditProfilePageState extends State<EditProfilePage> {
   late final TextEditingController _alias;
   late final TextEditingController _bio;
+  late final TextEditingController _username;
   bool _fieldsMade = false;
   bool _saving = false;
 
@@ -680,6 +792,12 @@ class _EditProfilePageState extends State<EditProfilePage> {
   int get _aliasLength => _alias.text.trim().runes.length;
   bool get _aliasTooLong => _aliasLength > maxDisplayNameLength;
 
+  /// The username as the API takes it: trimmed; empty keeps the one there.
+  String get _name => _username.text.trim();
+  int get _nameLength => _name.runes.length;
+  bool get _nameTooLong => _nameLength > maxUsernameLength;
+  bool _renamed(Profile profile) => _name.isNotEmpty && _name != profile.username;
+
   @override
   void didChangeDependencies() {
     super.didChangeDependencies();
@@ -690,12 +808,14 @@ class _EditProfilePageState extends State<EditProfilePage> {
     final profile = context.repository.profile.value;
     _alias = TextEditingController(text: profile?.alias ?? '')..addListener(() => setState(() {}));
     _bio = TextEditingController(text: profile?.bio ?? '')..addListener(() => setState(() {}));
+    _username = TextEditingController(text: profile?.username ?? '')..addListener(() => setState(() {}));
   }
 
   @override
   void dispose() {
     _alias.dispose();
     _bio.dispose();
+    _username.dispose();
     _upload.dispose();
     super.dispose();
   }
@@ -766,6 +886,7 @@ class _EditProfilePageState extends State<EditProfilePage> {
     // The bio goes only when it changed: left out, it stays.
     final bio = _bio.text.trim();
     final changed = bio != (repository.profile.value?.bio ?? '').trim();
+    final renamed = _renamed(repository.profile.value!);
     setState(() => _saving = true);
     var failure = 'Couldn’t save your profile';
     try {
@@ -792,7 +913,7 @@ class _EditProfilePageState extends State<EditProfilePage> {
         _banner = null;
       }
       failure = 'Couldn’t save your profile';
-      await repository.updateProfile(alias: _alias.text, bio: changed ? bio : null);
+      await repository.updateProfile(alias: _alias.text, bio: changed ? bio : null, username: renamed ? _name : null);
       // Cancelled meanwhile: the page is gone, and the route under it stays.
       if (mounted) navigator.pop();
     } catch (e) {
@@ -820,7 +941,9 @@ class _EditProfilePageState extends State<EditProfilePage> {
     final banner = _banner ?? bannerNow;
     final hasAvatar = _avatar != null || avatarNow != null;
     final alias = _alias.text.trim();
+    final username = _name.isEmpty ? profile.username : _name;
     final dirty =
+        _renamed(profile) ||
         _avatar != null ||
         _banner != null ||
         _removeAvatar ||
@@ -859,7 +982,7 @@ class _EditProfilePageState extends State<EditProfilePage> {
                               borderRadius: const BorderRadius.vertical(top: Radius.circular(DuvetTokens.radiusCard)),
                               image: switch (banner) {
                                 final b? => DecorationImage(
-                                  image: b.startsWith('http') ? NetworkImage(b) : FileImage(File(b)) as ImageProvider,
+                                  image: b.startsWith('http') ? cachedImage(b) : FileImage(File(b)),
                                   fit: BoxFit.cover,
                                 ),
                                 null => null,
@@ -950,13 +1073,13 @@ class _EditProfilePageState extends State<EditProfilePage> {
                             crossAxisAlignment: CrossAxisAlignment.start,
                             children: [
                               Text(
-                                alias.isEmpty ? profile.username : alias,
+                                alias.isEmpty ? username : alias,
                                 maxLines: 1,
                                 overflow: TextOverflow.ellipsis,
                                 style: DuvetType.label.copyWith(color: colors.foreground),
                               ),
                               Text(
-                                '@${profile.username}',
+                                '@$username',
                                 maxLines: 1,
                                 overflow: TextOverflow.ellipsis,
                                 style: DuvetType.caption.copyWith(color: colors.mutedForeground),
@@ -980,7 +1103,7 @@ class _EditProfilePageState extends State<EditProfilePage> {
                   DuvetTextField(
                     label: 'Display name',
                     controller: _alias,
-                    hint: profile.username,
+                    hint: username,
                     error: _aliasTooLong ? 'Too long: $_aliasLength of $maxDisplayNameLength characters' : null,
                   ),
                   const SizedBox(height: 16),
@@ -995,20 +1118,15 @@ class _EditProfilePageState extends State<EditProfilePage> {
                     error: _bioTooLong ? 'Too long: $_bioLength of $maxBioLength characters' : null,
                   ),
                   const SizedBox(height: 16),
-                  Text(
-                    'Username',
-                    style: DuvetType.caption.copyWith(color: colors.foreground, fontWeight: FontWeight.w500),
-                  ),
-                  const SizedBox(height: 8),
-                  Container(
-                    height: 48,
-                    padding: const EdgeInsets.symmetric(horizontal: 16),
-                    alignment: Alignment.centerLeft,
-                    decoration: BoxDecoration(
-                      color: colors.secondary,
-                      borderRadius: BorderRadius.circular(DuvetTokens.radiusField),
-                    ),
-                    child: Text('@${profile.username}', style: DuvetType.body.copyWith(color: colors.mutedForeground)),
+                  // As the API takes it, and only that: 32 characters at most,
+                  // trimmed; empty keeps the one there.
+                  DuvetTextField(
+                    label: 'Username',
+                    controller: _username,
+                    hint: profile.username,
+                    autofillHints: const [AutofillHints.newUsername],
+                    helper: 'It’s how people mention you.',
+                    error: _nameTooLong ? 'Too long: $_nameLength of $maxUsernameLength characters' : null,
                   ),
                 ],
               ),
@@ -1023,7 +1141,7 @@ class _EditProfilePageState extends State<EditProfilePage> {
                 actions: [
                   TextAction(
                     label: 'Save',
-                    onPressed: _saving || !dirty || _bioTooLong || _aliasTooLong ? null : _save,
+                    onPressed: _saving || !dirty || _bioTooLong || _aliasTooLong || _nameTooLong ? null : _save,
                   ),
                 ],
               ),
@@ -1062,13 +1180,24 @@ class _CropPageState extends State<CropPage> {
   @override
   void initState() {
     super.initState();
+    // Its size from its header: decoding a frame isn't needed, and a moving
+    // GIF's first frame sometimes never came in tests.
     File(widget.path)
         .readAsBytes()
-        .then(ui.instantiateImageCodec)
-        .then((codec) => codec.getNextFrame())
+        .then(ui.ImmutableBuffer.fromUint8List)
+        .then((buffer) async {
+          try {
+            final descriptor = await ui.ImageDescriptor.encoded(buffer);
+            final size = Size(descriptor.width.toDouble(), descriptor.height.toDouble());
+            descriptor.dispose();
+            return size;
+          } finally {
+            buffer.dispose();
+          }
+        })
         .then(
-          (frame) {
-            if (mounted) setState(() => _image = Size(frame.image.width.toDouble(), frame.image.height.toDouble()));
+          (size) {
+            if (mounted) setState(() => _image = size);
           },
           onError: (Object e) {
             if (mounted) Navigator.of(context).pop();
@@ -1234,35 +1363,8 @@ class _MyFilesPageState extends State<MyFilesPage> {
   }
 
   Future<void> _delete(MyFile f) async {
-    final sure = await showGlassDialogSheet<bool>(
-      context,
-      label: 'Delete ${f.name}?',
-      builder: (context) => Padding(
-        padding: const EdgeInsets.fromLTRB(24, 16, 24, 24),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            Text('Delete ${f.name}?', style: DuvetType.titleSans.copyWith(color: context.theme.colors.foreground)),
-            const SizedBox(height: 12),
-            Text(
-              'It goes from every message it’s in. This can’t be undone.',
-              style: DuvetType.snippet.copyWith(color: context.theme.colors.mutedForeground),
-            ),
-            const SizedBox(height: 24),
-            DuvetButton(
-              label: 'Delete file',
-              variant: ButtonVariant.destructive,
-              expand: true,
-              onPressed: () => Navigator.of(context).pop(true),
-            ),
-            const SizedBox(height: 12),
-            DuvetButton(label: 'Cancel', expand: true, onPressed: () => Navigator.of(context).pop(false)),
-          ],
-        ),
-      ),
-    );
-    if (sure != true || !mounted) return;
+    final sure = await confirmFileDelete(context, 'Delete ${f.name}?');
+    if (!sure || !mounted) return;
     try {
       await context.repository.deleteMyFile(f.id);
       await _load();
@@ -1296,6 +1398,22 @@ class _MyFilesPageState extends State<MyFilesPage> {
             child: ListView(
               padding: EdgeInsets.only(top: GlassTopBar.heightOf(context) + 8, bottom: padding.bottom + 24),
               children: [
+                if (files == null)
+                  Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 16),
+                    child: LoadingSkeleton(
+                      label: 'Loading storage',
+                      children: [
+                        StorageMeter(
+                          storage: const StorageInfo(used: 0, max: 1),
+                          images: 0,
+                          files: 0,
+                          voice: 0,
+                          big: true,
+                        ),
+                      ],
+                    ),
+                  ),
                 if (storage != null) ...[
                   // As the desktop: the active bucket first, which keeps the uploads, then the default
                   // storage and every bucket. The files list doesn't say where each file is, so with buckets
@@ -1373,63 +1491,20 @@ class _MyFilesPageState extends State<MyFilesPage> {
                   ),
                 ),
                 if (files == null)
-                  const Padding(
-                    padding: EdgeInsets.all(24),
-                    child: Center(child: FCircularProgress()),
+                  Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 16),
+                    child: LoadingSkeleton(
+                      label: 'Loading files',
+                      children: [for (final f in placeholderFiles) FileRow(file: f)],
+                    ),
                   )
                 else if (shown.isEmpty)
                   const ListNote('No files')
                 else
                   for (final f in shown)
                     Padding(
-                      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-                      child: Row(
-                        children: [
-                          ClipRRect(
-                            borderRadius: BorderRadius.circular(DuvetTokens.radiusField),
-                            child: Container(
-                              width: 48,
-                              height: 48,
-                              color: colors.secondary,
-                              child: f.isImage
-                                  ? Image.network(
-                                      f.url,
-                                      fit: BoxFit.cover,
-                                      cacheWidth: (48 * MediaQuery.devicePixelRatioOf(context)).round(),
-                                      errorBuilder: (_, _, _) => Icon(FLucideIcons.image, color: colors.foreground),
-                                    )
-                                  : Icon(
-                                      f.isAudio ? FLucideIcons.mic : FLucideIcons.fileText,
-                                      color: colors.foreground,
-                                    ),
-                            ),
-                          ),
-                          const SizedBox(width: 12),
-                          Expanded(
-                            child: Column(
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              children: [
-                                Text(
-                                  f.name,
-                                  maxLines: 1,
-                                  overflow: TextOverflow.ellipsis,
-                                  style: DuvetType.rowTitle.copyWith(fontSize: 15, color: colors.foreground),
-                                ),
-                                Text(
-                                  '${formatBytes(f.sizeBytes)} · ${shortTime(f.createdAt)}',
-                                  style: DuvetType.caption.copyWith(color: colors.mutedForeground),
-                                ),
-                              ],
-                            ),
-                          ),
-                          IconAction(
-                            icon: FLucideIcons.trash2,
-                            label: 'Delete ${f.name}',
-                            color: colors.mutedForeground,
-                            onPressed: () => _delete(f),
-                          ),
-                        ],
-                      ),
+                      padding: const EdgeInsets.symmetric(horizontal: 16),
+                      child: FileRow(file: f, onDelete: () => _delete(f)),
                     ),
               ],
             ),
@@ -1440,6 +1515,110 @@ class _MyFilesPageState extends State<MyFilesPage> {
             right: 0,
             child: GlassTopBar(title: const Text('My files'), onBack: () => Navigator.of(context).maybePop()),
           ),
+        ],
+      ),
+    );
+  }
+}
+
+/// Asks before deleting files for good: one of the user's, by default.
+Future<bool> confirmFileDelete(
+  BuildContext context,
+  String title, {
+  String body = 'It goes from every message it’s in. This can’t be undone.',
+  String action = 'Delete file',
+}) async =>
+    await showGlassDialogSheet<bool>(
+      context,
+      label: title,
+      builder: (context) => Padding(
+        padding: const EdgeInsets.fromLTRB(24, 16, 24, 24),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Text(title, style: DuvetType.titleSans.copyWith(color: context.theme.colors.foreground)),
+            const SizedBox(height: 12),
+            Text(body, style: DuvetType.snippet.copyWith(color: context.theme.colors.mutedForeground)),
+            const SizedBox(height: 24),
+            DuvetButton(
+              label: action,
+              variant: ButtonVariant.destructive,
+              expand: true,
+              onPressed: () => Navigator.of(context).pop(true),
+            ),
+            const SizedBox(height: 12),
+            DuvetButton(label: 'Cancel', expand: true, onPressed: () => Navigator.of(context).pop(false)),
+          ],
+        ),
+      ),
+    ) ==
+    true;
+
+/// Files for [FileRow]s while a list of them loads.
+final placeholderFiles = [
+  for (final (i, name) in placeholderNames.indexed)
+    MyFile(id: 'placeholder-$i', name: name, contentType: '', sizeBytes: 0, createdAt: DateTime(2026), url: ''),
+];
+
+/// An uploaded file: its picture or kind, name, size and date, and a trash
+/// button when it can be deleted alone.
+class FileRow extends StatelessWidget {
+  final MyFile file;
+  final VoidCallback? onDelete;
+
+  /// After the size and date, e.g. why it can't be deleted alone.
+  final String? note;
+  const FileRow({required this.file, this.onDelete, this.note, super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = context.theme.colors;
+    final f = file;
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 8),
+      child: Row(
+        children: [
+          ClipRRect(
+            borderRadius: BorderRadius.circular(DuvetTokens.radiusField),
+            child: Container(
+              width: 48,
+              height: 48,
+              color: colors.secondary,
+              child: f.isImage
+                  ? Image(
+                      image: cachedImage(f.url, cacheWidth: (48 * MediaQuery.devicePixelRatioOf(context)).round()),
+                      fit: BoxFit.cover,
+                      errorBuilder: (_, _, _) => Icon(FLucideIcons.image, color: colors.foreground),
+                    )
+                  : Icon(f.isAudio ? FLucideIcons.mic : FLucideIcons.fileText, color: colors.foreground),
+            ),
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  f.name,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: DuvetType.rowTitle.copyWith(fontSize: 15, color: colors.foreground),
+                ),
+                Text(
+                  [formatBytes(f.sizeBytes), shortTime(f.createdAt), ?note].join(' · '),
+                  style: DuvetType.caption.copyWith(color: colors.mutedForeground),
+                ),
+              ],
+            ),
+          ),
+          if (onDelete != null)
+            IconAction(
+              icon: FLucideIcons.trash2,
+              label: 'Delete ${f.name}',
+              color: colors.mutedForeground,
+              onPressed: onDelete,
+            ),
         ],
       ),
     );
@@ -1567,7 +1746,10 @@ class StorageMeter extends StatelessWidget {
 class BucketMeter extends StatelessWidget {
   final BucketUsage bucket;
   final bool big;
-  const BucketMeter({required this.bucket, this.big = false, super.key});
+
+  /// Before the bucket's name: whose storage it is.
+  final String title;
+  const BucketMeter({required this.bucket, this.big = false, this.title = 'Your own storage', super.key});
 
   @override
   Widget build(BuildContext context) {
@@ -1584,13 +1766,13 @@ class BucketMeter extends StatelessWidget {
       ),
       child: Semantics(
         container: true,
-        label: 'Your own storage, ${bucket.name}: ${formatBytes(bucket.used)} $of',
+        label: '$title, ${bucket.name}: ${formatBytes(bucket.used)} $of',
         excludeSemantics: true,
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             Text(
-              'Your own storage · ${bucket.name}',
+              '$title · ${bucket.name}',
               maxLines: 1,
               overflow: TextOverflow.ellipsis,
               style: DuvetType.caption.copyWith(color: colors.mutedForeground),
@@ -1652,6 +1834,31 @@ class _YouTabState extends State<YouTab> {
   // The status chosen while the server takes it: shown meanwhile.
   Presence? _choosing;
 
+  // A reset link on its way: a second tap doesn't send another.
+  bool _sendingReset = false;
+
+  // The emailed link opens the reset page, as Forgot password's does.
+  Future<void> _sendResetPassword() async {
+    if (_sendingReset) return;
+    final sure = await confirmDestructive(
+      context,
+      title: 'Reset your password?',
+      body: 'We’ll email you a link to set a new one. Your password stays as it is until you do.',
+      action: 'Send link',
+      destructive: false,
+    );
+    if (!sure || !mounted) return;
+    setState(() => _sendingReset = true);
+    try {
+      await context.repository.sendResetPasswordEmail();
+      if (mounted) _toast(context, 'We emailed you a link to set a new password');
+    } catch (e) {
+      if (mounted) _toast(context, e is ActionFailed ? e.message : 'Couldn’t send the link');
+    } finally {
+      if (mounted) setState(() => _sendingReset = false);
+    }
+  }
+
   @override
   void didChangeDependencies() {
     super.didChangeDependencies();
@@ -1681,6 +1888,9 @@ class _YouTabState extends State<YouTab> {
   Widget build(BuildContext context) {
     final repository = context.repository;
     final appearance = AppearanceScope.of(context);
+    // Null where the app doesn't hand them down (a test's bare app): no Voice section.
+    final voicePrefs = VoicePrefsScope.maybeOf(context);
+    final sounds = SoundsScope.maybeOf(context);
     final colors = context.theme.colors;
     final tokens = context.duvet;
     return ListenableBuilder(
@@ -1699,6 +1909,27 @@ class _YouTabState extends State<YouTab> {
         );
         Widget row(String label, VoidCallback onTap, {String? value, bool warn = false}) =>
             GlassRow(label: label, detail: value, destructive: warn, onPressed: onTap);
+        Widget toggle(String label, String detail, bool value, ValueChanged<bool> onChanged) => Semantics(
+          container: true,
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+            child: Row(
+              children: [
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(label, style: DuvetType.rowTitle.copyWith(color: colors.foreground)),
+                      Text(detail, style: DuvetType.caption.copyWith(color: colors.mutedForeground)),
+                    ],
+                  ),
+                ),
+                const SizedBox(width: 12),
+                DuvetSwitch(label: label, value: value, onChanged: onChanged),
+              ],
+            ),
+          ),
+        );
         return LargeTitlePage(
           title: 'You',
           titleLeading: const AppIcon(size: 32),
@@ -1706,112 +1937,343 @@ class _YouTabState extends State<YouTab> {
           slivers: [
             SliverPadding(
               padding: const EdgeInsets.fromLTRB(16, 16, 16, 0),
-              sliver: SliverList.list(
-                children: [
-                  Container(
-                    padding: const EdgeInsets.all(16),
-                    decoration: BoxDecoration(
-                      color: colors.card,
-                      borderRadius: BorderRadius.circular(DuvetTokens.radiusCard),
-                      boxShadow: tokens.shadowRaised,
-                    ),
-                    child: Row(
-                      children: [
-                        ExcludeSemantics(
-                          child: UserAvatar(name: profile.displayName, url: profile.avatarUrl, size: 56),
-                        ),
-                        const SizedBox(width: 12),
-                        Expanded(
-                          child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              Text(
-                                profile.displayName,
-                                maxLines: 1,
-                                overflow: TextOverflow.ellipsis,
-                                style: DuvetType.rowTitleUnread.copyWith(fontSize: 17, color: colors.foreground),
-                              ),
-                              Text(
-                                '@${profile.username}',
-                                style: DuvetType.caption.copyWith(color: colors.mutedForeground),
-                              ),
-                            ],
+              // Built whole, not lazily: a short page, and every row (Storage,
+              // the Developer portal) exists for finders and screen readers alike.
+              sliver: SliverToBoxAdapter(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    Container(
+                      padding: const EdgeInsets.all(16),
+                      decoration: BoxDecoration(
+                        color: colors.card,
+                        borderRadius: BorderRadius.circular(DuvetTokens.radiusCard),
+                        boxShadow: tokens.shadowRaised,
+                      ),
+                      child: Row(
+                        children: [
+                          ExcludeSemantics(
+                            child: UserAvatar(name: profile.displayName, url: profile.avatarUrl, size: 56),
                           ),
-                        ),
-                        DuvetButton(label: 'Edit', onPressed: () => _push(const EditProfilePage())),
-                      ],
+                          const SizedBox(width: 12),
+                          Expanded(
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Text(
+                                  profile.displayName,
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                  style: DuvetType.rowTitleUnread.copyWith(fontSize: 17, color: colors.foreground),
+                                ),
+                                Text(
+                                  '@${profile.username}',
+                                  style: DuvetType.caption.copyWith(color: colors.mutedForeground),
+                                ),
+                              ],
+                            ),
+                          ),
+                          DuvetButton(label: 'Edit', onPressed: () => _push(const EditProfilePage())),
+                        ],
+                      ),
                     ),
-                  ),
-                  if (!profile.emailVerified) ...[
+                    if (!profile.emailVerified) ...[
+                      const SizedBox(height: 16),
+                      panel([
+                        row('Verify your email', () => _push(const VerifyEmailPage()), value: 'Not verified yet'),
+                      ]),
+                    ],
                     const SizedBox(height: 16),
-                    panel([row('Verify your email', () => _push(const VerifyEmailPage()), value: 'Not verified yet')]),
-                  ],
-                  const SizedBox(height: 16),
-                  panel([
-                    row(
-                      'Friends',
-                      () => _push(const FriendsPage()),
-                      value: repository.friends.value.incoming.isEmpty
-                          ? null
-                          : '${repository.friends.value.incoming.length} waiting',
+                    panel([
+                      row(
+                        'Friends',
+                        () => _push(const FriendsPage()),
+                        value: repository.friends.value.incoming.isEmpty
+                            ? null
+                            : '${repository.friends.value.incoming.length} waiting',
+                      ),
+                    ]),
+                    // What others see while you're connected.
+                    const Overline('Status'),
+                    Segmented<Presence>(
+                      label: 'Status',
+                      value: _choosing ?? profile.status,
+                      options: const {Presence.online: 'Online', Presence.doNotDisturb: 'Do not disturb'},
+                      onChanged: _setStatus,
                     ),
-                  ]),
-                  // What others see while you're connected.
-                  const Overline('Status'),
-                  Segmented<Presence>(
-                    label: 'Status',
-                    value: _choosing ?? profile.status,
-                    options: const {Presence.online: 'Online', Presence.doNotDisturb: 'Do not disturb'},
-                    onChanged: _setStatus,
-                  ),
-                  const Overline('Appearance'),
-                  Segmented<ThemeMode>(
-                    label: 'Appearance',
-                    value: appearance.value,
-                    options: const {ThemeMode.system: 'System', ThemeMode.light: 'Light', ThemeMode.dark: 'Dark'},
-                    onChanged: appearance.set,
-                  ),
-                  const Overline('Reply to a message'),
-                  _ReplyGesturePicker(value: appearance.replyGesture, onChanged: appearance.setReplyGesture),
-                  const Overline('Storage'),
-                  Semantics(
-                    container: true,
-                    button: true,
-                    label: 'My files',
-                    onTap: () => _push(const MyFilesPage()),
-                    child: GestureDetector(
+                    const Overline('Appearance'),
+                    Segmented<ThemeMode>(
+                      label: 'Appearance',
+                      value: appearance.value,
+                      options: const {ThemeMode.system: 'System', ThemeMode.light: 'Light', ThemeMode.dark: 'Dark'},
+                      onChanged: appearance.set,
+                    ),
+                    const SizedBox(height: 12),
+                    panel([
+                      row(
+                        'Code theme',
+                        () => showGlassDialogSheet<void>(
+                          context,
+                          label: 'Code theme',
+                          builder: (_) => const _CodeThemeSheet(),
+                        ),
+                        value: appearance.codeTheme == null ? 'GitHub' : 'Custom',
+                      ),
+                    ]),
+                    const Overline('Reply to a message'),
+                    _ReplyGesturePicker(value: appearance.replyGesture, onChanged: appearance.setReplyGesture),
+                    const Overline('Your bubbles'),
+                    _BubbleColorPicker(value: appearance.bubbleColor, onChanged: appearance.setBubbleColor),
+                    const _LauncherIconPicker(),
+                    if (voicePrefs != null) ...[
+                      const Overline('Voice'),
+                      ListenableBuilder(
+                        listenable: voicePrefs,
+                        builder: (context, _) => panel([
+                          toggle(
+                            'Faces in voice',
+                            'Voice tiles show everyone’s animated face instead of their picture',
+                            voicePrefs.facesInVoice,
+                            voicePrefs.setFacesInVoice,
+                          ),
+                          toggle(
+                            'Noise suppression',
+                            'Filters background noise from your microphone',
+                            voicePrefs.noiseSuppression,
+                            voicePrefs.setNoiseSuppression,
+                          ),
+                          if (sounds != null) row('Sounds', () => _push(SoundsPage(sounds: sounds))),
+                        ]),
+                      ),
+                    ],
+                    const Overline('Storage'),
+                    Semantics(
+                      container: true,
+                      button: true,
+                      label: 'My files',
                       onTap: () => _push(const MyFilesPage()),
-                      // Where the uploads go: the user's own bucket while one is active.
-                      child: switch (_storage) {
-                        null => panel([row('My files', () => _push(const MyFilesPage()))]),
-                        StorageInfo(:final activeBucket?) => BucketMeter(bucket: activeBucket),
-                        final storage => StorageMeter(storage: storage, images: 0, files: storage.used, voice: 0),
-                      },
+                      child: GestureDetector(
+                        onTap: () => _push(const MyFilesPage()),
+                        // Where the uploads go: the user's own bucket while one is active.
+                        child: switch (_storage) {
+                          null => panel([row('My files', () => _push(const MyFilesPage()))]),
+                          StorageInfo(:final activeBucket?) => BucketMeter(bucket: activeBucket),
+                          final storage => StorageMeter(storage: storage, images: 0, files: storage.used, voice: 0),
+                        },
+                      ),
                     ),
-                  ),
-                  const Overline('Developer'),
-                  panel([
-                    row(
-                      'Developer portal',
-                      () => _push(const DeveloperPage()),
-                      value: switch (repository.teamInvites.value.length) {
-                        0 => null,
-                        1 => '1 invite',
-                        final n => '$n invites',
-                      },
-                    ),
-                  ]),
-                  const Overline('Account'),
-                  panel([
-                    row('Change email', () => _push(const ChangeEmailPage())),
-                    row('Sign out', repository.logOut, warn: true),
-                  ]),
-                ],
+                    const Overline('Developer'),
+                    panel([
+                      row(
+                        'Developer portal',
+                        () => _push(const DeveloperPage()),
+                        value: switch (repository.teamInvites.value.length) {
+                          0 => null,
+                          1 => '1 invite',
+                          final n => '$n invites',
+                        },
+                      ),
+                    ]),
+                    const Overline('Account'),
+                    panel([
+                      row('Change email', () => _push(const ChangeEmailPage())),
+                      row('Reset password', _sendResetPassword, value: _sendingReset ? 'Sending…' : null),
+                      row('Sign out', repository.logOut, warn: true),
+                    ]),
+                  ],
+                ),
               ),
             ),
           ],
         );
       },
+    );
+  }
+}
+
+/// A VS Code theme for code blocks, by its URL: fetched once, on Apply, and
+/// previewed on the surface it's used on, so applying a dark one in light
+/// mode still shows.
+class _CodeThemeSheet extends StatefulWidget {
+  const _CodeThemeSheet();
+
+  @override
+  State<_CodeThemeSheet> createState() => _CodeThemeSheetState();
+}
+
+class _CodeThemeSheetState extends State<_CodeThemeSheet> {
+  late final _url = TextEditingController(text: AppearanceScope.of(context).codeTheme?.url);
+  String? _error;
+  bool _busy = false;
+
+  static const _sample =
+      'package main\n\n// Greet says hello.\nfunc Greet(name string) string {\n\treturn fmt.Sprintf("Hi, %s", name) + strconv.Itoa(42)\n}';
+
+  @override
+  void dispose() {
+    _url.dispose();
+    super.dispose();
+  }
+
+  Future<void> _apply() async {
+    final appearance = AppearanceScope.of(context);
+    setState(() {
+      _busy = true;
+      _error = null;
+    });
+    try {
+      await appearance.applyCodeTheme(_url.text);
+    } catch (e) {
+      debugPrint('code theme: $e');
+      if (mounted) setState(() => _error = 'Couldn’t read a VS Code theme there');
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = context.theme.colors;
+    final appearance = AppearanceScope.of(context);
+    final theme = appearance.codeTheme;
+    final dark = theme?.dark ?? Theme.of(context).brightness == Brightness.dark;
+    final surface = dark ? Duvet.dark : Duvet.light;
+    final style = DuvetType.code.copyWith(fontSize: 13, height: 1.5, color: surface.foreground);
+    final where = theme == null
+        ? 'GitHub’s colors, as on the desktop'
+        : [
+            'Used in ${dark ? 'dark' : 'light'} mode',
+            if (ownBubble(context).onDark == dark) 'and on your bubbles',
+          ].join(' ');
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 8, 16, 24),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Semantics(
+            header: true,
+            child: Text('Code theme', style: DuvetType.title.copyWith(color: colors.foreground)),
+          ),
+          const SizedBox(height: 4),
+          Text(
+            'A VS Code color theme’s JSON, by its link.',
+            style: DuvetType.snippet.copyWith(color: colors.mutedForeground),
+          ),
+          const SizedBox(height: 16),
+          DuvetTextField(
+            label: 'Theme link',
+            controller: _url,
+            hint: 'https://…/theme.json',
+            error: _error,
+            keyboardType: TextInputType.url,
+            textInputAction: TextInputAction.done,
+            onSubmitted: (_) => _apply(),
+          ),
+          const SizedBox(height: 16),
+          // The theme's own surface, not the app's: its colors are made for it.
+          Semantics(
+            label: 'Preview. $where',
+            excludeSemantics: true,
+            child: Container(
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+              decoration: BoxDecoration(
+                color: surface.card,
+                borderRadius: BorderRadius.circular(DuvetTokens.radiusField),
+                border: Border.all(color: colors.border),
+              ),
+              child: SingleChildScrollView(
+                scrollDirection: Axis.horizontal,
+                child: Text.rich(highlightCode(_sample, 'go', base: style, dark: dark, custom: theme)!),
+              ),
+            ),
+          ),
+          const SizedBox(height: 6),
+          ExcludeSemantics(
+            child: Text(where, style: DuvetType.caption.copyWith(color: colors.mutedForeground)),
+          ),
+          const SizedBox(height: 16),
+          DuvetButton(label: 'Apply', variant: ButtonVariant.primary, expand: true, busy: _busy, onPressed: _apply),
+          if (theme != null) ...[
+            const SizedBox(height: 8),
+            Center(
+              child: TextAction(
+                label: 'Use the default',
+                onPressed: () {
+                  _url.clear();
+                  setState(() => _error = null);
+                  appearance.resetCodeTheme();
+                },
+              ),
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+}
+
+/// Your bubbles' color: azure, a role swatch or any custom color, on a bubble
+/// as the chat draws it. Solid fills only; the ink on them is picked for
+/// contrast.
+class _BubbleColorPicker extends StatefulWidget {
+  final int? value;
+  final ValueChanged<int?> onChanged;
+  const _BubbleColorPicker({required this.value, required this.onChanged});
+
+  @override
+  State<_BubbleColorPicker> createState() => _BubbleColorPickerState();
+}
+
+class _BubbleColorPickerState extends State<_BubbleColorPicker> {
+  // [roleSwatches]' names, in its order.
+  static const _names = ['Red', 'Orange', 'Yellow', 'Green', 'Teal', 'Blue', 'Indigo', 'Purple', 'Pink'];
+
+  // Shown while the wheel is dragged; saved, app-wide, once it's let go.
+  late int? _shown = widget.value;
+
+  @override
+  void didUpdateWidget(_BubbleColorPicker oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (widget.value != oldWidget.value) _shown = widget.value;
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = context.theme.colors;
+    final bubble = bubbleColors(_shown);
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Container(
+          padding: const EdgeInsets.all(16),
+          decoration: BoxDecoration(
+            color: colors.secondary,
+            borderRadius: BorderRadius.circular(DuvetTokens.radiusField),
+          ),
+          alignment: Alignment.centerRight,
+          child: ExcludeSemantics(
+            child: Container(
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+              decoration: BoxDecoration(
+                color: bubble.fill,
+                borderRadius: BorderRadius.circular(DuvetTokens.radiusButton),
+                boxShadow: context.duvet.shadowRest,
+              ),
+              child: Text('Looks good to me', style: DuvetType.body.copyWith(color: bubble.ink)),
+            ),
+          ),
+        ),
+        const SizedBox(height: 12),
+        ColorPick(
+          value: _shown,
+          presets: [null, ...roleSwatches],
+          label: (rgb) => rgb == null ? 'Azure' : _names[roleSwatches.indexOf(rgb)],
+          fill: (rgb) => bubbleColors(rgb).fill,
+          onChanged: (rgb) => setState(() => _shown = rgb),
+          onChangeEnd: widget.onChanged,
+        ),
+      ],
     );
   }
 }
@@ -1949,6 +2411,112 @@ class _ReplyGesturePickerState extends State<_ReplyGesturePicker> with SingleTic
   }
 }
 
+/// The app's icon on the home screen, each one a tile to pick it by, under its
+/// own heading. Nothing where it can't be changed (anywhere but Android).
+class _LauncherIconPicker extends StatefulWidget {
+  const _LauncherIconPicker();
+
+  @override
+  State<_LauncherIconPicker> createState() => _LauncherIconPickerState();
+}
+
+class _LauncherIconPickerState extends State<_LauncherIconPicker> {
+  LauncherIcon? _picked;
+
+  @override
+  void initState() {
+    super.initState();
+    LauncherIcon.picked().then((icon) {
+      if (mounted && icon != null) setState(() => _picked = icon);
+    });
+  }
+
+  Future<void> _pick(LauncherIcon icon) async {
+    if (icon == _picked) return;
+    final before = _picked;
+    HapticFeedback.selectionClick();
+    setState(() => _picked = icon);
+    try {
+      await icon.pick();
+    } catch (e) {
+      debugPrint('launcher icon: $e');
+      if (mounted) setState(() => _picked = before);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final picked = _picked;
+    if (picked == null) return const SizedBox.shrink();
+    final colors = context.theme.colors;
+    final tokens = context.duvet;
+    final still = MediaQuery.disableAnimationsOf(context);
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        const Overline('App icon'),
+        Semantics(
+          label: 'App icon',
+          explicitChildNodes: true,
+          child: Row(
+            children: [
+              for (final (i, icon) in LauncherIcon.values.indexed) ...[
+                if (i > 0) const SizedBox(width: 8),
+                Expanded(
+                  child: Semantics(
+                    container: true,
+                    button: true,
+                    inMutuallyExclusiveGroup: true,
+                    checked: icon == picked,
+                    label: icon.label,
+                    excludeSemantics: true,
+                    onTap: () => _pick(icon),
+                    child: GestureDetector(
+                      behavior: HitTestBehavior.opaque,
+                      onTap: () => _pick(icon),
+                      child: AnimatedContainer(
+                        duration: still ? Duration.zero : DuvetTokens.pressOut,
+                        height: 104,
+                        padding: const EdgeInsets.fromLTRB(8, 12, 8, 10),
+                        decoration: BoxDecoration(
+                          color: icon == picked ? tokens.selectedFill : colors.secondary,
+                          borderRadius: const BorderRadius.all(Radius.circular(DuvetTokens.radiusButton)),
+                          boxShadow: icon == picked ? tokens.shadowControl : null,
+                        ),
+                        child: Column(
+                          children: [
+                            Expanded(child: SvgPicture.asset(icon.asset, excludeFromSemantics: true)),
+                            const SizedBox(height: 8),
+                            Text(
+                              icon.label,
+                              maxLines: 1,
+                              style: DuvetType.label.copyWith(
+                                fontSize: 14,
+                                color: icon == picked ? colors.foreground : colors.mutedForeground,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+              ],
+            ],
+          ),
+        ),
+        Padding(
+          padding: const EdgeInsets.fromLTRB(4, 8, 4, 0),
+          child: Text(
+            'Your home screen shows it once you close Duvet. Some launchers need a restart first.',
+            style: DuvetType.caption.copyWith(color: colors.mutedForeground),
+          ),
+        ),
+      ],
+    );
+  }
+}
+
 /// One reply gesture on a tiny bubble at [t] through its loop: slid off its
 /// reply icon and back, or tapped twice with a ring for each tap.
 class _ReplyGestureDemo extends StatelessWidget {
@@ -1965,7 +2533,7 @@ class _ReplyGestureDemo extends StatelessWidget {
       width: 44,
       height: 22,
       decoration: BoxDecoration(
-        color: picked ? Duvet.accent : colors.mutedForeground.withValues(alpha: 0.35),
+        color: picked ? ownBubble(context).fill : colors.mutedForeground.withValues(alpha: 0.35),
         borderRadius: BorderRadius.circular(11),
       ),
     );

@@ -17,6 +17,7 @@ import 'widgets/chrome.dart';
 import 'widgets/duvet_mascot.dart';
 import 'widgets/depth.dart';
 import 'widgets/rows.dart';
+import 'widgets/voice_video.dart';
 
 /// Opens the call screen of [conversationId]'s call.
 Future<void> openCall(BuildContext context, String conversationId) => Navigator.of(
@@ -95,6 +96,20 @@ mixin _Ticking<T extends StatefulWidget> on State<T> {
   }
 }
 
+/// Builds [builder] again each second, and only it: the clock's text, not the videos around it.
+class _EverySecond extends StatefulWidget {
+  final WidgetBuilder builder;
+  const _EverySecond({required this.builder});
+
+  @override
+  State<_EverySecond> createState() => _EverySecondState();
+}
+
+class _EverySecondState extends State<_EverySecond> with _Ticking {
+  @override
+  Widget build(BuildContext context) => widget.builder(context);
+}
+
 /// The call: who's in it, how long it's been, and the controls. Back keeps
 /// the call going; the bar over the tabs brings it back.
 class CallScreen extends StatefulWidget {
@@ -105,7 +120,7 @@ class CallScreen extends StatefulWidget {
   State<CallScreen> createState() => _CallScreenState();
 }
 
-class _CallScreenState extends State<CallScreen> with _Ticking {
+class _CallScreenState extends State<CallScreen> {
   bool _closing = false;
 
   // The call ended or moved on: this screen goes, wherever it is.
@@ -130,7 +145,13 @@ class _CallScreenState extends State<CallScreen> with _Ticking {
     final voice = context.voice;
     final colors = context.theme.colors;
     return ListenableBuilder(
-      listenable: Listenable.merge([voice, voice.levels, repository.conversations, repository.profile]),
+      listenable: Listenable.merge([
+        voice,
+        voice.remoteVideos,
+        VoicePrefsScope.maybeOf(context),
+        repository.conversations,
+        repository.profile,
+      ]),
       builder: (context, _) {
         final call = voice.call;
         if (call == null || call.conversationId != widget.conversationId) {
@@ -139,7 +160,7 @@ class _CallScreenState extends State<CallScreen> with _Ticking {
         }
         final summary = repository.conversations.value.where((c) => c.id == call.conversationId).firstOrNull;
         final title = summary?.title ?? call.initiatorName;
-        final status = callStatus(voice, call, voice.now());
+        String status() => callStatus(voice, call, voice.now());
         final people = voicePeople(repository, voice, call.conversationId);
         final inVoice = voice.target == CallVoice(call.conversationId);
         final media = MediaQuery.of(context);
@@ -149,14 +170,16 @@ class _CallScreenState extends State<CallScreen> with _Ticking {
             children: [
               Positioned.fill(
                 child: call.phase == CallPhase.calling || people.isEmpty
-                    ? _Waiting(
-                        name: title,
-                        avatarUrl: summary?.isGroup == true ? null : summary?.avatarUrl,
-                        status: status,
+                    ? _EverySecond(
+                        builder: (_) => _Waiting(
+                          name: title,
+                          avatarUrl: summary?.isGroup == true ? null : summary?.avatarUrl,
+                          status: status(),
+                        ),
                       )
-                    : VoiceGrid(
+                    : VoiceStage(
                         people: people,
-                        levels: voice.levels.value,
+                        here: inVoice,
                         padding: EdgeInsets.fromLTRB(
                           16,
                           GlassTopBar.heightOf(context) + 16,
@@ -171,16 +194,21 @@ class _CallScreenState extends State<CallScreen> with _Ticking {
                 right: 0,
                 child: GlassTopBar(
                   onBack: () => Navigator.of(context).maybePop(),
-                  title: Semantics(
-                    label: 'Call with $title, $status',
-                    excludeSemantics: true,
-                    child: Column(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        Text(title, maxLines: 1, overflow: TextOverflow.ellipsis),
-                        Text(status, style: DuvetType.caption.copyWith(color: colors.mutedForeground)),
-                      ],
-                    ),
+                  title: _EverySecond(
+                    builder: (_) {
+                      final now = status();
+                      return Semantics(
+                        label: 'Call with $title, $now',
+                        excludeSemantics: true,
+                        child: Column(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Text(title, maxLines: 1, overflow: TextOverflow.ellipsis),
+                            Text(now, style: DuvetType.caption.copyWith(color: colors.mutedForeground)),
+                          ],
+                        ),
+                      );
+                    },
                   ),
                 ),
               ),
@@ -475,6 +503,11 @@ class _VoiceBarState extends State<VoiceBar> with _Ticking {
         open = () => openCall(context, call.conversationId);
     }
     final isCall = target is! RoomVoice;
+    // The bar ticks each second, so it follows the ping without listening to it.
+    final ping = target != null && voice.link == VoiceLink.connected ? voice.ping.value : null;
+    final caption = ping == null ? status : '$status · $ping ms';
+    // Desktop's red from 250 ms.
+    final poor = ping != null && ping >= 250;
     return GlassChrome(
       top: false,
       child: SizedBox(
@@ -485,7 +518,7 @@ class _VoiceBarState extends State<VoiceBar> with _Ticking {
               child: Semantics(
                 container: true,
                 button: true,
-                label: '${isCall ? 'Call with' : 'Voice in'} $title, $status. Open',
+                label: '${isCall ? 'Call with' : 'Voice in'} $title, $caption. Open',
                 excludeSemantics: true,
                 onTap: open,
                 child: Pressable(
@@ -516,9 +549,11 @@ class _VoiceBarState extends State<VoiceBar> with _Ticking {
                                 style: DuvetType.rowTitle.copyWith(color: colors.foreground),
                               ),
                               Text(
-                                status,
+                                caption,
                                 maxLines: 1,
-                                style: DuvetType.caption.copyWith(color: colors.mutedForeground),
+                                style: DuvetType.caption.copyWith(
+                                  color: poor ? colors.destructive : colors.mutedForeground,
+                                ),
                               ),
                             ],
                           ),
@@ -755,11 +790,11 @@ class CallBanner extends StatelessWidget {
     const radius = BorderRadius.all(Radius.circular(DuvetTokens.radiusField));
     return Container(
       height: 36,
-      padding: EdgeInsets.only(left: 12, right: elsewhere ? 12 : 0),
       decoration: BoxDecoration(color: colors.secondary, borderRadius: radius),
       child: InsetShadow(
         shadows: context.duvet.shadowWell,
         borderRadius: radius,
+        padding: EdgeInsets.only(left: 12, right: elsewhere ? 12 : 0),
         child: Row(
           children: [
             ExcludeSemantics(child: Icon(FLucideIcons.phoneCall, size: 16, color: colors.foreground)),

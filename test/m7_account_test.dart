@@ -10,13 +10,26 @@ import 'package:duvet/deep_links.dart';
 import 'package:duvet/main.dart';
 import 'package:duvet/space_admin.dart' show framedGif, saveBannerImage, saveSquareImage;
 import 'package:duvet/widgets/chrome.dart';
+import 'package:duvet/widgets/color_picker.dart' show ColorPick;
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart' show MethodChannel;
 import 'package:flutter_test/flutter_test.dart';
+import 'package:http/http.dart' as http;
+import 'package:http/testing.dart';
 import 'package:image/image.dart' as img;
 
 import 'support/fake_repository.dart';
+
+// A dark VS Code theme, comments and trailing commas and all.
+const _codeTheme = '''{
+  // Cut down.
+  "type": "dark",
+  "colors": {"editor.foreground": "#ABB2BF"},
+  "tokenColors": [
+    {"scope": "keyword", "settings": {"foreground": "#C678DD"}},
+  ],
+}''';
 
 class _Links implements DeepLinkSource {
   final controller = StreamController<Uri>.broadcast();
@@ -125,17 +138,42 @@ void main() {
     await tapLabel(tester, 'Create account');
     expect(find.text('Create your account'), findsOneWidget);
     final create = find.bySemanticsLabel('Create account');
-    expect(tester.getSemantics(create).getSemanticsData().flagsCollection.isEnabled.toString(), contains('isFalse'));
+    bool createEnabled() =>
+        tester.getSemantics(create).getSemanticsData().flagsCollection.isEnabled.toString().contains('isTrue');
+    // The button is past the screen's end: built, and in the semantics tree, once scrolled to.
+    await tester.scrollUntilVisible(create, 200, scrollable: find.byType(Scrollable).first);
+    await tester.pumpAndSettle();
+    expect(createEnabled(), isFalse);
 
-    await tester.enterText(find.byType(EditableText).at(0), 'alex.moreno');
-    await tester.enterText(find.byType(EditableText).at(1), 'alex@example.com');
-    await tester.enterText(find.byType(EditableText).at(2), 'short');
+    // Display name, username, email, password, and the password again.
+    final fields = find.byType(EditableText);
+    await tester.enterText(fields.at(0), 'Alex');
+    await tester.enterText(fields.at(1), 'alex.moreno');
+    await tester.enterText(fields.at(2), 'alex@example.com');
+    await tester.enterText(fields.at(3), 'short');
     await tester.pump();
     expect(find.text('Too short: at least 8 characters'), findsOneWidget);
-    await tester.enterText(find.byType(EditableText).at(2), 'a much longer one 9!');
+    await tester.enterText(fields.at(3), 'a much longer one 9!');
+    await tester.enterText(fields.at(4), 'a much longer one 8!');
     await tester.pump();
+    expect(find.text('Passwords don’t match'), findsOneWidget);
+    await tester.enterText(fields.at(4), 'a much longer one 9!');
+    await tester.pump();
+    expect(find.text('Passwords don’t match'), findsNothing);
+    // Not until the terms are accepted, which say what they are.
+    expect(createEnabled(), isFalse);
+    await tester.ensureVisible(find.bySemanticsLabel('Terms of use'));
+    await tester.pumpAndSettle();
+    await tapLabel(tester, 'Terms of use');
+    expect(find.textContaining('use Duvet respectfully'), findsOneWidget);
+    await tapLabel(tester, 'Close');
+    await tapLabel(tester, 'I agree to the Terms of use');
+    expect(createEnabled(), isTrue);
+
+    await tester.ensureVisible(create);
+    await tester.pumpAndSettle();
     await tapLabel(tester, 'Create account');
-    expect(repository.account.first, 'signup alex.moreno alex@example.com');
+    expect(repository.account.first, 'signup alex.moreno alex@example.com Alex');
     expect(find.text('Check your email'), findsOneWidget);
     expect(find.textContaining('alex@example.com'), findsOneWidget);
 
@@ -143,6 +181,43 @@ void main() {
     await tapLabel(tester, 'Verify');
     expect(repository.account.last, 'verify abc123');
     expect(find.text('Check your email'), findsNothing);
+    await tester.pump(const Duration(seconds: 61));
+    semantics.dispose();
+  });
+
+  testWidgets('sign up takes any username the API takes: 32 characters at most; its refusal says why', (tester) async {
+    final repository = await pumpApp(tester, signedIn: false, setUp: (r) => r.signUpRefused = 'That username is taken');
+    await tapLabel(tester, 'Create account');
+    final create = find.bySemanticsLabel('Create account');
+    bool createEnabled() =>
+        tester.getSemantics(create).getSemanticsData().flagsCollection.isEnabled.toString().contains('isTrue');
+    final fields = find.byType(EditableText);
+    await tester.enterText(fields.at(1), 'a' * 33);
+    await tester.enterText(fields.at(2), 'alex@example.com');
+    await tester.enterText(fields.at(3), 'a much longer one 9!');
+    await tester.enterText(fields.at(4), 'a much longer one 9!');
+    await tester.pump();
+    await tester.ensureVisible(find.bySemanticsLabel('I agree to the Terms of use'));
+    await tester.pumpAndSettle();
+    await tapLabel(tester, 'I agree to the Terms of use');
+    expect(find.text('Too long: 33 of 32 characters'), findsOneWidget);
+    expect(createEnabled(), isFalse);
+
+    // Spaces, a hyphen and an accent: the app's old rule refused them, the API doesn't. Trimmed, as the API trims it.
+    await tester.enterText(fields.at(1), '  Álex-M 😀  ');
+    await tester.pump();
+    expect(find.textContaining('Too long'), findsNothing);
+    expect(createEnabled(), isTrue);
+    await tester.ensureVisible(create);
+    await tester.pumpAndSettle();
+    await tapLabel(tester, 'Create account');
+    expect(find.text('That username is taken'), findsOneWidget);
+
+    repository.signUpRefused = null;
+    await tester.ensureVisible(create);
+    await tester.pumpAndSettle();
+    await tapLabel(tester, 'Create account');
+    expect(repository.account.first, 'signup Álex-M 😀 alex@example.com');
     await tester.pump(const Duration(seconds: 61));
     semantics.dispose();
   });
@@ -208,6 +283,110 @@ void main() {
     await tapLabel(tester, 'Send link');
     expect(repository.account.last, 'change-send new@example.com');
     expect(find.textContaining('Check new@example.com'), findsOneWidget);
+    semantics.dispose();
+  });
+
+  testWidgets('You: a code theme from a link, applied once, then back to the default', (tester) async {
+    final asked = <Uri>[];
+    appearance = Appearance(
+      store,
+      () => MockClient((request) async {
+        asked.add(request.url);
+        return http.Response(request.url.path == '/theme.json' ? _codeTheme : '<html></html>', 200);
+      }),
+    );
+    await pumpApp(tester);
+    await openYou(tester);
+    // Centered: aligned to the top, the row would sit under the collapsed title bar.
+    await Scrollable.ensureVisible(tester.element(find.text('Code theme')), alignment: 0.5);
+    await tester.pumpAndSettle();
+    await tapLabel(tester, 'Code theme, GitHub');
+
+    // Not a theme: said inline, and nothing changes.
+    await tester.enterText(find.byType(EditableText).last, 'https://example.com/page');
+    await tapLabel(tester, 'Apply');
+    expect(find.text('Couldn’t read a VS Code theme there'), findsOneWidget);
+    expect(appearance.codeTheme, isNull);
+    expect(store.codeTheme, isNull);
+
+    await tester.enterText(find.byType(EditableText).last, 'https://example.com/theme.json');
+    await tapLabel(tester, 'Apply');
+    expect(find.text('Couldn’t read a VS Code theme there'), findsNothing);
+    expect(appearance.codeTheme?.dark, isTrue);
+    expect(appearance.codeTheme?.styles['keyword']?.color, const Color(0xFFC678DD));
+    expect(store.codeTheme?.url, 'https://example.com/theme.json');
+    expect(store.codeTheme?.json, _codeTheme);
+    // Azure bubbles are dark too.
+    expect(find.text('Used in dark mode and on your bubbles'), findsOneWidget);
+    expect(asked, hasLength(2));
+
+    await tapLabel(tester, 'Use the default');
+    expect(appearance.codeTheme, isNull);
+    expect(store.codeTheme, isNull);
+    expect(asked, hasLength(2), reason: 'the default needs no fetch');
+    semantics.dispose();
+  });
+
+  testWidgets('You: reset password emails a link, and says why when refused', (tester) async {
+    final repository = await pumpApp(tester);
+    await openYou(tester);
+    await Scrollable.ensureVisible(tester.element(find.text('Reset password')), alignment: 0.5);
+    await tester.pumpAndSettle();
+    // It asks first: Cancel sends nothing.
+    await tapLabel(tester, 'Reset password');
+    expect(find.text('Reset your password?'), findsOneWidget);
+    await tapLabel(tester, 'Cancel');
+    expect(repository.account, isEmpty);
+
+    await tapLabel(tester, 'Reset password');
+    await tapLabel(tester, 'Send link');
+    expect(repository.account, ['send reset password']);
+    expect(find.text('We emailed you a link to set a new password'), findsOneWidget);
+    await tester.pump(const Duration(seconds: 4));
+    await tester.pumpAndSettle();
+
+    repository.resetPasswordRefused = 'Too many emails, try again later';
+    await tapLabel(tester, 'Reset password');
+    await tapLabel(tester, 'Send link');
+    expect(repository.account, ['send reset password'], reason: 'nothing sent');
+    expect(find.text('Too many emails, try again later'), findsOneWidget);
+    await tester.pump(const Duration(seconds: 4));
+    await tester.pumpAndSettle();
+    semantics.dispose();
+  });
+
+  testWidgets('You: your bubbles take a swatch; a pale one gets dark ink', (tester) async {
+    await pumpApp(tester);
+    await openYou(tester);
+    // Mid-screen: the Voice section above pushes the swatches down to the tab bar's glass.
+    await Scrollable.ensureVisible(tester.element(find.bySemanticsLabel('Yellow')), alignment: 0.5);
+    await tester.pumpAndSettle();
+    Color? ink() => tester.widget<Text>(find.text('Looks good to me')).style?.color;
+    expect(ink(), const Color(0xFFFFFFFF));
+
+    await tapLabel(tester, 'Yellow');
+    expect(appearance.bubbleColor, 0xD6A400);
+    expect(store.bubbleColor, '${0xD6A400}');
+    expect(ink(), bubbleDarkInk);
+
+    await tapLabel(tester, 'Azure');
+    expect(appearance.bubbleColor, isNull);
+    expect(store.bubbleColor, isNull);
+    expect(ink(), const Color(0xFFFFFFFF));
+    semantics.dispose();
+  });
+
+  testWidgets('You: your bubbles take any color, typed as #RRGGBB', (tester) async {
+    await pumpApp(tester);
+    await openYou(tester);
+    await Scrollable.ensureVisible(tester.element(find.bySemanticsLabel('Custom color')), alignment: 0.5);
+    await tester.pumpAndSettle();
+    await tapLabel(tester, 'Custom color');
+    await tester.enterText(find.descendant(of: find.byType(ColorPick), matching: find.byType(EditableText)), '#F0F0F0');
+    await tester.pumpAndSettle();
+    expect(appearance.bubbleColor, 0xF0F0F0);
+    expect(store.bubbleColor, '${0xF0F0F0}');
+    expect(tester.widget<Text>(find.text('Looks good to me')).style?.color, bubbleDarkInk);
     semantics.dispose();
   });
 
@@ -556,6 +735,45 @@ void main() {
     await cropPicture(tester, 'Change profile photo');
     await realClockUntil(() => saved.length == 2);
     expect(await middle(), (0xE0, 0x2F, 0x2F));
+    semantics.dispose();
+  });
+
+  testWidgets('edit profile changes the username: 32 characters at most, as the API takes it; a taken one says so', (
+    tester,
+  ) async {
+    final repository = await pumpApp(tester);
+    await openYou(tester);
+    await tapLabel(tester, 'Edit');
+    bool saveEnabled() =>
+        tester.getSemantics(find.bySemanticsLabel('Save').last).flagsCollection.isEnabled.toString().contains('isTrue');
+    // Display name, about me, username.
+    final name = find.byType(EditableText).at(2);
+    await tester.ensureVisible(name);
+    await tester.pumpAndSettle();
+
+    await tester.enterText(name, 'g' * 33);
+    await tester.pump();
+    expect(find.text('Too long: 33 of 32 characters'), findsOneWidget);
+    expect(saveEnabled(), isFalse);
+    // Empty keeps the one there: nothing to save.
+    await tester.enterText(name, '  ');
+    await tester.pump();
+    expect(saveEnabled(), isFalse);
+
+    // Any the API takes, trimmed; the preview shows it before Save.
+    await tester.enterText(name, '  Gaby R.  ');
+    await tester.pump();
+    expect(find.text('@Gaby R.'), findsOneWidget);
+    repository.profileRefused = 'That username is taken';
+    await tapLabel(tester, 'Save');
+    expect(find.text('That username is taken'), findsOneWidget);
+    repository.profileRefused = null;
+    // The toast gone, Save is there to tap again.
+    await tester.pump(const Duration(seconds: 4));
+    await tester.pumpAndSettle();
+    await tapLabel(tester, 'Save');
+    expect(repository.account, ['alias Gaby', 'username Gaby R.']);
+    expect(repository.profile.value!.username, 'Gaby R.');
     semantics.dispose();
   });
 

@@ -4,6 +4,10 @@
     <uses-permission android:name="android.permission.INTERNET"/>
     <!-- Voice notes, and voice rooms and calls. -->
     <uses-permission android:name="android.permission.RECORD_AUDIO"/>
+    <!-- The camera in voice rooms and calls; a phone without one still
+         installs the app. -->
+    <uses-permission android:name="android.permission.CAMERA"/>
+    <uses-feature android:name="android.hardware.camera" android:required="false"/>
     <!-- Voice and calls: WebRTC routes the sound (loudspeaker, earpiece,
          headsets) and follows the network through a change. -->
     <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS"/>
@@ -17,6 +21,9 @@
          and its wake and Wi-Fi locks. -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE"/>
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE"/>
+    <!-- A screen share's own foreground service (ScreenCaptureService), started
+         after the consent: the screen capture runs only under one. -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PROJECTION"/>
     <!-- Voice notes in Android's media controls (audio_service): their
          foreground service plays media. -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK"/>
@@ -30,7 +37,7 @@
     <application
         android:label="duvet"
         android:name="${applicationName}"
-        android:icon="@mipmap/ic_launcher">
+        android:icon="@mipmap/ic_launcher_violet">
         <activity
             android:name=".MainActivity"
             android:exported="true"
@@ -48,10 +55,6 @@
               android:name="io.flutter.embedding.android.NormalTheme"
               android:resource="@style/NormalTheme"
               />
-            <intent-filter>
-                <action android:name="android.intent.action.MAIN"/>
-                <category android:name="android.intent.category.LAUNCHER"/>
-            </intent-filter>
             <!-- Duvet's own links: duvet:// and duvet.chat invites and messages. -->
             <intent-filter>
                 <action android:name="android.intent.action.VIEW"/>
@@ -71,6 +74,36 @@
                 <data android:scheme="https" android:host="duvet.chat" android:pathPrefix="/change-email"/>
             </intent-filter>
         </activity>
+        <!-- The launcher's entries, one for each icon to pick in Appearance
+             (LauncherIcon.kt): the violet one unless the black one is on. Both
+             open MainActivity, which keeps the links. -->
+        <activity-alias
+            android:name=".IconViolet"
+            android:targetActivity=".MainActivity"
+            android:icon="@mipmap/ic_launcher_violet"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN"/>
+                <category android:name="android.intent.category.LAUNCHER"/>
+            </intent-filter>
+        </activity-alias>
+        <activity-alias
+            android:name=".IconBlack"
+            android:targetActivity=".MainActivity"
+            android:icon="@mipmap/ic_launcher"
+            android:enabled="false"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN"/>
+                <category android:name="android.intent.category.LAUNCHER"/>
+            </intent-filter>
+        </activity-alias>
+        <!-- Changes the launcher icon picked once the app is swiped away, which
+             it outlives for that (LauncherIcon.kt). -->
+        <service
+            android:name=".LauncherIconService"
+            android:stopWithTask="false"
+            android:exported="false"/>
         <!-- Keeps voice going in the background (flutter_background): started
              once the microphone is granted, stopped when the voice ends or the
              app is swiped away. -->
@@ -78,6 +111,14 @@
             android:name="de.julianassmann.flutter_background.IsolateHolderService"
             android:exported="false"
             android:foregroundServiceType="microphone"/>
+        <!-- Screen sharing in voice: started between the consent and the capture,
+             stopped with the share (chat.duvet/screen in MainActivity), or with
+             the app when it is swiped away during one. -->
+        <service
+            android:name=".ScreenCaptureService"
+            android:stopWithTask="true"
+            android:exported="false"
+            android:foregroundServiceType="mediaProjection"/>
         <!-- A voice note playing, in the media notification and quick settings
              (audio_service, through VoiceNoteHandler), and the headset's
              play/pause buttons. -->
@@ -98,6 +139,10 @@
                 <action android:name="android.intent.action.MEDIA_BUTTON"/>
             </intent-filter>
         </receiver>
+        <!-- FCM hands the app its installation ID (FID), which the API pushes to (lib/push). -->
+        <meta-data
+            android:name="firebase_messaging_installation_id_enabled"
+            android:value="true" />
         <!-- Don't delete the meta-data below.
              This is used by the Flutter tool to generate GeneratedPluginRegistrant.java -->
         <meta-data

@@ -1,14 +1,17 @@
 // The voice controller against a fake gateway and a fake WebRTC: joining and
 // negotiating as desktop's VoiceChat does, the whole state in every
-// VOICE_SYNC, a new session (READY) joining again, and calls.
+// VOICE_SYNC, a new session (READY) joining again, calls, the camera and the
+// screen, and the sounds of others in voice.
 import 'dart:async';
 
 import 'package:duvet/data/call_history.dart';
 import 'package:duvet/data/models.dart';
+import 'package:duvet/data/sounds.dart';
 import 'package:duvet/data/voice.dart';
 import 'package:duvet/data/voice_engine.dart' show PeerState;
 import 'package:duvet_client/duvet.dart' as duvet;
 import 'package:fake_async/fake_async.dart';
+import 'package:flutter/widgets.dart' show AppLifecycleState, SizedBox, VoidCallback;
 import 'package:flutter_test/flutter_test.dart';
 
 import 'support/fake_repository.dart';
@@ -19,13 +22,22 @@ const _studio = Room(id: 'r-studio', spaceId: 's-guild', name: 'studio', kind: R
 const _attic = Room(id: 'r-attic', spaceId: 's-guild', name: 'attic', kind: RoomKind.voice, position: 3);
 
 /// The whole voice state the phone always sends.
-Map<String, Object?> _sync({bool muted = false, bool deafened = false, String room = 'r-lounge'}) => {
+Map<String, Object?> _sync({
+  bool muted = false,
+  bool deafened = false,
+  bool screen = false,
+  bool camera = false,
+  bool videoOff = false,
+  List<String> watching = const [],
+  String room = 'r-lounge',
+}) => {
   'room_id': room,
   'muted': muted,
   'deafened': deafened,
-  'screen_sharing': false,
-  'camera': false,
-  'video_off': true,
+  'screen_sharing': screen,
+  'camera': camera,
+  'video_off': videoOff,
+  'watching': watching,
 };
 
 duvet.VoiceJoinedPayloadEvent _joined(String room, String sdp) => duvet.VoiceJoinedPayloadEvent(
@@ -49,10 +61,55 @@ duvet.WebRTCRenegotiateEvent _offer(String room, String sdp) => duvet.WebRTCRene
   ),
 );
 
-duvet.VoiceStateUpdatedEvent _state(String room, String user, int version, {bool joined = true, bool muted = false}) =>
-    duvet.VoiceStateUpdatedEvent(
-      duvet.VoiceStateEvent(roomId: room, userId: user, joined: joined, muted: muted, version: version),
+duvet.VoiceStateUpdatedEvent _state(
+  String room,
+  String user,
+  int version, {
+  bool joined = true,
+  bool muted = false,
+  bool screen = false,
+}) => duvet.VoiceStateUpdatedEvent(
+  duvet.VoiceStateEvent(
+    roomId: room,
+    userId: user,
+    joined: joined,
+    muted: muted,
+    screenSharing: screen,
+    version: version,
+  ),
+);
+
+duvet.WebRTCRenegotiateAnswerEvent _answer(String room, String sdp) => duvet.WebRTCRenegotiateAnswerEvent(
+  duvet.RenegotiateAnswerEvent(
+    roomId: room,
+    answer: duvet.SessionDescription(type: 'answer', sdp: sdp),
+  ),
+);
+
+duvet.VoiceVideoRefusedPayloadEvent _refused(String kind, String reason, {int? limit, String room = 'r-lounge'}) =>
+    duvet.VoiceVideoRefusedPayloadEvent(
+      duvet.VoiceVideoRefusedEvent(roomId: room, kind: kind, reason: reason, limit: limit),
     );
+
+class _Player implements SoundPlayer {
+  final played = <(Sound, bool)>[];
+  final stopped = <Sound>[];
+
+  @override
+  Future<void> play(Sound sound, double gain, {bool loop = false, VoidCallback? onDone}) async =>
+      played.add((sound, loop));
+
+  @override
+  Future<void> stop(Sound sound) async => stopped.add(sound);
+
+  @override
+  Future<void> dispose() async {}
+}
+
+class _Ringer implements RingerMode {
+  @override
+  Future<bool> quiet() async => false;
+}
 
 class _Harness {
   final repository = FakeRepository();
@@ -65,6 +122,10 @@ class _Harness {
   /// Duvet on screen, not behind another app or a locked screen.
   bool inFront = true;
 
+  final lifecycle = StreamController<AppLifecycleState>.broadcast(sync: true);
+  final player = _Player();
+  late final sounds = Sounds(player: player, ringer: _Ringer());
+
   FakeVoiceSignaling get gateway => repository.voiceSignaling;
 
   _Harness(FakeAsync async) {
@@ -75,6 +136,9 @@ class _Harness {
       historyStore: history,
       clock: () => now,
       inFront: () => inFront,
+      lifecycle: lifecycle.stream,
+      cameraRefused: () async => !engine.cameraAllowed,
+      sounds: sounds,
     );
     voice.notices.listen(notices.add);
     async.flushMicrotasks();
@@ -83,6 +147,7 @@ class _Harness {
   void dispose() {
     voice.dispose();
     repository.dispose();
+    lifecycle.close();
   }
 }
 
@@ -118,9 +183,15 @@ void main() {
       'stun:stun.l.google.com:19302',
       'turn:turn.duvet.chat:3478',
     ]);
-    expect(h.engine.peer.log, ['audio mic', 'sending true', 'local offer offer-1']);
+    // The camera's transceiver is in the first offer, with no track, tagged.
+    expect(h.engine.peer.log, ['audio mic', 'video', 'sending true', 'local offer offer-1']);
     expect(h.gateway.types, ['VOICE_JOIN', 'VOICE_SYNC']);
-    expect(h.gateway.last('VOICE_JOIN'), {'room_id': 'r-lounge', 'offer': 'offer-1', 'video_off': true});
+    expect(h.gateway.last('VOICE_JOIN'), {
+      'room_id': 'r-lounge',
+      'offer': 'offer-1',
+      'tracks': {'1': 'camera'},
+      'video_off': false,
+    });
     expect(h.gateway.last('VOICE_SYNC'), _sync());
     expect(h.voice.target, const RoomVoice(spaceId: 's-guild', roomId: 'r-lounge'));
     expect(h.voice.link, VoiceLink.connecting);
@@ -718,6 +789,31 @@ void main() {
     h.voice.levels.removeListener(shown);
     async.elapse(const Duration(seconds: 1));
     expect(peer.reads, 5);
+  });
+
+  _voice('the ping is measured every 3 s while in voice, and stops after leave', (async, h) {
+    h.voice.joinRoom(_lounge);
+    async.flushMicrotasks();
+    final peer = h.engine.peer..rtt = const Duration(milliseconds: 42);
+    async.elapse(const Duration(seconds: 6));
+    // Not before the connection is up.
+    expect(peer.pings, 0);
+    expect(h.voice.ping.value, isNull);
+
+    peer.stateHandler!(PeerState.connected);
+    async.flushMicrotasks();
+    expect(h.voice.ping.value, 42);
+
+    peer.rtt = const Duration(milliseconds: 310);
+    async.elapse(const Duration(seconds: 3));
+    expect(h.voice.ping.value, 310);
+    expect(peer.pings, 2);
+
+    h.voice.leave();
+    async.flushMicrotasks();
+    expect(h.voice.ping.value, isNull);
+    async.elapse(const Duration(seconds: 9));
+    expect(peer.pings, 2);
   });
 
   _voice('the faces\' mouths follow the voices\' levels', (async, h) {
@@ -1749,6 +1845,633 @@ void main() {
     expect(h.gateway.types.last, 'CALL_LEAVE');
     expect(h.voice.call, isNull);
     expect(h.history.data, isEmpty);
+  });
+
+  group('video', () {
+    // In the lounge, its join answered.
+    void connected(FakeAsync async, _Harness h) {
+      h.voice.joinRoom(_lounge);
+      async.flushMicrotasks();
+      h.gateway.push(_joined('r-lounge', 'a1'));
+      async.flushMicrotasks();
+    }
+
+    List<String> offers(_Harness h) => [
+      for (final (type, data) in h.gateway.sent)
+        if (type == 'WEBRTC_RENEGOTIATE_OFFER') data['offer'] as String,
+    ];
+
+    _voice('every VOICE_SYNC carries whose screen share the user watches, until it ends or they leave', (async, h) {
+      const maya = FakeRepository.maya;
+      const leo = FakeRepository.leo;
+      connected(async, h);
+      h.gateway.push(_state('r-lounge', maya, 3, screen: true));
+      h.gateway.push(_state('r-lounge', leo, 4, screen: true));
+      async.flushMicrotasks();
+
+      // Each watch is a sync, in the order they were opened.
+      h.voice.watch(maya, on: true);
+      expect(h.gateway.last('VOICE_SYNC'), _sync(watching: [maya]));
+      h.voice.watch(leo, on: true);
+      expect(h.gateway.last('VOICE_SYNC'), _sync(watching: [maya, leo]));
+      // Any other sync carries it too: VOICE_SYNC is the whole state.
+      h.voice.toggleMute();
+      async.flushMicrotasks();
+      expect(h.gateway.last('VOICE_SYNC'), _sync(muted: true, watching: [maya, leo]));
+      h.voice.toggleMute();
+      async.flushMicrotasks();
+
+      // With video off no screen comes in: none, and the list back with it.
+      h.voice.setIncomingVideo(false);
+      expect(h.gateway.last('VOICE_SYNC'), _sync(videoOff: true));
+      h.voice.setIncomingVideo(true);
+      expect(h.gateway.last('VOICE_SYNC'), _sync(watching: [maya, leo]));
+
+      // A sharer who stops is watched no more.
+      h.gateway.push(_state('r-lounge', maya, 5));
+      async.flushMicrotasks();
+      expect(h.voice.watching, [leo]);
+      expect(h.gateway.last('VOICE_SYNC'), _sync(watching: [leo]));
+      h.voice.watch(leo, on: false);
+      expect(h.gateway.last('VOICE_SYNC'), _sync());
+
+      // Leaving keeps nothing for the next join.
+      h.voice.watch(leo, on: true);
+      h.voice.leave();
+      async.flushMicrotasks();
+      expect(h.voice.watching, isEmpty);
+      h.voice.joinRoom(_lounge);
+      async.flushMicrotasks();
+      expect(h.gateway.last('VOICE_SYNC'), _sync());
+    });
+
+    _voice('the camera swaps its track and says so in VOICE_SYNC: it never renegotiates', (async, h) {
+      connected(async, h);
+      h.voice.toggleCamera();
+      async.flushMicrotasks();
+      final camera = h.engine.openedCameras.single;
+      expect(h.voice.cameraOn, isTrue);
+      expect(h.voice.camera, camera);
+      expect(h.engine.peer.camera, camera);
+      expect(h.gateway.last('VOICE_SYNC'), _sync(camera: true));
+
+      h.voice.switchCamera();
+      async.flushMicrotasks();
+      expect(camera.switches, 1);
+
+      h.voice.toggleCamera();
+      async.flushMicrotasks();
+      expect(h.voice.cameraOn, isFalse);
+      expect(camera.stopped, isTrue);
+      expect(h.engine.peer.log, containsAllInOrder(['camera true', 'camera false']));
+      expect(h.gateway.last('VOICE_SYNC'), _sync());
+      expect(offers(h), isEmpty);
+    });
+
+    _voice('a camera that can\'t open says why: refused, or none at all', (async, h) {
+      connected(async, h);
+      h.engine.cameraAllowed = false;
+      h.voice.toggleCamera();
+      async.flushMicrotasks();
+      expect(h.notices.last, 'Allow Duvet to use the camera to turn it on');
+      h.engine.cameraDevices = const [];
+      h.voice.toggleCamera();
+      async.flushMicrotasks();
+      expect(h.notices.last, 'This phone has no camera');
+      expect(h.voice.cameraOn, isFalse);
+      expect(h.gateway.types.where((t) => t == 'VOICE_SYNC'), hasLength(1));
+    });
+
+    _voice('a camera allowed but busy says only that it couldn\'t turn on', (async, h) {
+      connected(async, h);
+      h.engine.cameraBusy = true;
+      h.voice.toggleCamera();
+      async.flushMicrotasks();
+      expect(h.notices.last, 'Couldn’t turn on the camera');
+      expect(h.voice.cameraOn, isFalse);
+    });
+
+    _voice('a tap while the camera opens is the latest word: one camera opens, and off stays off', (async, h) {
+      connected(async, h);
+      h.engine.holdCamera = Completer<void>();
+      h.voice.toggleCamera();
+      async.flushMicrotasks();
+      h.voice.toggleCamera();
+      async.flushMicrotasks();
+      h.engine.holdCamera!.complete();
+      h.engine.holdCamera = null;
+      async.flushMicrotasks();
+      expect(h.engine.cameraOpens, 1);
+      expect(h.engine.openedCameras.single.stopped, isTrue);
+      expect(h.voice.cameraOn, isFalse);
+      expect(h.engine.peer.camera, isNull);
+      expect(h.notices, isEmpty);
+      expect(h.gateway.last('VOICE_SYNC'), _sync());
+      expect(h.lifecycle.hasListener, isFalse);
+
+      // On, off, on: on, still with one camera opening.
+      h.engine.holdCamera = Completer<void>();
+      h.voice.toggleCamera();
+      async.flushMicrotasks();
+      h.voice.toggleCamera();
+      h.voice.toggleCamera();
+      h.engine.holdCamera!.complete();
+      h.engine.holdCamera = null;
+      async.flushMicrotasks();
+      expect(h.engine.cameraOpens, 2);
+      expect(h.voice.camera, h.engine.openedCameras.last);
+      expect(h.gateway.last('VOICE_SYNC'), _sync(camera: true));
+    });
+
+    _voice('the app going to the background while the camera opens leaves it off', (async, h) {
+      connected(async, h);
+      h.engine.holdCamera = Completer<void>();
+      h.voice.toggleCamera();
+      async.flushMicrotasks();
+      h.lifecycle.add(AppLifecycleState.paused);
+      h.engine.holdCamera!.complete();
+      h.engine.holdCamera = null;
+      async.flushMicrotasks();
+      expect(h.voice.cameraOn, isFalse);
+      expect(h.engine.openedCameras.single.stopped, isTrue);
+      expect(h.notices, ['Camera turned off in the background']);
+      expect(h.gateway.last('VOICE_SYNC'), _sync());
+      expect(h.lifecycle.hasListener, isFalse);
+    });
+
+    _voice('the camera picked opens on the next tap, or replaces the one on', (async, h) {
+      connected(async, h);
+      expect(h.voice.selectedCameraId, isNull);
+      h.voice.selectCamera('0');
+      expect(h.voice.selectedCameraId, '0');
+      h.voice.toggleCamera();
+      async.flushMicrotasks();
+      expect(h.engine.openedCameras.single.deviceId, '0');
+
+      h.voice.selectCamera('1');
+      async.flushMicrotasks();
+      final [back, front] = h.engine.openedCameras;
+      expect(back.stopped, isTrue);
+      expect(front.deviceId, '1');
+      expect(h.voice.selectedCameraId, '1');
+      expect(h.voice.camera, front);
+      expect(h.engine.peer.camera, front);
+      expect(offers(h), isEmpty);
+    });
+
+    _voice('a camera that ends on its own turns off', (async, h) {
+      connected(async, h);
+      h.voice.toggleCamera();
+      async.flushMicrotasks();
+      h.engine.openedCameras.single.end();
+      async.flushMicrotasks();
+      expect(h.voice.cameraOn, isFalse);
+      expect(h.gateway.last('VOICE_SYNC'), _sync());
+    });
+
+    _voice('sharing the screen is the phone\'s own offer, answered by the gateway, and so is stopping', (async, h) {
+      connected(async, h);
+      h.voice.startScreenShare();
+      async.flushMicrotasks();
+      final screen = h.engine.screens.single;
+      expect(h.voice.screenSharing, isTrue);
+      expect(h.engine.peer.screen, screen);
+      expect(h.gateway.last('VOICE_SYNC'), _sync(screen: true));
+      expect(h.gateway.last('WEBRTC_RENEGOTIATE_OFFER'), {
+        'room_id': 'r-lounge',
+        'offer': 'offer-1',
+        'tracks': {'1': 'camera'},
+      });
+      h.gateway.push(_answer('r-lounge', 'b1'));
+      async.flushMicrotasks();
+      expect(h.engine.peer.log.last, 'remote answer b1');
+
+      h.voice.stopScreenShare();
+      async.flushMicrotasks();
+      expect(screen.stopped, isTrue);
+      expect(h.engine.peer.screen, isNull);
+      expect(h.gateway.last('VOICE_SYNC'), _sync());
+      expect(offers(h), hasLength(2));
+      h.gateway.push(_answer('r-lounge', 'b2'));
+      async.flushMicrotasks();
+      expect(h.engine.peer.log.last, 'remote answer b2');
+    });
+
+    _voice('a second tap while the screen capture starts asks nothing more', (async, h) {
+      connected(async, h);
+      h.engine.holdScreen = Completer<void>();
+      h.voice.startScreenShare();
+      h.voice.startScreenShare();
+      async.flushMicrotasks();
+      h.engine.holdScreen!.complete();
+      h.engine.holdScreen = null;
+      async.flushMicrotasks();
+      expect(h.engine.screenOpens, 1);
+      expect(h.voice.screen, h.engine.screens.single);
+      expect(offers(h), hasLength(1));
+    });
+
+    _voice('stopping the screen while its offer is out offers again once the answer is in', (async, h) {
+      connected(async, h);
+      h.voice.startScreenShare();
+      async.flushMicrotasks();
+      h.voice.stopScreenShare();
+      async.flushMicrotasks();
+      expect(offers(h), hasLength(1));
+      h.gateway.push(_answer('r-lounge', 'b1'));
+      async.flushMicrotasks();
+      expect(offers(h), hasLength(2));
+      h.gateway.push(_answer('r-lounge', 'b2'));
+      async.flushMicrotasks();
+      expect(h.engine.peer.log, containsAllInOrder(['remote answer b1', 'remote answer b2']));
+      expect(h.engine.peers, hasLength(1));
+    });
+
+    _voice('the second answer to an offer sent again on a resumed socket isn\'t taken for the next one\'s', (async, h) {
+      connected(async, h);
+      h.voice.startScreenShare();
+      async.flushMicrotasks();
+      h.gateway.resumed();
+      async.flushMicrotasks();
+      h.gateway.push(_answer('r-lounge', 'b1'));
+      async.flushMicrotasks();
+      h.voice.stopScreenShare();
+      async.flushMicrotasks();
+      expect(offers(h), hasLength(3));
+      h.gateway.push(_answer('r-lounge', 'b1-again'));
+      async.flushMicrotasks();
+      expect(h.engine.peer.log, isNot(contains('remote answer b1-again')));
+      h.gateway.push(_answer('r-lounge', 'b2'));
+      async.flushMicrotasks();
+      expect(h.engine.peer.log.last, 'remote answer b2');
+      async.elapse(const Duration(seconds: 15));
+      expect(h.engine.peers, hasLength(1));
+    });
+
+    _voice('a screen capture refused, or ended on its own', (async, h) {
+      connected(async, h);
+      h.engine.screenAllowed = false;
+      h.voice.startScreenShare();
+      async.flushMicrotasks();
+      expect(h.notices.last, 'Duvet can’t share the screen');
+      expect(offers(h), isEmpty);
+
+      h.engine.screenAllowed = true;
+      h.voice.startScreenShare();
+      async.flushMicrotasks();
+      h.gateway.push(_answer('r-lounge', 'b1'));
+      h.engine.screens.single.end();
+      async.flushMicrotasks();
+      expect(h.voice.screenSharing, isFalse);
+      expect(h.gateway.last('VOICE_SYNC'), _sync());
+      expect(offers(h), hasLength(2));
+    });
+
+    _voice('glare: the gateway\'s offer crossing the phone\'s, the phone rolls back, answers, then offers again', (
+      async,
+      h,
+    ) {
+      connected(async, h);
+      final peer = h.engine.peer;
+      h.voice.startScreenShare();
+      async.flushMicrotasks();
+      expect(offers(h), hasLength(1));
+      h.gateway.push(_offer('r-lounge', 'o2'));
+      async.flushMicrotasks();
+      expect(
+        peer.log.skip(5),
+        containsAllInOrder(['local offer offer-1', 'local rollback ', 'remote offer o2', 'local offer offer-1']),
+      );
+      expect(h.gateway.types.where((t) => t.startsWith('WEBRTC_') && t != 'WEBRTC_ICE_CANDIDATE'), [
+        'WEBRTC_RENEGOTIATE_OFFER',
+        'WEBRTC_ANSWER',
+        'WEBRTC_RENEGOTIATE_OFFER',
+      ]);
+      // The first offer's answer can't come: the gateway failed it.
+      h.gateway.push(_answer('r-lounge', 'b1'));
+      async.flushMicrotasks();
+      expect(peer.log.last, 'remote answer b1');
+    });
+
+    _voice('the phone\'s offer waits while the gateway\'s is being answered', (async, h) {
+      connected(async, h);
+      final peer = h.engine.peer..holdRemote = Completer<void>();
+      h.gateway.push(_offer('r-lounge', 'o2'));
+      async.flushMicrotasks();
+      h.voice.startScreenShare();
+      async.flushMicrotasks();
+      expect(offers(h), isEmpty);
+      peer.holdRemote!.complete();
+      peer.holdRemote = null;
+      async.flushMicrotasks();
+      expect(h.gateway.types.where((t) => t == 'WEBRTC_ANSWER' || t == 'WEBRTC_RENEGOTIATE_OFFER'), [
+        'WEBRTC_ANSWER',
+        'WEBRTC_RENEGOTIATE_OFFER',
+      ]);
+      expect(peer.log, isNot(contains('local rollback ')));
+    });
+
+    _voice('an offer resumed on a new socket goes again; one never answered starts over without the screen', (
+      async,
+      h,
+    ) {
+      connected(async, h);
+      h.voice.startScreenShare();
+      async.flushMicrotasks();
+      h.gateway.resumed();
+      async.flushMicrotasks();
+      expect(offers(h), ['offer-1', 'offer-1']);
+
+      async.elapse(const Duration(seconds: 15));
+      expect(h.engine.peers, hasLength(2));
+      expect(h.engine.screens.single.stopped, isTrue);
+      expect(h.voice.screenSharing, isFalse);
+      expect(h.notices.last, 'Screen sharing stopped');
+      expect(h.gateway.types.where((t) => t == 'VOICE_JOIN'), hasLength(2));
+      expect(h.gateway.last('VOICE_SYNC'), _sync());
+    });
+
+    _voice('a new session joins again with the camera on, tagged, and the screen stopped', (async, h) {
+      connected(async, h);
+      h.voice.toggleCamera();
+      h.voice.startScreenShare();
+      async.flushMicrotasks();
+      h.gateway.ready(number: 2);
+      async.flushMicrotasks();
+      expect(h.engine.peer.log, ['audio mic', 'video', 'camera true', 'sending true', 'local offer offer-2']);
+      expect(h.gateway.last('VOICE_JOIN')!['tracks'], {'1': 'camera'});
+      expect(h.engine.openedCameras.single.stopped, isFalse);
+      expect(h.engine.screens.single.stopped, isTrue);
+      expect(h.notices.last, 'Screen sharing stopped');
+      expect(h.gateway.last('VOICE_SYNC'), _sync(camera: true));
+    });
+
+    _voice('leaving, or the voice taken by another device, stops both; the next join starts with both off', (async, h) {
+      connected(async, h);
+      h.voice.toggleCamera();
+      h.voice.startScreenShare();
+      async.flushMicrotasks();
+      h.voice.leave();
+      async.flushMicrotasks();
+      expect(h.engine.openedCameras.single.stopped, isTrue);
+      expect(h.engine.screens.single.stopped, isTrue);
+      expect((h.voice.cameraOn, h.voice.screenSharing), (false, false));
+
+      connected(async, h);
+      expect(h.engine.peer.log, isNot(contains('camera true')));
+      h.voice.toggleCamera();
+      h.voice.startScreenShare();
+      async.flushMicrotasks();
+      h.gateway.push(const duvet.VoiceSessionReplacedPayloadEvent(duvet.VoiceSessionReplacedEvent(roomId: 'r-lounge')));
+      async.flushMicrotasks();
+      expect(h.engine.openedCameras.last.stopped, isTrue);
+      expect(h.engine.screens.last.stopped, isTrue);
+      expect((h.voice.cameraOn, h.voice.screenSharing), (false, false));
+    });
+
+    _voice('VOICE_VIDEO_REFUSED stops the capture and says why, as the desktop says it', (async, h) {
+      connected(async, h);
+      for (final (refusal, why) in [
+        (_refused('camera', 'limit', limit: 8), 'This room already has 8 cameras on'),
+        (_refused('camera', 'limit', limit: 1), 'This room already has 1 camera on'),
+        (_refused('camera', 'limit', limit: 0), 'Cameras are turned off in this room'),
+        (_refused('camera', 'limit'), 'This room already has as many cameras on as it can'),
+        (_refused('camera', 'permission'), 'You can’t use video in this room'),
+        (_refused('camera', 'bitrate'), 'Your camera was turned off: it was sending more video than this room allows'),
+      ]) {
+        h.voice.toggleCamera();
+        async.flushMicrotasks();
+        h.gateway.push(refusal);
+        async.flushMicrotasks();
+        expect(h.voice.cameraOn, isFalse);
+        expect(h.engine.openedCameras.last.stopped, isTrue);
+        expect(h.notices.last, why);
+        expect(h.gateway.last('VOICE_SYNC'), _sync());
+      }
+      // Nothing on: nothing to say.
+      final said = h.notices.length;
+      h.gateway.push(_refused('camera', 'limit', limit: 8));
+      expect(h.notices, hasLength(said));
+
+      h.voice.startScreenShare();
+      async.flushMicrotasks();
+      h.gateway.push(_refused('screen', 'permission'));
+      async.flushMicrotasks();
+      expect(h.voice.screenSharing, isFalse);
+      expect(h.engine.screens.single.stopped, isTrue);
+      expect(h.notices.last, 'You can’t use video in this room');
+    });
+
+    _voice('in a call, video is always allowed, and refusals speak of the call', (async, h) {
+      h.repository.deniedInRoom['r-lounge'] = Perm.video;
+      h.gateway.push(
+        const duvet.CallIncomingPayloadEvent(
+          duvet.CallIncomingEvent(conversationId: 'c-leo', initiatorId: FakeRepository.leo, initiatorName: 'Leo'),
+        ),
+      );
+      h.voice.acceptCall();
+      async.flushMicrotasks();
+      expect(h.voice.canVideo, isTrue);
+      h.voice.toggleCamera();
+      async.flushMicrotasks();
+      h.gateway.push(_refused('camera', 'limit', limit: 8, room: 'c-leo'));
+      async.flushMicrotasks();
+      expect(h.notices.last, 'This call already has 8 cameras on');
+    });
+
+    _voice('losing Video in the room stops the camera and the screen', (async, h) {
+      connected(async, h);
+      expect(h.voice.canVideo, isTrue);
+      h.voice.toggleCamera();
+      h.voice.startScreenShare();
+      async.flushMicrotasks();
+      h.repository.deniedInRoom['r-lounge'] = Perm.video;
+      h.repository.spaces.value = [...h.repository.spaces.value];
+      async.flushMicrotasks();
+      expect(h.voice.canVideo, isFalse);
+      expect((h.voice.cameraOn, h.voice.screenSharing), (false, false));
+      expect(h.engine.openedCameras.single.stopped, isTrue);
+      expect(h.engine.screens.single.stopped, isTrue);
+      expect(h.notices.last, 'You can’t use video in this room now');
+      expect(h.gateway.last('VOICE_SYNC'), _sync());
+
+      h.voice.toggleCamera();
+      async.flushMicrotasks();
+      expect(h.engine.openedCameras, hasLength(1));
+      expect(h.notices.last, 'You can’t use video in this room');
+    });
+
+    _voice('the camera turns off in the background; the screen goes on', (async, h) {
+      connected(async, h);
+      h.voice.toggleCamera();
+      h.voice.startScreenShare();
+      async.flushMicrotasks();
+      h.lifecycle.add(AppLifecycleState.inactive);
+      expect(h.voice.cameraOn, isTrue);
+      h.lifecycle.add(AppLifecycleState.paused);
+      async.flushMicrotasks();
+      expect(h.voice.cameraOn, isFalse);
+      expect(h.engine.openedCameras.single.stopped, isTrue);
+      expect(h.voice.screenSharing, isTrue);
+      expect(h.notices.last, 'Camera turned off in the background');
+      expect(h.gateway.last('VOICE_SYNC'), _sync(screen: true));
+    });
+
+    _voice('incoming video off: VOICE_JOIN and every sync say so, and the others\' videos hide', (async, h) {
+      h.voice.setIncomingVideo(false);
+      connected(async, h);
+      expect(h.gateway.last('VOICE_JOIN')!['video_off'], isTrue);
+      expect(h.gateway.last('VOICE_SYNC'), _sync(videoOff: true));
+      final maya = VoiceRemoteVideo(userId: FakeRepository.maya, kind: VideoKind.camera, view: (_) => const SizedBox());
+      h.engine.peer.remoteVideos.value = [maya];
+      expect(h.voice.remoteVideos.value, isEmpty);
+
+      h.voice.setIncomingVideo(true);
+      async.flushMicrotasks();
+      expect(h.gateway.last('VOICE_SYNC'), _sync());
+      expect(h.voice.remoteVideos.value, [maya]);
+
+      h.voice.leave();
+      expect(h.voice.remoteVideos.value, isEmpty);
+    });
+
+    _voice('noise suppression opens the microphone again with it, still muted', (async, h) {
+      connected(async, h);
+      h.voice.toggleMute();
+      async.flushMicrotasks();
+      h.voice.setNoiseSuppression(false);
+      async.flushMicrotasks();
+      expect(h.engine.noiseSuppression, [true, false]);
+      expect(h.engine.mics.first.stopped, isTrue);
+      expect(h.engine.mics.last.stopped, isFalse);
+      expect(h.engine.peer.log, contains('mic'));
+      expect(h.engine.peer.sending, isFalse);
+
+      h.voice.leave();
+      h.voice.joinRoom(_lounge);
+      async.flushMicrotasks();
+      expect(h.engine.noiseSuppression.last, isFalse);
+    });
+
+    _voice('noise suppression toggled quickly reopens the microphone one at a time, the last setting winning', (
+      async,
+      h,
+    ) {
+      connected(async, h);
+      final peer = h.engine.peer;
+      h.engine.holdMic = Completer<void>();
+      h.voice.setNoiseSuppression(false);
+      async.flushMicrotasks();
+      h.voice.setNoiseSuppression(true);
+      h.voice.setNoiseSuppression(false);
+      h.engine.holdMic!.complete();
+      h.engine.holdMic = null;
+      async.flushMicrotasks();
+      expect(h.engine.noiseSuppression, [true, false]);
+      expect(peer.log.where((l) => l == 'mic'), hasLength(1));
+      expect(h.engine.mics.first.stopped, isTrue);
+      expect(h.engine.mics.last.stopped, isFalse);
+
+      h.voice.setNoiseSuppression(true);
+      h.voice.setNoiseSuppression(false);
+      h.voice.setNoiseSuppression(true);
+      async.flushMicrotasks();
+      expect(h.engine.noiseSuppression, [true, false, true]);
+      expect(h.engine.mics.where((m) => !m.stopped), hasLength(1));
+    });
+
+    _voice('the setting changed while joining opens the microphone again with it', (async, h) {
+      h.engine.holdMic = Completer<void>();
+      h.voice.joinRoom(_lounge);
+      async.flushMicrotasks();
+      h.voice.setNoiseSuppression(false);
+      h.engine.holdMic!.complete();
+      h.engine.holdMic = null;
+      async.flushMicrotasks();
+      expect(h.engine.noiseSuppression, [true, false]);
+      expect(h.engine.mics.first.stopped, isTrue);
+      expect(h.engine.mics.last.stopped, isFalse);
+    });
+  });
+
+  group('sounds', () {
+    _voice('others joining, leaving and sharing their screen in the user\'s voice', (async, h) {
+      // Not in voice: nothing.
+      h.gateway.push(_state('r-lounge', FakeRepository.leo, 1));
+      h.voice.joinRoom(_lounge);
+      async.flushMicrotasks();
+      final me = h.repository.profile.value!.id;
+      h.gateway.push(_state('r-lounge', me, 1));
+      // Leo was there already, as is a catch-up of him.
+      h.gateway.push(_state('r-lounge', FakeRepository.leo, 1));
+      h.gateway.push(_state('r-studio', FakeRepository.maya, 1));
+      async.flushMicrotasks();
+      expect(h.player.played, isEmpty);
+
+      h.gateway.push(_state('r-lounge', FakeRepository.maya, 2));
+      h.gateway.push(_state('r-lounge', FakeRepository.maya, 3, screen: true));
+      h.gateway.push(_state('r-lounge', FakeRepository.maya, 4, muted: true, screen: true));
+      h.gateway.push(_state('r-lounge', FakeRepository.maya, 5));
+      h.gateway.push(_state('r-lounge', FakeRepository.maya, 6, joined: false));
+      async.flushMicrotasks();
+      expect(h.player.played.map((p) => p.$1), [
+        Sound.voiceJoin,
+        Sound.screenShareOn,
+        Sound.screenShareOff,
+        Sound.voiceLeave,
+      ]);
+    });
+
+    _voice('the ring goes while a call rings, and stops however it ends', (async, h) {
+      const incoming = duvet.CallIncomingPayloadEvent(
+        duvet.CallIncomingEvent(conversationId: 'c-leo', initiatorId: FakeRepository.leo, initiatorName: 'Leo'),
+      );
+      h.gateway.push(incoming);
+      async.flushMicrotasks();
+      expect(h.player.played, [(Sound.incomingCall, true)]);
+      h.voice.acceptCall();
+      async.flushMicrotasks();
+      expect(h.player.stopped, [Sound.incomingCall]);
+
+      h.voice.hangUp();
+      h.gateway.push(incoming);
+      async.flushMicrotasks();
+      h.voice.declineCall();
+      async.flushMicrotasks();
+      expect(h.player.stopped, hasLength(2));
+
+      h.gateway.push(incoming);
+      async.flushMicrotasks();
+      h.gateway.push(const duvet.CallEndedPayloadEvent(duvet.CallEndedEvent(conversationId: 'c-leo')));
+      async.flushMicrotasks();
+      expect(h.player.stopped, hasLength(3));
+    });
+  });
+
+  test('the ring stops when the controller goes', () {
+    fakeAsync((async) {
+      final repository = FakeRepository()..restore();
+      final player = _Player();
+      final voice = VoiceController(
+        repository: repository,
+        engine: FakeVoiceEngine(),
+        historyStore: MemoryCallHistoryStore(),
+        sounds: Sounds(player: player, ringer: _Ringer()),
+      );
+      async.flushMicrotasks();
+      repository.voiceSignaling.push(
+        const duvet.CallIncomingPayloadEvent(
+          duvet.CallIncomingEvent(conversationId: 'c-leo', initiatorId: FakeRepository.leo, initiatorName: 'Leo'),
+        ),
+      );
+      async.flushMicrotasks();
+      expect(player.played, [(Sound.incomingCall, true)]);
+      voice.dispose();
+      async.flushMicrotasks();
+      expect(player.stopped, [Sound.incomingCall]);
+      repository.dispose();
+      async.flushMicrotasks();
+    });
   });
 
   test('a session refused at launch forgets the call histories kept on the phone', () {

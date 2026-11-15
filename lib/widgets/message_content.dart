@@ -12,7 +12,10 @@ import 'package:url_launcher/url_launcher.dart';
 import 'package:youtube_player_iframe/youtube_player_iframe.dart'
     show PlayerState, YoutubePlayerController, YoutubeValueBuilder;
 
+import '../data/appearance.dart';
+import '../data/code_theme.dart';
 import '../data/emoji_catalog.dart';
+import '../data/images.dart';
 import '../data/links.dart';
 import '../data/markdown.dart';
 import '../deep_links.dart';
@@ -20,12 +23,15 @@ import '../data/message_tokens.dart';
 import '../data/models.dart';
 import '../theme.dart';
 import 'apng.dart';
+import 'attachment_link.dart';
 import 'code_highlight.dart';
 import 'depth.dart';
 import 'glass.dart';
 import 'media.dart';
 import 'media_actions.dart';
+import 'prism.dart';
 import 'role_name.dart';
+import 'skeleton.dart';
 import 'youtube_dock.dart';
 
 /// What a bubble needs to show names and custom emoji.
@@ -116,20 +122,11 @@ class _MessageTextState extends State<MessageText> {
   late List<MdBlock> _blocks = _parse();
 
   // Its code blocks' colors, worked out once a block and a theme, not each build.
-  final _colored = <(String, String, bool), TextSpan?>{};
+  final _colored = <(String, String, bool, CodeTheme?), TextSpan?>{};
 
   List<MdBlock> _parse() {
     if (!widget.singleLine) return parseMarkdown(widget.content);
-    // Code blocks as inline code; headings, quotes and lists as plain text.
-    final line = widget.content
-        .replaceAllMapped(
-          RegExp(r'```[\w+#-]*\n?([\s\S]*?)```'),
-          (m) => '`${m.group(1)!.trim().replaceAll(RegExp(r'\s+'), ' ')}`',
-        )
-        .split('\n')
-        .map((l) => l.replaceFirst(RegExp(r'^(?:#{1,3} |-# |>>> |> |\s*[-*]\s+|\s*\d+[.)]\s+)'), ''))
-        .join(' ');
-    return [MdParagraph(parseInline(line))];
+    return [MdParagraph(parseLine(widget.content))];
   }
 
   @override
@@ -183,8 +180,11 @@ class _MessageTextState extends State<MessageText> {
     final base = jumbo ? widget.style.copyWith(fontSize: 40, height: 1.2) : widget.style;
     final emojiSize = jumbo ? 48.0 : 22.0;
     final dark = Theme.of(context).brightness == Brightness.dark;
+    final appearance = AppearanceScope.maybeOf(context);
+    // Overlays on your bubble are its ink, faint: white on azure.
+    final ink = ownBubble(context).ink;
     final codeFill = widget.onAccent
-        ? const Color(0x29FFFFFF)
+        ? ink.withAlpha(0x29)
         : dark
         ? const Color(0x14FFFFFF)
         : const Color(0x0F141416);
@@ -195,6 +195,7 @@ class _MessageTextState extends State<MessageText> {
     // The rooms mentioned where they show, each once.
     final rooms = <String, Room>{};
     var spoilers = false;
+    final prism = inPrism(context);
 
     // A mention in its member's role colors, as their name shows in the
     // member list; violet without a colored role. On your azure bubble, bold
@@ -203,6 +204,29 @@ class _MessageTextState extends State<MessageText> {
       final bold = (style ?? const TextStyle()).copyWith(fontWeight: FontWeight.w700);
       final role = widget.onAccent ? null : widget.directory.nameColorsOf(userId);
       final onMention = widget.onMention;
+      // In a lit bubble the names are read on its light at its strongest, not on the page.
+      final on = prism ? tokens.prism.behindName : null;
+      final violet = on == null ? tokens.violetText : readableOn(tokens.violetText, on);
+      // The user themself, in a bubble that mentions them: the same name, a
+      // box of its own in the line, which the bubble's light centres on.
+      if (prism && userId == widget.directory.me) {
+        return WidgetSpan(
+          alignment: PlaceholderAlignment.baseline,
+          baseline: TextBaseline.alphabetic,
+          child: GestureDetector(
+            onTap: onMention == null ? null : () => onMention(userId),
+            child: PrismAnchor(
+              child: switch (role) {
+                (from: _?, via: _, to: _?) => RoleName(name, colors: role, style: base.merge(bold), on: on),
+                _ => Text(
+                  name,
+                  style: base.merge(bold).copyWith(color: roleColorOn(context, role?.from, on: on) ?? violet),
+                ),
+              },
+            ),
+          ),
+        );
+      }
       if (role case (from: _?, via: _, to: _?)) {
         // A gradient spans the name, so the name is a box of its own in the line.
         return WidgetSpan(
@@ -210,14 +234,14 @@ class _MessageTextState extends State<MessageText> {
           baseline: TextBaseline.alphabetic,
           child: GestureDetector(
             onTap: onMention == null ? null : () => onMention(userId),
-            child: RoleName(name, colors: role, style: base.merge(bold)),
+            child: RoleName(name, colors: role, style: base.merge(bold), on: on),
           ),
         );
       }
       return TextSpan(
         text: name,
         recognizer: onMention == null ? null : _tap(() => onMention(userId)),
-        style: bold.copyWith(color: widget.onAccent ? null : roleColorOn(context, role?.from) ?? tokens.violetText),
+        style: bold.copyWith(color: widget.onAccent ? null : roleColorOn(context, role?.from, on: on) ?? violet),
       );
     }
 
@@ -227,7 +251,7 @@ class _MessageTextState extends State<MessageText> {
         switch (token) {
           TextToken(:final text) => TextSpan(text: text, style: style),
           MentionToken(:final userId) => mention(
-            '@${mentions[userId] = widget.directory.nameOf(userId) ?? 'someone'}',
+            '@${mentions[userId] = widget.directory.nameOf(userId) ?? userId.substring(0, 8)}',
             userId,
             style,
           ),
@@ -252,11 +276,13 @@ class _MessageTextState extends State<MessageText> {
               alignment: PlaceholderAlignment.middle,
               child: Padding(
                 padding: const EdgeInsets.symmetric(horizontal: 1),
-                child: Image.network(
-                  emoji.url,
+                child: Image(
+                  image: cachedImage(
+                    emoji.url,
+                    cacheWidth: (emojiSize * MediaQuery.devicePixelRatioOf(context)).round(),
+                  ),
                   width: emojiSize,
                   height: emojiSize,
-                  cacheWidth: (emojiSize * MediaQuery.devicePixelRatioOf(context)).round(),
                   fit: BoxFit.contain,
                   excludeFromSemantics: true,
                   errorBuilder: (_, _, _) => Text(':${emoji.name}:'),
@@ -301,9 +327,9 @@ class _MessageTextState extends State<MessageText> {
             return spans(
               children,
               (style ?? const TextStyle()).copyWith(
-                color: widget.onAccent ? colors.primaryForeground : tokens.accentText,
+                color: widget.onAccent ? ink : tokens.accentText,
                 decoration: TextDecoration.underline,
-                decorationColor: widget.onAccent ? colors.primaryForeground : tokens.accentText,
+                decorationColor: widget.onAccent ? ink : tokens.accentText,
               ),
               _tap(() => _open(url)),
             );
@@ -316,7 +342,7 @@ class _MessageTextState extends State<MessageText> {
               children,
               (style ?? const TextStyle()).copyWith(
                 color: const Color(0x00000000),
-                backgroundColor: widget.onAccent ? const Color(0x52FFFFFF) : colors.secondary,
+                backgroundColor: widget.onAccent ? ink.withAlpha(0x52) : colors.secondary,
                 decoration: TextDecoration.none,
               ),
               _tap(_reveal),
@@ -345,7 +371,7 @@ class _MessageTextState extends State<MessageText> {
           MdQuote(:final inlines) => Container(
             padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
             decoration: BoxDecoration(
-              color: widget.onAccent ? const Color(0x1FFFFFFF) : colors.secondary,
+              color: widget.onAccent ? ink.withAlpha(0x1F) : colors.secondary,
               borderRadius: BorderRadius.circular(DuvetTokens.radiusField),
             ),
             child: rich(inlines, base.copyWith(color: secondary)),
@@ -404,15 +430,18 @@ class _MessageTextState extends State<MessageText> {
               scrollDirection: Axis.horizontal,
               child: () {
                 final style = DuvetType.code.copyWith(fontSize: 13, height: 1.5, color: base.color);
-                // Its language's colors, as the desktop's; on the accent, the dark ones.
-                final onDark = dark || widget.onAccent;
+                // Its language's colors, as the desktop's; on your bubble,
+                // those for its ink.
+                final onDark = widget.onAccent ? ownBubble(context).onDark : dark;
+                final custom = appearance?.codeTheme;
                 final colored = language == null
                     ? null
                     : _colored.putIfAbsent((
                         code,
                         language,
                         onDark,
-                      ), () => highlightCode(code, language, base: style, dark: onDark));
+                        custom,
+                      ), () => highlightCode(code, language, base: style, dark: onDark, custom: custom));
                 return colored == null ? Text(code, style: style) : Text.rich(colored);
               }(),
             ),
@@ -587,6 +616,62 @@ class MessageAttachments extends StatelessWidget {
           ),
         ),
       ],
+    );
+  }
+}
+
+/// Where a file deleted since it was sent was, as the desktop shows one: a
+/// picture's box keeps its size, when known.
+class DeletedAttachment extends StatelessWidget {
+  final MessageAttachment attachment;
+
+  /// A voice note's recording: "Voice note deleted", a voice note's height.
+  final bool voice;
+  final double maxWidth;
+  const DeletedAttachment({required this.attachment, this.voice = false, this.maxWidth = 260, super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = context.theme.colors;
+    final a = attachment;
+    final label = voice ? 'Voice note deleted' : 'Attachment deleted';
+    final (w, h) = (a.width ?? 0, a.height ?? 0);
+    final scale = w > 0 && h > 0 ? math.min(1.0, math.min(maxWidth / w, 260 / h)) : 0.0;
+    // Never smaller than its words: a deleted emoji-sized picture keeps a box they fit in.
+    final minWidth = math.min(180.0, maxWidth);
+    final size = scale > 0 && !voice
+        ? Size(math.max(w * scale, minWidth), math.max(h * scale, 48))
+        : Size(math.min(200, maxWidth), 48);
+    return Semantics(
+      container: true,
+      label: label,
+      excludeSemantics: true,
+      child: Container(
+        width: size.width,
+        height: size.height,
+        margin: const EdgeInsets.only(top: 4),
+        padding: const EdgeInsets.symmetric(horizontal: 12),
+        decoration: BoxDecoration(
+          color: colors.secondary,
+          borderRadius: BorderRadius.circular(DuvetTokens.radiusField),
+          border: Border.all(color: context.duvet.hairline),
+        ),
+        child: Row(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Icon(FLucideIcons.trash2, size: 16, color: colors.mutedForeground),
+            const SizedBox(width: 8),
+            Flexible(
+              child: Text(
+                label,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: DuvetType.caption.copyWith(color: colors.mutedForeground, fontStyle: FontStyle.italic),
+              ),
+            ),
+          ],
+        ),
+      ),
     );
   }
 }
@@ -771,49 +856,125 @@ class _PictureState extends State<_Picture> {
     );
   }
 
-  void _open(BuildContext context) {
-    // Out of the composer: or closing the viewer hands it the keyboard back.
-    FocusManager.instance.primaryFocus?.unfocus();
-    Navigator.of(context).push(
-      PageRouteBuilder<void>(
-        opaque: false,
-        barrierColor: Colors.black,
-        transitionDuration: DuvetTokens.panelIn,
-        reverseTransitionDuration: DuvetTokens.panelOut,
-        pageBuilder: (_, _, _) => ImageViewer(gallery: widget.gallery, initial: widget.index),
-        transitionsBuilder: (_, animation, _, child) => FadeTransition(
-          opacity: CurvedAnimation(parent: animation, curve: DuvetTokens.decelerate),
-          child: child,
-        ),
+  void _open(BuildContext context) => openImageViewer(context, widget.gallery, widget.index);
+}
+
+/// Opens [gallery] full screen, at [index].
+void openImageViewer(BuildContext context, List<MessageAttachment> gallery, [int index = 0]) {
+  // Out of the composer: or closing the viewer hands it the keyboard back.
+  FocusManager.instance.primaryFocus?.unfocus();
+  Navigator.of(context).push(
+    PageRouteBuilder<void>(
+      opaque: false,
+      barrierColor: Colors.black,
+      transitionDuration: DuvetTokens.panelIn,
+      reverseTransitionDuration: DuvetTokens.panelOut,
+      pageBuilder: (_, _, _) => ImageViewer(gallery: gallery, initial: index),
+      transitionsBuilder: (_, animation, _, child) => FadeTransition(
+        opacity: CurvedAnimation(parent: animation, curve: DuvetTokens.decelerate),
+        child: child,
       ),
-    );
-  }
+    ),
+  );
 }
 
 String _heroTag(MessageAttachment a) => 'attachment:${a.id}:${a.url}';
 
-Widget _image(MessageAttachment a, double width, {BoxFit fit = BoxFit.cover}) {
+/// [retry]: a picture that didn't load says so, and a tap loads it again.
+Widget _image(MessageAttachment a, double width, {BoxFit fit = BoxFit.cover, bool retry = false}) {
   final dpr = WidgetsBinding.instance.platformDispatcher.views.first.devicePixelRatio;
   final cache = math.max(1, (width * dpr).round());
   Widget broken(BuildContext context, Object _, StackTrace? _) =>
       Center(child: Icon(FLucideIcons.imageOff, color: context.theme.colors.mutedForeground));
-  final still = a.local
-      ? Image.file(File(a.url), fit: fit, cacheWidth: fit == BoxFit.cover ? cache : null, errorBuilder: broken)
-      : Image.network(
-          a.url,
-          fit: fit,
-          cacheWidth: fit == BoxFit.cover ? cache : null,
-          errorBuilder: broken,
-          frameBuilder: (context, child, frame, sync) => AnimatedOpacity(
-            opacity: frame == null && !sync ? 0 : 1,
-            duration: const Duration(milliseconds: 200),
-            child: child,
-          ),
-        );
   // Flutter plays GIFs and WebPs itself, APNGs not: apng.dart does.
-  return a.contentType == 'image/apng'
-      ? ApngImage(url: a.url, local: a.local, width: width, fit: fit, placeholder: still)
+  Widget played(String url, Widget still) => a.contentType == 'image/apng'
+      ? ApngImage(key: ValueKey(url), url: url, local: a.local, width: width, fit: fit, placeholder: still)
       : still;
+  if (a.local) {
+    return played(
+      a.url,
+      Image.file(File(a.url), fit: fit, cacheWidth: fit == BoxFit.cover ? cache : null, errorBuilder: broken),
+    );
+  }
+  // In a message (covered), a pulse in its box until it shows, as the desktop's; not full screen in the viewer.
+  final inMessage = fit == BoxFit.cover;
+  // Reloading starts its link over too: an expired one is asked for anew.
+  return _Reloadable(
+    builder: (context, reload) => AttachmentLinkBuilder(
+      attachment: a,
+      waiting: inMessage ? const SkeletonBox() : const SizedBox.expand(),
+      builder: (context, url, refused) => played(
+        url,
+        Image(
+          image: cachedImage(url, cacheWidth: inMessage ? cache : null),
+          fit: fit,
+          errorBuilder: (context, error, stack) {
+            // Its link expired: the API refuses it.
+            if (error is NetworkImageLoadException && error.statusCode == 403) refused();
+            if (!retry) return broken(context, error, stack);
+            final muted = context.theme.colors.mutedForeground;
+            return Center(
+              child: Semantics(
+                container: true,
+                button: true,
+                label: 'Couldn’t load the picture. Try again',
+                excludeSemantics: true,
+                onTap: reload,
+                child: GestureDetector(
+                  behavior: HitTestBehavior.opaque,
+                  onTap: reload,
+                  child: Padding(
+                    padding: const EdgeInsets.all(16),
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Icon(FLucideIcons.imageOff, color: muted),
+                        const SizedBox(height: 8),
+                        Text('Tap to try again', style: DuvetType.caption.copyWith(color: muted)),
+                      ],
+                    ),
+                  ),
+                ),
+              ),
+            );
+          },
+          frameBuilder: (context, child, frame, sync) {
+            final loading = frame == null && !sync;
+            const fade = Duration(milliseconds: 200);
+            if (!inMessage) return AnimatedOpacity(opacity: loading ? 0 : 1, duration: fade, child: child);
+            // The pulse stays whole under the picture until it has faded in: the box behind is black in the dark
+            // theme, and showed through the fade.
+            return AnimatedSwitcher(
+              duration: fade,
+              layoutBuilder: (current, previous) => Stack(fit: StackFit.passthrough, children: [...previous, ?current]),
+              transitionBuilder: (child, animation) =>
+                  child is SkeletonBox ? child : FadeTransition(opacity: animation, child: child),
+              child: loading ? const SkeletonBox() : child,
+            );
+          },
+        ),
+      ),
+    ),
+  );
+}
+
+/// Builds its child again, from scratch, each time the child calls `reload`:
+/// a picture that failed loads anew, as Flutter drops a failed one from its
+/// cache.
+class _Reloadable extends StatefulWidget {
+  final Widget Function(BuildContext context, VoidCallback reload) builder;
+  const _Reloadable({required this.builder});
+
+  @override
+  State<_Reloadable> createState() => _ReloadableState();
+}
+
+class _ReloadableState extends State<_Reloadable> {
+  int _attempt = 0;
+
+  @override
+  Widget build(BuildContext context) =>
+      KeyedSubtree(key: ValueKey(_attempt), child: widget.builder(context, () => setState(() => _attempt++)));
 }
 
 class _Badge extends StatelessWidget {
@@ -914,6 +1075,7 @@ class _FileTile extends StatelessWidget {
 }
 
 Future<void> _fileMenu(BuildContext anchor, MessageAttachment a) async {
+  final link = linkSource(anchor, a);
   final picked = await showGlassMenu(
     anchor,
     label: 'File options',
@@ -926,11 +1088,11 @@ Future<void> _fileMenu(BuildContext anchor, MessageAttachment a) async {
   try {
     switch (picked) {
       case 'open':
-        await MediaActions.instance.open(a.url);
+        await MediaActions.instance.open(await link());
       case 'share':
-        await MediaActions.instance.share(a.url, a.displayName, a.contentType);
+        await MediaActions.instance.share(await link(), a.displayName, a.contentType);
       case 'copy':
-        await Clipboard.setData(ClipboardData(text: a.url));
+        await Clipboard.setData(ClipboardData(text: await link()));
     }
   } catch (_) {
     if (anchor.mounted) {
@@ -939,41 +1101,49 @@ Future<void> _fileMenu(BuildContext anchor, MessageAttachment a) async {
   }
 }
 
-/// A sticker: large, with no bubble; a `base-sunken` square until it loads.
+/// A sticker: large, with no bubble; a pulsing square until it loads.
 class StickerView extends StatelessWidget {
   final String url;
   final String? name;
-  const StickerView({required this.url, this.name, super.key});
+
+  /// A tap opens it full screen, to zoom in, as a picture does.
+  final bool zoomable;
+  const StickerView({required this.url, this.name, this.zoomable = false, super.key});
+
+  void _open(BuildContext context) => openImageViewer(context, [
+    MessageAttachment(id: 'sticker:$url', filename: name ?? 'Sticker', contentType: 'image/png', url: url),
+  ]);
 
   @override
   Widget build(BuildContext context) => Semantics(
     container: true,
     image: true,
+    button: zoomable,
     label: name == null ? 'Sticker' : 'Sticker, $name',
+    hint: zoomable ? 'Double tap to open' : null,
     excludeSemantics: true,
-    child: Image.network(
-      url,
+    onTap: zoomable ? () => _open(context) : null,
+    child: GestureDetector(onTap: zoomable ? () => _open(context) : null, child: _sticker(context)),
+  );
+
+  Widget _sticker(BuildContext context) => Image(
+    image: cachedImage(url, cacheWidth: (160 * MediaQuery.devicePixelRatioOf(context)).round()),
+    width: 160,
+    height: 160,
+    fit: BoxFit.contain,
+    // Not behind the sticker once it's there: stickers are see-through.
+    frameBuilder: (context, child, frame, sync) => frame == null && !sync
+        ? const SkeletonBox(
+            width: 160,
+            height: 160,
+            borderRadius: BorderRadius.all(Radius.circular(DuvetTokens.radiusButton)),
+          )
+        : child,
+    errorBuilder: (context, _, _) => SizedBox(
       width: 160,
       height: 160,
-      cacheWidth: (160 * MediaQuery.devicePixelRatioOf(context)).round(),
-      fit: BoxFit.contain,
-      // Not behind the sticker once it's there: stickers are see-through.
-      frameBuilder: (context, child, frame, sync) => frame == null && !sync
-          ? Container(
-              width: 160,
-              height: 160,
-              decoration: BoxDecoration(
-                color: context.theme.colors.secondary,
-                borderRadius: BorderRadius.circular(DuvetTokens.radiusButton),
-              ),
-            )
-          : child,
-      errorBuilder: (context, _, _) => SizedBox(
-        width: 160,
-        height: 160,
-        child: Center(
-          child: Text('Sticker unavailable', style: TextStyle(color: context.theme.colors.mutedForeground)),
-        ),
+      child: Center(
+        child: Text('Sticker unavailable', style: TextStyle(color: context.theme.colors.mutedForeground)),
       ),
     ),
   );
@@ -1000,15 +1170,17 @@ class EmbedCard extends StatelessWidget {
     Widget picture(double w) {
       final ratio = (e.imageWidth ?? 0) > 0 && (e.imageHeight ?? 0) > 0 ? e.imageWidth! / e.imageHeight! : null;
       final height = ratio == null ? 140.0 : math.min(w / ratio, 320.0);
+      final width = ratio == null ? w : math.min(w, height * ratio);
       return ClipRRect(
         borderRadius: BorderRadius.circular(DuvetTokens.radiusButton),
-        child: Image.network(
-          e.imageUrl!,
-          width: ratio == null ? w : math.min(w, height * ratio),
+        child: Image(
+          image: cachedImage(e.imageUrl!, cacheWidth: (w * dpr).round()),
+          width: width,
           height: height,
-          cacheWidth: (w * dpr).round(),
           fit: ratio == null ? BoxFit.cover : BoxFit.contain,
           excludeFromSemantics: true,
+          frameBuilder: (_, child, frame, sync) =>
+              frame == null && !sync ? SkeletonBox(width: width, height: height) : child,
           errorBuilder: (_, _, _) => const SizedBox.shrink(),
         ),
       );
@@ -1036,6 +1208,7 @@ class EmbedCard extends StatelessWidget {
           ),
           width: w,
           poster: e.imageUrl,
+          embed: true,
         );
       }
       if (youtube != null) {
@@ -1047,7 +1220,7 @@ class EmbedCard extends StatelessWidget {
       return Stack(alignment: Alignment.center, children: [picture(w), const PlayMark()]);
     }
 
-    if (e.title == null && e.description == null && (e.isBareImage || e.isDirectVideo)) {
+    if (e.isWordless && (e.imageUrl != null || e.isDirectVideo)) {
       final bare = media(width)!;
       if ((e.isDirectVideo && !gif) || youtube != null) return bare;
       final play = !gif && e.videoUrl != null && link != null;
@@ -1059,10 +1232,53 @@ class EmbedCard extends StatelessWidget {
       );
     }
 
+    final muted = DuvetType.caption.copyWith(color: colors.mutedForeground);
+    final authorLink = switch (e.authorUrl) {
+      final u? => switch (Uri.tryParse(u)) {
+        final uri? when uri.scheme == 'http' || uri.scheme == 'https' => uri,
+        _ => null,
+      },
+      null => null,
+    };
+    // Its footer and its date, as the desktop's "FxTwitter • 10/21/26, 3:02 AM".
+    final footer = [
+      ?e.footer,
+      if (e.timestamp case final t?)
+        '${MaterialLocalizations.of(context).formatCompactDate(t)}, '
+            '${MaterialLocalizations.of(context).formatTimeOfDay(TimeOfDay.fromDateTime(t), alwaysUse24HourFormat: MediaQuery.alwaysUse24HourFormatOf(context))}',
+    ].join(' • ');
     final text = Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        if (e.provider != null) Text(e.provider!, style: DuvetType.caption.copyWith(color: colors.mutedForeground)),
+        if (e.provider != null) Text(e.provider!, style: muted),
+        if (e.authorName != null)
+          GestureDetector(
+            onTap: authorLink == null ? null : () => MessageText.openLink(authorLink),
+            child: Padding(
+              padding: const EdgeInsets.only(bottom: 2),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  if (e.authorIconUrl != null) ...[
+                    ClipOval(
+                      child: Image(
+                        image: cachedImage(e.authorIconUrl!, cacheWidth: (16 * dpr).round()),
+                        width: 16,
+                        height: 16,
+                        fit: BoxFit.cover,
+                        excludeFromSemantics: true,
+                        errorBuilder: (_, _, _) => const SizedBox.shrink(),
+                      ),
+                    ),
+                    const SizedBox(width: 6),
+                  ],
+                  Flexible(
+                    child: Text(e.authorName!, maxLines: 1, overflow: TextOverflow.ellipsis, style: muted),
+                  ),
+                ],
+              ),
+            ),
+          ),
         // Four lines here hold what the desktop's two do in its wider
         // card: a GitHub run's title with its result at the end.
         if (e.title != null)
@@ -1082,8 +1298,55 @@ class EmbedCard extends StatelessWidget {
               style: DuvetType.snippet.copyWith(color: colors.mutedForeground),
             ),
           ),
+        if (e.fields.isNotEmpty)
+          Padding(
+            padding: const EdgeInsets.only(top: 6),
+            child: Wrap(
+              spacing: 16,
+              runSpacing: 6,
+              children: [
+                for (final f in e.fields)
+                  // A field not inline takes its own line.
+                  SizedBox(
+                    width: f.inline ? null : double.infinity,
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Text(
+                          f.name.toUpperCase(),
+                          style: DuvetType.tabLabel.copyWith(
+                            color: colors.mutedForeground,
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
+                        Text(f.value, style: DuvetType.snippet.copyWith(color: colors.foreground)),
+                      ],
+                    ),
+                  ),
+              ],
+            ),
+          ),
+        if (footer.isNotEmpty)
+          Padding(
+            padding: const EdgeInsets.only(top: 6),
+            child: Text(footer, style: DuvetType.tabLabel.copyWith(color: colors.mutedForeground)),
+          ),
       ],
     );
+    // Its color as a stripe down the left side: a gradient top to bottom when
+    // it has more than one, as the desktop's border.
+    final stripe = switch (e.colors) {
+      [] => null,
+      [final c] => BoxDecoration(color: Color(0xFF000000 | (c & 0xFFFFFF))),
+      final cs => BoxDecoration(
+        gradient: LinearGradient(
+          begin: Alignment.topCenter,
+          end: Alignment.bottomCenter,
+          colors: [for (final c in cs) Color(0xFF000000 | (c & 0xFFFFFF))],
+        ),
+      ),
+    };
     return Semantics(
       container: true,
       button: link != null,
@@ -1093,39 +1356,49 @@ class EmbedCard extends StatelessWidget {
           onTap: link == null ? null : () => MessageText.openLink(link),
           child: Container(
             width: width,
-            padding: const EdgeInsets.all(12),
+            clipBehavior: stripe == null ? Clip.none : Clip.antiAlias,
             decoration: BoxDecoration(
               color: colors.card,
               borderRadius: BorderRadius.circular(DuvetTokens.radiusButton),
               boxShadow: context.duvet.shadowRest,
             ),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
+            child: Stack(
               children: [
-                if (e.thumbnailUrl == null)
-                  text
-                else
-                  // A small picture beside the text, as the desktop's card.
-                  Row(
+                Padding(
+                  padding: const EdgeInsets.all(12),
+                  child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      Expanded(child: text),
-                      const SizedBox(width: 12),
-                      ClipRRect(
-                        borderRadius: BorderRadius.circular(DuvetTokens.radiusField),
-                        child: Image.network(
-                          e.thumbnailUrl!,
-                          width: 64,
-                          height: 64,
-                          cacheWidth: (64 * dpr).round(),
-                          fit: BoxFit.cover,
-                          excludeFromSemantics: true,
-                          errorBuilder: (_, _, _) => const SizedBox.shrink(),
+                      if (e.thumbnailUrl == null)
+                        text
+                      else
+                        // A small picture beside the text, as the desktop's card.
+                        Row(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Expanded(child: text),
+                            const SizedBox(width: 12),
+                            ClipRRect(
+                              borderRadius: BorderRadius.circular(DuvetTokens.radiusField),
+                              child: Image(
+                                image: cachedImage(e.thumbnailUrl!, cacheWidth: (64 * dpr).round()),
+                                width: 64,
+                                height: 64,
+                                fit: BoxFit.cover,
+                                excludeFromSemantics: true,
+                                frameBuilder: (_, child, frame, sync) =>
+                                    frame == null && !sync ? const SkeletonBox(width: 64, height: 64) : child,
+                                errorBuilder: (_, _, _) => const SizedBox.shrink(),
+                              ),
+                            ),
+                          ],
                         ),
-                      ),
+                      if (media(width - 24) case final m?) Padding(padding: const EdgeInsets.only(top: 8), child: m),
                     ],
                   ),
-                if (media(width - 24) case final m?) Padding(padding: const EdgeInsets.only(top: 8), child: m),
+                ),
+                if (stripe != null)
+                  Positioned(left: 0, top: 0, bottom: 0, width: 4, child: DecoratedBox(decoration: stripe)),
               ],
             ),
           ),
@@ -1217,11 +1490,14 @@ class _YouTubeTileState extends State<_YouTubeTile> with AutomaticKeepAliveClien
       fit: StackFit.expand,
       children: [
         if (widget.poster case final poster?)
-          Image.network(
-            poster,
+          Image(
+            image: cachedImage(
+              poster,
+              cacheWidth: math.max(1, (width * MediaQuery.devicePixelRatioOf(context)).round()),
+            ),
             fit: BoxFit.cover,
-            cacheWidth: math.max(1, (width * MediaQuery.devicePixelRatioOf(context)).round()),
             excludeFromSemantics: true,
+            frameBuilder: (_, child, frame, sync) => frame == null && !sync ? const SkeletonBox() : child,
             errorBuilder: (_, _, _) => const SizedBox.shrink(),
           ),
         if (!playing) const Center(child: PlayMark()),
@@ -1309,6 +1585,11 @@ class _ImageViewerState extends State<ImageViewer> with TickerProviderStateMixin
   late final _pages = PageController(initialPage: widget.initial);
   late int _index = widget.initial;
 
+  // Each photo's quarter turns clockwise, from Rotate, by its page: each
+  // starts upright, and keeps its turn while swiped away and back.
+  final _turnsOf = <int, int>{};
+  int get _turns => _turnsOf[_index] ?? 0;
+
   // The zoom of the photo shown: paging stops while it's zoomed, so the others
   // are always at their size.
   double _scale = 1;
@@ -1380,7 +1661,9 @@ class _ImageViewerState extends State<ImageViewer> with TickerProviderStateMixin
     final whole = Offset.zero & _view;
     // shortcut: a photo of unknown size takes the whole view, so panning can reach past its edges.
     if (a.width == null || a.height == null || a.width == 0 || a.height == 0) return whole;
-    final size = Size(a.width!.toDouble(), a.height!.toDouble());
+    final size = _turns.isOdd
+        ? Size(a.height!.toDouble(), a.width!.toDouble())
+        : Size(a.width!.toDouble(), a.height!.toDouble());
     final fitted = applyBoxFit(BoxFit.contain, size, _view).destination;
     // A photo smaller than the screen shows at its own size: it isn't scaled up.
     return Alignment.center.inscribe(fitted.width > size.width ? size : fitted, whole);
@@ -1400,6 +1683,16 @@ class _ImageViewerState extends State<ImageViewer> with TickerProviderStateMixin
     _scaleTo = Tween(begin: _scale, end: scale).animate(curve);
     _panTo = Tween(begin: _pan, end: pan).animate(curve);
     _zoomMotion.forward(from: 0);
+  }
+
+  // A quarter turn clockwise, at its size: a zoom wouldn't fit the turned photo.
+  void _rotate() {
+    _zoomMotion.stop();
+    setState(() {
+      _turnsOf[_index] = (_turns + 1) % 4;
+      _scale = 1;
+      _pan = Offset.zero;
+    });
   }
 
   // Double-tap: zoom in where tapped, or back out.
@@ -1550,8 +1843,9 @@ class _ImageViewerState extends State<ImageViewer> with TickerProviderStateMixin
   }
 
   Future<void> _save(MessageAttachment a) async {
+    final link = linkSource(context, a);
     try {
-      final saved = await MediaActions.instance.saveToGallery(a.url, a.displayName);
+      final saved = await MediaActions.instance.saveToGallery(await link(), a.displayName);
       _toast(saved ? 'Saved to your photos' : 'Duvet can’t save to your photos');
     } catch (_) {
       _toast('Couldn’t save the photo');
@@ -1559,8 +1853,9 @@ class _ImageViewerState extends State<ImageViewer> with TickerProviderStateMixin
   }
 
   Future<void> _share(MessageAttachment a) async {
+    final link = linkSource(context, a);
     try {
-      await MediaActions.instance.share(a.url, a.displayName, a.contentType);
+      await MediaActions.instance.share(await link(), a.displayName, a.contentType);
     } catch (_) {
       _toast('Couldn’t share the photo');
     }
@@ -1640,11 +1935,12 @@ class _ImageViewerState extends State<ImageViewer> with TickerProviderStateMixin
                         onPageChanged: (i) => setState(() => _index = i),
                         itemBuilder: (context, i) {
                           final a = widget.gallery[i];
+                          // Its own node, with the picture's Try again under it when it failed.
                           return Semantics(
+                            container: true,
                             image: true,
                             label:
                                 '${a.isGif ? 'GIF' : 'Photo'}, ${a.displayName}, ${i + 1} of ${widget.gallery.length}',
-                            excludeSemantics: true,
                             child: RawGestureDetector(
                               gestures: {
                                 if (!_zoomed && !_pinching)
@@ -1667,9 +1963,21 @@ class _ImageViewerState extends State<ImageViewer> with TickerProviderStateMixin
                                           ..setTranslationRaw(_pan.dx, _pan.dy, 0))
                                       : Matrix4.identity(),
                                   child: Center(
-                                    child: Hero(
-                                      tag: _heroTag(a),
-                                      child: _image(a, MediaQuery.sizeOf(context).width, fit: BoxFit.contain),
+                                    // Turned, it fades out rather than flying back upright.
+                                    child: HeroMode(
+                                      enabled: (_turnsOf[i] ?? 0) == 0,
+                                      child: Hero(
+                                        tag: _heroTag(a),
+                                        child: RotatedBox(
+                                          quarterTurns: _turnsOf[i] ?? 0,
+                                          child: _image(
+                                            a,
+                                            MediaQuery.sizeOf(context).width,
+                                            fit: BoxFit.contain,
+                                            retry: true,
+                                          ),
+                                        ),
+                                      ),
                                     ),
                                   ),
                                 ),
@@ -1725,7 +2033,20 @@ class _ImageViewerState extends State<ImageViewer> with TickerProviderStateMixin
                                 ],
                               ),
                             ),
-                            const SizedBox(width: 48),
+                            Semantics(
+                              button: true,
+                              label: 'Rotate',
+                              excludeSemantics: true,
+                              onTap: _rotate,
+                              child: GestureDetector(
+                                onTap: _rotate,
+                                child: const SizedBox.square(
+                                  dimension: 40,
+                                  child: Icon(FLucideIcons.rotateCw, color: _ink),
+                                ),
+                              ),
+                            ),
+                            const SizedBox(width: 8),
                           ],
                         ),
                       ),
@@ -1749,7 +2070,8 @@ class _ImageViewerState extends State<ImageViewer> with TickerProviderStateMixin
                             action(FLucideIcons.download, 'Save', () => _save(current)),
                             action(FLucideIcons.share2, 'Share', () => _share(current)),
                             action(FLucideIcons.link, 'Copy link', () async {
-                              await Clipboard.setData(ClipboardData(text: current.url));
+                              final link = linkSource(context, current);
+                              await Clipboard.setData(ClipboardData(text: await link()));
                               _toast('Link copied');
                             }),
                           ],

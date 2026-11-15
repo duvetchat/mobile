@@ -5,10 +5,14 @@ import 'package:duvet/data/emoji_catalog.dart';
 import 'package:duvet/data/gifs.dart';
 import 'package:duvet/data/links.dart';
 import 'package:duvet/data/models.dart';
+import 'package:duvet/data/recent_emoji.dart';
+import 'package:duvet/data/scope.dart';
 import 'package:duvet/data/appearance.dart';
 import 'package:duvet/main.dart';
 import 'package:duvet/theme.dart';
 import 'package:duvet/widgets/apng.dart';
+import 'package:duvet/widgets/attachment_link.dart';
+import 'package:duvet/widgets/link_embeds.dart';
 import 'package:duvet/widgets/media.dart';
 import 'package:duvet/widgets/media_actions.dart';
 import 'package:duvet/widgets/message_content.dart';
@@ -23,6 +27,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:forui/forui.dart';
 import 'package:image/image.dart' as img;
 import 'package:image_picker/image_picker.dart';
+import 'package:video_player/video_player.dart';
 
 import 'support/fake_repository.dart';
 
@@ -39,8 +44,15 @@ class _Playback implements AudioPlayback {
   ValueListenable<PlaybackState> get state => _state;
 
   @override
-  Future<void> play(String id, String url, {required String title, String? artist, String? artUrl}) async {
-    played.add((id, url));
+  Future<void> play(
+    String id,
+    String url, {
+    required String title,
+    String? artist,
+    String? artUrl,
+    LinkSource? link,
+  }) async {
+    played.add((id, link == null ? url : await link()));
     _state.value = PlaybackState(
       id: id,
       title: title,
@@ -63,6 +75,13 @@ class _Playback implements AudioPlayback {
 
   @override
   Future<void> seek(String id, Duration position) async {}
+
+  final _speeds = ValueNotifier(const <String, double>{});
+  @override
+  ValueListenable<Map<String, double>> get speeds => _speeds;
+
+  @override
+  Future<void> setSpeed(String id, double speed) async => _speeds.value = {..._speeds.value, id: speed};
 
   @override
   Future<void> resume() async {
@@ -114,6 +133,14 @@ class _Actions extends MediaActions {
 
   @override
   Future<void> share(String url, String name, String contentType) async => calls.add('share $name');
+}
+
+/// A player that never finishes loading: its slot stays taken.
+class _PendingVideo extends VideoPlayerController {
+  _PendingVideo(super.url) : super.networkUrl();
+
+  @override
+  Future<void> initialize() => Completer<void>().future;
 }
 
 class _Gifs implements GifSource {
@@ -297,7 +324,8 @@ void main() {
     final build = VideoPage.controllerFor;
     VideoPage.controllerFor = (url) {
       made++;
-      return build(url);
+      // One that failed would free its slot for the next.
+      return _PendingVideo(url);
     };
     addTearDown(() => VideoPage.controllerFor = build);
     Widget tiles(int count) => MaterialApp(
@@ -351,6 +379,40 @@ void main() {
       expect(parseInviteCode('https://duvet.chat/invite'), isNull);
       expect(parseDeepLink('duvet://invite/x'), isA<OpenInvite>());
       expect(parseDeepLink('https://example.com'), isNull);
+    });
+
+    // #234: the closing markers of emphasis around a link were the card's, which asked for invite `abc**`.
+    test('a card names the link the text shows, emphasis around it or not', () {
+      const invite = 'https://duvet.chat/invite/abc';
+      for (final text in [
+        '**$invite**',
+        '*$invite*',
+        '__${invite}__',
+        '_${invite}_',
+        '~~$invite~~',
+        '***$invite***',
+        '**join us: $invite**',
+        '**$invite**.',
+        '**$invite**!',
+        '(**$invite**)',
+        '**$invite.**',
+        '[join us]($invite)',
+        '[$invite](https://example.org)',
+        '`$invite`',
+        '**_${invite}_**',
+        '~~**$invite**~~',
+      ]) {
+        expect(duvetLinksIn(text), [invite], reason: text);
+      }
+      const bot = 'https://duvet.chat/invite?bot=$_room';
+      expect(duvetLinksIn('_${bot}_'), [bot]);
+      const message = 'https://duvet.chat/channels/$_space/$_room/$_linked';
+      expect(duvetLinksIn('~~$message~~ and **$bot**'), [message, bot]);
+      // A URL's own * and _, which nothing before it opens, stay.
+      expect(duvetLinksIn('**https://duvet.chat/invite/a_b**'), ['https://duvet.chat/invite/a_b']);
+      expect(duvetLinksIn('see https://duvet.chat/invite/a*b*'), ['https://duvet.chat/invite/a*b*']);
+      expect(duvetLinksIn('see https://duvet.chat/invite/x**'), ['https://duvet.chat/invite/x**']);
+      expect(duvetLinksIn('snake_https://duvet.chat/invite/y_'), ['https://duvet.chat/invite/y_']);
     });
 
     test('KLIPY results, upload shares, fallback waveforms', () {
@@ -414,6 +476,113 @@ void main() {
     expect(playback.played.single, ('att-v', 'https://x/v.webm'));
     expect(find.bySemanticsLabel('Pause'), findsOneWidget);
     semantics.dispose();
+  });
+
+  testWidgets('a voice note\'s speed steps as the desktop\'s, and comes back round', (tester) async {
+    final repository = await openMaya(tester);
+    repository.push(
+      'c-maya',
+      MessageCreated(
+        withFiles('v', const [
+          MessageAttachment(
+            id: 'att-v',
+            filename: 'voice-note.webm',
+            contentType: 'audio/webm',
+            url: 'https://x/v.webm',
+          ),
+        ], voice: true),
+      ),
+    );
+    await tester.pumpAndSettle();
+    final seen = <String>[];
+    for (var i = 0; i < AudioPlayback.speedSteps.length; i++) {
+      await tapLabel(tester, RegExp(r'^Speed, '));
+      seen.add(playback.speeds.value['att-v']!.toString());
+    }
+    expect(seen, ['1.25', '1.5', '1.75', '2.0', '0.5', '0.75', '1.0']);
+    expect(find.bySemanticsLabel('Speed, 1×'), findsOneWidget);
+    semantics.dispose();
+  });
+
+  // A file's link expires a day after the API signed it (#182).
+  group('file links', () {
+    String signed(String id, Duration left) =>
+        'https://x/attachments/$id?sig=old&exp=${DateTime.now().add(left).millisecondsSinceEpoch ~/ 1000}';
+    const fresh = 'https://x/attachments/p-1?sig=new&exp=4102444800';
+    MessageAttachment picture(String url) =>
+        MessageAttachment(id: 'p-1', filename: 'cat.png', contentType: 'image/png', url: url, width: 100, height: 100);
+    List<String> loaded(WidgetTester tester) => [
+      for (final image in tester.widgetList<Image>(find.byType(Image)))
+        if (switch (image.image) {
+              ResizeImage(:final imageProvider) => imageProvider,
+              final provider => provider,
+            }
+            case NetworkImage(:final url))
+          url,
+    ];
+
+    testWidgets('a picture whose link is about to expire loads from a new one; one with time left as it is', (
+      tester,
+    ) async {
+      final repository = await openMaya(tester);
+      repository.renewedLinks['p-1'] = fresh;
+      final soon = signed('p-1', const Duration(minutes: 5));
+      repository.push('c-maya', MessageCreated(withFiles('m-p', [picture(soon)])));
+      await tester.pumpAndSettle();
+      expect(repository.linksAsked, [(id: 'p-1', refused: false)]);
+      expect(loaded(tester), contains(fresh));
+      expect(loaded(tester), isNot(contains(soon)));
+
+      final later = signed('p-2', const Duration(hours: 5));
+      repository.push('c-maya', MessageCreated(withFiles('m-q', [picture(later)])));
+      await tester.pumpAndSettle();
+      expect(repository.linksAsked, hasLength(1));
+      expect(loaded(tester), contains(later));
+      semantics.dispose();
+    });
+
+    testWidgets('a link that fails to load is asked for anew, once', (tester) async {
+      final repository = FakeRepository()..renewedLinks['p-1'] = fresh;
+      final file = picture(signed('p-1', const Duration(hours: 5)));
+      final urls = <String>[];
+      late VoidCallback refuse;
+      await tester.pumpWidget(
+        RepositoryScope(
+          repository: repository,
+          child: AttachmentLinkBuilder(
+            attachment: file,
+            builder: (_, url, refused) {
+              urls.add(url);
+              refuse = refused;
+              return const SizedBox();
+            },
+          ),
+        ),
+      );
+      expect(urls.last, file.url);
+      refuse();
+      refuse();
+      await tester.pumpAndSettle();
+      expect(urls.last, fresh);
+      expect(repository.linksAsked, [(id: 'p-1', refused: true)]);
+    });
+
+    testWidgets('a voice note whose link is about to expire plays from a new one', (tester) async {
+      final repository = await openMaya(tester);
+      const renewed = 'https://x/attachments/att-v?sig=new&exp=4102444800';
+      repository.renewedLinks['att-v'] = renewed;
+      final note = MessageAttachment(
+        id: 'att-v',
+        filename: 'voice-note.webm',
+        contentType: 'audio/webm',
+        url: signed('att-v', const Duration(minutes: 5)),
+      );
+      repository.push('c-maya', MessageCreated(withFiles('v', [note], voice: true)));
+      await tester.pumpAndSettle();
+      await tapLabel(tester, 'Play voice note');
+      expect(playback.played.single, ('att-v', renewed));
+      semantics.dispose();
+    });
   });
 
   testWidgets('the playback bar over the tabs: what plays, pause, play, and stop and close', (tester) async {
@@ -592,6 +761,30 @@ void main() {
     await tester.tap(find.text('Celebrate'));
     await tester.pumpAndSettle();
     expect(gifs.searched, ['cat', 'Celebrate']);
+    semantics.dispose();
+  });
+
+  testWidgets('Recently used: a long press takes an emoji out, in the store too', (tester) async {
+    final store = MemoryRecentEmojiStore();
+    RecentEmoji.instance = RecentEmoji(store);
+    addTearDown(() => RecentEmoji.instance = RecentEmoji(MemoryRecentEmojiStore()));
+    EmojiCatalog.used('😀');
+    // A space's emoji: kept, and not shown in a DM.
+    EmojiCatalog.used(FakeRepository.party.code);
+    await openMaya(tester);
+    await tapLabel(tester, 'Emoji and stickers');
+    expect(find.text('RECENTLY USED'), findsOneWidget);
+    expect(find.bySemanticsLabel('party'), findsNothing);
+
+    // The first is the recent one; the second sits in its category.
+    await tester.longPress(find.bySemanticsLabel('grinning').first);
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Remove from recently used'));
+    await tester.pumpAndSettle();
+    expect(find.text('RECENTLY USED'), findsNothing);
+    expect(RecentEmoji.instance.ranked, [FakeRepository.party.code]);
+    expect(store.uses, isNot(contains('😀')));
+    expect(store.uses, contains(FakeRepository.party.code));
     semantics.dispose();
   });
 
@@ -900,18 +1093,76 @@ void main() {
     repository.holdSends!.complete();
     await tester.pumpAndSettle();
 
+    // Every byte up: the API may post it whatever the app does, so no Cancel
+    // until it answers (#180).
+    repository
+      ..cancelled = false
+      ..holdSends = Completer();
+    await tapLabel(tester, 'Send');
+    repository.lastUpload!(0.99);
+    await tester.pump();
+    expect(find.bySemanticsLabel('Cancel upload'), findsOneWidget);
+    repository.lastUpload!(1);
+    await tester.pump();
+    expect(find.text('Uploading 2 of 2 · 100%'), findsOneWidget);
+    expect(find.bySemanticsLabel('Cancel upload'), findsNothing);
+    repository.holdSends!.complete();
+    await tester.pumpAndSettle();
+    expect(find.textContaining('Uploading'), findsNothing);
+    expect(find.bySemanticsLabel('Retry'), findsNothing);
+    expect(repository.cancelled, isFalse);
+
     // Over the limit: kept back, with the reason.
     ChatView.debugPickMedia = (_) async => const [
       OutgoingFile(path: '/tmp/big.mov', name: 'big.mov', contentType: 'video/quicktime', sizeBytes: 30 * 1024 * 1024),
     ];
-    await tapLabel(tester, 'Remove a.jpg');
-    await tapLabel(tester, 'Remove b.jpg');
     await tapLabel(tester, 'Add photos, a sticker or a mention');
     await tapLabel(tester, 'Photos & GIFs');
     final sent = repository.sent.length;
     await tapLabel(tester, 'Send');
     expect(repository.sent.length, sent);
     expect(find.text('big.mov is over your 25 MB upload limit'), findsOneWidget);
+    semantics.dispose();
+  });
+
+  testWidgets('a cancelled upload gives back its text and reply while the composer has neither', (tester) async {
+    final repository = await openMaya(tester);
+    ChatView.debugPickMedia = (_) async => const [
+      OutgoingFile(path: '/tmp/a.jpg', name: 'a.jpg', contentType: 'image/jpeg', sizeBytes: 1000),
+    ];
+    repository.holdSends = Completer();
+    String typed() => tester.widget<EditableText>(find.byType(EditableText)).controller.text;
+    const strip = 'Replying to Maya — Hey! Did you see the new tab bar?';
+    Future<void> sendWithReply() async {
+      await tester.drag(find.text('Hey! Did you see the new tab bar?').first, const Offset(-120, 0));
+      await tester.pumpAndSettle();
+      await tester.enterText(find.byType(EditableText), 'Here it is');
+      await tapLabel(tester, 'Add photos, a sticker or a mention');
+      await tapLabel(tester, 'Photos & GIFs');
+      await tapLabel(tester, 'Send');
+      expect((typed(), find.text(strip).evaluate().length), ('', 0));
+    }
+
+    // Nothing typed since: the text, the reply and the file come back.
+    await sendWithReply();
+    await tapLabel(tester, 'Cancel upload');
+    expect(typed(), 'Here it is');
+    expect(find.text(strip), findsOneWidget);
+    expect(find.bySemanticsLabel('Photo, a.jpg'), findsOneWidget);
+
+    // Something typed since: it stays, and only the file comes back.
+    await tapLabel(tester, 'Cancel reply');
+    await tester.enterText(find.byType(EditableText), '');
+    await tapLabel(tester, 'Remove a.jpg');
+    await sendWithReply();
+    await tester.enterText(find.byType(EditableText), 'wait');
+    await tester.pump();
+    await tapLabel(tester, 'Cancel upload');
+    expect(typed(), 'wait');
+    expect(find.text(strip), findsNothing);
+    expect(find.bySemanticsLabel('Photo, a.jpg'), findsOneWidget);
+    repository.holdSends!.complete();
+    await tester.pumpAndSettle();
     semantics.dispose();
   });
 

@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:forui/forui.dart';
 
+import '../data/images.dart';
 import '../data/models.dart';
 import '../theme.dart';
 import 'avatar.dart';
@@ -26,6 +27,9 @@ class ListRow extends StatelessWidget {
 
   /// After the title, in `ink-secondary`, e.g. "· Space name".
   final String? titleSuffix;
+
+  /// Right after the title, a small glyph kept when a long title is cut: [OwnerCrown], the pin.
+  final Widget? titleIcon;
   final String? snippet;
 
   /// Right-aligned on the first line, e.g. the time.
@@ -56,6 +60,7 @@ class ListRow extends StatelessWidget {
     this.leading,
     this.hash = false,
     this.titleSuffix,
+    this.titleIcon,
     this.snippet,
     this.trailing,
     this.unread = false,
@@ -85,6 +90,26 @@ class ListRow extends StatelessWidget {
       ?snippet,
       ?trailing,
     ].join(', ');
+    final titleText = Text.rich(
+      TextSpan(
+        children: [
+          if (hash)
+            TextSpan(
+              text: '# ',
+              style: TextStyle(color: secondary),
+            ),
+          TextSpan(text: title),
+          if (titleSuffix != null)
+            TextSpan(
+              text: ' $titleSuffix',
+              style: TextStyle(color: secondary, fontWeight: FontWeight.w400),
+            ),
+        ],
+      ),
+      maxLines: 1,
+      overflow: TextOverflow.ellipsis,
+      style: (unread ? DuvetType.rowTitleUnread : DuvetType.rowTitle).copyWith(color: name),
+    );
     return Semantics(
       container: ownNode,
       button: onTap != null,
@@ -125,26 +150,15 @@ class ListRow extends StatelessWidget {
                         textBaseline: TextBaseline.alphabetic,
                         children: [
                           Expanded(
-                            child: Text.rich(
-                              TextSpan(
-                                children: [
-                                  if (hash)
-                                    TextSpan(
-                                      text: '# ',
-                                      style: TextStyle(color: secondary),
-                                    ),
-                                  TextSpan(text: title),
-                                  if (titleSuffix != null)
-                                    TextSpan(
-                                      text: ' $titleSuffix',
-                                      style: TextStyle(color: secondary, fontWeight: FontWeight.w400),
-                                    ),
-                                ],
-                              ),
-                              maxLines: 1,
-                              overflow: TextOverflow.ellipsis,
-                              style: (unread ? DuvetType.rowTitleUnread : DuvetType.rowTitle).copyWith(color: name),
-                            ),
+                            child: titleIcon == null
+                                ? titleText
+                                : Row(
+                                    children: [
+                                      Flexible(child: titleText),
+                                      const SizedBox(width: 4),
+                                      titleIcon!,
+                                    ],
+                                  ),
                           ),
                           if (trailing != null) ...[
                             const SizedBox(width: 8),
@@ -191,15 +205,17 @@ class _MentionCount extends StatelessWidget {
     const radius = BorderRadius.all(Radius.circular(DuvetTokens.radiusChip));
     return Container(
       height: 20,
-      padding: const EdgeInsets.symmetric(horizontal: 6),
-      alignment: Alignment.center,
       decoration: BoxDecoration(color: colors.secondary, borderRadius: radius),
       child: InsetShadow(
         shadows: context.duvet.shadowWell,
         borderRadius: radius,
-        child: Text(
-          '@${count > 99 ? '99+' : count}',
-          style: DuvetType.overline.copyWith(color: colors.foreground, fontWeight: FontWeight.w700, letterSpacing: 0),
+        padding: const EdgeInsets.symmetric(horizontal: 6),
+        child: Center(
+          widthFactor: 1,
+          child: Text(
+            '@${count > 99 ? '99+' : count}',
+            style: DuvetType.overline.copyWith(color: colors.foreground, fontWeight: FontWeight.w700, letterSpacing: 0),
+          ),
         ),
       ),
     );
@@ -397,11 +413,10 @@ class SpaceBanner extends StatelessWidget {
       return ExcludeSemantics(
         child: ClipRRect(
           borderRadius: BorderRadius.circular(DuvetTokens.radiusCard),
-          child: Image.network(
-            url,
+          child: Image(
+            image: cachedImage(url, cacheWidth: (width * MediaQuery.devicePixelRatioOf(context)).round()),
             width: width,
             height: height,
-            cacheWidth: (width * MediaQuery.devicePixelRatioOf(context)).round(),
             fit: BoxFit.cover,
             frameBuilder: (context, child, frame, sync) => frame == null && !sync
                 ? SizedBox(
@@ -451,11 +466,10 @@ class SpaceIcon extends StatelessWidget {
     return ExcludeSemantics(
       child: ClipRRect(
         borderRadius: radius,
-        child: Image.network(
-          url,
+        child: Image(
+          image: cachedImage(url, cacheWidth: (size * MediaQuery.devicePixelRatioOf(context)).round()),
           width: size,
           height: size,
-          cacheWidth: (size * MediaQuery.devicePixelRatioOf(context)).round(),
           fit: BoxFit.cover,
           frameBuilder: (context, child, frame, sync) => frame == null && !sync ? monogram : child,
           errorBuilder: (context, error, stackTrace) => monogram,
@@ -530,7 +544,8 @@ class SpaceWideCard extends StatelessWidget {
   final Space space;
   final bool unread;
   final VoidCallback onTap;
-  const SpaceWideCard({required this.space, required this.onTap, this.unread = false, super.key});
+  final VoidCallback? onLongPress;
+  const SpaceWideCard({required this.space, required this.onTap, this.unread = false, this.onLongPress, super.key});
 
   @override
   Widget build(BuildContext context) {
@@ -542,8 +557,10 @@ class SpaceWideCard extends StatelessWidget {
       label: [space.name, if (unread) 'unread', ?online].join(', '),
       excludeSemantics: true,
       onTap: onTap,
+      onLongPress: onLongPress,
       child: Pressable(
         onTap: onTap,
+        onLongPress: onLongPress,
         scale: 0.98,
         builder: (context, pressed) => AnimatedContainer(
           duration: pressed ? DuvetTokens.pressIn : DuvetTokens.pressOut,
@@ -647,7 +664,6 @@ class DuvetButton extends StatelessWidget {
           builder: (context, pressed) => AnimatedContainer(
             duration: pressed ? DuvetTokens.pressIn : DuvetTokens.pressOut,
             height: 48,
-            padding: const EdgeInsets.symmetric(horizontal: 24),
             decoration: BoxDecoration(
               color: switch (variant) {
                 ButtonVariant.primary => Duvet.accent,
@@ -660,6 +676,7 @@ class DuvetButton extends StatelessWidget {
             child: InsetShadow(
               shadows: pressed ? tokens.shadowPressed : const [],
               borderRadius: radius,
+              padding: const EdgeInsets.symmetric(horizontal: 24),
               child: Row(
                 mainAxisSize: expand ? MainAxisSize.max : MainAxisSize.min,
                 mainAxisAlignment: MainAxisAlignment.center,
@@ -1109,11 +1126,11 @@ class Segmented<T> extends StatelessWidget {
       child: Container(
         // 44 inside the recess: each choice a full tap target.
         height: 48,
-        padding: const EdgeInsets.all(2),
         decoration: const BoxDecoration(borderRadius: radius).copyWith(color: colors.secondary),
         child: InsetShadow(
           shadows: tokens.shadowWell,
           borderRadius: radius,
+          padding: const EdgeInsets.all(2),
           child: Row(
             children: [
               for (final MapEntry(:key, value: text) in options.entries)
@@ -1166,4 +1183,18 @@ class Segmented<T> extends StatelessWidget {
       ),
     );
   }
+}
+
+/// A Space owner's crown, after their name: gold, dimmed while they're offline.
+class OwnerCrown extends StatelessWidget {
+  final bool offline;
+  const OwnerCrown({this.offline = false, super.key});
+
+  @override
+  Widget build(BuildContext context) => Icon(
+    FLucideIcons.crown,
+    size: 14,
+    color: context.duvet.crown.withValues(alpha: offline ? 0.6 : 1),
+    semanticLabel: 'Owner',
+  );
 }

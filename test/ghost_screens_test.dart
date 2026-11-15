@@ -39,6 +39,9 @@ void main() {
     await tap(tester, 'Create account');
     expect(find.text('Create your account'), findsOneWidget);
     // Sign up's "Sign in" swaps in the sign-in form; Back skips past both.
+    // Below the form, which runs past the screen: built only once scrolled to.
+    await tester.scrollUntilVisible(find.text('Sign in'), 200, scrollable: find.byType(Scrollable).first);
+    await tester.pumpAndSettle();
     await tap(tester, 'Sign in');
     expect(find.text('Sign in to Duvet'), findsOneWidget);
     await tap(tester, 'Create an account');

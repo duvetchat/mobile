@@ -6,6 +6,7 @@ import 'package:flutter/services.dart';
 import 'package:forui/forui.dart';
 
 import 'account.dart' show CropPage, maxDisplayNameLength, pickProfilePicture;
+import 'app_commands.dart';
 import 'data/links.dart' show botInviteLink;
 import 'data/models.dart';
 import 'data/scope.dart';
@@ -16,6 +17,8 @@ import 'widgets/chrome.dart';
 import 'widgets/glass.dart';
 import 'widgets/picture_edit.dart';
 import 'widgets/rows.dart';
+import 'widgets/sheets.dart' show LoadingSkeleton, placeholderNames, placeholderRows;
+import 'widgets/skeleton.dart' show Bone;
 
 // The developer portal, as the desktop's Settings → Developer: teams, their
 // members and invites, their applications and the applications' bots. Only a
@@ -137,9 +140,16 @@ class _DeveloperPageState extends State<DeveloperPage> {
               if (snapshot.hasError)
                 const ListNote('Couldn’t load your teams')
               else if (teams == null)
-                const Padding(
-                  padding: EdgeInsets.all(24),
-                  child: Center(child: FCircularProgress()),
+                LoadingSkeleton(
+                  label: 'Loading teams',
+                  children: [
+                    AdminPanel(
+                      children: [
+                        for (final name in placeholderNames.take(2))
+                          GlassRow(icon: FLucideIcons.users, label: name, onPressed: () {}),
+                      ],
+                    ),
+                  ],
                 )
               else if (teams.isEmpty)
                 const ListNote('No teams yet. Make one to build applications and bots.')
@@ -290,9 +300,12 @@ class _TeamPageState extends State<TeamPage> {
             if (snapshot.hasError)
               const ListNote('Couldn’t load the team')
             else if (data == null)
-              const Padding(
-                padding: EdgeInsets.all(24),
-                child: Center(child: FCircularProgress()),
+              LoadingSkeleton(
+                label: 'Loading the team',
+                children: [
+                  const Overline('Members'),
+                  AdminPanel(children: placeholderRows(avatar: 40).take(2).toList()),
+                ],
               )
             else ...[
               const Overline('Members'),
@@ -614,6 +627,18 @@ class _ApplicationPageState extends State<ApplicationPage> {
             ),
           ],
         ),
+        const Overline('Commands'),
+        AdminPanel(
+          children: [
+            GlassRow(
+              icon: FLucideIcons.squareSlash,
+              label: 'Commands',
+              detail: 'What people type / to use',
+              onPressed: () =>
+                  Navigator.of(context).push(MaterialPageRoute<void>(builder: (_) => CommandsPage(app: _app))),
+            ),
+          ],
+        ),
         const Overline('Bot'),
         if (_bot == null)
           AdminPanel(
@@ -626,9 +651,16 @@ class _ApplicationPageState extends State<ApplicationPage> {
               final bot = snapshot.data;
               if (snapshot.hasError) return const ListNote('Couldn’t load the bot');
               if (bot == null) {
-                return const Padding(
-                  padding: EdgeInsets.all(24),
-                  child: Center(child: FCircularProgress()),
+                return LoadingSkeleton(
+                  label: 'Loading the bot',
+                  children: [
+                    AdminPanel(
+                      children: [
+                        for (final name in placeholderNames)
+                          GlassRow(leading: const Bone.circle(size: 48), label: name, onPressed: () {}),
+                      ],
+                    ),
+                  ],
                 );
               }
               final rows = [

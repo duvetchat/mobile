@@ -8,6 +8,9 @@ const duvetDomain = 'https://duvet.chat';
 
 final _uuid = RegExp(r'^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$', caseSensitive: false);
 
+/// Whether [id] is written as Duvet's IDs are: a UUID.
+bool isDuvetId(String id) => _uuid.hasMatch(id);
+
 /// The message a link names: in a room of a space, or in a conversation.
 class MessageLink {
   final String? spaceId;

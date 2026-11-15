@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:forui/forui.dart';
 
 import '../data/links.dart';
+import '../data/markdown.dart';
 import '../data/models.dart';
 import '../data/repository.dart';
 import '../data/scope.dart';
@@ -10,18 +11,61 @@ import 'avatar.dart';
 import 'depth.dart';
 import 'message_content.dart';
 import 'rows.dart';
+import 'skeleton.dart';
 
 /// Duvet's own links in a message's text, each once: message links and
-/// invites, which show as cards under it.
+/// invites, which show as cards under it. Each is the link the text shows
+/// ([parseMarkdown]), so `**https://duvet.chat/invite/abc**` ends before the
+/// `**` that close its bold, while a URL's own `*` or `_` stays. A link in
+/// code, which the text doesn't link, goes up to a space or one of `<>()[]"'`.
 List<String> duvetLinksIn(String content) {
-  final seen = <String>{};
-  return [
-    for (final m in RegExp(r'''(?:https?|duvet)://[^\s<>()\[\]"']+''').allMatches(content))
-      if ((parseDeepLink(m.group(0)!.replaceFirst(RegExp(r'[.,;:!?]+$'), '')) != null ||
-              parseBotInvite(m.group(0)!.replaceFirst(RegExp(r'[.,;:!?]+$'), '')) != null) &&
-          seen.add(m.group(0)!.replaceFirst(RegExp(r'[.,;:!?]+$'), '')))
-        m.group(0)!.replaceFirst(RegExp(r'[.,;:!?]+$'), ''),
-  ].take(3).toList();
+  if (!content.contains('://')) return const [];
+  final links = <String>{};
+  void add(String url) {
+    if (parseDeepLink(url) != null || parseBotInvite(url) != null) links.add(url);
+  }
+
+  void inCode(String code) {
+    for (final m in RegExp(r'''(?:https?|duvet)://[^\s<>()\[\]"']+''').allMatches(code)) {
+      add(m[0]!.replaceFirst(RegExp(r'[.,;:!?]+$'), ''));
+    }
+  }
+
+  void walk(List<MdInline> inlines) {
+    for (final inline in inlines) {
+      switch (inline) {
+        case MdLink(:final url, :final children):
+          walk(children);
+          add(url);
+        case MdStyled(:final children) || MdSpoiler(:final children):
+          walk(children);
+        case MdCode(:final code):
+          inCode(code);
+        case MdText():
+          break;
+      }
+    }
+  }
+
+  for (final block in parseMarkdown(content)) {
+    switch (block) {
+      case MdParagraph(:final inlines) ||
+          MdHeading(:final inlines) ||
+          MdSubtext(:final inlines) ||
+          MdQuote(:final inlines):
+        walk(inlines);
+      case MdList(:final items):
+        items.forEach(walk);
+      case MdTable(:final header, :final rows):
+        header.forEach(walk);
+        for (final row in rows) {
+          row.forEach(walk);
+        }
+      case MdCodeBlock(:final code):
+        inCode(code);
+    }
+  }
+  return links.take(3).toList();
 }
 
 /// [content] without the links its previews stand in for: one whose embed is
@@ -31,7 +75,7 @@ List<String> duvetLinksIn(String content) {
 String withoutPreviewedLinks(String content, List<MessageEmbed> embeds, {bool cards = true}) {
   final bare = [
     for (final e in embeds)
-      if (e.title == null && e.description == null && (e.imageUrl != null || e.videoUrl != null)) e,
+      if (e.isWordless && (e.imageUrl != null || e.videoUrl != null)) e,
   ];
   final invites = {
     if (cards)
@@ -144,11 +188,11 @@ class _MessageLinkCardState extends State<MessageLinkCard> {
             onTap: m == null ? null : () => widget.onOpen(link),
             child: Container(
               width: 280,
-              padding: const EdgeInsets.all(12),
               decoration: BoxDecoration(color: colors.secondary, borderRadius: radius),
               child: InsetShadow(
                 shadows: tokens.shadowWell,
                 borderRadius: radius,
+                padding: const EdgeInsets.all(12),
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
@@ -279,51 +323,9 @@ class _InviteCardState extends State<InviteCard> {
       future: _invite,
       builder: (context, snapshot) {
         final invite = snapshot.data;
-        if (snapshot.hasError) {
-          return Semantics(
-            container: true,
-            label: 'Invite expired. Ask for a new link',
-            excludeSemantics: true,
-            child: Container(
-              width: 240,
-              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-              decoration: BoxDecoration(
-                color: colors.card,
-                borderRadius: BorderRadius.circular(DuvetTokens.radiusButton),
-                boxShadow: tokens.shadowRest,
-              ),
-              child: Row(
-                children: [
-                  Opacity(
-                    opacity: 0.6,
-                    child: SpaceIcon(
-                      space: const Space(id: '', name: '?'),
-                      size: 40,
-                    ),
-                  ),
-                  const SizedBox(width: 12),
-                  Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(
-                        'Invite expired',
-                        style: DuvetType.rowTitle.copyWith(fontSize: 15, color: colors.foreground),
-                      ),
-                      Text('Ask for a new link', style: DuvetType.caption.copyWith(color: colors.mutedForeground)),
-                    ],
-                  ),
-                ],
-              ),
-            ),
-          );
-        }
-        if (invite == null) {
-          return const SizedBox(
-            width: 280,
-            height: 56,
-            child: Center(child: FCircularProgress(size: .sm)),
-          );
-        }
+        // One that doesn't load shows nothing, as on the desktop.
+        if (snapshot.hasError) return const SizedBox.shrink();
+        if (invite == null) return const InviteCardSkeleton();
         final joined = invite.joined || _joined != null;
         final spaceId = _joined ?? invite.spaceId;
         return Semantics(
@@ -393,6 +395,61 @@ class _InviteCardState extends State<InviteCard> {
           ),
         );
       },
+    );
+  }
+}
+
+/// An invite card while it loads, as the desktop's: pulsing blocks where its
+/// header, icon, name and button go, at the card's own size, so nothing moves
+/// when it lands.
+class InviteCardSkeleton extends StatelessWidget {
+  /// A bot's invite: its rounded square, and its name alone.
+  final bool bot;
+  const InviteCardSkeleton({this.bot = false, super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    const line = BorderRadius.all(Radius.circular(4));
+    return Container(
+      width: 280,
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: context.theme.colors.card,
+        borderRadius: BorderRadius.circular(DuvetTokens.radiusCard),
+        boxShadow: context.duvet.shadowRaised,
+      ),
+      child: DuvetSkeleton(
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            // The header's line is 16.8 high (12 at 1.4).
+            Padding(
+              padding: const EdgeInsets.symmetric(vertical: 2.4),
+              child: Bone(width: bot ? 144 : 176, height: 12, borderRadius: line),
+            ),
+            const SizedBox(height: 12),
+            Row(
+              children: [
+                Bone.square(size: 48, borderRadius: BorderRadius.circular(bot ? 48 * 0.3 : DuvetTokens.radiusField)),
+                const SizedBox(width: 12),
+                Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Bone(width: bot ? 96 : 112, height: 16, borderRadius: line),
+                    if (!bot) ...[const SizedBox(height: 6), const Bone(width: 80, height: 12, borderRadius: line)],
+                  ],
+                ),
+              ],
+            ),
+            const SizedBox(height: 16),
+            const Bone(
+              width: double.infinity,
+              height: 48,
+              borderRadius: BorderRadius.all(Radius.circular(DuvetTokens.radiusButton)),
+            ),
+          ],
+        ),
+      ),
     );
   }
 }

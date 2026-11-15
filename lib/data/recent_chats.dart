@@ -4,6 +4,7 @@ import 'dart:convert';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 
+import 'call_notices.dart' show callDuration;
 import 'models.dart';
 
 /// A chat in the Chats tab: one you opened, or a DM with something new. The
@@ -81,6 +82,12 @@ class RecentChat {
 
 /// A message as a one-line preview: its text, or what it carries.
 String previewOf(ChatMessage m, String Function(String content) readable) {
+  if (m.call case final call?) {
+    // Whoever reads it: the list names the caller, or "You", before it.
+    return call.participants.any((id) => id != m.authorId)
+        ? 'started a call that lasted ${callDuration(call.duration)}'
+        : 'started a call. No one answered.';
+  }
   if (m.isNotice) return 'pinned a message';
   if (m.stickerUrl != null) return 'Sticker';
   if (m.content.isNotEmpty) return readable(m.content).replaceAll('\n', ' ');
@@ -91,7 +98,7 @@ String previewOf(ChatMessage m, String Function(String content) readable) {
         : (m.attachments.length == 1 ? 'file' : 'files');
     return m.attachments.length == 1 ? 'Sent a $noun' : 'Sent ${m.attachments.length} $noun';
   }
-  if (m.embeds.isNotEmpty) return m.embeds.first.title ?? 'Sent a link';
+  if (m.embeds.isNotEmpty) return m.embeds.first.title ?? m.embeds.first.authorName ?? 'Sent a link';
   return 'Sent a message';
 }
 

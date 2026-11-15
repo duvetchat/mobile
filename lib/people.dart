@@ -1,11 +1,21 @@
+import 'dart:async';
+import 'dart:math' as math;
+
+import 'package:duvet_client/duvet.dart' as duvet;
+
 import 'package:flutter/foundation.dart' show ValueListenable;
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
+import 'package:flutter_svg/flutter_svg.dart';
 import 'package:forui/forui.dart';
 
 import 'chat_view.dart';
+import 'data/images.dart';
+import 'data/links.dart' show isDuvetId;
 import 'data/models.dart';
 import 'data/scope.dart';
 import 'members_sheet.dart' show MemberAction, PresenceAvatar;
+import 'space_admin.dart' show RoleSwatch, adminTry, confirmDestructive, managesRoleAt, mayRemove;
 import 'theme.dart';
 import 'widgets/avatar.dart';
 import 'widgets/chrome.dart';
@@ -14,6 +24,7 @@ import 'widgets/glass.dart';
 import 'widgets/message_content.dart';
 import 'widgets/role_name.dart';
 import 'widgets/rows.dart';
+import 'widgets/sheets.dart' show LoadingSkeleton, placeholderRows;
 
 /// What a presence reads as; nothing when it isn't known.
 String presenceText(Presence? p) => switch (p) {
@@ -22,6 +33,163 @@ String presenceText(Presence? p) => switch (p) {
   Presence.offline => 'Offline',
   null => '',
 };
+
+/// Asks, then takes [bot] out of the Space; true once it's gone. Says the
+/// API's reason when it refuses, as adding a bot does.
+Future<bool> removeBotAsking(
+  BuildContext context, {
+  required String spaceId,
+  required Member bot,
+  required String spaceName,
+}) async {
+  final name = bot.displayName;
+  final sure = await confirmDestructive(
+    context,
+    title: 'Remove $name from $spaceName?',
+    body: 'It leaves the Space and loses its roles. It can be added again later.',
+    action: 'Remove from Space',
+  );
+  if (!sure || !context.mounted) return false;
+  try {
+    await context.repository.removeBot(spaceId, bot.userId);
+    return true;
+  } catch (e) {
+    if (context.mounted) {
+      showFToast(
+        context: context,
+        title: Text(e is ActionFailed ? e.message : 'Couldn’t remove $name'),
+        duration: const Duration(seconds: 3),
+      );
+    }
+    return false;
+  }
+}
+
+/// Kick and Ban for a person, each only for who may ([mayRemove]), after
+/// [gap]; nothing for a bot, which has Remove from Space. [onGone] once
+/// they're out. Both greyed out once they're [banned].
+List<Widget> removeMemberButtons(
+  BuildContext context, {
+  required String spaceId,
+  required Member member,
+  required String spaceName,
+  required double gap,
+  required VoidCallback onGone,
+  bool banned = false,
+}) {
+  final repository = context.repository;
+  final kick = !member.isBot && mayRemove(repository, spaceId, member.userId, Perm.kickMembers);
+  final ban = !member.isBot && mayRemove(repository, spaceId, member.userId, Perm.banMembers);
+  if (!kick && !ban) return const [];
+  final name = member.displayName;
+  Future<void> remove(String done, String failed, Future<void> Function() call) async {
+    try {
+      await call();
+      // Before onGone closes the sheet: the toaster sits above it.
+      if (context.mounted) showFToast(context: context, title: Text(done), duration: const Duration(seconds: 3));
+      onGone();
+    } catch (e) {
+      if (context.mounted) {
+        showFToast(
+          context: context,
+          title: Text(e is ActionFailed ? e.message : failed),
+          duration: const Duration(seconds: 3),
+        );
+      }
+    }
+  }
+
+  return [
+    SizedBox(height: gap),
+    if (kick)
+      DuvetButton(
+        label: 'Kick from Space',
+        icon: FLucideIcons.userMinus,
+        variant: ButtonVariant.destructive,
+        expand: true,
+        onPressed: banned
+            ? null
+            : () async {
+                final sure = await confirmDestructive(
+                  context,
+                  title: 'Kick $name from $spaceName?',
+                  body: 'They leave the Space and lose their roles. They can join again with an invite.',
+                  action: 'Kick',
+                );
+                if (sure && context.mounted) {
+                  await remove(
+                    'Kicked $name from $spaceName',
+                    'Couldn’t kick $name',
+                    () => repository.kick(spaceId, member.userId),
+                  );
+                }
+              },
+      ),
+    if (kick && ban) const SizedBox(height: 12),
+    if (ban)
+      DuvetButton(
+        label: banned ? 'Banned' : 'Ban from Space',
+        icon: FLucideIcons.ban,
+        variant: ButtonVariant.destructive,
+        expand: true,
+        onPressed: banned
+            ? null
+            : () async {
+                final reason = await _askBanReason(context, title: 'Ban $name from $spaceName?');
+                if (reason != null && context.mounted) {
+                  await remove(
+                    'Banned $name from $spaceName',
+                    'Couldn’t ban $name',
+                    () => repository.ban(spaceId, member.userId, reason: reason),
+                  );
+                }
+              },
+      ),
+  ];
+}
+
+/// Asks before a ban, with a reason or none (empty); null when cancelled.
+Future<String?> _askBanReason(BuildContext context, {required String title}) {
+  var reason = '';
+  return showGlassDialogSheet<String>(
+    context,
+    label: title,
+    builder: (context) => Padding(
+      padding: const EdgeInsets.fromLTRB(24, 16, 24, 24),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Text(title, style: DuvetType.title.copyWith(color: context.theme.colors.foreground)),
+          const SizedBox(height: 12),
+          Text(
+            'They leave the Space, lose their roles and can’t join again while banned.',
+            style: DuvetType.snippet.copyWith(color: context.theme.colors.mutedForeground),
+          ),
+          const SizedBox(height: 16),
+          DuvetTextField(
+            label: 'Reason',
+            hint: 'Optional',
+            maxLines: 3,
+            keyboardType: TextInputType.multiline,
+            // As the API keeps it.
+            maxLength: 512,
+            onChanged: (v) => reason = v,
+          ),
+          const SizedBox(height: 24),
+          DuvetButton(
+            label: 'Ban',
+            variant: ButtonVariant.destructive,
+            expand: true,
+            onPressed: () => Navigator.of(context).pop(reason.trim()),
+          ),
+          const SizedBox(height: 12),
+          DuvetButton(label: 'Cancel', expand: true, onPressed: () => Navigator.of(context).pop()),
+        ],
+      ),
+    ),
+  );
+}
 
 /// Someone's profile, in a glass sheet: banner, avatar, presence, name, what
 /// they wrote, their roles in the Space; Message, Mention, Add friend.
@@ -53,10 +221,52 @@ class _ProfileState extends State<_Profile> {
   bool _asked = false;
   bool _accepting = false;
 
+  // Banned from the Space; only asked by who holds Ban Members, as the API
+  // lists bans only to them.
+  bool _banned = false;
+  StreamSubscription<String>? _bansChanged;
+
   @override
   void didChangeDependencies() {
     super.didChangeDependencies();
-    context.repository.loadFriends().catchError((Object e) => debugPrint('friends: $e'));
+    final repository = context.repository;
+    repository.loadFriends().catchError((Object e) => debugPrint('friends: $e'));
+    if (_bansChanged == null) {
+      _bansChanged = repository.bansChanged.listen((id) {
+        if (id == widget.spaceId) _checkBan();
+      });
+      _checkBan();
+    }
+  }
+
+  @override
+  void dispose() {
+    _bansChanged?.cancel();
+    super.dispose();
+  }
+
+  // shortcut: reads the whole ban list (the API has no single-ban lookup); fine while bans stay few.
+  Future<void> _checkBan() async {
+    final repository = context.repository;
+    final spaceId = widget.spaceId;
+    final userId = widget.member.userId;
+    if (spaceId == null ||
+        widget.member.isBot ||
+        repository.isMember(spaceId, userId) ||
+        !(repository.spaceProfile(spaceId)?.can(Perm.banMembers) ?? false)) {
+      return;
+    }
+    try {
+      final banned = (await repository.bans(spaceId)).any((b) => b.user.userId == userId);
+      if (mounted) setState(() => _banned = banned);
+    } catch (e) {
+      debugPrint('bans: $e');
+    }
+  }
+
+  Future<void> _removeBot(String spaceId, String spaceName) async {
+    final navigator = Navigator.of(context);
+    if (await removeBotAsking(context, spaceId: spaceId, bot: widget.member, spaceName: spaceName)) navigator.pop();
   }
 
   Future<void> _message() async {
@@ -135,11 +345,31 @@ class _ProfileState extends State<_Profile> {
             bannerUrl: widget.member.bannerUrl ?? known.bannerUrl,
           );
     final me = repository.profile.value?.id == m.userId;
-    final roles = widget.spaceId == null ? const <RoleTag>[] : repository.rolesOf(widget.spaceId!, m.userId);
     final spaceName = repository.spaces.value.where((s) => s.id == widget.spaceId).firstOrNull?.name;
+    final removable =
+        m.isBot && widget.spaceId != null && (repository.spaceProfile(widget.spaceId!)?.can(Perm.manageBots) ?? false);
     return ListenableBuilder(
-      listenable: Listenable.merge([repository.presence, repository.mobileOnly, repository.friends]),
+      // spaces: a role given or taken here shows at once.
+      listenable: Listenable.merge([
+        repository.presence,
+        repository.mobileOnly,
+        repository.friends,
+        repository.spaces,
+        repository.activities,
+      ]),
       builder: (context, _) {
+        final spaceId = widget.spaceId;
+        final roles = spaceId == null ? const <RoleTag>[] : repository.rolesOf(spaceId, m.userId);
+        // As MemberAdminPage; on their own profile only if a role is theirs to change.
+        final assignsRoles =
+            spaceId != null &&
+            (repository.spaceProfile(spaceId)?.can(Perm.manageRoles) ?? false) &&
+            (!me ||
+                repository.roles(spaceId).any((r) => !r.everyone && managesRoleAt(repository, spaceId, r.position)));
+        final held = {for (final r in roles) r.id};
+        final spaceRoles = assignsRoles
+            ? repository.roles(spaceId).where((r) => !r.everyone).toList()
+            : const <SpaceRole>[];
         final presence = presenceIn(repository.presence.value, m.userId, spaceId: widget.spaceId);
         final f = repository.friends.value;
         final isFriend = f.friends.any((x) => x.userId == m.userId);
@@ -147,6 +377,7 @@ class _ProfileState extends State<_Profile> {
         // They asked the user: Accept request, as on the desktop's profile.
         final asking = f.incoming.where((r) => r.person.userId == m.userId).firstOrNull;
         final mutual = repository.spaces.value.where((s) => repository.isMember(s.id, m.userId)).length;
+        final gone = spaceId != null && !repository.isMember(spaceId, m.userId);
         // Between the card's sections, as the hairlines elsewhere.
         final divider = Padding(
           padding: const EdgeInsets.symmetric(vertical: 16),
@@ -162,8 +393,8 @@ class _ProfileState extends State<_Profile> {
               aspectRatio: bannerAspect,
               child: m.bannerUrl == null
                   ? ColoredBox(color: colors.secondary)
-                  : Image.network(
-                      m.bannerUrl!,
+                  : Image(
+                      image: cachedImage(m.bannerUrl!),
                       fit: BoxFit.cover,
                       errorBuilder: (_, _, _) => ColoredBox(color: colors.secondary),
                     ),
@@ -184,8 +415,22 @@ class _ProfileState extends State<_Profile> {
                             border: Border.all(color: colors.background, width: 4),
                             boxShadow: tokens.shadowRaised,
                           ),
-                          child: ExcludeSemantics(
-                            child: UserAvatar(name: m.displayName, url: m.avatarUrl, size: 80),
+                          child: Semantics(
+                            // Its own node, not merged into the card's text.
+                            container: gone,
+                            label: gone ? 'Not in this Space' : null,
+                            child: ExcludeSemantics(
+                              // Grey once they've left, been kicked or banned.
+                              child: gone
+                                  ? ColorFiltered(
+                                      colorFilter: const ColorFilter.matrix(_greyscale),
+                                      child: Opacity(
+                                        opacity: 0.6,
+                                        child: UserAvatar(name: m.displayName, url: m.avatarUrl, size: 80),
+                                      ),
+                                    )
+                                  : UserAvatar(name: m.displayName, url: m.avatarUrl, size: 80),
+                            ),
                           ),
                         ),
                         const SizedBox(width: 12),
@@ -313,11 +558,49 @@ class _ProfileState extends State<_Profile> {
                             )
                           else
                             Text('Nothing here yet.', style: DuvetType.body.copyWith(color: colors.mutedForeground)),
-                          if (roles.isNotEmpty) ...[
+                          if (repository.activities.value[m.userId] case final doing? when doing.isNotEmpty)
+                            ProfileActivities(doing, divider: divider),
+                          if (roles.isNotEmpty || assignsRoles) ...[
                             divider,
                             _Label('Roles in ${spaceName ?? 'this Space'}'),
                             const SizedBox(height: 8),
-                            Wrap(spacing: 8, runSpacing: 8, children: [for (final r in roles) RoleChip(role: r)]),
+                            Wrap(
+                              spacing: 8,
+                              runSpacing: 8,
+                              children: [
+                                if (!assignsRoles)
+                                  for (final r in roles) RoleChip(role: r)
+                                else ...[
+                                  // As the desktop: every role, colored if held, a tap gives or takes it.
+                                  for (final r in spaceRoles)
+                                    RoleChip(
+                                      role: RoleTag(
+                                        r.name,
+                                        color: r.color,
+                                        colorVia: r.colorVia,
+                                        colorTo: r.colorTo,
+                                        id: r.id,
+                                      ),
+                                      held: held.contains(r.id),
+                                      onTap: managesRoleAt(repository, spaceId, r.position)
+                                          ? () => adminTry(
+                                              context,
+                                              'Couldn’t change ${m.displayName}’s roles',
+                                              () => repository.setRole(
+                                                spaceId,
+                                                r.id,
+                                                m.userId,
+                                                has: !held.contains(r.id),
+                                              ),
+                                            )
+                                          : null,
+                                    ),
+                                  // Held but not in the Space's list (yet): it still shows, unchangeable here.
+                                  for (final r in roles)
+                                    if (!spaceRoles.any((s) => s.id == r.id)) RoleChip(role: r),
+                                ],
+                              ],
+                            ),
                           ],
                           if (!me && mutual > 0) ...[
                             divider,
@@ -328,6 +611,27 @@ class _ProfileState extends State<_Profile> {
                         ],
                       ),
                     ),
+                    if (removable) ...[
+                      const SizedBox(height: 16),
+                      DuvetButton(
+                        label: 'Remove from Space',
+                        icon: FLucideIcons.userMinus,
+                        variant: ButtonVariant.destructive,
+                        expand: true,
+                        onPressed: () => _removeBot(widget.spaceId!, spaceName ?? 'this Space'),
+                      ),
+                    ],
+                    if (spaceId != null)
+                      ...removeMemberButtons(
+                        context,
+                        spaceId: spaceId,
+                        member: m,
+                        spaceName: spaceName ?? 'this Space',
+                        gap: 16,
+                        onGone: Navigator.of(context).pop,
+                        // A ban lifted and the person back in: no longer shown banned.
+                        banned: _banned && gone,
+                      ),
                   ],
                 ),
               ),
@@ -338,6 +642,288 @@ class _ProfileState extends State<_Profile> {
     );
   }
 }
+
+// -----------------------------------------------------------------------------
+// Activities
+// -----------------------------------------------------------------------------
+
+/// Spotify's activity, as the desktop app shares it: the song in details, the
+/// artist in state, the album in the large image's text, and the song's start
+/// and end. It has no cover.
+bool isSpotify(duvet.Activity a) => a.type == duvet.ActivityType.listening && a.name == 'Spotify';
+
+/// The activities worth showing, as the desktop's: all but a Spotify song that
+/// ended over 30 seconds ago, whose app stopped updating it (closed, asleep).
+List<duvet.Activity> shownActivities(List<duvet.Activity> list, DateTime now) => [
+  for (final a in list)
+    if (!isSpotify(a) || a.timestamps?.end == null || now.millisecondsSinceEpoch <= a.timestamps!.end! + 30000) a,
+];
+
+/// A playback time as m:ss, or h:mm:ss from an hour on.
+String playbackTime(Duration d) {
+  final s = d.isNegative ? 0 : d.inSeconds;
+  final ss = '${s % 60}'.padLeft(2, '0');
+  return s >= 3600 ? '${s ~/ 3600}:${'${s % 3600 ~/ 60}'.padLeft(2, '0')}:$ss' : '${s ~/ 60}:$ss';
+}
+
+// The image types the gateway keeps an activity's pictures in.
+const _activityImageTypes = {'image/png', 'image/jpeg', 'image/gif', 'image/webp', 'image/svg+xml'};
+
+/// [value] when it's a picture an activity may show: a data URI of a type the
+/// gateway keeps, which draws without loading anything; null for any other,
+/// one by URL above all, whose host would learn who views it.
+({String type, Uint8List bytes})? inlineActivityImage(String? value) {
+  if (value == null || !value.startsWith('data:')) return null;
+  try {
+    final data = UriData.parse(value);
+    final type = data.mimeType.toLowerCase();
+    return _activityImageTypes.contains(type) ? (type: type, bytes: data.contentAsBytes()) : null;
+  } on FormatException {
+    return null;
+  }
+}
+
+const _spotifyLogo =
+    '<svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path fill="#1ED760" d="M12 0C5.4 0 0 5.4 0 12s5.4 12 12 12 12-5.4 12-12S18.66 0 12 0zm5.521 17.34c-.24.359-.66.48-1.021.24-2.82-1.74-6.36-2.101-10.561-1.141-.418.122-.779-.179-.899-.539-.12-.421.18-.78.54-.9 4.56-1.021 8.52-.6 11.64 1.32.42.18.479.659.301 1.02zm1.44-3.3c-.301.42-.841.6-1.262.3-3.239-1.98-8.159-2.58-11.939-1.38-.479.12-1.02-.12-1.14-.6-.12-.48.12-1.021.6-1.141C9.6 9.9 15 10.561 18.72 12.84c.361.181.54.78.241 1.2zm.12-3.36C15.24 8.4 8.82 8.16 5.16 9.301c-.6.179-1.2-.181-1.38-.721-.18-.601.18-1.2.72-1.381 4.26-1.26 11.28-1.02 15.721 1.621.539.3.719 1.02.419 1.56-.299.421-1.02.599-1.559.3z"/></svg>';
+
+/// What someone is doing, on their profile, as the desktop's ActivityList:
+/// Spotify's song with its progress, any other with its pictures and how long
+/// it has been going. Ticks each second; nothing once none is worth showing.
+class ProfileActivities extends StatefulWidget {
+  final List<duvet.Activity> activities;
+
+  /// Above the section, between it and the one before.
+  final Widget divider;
+  const ProfileActivities(this.activities, {required this.divider, super.key});
+
+  @override
+  State<ProfileActivities> createState() => _ProfileActivitiesState();
+}
+
+class _ProfileActivitiesState extends State<ProfileActivities> {
+  late final Timer _tick;
+
+  @override
+  void initState() {
+    super.initState();
+    _tick = Timer.periodic(const Duration(seconds: 1), (_) => setState(() {}));
+  }
+
+  @override
+  void dispose() {
+    _tick.cancel();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = context.theme.colors;
+    final now = DateTime.now();
+    final shown = shownActivities(widget.activities, now);
+    if (shown.isEmpty) return const SizedBox.shrink();
+    final muted = DuvetType.caption.copyWith(color: colors.mutedForeground);
+    Widget line(String text, TextStyle style) => Text(text, maxLines: 1, overflow: TextOverflow.ellipsis, style: style);
+    Widget tile(Widget child) => Container(
+      width: 40,
+      height: 40,
+      alignment: Alignment.center,
+      decoration: BoxDecoration(color: colors.secondary, borderRadius: BorderRadius.circular(DuvetTokens.radiusChip)),
+      child: child,
+    );
+    final unknown = tile(Text('?', style: DuvetType.label.copyWith(color: colors.mutedForeground)));
+    DateTime at(int ms) => DateTime.fromMillisecondsSinceEpoch(ms);
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        widget.divider,
+        _Label(shown.length == 1 ? 'Activity' : 'Activities'),
+        for (final a in shown) ...[
+          const SizedBox(height: 8),
+          if (isSpotify(a))
+            Builder(
+              builder: (context) {
+                final start = a.timestamps?.start ?? now.millisecondsSinceEpoch;
+                final length = Duration(milliseconds: math.max((a.timestamps?.end ?? start) - start, 0));
+                final elapsed = Duration(
+                  milliseconds: (now.millisecondsSinceEpoch - start).clamp(0, length.inMilliseconds),
+                );
+                final song = a.details ?? '';
+                final query = [song, ?a.state].where((t) => t.isNotEmpty).join(' ');
+                void find() =>
+                    MessageText.launch(Uri.parse('https://open.spotify.com/search/${Uri.encodeComponent(query)}'));
+                return Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    line('Listening to Spotify', muted.copyWith(fontWeight: FontWeight.w600)),
+                    const SizedBox(height: 6),
+                    Row(
+                      children: [
+                        ExcludeSemantics(child: tile(SvgPicture.string(_spotifyLogo, width: 24, height: 24))),
+                        const SizedBox(width: 8),
+                        Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              // No track ID to link the song itself: a search for it, as the desktop's.
+                              Semantics(
+                                container: true,
+                                link: true,
+                                label: 'Find $song on Spotify',
+                                excludeSemantics: true,
+                                onTap: find,
+                                child: GestureDetector(
+                                  onTap: find,
+                                  child: line(song, DuvetType.label.copyWith(color: colors.foreground)),
+                                ),
+                              ),
+                              if (a.state case final artist?) line('by $artist', muted),
+                              if (a.assets?.largeText case final album?) line('on $album', muted),
+                            ],
+                          ),
+                        ),
+                      ],
+                    ),
+                    if (length > Duration.zero) ...[
+                      const SizedBox(height: 6),
+                      Semantics(
+                        label: '${playbackTime(elapsed)} of ${playbackTime(length)}',
+                        excludeSemantics: true,
+                        child: Row(
+                          children: [
+                            Text(playbackTime(elapsed), style: muted),
+                            const SizedBox(width: 8),
+                            Expanded(
+                              // `ink` on its track, as the password's strength.
+                              child: Container(
+                                height: 4,
+                                alignment: Alignment.centerLeft,
+                                decoration: BoxDecoration(
+                                  color: colors.secondary,
+                                  borderRadius: BorderRadius.circular(2),
+                                ),
+                                child: FractionallySizedBox(
+                                  widthFactor: elapsed.inMilliseconds / length.inMilliseconds,
+                                  child: DecoratedBox(
+                                    decoration: BoxDecoration(
+                                      color: colors.foreground,
+                                      borderRadius: BorderRadius.circular(2),
+                                    ),
+                                  ),
+                                ),
+                              ),
+                            ),
+                            const SizedBox(width: 8),
+                            Text(playbackTime(length), style: muted),
+                          ],
+                        ),
+                      ),
+                    ],
+                  ],
+                );
+              },
+            )
+          else
+            Row(
+              children: [
+                ExcludeSemantics(
+                  child: Stack(
+                    clipBehavior: Clip.none,
+                    children: [
+                      _ActivityImage(a.assets?.largeImage, size: 40, fallback: unknown),
+                      if (inlineActivityImage(a.assets?.smallImage) != null)
+                        Positioned(
+                          right: -4,
+                          bottom: -4,
+                          child: Container(
+                            width: 20,
+                            height: 20,
+                            padding: const EdgeInsets.all(2),
+                            decoration: BoxDecoration(
+                              color: colors.secondary,
+                              borderRadius: BorderRadius.circular(4),
+                              border: Border.all(color: colors.card),
+                            ),
+                            child: _ActivityImage(a.assets?.smallImage, size: 14, fallback: const SizedBox.shrink()),
+                          ),
+                        ),
+                    ],
+                  ),
+                ),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      line(a.name, DuvetType.label.copyWith(color: colors.foreground)),
+                      if (a.details case final details?) line(details, muted.copyWith(color: colors.foreground)),
+                      if (a.state case final state?) line(state, muted),
+                      if (a.timestamps?.start case final start?)
+                        line('${playbackTime(now.difference(at(start)))} elapsed', muted),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+        ],
+      ],
+    );
+  }
+}
+
+/// An activity's picture, decoded once: only from a data URI
+/// ([inlineActivityImage]), else [fallback].
+class _ActivityImage extends StatefulWidget {
+  final String? value;
+  final double size;
+  final Widget fallback;
+  const _ActivityImage(this.value, {required this.size, required this.fallback});
+
+  @override
+  State<_ActivityImage> createState() => _ActivityImageState();
+}
+
+class _ActivityImageState extends State<_ActivityImage> {
+  late var _image = inlineActivityImage(widget.value);
+
+  @override
+  void didUpdateWidget(_ActivityImage old) {
+    super.didUpdateWidget(old);
+    if (old.value != widget.value) _image = inlineActivityImage(widget.value);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final size = widget.size;
+    final picture = switch (_image) {
+      null => null,
+      (type: 'image/svg+xml', :final bytes) => SvgPicture.memory(
+        bytes,
+        width: size,
+        height: size,
+        errorBuilder: (_, _, _) => widget.fallback,
+      ),
+      (:final bytes, type: _) => Image.memory(
+        bytes,
+        width: size,
+        height: size,
+        fit: BoxFit.cover,
+        gaplessPlayback: true,
+        errorBuilder: (_, _, _) => widget.fallback,
+      ),
+    };
+    return picture == null
+        ? widget.fallback
+        : ClipRRect(borderRadius: BorderRadius.circular(size / 10), child: picture);
+  }
+}
+
+// Luminance only (Rec. 709 weights), as glass.dart's saturate at 0.
+const _greyscale = <double>[
+  0.213, 0.715, 0.072, 0, 0, //
+  0.213, 0.715, 0.072, 0, 0, //
+  0.213, 0.715, 0.072, 0, 0, //
+  0, 0, 0, 1, 0,
+];
 
 class _Label extends StatelessWidget {
   final String text;
@@ -350,31 +936,74 @@ class _Label extends StatelessWidget {
   );
 }
 
-/// A role, as a flat chip; its color as a small square beside the name.
+/// A role, as a flat chip. Held, it's tinted with the role's color or
+/// gradient, the name in it as members see it; a role the member lacks stays
+/// grey. Either way a dot beside the name: the role's colors, or grey.
 class RoleChip extends StatelessWidget {
   final RoleTag role;
-  const RoleChip({required this.role, super.key});
+
+  /// False: a role the member lacks, in grey.
+  final bool held;
+
+  /// Gives or takes it; null when it can't change.
+  final VoidCallback? onTap;
+  const RoleChip({required this.role, this.held = true, this.onTap, super.key});
 
   @override
   Widget build(BuildContext context) {
     final colors = context.theme.colors;
-    return Container(
+    final background = colors.background;
+    // Solid tints, each stop a fifth over the background, so the name's
+    // contrast is checked against what it's drawn on: the tint furthest from
+    // the background, the hardest to read on.
+    final tints = [
+      if (held)
+        for (final c in [role.color, role.colorVia, role.colorTo].nonNulls)
+          Color.alphaBlend(Color(0xFF000000 | c).withValues(alpha: 0.2), background),
+    ];
+    final on = tints.isEmpty
+        ? null
+        : tints.reduce((a, b) => contrastOf(a, background) >= contrastOf(b, background) ? a : b);
+    final chip = Container(
       height: 28,
       padding: const EdgeInsets.symmetric(horizontal: 10),
-      decoration: BoxDecoration(color: colors.secondary, borderRadius: BorderRadius.circular(DuvetTokens.radiusChip)),
+      decoration: BoxDecoration(
+        color: tints.firstOrNull ?? colors.secondary,
+        // A gradient only with both ends, as [RoleName] reads one.
+        gradient: tints.length > 1 && role.colorTo != null ? LinearGradient(colors: tints) : null,
+        borderRadius: BorderRadius.circular(DuvetTokens.radiusChip),
+      ),
       child: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
-          if (role.color case final c?) ...[
-            Container(
-              width: 8,
-              height: 8,
-              decoration: BoxDecoration(color: Color(c), borderRadius: BorderRadius.circular(2)),
-            ),
+          if (role.color != null) ...[
+            held
+                ? RoleSwatch(colors: role.colors, width: 8, height: 8)
+                : Container(
+                    width: 8,
+                    height: 8,
+                    decoration: BoxDecoration(color: colors.mutedForeground, borderRadius: BorderRadius.circular(6)),
+                  ),
             const SizedBox(width: 6),
           ],
-          Text(role.name, style: DuvetType.caption.copyWith(color: colors.foreground)),
+          if (held)
+            RoleName(role.name, colors: role.colors, style: DuvetType.caption, on: on)
+          else
+            Text(role.name, style: DuvetType.caption.copyWith(color: colors.mutedForeground)),
         ],
+      ),
+    );
+    if (onTap == null && held) return chip;
+    return Semantics(
+      button: onTap != null,
+      toggled: held,
+      label: role.name,
+      excludeSemantics: true,
+      // Padded past 44pt for the finger.
+      child: GestureDetector(
+        behavior: HitTestBehavior.opaque,
+        onTap: onTap,
+        child: Padding(padding: const EdgeInsets.symmetric(vertical: 8), child: chip),
       ),
     );
   }
@@ -517,8 +1146,8 @@ class PersonRow extends StatelessWidget {
 
 enum _FriendsTab { all, pending, sent }
 
-/// Friends: add one by username, then everyone, the requests to the user,
-/// and theirs.
+/// Friends: add one by user ID or username, then everyone, the requests to
+/// the user, and theirs.
 class FriendsPage extends StatefulWidget {
   const FriendsPage({super.key});
 
@@ -551,24 +1180,31 @@ class _FriendsPageState extends State<FriendsPage> {
     super.dispose();
   }
 
-  Future<void> _addByName() async {
+  Future<void> _addFriend() async {
     final repository = context.repository;
-    final name = _add.text.trim().replaceFirst('@', '').toLowerCase();
+    final typed = _add.text.trim();
+    final name = typed.replaceFirst('@', '').toLowerCase();
     if (name.isEmpty) return;
+    // A username only among the people the app knows; a user ID, anyone's.
     final person = repository.people.where((p) => p.username.toLowerCase() == name).firstOrNull;
-    if (person == null) {
+    final userId = person?.userId ?? (isDuvetId(typed) ? typed : null);
+    if (userId == null) {
       setState(() => _addError = 'No one called @$name shares a Space or a chat with you');
       return;
     }
     try {
-      await repository.sendFriendRequest(person.userId);
+      await repository.sendFriendRequest(userId);
       _add.clear();
       setState(() => _addError = null);
       if (mounted) {
-        showFToast(context: context, title: Text('Asked ${person.displayName}'), duration: const Duration(seconds: 3));
+        showFToast(
+          context: context,
+          title: Text(person == null ? 'Friend request sent' : 'Asked ${person.displayName}'),
+          duration: const Duration(seconds: 3),
+        );
       }
-    } catch (_) {
-      setState(() => _addError = 'Couldn’t send the request');
+    } catch (e) {
+      if (mounted) setState(() => _addError = e is ActionFailed ? e.message : 'Couldn’t send the request');
     }
   }
 
@@ -624,13 +1260,13 @@ class _FriendsPageState extends State<FriendsPage> {
                           Expanded(
                             child: SearchField(
                               controller: _add,
-                              hint: 'Add a friend by username',
+                              hint: 'Add a friend by user ID or username',
                               onChanged: (_) {
                                 if (_addError != null) setState(() => _addError = null);
                               },
                             ),
                           ),
-                          TextAction(label: 'Add', onPressed: _addByName),
+                          TextAction(label: 'Add', onPressed: _addFriend),
                         ],
                       ),
                     ),
@@ -642,6 +1278,31 @@ class _FriendsPageState extends State<FriendsPage> {
                           child: Text(_addError!, style: DuvetType.caption.copyWith(color: colors.destructive)),
                         ),
                       ),
+                    // As the desktop adds friends: by the ID they share.
+                    Padding(
+                      padding: const EdgeInsets.fromLTRB(16, 4, 4, 0),
+                      child: Row(
+                        children: [
+                          Expanded(
+                            child: Text(
+                              'Friends add you by your user ID.',
+                              style: DuvetType.caption.copyWith(color: colors.mutedForeground),
+                            ),
+                          ),
+                          TextAction(
+                            label: 'Copy your ID',
+                            onPressed: () {
+                              Clipboard.setData(ClipboardData(text: repository.profile.value!.id));
+                              showFToast(
+                                context: context,
+                                title: const Text('ID copied'),
+                                duration: const Duration(seconds: 3),
+                              );
+                            },
+                          ),
+                        ],
+                      ),
+                    ),
                     // Edge to edge: the tabs scroll to the screen's edge, 16 in at rest.
                     Padding(
                       padding: const EdgeInsets.only(top: 8),
@@ -682,9 +1343,9 @@ class _FriendsPageState extends State<FriendsPage> {
                       ),
                     ),
                     if (_loading && f.friends.isEmpty && f.incoming.isEmpty)
-                      const Padding(
-                        padding: EdgeInsets.all(24),
-                        child: Center(child: FCircularProgress()),
+                      LoadingSkeleton(
+                        label: 'Loading friends',
+                        children: [const Overline('Lorem ipsum'), ...placeholderRows(avatar: 48)],
                       ),
                     if (_tab != _FriendsTab.sent && f.incoming.isNotEmpty) ...[
                       const Overline('Wants to be friends'),

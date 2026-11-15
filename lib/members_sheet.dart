@@ -8,6 +8,8 @@ import 'theme.dart';
 import 'widgets/avatar.dart';
 import 'widgets/glass.dart';
 import 'widgets/rows.dart';
+import 'widgets/sheets.dart' show LoadingSkeleton, placeholderLines, placeholderNames;
+import 'widgets/skeleton.dart' show Bone;
 
 /// What a member's row can do.
 enum MemberAction { mention, message }
@@ -72,7 +74,42 @@ class _MembersSheetState extends State<_MembersSheet> {
           );
         }
         final all = snapshot.data;
-        if (all == null) return const Center(child: FCircularProgress());
+        if (all == null) {
+          return ListView(
+            controller: widget.scroll,
+            padding: EdgeInsets.zero,
+            children: [
+              const SheetTitle(title: 'Members'),
+              LoadingSkeleton(
+                label: 'Loading members',
+                children: [
+                  const Padding(
+                    padding: EdgeInsets.fromLTRB(16, 0, 16, 8),
+                    child: Bone(
+                      width: double.infinity,
+                      height: 40,
+                      borderRadius: BorderRadius.all(Radius.circular(DuvetTokens.radiusField)),
+                    ),
+                  ),
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(16, 16, 16, 4),
+                    child: Text('LOREM IPSUM — 4', style: DuvetType.overline),
+                  ),
+                  for (final (i, name) in placeholderNames.indexed)
+                    Padding(
+                      padding: const EdgeInsets.symmetric(horizontal: 8),
+                      child: GlassRow(
+                        leading: const Bone.circle(size: 48),
+                        label: name,
+                        detail: placeholderLines[i],
+                        onPressed: () {},
+                      ),
+                    ),
+                ],
+              ),
+            ],
+          );
+        }
         return ListenableBuilder(
           // Presence, and roles: a role hoisted or taken while it's open
           // regroups it.
@@ -84,19 +121,23 @@ class _MembersSheetState extends State<_MembersSheet> {
           builder: (context, _) {
             final presence = widget.repository.presence.value;
             final mobileOnly = widget.repository.mobileOnly.value;
-            final q = _search.text.trim().toLowerCase();
-            final shown = q.isEmpty
-                ? all
-                : all
-                      .where((m) => m.displayName.toLowerCase().contains(q) || m.username.toLowerCase().contains(q))
-                      .toList();
-            // Not reported isn't offline: those go under Members, with no
-            // status shown.
-            // In a Space, a bot's there comes first.
             final spaceId = switch (widget.target) {
               RoomTarget(:final spaceId) => spaceId,
               ConversationTarget() => null,
             };
+            final ownerId = widget.repository.spaces.value.where((s) => s.id == spaceId).firstOrNull?.ownerId;
+            final q = _search.text.trim().toLowerCase();
+            // Without those the gateway says left since the list came (a bot
+            // removed, say).
+            final shown = all
+                .where((m) => spaceId == null || widget.repository.isMember(spaceId, m.userId))
+                .where(
+                  (m) => q.isEmpty || m.displayName.toLowerCase().contains(q) || m.username.toLowerCase().contains(q),
+                )
+                .toList();
+            // Not reported isn't offline: those go under Members, with no
+            // status shown.
+            // In a Space, a bot's there comes first.
             Presence? of(Member m) => presenceIn(presence, m.userId, spaceId: spaceId);
             bool away(Member m) => of(m) == null || of(m) == Presence.offline;
             final rest = [
@@ -192,6 +233,7 @@ class _MembersSheetState extends State<_MembersSheet> {
                           presence: of(members[i]),
                           mobileOnly: mobileOnly.contains(members[i].userId),
                           me: widget.repository.profile.value?.id == members[i].userId,
+                          owner: ownerId != null && ownerId == members[i].userId,
                           spaceId: spaceId,
                           roleColors: switch (widget.target) {
                             RoomTarget(:final spaceId) => nameColorsOf(
@@ -220,6 +262,9 @@ class _MemberRow extends StatelessWidget {
   final Presence? presence;
   final bool mobileOnly;
   final bool me;
+
+  /// Owns the Space: a crown after their name, as the desktop has it.
+  final bool owner;
   final String? spaceId;
 
   /// Their highest colored role's colors: they tint the name, or run across it as a gradient.
@@ -229,6 +274,7 @@ class _MemberRow extends StatelessWidget {
     required this.presence,
     required this.mobileOnly,
     required this.me,
+    this.owner = false,
     this.spaceId,
     this.roleColors,
   });
@@ -242,11 +288,18 @@ class _MemberRow extends StatelessWidget {
       null => null,
     };
     // The status as the caption line, then who they are.
-    final detail = [?status, '@${member.username}', if (member.isBot) 'bot', if (me) 'you'].join(' · ');
+    final detail = [
+      ?status,
+      '@${member.username}',
+      if (owner) 'owner',
+      if (member.isBot) 'bot',
+      if (me) 'you',
+    ].join(' · ');
     return Builder(
       builder: (rowContext) => GlassRow(
         label: member.displayName,
         labelColors: roleColors,
+        labelIcon: owner ? OwnerCrown(offline: isOffline(presence)) : null,
         detail: detail,
         hint: me ? null : 'Double tap for options',
         leading: PresenceAvatar(member: member, presence: presence, mobileOnly: mobileOnly, size: 48),

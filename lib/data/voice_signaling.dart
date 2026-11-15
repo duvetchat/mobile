@@ -33,11 +33,19 @@ abstract interface class VoiceSignaling {
   /// may have been lost with it.
   Stream<void> get resumes;
 
-  bool joinVoice(String roomId, duvet.SessionDescription offer, {required bool videoOff});
+  /// [tracks] tags the camera's transceiver by mid; [videoOff] receives no
+  /// video at all.
+  bool joinVoice(
+    String roomId,
+    duvet.SessionDescription offer, {
+    Map<String, String> tracks = const {},
+    required bool videoOff,
+  });
   bool leaveVoice(String roomId);
 
   /// The client's whole voice state: the gateway turns off whatever a sync
-  /// leaves out, so every field is required.
+  /// leaves out, so every field is required. [watching] is whose screen
+  /// share the user watches there, by user ID.
   bool syncVoice(
     String roomId, {
     required bool muted,
@@ -45,9 +53,14 @@ abstract interface class VoiceSignaling {
     required bool screenSharing,
     required bool camera,
     required bool videoOff,
+    required List<String> watching,
   });
   bool sendIceCandidate(String roomId, duvet.IceCandidateInit candidate);
   bool sendAnswer(String roomId, duvet.SessionDescription answer);
+
+  /// The client's own offer (the screen's sender came or went), its camera
+  /// tagged in [tracks]; the gateway answers with WEBRTC_RENEGOTIATE_ANSWER.
+  bool sendRenegotiateOffer(String roomId, duvet.SessionDescription offer, {Map<String, String> tracks = const {}});
 
   bool initiateCall(String conversationId, List<String> memberIds);
   bool acceptCall(String conversationId);
@@ -66,9 +79,16 @@ class GatewayVoiceSignaling implements VoiceSignaling {
   duvet.WebRTCController? _rtc;
   StreamSubscription<duvet.GatewayResume>? _resumed;
 
+  // Socket numbers go on from one gateway to the next ([connection]): each counts its own from 1, and a join made on
+  // one's first socket mustn't pass for one made on the next one's (taking up a session the background renewed makes
+  // a new gateway).
+  int _offset = 0;
+  int _highest = 0;
+
   /// The gateway of a new session.
   void attach(duvet.GatewayManager manager) {
     detach();
+    _offset = _highest;
     _manager = manager;
     _rtc = duvet.WebRTCController(manager);
     _resumed = manager.onResume.listen((_) {
@@ -102,6 +122,7 @@ class GatewayVoiceSignaling implements VoiceSignaling {
     duvet.WebRTCIceCandidateEvent() ||
     duvet.WebRTCRenegotiateEvent() ||
     duvet.WebRTCRenegotiateAnswerEvent() ||
+    duvet.VoiceVideoRefusedPayloadEvent() ||
     duvet.CallIncomingPayloadEvent() ||
     // A call the user placed, and one going on without ringing them; a
     // gateway from before calls across devices sends neither.
@@ -117,7 +138,13 @@ class GatewayVoiceSignaling implements VoiceSignaling {
   Stream<duvet.GatewayEventPayload> get events => _events.stream;
 
   @override
-  int? get connection => _manager?.connection;
+  int? get connection {
+    final socket = _manager?.connection;
+    if (socket == null) return null;
+    final connection = _offset + socket;
+    if (connection > _highest) _highest = connection;
+    return connection;
+  }
 
   @override
   Duration get silenceBeforeReady => _manager?.silenceBeforeReady ?? Duration.zero;
@@ -129,8 +156,12 @@ class GatewayVoiceSignaling implements VoiceSignaling {
   Stream<void> get resumes => _resumes.stream;
 
   @override
-  bool joinVoice(String roomId, duvet.SessionDescription offer, {required bool videoOff}) =>
-      _rtc?.joinVoice(roomId, offer, videoOff: videoOff) ?? false;
+  bool joinVoice(
+    String roomId,
+    duvet.SessionDescription offer, {
+    Map<String, String> tracks = const {},
+    required bool videoOff,
+  }) => _rtc?.joinVoice(roomId, offer, tracks: tracks, videoOff: videoOff) ?? false;
 
   @override
   bool leaveVoice(String roomId) => _rtc?.leaveVoice(roomId) ?? false;
@@ -143,6 +174,7 @@ class GatewayVoiceSignaling implements VoiceSignaling {
     required bool screenSharing,
     required bool camera,
     required bool videoOff,
+    required List<String> watching,
   }) =>
       _rtc?.syncVoice(
         roomId,
@@ -151,6 +183,7 @@ class GatewayVoiceSignaling implements VoiceSignaling {
         screenSharing: screenSharing,
         camera: camera,
         videoOff: videoOff,
+        watching: watching,
       ) ??
       false;
 
@@ -160,6 +193,10 @@ class GatewayVoiceSignaling implements VoiceSignaling {
 
   @override
   bool sendAnswer(String roomId, duvet.SessionDescription answer) => _rtc?.sendAnswer(roomId, answer) ?? false;
+
+  @override
+  bool sendRenegotiateOffer(String roomId, duvet.SessionDescription offer, {Map<String, String> tracks = const {}}) =>
+      _rtc?.sendRenegotiateOffer(roomId, offer, tracks: tracks) ?? false;
 
   @override
   bool initiateCall(String conversationId, List<String> memberIds) =>

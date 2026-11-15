@@ -56,7 +56,12 @@ abstract final class Duvet {
 
   static FThemeData theme(Brightness brightness) {
     final colors = brightness == Brightness.dark ? dark : light;
-    final face = FTypeface.inherit(colors: colors, touch: true, fontFamily: DuvetType.family);
+    final face = FTypeface.inherit(
+      colors: colors,
+      touch: true,
+      fontFamily: DuvetType.family,
+      fontFamilyFallback: DuvetType.fallback,
+    );
     // forui's own widgets read these slots; Duvet code uses [DuvetType] by name.
     final ramp = face.copyWith(
       xs3: DuvetType.tabLabel.copyWith(color: colors.foreground),
@@ -81,6 +86,7 @@ abstract final class Duvet {
     return ThemeData(
       brightness: brightness,
       fontFamily: DuvetType.family,
+      fontFamilyFallback: DuvetType.fallback,
       scaffoldBackgroundColor: c.background,
       canvasColor: c.background,
       colorScheme: ColorScheme(
@@ -109,6 +115,14 @@ abstract final class DuvetType {
   static const serif = 'Fraunces';
   static const mono = 'Fira Mono';
 
+  /// Twemoji, as on desktop. Set it first on text that is only emoji: as a
+  /// fallback it loses ©️ ™️ ‼️ ❤️ #️⃣ and the like to Inter's and Roboto's own glyphs.
+  static const emoji = 'Twemoji';
+
+  /// Emoji in every face are Twemoji instead of whatever the phone ships
+  /// (older Androids miss the newer ones).
+  static const fallback = [emoji];
+
   // Fraunces is one variable font whose default instance is Black and wonky:
   // pin the soft Regular cut, at the optical size its size calls for.
   static TextStyle _headline(
@@ -118,6 +132,7 @@ abstract final class DuvetType {
     double tracking = -0.01,
   }) => TextStyle(
     fontFamily: serif,
+    fontFamilyFallback: fallback,
     fontSize: size,
     height: 1.1,
     letterSpacing: size * tracking,
@@ -129,7 +144,12 @@ abstract final class DuvetType {
       const FontVariation('WONK', 0),
     ],
   );
-  static const _text = TextStyle(fontFamily: family, height: 1.4, leadingDistribution: TextLeadingDistribution.even);
+  static const _text = TextStyle(
+    fontFamily: family,
+    fontFamilyFallback: fallback,
+    height: 1.4,
+    leadingDistribution: TextLeadingDistribution.even,
+  );
 
   /// Page titles (h1): the tabs' Chats, Spaces, Calls, You. Inter, not
   /// Fraunces: a serif this big shouts.
@@ -185,7 +205,50 @@ abstract final class DuvetType {
   static final tabLabel = _text.copyWith(fontSize: 11, fontWeight: FontWeight.w500);
 
   /// Inline and block code.
-  static const code = TextStyle(fontFamily: mono, fontSize: 14, height: 1.4);
+  static const code = TextStyle(fontFamily: mono, fontFamilyFallback: fallback, fontSize: 14, height: 1.4);
+}
+
+/// Prism: the light a mention of the user throws on its bubble, as each theme
+/// has it. The colors are opaque; each layer takes its own share of them.
+class PrismPalette {
+  /// The light itself: the spill round the mention, the rim, the shadow.
+  final Color gem;
+
+  /// The blue and the pink it splits into, to the sides.
+  final Color cool;
+  final Color warm;
+
+  /// How much of the spill shows, 0 to 1.
+  final double intensity;
+
+  /// How strong each of the spill's lights is at its centre: the mention's own, the blue, the pink.
+  final double mainSpill;
+  final double coolSpill;
+  final double warmSpill;
+
+  /// The blur and the spread of the light's shadow under the bubble.
+  final double shadowBlur;
+  final double shadowSpread;
+
+  /// The rim's gradient, across the bubble at 135°: each color, its share, and where it sits.
+  final List<(Color, double, double)> rim;
+
+  /// The bubble where the spill is strongest behind a name: the names in it are made readable on this.
+  final Color behindName;
+
+  const PrismPalette({
+    required this.gem,
+    required this.cool,
+    required this.warm,
+    required this.intensity,
+    required this.mainSpill,
+    required this.coolSpill,
+    required this.warmSpill,
+    required this.shadowBlur,
+    required this.shadowSpread,
+    required this.rim,
+    required this.behindName,
+  });
 }
 
 /// The Duvet design-system tokens forui has no slot for: Liquid Glass, the
@@ -220,6 +283,9 @@ class DuvetTokens {
   /// Green for what is live: a call going on, someone online.
   final Color live;
 
+  /// Gold for a Space owner's crown: 3:1 or more on the background.
+  final Color crown;
+
   /// Received bubbles and other surfaces at rest.
   final List<BoxShadow> shadowRest;
 
@@ -238,6 +304,9 @@ class DuvetTokens {
   /// Inset: the resting recess of fields.
   final List<BoxShadow> shadowWell;
 
+  /// The light of a mention of the user.
+  final PrismPalette prism;
+
   const DuvetTokens._({
     required this.glass,
     required this.glassEdge,
@@ -250,12 +319,14 @@ class DuvetTokens {
     required this.secondaryFill,
     required this.hairline,
     required this.live,
+    required this.crown,
     required this.shadowRest,
     required this.shadowFloat,
     required this.shadowControl,
     required this.shadowRaised,
     required this.shadowPressed,
     required this.shadowWell,
+    required this.prism,
   });
 
   static const light = DuvetTokens._(
@@ -270,6 +341,7 @@ class DuvetTokens {
     secondaryFill: Color(0xFFE3E9FF),
     hairline: Color(0x1415172B),
     live: Color(0xFF2F9E62),
+    crown: Color(0xFFB7791F),
     // Light shadows carry a little cobalt, so surfaces float on the pastel sky.
     shadowRest: [
       BoxShadow(color: Color(0x0A15172B), blurRadius: 2, offset: Offset(0, 1)),
@@ -292,6 +364,29 @@ class DuvetTokens {
       BoxShadow(color: Color(0x1415172B), blurRadius: 2, offset: Offset(0, 1)),
     ],
     shadowWell: [BoxShadow(color: Color(0x0F15172B), blurRadius: 3, offset: Offset(0, 1))],
+    // Stronger than dark's, to show on white: the names carry the contrast
+    // (behindName). The violet is the app's own, not a purer one, which glows
+    // like neon on white.
+    prism: PrismPalette(
+      gem: Color(0xFF7A68E8),
+      cool: Color(0xFF2F8CFF),
+      warm: Color(0xFFE44FCB),
+      intensity: 0.7,
+      mainSpill: 0.26,
+      coolSpill: 0.16,
+      warmSpill: 0.14,
+      shadowBlur: 24,
+      shadowSpread: -8,
+      // A rim of light, strongest where the light comes from: as strong all
+      // the way round it reads as a gradient outline.
+      rim: [
+        (Color(0xFF7A68E8), 0.70, 0),
+        (Color(0xFF7A68E8), 0.20, 0.42),
+        (Color(0xFF2F8CFF), 0.20, 0.70),
+        (Color(0xFF2F8CFF), 0.50, 1),
+      ],
+      behindName: Color(0xFFD3D0FD),
+    ),
   );
 
   static const dark = DuvetTokens._(
@@ -306,6 +401,7 @@ class DuvetTokens {
     secondaryFill: Color(0xFF1C1E2E),
     hairline: Color(0x12FFFFFF),
     live: Color(0xFF4CC38A),
+    crown: Color(0xFFFBBF24),
     shadowRest: [
       BoxShadow(color: Color(0x4D000000), blurRadius: 2, offset: Offset(0, 1)),
       BoxShadow(color: Color(0x40000000), blurRadius: 12, offset: Offset(0, 4)),
@@ -327,6 +423,24 @@ class DuvetTokens {
       BoxShadow(color: Color(0x4D000000), blurRadius: 2, offset: Offset(0, 1)),
     ],
     shadowWell: [BoxShadow(color: Color(0x66000000), blurRadius: 3, offset: Offset(0, 1))],
+    prism: PrismPalette(
+      gem: Color(0xFF8B6CFF),
+      cool: Color(0xFF7B9DFF),
+      warm: Color(0xFFBF7CEF),
+      intensity: 0.7,
+      mainSpill: 0.36,
+      coolSpill: 0.14,
+      warmSpill: 0.12,
+      shadowBlur: 26,
+      shadowSpread: -14,
+      rim: [
+        (Color(0xFF8B6CFF), 0.8, 0),
+        (Color(0xFFFFFFFF), 0.08, 0.42),
+        (Color(0xFFFFFFFF), 0.08, 0.70),
+        (Color(0xFF7B9DFF), 0.35, 1),
+      ],
+      behindName: Color(0xFF413A66),
+    ),
   );
 
   // Backdrop blur: bars, and overlays (dropdowns, sheets).

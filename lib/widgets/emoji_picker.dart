@@ -1,15 +1,19 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/semantics.dart';
 import 'package:flutter/services.dart';
 import 'package:forui/forui.dart';
 
 import '../data/emoji_catalog.dart';
 import '../data/gifs.dart';
+import '../data/images.dart';
 import '../data/models.dart';
+import '../data/recent_emoji.dart';
 import '../theme.dart';
 import 'glass.dart';
 import 'rows.dart';
+import 'skeleton.dart';
 
 sealed class PickerChoice {
   const PickerChoice();
@@ -159,7 +163,13 @@ class _PickerState extends State<_Picker> {
 
   Widget _emojiTab(BuildContext context) {
     final catalog = _catalog;
-    if (catalog == null) return const Center(child: FCircularProgress());
+    if (catalog == null) {
+      return _loadingGrid(
+        48,
+        Center(child: Bone.square(size: 30, borderRadius: BorderRadius.circular(DuvetTokens.radiusField))),
+        padding: const EdgeInsets.fromLTRB(12, 8, 12, 0),
+      );
+    }
     final query = _search.text.trim();
     final colors = context.theme.colors;
 
@@ -186,17 +196,17 @@ class _PickerState extends State<_Picker> {
         if (found.isNotEmpty) ..._section('Results', found),
       ];
     } else {
-      final recent = EmojiCatalog.recent.value;
       final customById = {for (final e in _custom) e.code: e};
+      // Cut after leaving out other spaces' emoji, so they take no place.
+      final recent = <Object>[
+        for (final r in EmojiCatalog.recent)
+          if (customById[r] case final custom?)
+            custom
+          else if (!r.startsWith('<:'))
+            EmojiEntry(r, catalog.nameOf(r) ?? r),
+      ].take(RecentEmoji.shown).toList();
       slivers = [
-        if (recent.isNotEmpty)
-          ..._section('Recently used', [
-            for (final r in recent)
-              if (customById[r] case final custom?)
-                custom
-              else if (!r.startsWith('<:'))
-                EmojiEntry(r, catalog.nameOf(r) ?? r),
-          ]),
+        if (recent.isNotEmpty) ..._section('Recently used', recent, recent: true),
         if (_custom.isNotEmpty) ..._section('This space', _custom),
         for (final c in catalog.categories) ..._section(c.label, c.emojis),
       ];
@@ -248,7 +258,9 @@ class _PickerState extends State<_Picker> {
                 child: SizedBox(
                   width: 44,
                   height: 44,
-                  child: Center(child: Text(icon, style: const TextStyle(fontSize: 22))),
+                  child: Center(
+                    child: Text(icon, style: const TextStyle(fontFamily: DuvetType.emoji, fontSize: 22)),
+                  ),
                 ),
               ),
             ),
@@ -269,7 +281,7 @@ class _PickerState extends State<_Picker> {
 
   // Each section's cells are built as they scroll into view, from the entries
   // (an EmojiEntry or a CustomEmoji), not made up front: there are ~1,900.
-  List<Widget> _section(String label, List<Object> entries) => [
+  List<Widget> _section(String label, List<Object> entries, {bool recent = false}) => [
     SliverToBoxAdapter(
       child: Padding(
         key: _sectionKeys.putIfAbsent(label, GlobalKey.new),
@@ -289,8 +301,8 @@ class _PickerState extends State<_Picker> {
         gridDelegate: const SliverGridDelegateWithMaxCrossAxisExtent(maxCrossAxisExtent: 48),
         delegate: SliverChildBuilderDelegate(
           (context, i) => switch (entries[i]) {
-            final CustomEmoji e => _customCell(e),
-            final EmojiEntry e => _unicodeCell(e),
+            final CustomEmoji e => _customCell(e, recent: recent),
+            final EmojiEntry e => _unicodeCell(e, recent: recent),
             _ => const SizedBox.shrink(),
           },
           childCount: entries.length,
@@ -300,20 +312,26 @@ class _PickerState extends State<_Picker> {
     ),
   ];
 
-  Widget _unicodeCell(EmojiEntry e) => _Cell(
+  void _forget(String emojiOrCode) {
+    RecentEmoji.instance.remove(emojiOrCode);
+    if (mounted) setState(() {});
+  }
+
+  Widget _unicodeCell(EmojiEntry e, {bool recent = false}) => _Cell(
     label: e.name,
     onTap: () => _pick(PickedEmoji(e.emoji)),
-    child: Text(e.emoji, style: const TextStyle(fontSize: 28, height: 1.15)),
+    onRemove: recent ? () => _forget(e.emoji) : null,
+    child: Text(e.emoji, style: const TextStyle(fontFamily: DuvetType.emoji, fontSize: 28, height: 1.15)),
   );
 
-  Widget _customCell(CustomEmoji e) => _Cell(
+  Widget _customCell(CustomEmoji e, {bool recent = false}) => _Cell(
     label: e.name,
     onTap: () => _pick(PickedCustomEmoji(e)),
-    child: Image.network(
-      e.url,
+    onRemove: recent ? () => _forget(e.code) : null,
+    child: Image(
+      image: cachedImage(e.url, cacheWidth: (30 * MediaQuery.devicePixelRatioOf(context)).round()),
       width: 30,
       height: 30,
-      cacheWidth: (30 * MediaQuery.devicePixelRatioOf(context)).round(),
       fit: BoxFit.contain,
       excludeFromSemantics: true,
       errorBuilder: (_, _, _) => Text(':${e.name}:', maxLines: 1, overflow: TextOverflow.fade, softWrap: false),
@@ -335,7 +353,17 @@ class _PickerState extends State<_Picker> {
     if (!widget.inSpace) return message('Stickers belong to spaces. Send one from a space’s room.');
     if (_stickersError != null) return message('Couldn’t load stickers');
     final stickers = _stickers;
-    if (stickers == null) return const Center(child: FCircularProgress());
+    if (stickers == null) {
+      return _loadingGrid(
+        112,
+        Padding(
+          padding: const EdgeInsets.all(6),
+          child: Bone(borderRadius: BorderRadius.circular(DuvetTokens.radiusField)),
+        ),
+        spacing: 8,
+        padding: const EdgeInsets.fromLTRB(12, 4, 12, 24),
+      );
+    }
     final query = _search.text.trim().toLowerCase();
     final shown = query.isEmpty ? stickers : stickers.where((s) => s.name.toLowerCase().contains(query)).toList();
     return Column(
@@ -367,9 +395,8 @@ class _PickerState extends State<_Picker> {
                       onTap: () => _pick(PickedSticker(s)),
                       child: Padding(
                         padding: const EdgeInsets.all(6),
-                        child: Image.network(
-                          s.url,
-                          cacheWidth: (100 * MediaQuery.devicePixelRatioOf(context)).round(),
+                        child: Image(
+                          image: cachedImage(s.url, cacheWidth: (100 * MediaQuery.devicePixelRatioOf(context)).round()),
                           fit: BoxFit.contain,
                           excludeFromSemantics: true,
                           errorBuilder: (_, _, _) => Center(child: Text(s.name, textAlign: TextAlign.center)),
@@ -384,14 +411,82 @@ class _PickerState extends State<_Picker> {
   }
 }
 
+/// Where a spinner was: [cell] in each place of a grid of cells at most
+/// [extent] wide, as the one coming lays them out, under one pulse.
+Widget _loadingGrid(double extent, Widget cell, {double spacing = 0, EdgeInsetsGeometry? padding}) => Semantics(
+  label: 'Loading',
+  child: ExcludeSemantics(
+    child: DuvetSkeleton(
+      child: GridView.builder(
+        physics: const NeverScrollableScrollPhysics(),
+        padding: padding,
+        gridDelegate: SliverGridDelegateWithMaxCrossAxisExtent(
+          maxCrossAxisExtent: extent,
+          mainAxisSpacing: spacing,
+          crossAxisSpacing: spacing,
+        ),
+        itemBuilder: (_, _) => cell,
+      ),
+    ),
+  ),
+);
+
+/// The GIFs' two columns while they come: tiles of a few shapes, as GIFs are.
+class _LoadingGifs extends StatelessWidget {
+  const _LoadingGifs();
+
+  static const _ratios = [
+    [1.0, 0.75, 1.33, 1.0],
+    [0.8, 1.33, 1.0, 0.75],
+  ];
+
+  @override
+  Widget build(BuildContext context) => Semantics(
+    label: 'Loading',
+    child: ExcludeSemantics(
+      child: DuvetSkeleton(
+        child: SingleChildScrollView(
+          physics: const NeverScrollableScrollPhysics(),
+          padding: const EdgeInsets.fromLTRB(16, 4, 16, 8),
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              for (final (i, column) in _ratios.indexed) ...[
+                if (i > 0) const SizedBox(width: 8),
+                Expanded(
+                  child: Column(
+                    children: [
+                      for (final ratio in column)
+                        Padding(
+                          padding: const EdgeInsets.only(bottom: 8),
+                          child: AspectRatio(
+                            aspectRatio: ratio,
+                            child: Bone(borderRadius: BorderRadius.circular(DuvetTokens.radiusField)),
+                          ),
+                        ),
+                    ],
+                  ),
+                ),
+              ],
+            ],
+          ),
+        ),
+      ),
+    ),
+  );
+}
+
 /// A picker cell: sinks while pressed. No implicit animations: a grid holds
 /// hundreds, and an animation each would cost a controller and a ticker.
 class _Cell extends StatefulWidget {
   final String label;
   final String? hint;
   final VoidCallback onTap;
+
+  /// In Recently used: a long press offers to take it out of there.
+  final VoidCallback? onRemove;
   final Widget child;
-  const _Cell({required this.label, required this.onTap, required this.child, this.hint});
+  const _Cell({required this.label, required this.onTap, required this.child, this.hint, this.onRemove});
 
   @override
   State<_Cell> createState() => _CellState();
@@ -400,6 +495,19 @@ class _Cell extends StatefulWidget {
 class _CellState extends State<_Cell> {
   bool _pressed = false;
 
+  static const _remove = 'Remove from recently used';
+
+  Future<void> _offerRemove() async {
+    // Kept: the cell may be gone by the time the menu answers.
+    final remove = widget.onRemove!;
+    final sure = await showGlassMenu<bool>(
+      context,
+      label: widget.label,
+      items: const [GlassMenuItem(icon: FLucideIcons.trash2, label: _remove, value: true, destructive: true)],
+    );
+    if (sure == true) remove();
+  }
+
   @override
   Widget build(BuildContext context) => Semantics(
     button: true,
@@ -407,7 +515,10 @@ class _CellState extends State<_Cell> {
     hint: widget.hint,
     excludeSemantics: true,
     onTap: widget.onTap,
+    // The long press, for a screen reader; it needs no menu to confirm.
+    customSemanticsActions: {const CustomSemanticsAction(label: _remove): ?widget.onRemove},
     child: GestureDetector(
+      onLongPress: widget.onRemove == null ? null : _offerRemove,
       onTapDown: (_) => setState(() => _pressed = true),
       onTapUp: (_) => setState(() => _pressed = false),
       onTapCancel: () => setState(() => _pressed = false),
@@ -615,7 +726,7 @@ class _GifTabState extends State<_GifTab> {
                 );
               }
               final gifs = snapshot.data;
-              if (gifs == null) return const Center(child: FCircularProgress());
+              if (gifs == null) return const _LoadingGifs();
               if (gifs.isEmpty) {
                 return Center(
                   child: Text('No GIFs found', style: DuvetType.body.copyWith(color: colors.mutedForeground)),
@@ -706,10 +817,9 @@ class _GifTile extends StatelessWidget {
               fit: StackFit.expand,
               children: [
                 ColoredBox(color: context.theme.colors.secondary),
-                Image.network(
-                  gif.preview,
+                Image(
+                  image: cachedImage(gif.preview, cacheWidth: (180 * MediaQuery.devicePixelRatioOf(context)).round()),
                   fit: BoxFit.cover,
-                  cacheWidth: (180 * MediaQuery.devicePixelRatioOf(context)).round(),
                   errorBuilder: (_, _, _) => const SizedBox.shrink(),
                 ),
                 Positioned(

@@ -4,6 +4,7 @@ import 'package:duvet/data/models.dart';
 import 'package:duvet/data/recent_chats.dart';
 import 'package:duvet/data/recent_chats.dart' as recent show previewOf;
 import 'package:duvet/data/repository.dart';
+import 'package:duvet_client/duvet.dart' show Activity;
 import 'package:flutter/foundation.dart';
 
 import 'fake_voice.dart';
@@ -49,6 +50,16 @@ class FakeRepository implements ChatRepository {
   final ValueNotifier<Set<String>> collapsedCategories = ValueNotifier(const {});
 
   @override
+  final ValueNotifier<Set<String>> pinnedChats = ValueNotifier(const {});
+
+  @override
+  void setChatPinned(String key, bool pinned) => pinnedChats.value = {
+    for (final k in pinnedChats.value)
+      if (k != key) k,
+    if (pinned) key,
+  };
+
+  @override
   void setCategoryCollapsed(String categoryId, bool collapsed) => collapsedCategories.value = {
     for (final id in collapsedCategories.value)
       if (id != categoryId) id,
@@ -69,6 +80,89 @@ class FakeRepository implements ChatRepository {
   final ValueNotifier<Map<String, List<TypingUser>>> typingNow = ValueNotifier(const {});
   @override
   final ValueNotifier<Map<String, int>> mentions = ValueNotifier(const {});
+
+  @override
+  final ValueNotifier<Map<String, NotificationLevel>> notificationLevels = ValueNotifier(const {});
+
+  /// Each Space's default, as its owner set it: only mentions when it isn't here.
+  final spaceDefaults = <String, NotificationLevel>{};
+
+  /// The levels chosen in the app, as `<target ID> <kind> <level, or default>`.
+  final levelChoices = <String>[];
+
+  @override
+  NotificationLevel spaceLevel(String spaceId) => notificationLevels.value[spaceId] ?? spaceDefault(spaceId);
+
+  @override
+  NotificationLevel spaceDefault(String spaceId) => spaceDefaults[spaceId] ?? NotificationLevel.mentions;
+
+  @override
+  NotificationLevel roomLevel(String roomId) =>
+      notificationLevels.value[roomId] ??
+      switch (spaces.value.where((s) => s.rooms.any((r) => r.id == roomId)).firstOrNull) {
+        final space? => spaceLevel(space.id),
+        null => NotificationLevel.mentions,
+      };
+
+  @override
+  NotificationLevel conversationLevel(String conversationId) =>
+      notificationLevels.value[conversationId] ?? NotificationLevel.all;
+
+  @override
+  bool quiet(String chatId) =>
+      (spaces.value.any((s) => s.rooms.any((r) => r.id == chatId)) ? roomLevel(chatId) : conversationLevel(chatId)) ==
+      NotificationLevel.nothing;
+
+  /// The FIDs the app registered, in order, and how many times it deleted its registration; and how many of the
+  /// next registrations fail.
+  final pushRegistrations = <String>[];
+  int pushDeletes = 0;
+  int pushRegistrationFailures = 0;
+
+  @override
+  Future<void> setPushRegistration(String fid) async {
+    if (pushRegistrationFailures > 0) {
+      pushRegistrationFailures--;
+      throw Exception('the API is unreachable');
+    }
+    pushRegistrations.add(fid);
+  }
+
+  @override
+  Future<void> deletePushRegistration() async => pushDeletes++;
+
+  @override
+  Future<void> setNotificationLevel(String targetId, NotificationTarget target, NotificationLevel? level) async {
+    levelChoices.add('$targetId ${target.name} ${level?.name ?? 'default'}');
+    // As the server's NOTIFICATION_SETTINGS_UPDATE would.
+    notificationLevels.value = level == null
+        ? ({...notificationLevels.value}..remove(targetId))
+        : {...notificationLevels.value, targetId: level};
+  }
+
+  @override
+  final ValueNotifier<List<MentionNotice>> mentionNotices = ValueNotifier(const []);
+
+  @override
+  void dismissMentionNotice(String messageId) =>
+      mentionNotices.value = [...mentionNotices.value.where((n) => n.messageId != messageId)];
+
+  /// The chat on screen, as its screen says it.
+  ({String chatId, String? threadOf})? onScreen;
+
+  @override
+  void chatShown(ChatTarget target, {String? threadOf, bool opened = true}) {
+    onScreen = (chatId: target.id, threadOf: threadOf);
+    if (opened && threadOf == null) {
+      mentionNotices.value = [...mentionNotices.value.where((n) => n.target != target)];
+    }
+  }
+
+  @override
+  void chatHidden(ChatTarget target, {String? threadOf}) {
+    if (onScreen == (chatId: target.id, threadOf: threadOf)) onScreen = null;
+  }
+
   @override
   final drafts = <String, ChatDraft>{};
   final lastRead = <String, String>{};
@@ -132,23 +226,30 @@ class FakeRepository implements ChatRepository {
   final pinChanges = <(String, bool)>[];
   final threads = <String, List<ChatMessage>>{};
 
+  /// How many hits a page of [search] holds; the API's is 25.
+  int searchPageSize = 25;
+
   @override
-  Future<List<SearchHit>> search(SearchQuery query) async {
+  Future<SearchPage> search(SearchQuery query) async {
     searches.add(query);
     final q = query.text.toLowerCase();
-    return [
+    final all = [
       for (final MapEntry(:key, :value) in history.entries)
         if ((query.conversationId == null || query.conversationId == key) &&
-            (query.roomId == null || query.roomId == key) &&
+            (query.roomIds.isEmpty || query.roomIds.contains(key)) &&
             (query.spaceId == null || key.startsWith('r-')) &&
             !(query.spaceId == null && query.conversationId == null))
           for (final m in value.reversed)
-            if (m.content.toLowerCase().contains(q))
+            if (m.content.toLowerCase().contains(q) &&
+                (query.authorIds.isEmpty || query.authorIds.contains(m.authorId)) &&
+                (query.pinned == null || m.pinned == query.pinned))
               SearchHit(
                 target: key.startsWith('c-') ? ConversationTarget(key) : RoomTarget(spaceId: 's-guild', roomId: key),
                 message: m,
               ),
     ];
+    final from = query.cursor == null ? 0 : all.indexWhere((h) => h.message.id == query.cursor) + 1;
+    return (hits: all.skip(from).take(searchPageSize).toList(), total: all.length);
   }
 
   @override
@@ -226,7 +327,13 @@ class FakeRepository implements ChatRepository {
   }
 
   @override
-  Future<void> sendFriendRequest(String userId) async => friendCalls.add('send $userId');
+  Future<void> sendFriendRequest(String userId) async {
+    if (friendRequestRefused != null) throw ActionFailed(friendRequestRefused!);
+    friendCalls.add('send $userId');
+  }
+
+  /// Why the server refuses a friend request, if it does.
+  String? friendRequestRefused;
 
   @override
   Future<void> acceptFriendRequest(String requestId) async => friendCalls.add('accept $requestId');
@@ -282,6 +389,9 @@ class FakeRepository implements ChatRepository {
   List<MyFile> files = [];
   StorageInfo usage = const StorageInfo(used: 0, max: 5 * 1024 * 1024 * 1024);
 
+  /// Why the server refuses a sign-up, if it does.
+  String? signUpRefused;
+
   @override
   Future<void> signUp({
     required String username,
@@ -289,13 +399,23 @@ class FakeRepository implements ChatRepository {
     required String password,
     String? alias,
   }) async {
-    account.add('signup $username $email');
+    if (signUpRefused != null) throw ActionFailed(signUpRefused!);
+    account.add(['signup', username, email, ?alias].join(' '));
     _seed();
     profile.value = Profile(id: me.id, username: username, alias: alias, emailVerified: false);
   }
 
   @override
   Future<void> sendVerificationEmail() async => account.add('send verification');
+
+  /// What [sendResetPasswordEmail] fails with, when set.
+  String? resetPasswordRefused;
+
+  @override
+  Future<void> sendResetPasswordEmail() async {
+    if (resetPasswordRefused != null) throw ActionFailed(resetPasswordRefused!);
+    account.add('send reset password');
+  }
 
   @override
   Future<void> verifyEmail(String token) async {
@@ -325,14 +445,15 @@ class FakeRepository implements ChatRepository {
   String? pictureRefused;
 
   @override
-  Future<void> updateProfile({required String alias, String? bio}) async {
+  Future<void> updateProfile({required String alias, String? bio, String? username}) async {
     if (profileRefused != null) throw ActionFailed(profileRefused!);
     account.add('alias $alias');
     if (bio != null) account.add('bio $bio');
+    if (username != null) account.add('username $username');
     final p = profile.value!;
     profile.value = Profile(
       id: p.id,
-      username: p.username,
+      username: username ?? p.username,
       alias: alias.isEmpty ? null : alias,
       bio: bio == null ? p.bio : (bio.trim().isEmpty ? null : bio.trim()),
       status: p.status,
@@ -433,6 +554,9 @@ class FakeRepository implements ChatRepository {
   /// What [spaceProfile] says of ManageChannels in some room.
   bool managesRooms = false;
 
+  /// The Space's locale, as [updateSpace] leaves it.
+  String? spaceLocale;
+
   @override
   bool canInRoom(String spaceId, String roomId, int bit) => switch (bit) {
     _ when (deniedInRoom[roomId] ?? 0) & bit != 0 => false,
@@ -451,6 +575,7 @@ class FakeRepository implements ChatRepository {
       name: space.name,
       iconUrl: space.iconUrl,
       bannerUrl: space.bannerUrl,
+      locale: spaceLocale,
       memberCount: everyone.length,
       owner: spaceOwner,
       perms: spacePerms,
@@ -463,15 +588,19 @@ class FakeRepository implements ChatRepository {
     String spaceId, {
     String? name,
     String? description,
+    String? locale,
     String? iconPath,
     String? bannerPath,
     bool removeBanner = false,
     bool removeIcon = false,
+    NotificationLevel? defaultNotifications,
     void Function(double progress)? onProgress,
   }) async {
     if (iconPath != null || bannerPath != null) await _upload(onProgress);
+    if (locale != null) spaceLocale = locale;
+    if (defaultNotifications != null) spaceDefaults[spaceId] = defaultNotifications;
     admin.add(
-      'space ${[if (name != null) 'name=$name', if (description != null) 'about=$description', if (iconPath != null) 'icon=$iconPath', if (removeIcon && iconPath == null) 'icon=none', if (bannerPath != null) 'banner=$bannerPath', if (removeBanner && bannerPath == null) 'banner=none'].join(' ')}',
+      'space ${[if (name != null) 'name=$name', if (description != null) 'about=$description', if (locale != null) 'locale=$locale', if (iconPath != null) 'icon=$iconPath', if (removeIcon && iconPath == null) 'icon=none', if (bannerPath != null) 'banner=$bannerPath', if (removeBanner && bannerPath == null) 'banner=none', if (defaultNotifications != null) 'notifications=${defaultNotifications.name}'].join(' ')}',
     );
     if (name != null || iconPath != null || bannerPath != null || removeBanner || removeIcon) {
       spaces.value = [
@@ -487,6 +616,7 @@ class FakeRepository implements ChatRepository {
                       : s.iconUrl,
                   sections: s.sections,
                   onlineCount: s.onlineCount,
+                  ownerId: s.ownerId,
                   // As SPACE_UPDATE brings it: an uploaded banner, or none.
                   bannerUrl: bannerPath != null
                       ? 'https://example.invalid/banner.png'
@@ -524,6 +654,7 @@ class FakeRepository implements ChatRepository {
               iconUrl: s.iconUrl,
               onlineCount: s.onlineCount,
               bannerUrl: s.bannerUrl,
+              ownerId: s.ownerId,
               sections: [
                 for (final section in s.sections)
                   RoomSection(
@@ -755,6 +886,12 @@ class FakeRepository implements ChatRepository {
     admin.add('${has ? 'give' : 'take'} $roleId ${nameOf(userId)}');
     final holders = roleHolders[roleId] ??= {};
     has ? holders.add(userId) : holders.remove(userId);
+    // As the real one: their roles change, and the Space's listeners hear.
+    final role = roles(spaceId).where((r) => r.id == roleId).firstOrNull;
+    final tags = [...?roleTags[userId]]..removeWhere((t) => t.id == roleId);
+    if (has && role != null) tags.add(RoleTag(role.name, color: role.color, id: role.id, position: role.position));
+    roleTags[userId] = tags..sort((a, b) => b.position.compareTo(a.position));
+    spaces.value = [...spaces.value];
   }
 
   @override
@@ -853,6 +990,126 @@ class FakeRepository implements ChatRepository {
 
   @override
   Future<SpaceStorage> spaceStorage(String spaceId) async => storageOfSpace;
+
+  String _limits(BucketDraft d) =>
+      'region=${d.region} path=${d.pathStyle} max=${d.max} limit=${d.uploadLimit} secret=${d.secret}';
+
+  @override
+  Future<void> createSpaceBucket(String spaceId, BucketDraft draft) async {
+    admin.add('bucket+ ${draft.name} ${_limits(draft)}');
+    _refuse('createSpaceBucket');
+    final s = storageOfSpace;
+    storageOfSpace = SpaceStorage(
+      used: s.used,
+      files: s.files,
+      buckets: [
+        ...s.buckets,
+        Bucket(
+          id: 'b-${draft.name}',
+          name: draft.name,
+          region: draft.region,
+          endpoint: draft.endpoint,
+          bucketName: draft.bucketName,
+          accessKey: draft.accessKey,
+          pathStyle: draft.pathStyle,
+          max: draft.max,
+          uploadLimit: draft.uploadLimit,
+        ),
+      ],
+    );
+  }
+
+  @override
+  Future<void> updateSpaceBucket(String spaceId, String bucketId, BucketDraft draft) async {
+    admin.add('bucket* $bucketId ${draft.name} ${_limits(draft)}');
+    _refuse('updateSpaceBucket');
+    final s = storageOfSpace;
+    storageOfSpace = SpaceStorage(
+      used: s.used,
+      files: s.files,
+      buckets: [
+        for (final b in s.buckets)
+          b.id != bucketId
+              ? b
+              : Bucket(
+                  id: b.id,
+                  name: draft.name,
+                  region: draft.region,
+                  endpoint: draft.endpoint,
+                  bucketName: draft.bucketName,
+                  accessKey: draft.accessKey,
+                  pathStyle: draft.pathStyle,
+                  active: b.active,
+                  used: b.used,
+                  max: draft.max,
+                  uploadLimit: draft.uploadLimit,
+                ),
+      ],
+    );
+  }
+
+  @override
+  Future<void> deleteSpaceBucket(String spaceId, String bucketId) async {
+    admin.add('bucket- $bucketId');
+    _refuse('deleteSpaceBucket');
+    final s = storageOfSpace;
+    storageOfSpace = SpaceStorage(
+      used: s.used,
+      files: s.files,
+      buckets: s.buckets.where((b) => b.id != bucketId).toList(),
+    );
+  }
+
+  @override
+  Future<void> setSpaceBucketActive(String spaceId, String bucketId, bool active) async {
+    admin.add('bucket ${active ? 'on' : 'off'} $bucketId');
+    _refuse('setSpaceBucketActive');
+    final s = storageOfSpace;
+    // One active at most, as the API keeps it.
+    storageOfSpace = SpaceStorage(
+      used: s.used,
+      files: s.files,
+      buckets: [
+        for (final b in s.buckets)
+          Bucket(
+            id: b.id,
+            name: b.name,
+            region: b.region,
+            endpoint: b.endpoint,
+            bucketName: b.bucketName,
+            accessKey: b.accessKey,
+            pathStyle: b.pathStyle,
+            active: b.id == bucketId
+                ? active
+                : active
+                ? false
+                : b.active,
+            used: b.used,
+            max: b.max,
+            uploadLimit: b.uploadLimit,
+          ),
+      ],
+    );
+  }
+
+  @override
+  Future<void> deleteSpaceFile(String spaceId, String fileId) async {
+    admin.add('file- $fileId');
+    _refuse('deleteSpaceFile');
+    final s = storageOfSpace;
+    storageOfSpace = SpaceStorage(
+      used: s.used,
+      buckets: s.buckets,
+      files: s.files.where((f) => f.id != fileId).toList(),
+    );
+  }
+
+  @override
+  Future<void> deleteAllSpaceFiles(String spaceId) async {
+    admin.add('files-');
+    _refuse('deleteAllSpaceFiles');
+    storageOfSpace = SpaceStorage(used: 0, buckets: storageOfSpace.buckets);
+  }
 
   // The developer portal: teams, their members and apps, by team ID, and the
   // bots' profiles by user ID. Changes go in [admin].
@@ -958,6 +1215,40 @@ class FakeRepository implements ChatRepository {
     appList[app.teamId]?.removeWhere((a) => a.id == app.id);
   }
 
+  /// Each application's commands, by its ID.
+  final appCommandList = <String, List<BotCommand>>{};
+  int _commandIds = 0;
+
+  @override
+  Future<List<BotCommand>> appCommands(DevApp app) async =>
+      [...?appCommandList[app.id]]..sort((a, b) => a.name.compareTo(b.name));
+
+  @override
+  Future<BotCommand> saveAppCommand(DevApp app, BotCommand command) async {
+    _refuse('saveAppCommand');
+    final saved = BotCommand(
+      id: command.id.isEmpty ? 'cmd-${++_commandIds}' : command.id,
+      applicationId: app.id,
+      appName: app.name,
+      name: command.name,
+      description: command.description,
+      options: command.options,
+    );
+    admin.add('${command.id.isEmpty ? 'command+' : 'command'} ${saved.name}');
+    final list = appCommandList[app.id] ??= [];
+    list
+      ..removeWhere((c) => c.id == saved.id)
+      ..add(saved);
+    return saved;
+  }
+
+  @override
+  Future<void> deleteAppCommand(DevApp app, String commandId) async {
+    _refuse('deleteAppCommand');
+    admin.add('command- $commandId');
+    appCommandList[app.id]?.removeWhere((c) => c.id == commandId);
+  }
+
   @override
   Future<String> createBot(DevApp app) async {
     admin.add('bot+ ${app.id}');
@@ -1038,6 +1329,7 @@ class FakeRepository implements ChatRepository {
     UiComponent component, {
     List<String>? values,
   }) async {
+    _refuse('useComponent');
     interactions.add('component ${component.customId}${values == null ? '' : ' ${values.join(',')}'}');
     final modal = nextModal;
     nextModal = null;
@@ -1046,7 +1338,7 @@ class FakeRepository implements ChatRepository {
 
   @override
   Future<BotModal?> useCommand(RoomTarget target, BotCommand command, Map<String, Object> options) async {
-    interactions.add('command ${command.name} ${options.entries.map((e) => '${e.key}=${e.value}').join(' ')}'.trim());
+    interactions.add('command ${command.path} ${options.entries.map((e) => '${e.key}=${e.value}').join(' ')}'.trim());
     final modal = nextModal;
     nextModal = null;
     return modal;
@@ -1068,6 +1360,63 @@ class FakeRepository implements ChatRepository {
   Future<void> addBot(String spaceId, String botId) async {
     _refuse('addBot');
     botsAdded.add((spaceId, botId));
+  }
+
+  final botsRemoved = <(String, String)>[];
+
+  @override
+  Future<void> removeBot(String spaceId, String botId) async {
+    _refuse('removeBot');
+    botsRemoved.add((spaceId, botId));
+    // The gateway's SPACE_MEMBER_REMOVE that follows.
+    spaceMembers[spaceId]?.remove(botId);
+    spaces.value = [...spaces.value];
+  }
+
+  final kicked = <(String, String)>[];
+  final banned = <(String, String, String?)>[];
+
+  @override
+  Future<void> kick(String spaceId, String userId) async {
+    _refuse('kick');
+    kicked.add((spaceId, userId));
+    spaceMembers[spaceId]?.remove(userId);
+    spaces.value = [...spaces.value];
+  }
+
+  @override
+  Future<void> ban(String spaceId, String userId, {String? reason}) async {
+    _refuse('ban');
+    banned.add((spaceId, userId, reason));
+    spaceMembers[spaceId]?.remove(userId);
+    spaces.value = [...spaces.value];
+  }
+
+  /// The Space's bans, newest first; [banElsewhere] adds one as SPACE_BAN_ADD would.
+  var banList = <SpaceBan>[];
+  final unbanned = <(String, String)>[];
+
+  @override
+  Future<List<SpaceBan>> bans(String spaceId) async {
+    _refuse('bans');
+    return [...banList];
+  }
+
+  @override
+  Future<void> unban(String spaceId, String userId) async {
+    _refuse('unban');
+    unbanned.add((spaceId, userId));
+    banList = banList.where((b) => b.user.userId != userId).toList();
+  }
+
+  final _bansChanged = StreamController<String>.broadcast();
+
+  @override
+  Stream<String> get bansChanged => _bansChanged.stream;
+
+  void banElsewhere(String spaceId, SpaceBan ban) {
+    banList = [ban, ...banList];
+    _bansChanged.add(spaceId);
   }
 
   @override
@@ -1108,13 +1457,24 @@ class FakeRepository implements ChatRepository {
   final history = <String, List<ChatMessage>>{};
   final sent =
       <
-        ({ChatTarget target, String content, String nonce, List<OutgoingFile> files, Sticker? sticker, String? replyTo})
+        ({
+          ChatTarget target,
+          String content,
+          String nonce,
+          List<OutgoingFile> files,
+          Sticker? sticker,
+          String? replyTo,
+          bool? mentionRepliedUser,
+        })
       >[];
   final directMessagesOpened = <String>[];
   @override
   final ValueNotifier<Map<String, Presence>> presence = ValueNotifier({maya: Presence.online});
   @override
   final ValueNotifier<Set<String>> mobileOnly = ValueNotifier(const {});
+
+  @override
+  final ValueNotifier<Map<String, List<Activity>>> activities = ValueNotifier(const {});
   final reads = <(ChatTarget, String)>[];
 
   /// Completes sends when set; otherwise they answer at once.
@@ -1135,6 +1495,7 @@ class FakeRepository implements ChatRepository {
         id: 's-guild',
         name: 'Design Guild',
         onlineCount: 1,
+        ownerId: maya,
         sections: [
           RoomSection(
             name: null,
@@ -1205,6 +1566,12 @@ class FakeRepository implements ChatRepository {
   @override
   void cameToFront() => cameToFrontTimes++;
 
+  /// How many times the app went to the background.
+  int wentToBackTimes = 0;
+
+  @override
+  void wentToBack() => wentToBackTimes++;
+
   @override
   Future<void> logIn(String email, String password) async {
     if (password != this.password) throw Exception('rejected');
@@ -1260,6 +1627,17 @@ class FakeRepository implements ChatRepository {
   /// Messages only a fetch by ID finds: older than the loaded page.
   final older = <String, List<ChatMessage>>{};
 
+  /// The links asked for, and the new link of each file, by ID: one without
+  /// keeps its own.
+  final linksAsked = <({String id, bool refused})>[];
+  final renewedLinks = <String, String>{};
+
+  @override
+  Future<String> attachmentLink(MessageAttachment attachment, {bool refused = false}) async {
+    linksAsked.add((id: attachment.id, refused: refused));
+    return renewedLinks[attachment.id] ?? attachment.url;
+  }
+
   /// What [messagesAfter] answers, by chat ID.
   final missed = <String, List<ChatMessage>>{};
 
@@ -1291,6 +1669,12 @@ class FakeRepository implements ChatRepository {
   @override
   String previewOf(ChatMessage message) => recent.previewOf(message, (c) => c);
 
+  /// What [cachedMessages] answers, by chat ID.
+  final cachedPages = <String, List<ChatMessage>>{};
+
+  @override
+  Future<List<ChatMessage>?> cachedMessages(ChatTarget target) async => cachedPages[target.id];
+
   @override
   Future<List<ChatMessage>> messages(ChatTarget target, {String? before}) async {
     if (before == null) return [...?history[target.id]];
@@ -1319,10 +1703,19 @@ class FakeRepository implements ChatRepository {
     List<OutgoingFile> files = const [],
     Sticker? sticker,
     String? replyTo,
+    bool? mentionRepliedUser,
     void Function(double progress)? onProgress,
     Future<void>? cancel,
   }) async {
-    sent.add((target: target, content: content, nonce: nonce, files: files, sticker: sticker, replyTo: replyTo));
+    sent.add((
+      target: target,
+      content: content,
+      nonce: nonce,
+      files: files,
+      sticker: sticker,
+      replyTo: replyTo,
+      mentionRepliedUser: mentionRepliedUser,
+    ));
     if (files.isNotEmpty) {
       onProgress?.call(0);
       lastUpload = onProgress;
@@ -1368,8 +1761,13 @@ class FakeRepository implements ChatRepository {
   final extraRoomMembers = <Member>[];
 
   @override
-  Future<List<Member>> members(ChatTarget target, {bool refresh = false}) async =>
-      target is RoomTarget ? [...everyone, ...extraRoomMembers] : everyone.where((m) => m.userId != leo).toList();
+  Future<List<Member>> members(ChatTarget target, {bool refresh = false}) async {
+    if (target is! RoomTarget) return everyone.where((m) => m.userId != leo).toList();
+    final list = [...everyone, ...extraRoomMembers];
+    // As the real one: a list loaded tells who's in the Space.
+    (spaceMembers[target.spaceId] ??= {}).addAll(list.map((m) => m.userId));
+    return list;
+  }
 
   @override
   String? nameOf(String userId) => everyone.where((m) => m.userId == userId).firstOrNull?.displayName;
@@ -1424,5 +1822,6 @@ class FakeRepository implements ChatRepository {
     recentChats.dispose();
     presence.dispose();
     mobileOnly.dispose();
+    activities.dispose();
   }
 }

@@ -3,6 +3,7 @@ import 'dart:io';
 import 'dart:math' as math;
 
 import 'package:audio_service/audio_service.dart' as svc;
+import 'package:clock/clock.dart' as time show clock;
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:forui/forui.dart';
@@ -11,10 +12,14 @@ import 'package:path_provider/path_provider.dart';
 import 'package:record/record.dart' as rec;
 import 'package:video_player/video_player.dart';
 
+import '../data/images.dart';
 import '../data/models.dart';
 import '../data/ogg.dart';
+import '../data/appearance.dart' show ownBubble;
 import '../theme.dart';
+import 'attachment_link.dart';
 import 'depth.dart';
+import 'skeleton.dart';
 
 // -----------------------------------------------------------------------------
 // Playback
@@ -53,7 +58,9 @@ abstract class AudioPlayback {
   /// Plays [url] as [id], from where it was paused if it's the same.
   /// [title] and [artist] name it in the playback bar and the system's media
   /// controls, which show [artUrl] (the sender's avatar) as its artwork.
-  Future<void> play(String id, String url, {required String title, String? artist, String? artUrl});
+  /// [link], when given, answers the link to load instead, a new one when
+  /// [url] is about to expire, and is asked once more when it fails to load.
+  Future<void> play(String id, String url, {required String title, String? artist, String? artUrl, LinkSource? link});
 
   /// Plays what was paused.
   Future<void> resume();
@@ -62,6 +69,22 @@ abstract class AudioPlayback {
 
   /// Stops and forgets it: the playback bar and the media notification go.
   Future<void> stop();
+
+  /// Each note's speed, as the user set it: one missing plays at 1×.
+  ValueListenable<Map<String, double>> get speeds;
+
+  /// Plays [id] at [speed]: at once if it's playing, and whenever it plays
+  /// next.
+  Future<void> setSpeed(String id, double speed);
+
+  /// The desktop's steps, which the speed button goes through in turn.
+  static const speedSteps = [0.5, 0.75, 1.0, 1.25, 1.5, 1.75, 2.0];
+
+  /// The step after [speed], back to the first after the last.
+  static double nextSpeed(double speed) {
+    final i = speedSteps.indexOf(speed);
+    return speedSteps[(i + 1) % speedSteps.length];
+  }
 
   static AudioPlayback instance = JustAudioPlayback();
 }
@@ -135,7 +158,18 @@ class VoiceNoteHandler extends svc.BaseAudioHandler with svc.SeekHandler {
 class JustAudioPlayback implements AudioPlayback {
   VoiceNoteHandler? _handler;
   final _state = ValueNotifier(PlaybackState.idle);
-  ({String id, String url, String title, String? artist, String? artUrl})? _last;
+  final _speeds = ValueNotifier(const <String, double>{});
+
+  @override
+  ValueListenable<Map<String, double>> get speeds => _speeds;
+
+  @override
+  Future<void> setSpeed(String id, double speed) async {
+    _speeds.value = {..._speeds.value, id: speed};
+    if (_state.value.id == id) await _handler?.player.setSpeed(speed);
+  }
+
+  ({String id, String url, String title, String? artist, String? artUrl, LinkSource? link})? _last;
 
   @override
   ValueListenable<PlaybackState> get state => _state;
@@ -145,7 +179,9 @@ class JustAudioPlayback implements AudioPlayback {
     final handler = _handler = VoiceNoteHandler.instance;
     handler.onStopped = () => _state.value = PlaybackState.idle;
     handler.onReplay = () async {
-      if (_last case final l?) await play(l.id, l.url, title: l.title, artist: l.artist, artUrl: l.artUrl);
+      if (_last case final l?) {
+        await play(l.id, l.url, title: l.title, artist: l.artist, artUrl: l.artUrl, link: l.link);
+      }
     };
     final player = handler.player;
     player.positionStream.listen((p) => _update(position: p));
@@ -175,27 +211,50 @@ class JustAudioPlayback implements AudioPlayback {
   }
 
   @override
-  Future<void> play(String id, String url, {required String title, String? artist, String? artUrl}) async {
+  Future<void> play(
+    String id,
+    String url, {
+    required String title,
+    String? artist,
+    String? artUrl,
+    LinkSource? link,
+  }) async {
     final handler = _ensure();
-    _last = (id: id, url: url, title: title, artist: artist, artUrl: artUrl);
+    _last = (id: id, url: url, title: title, artist: artist, artUrl: artUrl, link: link);
     if (_state.value.id != id) {
       await handler.player.stop();
       _state.value = PlaybackState(id: id, title: title, artist: artist);
       handler.mediaItem.add(
         svc.MediaItem(id: id, title: title, artist: artist, artUri: artUrl == null ? null : Uri.tryParse(artUrl)),
       );
-      try {
-        await handler.player.setUrl(url);
-      } on ja.PlayerInterruptedException {
-        // Another note, or Stop, took over while this one loaded.
-        return;
-      } catch (e) {
-        // A note that won't load mustn't stay in the bar and the notification.
-        debugPrint('Voice note $id failed to load: $e');
-        await handler.stop();
-        return;
+      // Its link, renewed first when it's about to expire, and once more when
+      // it won't load: an expired link is refused.
+      String? failed;
+      for (var refused = false; ; refused = true) {
+        final source = link == null ? url : await link(failed: failed);
+        // Another note, or Stop, took over while its link came.
+        if (_state.value.id != id) return;
+        try {
+          await handler.player.setUrl(source);
+          break;
+        } on ja.PlayerInterruptedException {
+          // Another note, or Stop, took over while this one loaded.
+          return;
+        } catch (e) {
+          if (link != null && !refused) {
+            failed = source;
+            continue;
+          }
+          // A note that won't load mustn't stay in the bar and the notification.
+          debugPrint('Voice note $id failed to load: $e');
+          await handler.stop();
+          return;
+        }
       }
     }
+    await handler.player.setSpeed(_speeds.value[id] ?? 1);
+    // Stop, or another note, took over while the speed was set.
+    if (_state.value.id != id) return;
     // The player's own play: the handler's would replay a note that's idle.
     unawaited(handler.player.play());
   }
@@ -279,6 +338,7 @@ class _PlaySquare extends StatelessWidget {
     final colors = context.theme.colors;
     final tokens = context.duvet;
     const radius = BorderRadius.all(Radius.circular(DuvetTokens.radiusField));
+    final ink = ownBubble(context).ink;
     return Semantics(
       container: true,
       button: true,
@@ -290,14 +350,14 @@ class _PlaySquare extends StatelessWidget {
         builder: (context, pressed) => Container(
           width: 36,
           height: 36,
-          decoration: BoxDecoration(color: onAccent ? const Color(0x2EFFFFFF) : colors.secondary, borderRadius: radius),
+          decoration: BoxDecoration(color: onAccent ? ink.withAlpha(0x2E) : colors.secondary, borderRadius: radius),
           child: InsetShadow(
             shadows: onAccent ? const [] : (pressed ? tokens.shadowPressed : tokens.shadowWell),
             borderRadius: radius,
             child: Icon(
               playing ? FLucideIcons.pause : FLucideIcons.play,
               size: 18,
-              color: onAccent ? colors.primaryForeground : colors.foreground,
+              color: onAccent ? ink : colors.foreground,
             ),
           ),
         ),
@@ -328,7 +388,8 @@ class VoiceNotePlayer extends StatelessWidget {
     final colors = context.theme.colors;
     final tokens = context.duvet;
     final playback = AudioPlayback.instance;
-    final ink = mine ? colors.primaryForeground : colors.foreground;
+    final bubble = ownBubble(context);
+    final ink = mine ? bubble.ink : colors.foreground;
     final bars = fallbackBars(attachment.id, 30);
     return ValueListenableBuilder(
       valueListenable: playback.state,
@@ -349,7 +410,7 @@ class VoiceNotePlayer extends StatelessWidget {
             width: 260,
             padding: const EdgeInsets.fromLTRB(8, 8, 12, 8),
             decoration: BoxDecoration(
-              color: mine ? Duvet.azure : colors.card,
+              color: mine ? bubble.fill : colors.card,
               borderRadius: BorderRadius.circular(DuvetTokens.radiusButton),
               boxShadow: tokens.shadowRest,
             ),
@@ -367,22 +428,23 @@ class VoiceNotePlayer extends StatelessWidget {
                           title: 'Voice message',
                           artist: authorName,
                           artUrl: authorAvatarUrl,
+                          link: linkSource(context, attachment),
                         ),
                 ),
                 const SizedBox(width: 10),
                 Expanded(
                   child: ExcludeSemantics(
-                    child: GestureDetector(
-                      // Tap along the waveform to jump there.
-                      onTapDown: duration == null
-                          ? null
-                          : (d) {
-                              final box = context.findRenderObject() as RenderBox?;
-                              final width = (box?.size.width ?? 1) - 76;
-                              final f = ((d.localPosition.dx) / math.max(1, width)).clamp(0.0, 1.0);
-                              playback.seek(attachment.id, duration * f);
-                            },
-                      child: Waveform(bars: bars, color: ink, progress: active ? progress : 0),
+                    child: LayoutBuilder(
+                      builder: (context, box) => GestureDetector(
+                        // Tap along the waveform to jump there.
+                        onTapDown: duration == null
+                            ? null
+                            : (d) {
+                                final f = (d.localPosition.dx / math.max(1, box.maxWidth)).clamp(0.0, 1.0);
+                                playback.seek(attachment.id, duration * f);
+                              },
+                        child: Waveform(bars: bars, color: ink, progress: active ? progress : 0),
+                      ),
                     ),
                   ),
                 ),
@@ -396,7 +458,65 @@ class VoiceNotePlayer extends StatelessWidget {
                     ),
                   ),
                 ),
+                const SizedBox(width: 6),
+                _SpeedButton(id: attachment.id, onAccent: mine),
               ],
+            ),
+          ),
+        );
+      },
+    );
+  }
+}
+
+/// A voice note's speed, "1×": a tap takes the next of the desktop's steps.
+class _SpeedButton extends StatelessWidget {
+  final String id;
+  final bool onAccent;
+  const _SpeedButton({required this.id, required this.onAccent});
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = context.theme.colors;
+    final ink = ownBubble(context).ink;
+    final playback = AudioPlayback.instance;
+    return ValueListenableBuilder(
+      valueListenable: playback.speeds,
+      builder: (context, speeds, _) {
+        final speed = speeds[id] ?? 1;
+        final shown = '${speed.toString().replaceFirst(RegExp(r'\.0$'), '')}×';
+        void next() => playback.setSpeed(id, AudioPlayback.nextSpeed(speed));
+        return Semantics(
+          container: true,
+          button: true,
+          label: 'Speed, $shown',
+          excludeSemantics: true,
+          onTap: next,
+          child: GestureDetector(
+            behavior: HitTestBehavior.opaque,
+            onTap: next,
+            // At least 40 by 40 to hit, the chip to see.
+            child: ConstrainedBox(
+              constraints: const BoxConstraints(minWidth: 40, minHeight: 40),
+              child: Center(
+                widthFactor: 1,
+                heightFactor: 1,
+                child: Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                  decoration: BoxDecoration(
+                    color: onAccent ? ink.withAlpha(0x2E) : colors.secondary,
+                    borderRadius: BorderRadius.circular(DuvetTokens.radiusChip),
+                  ),
+                  child: Text(
+                    shown,
+                    style: DuvetType.caption.copyWith(
+                      color: onAccent ? ink : colors.foreground,
+                      fontWeight: FontWeight.w600,
+                      fontFeatures: const [FontFeature.tabularFigures()],
+                    ),
+                  ),
+                ),
+              ),
             ),
           ),
         );
@@ -444,7 +564,12 @@ class AudioFileTile extends StatelessWidget {
                   label: playing ? 'Pause' : 'Play ${attachment.displayName}',
                   onPressed: () => playing
                       ? playback.pause()
-                      : playback.play(attachment.id, attachment.url, title: attachment.displayName),
+                      : playback.play(
+                          attachment.id,
+                          attachment.url,
+                          title: attachment.displayName,
+                          link: linkSource(context, attachment),
+                        ),
                 ),
                 const SizedBox(width: 12),
                 Expanded(
@@ -569,44 +694,168 @@ class PlayMark extends StatelessWidget {
 }
 
 /// A video in a message: a poster with a play button; tapping plays it full
-/// screen. The poster is [poster] (an embed's picture) or else the video's
-/// first frame, loaded paused.
+/// screen. The poster is [poster] (an embed's picture) or else, for an
+/// upload, the video's first frame, loaded paused.
 class VideoTile extends StatefulWidget {
   final MessageAttachment attachment;
   final double width;
   final String? poster;
-  const VideoTile({required this.attachment, this.width = 248, this.poster, super.key});
+
+  /// An embed's video, from another host: nothing loads from there until
+  /// someone plays it (#172), so it shows [poster] or the play mark alone.
+  final bool embed;
+  const VideoTile({required this.attachment, this.width = 248, this.poster, this.embed = false, super.key});
+
+  /// Lets go of the players kept for tiles that scrolled away, on signing
+  /// out: they hold the account's links. The tiles still there keep none.
+  static void releaseParked() => _VideoTileState._release();
 
   @override
   State<VideoTile> createState() => _VideoTileState();
 }
 
 class _VideoTileState extends State<VideoTile> {
-  // Each first frame is a player and a decoder of its own.
-  // shortcut: at most 3 load at once, the rest show the play mark only; upgrade when the API sends a poster for
-  // uploaded videos.
+  // Each first frame is a paused player and a decoder of its own, so at most 3 are kept, shown or not; the rest wait
+  // their turn, pulsing, and take the next slot that frees.
+  // shortcut: the frame is the paused player itself, as video_player hands out no picture of it; upgrade when the API
+  // sends a poster for uploaded videos.
   static const _maxFrames = 3;
+
+  // Players loading a frame or showing one.
   static int _frames = 0;
 
-  // Only while on screen: the list drops (and so disposes) a tile scrolled away.
+  // The players of frames whose tiles scrolled away, oldest first, by file: scrolled back, a tile shows its frame at
+  // once; a tile waiting for a slot takes the oldest one's.
+  static final _parked = <String, VideoPlayerController>{};
+
+  // Tiles waiting for a slot, in the order they showed.
+  static final _waiting = <_VideoTileState>[];
+
+  // How many times the parked ones were let go: a tile from before parks nothing.
+  static int _releases = 0;
+  int _since = 0;
+
+  static void _release() {
+    _releases++;
+    for (final parked in _parked.values) {
+      unawaited(parked.dispose());
+    }
+    _parked.clear();
+  }
+
   VideoPlayerController? _frame;
+  bool _counted = false;
+  late LinkSource _link;
+
+  // Only an upload's frame is loaded here: an embed's video is reached only once played (#172).
+  bool get _grabs => !widget.embed && widget.poster == null && !widget.attachment.local;
 
   @override
   void initState() {
     super.initState();
-    if (widget.poster != null || widget.attachment.local || _frames >= _maxFrames) return;
+    if (_grabs) _queue();
+  }
+
+  @override
+  void didUpdateWidget(VideoTile old) {
+    super.didUpdateWidget(old);
+    // A video sent from here, uploaded now: its message keeps this tile.
+    if (old.attachment.local && _grabs) _queue();
+  }
+
+  // Shows the frame kept for it, or waits for a slot to load it.
+  void _queue() {
+    _since = _releases;
+    _link = linkSource(context, widget.attachment);
+    if (_parked.remove(widget.attachment.id) case final parked?) {
+      _frames++;
+      _counted = true;
+      _frame = parked;
+      return;
+    }
+    _waiting.add(this);
+    _next();
+  }
+
+  // Starts the tiles waiting while there's a slot, or a parked player to give up for one.
+  static void _next() {
+    while (_waiting.isNotEmpty) {
+      if (_frames + _parked.length >= _maxFrames) {
+        if (_parked.isEmpty) return;
+        unawaited(_parked.remove(_parked.keys.first)!.dispose());
+      }
+      _waiting.removeAt(0)._start();
+    }
+  }
+
+  void _start() {
     _frames++;
-    _frame = VideoPage.controllerFor(Uri.parse(widget.attachment.url))
-      ..initialize().then((_) {
+    _counted = true;
+    final a = widget.attachment;
+    // Its link renewed first when it's about to expire.
+    if (a.linkDueAt(time.clock.now())) {
+      _link().then((url) => _load(url, _link), onError: (Object _) => _fail());
+    } else {
+      _load(a.url, _link);
+    }
+  }
+
+  // Loads the first frame from [url]; once more from a new link when it
+  // won't, as an expired link is refused.
+  void _load(String url, LinkSource link, {bool retry = true}) {
+    if (!mounted) return;
+    final frame = _frame = VideoPage.controllerFor(Uri.parse(url));
+    frame.initialize().then(
+      (_) {
         if (mounted) setState(() {});
-      }, onError: (Object _) {});
+      },
+      onError: (Object _) async {
+        if (!mounted || !identical(_frame, frame)) return;
+        if (!retry || widget.attachment.linkExpires == null) {
+          _fail();
+          return;
+        }
+        final String next;
+        try {
+          next = await link(failed: url);
+        } catch (_) {
+          _fail();
+          return;
+        }
+        if (!mounted || !identical(_frame, frame)) return;
+        _frame = null;
+        // Not awaited: a player that failed to start never finishes disposing.
+        unawaited(frame.dispose());
+        _load(next, link, retry: false);
+      },
+    );
+  }
+
+  // Its frame won't load: the play mark alone, and its slot to the next.
+  void _fail() {
+    if (!mounted) return;
+    unawaited(_frame?.dispose());
+    _frame = null;
+    _counted = false;
+    _frames--;
+    _next();
+    setState(() {});
   }
 
   @override
   void dispose() {
-    if (_frame case final frame?) {
+    _waiting.remove(this);
+    if (_counted) {
       _frames--;
-      frame.dispose();
+      final frame = _frame;
+      if (frame != null && frame.value.isInitialized && _since == _releases) {
+        unawaited(_parked.remove(widget.attachment.id)?.dispose());
+        _parked[widget.attachment.id] = frame;
+      } else {
+        unawaited(frame?.dispose());
+      }
+      // Once this frame's other tiles have gone too: one going mustn't start.
+      scheduleMicrotask(_next);
     }
     super.dispose();
   }
@@ -621,19 +870,7 @@ class _VideoTileState extends State<VideoTile> {
     final height = math.min(widget.width / ratio, 320.0);
     final width = math.min(widget.width, height * ratio);
     final frame = _frame?.value;
-    void open() => Navigator.of(context, rootNavigator: true).push(
-      PageRouteBuilder<void>(
-        opaque: false,
-        barrierColor: Colors.black,
-        transitionDuration: DuvetTokens.panelIn,
-        reverseTransitionDuration: DuvetTokens.panelOut,
-        pageBuilder: (_, _, _) => VideoPage(attachment: attachment),
-        transitionsBuilder: (_, animation, _, child) => FadeTransition(
-          opacity: CurvedAnimation(parent: animation, curve: DuvetTokens.decelerate),
-          child: child,
-        ),
-      ),
-    );
+    void open() => openVideo(context, attachment);
     return Semantics(
       container: true,
       button: true,
@@ -654,11 +891,14 @@ class _VideoTileState extends State<VideoTile> {
             fit: StackFit.expand,
             children: [
               if (widget.poster case final poster?)
-                Image.network(
-                  poster,
+                Image(
+                  image: cachedImage(
+                    poster,
+                    cacheWidth: math.max(1, (width * MediaQuery.devicePixelRatioOf(context)).round()),
+                  ),
                   fit: BoxFit.cover,
-                  cacheWidth: math.max(1, (width * MediaQuery.devicePixelRatioOf(context)).round()),
                   excludeFromSemantics: true,
+                  frameBuilder: (_, child, shown, sync) => shown == null && !sync ? const SkeletonBox() : child,
                   errorBuilder: (_, _, _) => const SizedBox.shrink(),
                 )
               else if (frame != null && frame.isInitialized && !frame.size.isEmpty)
@@ -666,7 +906,10 @@ class _VideoTileState extends State<VideoTile> {
                   fit: BoxFit.cover,
                   clipBehavior: Clip.hardEdge,
                   child: SizedBox.fromSize(size: frame.size, child: VideoPlayer(_frame!)),
-                ),
+                )
+              // Its first frame on its way, or waiting its turn: the desktop's video-skeleton.
+              else if ((_counted || _waiting.contains(this)) && !(frame?.isInitialized ?? false))
+                const SkeletonBox(),
               const Center(child: PlayMark()),
             ],
           ),
@@ -675,6 +918,21 @@ class _VideoTileState extends State<VideoTile> {
     );
   }
 }
+
+/// Plays [attachment] full screen ([VideoPage]).
+void openVideo(BuildContext context, MessageAttachment attachment) => Navigator.of(context, rootNavigator: true).push(
+  PageRouteBuilder<void>(
+    opaque: false,
+    barrierColor: Colors.black,
+    transitionDuration: DuvetTokens.panelIn,
+    reverseTransitionDuration: DuvetTokens.panelOut,
+    pageBuilder: (_, _, _) => VideoPage(attachment: attachment),
+    transitionsBuilder: (_, animation, _, child) => FadeTransition(
+      opacity: CurvedAnimation(parent: animation, curve: DuvetTokens.decelerate),
+      child: child,
+    ),
+  ),
+);
 
 /// A video, full screen on near-black: play and pause, a scrub bar, the time;
 /// swipe down or Close to leave.
@@ -691,20 +949,44 @@ class VideoPage extends StatefulWidget {
 }
 
 class _VideoPageState extends State<VideoPage> {
-  late final VideoPlayerController _controller = VideoPage.controllerFor(Uri.parse(widget.attachment.url));
+  // Null until its link is there: a new one, when its own is about to expire.
+  VideoPlayerController? _player;
   Object? _error;
   double _drag = 0;
 
   @override
   void initState() {
     super.initState();
-    _controller.addListener(_changed);
-    _controller.initialize().then(
+    final a = widget.attachment;
+    final link = linkSource(context, a);
+    if (a.linkDueAt(time.clock.now())) {
+      link().then((url) => _load(url, link));
+    } else {
+      _load(a.url, link);
+    }
+  }
+
+  // Plays it from [url]; once more from a new link when it won't load, as an
+  // expired link is refused.
+  void _load(String url, LinkSource link, {bool retry = true}) {
+    if (!mounted) return;
+    final player = _player = VideoPage.controllerFor(Uri.parse(url))..addListener(_changed);
+    player.initialize().then(
       (_) {
-        if (mounted) _controller.play();
+        if (mounted && identical(_player, player)) player.play();
       },
-      onError: (Object e) {
-        if (mounted) setState(() => _error = e);
+      onError: (Object e) async {
+        if (!mounted || !identical(_player, player)) return;
+        if (!retry || widget.attachment.linkExpires == null) {
+          setState(() => _error = e);
+          return;
+        }
+        final next = await link(failed: url);
+        if (!mounted || !identical(_player, player)) return;
+        player.removeListener(_changed);
+        _player = null;
+        await player.dispose();
+        _load(next, link, retry: false);
       },
     );
   }
@@ -715,15 +997,16 @@ class _VideoPageState extends State<VideoPage> {
 
   @override
   void dispose() {
-    _controller.removeListener(_changed);
-    _controller.dispose();
+    _player?.removeListener(_changed);
+    _player?.dispose();
     super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
     const ink = DuvetTokens.mediaInk;
-    final value = _controller.value;
+    final controller = _player;
+    final value = controller?.value ?? const VideoPlayerValue.uninitialized();
     final duration = value.duration;
     final progress = duration == Duration.zero ? 0.0 : value.position.inMilliseconds / duration.inMilliseconds;
     return Semantics(
@@ -750,10 +1033,10 @@ class _VideoPageState extends State<VideoPage> {
                   child: Center(
                     child: _error != null
                         ? Text('Couldn’t play this video', style: DuvetType.body.copyWith(color: ink))
-                        : value.isInitialized
+                        : value.isInitialized && controller != null
                         ? GestureDetector(
-                            onTap: () => value.isPlaying ? _controller.pause() : _controller.play(),
-                            child: AspectRatio(aspectRatio: value.aspectRatio, child: VideoPlayer(_controller)),
+                            onTap: () => value.isPlaying ? controller.pause() : controller.play(),
+                            child: AspectRatio(aspectRatio: value.aspectRatio, child: VideoPlayer(controller)),
                           )
                         : const CircularProgressIndicator(color: ink),
                   ),
@@ -773,7 +1056,7 @@ class _VideoPageState extends State<VideoPage> {
                   ),
                 ),
               ),
-              if (value.isInitialized)
+              if (value.isInitialized && controller != null)
                 Positioned(
                   left: 16,
                   right: 16,
@@ -784,9 +1067,9 @@ class _VideoPageState extends State<VideoPage> {
                         button: true,
                         label: value.isPlaying ? 'Pause' : 'Play',
                         excludeSemantics: true,
-                        onTap: () => value.isPlaying ? _controller.pause() : _controller.play(),
+                        onTap: () => value.isPlaying ? controller.pause() : controller.play(),
                         child: GestureDetector(
-                          onTap: () => value.isPlaying ? _controller.pause() : _controller.play(),
+                          onTap: () => value.isPlaying ? controller.pause() : controller.play(),
                           child: SizedBox.square(
                             dimension: 40,
                             child: Icon(value.isPlaying ? FLucideIcons.pause : FLucideIcons.play, color: ink),
@@ -799,7 +1082,7 @@ class _VideoPageState extends State<VideoPage> {
                           progress: progress.clamp(0, 1),
                           track: const Color(0x3DFFFFFF),
                           fill: ink,
-                          onSeek: (f) => _controller.seekTo(duration * f),
+                          onSeek: (f) => controller.seekTo(duration * f),
                         ),
                       ),
                       const SizedBox(width: 12),

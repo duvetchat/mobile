@@ -8,6 +8,7 @@ import 'package:duvet/deep_links.dart';
 import 'package:duvet/main.dart';
 import 'package:duvet/widgets/avatar.dart';
 import 'package:duvet/widgets/chrome.dart';
+import 'package:duvet/widgets/prism.dart';
 import 'package:duvet/widgets/rows.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
@@ -58,6 +59,7 @@ class _Fake extends FakeRepository {
     List<OutgoingFile> files = const [],
     Sticker? sticker,
     String? replyTo,
+    bool? mentionRepliedUser,
     void Function(double progress)? onProgress,
     Future<void>? cancel,
   }) async {
@@ -69,6 +71,7 @@ class _Fake extends FakeRepository {
       files: files,
       sticker: sticker,
       replyTo: replyTo,
+      mentionRepliedUser: mentionRepliedUser,
       onProgress: onProgress,
       cancel: cancel,
     );
@@ -357,6 +360,42 @@ void main() {
       semantics.dispose();
     });
 
+    testWidgets('one to a command says who used it; one to a component, the bot\'s', (tester) async {
+      final repository = await openGeneral(tester);
+      repository.push(
+        'r-general',
+        MessageCreated(
+          ChatMessage(
+            id: 'c1',
+            authorId: 'u-ballot',
+            authorName: 'Ballot',
+            fromBot: true,
+            content: 'Poll started',
+            createdAt: DateTime(2026, 10, 23, 9, 5),
+            interaction: const MessageInteraction(userName: 'Leo', command: 'poll start'),
+          ),
+        ),
+      );
+      repository.push(
+        'r-general',
+        MessageCreated(
+          ChatMessage(
+            id: 'c2',
+            authorId: 'u-ballot',
+            authorName: 'Ballot',
+            fromBot: true,
+            content: 'Vote counted',
+            createdAt: DateTime(2026, 10, 23, 9, 6),
+            interaction: const MessageInteraction(userName: 'Leo', interactedMessageId: 'c1'),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+      expect(find.bySemanticsLabel('Leo used /poll start'), findsOneWidget);
+      expect(find.bySemanticsLabel('Leo used Ballot. Jump to message'), findsOneWidget);
+      semantics.dispose();
+    });
+
     testWidgets('a deferred one: the bot is thinking, and past 15 minutes it did not respond', (tester) async {
       final repository = await openGeneral(tester);
       repository.push('r-general', MessageCreated(answer('l1', '', ephemeral: false, loading: true, at: clock.now())));
@@ -422,6 +461,58 @@ void main() {
     });
   });
 
+  testWidgets('a deleted file, or voice note, leaves a placeholder where it was', (tester) async {
+    final repository = await openMaya(tester);
+    MessageAttachment file(String id, String name, String type) =>
+        MessageAttachment(id: id, filename: name, contentType: type, url: 'https://example.invalid/$id');
+    repository.push(
+      'c-maya',
+      MessageCreated(
+        ChatMessage(
+          id: 'gone',
+          authorId: _maya,
+          authorName: 'Maya',
+          content: 'the plan',
+          createdAt: DateTime(2026, 10, 23, 10),
+          attachments: [file('kept', 'kept.pdf', 'application/pdf')],
+          deletedAttachments: [
+            file('d', 'plan.pdf', 'application/pdf'),
+            // Emoji-sized: its box still fits its words.
+            const MessageAttachment(
+              id: 'tiny',
+              filename: 'dot.png',
+              contentType: 'image/png',
+              url: 'https://example.invalid/tiny',
+              width: 16,
+              height: 16,
+            ),
+          ],
+        ),
+      ),
+    );
+    repository.push(
+      'c-maya',
+      MessageCreated(
+        ChatMessage(
+          id: 'gone-voice',
+          authorId: _maya,
+          authorName: 'Maya',
+          content: '',
+          createdAt: DateTime(2026, 10, 23, 10, 1),
+          isVoice: true,
+          deletedAttachments: [file('v', 'voice-note.ogg', 'audio/ogg')],
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+    expect(find.bySemanticsLabel('Attachment deleted'), findsNWidgets(2));
+    expect(tester.takeException(), isNull, reason: 'no overflow');
+    expect(find.bySemanticsLabel(RegExp(r'^PDF, kept\.pdf')), findsOneWidget);
+    expect(find.bySemanticsLabel(RegExp(r'plan\.pdf')), findsNothing);
+    expect(find.bySemanticsLabel('Voice note deleted'), findsOneWidget);
+    semantics.dispose();
+  });
+
   testWidgets('spoiler videos, audio and files stay covered until tapped, as pictures do', (tester) async {
     final repository = await openMaya(tester);
     MessageAttachment file(String id, String name, String type) =>
@@ -457,13 +548,9 @@ void main() {
   });
 
   group('mentions', () {
-    Finder outlined() => find.byWidgetPredicate(
-      (w) => w is Container && ((w.decoration as BoxDecoration?)?.border as Border?)?.top.width == 1.5,
-    );
+    Finder lit() => find.byType(PrismBubble);
 
-    testWidgets('a reply to the user that mentions them is outlined; one sent without the mention isn\'t', (
-      tester,
-    ) async {
+    testWidgets('a reply to the user that mentions them is lit; one sent without the mention isn\'t', (tester) async {
       final repository = await openMaya(tester);
       MessageReply toMe({required bool mention}) => MessageReply(
         messageId: 'm2',
@@ -485,12 +572,12 @@ void main() {
         ),
       );
       await tester.pumpAndSettle();
-      expect(outlined(), findsOneWidget);
-      expect(find.ancestor(of: find.text('A loud reply'), matching: outlined()), findsOneWidget);
+      expect(lit(), findsOneWidget);
+      expect(find.ancestor(of: find.text('A loud reply'), matching: lit()), findsOneWidget);
       semantics.dispose();
     });
 
-    testWidgets('a v2 message whose text displays mention the user is outlined', (tester) async {
+    testWidgets('a v2 message whose text displays mention the user is framed in the same light', (tester) async {
       final repository = await openGeneral(tester);
       repository.push(
         'r-general',
@@ -515,7 +602,9 @@ void main() {
         ),
       );
       await tester.pumpAndSettle();
-      expect(find.ancestor(of: find.text('Your turn, @Gaby'), matching: outlined()), findsOneWidget);
+      // No text bubble to light: the frame goes round the message, lit from the mention.
+      expect(lit(), findsOneWidget);
+      expect(find.descendant(of: lit(), matching: find.text('@Gaby')), findsOneWidget);
       semantics.dispose();
     });
   });
@@ -552,6 +641,35 @@ void main() {
       semantics.dispose();
     });
 
+    testWidgets('one that comes while the reader is up the list places a divider, as on the desktop', (tester) async {
+      final repository = await openMaya(tester, setUp: longChat);
+      expect(find.textContaining('new message'), findsNothing);
+
+      // Up the list, Maya's two messages go below a divider after the last one seen, which stays for the visit.
+      await tester.drag(list, const Offset(0, 600));
+      await tester.pumpAndSettle();
+      repository.push('c-maya', MessageCreated(later('n1', 'While you were up there')));
+      repository.push('c-maya', MessageCreated(later('n2', 'And this')));
+      await tester.pumpAndSettle();
+      await tester.drag(list, const Offset(0, -3000));
+      await tester.pumpAndSettle();
+      final divider = find.text('2 new messages');
+      expect(divider, findsOneWidget);
+      expect(tester.getTopLeft(divider).dy, greaterThan(tester.getTopLeft(find.text('Line 39')).dy));
+      expect(tester.getTopLeft(divider).dy, lessThan(tester.getTopLeft(find.text('While you were up there')).dy));
+
+      // No other is placed: the one there counts the newest too.
+      await tester.drag(list, const Offset(0, 600));
+      await tester.pumpAndSettle();
+      repository.push('c-maya', MessageCreated(later('n3', 'Again')));
+      await tester.pumpAndSettle();
+      await tester.drag(list, const Offset(0, -3000));
+      await tester.pumpAndSettle();
+      expect(find.text('3 new messages'), findsOneWidget);
+      expect(find.textContaining('new message'), findsOneWidget);
+      semantics.dispose();
+    });
+
     testWidgets('a chat opened at its divider is read at the bottom, not on opening', (tester) async {
       final repository = await openMaya(
         tester,
@@ -561,8 +679,8 @@ void main() {
           r.unread.value = {'c-maya'};
         },
       );
-      // It opens at its divider, above its newest messages: nothing is read.
-      expect(find.text('New messages'), findsOneWidget);
+      // It opens at its divider, above its newest messages, which it counts: nothing is read.
+      expect(find.text('30 new messages'), findsOneWidget);
       expect(repository.reads, isEmpty);
       expect(repository.unread.value, contains('c-maya'));
 
@@ -571,7 +689,7 @@ void main() {
       expect(repository.unread.value, contains('c-maya'));
       await tester.tap(find.text('Maya'));
       await tester.pumpAndSettle();
-      expect(find.text('New messages'), findsOneWidget);
+      expect(find.text('30 new messages'), findsOneWidget);
       expect(repository.reads, isEmpty);
 
       // Scrolled down to the bottom, it's read.
@@ -606,9 +724,12 @@ void main() {
       );
       // Above the oldest message of the first page, where it opens, and where it stays when the older page comes:
       // nothing is read.
-      expect(find.text('New messages'), findsOneWidget);
+      expect(find.text('100 new messages'), findsOneWidget);
       expect(find.text('Line 100'), findsOneWidget);
-      expect(tester.getTopLeft(find.text('New messages')).dy, lessThan(tester.getTopLeft(find.text('Line 100')).dy));
+      expect(
+        tester.getTopLeft(find.text('100 new messages')).dy,
+        lessThan(tester.getTopLeft(find.text('Line 100')).dy),
+      );
       expect(repository.reads, isEmpty);
       expect(repository.unread.value, contains('c-maya'));
 
@@ -631,6 +752,8 @@ void main() {
         tester.binding.handleAppLifecycleStateChanged(state);
       }
       await tester.pumpAndSettle();
+      // Below a divider placed while away, as on the desktop, and read: it was at its bottom.
+      expect(find.text('1 new message'), findsOneWidget);
       expect(repository.reads.last.$2, 'n1');
       semantics.dispose();
     });
@@ -638,7 +761,7 @@ void main() {
     testWidgets('a chat that opens as the app goes to the background is read once it comes back', (tester) async {
       final repository = await pumpApp(tester, (r) => r.holdHistory = Completer<void>());
       await tester.tap(find.text('Maya'));
-      // Its history is loading: a spinner, which never settles.
+      // Its history is loading: a skeleton, still in tests.
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 500));
       for (final state in [AppLifecycleState.inactive, AppLifecycleState.hidden, AppLifecycleState.paused]) {

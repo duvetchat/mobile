@@ -14,9 +14,12 @@ import 'package:file_picker/file_picker.dart';
 import 'package:image_picker/image_picker.dart';
 
 import 'calls.dart';
-import 'data/appearance.dart' show AppearanceScope, ReplyGesture;
+import 'data/appearance.dart' show AppearanceScope, ReplyGesture, ownBubble;
+import 'data/call_notices.dart';
+import 'data/images.dart';
 import 'data/emoji_catalog.dart';
 import 'data/links.dart';
+import 'data/markdown.dart' show parseLine, plainInline;
 import 'data/message_tokens.dart';
 import 'data/models.dart';
 import 'data/repository.dart';
@@ -43,8 +46,10 @@ import 'widgets/glass.dart';
 import 'widgets/link_embeds.dart';
 import 'widgets/media.dart';
 import 'widgets/message_content.dart';
+import 'widgets/prism.dart';
 import 'widgets/rows.dart';
 import 'widgets/sheets.dart';
+import 'widgets/skeleton.dart';
 
 part 'chat/actions.dart';
 part 'chat/bubble.dart';
@@ -63,7 +68,14 @@ enum _Delivery { sent, sending, failed }
 typedef _Entry = ({ChatMessage message, _Delivery delivery});
 
 /// What a pending message carries, kept to send it again.
-typedef _Outgoing = ({String content, List<OutgoingFile> files, Sticker? sticker, String? replyTo, Recording? voice});
+typedef _Outgoing = ({
+  String content,
+  List<OutgoingFile> files,
+  Sticker? sticker,
+  String? replyTo,
+  bool? mentionReplied,
+  Recording? voice,
+});
 
 /// How many files one message takes.
 const maxFiles = 10;
@@ -98,10 +110,11 @@ class ChatView extends StatefulWidget {
   State<ChatView> createState() => _ChatViewState();
 }
 
-class _ChatViewState extends State<ChatView> {
+class _ChatViewState extends State<ChatView> with SingleTickerProviderStateMixin {
   static const _pageSize = 100;
-  static const _typingFor = Duration(seconds: 6);
-  static const _typingEvery = Duration(seconds: 5);
+  // As the desktop: a notice every 3 s while typing, shown for 5 s.
+  static const _typingFor = Duration(seconds: 5);
+  static const _typingEvery = Duration(seconds: 3);
 
   late final _composer = ComposerController(accent: () => context.duvet.accentText);
   final _scroll = ScrollController();
@@ -119,6 +132,15 @@ class _ChatViewState extends State<ChatView> {
   Object? _error;
   bool _loadingOlder = false;
   bool _hasOlder = false;
+  // The kept page's messages while it shows in place of the latest, and
+  // where it was placed.
+  Set<String>? _kept;
+  double? _keptAt;
+  // Until the kept page is looked for (a moment on the device) nothing
+  // shows: not a frame of the skeleton before it.
+  bool _lookedForKept = false;
+  // The list fading in when the latest replaces a kept page it has nothing in common with.
+  late final AnimationController _reveal;
 
   final _typing = <String, ({String name, bool recording, Timer expiry})>{};
   DateTime _lastTypingSent = DateTime.fromMillisecondsSinceEpoch(0);
@@ -148,8 +170,10 @@ class _ChatViewState extends State<ChatView> {
   MessageReply? _replyTo;
   ChatMessage? _editing;
 
-  // The last message read when the chat opened: the "New messages" divider
-  // goes after it.
+  // The last message read when the chat opened: the "N new messages" divider
+  // goes after it. Or, as the desktop places one later in the visit, the last
+  // one seen when someone else's came while the reader was up the list, or
+  // away from the chat.
   String? _unreadAfter;
   // When that one wasn't loaded on opening (further back than the first page,
   // or deleted), the first message loaded after it, as the desktop does: the
@@ -157,6 +181,9 @@ class _ChatViewState extends State<ChatView> {
   // or not.
   String? _unreadFrom;
   final _dividerKey = GlobalKey();
+  // One placed while away from the chat at its bottom is brought into view
+  // once back, as the desktop does.
+  bool _showDividerOnReturn = false;
   final _keys = <String, GlobalKey>{};
 
   /// Messages being deleted, gone to dust: their place stays a moment,
@@ -176,15 +203,29 @@ class _ChatViewState extends State<ChatView> {
   bool _atBottom = true;
   bool _onTop = true;
   String? _acked;
+  // The unread mentions of the user: each one's light comes up once, as its
+  // bubble first comes all into sight. How many the chat had on opening, until
+  // its page comes and tells which they are; then the ones yet to shine.
+  int _unreadMentions = 0;
+  final _unshone = <String>{};
+  // Shone already, this visit or an earlier one: a chat left unread and opened
+  // again doesn't shine them twice.
+  static final _shone = <String>{};
   late final AppLifecycleListener _lifecycle;
 
   @override
   void initState() {
     super.initState();
+    _reveal = AnimationController(vsync: this, duration: DuvetTokens.panelOut, value: 1);
     EmojiCatalog.load().then((c) {
       if (mounted) setState(() => _catalog = c);
     }, onError: (Object e) => debugPrint('emoji: $e'));
-    _lifecycle = AppLifecycleListener(onResume: _readIfSeen);
+    _lifecycle = AppLifecycleListener(
+      onResume: _back,
+      onStateChange: (_) {
+        if (_events != null) _reportScreen(opened: false);
+      },
+    );
   }
 
   @override
@@ -195,10 +236,12 @@ class _ChatViewState extends State<ChatView> {
     final onTop = ModalRoute.of(context)?.isCurrent ?? true;
     if (onTop != _onTop) {
       _onTop = onTop;
-      if (onTop) WidgetsBinding.instance.addPostFrameCallback((_) => _readIfSeen());
+      if (onTop) WidgetsBinding.instance.addPostFrameCallback((_) => _back());
+      if (_events != null) _reportScreenAfterBuild();
     }
     if (_events != null) return;
     _repository = context.repository;
+    _reportScreenAfterBuild();
     // Listen before loading, so nothing sent meanwhile is missed.
     _events = _repository.messageEvents(widget.target).listen(_onEvent);
     _typingSub = _repository.typing(widget.target).listen(_onTyping);
@@ -206,6 +249,8 @@ class _ChatViewState extends State<ChatView> {
     if (widget.threadOf == null && _repository.unread.value.contains(widget.target.id)) {
       _unreadAfter = _repository.lastReadOf(widget.target);
     }
+    // Before reading the chat takes the count away. A thread has none of its own.
+    if (widget.threadOf == null) _unreadMentions = _repository.mentions.value[widget.target.id] ?? 0;
     _restoreDraft();
     _composer.addListener(_onComposerChanged);
     _scroll.addListener(_onScroll);
@@ -214,8 +259,21 @@ class _ChatViewState extends State<ChatView> {
     _loadDirectory();
   }
 
+  // On top with the app in front, the chat is on screen: its mentions show no
+  // notice at the top. A sheet over it takes the top too: one shows then.
+  void _reportScreen({bool gone = false, bool opened = true}) => !gone && _onTop && _inFront
+      ? _repository.chatShown(widget.target, threadOf: widget.threadOf, opened: opened)
+      : _repository.chatHidden(widget.target, threadOf: widget.threadOf);
+
+  // Once built: being shown takes the chat's notices away, which rebuilds
+  // them.
+  void _reportScreenAfterBuild() => WidgetsBinding.instance.addPostFrameCallback((_) {
+    if (mounted) _reportScreen();
+  });
+
   @override
   void dispose() {
+    if (_events != null) _reportScreen(gone: true);
     _saveDraft();
     _voice?.removeListener(_onVoice);
     _recordTick?.cancel();
@@ -234,6 +292,7 @@ class _ChatViewState extends State<ChatView> {
     _composer.dispose();
     _scroll.dispose();
     _focus.dispose();
+    _reveal.dispose();
     super.dispose();
   }
 
@@ -313,10 +372,25 @@ class _ChatViewState extends State<ChatView> {
   }
 
   Future<void> _load() async {
+    // The page kept on the device shows meanwhile; a thread's or a jump's
+    // place isn't on it.
+    final lookForKept = widget.threadOf == null && widget.jumpTo == null && _kept == null;
     setState(() {
       _loading = true;
       _error = null;
+      if (!lookForKept) _lookedForKept = true;
     });
+    if (lookForKept) {
+      _repository
+          .cachedMessages(widget.target)
+          .then(
+            _showKept,
+            onError: (Object e) {
+              debugPrint('kept: $e');
+              _showKept(null);
+            },
+          );
+    }
     try {
       final thread = widget.threadOf;
       final page = thread == null
@@ -324,10 +398,20 @@ class _ChatViewState extends State<ChatView> {
           : await _repository.thread(widget.target, thread);
       if (!mounted) return;
       final loaded = {for (final m in page) m.id};
-      // Keep what the gateway pushed while the page loaded.
+      final kept = _kept ?? const {};
+      // Not one message in common: the kept page is from before all of these,
+      // with a gap between that older pages would skip. It goes, faded over.
+      if (kept.isNotEmpty && !loaded.any(kept.contains) && !MediaQuery.disableAnimationsOf(context)) {
+        _reveal.forward(from: 0);
+      }
+      // Where the kept page was placed: if the reader has scrolled since,
+      // the fetched one isn't placed again.
+      final moved = _keptAt != null && _scroll.hasClients && _scroll.offset != _keptAt;
+      // Keep what the gateway pushed while the page loaded. What was kept
+      // and isn't on the page anymore (deleted, or older than it) goes.
       final pushed = [
         for (final e in _entries)
-          if (!loaded.contains(e.message.id)) e,
+          if (!loaded.contains(e.message.id) && !kept.contains(e.message.id)) e,
       ];
       final shown = {...loaded, for (final e in pushed) e.message.id};
       // The bots' answers to the user alone, which no history has, show among
@@ -340,6 +424,11 @@ class _ChatViewState extends State<ChatView> {
         _entries = [for (final m in _byTime(page, ephemeral)) (message: m, delivery: _Delivery.sent), ...pushed];
         _hasOlder = thread == null && page.length >= _pageSize;
         _loading = false;
+        _kept = null;
+        // shortcut: this page's only, an unread mention further back doesn't
+        // shine; count on through the older pages if it should.
+        _unshone.addAll(unreadMentions(_entries.map((e) => e.message), _me, _unreadMentions).difference(_shone));
+        _unreadMentions = 0;
         // Nothing after the last read: no divider.
         if (_unreadAfter != null && page.lastOrNull?.id == _unreadAfter) _unreadAfter = null;
         // The last read not loaded: the first message after it is, as message
@@ -356,7 +445,7 @@ class _ChatViewState extends State<ChatView> {
       // scrolling down reads it.
       if (widget.jumpTo case final id?) {
         WidgetsBinding.instance.addPostFrameCallback((_) => _jumpTo(id).whenComplete(_readIfSeen));
-      } else if (_unreadAfter != null) {
+      } else if (_unreadAfter != null && !moved) {
         WidgetsBinding.instance.addPostFrameCallback((_) => _showDivider().whenComplete(_readIfSeen));
       } else {
         _readIfSeen();
@@ -370,6 +459,42 @@ class _ChatViewState extends State<ChatView> {
           _loading = false;
         });
       }
+    }
+  }
+
+  /// The chat's page as it was last seen here, while its latest loads (or
+  /// failed to): under what the gateway pushed meanwhile, with no older pages
+  /// from it, as it may be far behind, and nothing read from it.
+  void _showKept(List<ChatMessage>? page) {
+    if (!mounted) return;
+    if (page == null || page.isEmpty || !(_loading || _error != null)) {
+      if (!_lookedForKept) setState(() => _lookedForKept = true);
+      return;
+    }
+    final ids = {for (final m in page) m.id};
+    final ephemeral = [
+      for (final m in _repository.ephemeralIn(widget.target))
+        if (!ids.contains(m.id)) m,
+    ];
+    setState(() {
+      _entries = [
+        for (final m in _byTime(page, ephemeral)) (message: m, delivery: _Delivery.sent),
+        for (final e in _entries)
+          if (!ids.contains(e.message.id)) e,
+      ];
+      _kept = {...ids, for (final m in ephemeral) m.id};
+      _lookedForKept = true;
+    });
+    // At the divider, if it shows here, as a load places it; else at the bottom.
+    final last = page.indexWhere((m) => m.id == _unreadAfter);
+    if (last < 0 || last == page.length - 1) {
+      _keptAt = 0;
+    } else {
+      WidgetsBinding.instance.addPostFrameCallback(
+        (_) => _showDivider().whenComplete(() {
+          if (mounted && _scroll.hasClients) _keptAt = _scroll.offset;
+        }),
+      );
     }
   }
 
@@ -393,7 +518,7 @@ class _ChatViewState extends State<ChatView> {
       if (e.delivery == _Delivery.sent && !e.message.isEphemeral) e.message,
   ];
 
-  /// Brings the "New messages" divider into view, near the top.
+  /// Brings the "N new messages" divider into view, near the top.
   Future<void> _showDivider() async {
     if (!mounted || !_entries.any((e) => e.message.id == (_unreadFrom ?? _unreadAfter))) return;
     if (await _scrollUntilBuilt(() => _dividerKey.currentContext)) {
@@ -434,6 +559,13 @@ class _ChatViewState extends State<ChatView> {
   /// What came while the socket was down: everything after the newest
   /// message here.
   Future<void> _catchUp() async {
+    // Still on the kept page: its latest is on the way, or is asked again.
+    // shortcut: only the gateway coming back asks again; a failed fetch with the socket up stays on the kept page
+    // (no reads, no older pages) until the chat is reopened. Upgrade to a retry on a timer or a pull if that's seen.
+    if (_kept != null) {
+      if (!_loading) _load();
+      return;
+    }
     final newest = _history.lastOrNull;
     if (newest == null) return;
     try {
@@ -441,6 +573,7 @@ class _ChatViewState extends State<ChatView> {
       if (!mounted || missed.isEmpty) return;
       setState(() {
         for (final m in missed) {
+          _markUnreadFrom(m);
           _upsert(m);
         }
       });
@@ -473,7 +606,8 @@ class _ChatViewState extends State<ChatView> {
   /// Reads the chat up to its newest message.
   void _markRead() {
     final newest = _history.lastOrNull;
-    if (newest == null || newest.id == _acked) return;
+    // A kept page's newest may not be the chat's: the latest page reads it.
+    if (newest == null || newest.id == _acked || _kept != null) return;
     _acked = newest.id;
     _repository.markRead(widget.target, newest.id);
   }
@@ -485,6 +619,16 @@ class _ChatViewState extends State<ChatView> {
     _markRead();
   }
 
+  /// Back at the chat: read, as it was left at its bottom, and the divider
+  /// placed meanwhile, if any, brought into view.
+  void _back() {
+    _readIfSeen();
+    if (!_showDividerOnReturn) return;
+    _showDividerOnReturn = false;
+    // Not before a frame: none ran while the app was behind, so the divider isn't built yet.
+    WidgetsBinding.instance.endOfFrame.then((_) => _showDivider());
+  }
+
   static bool get _inFront => switch (WidgetsBinding.instance.lifecycleState) {
     null || AppLifecycleState.resumed || AppLifecycleState.inactive => true,
     _ => false,
@@ -494,6 +638,12 @@ class _ChatViewState extends State<ChatView> {
     if (event case ReactionChanged(:final messageId) when !_entries.any((e) => e.message.id == messageId)) return;
     // A profile change that shows nothing new on the messages here.
     if (event is AuthorChanged && _entries.every((e) => identical(e.message.changedBy(event), e.message))) return;
+    if (event case AttachmentRenewed(
+      :final attachmentId,
+      :final url,
+    ) when _entries.every((e) => identical(e.message.withAttachmentLink(attachmentId, url), e.message))) {
+      return;
+    }
     // A thread takes the replies to its messages, and its own sends.
     if (widget.threadOf != null) {
       if (event case MessageCreated(
@@ -506,6 +656,9 @@ class _ChatViewState extends State<ChatView> {
       switch (event) {
         case MessageCreated(:final message):
           _stopTyping(message.authorId);
+          _markUnreadFrom(message);
+          // One that comes with the chat open shines too, in sight already or not.
+          if (_mentionsUser(message, _me) && !_shone.contains(message.id)) _unshone.add(message.id);
           _upsert(message);
         case MessageUpdated(:final message):
           _applyUpdate(message);
@@ -545,9 +698,30 @@ class _ChatViewState extends State<ChatView> {
             final changed = m.changedBy(event);
             if (!identical(changed, m)) _entries[i] = (message: changed, delivery: _entries[i].delivery);
           }
+        // A file's new link, once its old one expired.
+        case AttachmentRenewed(:final attachmentId, :final url):
+          for (var i = 0; i < _entries.length; i++) {
+            final m = _entries[i].message;
+            final changed = m.withAttachmentLink(attachmentId, url);
+            if (!identical(changed, m)) _entries[i] = (message: changed, delivery: _entries[i].delivery);
+          }
       }
     });
     if (event is MessageCreated) _readIfSeen();
+  }
+
+  /// Someone else's [message] coming while the reader doesn't see the newest
+  /// (up the list, the app behind, a chat over this one) places the divider
+  /// after the last message they saw, unless the visit has one already.
+  void _markUnreadFrom(ChatMessage message) {
+    // A thread acks nothing, so has no last seen: it gets no divider, as on opening.
+    final seen = _acked;
+    if (seen == null || _unreadAfter != null || _unreadFrom != null) return;
+    if (message.authorId == _me || message.id.compareTo(seen) <= 0) return;
+    if (_onTop && _inFront && _atBottom) return;
+    if (!_entries.any((e) => e.message.id == seen)) return;
+    _unreadAfter = seen;
+    if (_atBottom) _showDividerOnReturn = true;
   }
 
   /// An edit, or a link preview that came late, merged into the message (see
@@ -601,7 +775,14 @@ class _ChatViewState extends State<ChatView> {
   void _onComposerChanged() {
     final query = _composer.query;
     final text = _composer.text;
-    final slash = _commands.isNotEmpty && _editing == null && _canUseCommands && RegExp(r'^/\S*$').hasMatch(text)
+    // The menu stays while some command, `perms user get` among them, starts
+    // with what's typed; past that, `@`, `#` and emoji suggest as usual.
+    final typed = text.startsWith('/') && !text.contains('\n') ? text.substring(1).toLowerCase() : null;
+    final slash =
+        typed != null &&
+            _editing == null &&
+            _canUseCommands &&
+            _commands.any((c) => c.path.toLowerCase().startsWith(typed))
         ? text.substring(1)
         : null;
     if (query != _query || _canSend != _couldSend || slash != _slash) {
@@ -631,9 +812,9 @@ class _ChatViewState extends State<ChatView> {
     }
     final content = _composer.encoded.trim();
     if (content.isEmpty && _files.isEmpty) return;
-    // `/name` of a command runs it.
+    // `/name` of a command, or `/name group sub` of a subcommand, runs it.
     if (_files.isEmpty && content.startsWith('/') && _canUseCommands) {
-      final command = _commands.where((c) => '/${c.name}' == content).firstOrNull;
+      final command = _commands.where((c) => '/${c.path}' == content).firstOrNull;
       if (command != null) return _runCommand(command);
     }
     // Files over the upload limit stay in the tray, with the reason.
@@ -647,7 +828,7 @@ class _ChatViewState extends State<ChatView> {
       if (over.isNotEmpty) {
         _toast(
           over.length == 1
-              ? '${over.single.name} is over your ${_megabytes(limit!)} upload limit'
+              ? '${over.single.displayName} is over your ${_megabytes(limit!)} upload limit'
               : '${over.length} files are over your ${_megabytes(limit!)} upload limit',
         );
         return;
@@ -663,7 +844,14 @@ class _ChatViewState extends State<ChatView> {
     _lastTypingSent = DateTime.fromMillisecondsSinceEpoch(0);
     // In a thread, a message with no other target replies to the thread's root.
     final to = replyTo?.messageId ?? widget.threadOf;
-    _queue((content: content, files: files, sticker: null, replyTo: to, voice: null), reply: replyTo);
+    _queue((
+      content: content,
+      files: files,
+      sticker: null,
+      replyTo: to,
+      mentionReplied: replyTo?.mentionAuthor,
+      voice: null,
+    ), reply: replyTo);
   }
 
   static String _megabytes(int bytes) => '${(bytes / (1024 * 1024)).round()} MB';
@@ -678,11 +866,18 @@ class _ChatViewState extends State<ChatView> {
     final reply = _replyTo;
     if (reply != null) setState(() => _replyTo = null);
     final to = reply?.messageId ?? widget.threadOf;
-    _queue((content: content, files: const [], sticker: sticker, replyTo: to, voice: null), reply: reply);
+    _queue((
+      content: content,
+      files: const [],
+      sticker: sticker,
+      replyTo: to,
+      mentionReplied: reply?.mentionAuthor,
+      voice: null,
+    ), reply: reply);
   }
 
   void _sendVoice(Recording recording) =>
-      _queue((content: '', files: const [], sticker: null, replyTo: null, voice: recording));
+      _queue((content: '', files: const [], sticker: null, replyTo: null, mentionReplied: null, voice: recording));
 
   void _queue(_Outgoing outgoing, {MessageReply? reply}) {
     final nonce = _nonce();
@@ -742,6 +937,7 @@ class _ChatViewState extends State<ChatView> {
           files: outgoing.files,
           sticker: outgoing.sticker,
           replyTo: outgoing.replyTo,
+          mentionRepliedUser: outgoing.mentionReplied,
           onProgress: outgoing.files.isEmpty
               ? null
               : (p) {
@@ -785,17 +981,35 @@ class _ChatViewState extends State<ChatView> {
     }
   }
 
-  /// Stops an upload: the message goes, its files back to the tray.
+  /// Stops an upload: the message goes, its files back to the tray. Its text
+  /// and reply come back too while the composer has neither, as the desktop
+  /// does; what the user wrote or picked since stays.
   void _cancelUpload(_Entry entry) {
     final nonce = entry.message.nonce;
     if (nonce == null) return;
     _cancels[nonce]?.complete();
     final outgoing = _outgoing.remove(nonce);
+    final restore = outgoing != null && _editing == null;
+    final empty = _composer.text.trim().isEmpty && _replyTo == null;
+    // A reply whose message was deleted meanwhile can't be sent again.
+    final reply = entry.message.reply;
     setState(() {
       _entries.remove(entry);
       _progress.remove(nonce);
-      if (outgoing != null && _editing == null) _files.addAll(outgoing.files.take(maxFiles - _files.length));
+      if (restore) {
+        _files.addAll(outgoing.files.take(maxFiles - _files.length));
+        if (empty && reply != null && !reply.deleted) _replyTo = reply;
+      }
     });
+    if (restore && empty && outgoing.content.isNotEmpty) {
+      final directory = _directory;
+      _composer.setEncoded(
+        outgoing.content,
+        nameOf: directory.nameOf,
+        emojiNameOf: (id) => directory.emojiOf(id)?.name,
+        roomNameOf: (id) => directory.roomOf(id)?.name,
+      );
+    }
     _announce('Upload cancelled');
   }
 
@@ -940,6 +1154,8 @@ class _ChatViewState extends State<ChatView> {
         authorId: m.authorId,
         authorName: m.authorName,
         content: _repository.previewOf(m),
+        // The desktop's @ ON: a reply pings its author unless turned off.
+        mentionAuthor: m.authorId != _me && m.webhookId == null,
       );
     });
     _focus.requestFocus();
@@ -947,6 +1163,18 @@ class _ChatViewState extends State<ChatView> {
   }
 
   void _cancelReply() => setState(() => _replyTo = null);
+
+  void _toggleReplyMention() {
+    final reply = _replyTo;
+    if (reply == null) return;
+    setState(() => _replyTo = reply.withMentionAuthor(!reply.mentionAuthor));
+    _focus.requestFocus();
+  }
+
+  // As on the desktop: no @ ON/OFF for a reply to oneself or to a webhook.
+  bool _canMentionReplied(MessageReply reply) =>
+      reply.authorId != _me &&
+      _entries.where((e) => e.message.id == reply.messageId).firstOrNull?.message.webhookId == null;
 
   /// Dismisses a bot's answer to the user alone: it goes for the session.
   void _dismiss(ChatMessage m) {
@@ -1366,6 +1594,18 @@ class _ChatViewState extends State<ChatView> {
         detail: 'messages will send when you’re back',
       ),
       LiveStatus.offline => const ConnectionBanner(text: 'Offline', detail: '· showing saved messages'),
+      // Connected, yet the latest failed to load: what shows is the page kept.
+      _ when _error != null && _entries.isNotEmpty => Semantics(
+        button: true,
+        child: GestureDetector(
+          onTap: _load,
+          child: const ConnectionBanner(
+            text: 'Couldn’t load the latest messages',
+            detail: '· tap to try again',
+            icon: FLucideIcons.refreshCw,
+          ),
+        ),
+      ),
       _ => null,
     };
     final call = _callable && CallBanner.shows(context.voice, widget.target.id)
@@ -1585,7 +1825,7 @@ class _ChatViewState extends State<ChatView> {
     if (id == null) return;
     _openProfile(
       _members.where((x) => x.userId == id).firstOrNull ??
-          Member(userId: id, username: m.authorName, avatarUrl: m.authorAvatarUrl),
+          Member(userId: id, username: m.authorName, avatarUrl: m.authorAvatarUrl, isBot: m.fromBot && !m.fromWebhook),
     );
   }
 
@@ -1681,7 +1921,12 @@ class _ChatViewState extends State<ChatView> {
     final picked = await _showMessageActions(
       context,
       bubble: box.localToGlobal(Offset.zero) & box.size,
-      lifted: _bubbleFor(entry, lifted: true),
+      // Lit as in the list, which it's held up from.
+      lifted: PrismViewport(
+        top: _topHeight == 0 ? GlassTopBar.heightOf(context) : _topHeight,
+        bottom: _composerHeight,
+        child: _bubbleFor(entry, lifted: true),
+      ),
       me: _me,
       reactions: sent ? m.reactions : null,
       catalog: _catalog,
@@ -1690,6 +1935,8 @@ class _ChatViewState extends State<ChatView> {
     if (!mounted || picked == null) return;
     switch (picked) {
       case (_Action.react, final emoji?):
+        // A quick reaction counts as a use, as a pick in the picker does; taking one back doesn't.
+        if (!m.reactions.any((r) => r.emoji == emoji && r.users.contains(_me))) EmojiCatalog.used(emoji);
         await _toggleReaction(m, emoji);
       case (_Action.moreReactions, _):
         await _pickReaction(m);
@@ -1769,7 +2016,7 @@ class _ChatViewState extends State<ChatView> {
     ConversationTarget() => false,
   };
 
-  /// Who may delete a pin notice, as the desktop has it: ManageMessages in a
+  /// Who may delete a notice, as the desktop has it: ManageMessages in a
   /// room; in a conversation, either of a DM's two, or a group's owner.
   bool get _canDeleteNotices => switch (widget.target) {
     RoomTarget() => _canDeleteOthers,
@@ -1781,7 +2028,7 @@ class _ChatViewState extends State<ChatView> {
     },
   };
 
-  /// A pin notice held: Delete, the one thing to do with it.
+  /// A notice held: Delete, the one thing to do with it.
   Future<void> _noticeActions(BuildContext anchor, ChatMessage m) async {
     final picked = await showGlassMenu(
       anchor,
@@ -1792,7 +2039,7 @@ class _ChatViewState extends State<ChatView> {
     final sure = await confirmDestructive(
       context,
       title: 'Delete this notice?',
-      body: 'The message stays pinned.',
+      body: m.call != null ? 'It goes for everyone in the conversation.' : 'The message stays pinned.',
       action: 'Delete',
     );
     if (!sure || !mounted) return;
@@ -1879,8 +2126,8 @@ class _ChatViewState extends State<ChatView> {
       final modal = await _repository.useComponent(target, m.id, component, values: values);
       // The button is done once the bot answers; its modal is on its own.
       unawaited(_openModal(modal, m.authorName));
-    } catch (_) {
-      _toast('${m.authorName} didn’t answer. Try again.');
+    } catch (e) {
+      _toast(e is ActionFailed ? e.message : 'This interaction failed');
     }
   }
 
@@ -1897,8 +2144,8 @@ class _ChatViewState extends State<ChatView> {
     try {
       final modal = await _repository.useCommand(target, command, options);
       await _openModal(modal, command.appName);
-    } catch (_) {
-      _toast('${command.appName} didn’t answer /${command.name}. Try again.');
+    } catch (e) {
+      _toast(e is ActionFailed ? e.message : 'This interaction failed');
     }
   }
 
@@ -1920,9 +2167,9 @@ class _ChatViewState extends State<ChatView> {
     if (_slash case final typed?) {
       final needle = typed.toLowerCase();
       return [
-        for (final c in _commands.where((c) => c.name.toLowerCase().startsWith(needle)).take(5))
+        for (final c in _commands.where((c) => c.path.toLowerCase().startsWith(needle)).take(5))
           GlassRow(
-            label: '/${c.name}',
+            label: '/${c.path}',
             detail: [c.appName, if (c.description.isNotEmpty) c.description].join(' · '),
             hint: 'Double tap to use',
             leading: const BotAvatar(),
@@ -1996,11 +2243,10 @@ class _ChatViewState extends State<ChatView> {
         GlassRow(
           label: ':${e.name}:',
           hint: 'Double tap to insert',
-          leading: Image.network(
-            e.url,
+          leading: Image(
+            image: cachedImage(e.url, cacheWidth: (28 * MediaQuery.devicePixelRatioOf(context)).round()),
             width: 28,
             height: 28,
-            cacheWidth: (28 * MediaQuery.devicePixelRatioOf(context)).round(),
             excludeFromSemantics: true,
             errorBuilder: (_, _, _) => const SizedBox.square(dimension: 28),
           ),
@@ -2013,7 +2259,9 @@ class _ChatViewState extends State<ChatView> {
         GlassRow(
           label: ':${e.name.replaceAll(' ', '_')}:',
           hint: 'Double tap to insert ${e.name}',
-          leading: ExcludeSemantics(child: Text(e.emoji, style: const TextStyle(fontSize: 26, height: 1.1))),
+          leading: ExcludeSemantics(
+            child: Text(e.emoji, style: const TextStyle(fontFamily: DuvetType.emoji, fontSize: 26, height: 1.1)),
+          ),
           onPressed: () {
             EmojiCatalog.used(e.emoji);
             _composer.insertEmoji(e.emoji);
@@ -2240,7 +2488,14 @@ class _ChatViewState extends State<ChatView> {
                         ),
                       ),
                       if (_files.isNotEmpty && _editing == null)
-                        _AttachmentTray(files: _files, onRemove: (f) => setState(() => _files.remove(f))),
+                        _AttachmentTray(
+                          files: _files,
+                          onRemove: (f) => setState(() => _files.remove(f)),
+                          onToggleSpoiler: (f) => setState(() {
+                            final i = _files.indexOf(f);
+                            if (i >= 0) _files[i] = f.withSpoiler(!f.isSpoiler);
+                          }),
+                        ),
                       Padding(
                         padding: const EdgeInsets.symmetric(horizontal: 16),
                         child: Column(
@@ -2248,6 +2503,10 @@ class _ChatViewState extends State<ChatView> {
                           children: [
                             _ComposerStrip(
                               reply: _replyTo,
+                              onToggleMention: switch (_replyTo) {
+                                final r? when _canMentionReplied(r) => _toggleReplyMention,
+                                _ => null,
+                              },
                               editing: _editing != null,
                               onClose: () {
                                 if (_editing != null) {
@@ -2345,7 +2604,11 @@ class _ChatViewState extends State<ChatView> {
       onOpenReactors: (r) => _openReactors(m, r),
       onLongPress: pinned ? null : (anchor) => _messageActions(anchor, entry),
       progress: m.nonce == null ? null : _progress[m.nonce],
-      onCancelUpload: entry.delivery == _Delivery.sending ? () => _cancelUpload(entry) : null,
+      // Once every byte is up the API may post the message whatever comes
+      // next, so there's nothing left to cancel: it shows as being sent.
+      onCancelUpload: entry.delivery == _Delivery.sending && (_progress[m.nonce] ?? 0) < 1
+          ? () => _cancelUpload(entry)
+          : null,
       tooLarge: m.nonce != null && _tooLarge.contains(m.nonce),
       onOpenLink: _openLink,
       onOpenSpace: _openSpace,
@@ -2355,6 +2618,14 @@ class _ChatViewState extends State<ChatView> {
       onUseComponent: (component, values) => _useComponent(m, component, values),
       selectChoices: _selectChoices,
       onDismiss: m.isEphemeral ? () => _dismiss(m) : null,
+      // Not in the pins: a copy there is lit already.
+      // Nor one that shone in another view of the chat, a thread over it.
+      onShine: !pinned && _unshone.contains(m.id) && !_shone.contains(m.id)
+          ? () {
+              _unshone.remove(m.id);
+              _shone.add(m.id);
+            }
+          : null,
     );
   }
 
@@ -2367,8 +2638,28 @@ class _ChatViewState extends State<ChatView> {
     _focus.requestFocus();
   }
 
-  Widget _body(BuildContext context) {
-    if (_loading && _entries.isEmpty) return const Center(child: FCircularProgress());
+  // Nothing to show yet: messages drawn as blocks, crossed into the list once
+  // it comes. Only that change fades; the list itself is updated in place.
+  Widget _body(BuildContext context) => AnimatedSwitcher(
+    duration: MediaQuery.disableAnimationsOf(context) ? Duration.zero : DuvetTokens.panelOut,
+    switchInCurve: DuvetTokens.decelerate,
+    layoutBuilder: (current, previous) => Stack(fit: StackFit.expand, children: [...previous, ?current]),
+    child: _loading && _entries.isEmpty && _lookedForKept
+        ? KeyedSubtree(
+            key: const ValueKey('skeleton'),
+            child: _MessagesSkeleton(
+              padding: EdgeInsets.fromLTRB(
+                16,
+                (_topHeight == 0 ? GlassTopBar.heightOf(context) : _topHeight) + 8,
+                16,
+                _composerHeight + 8,
+              ),
+            ),
+          )
+        : KeyedSubtree(key: const ValueKey('messages'), child: _messages(context)),
+  );
+
+  Widget _messages(BuildContext context) {
     if (_error != null && _entries.isEmpty) {
       return EmptyState(
         mascot: MascotState.oops,
@@ -2376,6 +2667,7 @@ class _ChatViewState extends State<ChatView> {
         action: DuvetButton(label: 'Try again', onPressed: _load),
       );
     }
+    if (_loading && _entries.isEmpty) return const SizedBox.shrink();
     if (_entries.isEmpty) {
       // A new DM: the ghost tucked in, and a first line to start with.
       if (widget.target is ConversationTarget && widget.threadOf == null) {
@@ -2403,59 +2695,79 @@ class _ChatViewState extends State<ChatView> {
       for (final (i, item) in items.indexed)
         if (item case _Message(:final entry)) ?_keys[entry.message.id]: items.length - 1 - i,
     };
-    return ListView.builder(
-      controller: _scroll,
-      reverse: true,
-      findChildIndexCallback: (key) => indexOf[key],
-      // A list with its own controller only scrolls once full: a short chat bounces too.
-      physics: const AlwaysScrollableScrollPhysics(),
-      keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
-      padding: EdgeInsets.fromLTRB(16, top + 8, 16, _composerHeight + 8),
-      itemCount: count,
-      itemBuilder: (context, index) {
-        if (index == items.length) {
-          return const Padding(
-            padding: EdgeInsets.all(12),
-            child: Center(child: FCircularProgress(size: .sm)),
-          );
-        }
-        return switch (items[items.length - 1 - index]) {
-          _Day(:final day) => _DaySeparator(day: day),
-          _NewMessages() => _NewMessagesDivider(key: _dividerKey),
-          _Replies(:final count) => _NewMessagesDivider(text: count == 1 ? '1 reply' : '$count replies', quiet: true),
-          _Message(:final entry, :final first, :final last) =>
-            entry.message.isNotice
-                ? _Notice(
-                    who: entry.message.authorName,
-                    where: widget.target is RoomTarget ? 'room' : 'conversation',
-                    onJump: switch (entry.message.reply?.messageId) {
-                      final id? => () => _jumpTo(id),
-                      null => null,
-                    },
-                    onPins: _openPins,
-                    onHold: _canDeleteNotices ? (anchor) => _noticeActions(anchor, entry.message) : null,
-                  )
-                : KeyedSubtree(
-                    key: _keyFor(entry.message.id),
-                    // Its own layer, for the picture a delete breaks up.
-                    child: RepaintBoundary(
-                      child: CompositedTransformTarget(
-                        link: _linkFor(entry.message.id),
-                        child: _Vanish(
-                          hidden: _vanishing.contains(entry.message.id),
-                          closed: _closing.contains(entry.message.id),
-                          child: _bubbleFor(entry, first: first, last: last),
+    return FadeTransition(
+      opacity: _reveal,
+      // The mentions' light goes by what shows of the list, between the bars.
+      child: PrismViewport(
+        top: top,
+        bottom: _composerHeight,
+        child: ListView.builder(
+          controller: _scroll,
+          reverse: true,
+          findChildIndexCallback: (key) => indexOf[key],
+          // A list with its own controller only scrolls once full: a short chat bounces too.
+          physics: const AlwaysScrollableScrollPhysics(),
+          keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
+          padding: EdgeInsets.fromLTRB(16, top + 8, 16, _composerHeight + 8),
+          itemCount: count,
+          itemBuilder: (context, index) {
+            if (index == items.length) {
+              return const Padding(
+                padding: EdgeInsets.all(12),
+                child: Center(child: FCircularProgress(size: .sm)),
+              );
+            }
+            return switch (items[items.length - 1 - index]) {
+              _Day(:final day) => _DaySeparator(day: day),
+              _NewMessages(:final count) => _NewMessagesDivider(
+                key: _dividerKey,
+                text: count == 1 ? '1 new message' : '$count new messages',
+              ),
+              _Replies(:final count) => _NewMessagesDivider(
+                text: count == 1 ? '1 reply' : '$count replies',
+                quiet: true,
+              ),
+              _Message(:final entry, :final first, :final last) =>
+                entry.message.isNotice
+                    ? switch (callNoticeLine(entry.message, _me)) {
+                        final line? => _CallNoticeRow(
+                          line: line,
+                          onHold: _canDeleteNotices ? (anchor) => _noticeActions(anchor, entry.message) : null,
+                        ),
+                        null => _Notice(
+                          who: entry.message.authorName,
+                          where: widget.target is RoomTarget ? 'room' : 'conversation',
+                          onJump: switch (entry.message.reply?.messageId) {
+                            final id? => () => _jumpTo(id),
+                            null => null,
+                          },
+                          onPins: _openPins,
+                          onHold: _canDeleteNotices ? (anchor) => _noticeActions(anchor, entry.message) : null,
+                        ),
+                      }
+                    : KeyedSubtree(
+                        key: _keyFor(entry.message.id),
+                        // Its own layer, for the picture a delete breaks up.
+                        child: RepaintBoundary(
+                          child: CompositedTransformTarget(
+                            link: _linkFor(entry.message.id),
+                            child: _Vanish(
+                              hidden: _vanishing.contains(entry.message.id),
+                              closed: _closing.contains(entry.message.id),
+                              child: _bubbleFor(entry, first: first, last: last),
+                            ),
+                          ),
                         ),
                       ),
-                    ),
-                  ),
-        };
-      },
+            };
+          },
+        ),
+      ),
     );
   }
 
   /// The entries, oldest first, with a separator where the day changes, the
-  /// "New messages" divider after the last one read (or above [_unreadFrom]),
+  /// "N new messages" divider after the last one read (or above [_unreadFrom]),
   /// and each message marked first and last of its run: one author, minutes
   /// apart. A webhook has no author ID: its own ID and the name it posts under
   /// stand in, as on the desktop. A person's name isn't compared: the history
@@ -2470,7 +2782,7 @@ class _ChatViewState extends State<ChatView> {
       final newDay = previous == null || !_sameDay(previous.createdAt, m.createdAt);
       if (newDay) items.add(_Day(day));
       final unreadStart = _unreadFrom != null ? m.id == _unreadFrom : previous != null && previous.id == _unreadAfter;
-      if (unreadStart) items.add(const _NewMessages());
+      if (unreadStart) items.add(_NewMessages(_entries.length - i));
       if (widget.threadOf != null && i == 1) items.add(_Replies(_entries.length - 1));
       final nextBreaks = next == null || (_unreadFrom != null ? next.id == _unreadFrom : m.id == _unreadAfter);
       items.add(
@@ -2535,7 +2847,9 @@ class _Day extends _Item {
 }
 
 class _NewMessages extends _Item {
-  const _NewMessages();
+  /// The messages below it, as the desktop counts them.
+  final int count;
+  const _NewMessages(this.count);
 }
 
 /// In a thread, between its root and the replies.

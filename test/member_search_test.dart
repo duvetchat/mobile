@@ -39,6 +39,9 @@ void main() {
     await tester.tap(find.bySemanticsLabel('Members').last);
     await tester.pumpAndSettle();
     expect(find.bySemanticsLabel(RegExp(r'^Leo')), findsWidgets);
+    // Maya owns the Space: a crown after her name, and only hers.
+    expect(find.byType(OwnerCrown), findsOneWidget);
+    expect(find.bySemanticsLabel(RegExp(r'^Maya, .*owner')), findsOneWidget);
 
     await tester.tap(find.byType(SearchField));
     await tester.enterText(find.descendant(of: find.byType(SearchField), matching: find.byType(EditableText)), 'may');

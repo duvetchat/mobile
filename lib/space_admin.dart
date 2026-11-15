@@ -13,20 +13,25 @@ import 'package:image/image.dart' as img;
 import 'package:image_picker/image_picker.dart';
 import 'package:path_provider/path_provider.dart';
 
-import 'account.dart' show CropPage, formatBytes;
+import 'account.dart' show BucketMeter, CropPage, FileRow, confirmFileDelete, formatBytes, placeholderFiles;
+import 'data/images.dart';
 import 'data/models.dart';
+import 'data/repository.dart' show ChatRepository;
 import 'data/scope.dart';
-import 'people.dart' show PersonRow;
+import 'people.dart' show PersonRow, removeBotAsking, removeMemberButtons;
 import 'spaces.dart' show deleteSpace, inviteRoomOf, pickSpaceIcon, showInviteSheet;
 import 'theme.dart';
 import 'widgets/avatar.dart';
 import 'widgets/chrome.dart';
 import 'widgets/depth.dart' show Pressable;
+import 'widgets/color_picker.dart';
 import 'widgets/glass.dart';
 import 'widgets/picture_edit.dart';
 import 'widgets/role_name.dart';
 import 'widgets/rows.dart';
 import 'widgets/scrolling.dart' show CarouselPhysics;
+import 'widgets/sheets.dart' show LoadingSkeleton, placeholderNames, placeholderRows;
+import 'widgets/skeleton.dart' show Bone;
 import 'widgets/unsaved_changes.dart';
 
 /// Picks a Space's banner as it is: resized, Android's picker would make a GIF
@@ -218,6 +223,7 @@ class SpaceSettingsPage extends StatefulWidget {
 
 class _SpaceSettingsPageState extends State<SpaceSettingsPage> {
   int? _invites;
+  int? _banned;
   (int, int)? _assets;
   int? _webhooks;
   int? _storage;
@@ -237,6 +243,9 @@ class _SpaceSettingsPageState extends State<SpaceSettingsPage> {
     void ignore(Object e) => debugPrint('space settings: $e');
     if (profile.can(Perm.manageInvites)) {
       repository.spaceInvites(id).then((l) => mounted ? setState(() => _invites = l.length) : null, onError: ignore);
+    }
+    if (profile.can(Perm.banMembers)) {
+      repository.bans(id).then((l) => mounted ? setState(() => _banned = l.length) : null, onError: ignore);
     }
     // Any member's to see.
     (
@@ -310,12 +319,29 @@ class _SpaceSettingsPageState extends State<SpaceSettingsPage> {
                   detail: '$roles',
                   onPressed: () => _open(RolesPage(spaceId: id)),
                 ),
+              if (profile.can(Perm.manageRoles) ||
+                  profile.can(Perm.manageBots) ||
+                  profile.can(Perm.kickMembers) ||
+                  profile.can(Perm.banMembers))
+                GlassRow(
+                  icon: FLucideIcons.users,
+                  label: 'Members',
+                  detail: '${profile.memberCount}',
+                  onPressed: () => _open(MembersAdminPage(spaceId: id)),
+                ),
               if (profile.can(Perm.manageInvites))
                 GlassRow(
                   icon: FLucideIcons.link,
                   label: 'Invites',
                   detail: _invites == null ? null : '$_invites active',
                   onPressed: () => _open(InvitesAdminPage(spaceId: id)),
+                ),
+              if (profile.can(Perm.banMembers))
+                GlassRow(
+                  icon: FLucideIcons.ban,
+                  label: 'Bans',
+                  detail: _banned == null ? null : '$_banned banned',
+                  onPressed: () => _open(BansAdminPage(spaceId: id)),
                 ),
             ],
           ),
@@ -729,6 +755,7 @@ Future<void> showSecretOnce(
   required String body,
   required String secret,
   required String copyLabel,
+  ({String label, String secret, String note})? also,
 }) => showGlassDialogSheet<void>(
   context,
   label: title,
@@ -760,6 +787,19 @@ Future<void> showSecretOnce(
             Navigator.of(context).pop();
           },
         ),
+        if (also != null) ...[
+          const SizedBox(height: 12),
+          DuvetButton(
+            label: also.label,
+            expand: true,
+            onPressed: () {
+              Clipboard.setData(ClipboardData(text: also.secret));
+              Navigator.of(context).pop();
+            },
+          ),
+          const SizedBox(height: 8),
+          Text(also.note, style: DuvetType.caption.copyWith(color: context.theme.colors.mutedForeground)),
+        ],
       ],
     ),
   ),
@@ -794,7 +834,12 @@ class _SpaceOverviewPageState extends State<SpaceOverviewPage> {
   late final SpaceProfile? _profile = context.repository.spaceProfile(widget.spaceId);
   late final _name = TextEditingController(text: _profile?.name)..addListener(_changed);
   late final _about = TextEditingController(text: _profile?.description)..addListener(_changed);
+  late final _locale = TextEditingController(text: _profile?.locale)..addListener(_changed);
   void _changed() => setState(() {});
+
+  // What its members are notified of until they choose: every message or only mentions.
+  late final NotificationLevel _defaultWas = context.repository.spaceDefault(widget.spaceId);
+  late NotificationLevel _default = _defaultWas;
 
   /// The new icon and banner, cropped; or [_removeIcon] and [_removeBanner]
   /// to take the ones there away.
@@ -863,6 +908,7 @@ class _SpaceOverviewPageState extends State<SpaceOverviewPage> {
   void dispose() {
     _name.dispose();
     _about.dispose();
+    _locale.dispose();
     _upload.dispose();
     super.dispose();
   }
@@ -872,6 +918,7 @@ class _SpaceOverviewPageState extends State<SpaceOverviewPage> {
     final name = _name.text.trim();
     if (p == null || name.isEmpty) return;
     final about = _about.text.trim();
+    final locale = _locale.text.trim();
     final navigator = Navigator.of(context);
     setState(() => _saving = true);
     final ok = await adminTry(
@@ -881,10 +928,12 @@ class _SpaceOverviewPageState extends State<SpaceOverviewPage> {
         p.id,
         name: name == p.name ? null : name,
         description: about == (p.description ?? '') ? null : about,
+        locale: locale == (p.locale ?? '') ? null : locale,
         iconPath: _icon,
         bannerPath: _banner,
         removeBanner: _removeBanner,
         removeIcon: _removeIcon,
+        defaultNotifications: _default == _defaultWas ? null : _default,
         onProgress: (p) {
           // Left mid-upload, the page is gone, and its note with it.
           if (mounted) _upload.value = p;
@@ -911,7 +960,9 @@ class _SpaceOverviewPageState extends State<SpaceOverviewPage> {
             _removeIcon ||
             _removeBanner ||
             _name.text.trim() != p.name ||
-            _about.text.trim() != (p.description ?? '').trim());
+            _about.text.trim() != (p.description ?? '').trim() ||
+            _locale.text.trim() != (p.locale ?? '').trim() ||
+            _default != _defaultWas);
     return UnsavedChanges(
       dirty: dirty,
       child: AdminPage(
@@ -965,6 +1016,23 @@ class _SpaceOverviewPageState extends State<SpaceOverviewPage> {
             DuvetTextField(label: 'Name', controller: _name),
             const SizedBox(height: 16),
             DuvetTextField(label: 'What it’s about', controller: _about, maxLines: 3),
+            const SizedBox(height: 16),
+            // Free text, as the desktop takes it.
+            DuvetTextField(label: 'Locale', controller: _locale, hint: 'en', maxLength: 4),
+            const Overline('Default notifications'),
+            Segmented<NotificationLevel>(
+              label: 'Default notifications',
+              value: _default,
+              options: const {NotificationLevel.all: 'All messages', NotificationLevel.mentions: 'Only mentions'},
+              onChanged: (level) => setState(() => _default = level),
+            ),
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 8, 16, 0),
+              child: Text(
+                'Members are notified of this until they choose for themselves.',
+                style: DuvetType.caption.copyWith(color: colors.mutedForeground),
+              ),
+            ),
           ],
         ],
       ),
@@ -2013,9 +2081,22 @@ class _MemberPickerState extends State<_MemberPicker> {
           if (snapshot.hasError)
             const ListNote('Couldn’t load the members. Close this and try again.')
           else if (!snapshot.hasData)
-            const Padding(
-              padding: EdgeInsets.all(24),
-              child: Center(child: FCircularProgress()),
+            LoadingSkeleton(
+              label: 'Loading members',
+              children: [
+                // As a PersonRow without the handle.
+                for (final name in placeholderNames)
+                  Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                    child: Row(
+                      children: [
+                        const Bone.circle(size: 40),
+                        const SizedBox(width: 12),
+                        Text(name, style: DuvetType.rowTitle),
+                      ],
+                    ),
+                  ),
+              ],
             )
           else if (offered.isEmpty)
             Padding(
@@ -2122,10 +2203,9 @@ int _adminRank(SpaceRole r) => Perm.has(r.perms, Perm.administrator)
 
 /// A role's colors read aloud: "default", "#30A46C", or a gradient's stops.
 String describeRoleColors(RoleColors c) {
-  String hex(int rgb) => '#${rgb.toRadixString(16).padLeft(6, '0').toUpperCase()}';
   if (c.from == null) return 'default';
-  if (c.to == null) return hex(c.from!);
-  return 'gradient, ${[c.from, c.via, c.to].nonNulls.map(hex).join(' to ')}';
+  if (c.to == null) return hexOf(c.from!);
+  return 'gradient, ${[c.from, c.via, c.to].nonNulls.map(hexOf).join(' to ')}';
 }
 
 /// A role's colors on a small rounded swatch, left to right: the picker's
@@ -2155,9 +2235,9 @@ enum _ColorKind { none, solid, gradient }
 
 enum _Stop { start, middle, end }
 
-/// The name's color: none, one of the swatches, or a gradient across two or
-/// three of them, previewed on the name as members will see it. A color set
-/// on the desktop outside the swatches stays offered. Answers on Done.
+/// The name's color: none, a swatch or any custom color, or a gradient across
+/// two or three of those, previewed on the name as members will see it.
+/// Answers on Done.
 class _RoleColorSheet extends StatefulWidget {
   final String name;
   final RoleColors initial;
@@ -2177,13 +2257,6 @@ class _RoleColorSheetState extends State<_RoleColorSheet> {
       : _ColorKind.gradient;
   _Stop _stop = _Stop.start;
 
-  // The swatches, and any color the role has beyond them.
-  late final _swatches = [
-    ...roleSwatches,
-    for (final c in [widget.initial.from, widget.initial.via, widget.initial.to].nonNulls)
-      if (!roleSwatches.contains(c)) c,
-  ];
-
   void _kindTo(_ColorKind kind) => setState(() {
     _kind = kind;
     _stop = _Stop.start;
@@ -2201,7 +2274,6 @@ class _RoleColorSheetState extends State<_RoleColorSheet> {
   });
 
   void _pick(int? rgb) => setState(() {
-    HapticFeedback.selectionClick();
     _c = switch ((_kind, _stop)) {
       (_ColorKind.gradient, _Stop.middle) => (from: _c.from, via: rgb, to: _c.to),
       (_ColorKind.gradient, _Stop.end) => (from: _c.from, via: _c.via, to: rgb),
@@ -2219,7 +2291,6 @@ class _RoleColorSheetState extends State<_RoleColorSheet> {
   @override
   Widget build(BuildContext context) {
     final colors = context.theme.colors;
-    final accent = context.duvet.accentText;
     // The middle stop alone may be left out.
     final none = _kind == _ColorKind.gradient && _stop == _Stop.middle;
     return ListView(
@@ -2267,35 +2338,16 @@ class _RoleColorSheetState extends State<_RoleColorSheet> {
         ],
         if (_kind != _ColorKind.none)
           Padding(
+            // Kept by key as the stops' row comes and goes: Custom stays open.
+            key: const ValueKey('color'),
             padding: const EdgeInsets.all(16),
-            child: Wrap(
-              spacing: 12,
-              runSpacing: 12,
-              children: [
-                for (final rgb in [if (none) null, ..._swatches])
-                  Semantics(
-                    container: true,
-                    button: true,
-                    selected: _current == rgb,
-                    label: rgb == null ? 'No middle' : describeRoleColors((from: rgb, via: null, to: null)),
-                    excludeSemantics: true,
-                    onTap: () => _pick(rgb),
-                    child: GestureDetector(
-                      onTap: () => _pick(rgb),
-                      child: AnimatedContainer(
-                        duration: MediaQuery.disableAnimationsOf(context) ? Duration.zero : DuvetTokens.pressOut,
-                        width: 44,
-                        height: 44,
-                        decoration: BoxDecoration(
-                          color: rgb == null ? colors.secondary : roleColorOn(context, rgb),
-                          borderRadius: BorderRadius.circular(DuvetTokens.radiusField),
-                          border: _current == rgb ? Border.all(color: accent, width: 3) : null,
-                        ),
-                        child: rgb == null ? Icon(FLucideIcons.ban, size: 18, color: colors.mutedForeground) : null,
-                      ),
-                    ),
-                  ),
-              ],
+            child: ColorPick(
+              value: _current,
+              presets: [if (none) null, ...roleSwatches],
+              label: (rgb) => rgb == null ? 'No middle' : hexOf(rgb),
+              fill: (rgb) => rgb == null ? colors.secondary : roleColorOn(context, rgb)!,
+              noneIcon: FLucideIcons.ban,
+              onChanged: _pick,
             ),
           ),
         Padding(
@@ -2356,16 +2408,7 @@ class _RolesPageState extends State<RolesPage> {
 
   /// Whether a role may sit at [position]: below the user's highest role,
   /// with ManageRoles; anywhere for the Space's owner.
-  bool _below(int position) {
-    final repository = context.repository;
-    final profile = repository.spaceProfile(widget.spaceId);
-    if (profile == null) return false;
-    if (profile.owner) return true;
-    if (!profile.can(Perm.manageRoles)) return false;
-    final me = repository.profile.value?.id;
-    final highest = me == null ? 0 : repository.rolesOf(widget.spaceId, me).firstOrNull?.position ?? 0;
-    return position < highest;
-  }
+  bool _below(int position) => managesRoleAt(context.repository, widget.spaceId, position);
 
   // A screen reader's move of a role the user may not move.
   void _cantMove(SpaceRole r) =>
@@ -2421,8 +2464,7 @@ class _RolesPageState extends State<RolesPage> {
     final sure = await confirmDestructive(
       context,
       title: 'Put admin roles first?',
-      body:
-          'Roles with Administrator go to the top, then those that manage part of the Space. The rest keep their order below them. Everyone sees the new order.',
+      body: 'Roles with Administrator go to the top, then those that manage part of the Space. The rest keep their order below them. Everyone sees the new order.',
       action: 'Reorder',
       destructive: false,
     );
@@ -2600,6 +2642,8 @@ class _RoleEditorPageState extends State<RoleEditorPage> {
   late RoleColors _colors = widget.role.colors;
   late int _perms = widget.role.perms;
   late bool _hoisted = widget.role.hoisted;
+  // Members to give (true) or take (false) the role on Save.
+  final _memberChanges = <String, bool>{};
   bool _saving = false;
 
   @override
@@ -2612,19 +2656,25 @@ class _RoleEditorPageState extends State<RoleEditorPage> {
     final r = widget.role;
     final name = _name.text.trim();
     final navigator = Navigator.of(context);
+    final repository = context.repository;
+    final fields = _fieldsDirty;
     setState(() => _saving = true);
-    final ok = await adminTry(
-      context,
-      'Couldn’t save ${r.name}',
-      () => context.repository.updateRole(
-        widget.spaceId,
-        r.id,
-        name: r.everyone || name.isEmpty || name == r.name ? null : name,
-        colors: _colors != r.colors ? _colors : null,
-        perms: _perms != r.perms ? _perms : null,
-        hoisted: _hoisted != r.hoisted ? _hoisted : null,
-      ),
-    );
+    final ok = await adminTry(context, 'Couldn’t save ${r.name}', () async {
+      if (fields) {
+        await repository.updateRole(
+          widget.spaceId,
+          r.id,
+          name: r.everyone || name.isEmpty || name == r.name ? null : name,
+          colors: _colors != r.colors ? _colors : null,
+          perms: _perms != r.perms ? _perms : null,
+          hoisted: _hoisted != r.hoisted ? _hoisted : null,
+        );
+      }
+      for (final MapEntry(key: userId, value: has) in [..._memberChanges.entries]) {
+        await repository.setRole(widget.spaceId, r.id, userId, has: has);
+        _memberChanges.remove(userId);
+      }
+    });
     if (!mounted) return;
     setState(() => _saving = false);
     if (ok) navigator.pop();
@@ -2659,7 +2709,7 @@ class _RoleEditorPageState extends State<RoleEditorPage> {
       initialSize: 0.75,
       builder: (context, scroll) => StatefulBuilder(
         builder: (context, setSheet) {
-          final holders = repository.roleMembers(widget.spaceId, widget.role.id).toSet();
+          final holders = _holders;
           return ListView(
             controller: scroll,
             children: [
@@ -2670,7 +2720,7 @@ class _RoleEditorPageState extends State<RoleEditorPage> {
                   presence: presenceIn(repository.presence.value, m.userId, spaceId: widget.spaceId),
                   checked: holders.contains(m.userId),
                   username: false,
-                  onTap: () => _toggle(m, !holders.contains(m.userId), setSheet),
+                  onTap: () => setSheet(() => _toggle(m.userId, !holders.contains(m.userId))),
                 ),
             ],
           );
@@ -2680,13 +2730,29 @@ class _RoleEditorPageState extends State<RoleEditorPage> {
     if (mounted) setState(() {});
   }
 
-  Future<void> _toggle(Member m, bool has, StateSetter setSheet) async {
-    await adminTry(
-      context,
-      'Couldn’t change ${m.displayName}’s roles',
-      () => context.repository.setRole(widget.spaceId, widget.role.id, m.userId, has: has),
-    );
-    setSheet(() {});
+  /// Who has the role once Save applies the staged member changes.
+  Set<String> get _holders {
+    final holders = context.repository.roleMembers(widget.spaceId, widget.role.id).toSet();
+    _memberChanges.forEach((userId, has) => has ? holders.add(userId) : holders.remove(userId));
+    return holders;
+  }
+
+  // Stages it for Save; back to how it was, nothing is staged.
+  void _toggle(String userId, bool has) => setState(() {
+    if (context.repository.roleMembers(widget.spaceId, widget.role.id).contains(userId) == has) {
+      _memberChanges.remove(userId);
+    } else {
+      _memberChanges[userId] = has;
+    }
+  });
+
+  bool get _fieldsDirty {
+    final r = widget.role;
+    final name = _name.text.trim();
+    return (!r.everyone && name.isNotEmpty && name != r.name) ||
+        _colors != r.colors ||
+        _perms != r.perms ||
+        _hoisted != r.hoisted;
   }
 
   Future<void> _delete() async {
@@ -2711,7 +2777,7 @@ class _RoleEditorPageState extends State<RoleEditorPage> {
   Widget build(BuildContext context) {
     final colors = context.theme.colors;
     final r = widget.role;
-    final holders = context.repository.roleMembers(widget.spaceId, r.id);
+    final holders = _holders;
     final admin = Perm.has(_perms, Perm.administrator);
     final children = <Widget>[
       const SizedBox(height: 8),
@@ -2839,17 +2905,12 @@ class _RoleEditorPageState extends State<RoleEditorPage> {
       ],
     ];
     if (!widget.readOnly) {
-      final name = _name.text.trim();
-      final dirty =
-          (!r.everyone && name.isNotEmpty && name != r.name) ||
-          _colors != r.colors ||
-          _perms != r.perms ||
-          _hoisted != r.hoisted;
+      final dirty = _fieldsDirty || _memberChanges.isNotEmpty;
       return UnsavedChanges(
         dirty: dirty,
         child: AdminPage(
           title: 'Edit role',
-          actions: [TextAction(label: 'Save', onPressed: _saving ? null : _save)],
+          actions: [TextAction(label: 'Save', onPressed: _saving || !dirty ? null : _save)],
           children: children,
         ),
       );
@@ -2899,13 +2960,15 @@ class _InvitesAdminPageState extends State<InvitesAdminPage> {
     _invites = context.repository.spaceInvites(widget.spaceId);
   });
 
-  static String _until(DateTime? t) {
-    if (t == null) return 'never expires';
-    final left = t.difference(DateTime.now());
-    if (left.isNegative) return 'expired';
-    if (left.inDays >= 1) return 'expires in ${left.inDays} ${left.inDays == 1 ? 'day' : 'days'}';
-    if (left.inHours >= 1) return 'expires in ${left.inHours} h';
-    return 'expires in ${left.inMinutes} min';
+  /// As the desktop: "Expires 11/15/2026, 3:04 PM", or "Never expires".
+  String _until(DateTime? t) {
+    if (t == null) return 'Never expires';
+    final l = MaterialLocalizations.of(context);
+    final time = l.formatTimeOfDay(
+      TimeOfDay.fromDateTime(t),
+      alwaysUse24HourFormat: MediaQuery.alwaysUse24HourFormatOf(context),
+    );
+    return 'Expires ${l.formatCompactDate(t)}, $time';
   }
 
   Future<void> _revoke(SpaceInvite i) async {
@@ -2941,10 +3004,7 @@ class _InvitesAdminPageState extends State<InvitesAdminPage> {
           if (snapshot.hasError)
             const ListNote('Couldn’t load the invites')
           else if (invites == null)
-            const Padding(
-              padding: EdgeInsets.all(24),
-              child: Center(child: FCircularProgress()),
-            )
+            LoadingSkeleton(label: 'Loading invites', children: placeholderRows())
           else if (invites.isEmpty)
             const ListNote('No invite links')
           else
@@ -2959,6 +3019,467 @@ class _InvitesAdminPageState extends State<InvitesAdminPage> {
       );
     },
   );
+}
+
+// -----------------------------------------------------------------------------
+// Bans
+// -----------------------------------------------------------------------------
+
+/// Who's banned from the Space, newest first: searchable by name, ID or
+/// reason, each with why, by whom and since when. One opens to unban. Bans
+/// made or lifted elsewhere show as they happen.
+class BansAdminPage extends StatefulWidget {
+  final String spaceId;
+  const BansAdminPage({required this.spaceId, super.key});
+
+  @override
+  State<BansAdminPage> createState() => _BansAdminPageState();
+}
+
+class _BansAdminPageState extends State<BansAdminPage> {
+  late Future<List<SpaceBan>> _bans;
+  final _search = TextEditingController();
+  StreamSubscription<String>? _changes;
+
+  // Unbanned here: gone from the list at once, until the list comes again.
+  final _lifting = <String>{};
+
+  @override
+  void initState() {
+    super.initState();
+    _search.addListener(() => setState(() {}));
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    final repository = context.repository;
+    _bans = repository.bans(widget.spaceId);
+    _changes ??= repository.bansChanged.where((id) => id == widget.spaceId).listen((_) => _reload());
+  }
+
+  @override
+  void dispose() {
+    _changes?.cancel();
+    _search.dispose();
+    super.dispose();
+  }
+
+  void _reload() {
+    if (!mounted) return;
+    final lifted = {..._lifting};
+    setState(() {
+      _bans = context.repository.bans(widget.spaceId).then((l) {
+        if (mounted) setState(() => _lifting.removeAll(lifted));
+        return l;
+      });
+    });
+  }
+
+  String _date(DateTime t) => MaterialLocalizations.of(context).formatMediumDate(t);
+
+  Future<void> _open(SpaceBan b) async {
+    final name = b.user.displayName;
+    if (!await _askUnban(context, b, _date(b.at)) || !mounted) return;
+    final id = b.user.userId;
+    setState(() => _lifting.add(id));
+    final lifted = await adminTry(context, 'Couldn’t unban $name', () => context.repository.unban(widget.spaceId, id));
+    if (!mounted) return;
+    if (lifted) {
+      adminToast(context, '$name can join again');
+      _reload();
+    } else {
+      setState(() => _lifting.remove(id));
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) => FutureBuilder(
+    future: _bans,
+    builder: (context, snapshot) {
+      final all = snapshot.data;
+      final q = _search.text.trim().toLowerCase();
+      bool matches(SpaceBan b) =>
+          q.isEmpty ||
+          b.user.displayName.toLowerCase().contains(q) ||
+          b.user.username.toLowerCase().contains(q) ||
+          b.user.userId.contains(q) ||
+          (b.reason?.toLowerCase().contains(q) ?? false);
+      final shown = [
+        for (final b in all ?? const <SpaceBan>[])
+          if (!_lifting.contains(b.user.userId) && matches(b)) b,
+      ];
+      return AdminPage(
+        title: 'Bans',
+        children: [
+          SearchField(controller: _search, hint: 'Search by name, ID or reason'),
+          const SizedBox(height: 8),
+          if (snapshot.hasError)
+            const ListNote('Couldn’t load the bans')
+          else if (all == null)
+            LoadingSkeleton(label: 'Loading bans', children: placeholderRows(avatar: 40))
+          else if (shown.isEmpty)
+            ListNote(q.isEmpty ? 'No one is banned' : 'No one matches')
+          else
+            for (final b in shown)
+              ListRow(
+                leading: ExcludeSemantics(
+                  child: UserAvatar(name: b.user.displayName, url: b.user.avatarUrl, size: 40),
+                ),
+                title: b.user.displayName,
+                snippet: [
+                  if (b.user.username.isNotEmpty) '@${b.user.username}',
+                  b.reason ?? 'No reason given',
+                ].join(' · '),
+                trailing: MaterialLocalizations.of(context).formatCompactDate(b.at),
+                detail: 'Double tap to unban',
+                onTap: () => _open(b),
+              ),
+        ],
+      );
+    },
+  );
+}
+
+/// A ban up close: who, by whom, when and why, in full. True to unban.
+Future<bool> _askUnban(BuildContext context, SpaceBan b, String date) async =>
+    await showGlassDialogSheet<bool>(
+      context,
+      label: '${b.user.displayName}’s ban',
+      builder: (context) {
+        final colors = context.theme.colors;
+        final m = b.user;
+        return Padding(
+          padding: const EdgeInsets.fromLTRB(24, 16, 24, 24),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Row(
+                children: [
+                  ExcludeSemantics(
+                    child: UserAvatar(name: m.displayName, url: m.avatarUrl, size: 48),
+                  ),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(m.displayName, style: DuvetType.title.copyWith(color: colors.foreground)),
+                        Text(
+                          [if (m.username.isNotEmpty) '@${m.username}', 'banned by ${b.bannedBy}', date].join(' · '),
+                          style: DuvetType.caption.copyWith(color: colors.mutedForeground),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 16),
+              Container(
+                padding: const EdgeInsets.all(12),
+                decoration: BoxDecoration(
+                  color: colors.secondary,
+                  borderRadius: BorderRadius.circular(DuvetTokens.radiusField),
+                ),
+                child: Text(
+                  b.reason ?? 'No reason given',
+                  style: DuvetType.body.copyWith(
+                    color: b.reason == null ? colors.mutedForeground : colors.foreground,
+                    fontStyle: b.reason == null ? FontStyle.italic : null,
+                  ),
+                ),
+              ),
+              const SizedBox(height: 12),
+              Text(
+                'Unbanned, they can join again with an invite.',
+                style: DuvetType.snippet.copyWith(color: colors.mutedForeground),
+              ),
+              const SizedBox(height: 24),
+              DuvetButton(
+                label: 'Unban',
+                icon: FLucideIcons.userCheck,
+                variant: ButtonVariant.primary,
+                expand: true,
+                onPressed: () => Navigator.of(context).pop(true),
+              ),
+              const SizedBox(height: 12),
+              DuvetButton(label: 'Cancel', expand: true, onPressed: () => Navigator.of(context).pop(false)),
+            ],
+          ),
+        );
+      },
+    ) ==
+    true;
+
+// -----------------------------------------------------------------------------
+// Members
+// -----------------------------------------------------------------------------
+
+/// Whether the user may give, take, move or change a role at [position]:
+/// as the API checks it, one below their highest role, with ManageRoles;
+/// any for the Space's owner (Administrator doesn't get past it).
+bool managesRoleAt(ChatRepository repository, String spaceId, int position) {
+  final profile = repository.spaceProfile(spaceId);
+  if (profile == null) return false;
+  if (profile.owner) return true;
+  if (!profile.can(Perm.manageRoles)) return false;
+  final me = repository.profile.value?.id;
+  final highest = me == null ? 0 : repository.rolesOf(spaceId, me).firstOrNull?.position ?? 0;
+  return position < highest;
+}
+
+/// May kick or ban [userId] ([bit]: Kick or Ban Members), as the API rules:
+/// never the owner or themselves and, but for the owner, only someone whose
+/// highest role is below the user's own.
+bool mayRemove(ChatRepository repository, String spaceId, String userId, int bit) {
+  final profile = repository.spaceProfile(spaceId);
+  final me = repository.profile.value?.id;
+  if (profile == null || me == null || userId == me || !profile.can(bit)) return false;
+  if (repository.spaces.value.where((s) => s.id == spaceId).firstOrNull?.ownerId == userId) return false;
+  if (profile.owner) return true;
+  int highest(String id) => repository.rolesOf(spaceId, id).firstOrNull?.position ?? 0;
+  return highest(userId) < highest(me);
+}
+
+/// A Space's members, as the desktop's Members tab lists them: searchable by
+/// name, username or ID, each with their roles. One opens to change their
+/// roles, and to remove a bot or kick or ban a person.
+class MembersAdminPage extends StatefulWidget {
+  final String spaceId;
+  const MembersAdminPage({required this.spaceId, super.key});
+
+  @override
+  State<MembersAdminPage> createState() => _MembersAdminPageState();
+}
+
+class _MembersAdminPageState extends State<MembersAdminPage> {
+  late Future<List<Member>> _members;
+  final _search = TextEditingController();
+
+  @override
+  void initState() {
+    super.initState();
+    _search.addListener(() => setState(() {}));
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    final repository = context.repository;
+    _members = repository.members(
+      RoomTarget(
+        spaceId: widget.spaceId,
+        roomId: repository.adminRooms(widget.spaceId).where((r) => r.kind == AdminRoomKind.text).firstOrNull?.id ?? '',
+      ),
+    );
+  }
+
+  @override
+  void dispose() {
+    _search.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final repository = context.repository;
+    return FutureBuilder(
+      future: _members,
+      builder: (context, snapshot) => ValueListenableBuilder(
+        // Roles given or taken, and members leaving (a bot removed).
+        valueListenable: repository.spaces,
+        builder: (context, _, _) {
+          final all = snapshot.data;
+          final ownerId = repository.spaces.value.where((s) => s.id == widget.spaceId).firstOrNull?.ownerId;
+          final q = _search.text.trim().toLowerCase();
+          final shown = [
+            for (final m in all ?? const <Member>[])
+              if (repository.isMember(widget.spaceId, m.userId) &&
+                  (q.isEmpty ||
+                      m.displayName.toLowerCase().contains(q) ||
+                      m.username.toLowerCase().contains(q) ||
+                      m.userId.contains(q)))
+                m,
+          ]..sort((a, b) => a.displayName.toLowerCase().compareTo(b.displayName.toLowerCase()));
+          return AdminPage(
+            title: 'Members',
+            children: [
+              SearchField(controller: _search, hint: 'Search by name or ID'),
+              const SizedBox(height: 8),
+              if (snapshot.hasError)
+                const ListNote('Couldn’t load the members')
+              else if (all == null)
+                LoadingSkeleton(label: 'Loading members', children: placeholderRows(avatar: 40))
+              else if (shown.isEmpty)
+                ListNote(q.isEmpty ? 'No members' : 'No one matches')
+              else
+                for (final m in shown)
+                  ListRow(
+                    leading: ExcludeSemantics(
+                      child: UserAvatar(name: m.displayName, url: m.avatarUrl, size: 40),
+                    ),
+                    title: m.displayName,
+                    titleIcon: m.userId == ownerId ? const OwnerCrown() : null,
+                    snippet: [
+                      if (m.username.isNotEmpty) '@${m.username}',
+                      if (m.userId == ownerId) 'owner',
+                      if (m.isBot) 'bot',
+                      switch (repository.rolesOf(widget.spaceId, m.userId)) {
+                        [] => 'No roles',
+                        final roles => roles.map((r) => r.name).join(', '),
+                      },
+                    ].join(' · '),
+                    onTap: () => Navigator.of(context).push(
+                      MaterialPageRoute<void>(
+                        builder: (_) => MemberAdminPage(spaceId: widget.spaceId, member: m),
+                      ),
+                    ),
+                  ),
+            ],
+          );
+        },
+      ),
+    );
+  }
+}
+
+/// A member's roles as switches; those the user manages change at once.
+/// The caller rebuilds it when repository.spaces changes.
+class MemberRoleSwitches extends StatelessWidget {
+  final String spaceId;
+  final Member member;
+  const MemberRoleSwitches({required this.spaceId, required this.member, super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    final repository = context.repository;
+    final m = member;
+    final has = {for (final r in repository.rolesOf(spaceId, m.userId)) r.id};
+    final roles = repository.roles(spaceId).where((r) => !r.everyone).toList();
+    return AdminPanel(
+      children: [
+        if (roles.isEmpty) const ListNote('This Space has no roles yet'),
+        for (final r in roles)
+          Builder(
+            builder: (context) {
+              final on = has.contains(r.id);
+              final change = managesRoleAt(repository, spaceId, r.position)
+                  ? (bool on) => adminTry(
+                      context,
+                      'Couldn’t change ${m.displayName}’s roles',
+                      () => repository.setRole(spaceId, r.id, m.userId, has: on),
+                    )
+                  : null;
+              // The whole row toggles, for a target past 44pt.
+              return GestureDetector(
+                behavior: HitTestBehavior.opaque,
+                excludeFromSemantics: true,
+                onTap: change == null ? null : () => change(!on),
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                  child: Row(
+                    children: [
+                      Expanded(
+                        child: RoleName(r.name, colors: r.colors, style: DuvetType.rowTitle),
+                      ),
+                      const SizedBox(width: 12),
+                      DuvetSwitch(label: r.name, value: on, onChanged: change),
+                    ],
+                  ),
+                ),
+              );
+            },
+          ),
+      ],
+    );
+  }
+}
+
+/// One member, in Space settings: their ID, their roles (those the user
+/// manages can be given and taken) and Remove from Space for a bot, or Kick
+/// and Ban for a person.
+class MemberAdminPage extends StatelessWidget {
+  final String spaceId;
+  final Member member;
+  const MemberAdminPage({required this.spaceId, required this.member, super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    final repository = context.repository;
+    final colors = context.theme.colors;
+    final m = member;
+    return ValueListenableBuilder(
+      valueListenable: repository.spaces,
+      builder: (context, spaces, _) {
+        final profile = repository.spaceProfile(spaceId);
+        final spaceName = spaces.where((s) => s.id == spaceId).firstOrNull?.name ?? 'this Space';
+        return AdminPage(
+          title: m.displayName,
+          backLabel: 'Back to Members',
+          children: [
+            Row(
+              children: [
+                ExcludeSemantics(
+                  child: UserAvatar(name: m.displayName, url: m.avatarUrl, size: 56),
+                ),
+                const SizedBox(width: 16),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(m.displayName, style: DuvetType.title.copyWith(color: colors.foreground)),
+                      if (m.username.isNotEmpty || m.isBot)
+                        Text(
+                          [if (m.username.isNotEmpty) '@${m.username}', if (m.isBot) 'bot'].join(' · '),
+                          style: DuvetType.caption.copyWith(color: colors.mutedForeground),
+                        ),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+            const Overline('User ID'),
+            AdminPanel(
+              children: [
+                ListRow(
+                  title: m.userId,
+                  detail: 'Double tap to copy',
+                  onTap: () {
+                    Clipboard.setData(ClipboardData(text: m.userId));
+                    adminToast(context, 'ID copied');
+                  },
+                ),
+              ],
+            ),
+            const Overline('Roles'),
+            MemberRoleSwitches(spaceId: spaceId, member: m),
+            if (m.isBot && (profile?.can(Perm.manageBots) ?? false)) ...[
+              const SizedBox(height: 32),
+              DuvetButton(
+                label: 'Remove from Space',
+                icon: FLucideIcons.userMinus,
+                variant: ButtonVariant.destructive,
+                expand: true,
+                onPressed: () async {
+                  final navigator = Navigator.of(context);
+                  if (await removeBotAsking(context, spaceId: spaceId, bot: m, spaceName: spaceName)) navigator.pop();
+                },
+              ),
+            ],
+            ...removeMemberButtons(
+              context,
+              spaceId: spaceId,
+              member: m,
+              spaceName: spaceName,
+              gap: 32,
+              onGone: Navigator.of(context).pop,
+            ),
+          ],
+        );
+      },
+    );
+  }
 }
 
 // -----------------------------------------------------------------------------
@@ -3149,9 +3670,27 @@ class _AssetsPageState extends State<AssetsPage> {
             if (snapshot.hasError)
               const ListNote('Couldn’t load them')
             else if (list == null)
-              const Padding(
-                padding: EdgeInsets.all(24),
-                child: Center(child: FCircularProgress()),
+              LoadingSkeleton(
+                label: 'Loading ${_noun}s',
+                children: [
+                  Wrap(
+                    spacing: 12,
+                    runSpacing: 12,
+                    children: [
+                      for (final name in placeholderNames)
+                        SizedBox(
+                          width: size + 24,
+                          child: Column(
+                            children: [
+                              Bone.square(size: size),
+                              const SizedBox(height: 4),
+                              Text(name, maxLines: 1, overflow: TextOverflow.ellipsis, style: DuvetType.caption),
+                            ],
+                          ),
+                        ),
+                    ],
+                  ),
+                ],
               )
             else if (list.isEmpty)
               ListNote('No ${_noun}s yet')
@@ -3175,8 +3714,8 @@ class _AssetsPageState extends State<AssetsPage> {
                           width: size + 24,
                           child: Column(
                             children: [
-                              Image.network(
-                                a.url,
+                              Image(
+                                image: cachedImage(a.url),
                                 width: size,
                                 height: size,
                                 fit: BoxFit.contain,
@@ -3236,6 +3775,11 @@ class _WebhooksPageState extends State<WebhooksPage> {
     body: 'Copy it now: it won’t be shown again. Anyone with it can post as $name.',
     secret: url,
     copyLabel: 'Copy URL',
+    also: (
+      label: 'Copy GitHub URL',
+      secret: '$url/github',
+      note: 'Paste it as a GitHub repository’s webhook: its pushes, issues and pull requests post here.',
+    ),
   );
 
   Future<void> _new() async {
@@ -3264,9 +3808,8 @@ class _WebhooksPageState extends State<WebhooksPage> {
   Future<void> _avatar(SpaceWebhook w) async {
     final path = await pickSpaceIcon();
     if (path == null || !mounted) return;
-    final crop = await Navigator.of(
-      context,
-    ).push<CropRect>(MaterialPageRoute(fullscreenDialog: true, builder: (_) => CropPage(path: path, aspect: 1)));
+    final crop = await Navigator.of(context)
+        .push<CropRect>(MaterialPageRoute(fullscreenDialog: true, builder: (_) => CropPage(path: path, aspect: 1)));
     if (crop == null || !mounted) return;
     final repository = context.repository;
     await adminTry(context, 'Couldn’t change its picture', () async {
@@ -3368,10 +3911,7 @@ class _WebhooksPageState extends State<WebhooksPage> {
           if (snapshot.hasError)
             const ListNote('Couldn’t load the webhooks')
           else if (list == null)
-            const Padding(
-              padding: EdgeInsets.all(24),
-              child: Center(child: FCircularProgress()),
-            )
+            LoadingSkeleton(label: 'Loading webhooks', children: placeholderRows(avatar: 48))
           else if (list.isEmpty)
             const ListNote('No webhooks. Make one to let another app post in a room.')
           else
@@ -3395,7 +3935,9 @@ class _WebhooksPageState extends State<WebhooksPage> {
 // Storage
 // -----------------------------------------------------------------------------
 
-/// What the Space's files take, where they're kept, and the largest.
+/// What the Space's files take and where they're kept: its buckets to add,
+/// change and delete (ManageSpaceBuckets), and its files to delete
+/// (ManageSpaceAttachments).
 class SpaceStoragePage extends StatefulWidget {
   final String spaceId;
   const SpaceStoragePage({required this.spaceId, super.key});
@@ -3405,76 +3947,426 @@ class SpaceStoragePage extends StatefulWidget {
 }
 
 class _SpaceStoragePageState extends State<SpaceStoragePage> {
-  late final Future<SpaceStorage> _storage = context.repository.spaceStorage(widget.spaceId);
+  late Future<SpaceStorage> _storage = context.repository.spaceStorage(widget.spaceId);
+
+  void _reload() => setState(() {
+    _storage = context.repository.spaceStorage(widget.spaceId);
+  });
+
+  Future<void> _editBucket(Bucket? b) async {
+    final repository = context.repository;
+    final id = widget.spaceId;
+    final saved = await Navigator.of(context).push<bool>(
+      MaterialPageRoute(
+        builder: (_) => BucketFormPage(
+          bucket: b,
+          onSave: (draft) =>
+              b == null ? repository.createSpaceBucket(id, draft) : repository.updateSpaceBucket(id, b.id, draft),
+        ),
+      ),
+    );
+    if (saved == true && mounted) _reload();
+  }
+
+  Future<void> _bucketOptions(BuildContext anchor, Bucket b) async {
+    final picked = await showGlassMenu<String>(
+      anchor,
+      label: b.name,
+      items: [
+        const GlassMenuItem(icon: FLucideIcons.pencil, label: 'Edit', value: 'edit'),
+        b.active
+            ? const GlassMenuItem(
+                icon: FLucideIcons.pause,
+                label: 'Deactivate',
+                value: 'off',
+                hint: 'Uploads go back to Duvet’s storage',
+              )
+            : const GlassMenuItem(
+                icon: FLucideIcons.play,
+                label: 'Activate',
+                value: 'on',
+                hint: 'The Space’s uploads go to it',
+              ),
+        const GlassMenuItem(icon: FLucideIcons.trash2, label: 'Delete', value: 'delete', destructive: true),
+      ],
+    );
+    if (picked == null || !mounted) return;
+    if (picked == 'edit') return _editBucket(b);
+    final repository = context.repository;
+    if (picked == 'delete') {
+      final sure = await confirmDestructive(
+        context,
+        title: 'Delete ${b.name}?',
+        body: 'Duvet forgets its keys. The bucket and what’s in it stay with its owner.',
+        action: 'Delete bucket',
+      );
+      if (!sure || !mounted) return;
+      // Refused while it holds files: the repository says how many.
+      await adminTry(context, 'Couldn’t delete the bucket', () => repository.deleteSpaceBucket(widget.spaceId, b.id));
+    } else {
+      await adminTry(
+        context,
+        'Couldn’t change the bucket',
+        () => repository.setSpaceBucketActive(widget.spaceId, b.id, picked == 'on'),
+      );
+    }
+    if (mounted) _reload();
+  }
+
+  Future<void> _deleteFile(MyFile f) async {
+    final sure = await confirmFileDelete(context, 'Delete ${f.name}?', body: 'This can’t be undone.');
+    if (!sure || !mounted) return;
+    await adminTry(context, 'Couldn’t delete the file', () => context.repository.deleteSpaceFile(widget.spaceId, f.id));
+    if (mounted) _reload();
+  }
+
+  Future<void> _deleteAll(int n) async {
+    // The API deletes every file, those posted in messages too: the confirm says so.
+    final sure = await confirmFileDelete(
+      context,
+      'Delete all files?',
+      body:
+          'Delete all $n ${n == 1 ? 'file' : 'files'} in this Space, including ones posted in messages? '
+          'This can’t be undone.',
+      action: 'Delete all files',
+    );
+    if (!sure || !mounted) return;
+    await adminTry(context, 'Couldn’t delete the files', () => context.repository.deleteAllSpaceFiles(widget.spaceId));
+    if (mounted) _reload();
+  }
 
   @override
   Widget build(BuildContext context) {
     final colors = context.theme.colors;
     final tokens = context.duvet;
+    final profile = context.repository.spaceProfile(widget.spaceId);
+    final manageBuckets = profile?.can(Perm.manageBuckets) ?? false;
+    final manageFiles = profile?.can(Perm.manageAttachments) ?? false;
     return FutureBuilder(
       future: _storage,
       builder: (context, snapshot) {
         final s = snapshot.data;
+        Widget usage(SpaceStorage s) => Container(
+          padding: const EdgeInsets.all(16),
+          decoration: BoxDecoration(
+            color: colors.card,
+            borderRadius: BorderRadius.circular(DuvetTokens.radiusCard),
+            boxShadow: tokens.shadowRaised,
+          ),
+          child: Semantics(
+            label: '${formatBytes(s.used)} used by ${s.files.length} files',
+            excludeSemantics: true,
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(formatBytes(s.used), style: DuvetType.titleSans.copyWith(color: colors.foreground)),
+                Text(
+                  '${s.files.length} ${s.files.length == 1 ? 'file' : 'files'}',
+                  style: DuvetType.caption.copyWith(color: colors.mutedForeground),
+                ),
+              ],
+            ),
+          ),
+        );
         return AdminPage(
           title: 'Storage',
           children: [
             if (snapshot.hasError)
               const ListNote('Couldn’t load the storage')
             else if (s == null)
-              const Padding(
-                padding: EdgeInsets.all(24),
-                child: Center(child: FCircularProgress()),
+              LoadingSkeleton(
+                label: 'Loading the storage',
+                children: [
+                  usage(const SpaceStorage(used: 0)),
+                  const Overline('Files'),
+                  for (final f in placeholderFiles) FileRow(file: f),
+                ],
               )
             else ...[
-              Container(
-                padding: const EdgeInsets.all(16),
-                decoration: BoxDecoration(
-                  color: colors.card,
-                  borderRadius: BorderRadius.circular(DuvetTokens.radiusCard),
-                  boxShadow: tokens.shadowRaised,
-                ),
-                child: Semantics(
-                  label: '${formatBytes(s.used)} used by ${s.files.length} files',
-                  excludeSemantics: true,
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(formatBytes(s.used), style: DuvetType.titleSans.copyWith(color: colors.foreground)),
-                      Text(
-                        '${s.files.length} ${s.files.length == 1 ? 'file' : 'files'}',
-                        style: DuvetType.caption.copyWith(color: colors.mutedForeground),
-                      ),
-                    ],
+              usage(s),
+              if (manageBuckets) ...[
+                const Overline('Buckets'),
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(4, 0, 4, 12),
+                  child: Text(
+                    'Connect an S3-compatible bucket. While one is active, the Space’s uploads go to it.',
+                    style: DuvetType.caption.copyWith(color: colors.mutedForeground),
                   ),
                 ),
-              ),
-              if (s.buckets.isNotEmpty) ...[
-                const Overline('Kept in'),
-                AdminPanel(
-                  children: [
-                    for (final b in s.buckets)
-                      ListRow(
-                        title: b.name,
-                        snippet: [
-                          b.max == null
-                              ? '${formatBytes(b.used)} used'
-                              : '${formatBytes(b.used)} of ${formatBytes(b.max!)}',
-                          if (!b.active) 'off',
-                        ].join(' · '),
+                for (final b in s.buckets)
+                  Padding(
+                    padding: const EdgeInsets.only(bottom: 12),
+                    // The menu opens under the meter it's for.
+                    child: Builder(
+                      builder: (anchor) => Semantics(
+                        container: true,
+                        button: true,
+                        label: 'Options for ${b.name}',
+                        onTap: () => _bucketOptions(anchor, b),
+                        child: GestureDetector(
+                          onTap: () => _bucketOptions(anchor, b),
+                          child: BucketMeter(bucket: b.usage, title: b.active ? 'Active' : 'Off'),
+                        ),
                       ),
-                  ],
+                    ),
+                  ),
+                Align(
+                  alignment: Alignment.centerLeft,
+                  child: DuvetButton(
+                    label: 'Add a bucket',
+                    icon: FLucideIcons.plus,
+                    onPressed: () => _editBucket(null),
+                  ),
                 ),
               ],
-              const Overline('Largest files'),
+              // Largest first: those worth deleting.
+              const Overline('Files'),
               if (s.files.isEmpty)
                 const ListNote('No files yet')
-              else
-                for (final f in s.files.take(20))
-                  ListRow(title: f.name, snippet: '${formatBytes(f.size)} · ${shortTime(f.createdAt)}'),
+              else ...[
+                for (final f in s.files)
+                  FileRow(
+                    file: f,
+                    // The API deletes a file in a message only with all of them.
+                    note: f.inMessage ? 'In a message' : null,
+                    onDelete: manageFiles && !f.inMessage ? () => _deleteFile(f) : null,
+                  ),
+                if (manageFiles) ...[
+                  const SizedBox(height: 24),
+                  DuvetButton(
+                    label: 'Delete all files',
+                    variant: ButtonVariant.destructive,
+                    expand: true,
+                    onPressed: () => _deleteAll(s.files.length),
+                  ),
+                ],
+              ],
             ],
           ],
         );
       },
+    );
+  }
+}
+
+/// A bucket's settings, to add one or change it. [onSave] does the saving, so
+/// the user's own buckets can use the form too.
+class BucketFormPage extends StatefulWidget {
+  /// The one to change, or null to add one.
+  final Bucket? bucket;
+  final Future<void> Function(BucketDraft draft) onSave;
+  const BucketFormPage({required this.onSave, this.bucket, super.key});
+
+  @override
+  State<BucketFormPage> createState() => _BucketFormPageState();
+}
+
+class _BucketFormPageState extends State<BucketFormPage> {
+  // Every field but the secret starts as the bucket has it: the API takes
+  // them all on an edit, and a blank limit would remove it.
+  late final Bucket? _b = widget.bucket;
+  late final _name = TextEditingController(text: _b?.name);
+  late final _region = TextEditingController(text: _b?.region);
+  late final _endpoint = TextEditingController(text: _b?.endpoint);
+  late final _bucketName = TextEditingController(text: _b?.bucketName);
+  late final _accessKey = TextEditingController(text: _b?.accessKey);
+  final _secret = TextEditingController();
+  late final _max = TextEditingController(text: _mb(_b?.max));
+  late final _uploadLimit = TextEditingController(text: _mb(_b?.uploadLimit));
+  late bool _pathStyle = _b?.pathStyle ?? false;
+  late final List<TextEditingController> _fields = [
+    _name,
+    _region,
+    _endpoint,
+    _bucketName,
+    _accessKey,
+    _secret,
+    _max,
+    _uploadLimit,
+  ];
+  late final Map<TextEditingController, String> _initial = {for (final c in _fields) c: c.text};
+  bool _saving = false;
+
+  static const _mib = 1024 * 1024;
+
+  /// Whole MB when it is, so an unchanged limit saves the same bytes.
+  static String _mb(int? bytes) => bytes == null ? '' : (bytes % _mib == 0 ? '${bytes ~/ _mib}' : '${bytes / _mib}');
+
+  /// What a limit field means: none when empty, else its bytes; not [ok]
+  /// when it isn't a number above 0.
+  static ({bool ok, int? bytes}) _limit(String text, int? was) {
+    final t = text.trim();
+    if (t.isEmpty) return (ok: true, bytes: null);
+    if (t == _mb(was)) return (ok: true, bytes: was);
+    final mb = double.tryParse(t);
+    return mb == null || mb <= 0 ? (ok: false, bytes: null) : (ok: true, bytes: (mb * _mib).round());
+  }
+
+  @override
+  void initState() {
+    super.initState();
+    // Reading [_initial] here keeps the texts the page opened with.
+    for (final c in _initial.keys) {
+      c.addListener(_changed);
+    }
+  }
+
+  void _changed() => setState(() {});
+
+  @override
+  void dispose() {
+    for (final c in _fields) {
+      c.dispose();
+    }
+    super.dispose();
+  }
+
+  Future<void> _save(BucketDraft draft) async {
+    if (_b == null) {
+      final sure = await confirmDestructive(
+        context,
+        title: 'Add this bucket?',
+        body:
+            'Only use keys you own and control. Whoever owns the bucket can read, change or delete every file '
+            'kept in it, and cut off access at any time.',
+        action: 'Yes, add bucket',
+        destructive: false,
+      );
+      if (!sure || !mounted) return;
+    }
+    final navigator = Navigator.of(context);
+    setState(() => _saving = true);
+    final ok = await adminTry(context, 'Couldn’t save the bucket', () => widget.onSave(draft));
+    if (!mounted) return;
+    setState(() => _saving = false);
+    if (ok) navigator.pop(true);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = context.theme.colors;
+    final max = _limit(_max.text, _b?.max);
+    final uploadLimit = _limit(_uploadLimit.text, _b?.uploadLimit);
+    final draft = (
+      name: _name.text.trim(),
+      region: _region.text.trim(),
+      endpoint: _endpoint.text.trim(),
+      bucketName: _bucketName.text.trim(),
+      accessKey: _accessKey.text.trim(),
+      secret: _secret.text,
+      pathStyle: _pathStyle,
+      max: max.bytes,
+      uploadLimit: uploadLimit.bytes,
+    );
+    final dirty = _pathStyle != (_b?.pathStyle ?? false) || _initial.entries.any((e) => e.key.text != e.value);
+    final complete =
+        draft.name.isNotEmpty &&
+        draft.endpoint.isNotEmpty &&
+        draft.bucketName.isNotEmpty &&
+        draft.accessKey.isNotEmpty &&
+        // A new bucket needs its secret; an edit keeps the stored one when it's empty.
+        (_b != null || draft.secret.trim().isNotEmpty) &&
+        max.ok &&
+        uploadLimit.ok;
+    const gap = SizedBox(height: 16);
+    return UnsavedChanges(
+      dirty: dirty,
+      child: AdminPage(
+        title: _b == null ? 'Add a bucket' : 'Edit bucket',
+        actions: [TextAction(label: 'Save', onPressed: _saving || !dirty || !complete ? null : () => _save(draft))],
+        children: [
+          const Overline('Bucket'),
+          DuvetTextField(label: 'Name', controller: _name, hint: 'My R2', textInputAction: TextInputAction.next),
+          gap,
+          DuvetTextField(label: 'Region', controller: _region, hint: 'auto', textInputAction: TextInputAction.next),
+          gap,
+          DuvetTextField(
+            label: 'Endpoint',
+            controller: _endpoint,
+            hint: 'https://account-id.r2.cloudflarestorage.com',
+            keyboardType: TextInputType.url,
+            textInputAction: TextInputAction.next,
+          ),
+          gap,
+          DuvetTextField(
+            label: 'Bucket name',
+            controller: _bucketName,
+            hint: 'my-bucket',
+            textInputAction: TextInputAction.next,
+          ),
+          const Overline('Keys'),
+          DuvetTextField(label: 'Access key ID', controller: _accessKey, textInputAction: TextInputAction.next),
+          gap,
+          DuvetTextField(
+            label: 'Secret access key',
+            controller: _secret,
+            obscure: true,
+            helper: _b == null ? null : 'Leave it empty to keep the current one',
+          ),
+          gap,
+          AdminPanel(
+            children: [
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                child: Row(
+                  children: [
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text('Path-style addressing', style: DuvetType.rowTitle.copyWith(color: colors.foreground)),
+                          Text(
+                            'Needed for MinIO, RustFS and the like',
+                            style: DuvetType.caption.copyWith(color: colors.mutedForeground),
+                          ),
+                        ],
+                      ),
+                    ),
+                    const SizedBox(width: 12),
+                    DuvetSwitch(
+                      label: 'Path-style addressing',
+                      value: _pathStyle,
+                      onChanged: (on) => setState(() => _pathStyle = on),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+          const Overline('Limits'),
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Expanded(
+                child: DuvetTextField(
+                  label: 'Total (MB)',
+                  controller: _max,
+                  hint: 'No limit',
+                  keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                  error: max.ok ? null : 'A number above 0',
+                ),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: DuvetTextField(
+                  label: 'Per file (MB)',
+                  controller: _uploadLimit,
+                  hint: 'No limit',
+                  keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                  error: uploadLimit.ok ? null : 'A number above 0',
+                ),
+              ),
+            ],
+          ),
+          Padding(
+            padding: const EdgeInsets.fromLTRB(4, 8, 4, 0),
+            child: Text(
+              'Leave them empty for no limit. With a total limit, the oldest files make room when it’s full.',
+              style: DuvetType.caption.copyWith(color: colors.mutedForeground),
+            ),
+          ),
+        ],
+      ),
     );
   }
 }

@@ -254,6 +254,116 @@ void main() {
     semantics.dispose();
   });
 
+  Future<FakeRepository> openCommands(WidgetTester tester) async {
+    final repository = await pumpPortal(
+      tester,
+      setUp: (r) {
+        r.teamList = [DevTeam(id: 't-acme', name: 'Acme', ownerId: FakeRepository.me.id)];
+        r.teamMemberList['t-acme'] = [FakeRepository.everyone.first];
+        r.appList['t-acme'] = [const DevApp(id: 'a-1', teamId: 't-acme', name: 'Helper')];
+      },
+    );
+    await tapLabel(tester, RegExp(r'^Acme'));
+    await tapLabel(tester, RegExp(r'^Helper'));
+    await tapLabel(tester, RegExp(r'^Commands'));
+    return repository;
+  }
+
+  Future<void> enter(WidgetTester tester, int field, String text) async {
+    await tester.enterText(find.byType(EditableText).at(field), text);
+    await tester.pump();
+  }
+
+  testWidgets('commands: one made with a required text option and a choice, changed, then deleted', (tester) async {
+    final repository = await openCommands(tester);
+    expect(find.textContaining('No commands yet'), findsOneWidget);
+    await tapLabel(tester, 'New command');
+    await enter(tester, 0, 'poll');
+    await enter(tester, 1, 'Start a vote');
+
+    await tapLabel(tester, 'Add option');
+    expect(find.text('Text'), findsOneWidget, reason: 'a value option first');
+    await enter(tester, 0, 'question');
+    await enter(tester, 1, 'What to ask');
+    await enter(tester, 3, '100');
+    await tapLabel(tester, 'Required');
+    await tapLabel(tester, 'Add choice');
+    final fields = find.byType(EditableText).evaluate().length;
+    await enter(tester, fields - 2, 'Lunch');
+    await enter(tester, fields - 1, 'lunch');
+    await tapLabel(tester, 'Save');
+    await tapLabel(tester, 'Done');
+    expect(find.text('question'), findsOneWidget);
+
+    await tapLabel(tester, 'Save');
+    expect(repository.admin, ['command+ poll']);
+    final saved = repository.appCommandList['a-1']!.single;
+    final question = saved.options.single;
+    expect((question.type, question.required, question.maxLength), (OptionKind.string, true, 100));
+    expect(question.choices.single, (name: 'Lunch', value: 'lunch'));
+    expect(find.text('/poll'), findsOneWidget);
+
+    await tester.tap(find.text('/poll'));
+    await tester.pumpAndSettle();
+    await enter(tester, 1, 'Vote on it');
+    await tapLabel(tester, 'Save');
+    expect(repository.admin.last, 'command poll');
+    expect(repository.appCommandList['a-1']!.single.description, 'Vote on it');
+
+    await tester.tap(find.text('/poll'));
+    await tester.pumpAndSettle();
+    await tapLabel(tester, 'Delete command');
+    await tapLabel(tester, 'Delete command');
+    expect(repository.admin.last, 'command- cmd-1');
+    expect(find.textContaining('No commands yet'), findsOneWidget);
+    semantics.dispose();
+  });
+
+  testWidgets('commands: a subcommand holds options; beside it only subcommands and groups', (tester) async {
+    final repository = await openCommands(tester);
+    await tapLabel(tester, 'New command');
+    await enter(tester, 0, 'perms');
+    await enter(tester, 1, 'Permissions');
+    await tapLabel(tester, 'Add option');
+    await tapLabel(tester, RegExp(r'^Type'));
+    await tapLabel(tester, 'Subcommand');
+    await enter(tester, 0, 'get');
+    await enter(tester, 1, 'Show them');
+    expect(find.bySemanticsLabel('Required'), findsNothing);
+    await tapLabel(tester, 'Add option');
+    await enter(tester, 0, 'user');
+    await enter(tester, 1, 'Whose');
+    await tapLabel(tester, 'Done');
+    await tapLabel(tester, 'Done');
+
+    // Next to a subcommand, a value option can't go.
+    await tapLabel(tester, 'Add option');
+    await tapLabel(tester, RegExp(r'^Type'));
+    expect(find.bySemanticsLabel('Text'), findsNothing);
+    expect(find.bySemanticsLabel('Group of subcommands'), findsOneWidget);
+    await tester.tapAt(const Offset(20, 20));
+    await tester.pumpAndSettle();
+    await tapLabel(tester, 'Back');
+    await tapLabel(tester, 'Save');
+
+    final get = repository.appCommandList['a-1']!.single.options.single;
+    expect((get.type, get.name), (OptionKind.subcommand, 'get'));
+    expect(get.options.single.name, 'user');
+    semantics.dispose();
+  });
+
+  testWidgets('commands: the API\'s refusal shows, and the command stays open', (tester) async {
+    final repository = await openCommands(tester);
+    repository.refusals['saveAppCommand'] = 'name "Poll" must be lowercase';
+    await tapLabel(tester, 'New command');
+    await enter(tester, 0, 'Poll');
+    await enter(tester, 1, 'Vote');
+    await tapLabel(tester, 'Save');
+    expect(find.text('name "Poll" must be lowercase'), findsOneWidget);
+    expect(find.text('New command'), findsOneWidget);
+    semantics.dispose();
+  });
+
   testWidgets('the bot\'s username, display name, picture and banner', (tester) async {
     final repository = await pumpPortal(
       tester,

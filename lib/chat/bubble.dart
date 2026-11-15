@@ -1,5 +1,20 @@
 part of '../chat_view.dart';
 
+/// Whether [m] mentions the user [me], as the desktop has it: its text (a v2
+/// message's text displays) names them, or it replies to them and mentions
+/// them. Never their own message.
+bool _mentionsUser(ChatMessage m, String? me) =>
+    me != null &&
+    m.authorId != me &&
+    (mentionedIn(m.text).contains(me) || (m.reply?.mentionAuthor == true && m.reply?.authorId == me));
+
+/// The unread mentions of [me] among [messages] (oldest first): the newest
+/// [count] that mention them, [count] being how many the app has unread there.
+Set<String> unreadMentions(Iterable<ChatMessage> messages, String? me, int count) => {
+  if (count > 0)
+    for (final m in messages.toList().reversed.where((m) => _mentionsUser(m, me)).take(count)) m.id,
+};
+
 /// One message: the sender's name over a run's first bubble, the reply it
 /// quotes, the bubble, its reactions, and the time under a run's last one.
 ///
@@ -64,6 +79,10 @@ class _Bubble extends StatelessWidget {
   /// Dismisses a bot's answer to the user alone.
   final VoidCallback? onDismiss;
 
+  /// An unread mention of the user, its light yet to come up: called when it
+  /// does, as all of the bubble first comes into sight.
+  final VoidCallback? onShine;
+
   const _Bubble({
     required this.entry,
     required this.mine,
@@ -95,6 +114,7 @@ class _Bubble extends StatelessWidget {
     required this.onUseComponent,
     required this.selectChoices,
     this.onDismiss,
+    this.onShine,
     super.key,
   });
 
@@ -103,15 +123,14 @@ class _Bubble extends StatelessWidget {
     final colors = context.theme.colors;
     final tokens = context.duvet;
     final m = entry.message;
-    // Mentioning the user, as the desktop has it: the text (a v2 message's
-    // text displays) names them, or it replies to them and mentions them.
-    final mentionsMe =
-        !mine &&
-        directory.me != null &&
-        (mentionedIn(m.text).contains(directory.me) ||
-            (m.reply?.mentionAuthor == true && m.reply?.authorId == directory.me));
+    final mentionsMe = !mine && _mentionsUser(m, directory.me);
     final text = withoutPreviewedLinks(m.content, m.embeds, cards: !lifted);
     final textBubble = text.isNotEmpty && !isJumboEmoji(text);
+    // Prism: a text bubble that mentions the user, in its text or as a reply
+    // to them, is lit. With no text bubble (a sticker, a bot's components),
+    // the light frames the whole message.
+    final prism = mentionsMe && textBubble ? tokens.prism : null;
+    const bubblePadding = EdgeInsets.symmetric(horizontal: 12, vertical: 8);
     final maxWidth = MediaQuery.sizeOf(context).width * 0.75;
     final secondary = DuvetType.caption.copyWith(color: colors.mutedForeground);
     final faded = entry.delivery != _Delivery.sent;
@@ -138,7 +157,7 @@ class _Bubble extends StatelessWidget {
         if (m.stickerUrl != null)
           GestureDetector(
             onDoubleTap: onDoubleTap,
-            child: StickerView(url: m.stickerUrl!, name: stickerName),
+            child: StickerView(url: m.stickerUrl!, name: stickerName, zoomable: !lifted),
           ),
         if (text.isNotEmpty)
           if (isJumboEmoji(text))
@@ -154,26 +173,46 @@ class _Bubble extends StatelessWidget {
             Pressable(
               scale: 0.98,
               onDoubleTap: onDoubleTap,
-              builder: (context, _) => Container(
-                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-                constraints: BoxConstraints(maxWidth: maxWidth),
-                decoration: BoxDecoration(
-                  color: mine ? Duvet.azure : colors.card,
-                  borderRadius: BorderRadius.circular(DuvetTokens.radiusButton),
-                  boxShadow: editing ? null : (lifted ? tokens.shadowFloat : tokens.shadowRest),
-                  // Mentioning the user: the accent as an outline, never a fill.
-                  border: mentionsMe ? Border.all(color: tokens.violetText, width: 1.5) : null,
-                ),
-                child: MessageText(
+              builder: (context, _) {
+                final message = MessageText(
                   content: text,
                   directory: directory,
                   onAccent: mine,
-                  style: DuvetType.body.copyWith(color: mine ? colors.primaryForeground : colors.foreground),
+                  style: DuvetType.body.copyWith(color: mine ? ownBubble(context).ink : colors.foreground),
                   onMention: onOpenMention,
                   onRoom: onOpenRoom,
                   messageActions: anchor == null ? const {} : actionsAt(anchor),
-                ),
-              ),
+                );
+                if (prism == null) {
+                  return Container(
+                    padding: bubblePadding,
+                    constraints: BoxConstraints(maxWidth: maxWidth),
+                    decoration: BoxDecoration(
+                      color: mine ? ownBubble(context).fill : colors.card,
+                      borderRadius: BorderRadius.circular(DuvetTokens.radiusButton),
+                      boxShadow: editing ? null : (lifted ? tokens.shadowFloat : tokens.shadowRest),
+                    ),
+                    child: message,
+                  );
+                }
+                // The same bubble, the mention's light between its fill and its
+                // text: the padding goes inside, so the light reaches the edges.
+                return Container(
+                  constraints: BoxConstraints(maxWidth: maxWidth),
+                  decoration: BoxDecoration(
+                    color: colors.card,
+                    borderRadius: BorderRadius.circular(DuvetTokens.radiusButton),
+                    boxShadow: [...(lifted ? tokens.shadowFloat : tokens.shadowRest), prismShadow(prism)],
+                  ),
+                  child: PrismBubble(
+                    palette: prism,
+                    radius: DuvetTokens.radiusButton,
+                    // A copy held up is lit already.
+                    onArrive: lifted ? null : onShine,
+                    child: Padding(padding: bubblePadding, child: message),
+                  ),
+                );
+              },
             ),
         if (m.isVoice && m.attachments.isNotEmpty)
           VoiceNotePlayer(
@@ -184,6 +223,7 @@ class _Bubble extends StatelessWidget {
           )
         else if (m.attachments.isNotEmpty)
           MessageAttachments(attachments: m.attachments, uploadProgress: progress, onDoubleTap: onDoubleTap),
+        for (final a in m.deletedAttachments) DeletedAttachment(attachment: a, voice: m.isVoice, maxWidth: maxWidth),
         // Duvet's own links, as cards: a quoted message, an invite.
         if (!lifted)
           for (final url in duvetLinksIn(m.content))
@@ -214,16 +254,15 @@ class _Bubble extends StatelessWidget {
             ),
         ],
       );
-      // A mention with no text bubble to outline (a bot's components, a
-      // sticker): the outline goes round the whole message.
+      // A mention with no text bubble to light (a bot's components, a
+      // sticker): a frame of the same light round the whole message, 8 out
+      // from it, with no fill and no shadow, which would show through it.
       if (mentionsMe && !textBubble) {
-        content = Container(
-          padding: const EdgeInsets.all(4),
-          decoration: BoxDecoration(
-            border: Border.all(color: tokens.violetText, width: 1.5),
-            borderRadius: BorderRadius.circular(DuvetTokens.radiusButton),
-          ),
-          child: content,
+        content = PrismBubble(
+          palette: tokens.prism,
+          radius: DuvetTokens.radiusButton,
+          onArrive: lifted ? null : onShine,
+          child: Padding(padding: const EdgeInsets.all(8), child: content),
         );
       }
       return Opacity(opacity: editing ? 0.55 : (faded ? 0.7 : 1), child: content);
@@ -278,7 +317,16 @@ class _Bubble extends StatelessWidget {
             ),
           ),
         if (m.reply case final reply?)
-          _ReplyRef(reply: reply, directory: directory, onTap: () => onJump(reply.messageId)),
+          _ReplyRef(reply: reply, directory: directory, onTap: () => onJump(reply.messageId))
+        else if (m.interaction case final used?)
+          _UsedRef(
+            used: used,
+            botName: m.authorName,
+            onTap: switch (used.interactedMessageId) {
+              final id? => () => onJump(id),
+              null => null,
+            },
+          ),
         Builder(
           builder: (anchor) => GestureDetector(
             onLongPress: switch (onLongPress) {
@@ -391,6 +439,89 @@ class _Bubble extends StatelessWidget {
   }
 
   static String _time(DateTime t) => '${t.hour.toString().padLeft(2, '0')}:${t.minute.toString().padLeft(2, '0')}';
+}
+
+/// A chat's messages while its first page loads, as the desktop draws them
+/// (every third one longer), in [_Bubble]'s places: the avatar beside a run's
+/// last bubble, the name over its first, the time's room under it, and some
+/// runs the user's own on the right. From the bottom up, as many as fill the
+/// screen, the oldest cut off at the top; it never scrolls.
+class _MessagesSkeleton extends StatelessWidget {
+  /// The list's own, so the blocks land where the messages will.
+  final EdgeInsets padding;
+  const _MessagesSkeleton({required this.padding});
+
+  // The shortest run, a lone one-line bubble with its name and time.
+  static const _shortest = 96.0;
+
+  @override
+  Widget build(BuildContext context) {
+    final maxWidth = MediaQuery.sizeOf(context).width * 0.75;
+    // A one-line text bubble: the body's line and its padding.
+    Widget bubble(double share) => Bone(
+      width: maxWidth * share,
+      height: DuvetType.body.fontSize! * DuvetType.body.height! + 16,
+      borderRadius: BorderRadius.circular(DuvetTokens.radiusButton),
+    );
+
+    Widget run(int i) {
+      final wide = i % 3 == 0;
+      final mine = i % 3 == 1;
+      return Padding(
+        padding: const EdgeInsets.only(top: 8),
+        child: Row(
+          mainAxisAlignment: mine ? MainAxisAlignment.end : MainAxisAlignment.start,
+          crossAxisAlignment: CrossAxisAlignment.end,
+          children: [
+            if (!mine) const Padding(padding: EdgeInsets.only(right: 4, bottom: 26), child: Bone.circle(size: 32)),
+            Flexible(
+              child: Padding(
+                padding: const EdgeInsets.all(4),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: mine ? CrossAxisAlignment.end : CrossAxisAlignment.start,
+                  children: [
+                    if (!mine)
+                      const Padding(
+                        padding: EdgeInsets.fromLTRB(4, 3, 0, 7),
+                        child: Bone(width: 96, height: 12, borderRadius: BorderRadius.all(Radius.circular(4))),
+                      ),
+                    bubble(wide ? 0.8 : 0.4),
+                    if (wide) ...[const SizedBox(height: 8), bubble(0.6)],
+                    const SizedBox(height: 22),
+                  ],
+                ),
+              ),
+            ),
+          ],
+        ),
+      );
+    }
+
+    return Semantics(
+      container: true,
+      label: 'Loading messages',
+      excludeSemantics: true,
+      child: LayoutBuilder(
+        builder: (context, constraints) => ClipRect(
+          child: OverflowBox(
+            alignment: Alignment.bottomCenter,
+            minHeight: 0,
+            maxHeight: double.infinity,
+            child: Padding(
+              padding: padding,
+              child: DuvetSkeleton(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [for (var i = (constraints.maxHeight / _shortest).ceil(); i >= 0; i--) run(i)],
+                ),
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
 }
 
 /// Swiping a message [left] (as in WhatsApp) or right replies to it: the
@@ -693,7 +824,7 @@ class _FailedActions extends StatelessWidget {
 }
 
 /// Under a message whose files are uploading: "Uploading 2 of 3 · 64%", and
-/// Cancel.
+/// Cancel while bytes are still going up.
 class _UploadStatus extends StatelessWidget {
   final List<MessageAttachment> files;
   final double progress;
@@ -789,12 +920,11 @@ class _ReplyRef extends StatelessWidget {
       );
     }
     final text = readableContent(
-      reply.content,
+      plainInline(parseLine(reply.content)),
       nameOf: directory.nameOf,
       emojiNameOf: (id) => directory.emojiOf(id)?.name,
       roomNameOf: (id) => directory.roomOf(id)?.name,
-      // A heading's #s go, a room's #name stays.
-    ).replaceAll(RegExp(r'[*_~|`>]+|#+(?!\S)'), '').replaceAll('\n', ' ').trim();
+    ).trim();
     final shown = text.isEmpty ? 'a message' : text;
     return Semantics(
       container: true,
@@ -822,6 +952,62 @@ class _ReplyRef extends StatelessWidget {
                         style: TextStyle(color: colors.foreground, fontWeight: FontWeight.w500),
                       ),
                       TextSpan(text: ' $shown'),
+                    ],
+                  ),
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: DuvetType.caption.copyWith(color: colors.mutedForeground),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// Above a bot's answer, as the desktop's: the avatar, then "**Jon** used **/ping**",
+/// or the bot's name for a component's. Tapping it goes to the message whose
+/// component was used.
+class _UsedRef extends StatelessWidget {
+  final MessageInteraction used;
+  final String botName;
+  final VoidCallback? onTap;
+  const _UsedRef({required this.used, required this.botName, this.onTap});
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = context.theme.colors;
+    final what = switch (used.command) {
+      final name? => '/$name',
+      null => botName,
+    };
+    final strong = TextStyle(color: colors.foreground, fontWeight: FontWeight.w500);
+    return Semantics(
+      container: true,
+      button: onTap != null,
+      label: '${used.userName} used $what${onTap == null ? '' : '. Jump to message'}',
+      excludeSemantics: true,
+      onTap: onTap,
+      child: GestureDetector(
+        behavior: HitTestBehavior.opaque,
+        onTap: onTap,
+        child: Container(
+          constraints: const BoxConstraints(maxWidth: 260, minHeight: 24),
+          padding: const EdgeInsets.fromLTRB(4, 0, 4, 4),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              UserAvatar(name: used.userName, url: used.userAvatarUrl, size: 16),
+              const SizedBox(width: 6),
+              Flexible(
+                child: Text.rich(
+                  TextSpan(
+                    children: [
+                      TextSpan(text: used.userName, style: strong),
+                      const TextSpan(text: ' used '),
+                      TextSpan(text: what, style: strong),
                     ],
                   ),
                   maxLines: 1,
@@ -922,18 +1108,22 @@ class _Reactions extends StatelessWidget {
                   mainAxisSize: MainAxisSize.min,
                   children: [
                     if (custom != null)
-                      Image.network(
-                        custom.url,
+                      Image(
+                        image: cachedImage(
+                          custom.url,
+                          cacheWidth: (18 * MediaQuery.devicePixelRatioOf(context)).round(),
+                        ),
                         width: 18,
                         height: 18,
-                        cacheWidth: (18 * MediaQuery.devicePixelRatioOf(context)).round(),
                         excludeFromSemantics: true,
                         // Its name until the image arrives, and if it never does.
                         frameBuilder: (_, child, frame, sync) => frame == null && !sync ? Text(name) : child,
                         errorBuilder: (_, _, _) => Text(name),
                       )
                     else
-                      Text(r.emojiId == null ? r.emoji : name, style: const TextStyle(fontSize: 15)),
+                      r.emojiId == null
+                          ? Text(r.emoji, style: const TextStyle(fontFamily: DuvetType.emoji, fontSize: 15))
+                          : Text(name, style: const TextStyle(fontSize: 15)),
                     const SizedBox(width: 4),
                     Text('${r.count}'),
                   ],
@@ -1063,6 +1253,64 @@ class _NoticeState extends State<_Notice> {
                         TextSpan(text: ' to this ${widget.where}. See all '),
                         TextSpan(text: 'pinned messages', style: link, recognizer: _pins),
                         const TextSpan(text: '.'),
+                      ],
+                    ),
+                    textAlign: TextAlign.center,
+                    style: DuvetType.caption.copyWith(color: colors.mutedForeground),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// A call notice, as the desktop's: who called and how long the call lasted,
+/// or that the reader missed it, by a phone that's red then. Held, its
+/// options ([onHold]; null for those who may not delete it).
+class _CallNoticeRow extends StatelessWidget {
+  final CallNoticeLine line;
+  final ValueChanged<BuildContext>? onHold;
+  const _CallNoticeRow({required this.line, this.onHold});
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = context.theme.colors;
+    return Builder(
+      builder: (anchor) => Semantics(
+        container: true,
+        label: '${line.before}${line.name}${line.after}',
+        excludeSemantics: true,
+        customSemanticsActions: {
+          if (onHold case final onHold?) const CustomSemanticsAction(label: 'Options'): () => onHold(anchor),
+        },
+        child: GestureDetector(
+          onLongPress: onHold == null ? null : () => onHold!(anchor),
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(16, 12, 16, 0),
+            child: Row(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                Icon(
+                  line.missed ? FLucideIcons.phoneMissed : FLucideIcons.phone,
+                  size: 14,
+                  color: line.missed ? colors.destructive : colors.mutedForeground,
+                ),
+                const SizedBox(width: 6),
+                Flexible(
+                  child: Text.rich(
+                    TextSpan(
+                      children: [
+                        if (line.before.isNotEmpty) TextSpan(text: line.before),
+                        if (line.name.isNotEmpty)
+                          TextSpan(
+                            text: line.name,
+                            style: TextStyle(color: colors.foreground, fontWeight: FontWeight.w500),
+                          ),
+                        if (line.after.isNotEmpty) TextSpan(text: line.after),
                       ],
                     ),
                     textAlign: TextAlign.center,

@@ -19,6 +19,9 @@ abstract interface class ChatCacheStore {
 
   /// The keys of what's kept.
   Future<List<String>> keys();
+
+  /// Deletes the keys starting with [prefix] but the [keep] written last.
+  Future<void> trim(String prefix, int keep);
 }
 
 class FileChatCacheStore implements ChatCacheStore {
@@ -54,18 +57,45 @@ class FileChatCacheStore implements ChatCacheStore {
     await for (final file in (await _dir()).list())
       if (file is File && file.path.endsWith('.json')) file.uri.pathSegments.last.replaceFirst(RegExp(r'\.json$'), ''),
   ];
+
+  @override
+  Future<void> trim(String prefix, int keep) async {
+    final files = [
+      await for (final file in (await _dir()).list())
+        if (file is File && file.uri.pathSegments.last.startsWith(_name(prefix))) (file, await file.lastModified()),
+    ];
+    if (files.length <= keep) return;
+    files.sort((a, b) => a.$2.compareTo(b.$2));
+    for (final (file, _) in files.take(files.length - keep)) {
+      await file.delete();
+    }
+  }
 }
 
 class MemoryChatCacheStore implements ChatCacheStore {
   final data = <String, String>{};
   @override
   Future<String?> read(String key) async => data[key];
+  // Written last, last: as [trim] takes them.
   @override
-  Future<void> write(String key, String json) async => data[key] = json;
+  Future<void> write(String key, String json) async => data
+    ..remove(key)
+    ..[key] = json;
   @override
   Future<void> clear() async => data.clear();
   @override
   Future<List<String>> keys() async => [...data.keys];
+  @override
+  Future<void> trim(String prefix, int keep) async {
+    final pages = [
+      for (final key in data.keys)
+        if (key.startsWith(prefix)) key,
+    ];
+    if (pages.length <= keep) return;
+    for (final key in pages.take(pages.length - keep)) {
+      data.remove(key);
+    }
+  }
 }
 
 // A change of the pages' messages ([ChatCache.changeMessages]).
@@ -74,6 +104,10 @@ typedef _Change = ChatMessage Function(String chatId, ChatMessage m);
 /// The cache over a store, with the models' JSON.
 class ChatCache {
   static const pageSize = 50;
+
+  /// How many chats' pages are kept, those saved last: the recent chats (50)
+  /// and the rooms fetched ahead, each page some tens of KB.
+  static const pagesKept = 100;
   final ChatCacheStore _store;
   ChatCache(this._store);
 
@@ -97,13 +131,19 @@ class ChatCache {
     return turn;
   }
 
-  /// Writes [json] under [key] a moment later, once per burst.
-  void _later(String key, Object? Function() json) {
+  /// Writes [json] under [key] a moment later, once per burst, then runs
+  /// [written].
+  void _later(String key, Object? Function() json, {Future<void> Function()? written}) {
     _pending[key]?.cancel();
     _pending[key] = Timer(const Duration(milliseconds: 500), () {
       _pending.remove(key);
       final data = json();
-      unawaited(_inTurn(key, () => _store.write(key, jsonEncode(data))));
+      unawaited(
+        _inTurn(key, () async {
+          await _store.write(key, jsonEncode(data));
+          await written?.call();
+        }),
+      );
     });
   }
 
@@ -130,6 +170,25 @@ class ChatCache {
     if (j == null) return null;
     try {
       return {...(j['ids']! as List).cast<String>()};
+    } catch (e) {
+      debugPrint('cache: $e');
+      return null;
+    }
+  }
+
+  /// The chats pinned to the top of Chats, by key.
+  void savePinned(Set<String> keys) => _later(
+    'pinned',
+    () => {
+      'keys': [...keys],
+    },
+  );
+
+  Future<Set<String>?> loadPinned() async {
+    final j = await _read('pinned');
+    if (j == null) return null;
+    try {
+      return {...(j['keys']! as List).cast<String>()};
     } catch (e) {
       debugPrint('cache: $e');
       return null;
@@ -177,12 +236,19 @@ class ChatCache {
     for (final m in j['messages']! as List) messageFromJson(m as Map<String, Object?>),
   ];
 
+  static List<ChatMessage> _newest(List<ChatMessage> page) =>
+      page.length > pageSize ? page.sublist(page.length - pageSize) : page;
+
+  /// Keeps [page] as [chatId]'s, and only the [pagesKept] chats' saved last.
   void savePage(String chatId, List<ChatMessage> page) {
-    _pages[chatId] = page.length > pageSize ? page.sublist(page.length - pageSize) : page;
-    _later('$_page$chatId', () => _pageToJson(_pages.remove(chatId)!));
+    _pages[chatId] = _newest(page);
+    _later('$_page$chatId', () => _pageToJson(_pages.remove(chatId)!), written: () => _store.trim(_page, pagesKept));
   }
 
   Future<List<ChatMessage>?> loadPage(String chatId) async {
+    // Not one being written, half there.
+    if (_writes['$_page$chatId'] case final writing?) await writing;
+    if (_pages[chatId] case final waiting?) return [...waiting];
     final j = await _read('$_page$chatId');
     if (j == null) return null;
     try {
@@ -197,6 +263,33 @@ class ChatCache {
   // nothing after.
   var _clears = 0;
 
+  /// Changes [chatId]'s page, if one is kept, written or not yet: [change]
+  /// answers it as it's to be kept, or the very messages it was given to
+  /// leave it as it is.
+  Future<void> changePage(String chatId, List<ChatMessage> Function(List<ChatMessage> page) change) {
+    final key = '$_page$chatId';
+    final clears = _clears;
+    // One not written yet changes before it is, and that's the one to write.
+    bool changedWaiting() {
+      final page = _pages[chatId];
+      if (page != null) _pages[chatId] = _newest(change(page));
+      return page != null;
+    }
+
+    if (changedWaiting()) return Future.value();
+    // In turn with the page's writes: read once the one under way is done,
+    // and written back before the next.
+    return _inTurn(key, () async {
+      if (clears != _clears || changedWaiting()) return;
+      final raw = await _store.read(key);
+      if (raw == null || clears != _clears || changedWaiting()) return;
+      final page = _pageFromJson(jsonDecode(raw) as Map<String, Object?>);
+      final after = change(page);
+      if (after.length == page.length && after.indexed.every((e) => identical(e.$2, page[e.$1]))) return;
+      await _store.write(key, jsonEncode(_pageToJson(_newest(after))));
+    });
+  }
+
   // The passes over the pages that change them, one after another.
   Future<void> _changes = Future.value();
 
@@ -208,11 +301,12 @@ class ChatCache {
   /// [change] answers each as it's to be kept, given its chat's ID, or the
   /// very message to leave it as it is. Only the pages with [id] in them (a
   /// user's, say) are parsed: no other can change. The changes queued while
-  /// a pass is under way wait for one more pass, which makes the last one
-  /// queued for each ID.
+  /// a pass is under way wait for one more pass, which makes those queued
+  /// for each ID in turn: two reactions to one message both count.
   Future<void> changeMessages(String id, ChatMessage Function(String chatId, ChatMessage m) change) {
     if (_queued case final queued?) {
-      queued[id] = change;
+      final before = queued[id];
+      queued[id] = before == null ? change : (chatId, m) => change(chatId, before(chatId, m));
       return _changes;
     }
     final queued = _queued = {id: change};
@@ -346,6 +440,7 @@ Map<String, Object?> spaceToJson(Space s) => {
   'name': s.name,
   'iconUrl': s.iconUrl,
   'bannerUrl': s.bannerUrl,
+  'ownerId': s.ownerId,
   'sections': [
     for (final section in s.sections)
       {
@@ -370,6 +465,7 @@ Space spaceFromJson(Map<String, Object?> j) => Space(
   name: j['name']! as String,
   iconUrl: j['iconUrl'] as String?,
   bannerUrl: j['bannerUrl'] as String?,
+  ownerId: j['ownerId'] as String?,
   sections: [
     for (final section in j['sections']! as List)
       RoomSection(
@@ -399,6 +495,12 @@ Map<String, Object?> messageToJson(ChatMessage m) => {
   'createdAt': m.createdAt.toUtc().toIso8601String(),
   'edited': m.edited,
   'isNotice': m.isNotice,
+  if (m.call case final c?)
+    'call': {
+      'participants': c.participants,
+      'startedAt': c.startedAt.toUtc().toIso8601String(),
+      'endedAt': c.endedAt.toUtc().toIso8601String(),
+    },
   'isVoice': m.isVoice,
   'pinned': m.pinned,
   'fromBot': m.fromBot,
@@ -406,20 +508,18 @@ Map<String, Object?> messageToJson(ChatMessage m) => {
   'webhookId': ?m.webhookId,
   if (m.isLoading) 'isLoading': true,
   if (m.isComponentsV2) 'isComponentsV2': true,
+  if (m.interaction case final i?)
+    'interaction': {
+      'userName': i.userName,
+      'userAvatarUrl': ?i.userAvatarUrl,
+      'command': ?i.command,
+      'interactedMessageId': ?i.interactedMessageId,
+    },
   if (m.rawComponents.isNotEmpty) 'components': m.rawComponents,
   'stickerUrl': m.stickerUrl,
-  'attachments': [
-    for (final a in m.attachments)
-      {
-        'id': a.id,
-        'filename': a.filename,
-        'contentType': a.contentType,
-        'url': a.url,
-        'width': a.width,
-        'height': a.height,
-        'sizeBytes': a.sizeBytes,
-      },
-  ],
+  'attachments': [for (final a in m.attachments) _attachmentToJson(a)],
+  if (m.deletedAttachments.isNotEmpty)
+    'deletedAttachments': [for (final a in m.deletedAttachments) _attachmentToJson(a)],
   'embeds': [
     for (final e in m.embeds)
       {
@@ -433,6 +533,16 @@ Map<String, Object?> messageToJson(ChatMessage m) => {
         'videoUrl': e.videoUrl,
         'videoContentType': e.videoContentType,
         'provider': e.provider,
+        if (e.colors.isNotEmpty) 'colors': e.colors,
+        'authorName': ?e.authorName,
+        'authorUrl': ?e.authorUrl,
+        'authorIconUrl': ?e.authorIconUrl,
+        if (e.fields.isNotEmpty)
+          'fields': [
+            for (final f in e.fields) {'name': f.name, 'value': f.value, 'inline': f.inline},
+          ],
+        'footer': ?e.footer,
+        'timestamp': ?e.timestamp?.toUtc().toIso8601String(),
       },
   ],
   if (m.reply case final r?)
@@ -454,6 +564,26 @@ Map<String, Object?> messageToJson(ChatMessage m) => {
   ],
 };
 
+Map<String, Object?> _attachmentToJson(MessageAttachment a) => {
+  'id': a.id,
+  'filename': a.filename,
+  'contentType': a.contentType,
+  'url': a.url,
+  'width': a.width,
+  'height': a.height,
+  'sizeBytes': a.sizeBytes,
+};
+
+MessageAttachment _attachmentFromJson(Map a) => MessageAttachment(
+  id: a['id'] as String,
+  filename: a['filename'] as String,
+  contentType: a['contentType'] as String,
+  url: a['url'] as String,
+  width: a['width'] as int?,
+  height: a['height'] as int?,
+  sizeBytes: a['sizeBytes'] as int? ?? 0,
+);
+
 ChatMessage messageFromJson(Map<String, Object?> j) => ChatMessage(
   id: j['id']! as String,
   authorId: j['authorId'] as String?,
@@ -463,6 +593,7 @@ ChatMessage messageFromJson(Map<String, Object?> j) => ChatMessage(
   createdAt: DateTime.parse(j['createdAt']! as String).toLocal(),
   edited: j['edited'] as bool? ?? false,
   isNotice: j['isNotice'] as bool? ?? false,
+  call: _callFromJson(j['call']),
   isVoice: j['isVoice'] as bool? ?? false,
   pinned: j['pinned'] as bool? ?? false,
   fromBot: j['fromBot'] as bool? ?? false,
@@ -470,6 +601,15 @@ ChatMessage messageFromJson(Map<String, Object?> j) => ChatMessage(
   webhookId: j['webhookId'] as String?,
   isLoading: j['isLoading'] as bool? ?? false,
   isComponentsV2: j['isComponentsV2'] as bool? ?? false,
+  interaction: switch (j['interaction']) {
+    final Map<String, Object?> i => MessageInteraction(
+      userName: i['userName'] as String? ?? 'Someone',
+      userAvatarUrl: i['userAvatarUrl'] as String?,
+      command: i['command'] as String?,
+      interactedMessageId: i['interactedMessageId'] as String?,
+    ),
+    _ => null,
+  },
   components: componentsFromJson([
     for (final c in j['components'] as List? ?? const [])
       if (c is Map<String, dynamic>) c,
@@ -479,18 +619,8 @@ ChatMessage messageFromJson(Map<String, Object?> j) => ChatMessage(
       if (c is Map<String, dynamic>) c,
   ],
   stickerUrl: j['stickerUrl'] as String?,
-  attachments: [
-    for (final a in j['attachments'] as List? ?? const [])
-      MessageAttachment(
-        id: (a as Map)['id'] as String,
-        filename: a['filename'] as String,
-        contentType: a['contentType'] as String,
-        url: a['url'] as String,
-        width: a['width'] as int?,
-        height: a['height'] as int?,
-        sizeBytes: a['sizeBytes'] as int? ?? 0,
-      ),
-  ],
+  attachments: [for (final a in j['attachments'] as List? ?? const []) _attachmentFromJson(a as Map)],
+  deletedAttachments: [for (final a in j['deletedAttachments'] as List? ?? const []) _attachmentFromJson(a as Map)],
   embeds: [
     for (final e in j['embeds'] as List? ?? const [])
       MessageEmbed(
@@ -504,6 +634,19 @@ ChatMessage messageFromJson(Map<String, Object?> j) => ChatMessage(
         videoUrl: e['videoUrl'] as String?,
         videoContentType: e['videoContentType'] as String?,
         provider: e['provider'] as String?,
+        colors: [for (final c in e['colors'] as List? ?? const []) c as int],
+        authorName: e['authorName'] as String?,
+        authorUrl: e['authorUrl'] as String?,
+        authorIconUrl: e['authorIconUrl'] as String?,
+        fields: [
+          for (final f in e['fields'] as List? ?? const [])
+            (name: (f as Map)['name'] as String, value: f['value'] as String, inline: f['inline'] as bool? ?? false),
+        ],
+        footer: e['footer'] as String?,
+        timestamp: switch (e['timestamp']) {
+          final String t => DateTime.tryParse(t)?.toLocal(),
+          _ => null,
+        },
       ),
   ],
   reply: switch (j['reply']) {
@@ -526,3 +669,18 @@ ChatMessage messageFromJson(Map<String, Object?> j) => ChatMessage(
       ),
   ],
 );
+
+CallNotice? _callFromJson(Object? j) {
+  if (j is! Map<String, Object?>) return null;
+  final startedAt = DateTime.tryParse(j['startedAt'] as String? ?? '');
+  final endedAt = DateTime.tryParse(j['endedAt'] as String? ?? '');
+  if (startedAt == null || endedAt == null) return null;
+  return CallNotice(
+    participants: [
+      for (final id in j['participants'] as List? ?? const [])
+        if (id is String) id,
+    ],
+    startedAt: startedAt.toLocal(),
+    endedAt: endedAt.toLocal(),
+  );
+}

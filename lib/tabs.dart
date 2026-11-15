@@ -19,8 +19,13 @@ import 'widgets/avatar.dart';
 import 'widgets/call_presence.dart';
 import 'widgets/chrome.dart';
 import 'widgets/duvet_mascot.dart';
+import 'widgets/glass.dart';
 import 'widgets/ghost_art.dart';
+import 'widgets/notification_menu.dart';
+import 'widgets/now.dart';
 import 'widgets/rows.dart';
+import 'widgets/sheets.dart' show LoadingSkeleton, placeholderNames, placeholderRows;
+import 'widgets/skeleton.dart' show Bone;
 
 /// The unified inbox: the recent chats, rooms and DMs alike, then the DMs
 /// never opened here; the newest first.
@@ -38,15 +43,17 @@ class ChatsTab extends StatelessWidget {
         repository.spaces,
         repository.unread,
         repository.mentions,
+        repository.notificationLevels,
         repository.profile,
         repository.presence,
         repository.mobileOnly,
         repository.friends,
+        repository.pinnedChats,
         repository.typingNow,
+        repository.status,
         voice,
       ]),
       builder: (context, _) {
-        final mentions = repository.mentions.value;
         final rows = _rows(
           repository.recents.value,
           repository.conversations.value,
@@ -54,8 +61,8 @@ class ChatsTab extends StatelessWidget {
           repository.profile.value?.id,
           repository.presence.value,
           repository.mobileOnly.value,
+          repository.pinnedChats.value,
         );
-        final unread = repository.unread.value;
         // The requests to the user, counted on Friends as on the desktop's.
         final asking = repository.friends.value.incoming.length;
         return LargeTitlePage(
@@ -93,6 +100,7 @@ class ChatsTab extends StatelessWidget {
             builder: (context, status, _) => Column(
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
+                const OnlineFriends(),
                 const GlobalSearch(),
                 // Opened from what's saved: says so, in the chrome of the list.
                 if (status == LiveStatus.offline)
@@ -104,34 +112,27 @@ class ChatsTab extends StatelessWidget {
                 // CallBanner has them; not the user's own still ringing the
                 // others from another device: nothing to join yet.
                 // Not the call the user is in: the voice bar already shows that one.
-                for (final id in voice.callsInProgress)
-                  if (!callingElsewhere(voice, id) &&
-                      !(voice.call?.conversationId == id && voice.call?.phase != CallPhase.ringing))
-                    Padding(padding: const EdgeInsets.fromLTRB(16, 12, 16, 0), child: _ongoingCall(context, id)),
-                // Friends in voice in a Space the user shares with them, to join.
-                for (final (friend, room, space) in _friendsInVoice(repository, voice))
-                  Padding(
-                    padding: const EdgeInsets.fromLTRB(16, 12, 16, 0),
-                    child: CallPresenceCard(
-                      key: ValueKey('friend-${friend.userId}'),
-                      icon: FLucideIcons.volume2,
-                      leading: UserAvatar(name: friend.displayName, url: friend.avatarUrl, size: 40),
-                      title: friend.displayName,
-                      detail: '${room.name} · ${space.name}',
-                      onJoin: voice.canJoin(room)
-                          ? () {
-                              voice.joinRoom(room);
-                              openVoiceRoom(context, room);
-                            }
-                          : null,
-                    ),
-                  ),
+                for (final id in joinableCalls(
+                  voice.callsInProgress,
+                  (id) =>
+                      callingElsewhere(voice, id) ||
+                      (voice.call?.conversationId == id && voice.call?.phase != CallPhase.ringing),
+                ))
+                  Padding(padding: const EdgeInsets.fromLTRB(16, 12, 16, 0), child: _ongoingCall(context, id)),
+                const NowBlock(),
               ],
             ),
           ),
           onRefresh: repository.refreshConversations,
           slivers: [
-            if (rows.isEmpty)
+            if (rows.isEmpty && repository.status.value == LiveStatus.connecting)
+              SliverPadding(
+                padding: const EdgeInsets.only(top: 16),
+                sliver: SliverToBoxAdapter(
+                  child: LoadingSkeleton(label: 'Loading chats', children: placeholderRows(avatar: 48)),
+                ),
+              )
+            else if (rows.isEmpty)
               const SliverFillRemaining(
                 hasScrollBody: false,
                 child: EmptyState(mascot: MascotState.empty, text: 'No conversations yet'),
@@ -141,19 +142,65 @@ class ChatsTab extends StatelessWidget {
                 padding: const EdgeInsets.only(top: 16),
                 sliver: SliverList.builder(
                   itemCount: rows.length,
+                  // Rows keep their elements as the list moves (a message elsewhere), so a menu open on one keeps its
+                  // anchor.
+                  findChildIndexCallback: (key) {
+                    final i = rows.indexWhere((r) => key == ValueKey(r.target.id));
+                    return i < 0 ? null : i;
+                  },
                   itemBuilder: (context, i) {
                     final row = rows[i];
-                    return ListRow(
+                    // The row's own context anchors its menu.
+                    return Builder(
                       key: ValueKey(row.target.id),
-                      leading: row.leading,
-                      title: row.title,
-                      hash: row.target is RoomTarget,
-                      titleSuffix: row.space == null ? null : '· ${row.space}',
-                      snippet: typingSentence(repository.typingNow.value[row.target.id] ?? const []) ?? row.snippet,
-                      trailing: row.at == null ? null : shortTime(row.at!),
-                      unread: unread.contains(row.target.id),
-                      mentions: mentions[row.target.id] ?? 0,
-                      onTap: () => openChat(context, row.target, row.chatTitle),
+                      builder: (rowContext) => ListRow(
+                        leading: row.leading,
+                        title: row.title,
+                        hash: row.target is RoomTarget,
+                        titleSuffix: row.space == null ? null : '· ${row.space}',
+                        snippet: typingSentence(repository.typingNow.value[row.target.id] ?? const []) ?? row.snippet,
+                        trailing: row.at == null ? null : shortTime(row.at!),
+                        unread: repository.shownUnread(row.target.id),
+                        mentions: repository.shownMentions(row.target.id),
+                        detail: row.pinned ? 'pinned' : null,
+                        titleIcon: row.pinned
+                            ? Icon(FLucideIcons.pin, size: 14, color: context.theme.colors.mutedForeground)
+                            : null,
+                        onTap: () => openChat(context, row.target, row.chatTitle),
+                        onLongPress: () async {
+                          final action = await showGlassMenu<String>(
+                            rowContext,
+                            label: row.title,
+                            items: [
+                              GlassMenuItem(
+                                icon: row.pinned ? FLucideIcons.pinOff : FLucideIcons.pin,
+                                label: row.pinned ? 'Unpin' : 'Pin to top',
+                                value: 'pin',
+                              ),
+                              const GlassMenuItem(
+                                icon: FLucideIcons.bell,
+                                label: 'Notifications',
+                                value: 'notifications',
+                              ),
+                            ],
+                          );
+                          if (action == 'pin') repository.setChatPinned(pinKey(row.target), !row.pinned);
+                          if (action == 'notifications' && rowContext.mounted) {
+                            await showNotificationMenu(
+                              rowContext,
+                              targetId: row.target.id,
+                              target: switch (row.target) {
+                                RoomTarget() => NotificationTarget.room,
+                                ConversationTarget() => NotificationTarget.conversation,
+                              },
+                              spaceId: switch (row.target) {
+                                RoomTarget(:final spaceId) => spaceId,
+                                ConversationTarget() => null,
+                              },
+                            );
+                          }
+                        },
+                      ),
                     );
                   },
                 ),
@@ -162,21 +209,6 @@ class ChatsTab extends StatelessWidget {
         );
       },
     );
-  }
-
-  /// Each friend in a voice room of a Space the user is in, with the room; not
-  /// the room the user is in, which the voice bar shows.
-  static Iterable<(Member, Room, Space)> _friendsInVoice(ChatRepository repository, VoiceController voice) sync* {
-    final friends = {for (final f in repository.friends.value.friends) f.userId: f};
-    if (friends.isEmpty) return;
-    for (final space in repository.spaces.value) {
-      for (final room in space.rooms) {
-        if (room.kind != RoomKind.voice || voice.target?.id == room.id) continue;
-        for (final p in voice.participants(room.id)) {
-          if (friends[p.userId] case final friend?) yield (friend, room, space);
-        }
-      }
-    }
   }
 
   static Widget _ongoingCall(BuildContext context, String conversationId) {
@@ -203,6 +235,7 @@ class ChatsTab extends StatelessWidget {
     String? me,
     Map<String, Presence> presence,
     Set<String> mobileOnly,
+    Set<String> pinned,
   ) {
     final conversationsById = {for (final c in conversations) c.id: c};
     final spacesById = {for (final s in spaces) s.id: s};
@@ -275,9 +308,37 @@ class ChatsTab extends StatelessWidget {
             at: c.updatedAt,
           ),
     ];
-    // The newest first; undated ones last, in the order they came.
+    // A pinned room that dropped out of the recents comes back from its Space,
+    // if the user still sees it.
+    final shown = {for (final r in rows) r.target.id};
+    for (final key in pinned) {
+      if (!key.startsWith('room:') || shown.contains(key.substring(5))) continue;
+      for (final space in spaces) {
+        final room = space.rooms.where((r) => r.id == key.substring(5) && r.kind == RoomKind.text).firstOrNull;
+        if (room == null) continue;
+        rows.add(
+          _ChatRow(
+            target: room.target,
+            title: room.name,
+            chatTitle: '# ${room.name}',
+            space: space.name,
+            leading: SpaceIcon(space: space),
+          ),
+        );
+        break;
+      }
+    }
+    // Pinned first, then the newest; undated ones last, in the order they came.
     final dated = rows.where((r) => r.at != null).toList()..sort((a, b) => b.at!.compareTo(a.at!));
-    return [...dated, ...rows.where((r) => r.at == null)];
+    final ordered = [...dated, ...rows.where((r) => r.at == null)];
+    final isPinned = {
+      for (final r in ordered)
+        if (pinned.contains(pinKey(r.target))) r,
+    };
+    return [
+      for (final r in ordered.where(isPinned.contains)) r.pinnedRow(),
+      ...ordered.where((r) => !isPinned.contains(r)),
+    ];
   }
 }
 
@@ -291,6 +352,7 @@ class _ChatRow {
   final String? snippet;
   final Widget? leading;
   final DateTime? at;
+  final bool pinned;
   const _ChatRow({
     required this.target,
     required this.title,
@@ -299,7 +361,19 @@ class _ChatRow {
     this.snippet,
     this.leading,
     this.at,
+    this.pinned = false,
   });
+
+  _ChatRow pinnedRow() => _ChatRow(
+    target: target,
+    title: title,
+    chatTitle: chatTitle,
+    space: space,
+    snippet: snippet,
+    leading: leading,
+    at: at,
+    pinned: true,
+  );
 }
 
 /// The Launchpad: the user's Spaces as a two-column grid of cards.
@@ -310,17 +384,29 @@ class SpacesTab extends StatelessWidget {
   Widget build(BuildContext context) {
     final repository = context.repository;
     return ListenableBuilder(
-      listenable: Listenable.merge([repository.spaces, repository.unread, repository.status]),
+      listenable: Listenable.merge([
+        repository.spaces,
+        repository.unread,
+        repository.notificationLevels,
+        repository.status,
+      ]),
       builder: (context, _) {
         final prefs = LaunchpadScope.of(context).value;
         final spaces = sortedSpaces(repository.spaces.value, prefs.sort);
-        final unread = repository.unread.value;
-        bool news(Space space) => space.rooms.any((r) => unread.contains(r.id));
+        bool news(Space space) => space.rooms.any((r) => repository.shownUnread(r.id));
+        // A long press chooses the Space's notifications, under its own card or row.
+        void notifications(BuildContext anchor, Space space) =>
+            showNotificationMenu(anchor, targetId: space.id, target: NotificationTarget.space);
         void open(Space space) => Navigator.of(context).push(
           MaterialPageRoute<void>(
             builder: (_) => SpaceDirectory(spaceId: space.id, name: space.name),
           ),
         );
+        // While the first READY comes: the chosen view's own tiles, as bones.
+        final placeholders = [
+          for (final (i, name) in placeholderNames.indexed) Space(id: 'placeholder-$i', name: name, onlineCount: 12),
+        ];
+        void none() {}
         return LargeTitlePage(
           title: 'Spaces',
           titleLeading: const AppIcon(size: 32),
@@ -334,12 +420,61 @@ class SpacesTab extends StatelessWidget {
           ),
           slivers: [
             if (spaces.isEmpty)
-              SliverFillRemaining(
-                hasScrollBody: false,
-                child: repository.status.value == LiveStatus.connecting
-                    ? const Center(child: FCircularProgress())
-                    : const EmptyState(mascot: MascotState.empty, text: 'You’re not in any spaces'),
-              )
+              repository.status.value == LiveStatus.connecting
+                  ? SliverToBoxAdapter(
+                      child: LoadingSkeleton(
+                        label: 'Loading spaces',
+                        children: [
+                          switch (prefs.view) {
+                            SpaceView.grid => Padding(
+                              padding: const EdgeInsets.fromLTRB(16, 16, 16, 0),
+                              child: Column(
+                                spacing: 12,
+                                children: [
+                                  for (var i = 0; i < placeholders.length; i += 2)
+                                    Row(
+                                      spacing: 12,
+                                      children: [
+                                        for (final space in placeholders.skip(i).take(2))
+                                          Expanded(
+                                            child: SpaceCard(space: space, onTap: none),
+                                          ),
+                                      ],
+                                    ),
+                                ],
+                              ),
+                            ),
+                            SpaceView.list => Padding(
+                              padding: const EdgeInsets.only(top: 8),
+                              child: Column(
+                                children: [
+                                  for (final space in placeholders)
+                                    ListRow(
+                                      leading: const Bone.square(
+                                        size: 48,
+                                        borderRadius: BorderRadius.all(Radius.circular(DuvetTokens.radiusField)),
+                                      ),
+                                      title: space.name,
+                                      snippet: '12 online',
+                                    ),
+                                ],
+                              ),
+                            ),
+                            SpaceView.cards => Padding(
+                              padding: const EdgeInsets.fromLTRB(16, 16, 16, 0),
+                              child: Column(
+                                spacing: 12,
+                                children: [for (final space in placeholders) SpaceWideCard(space: space, onTap: none)],
+                              ),
+                            ),
+                          },
+                        ],
+                      ),
+                    )
+                  : const SliverFillRemaining(
+                      hasScrollBody: false,
+                      child: EmptyState(mascot: MascotState.empty, text: 'You’re not in any spaces'),
+                    )
             else
               switch (prefs.view) {
                 SpaceView.grid => SliverPadding(
@@ -352,11 +487,14 @@ class SpacesTab extends StatelessWidget {
                       mainAxisExtent: 160,
                     ),
                     itemCount: spaces.length,
-                    itemBuilder: (context, i) => SpaceCard(
+                    itemBuilder: (context, i) => Builder(
                       key: ValueKey(spaces[i].id),
-                      space: spaces[i],
-                      unread: news(spaces[i]),
-                      onTap: () => open(spaces[i]),
+                      builder: (cardContext) => SpaceCard(
+                        space: spaces[i],
+                        unread: news(spaces[i]),
+                        onTap: () => open(spaces[i]),
+                        onLongPress: () => notifications(cardContext, spaces[i]),
+                      ),
                     ),
                   ),
                 ),
@@ -364,16 +502,19 @@ class SpacesTab extends StatelessWidget {
                   padding: const EdgeInsets.only(top: 8),
                   sliver: SliverList.builder(
                     itemCount: spaces.length,
-                    itemBuilder: (context, i) => ListRow(
+                    itemBuilder: (context, i) => Builder(
                       key: ValueKey(spaces[i].id),
-                      leading: SpaceIcon(space: spaces[i]),
-                      title: spaces[i].name,
-                      snippet: switch (spaces[i].onlineCount) {
-                        final n? => '$n online',
-                        null => null,
-                      },
-                      unread: news(spaces[i]),
-                      onTap: () => open(spaces[i]),
+                      builder: (rowContext) => ListRow(
+                        leading: SpaceIcon(space: spaces[i]),
+                        title: spaces[i].name,
+                        snippet: switch (spaces[i].onlineCount) {
+                          final n? => '$n online',
+                          null => null,
+                        },
+                        unread: news(spaces[i]),
+                        onTap: () => open(spaces[i]),
+                        onLongPress: () => notifications(rowContext, spaces[i]),
+                      ),
                     ),
                   ),
                 ),
@@ -382,11 +523,14 @@ class SpacesTab extends StatelessWidget {
                   sliver: SliverList.separated(
                     itemCount: spaces.length,
                     separatorBuilder: (_, _) => const SizedBox(height: 12),
-                    itemBuilder: (context, i) => SpaceWideCard(
+                    itemBuilder: (context, i) => Builder(
                       key: ValueKey(spaces[i].id),
-                      space: spaces[i],
-                      unread: news(spaces[i]),
-                      onTap: () => open(spaces[i]),
+                      builder: (cardContext) => SpaceWideCard(
+                        space: spaces[i],
+                        unread: news(spaces[i]),
+                        onTap: () => open(spaces[i]),
+                        onLongPress: () => notifications(cardContext, spaces[i]),
+                      ),
                     ),
                   ),
                 ),
@@ -466,6 +610,7 @@ class _SpaceDirectoryState extends State<SpaceDirectory> {
       listenable: Listenable.merge([
         repository.spaces,
         repository.unread,
+        repository.notificationLevels,
         repository.latest,
         repository.profile,
         repository.collapsedCategories,
@@ -475,7 +620,6 @@ class _SpaceDirectoryState extends State<SpaceDirectory> {
       builder: (context, _) {
         final space = repository.spaces.value.where((s) => s.id == widget.spaceId).firstOrNull;
         final collapsed = repository.collapsedCategories.value;
-        final unread = repository.unread.value;
         final latest = repository.latest.value;
         final me = repository.profile.value?.id;
         final barHeight = GlassTopBar.heightOf(context);
@@ -536,7 +680,7 @@ class _SpaceDirectoryState extends State<SpaceDirectory> {
                                 key: ValueKey('category-$id'),
                                 name: section.name ?? '',
                                 collapsed: collapsed.contains(id),
-                                unread: section.rooms.any((r) => unread.contains(r.id)),
+                                unread: section.rooms.any((r) => repository.shownUnread(r.id)),
                                 onToggle: () => repository.setCategoryCollapsed(id, !collapsed.contains(id)),
                               )
                             else if (section.rooms.isNotEmpty)
@@ -549,19 +693,28 @@ class _SpaceDirectoryState extends State<SpaceDirectory> {
                                 children: [
                                   for (final room in section.rooms)
                                     switch (room.kind) {
-                                      RoomKind.text => ListRow(
+                                      // A long press chooses its notifications, under its own row.
+                                      RoomKind.text => Builder(
                                         key: ValueKey(room.id),
-                                        title: room.name,
-                                        hash: true,
-                                        snippet:
-                                            typingSentence(repository.typingNow.value[room.id] ?? const []) ??
-                                            switch (latest[room.id]) {
-                                              final m? =>
-                                                '${m.authorId == me ? 'You' : m.authorName}: ${repository.previewOf(m)}',
-                                              null => null,
-                                            },
-                                        unread: unread.contains(room.id),
-                                        onTap: () => openChat(context, room.target, '# ${room.name}'),
+                                        builder: (rowContext) => ListRow(
+                                          title: room.name,
+                                          hash: true,
+                                          snippet:
+                                              typingSentence(repository.typingNow.value[room.id] ?? const []) ??
+                                              switch (latest[room.id]) {
+                                                final m? =>
+                                                  '${m.authorId == me ? 'You' : m.authorName}: ${repository.previewOf(m)}',
+                                                null => null,
+                                              },
+                                          unread: repository.shownUnread(room.id),
+                                          onTap: () => openChat(context, room.target, '# ${room.name}'),
+                                          onLongPress: () => showNotificationMenu(
+                                            rowContext,
+                                            targetId: room.id,
+                                            target: NotificationTarget.room,
+                                            spaceId: room.spaceId,
+                                          ),
+                                        ),
                                       ),
                                       // Who's in, the user first when their voice is here (no
                                       // accent: the tab bar has the screen's).
@@ -604,20 +757,27 @@ class _SpaceDirectoryState extends State<SpaceDirectory> {
   }
 }
 
-/// Who's in a voice room, for its row: "Maya, Leo and 2 more", or no one.
+/// Who's in a voice room, for its row: "Maya, Leo and 2 more", or no one,
+/// then what is live there, as Now's room cards say it: "· sharing screen".
 String voiceSnippet(ChatRepository repository, VoiceController voice, String roomId) {
   final me = repository.profile.value?.id;
   final known = {for (final m in repository.people) m.userId: m.displayName};
+  final people = voice.participants(roomId);
   final names = [
-    for (final p in voice.participants(roomId))
-      p.userId == me ? 'You' : known[p.userId] ?? repository.nameOf(p.userId) ?? 'Someone',
+    for (final p in people) p.userId == me ? 'You' : known[p.userId] ?? repository.nameOf(p.userId) ?? 'Someone',
   ];
   if (voice.target?.id == roomId && !names.contains('You')) names.insert(0, 'You');
-  return switch (names.length) {
-    0 => 'No one’s here',
-    1 || 2 => names.join(', '),
-    final n => '${names.take(2).join(', ')} and ${n - 2} more',
+  final live = switch (liveIn(people)) {
+    NowLive.screen => ' · sharing screen',
+    NowLive.camera => ' · camera on',
+    null => '',
   };
+  return switch (names.length) {
+        0 => 'No one’s here',
+        1 || 2 => names.join(', '),
+        final n => '${names.take(2).join(', ')} and ${n - 2} more',
+      } +
+      live;
 }
 
 /// The calls this phone saw: Duvet's servers keep no call history.

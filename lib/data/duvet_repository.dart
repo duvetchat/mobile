@@ -10,6 +10,8 @@ import 'package:http/http.dart' as http;
 
 import 'links.dart' show duvetDomain;
 import 'cache.dart';
+import 'call_notices.dart';
+import 'images.dart' show clearImageCache, prefetchImages;
 import 'message_tokens.dart';
 import 'models.dart';
 import 'recent_chats.dart';
@@ -20,6 +22,23 @@ import 'voice_signaling.dart';
 
 // Someone who joined a Space, with their user ID, or left it (null).
 typedef _MemberMove = ({String memberId, String? userId});
+
+/// The API and the gateway the app reaches, picked at build time (README, Build flags); production by default.
+const duvetRouter = ApiRouter(
+  api: String.fromEnvironment('DUVET_API', defaultValue: 'api.duvet.chat'),
+  ws: String.fromEnvironment('DUVET_GATEWAY', defaultValue: 'ws.duvet.chat'),
+  secure: bool.fromEnvironment('DUVET_SECURE', defaultValue: true),
+);
+
+final _uuid = RegExp(r'^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$', caseSensitive: false);
+
+/// An avatar's or icon's URL on [router]'s API: the API names an attachment by its ID, served outside `/api`, as the
+/// desktop app's `getAvatarURL` does, and a webhook's avatar may be a URL. Null for none, or for anything else.
+String? avatarUrlOn(ApiRouter router, String? avatar) {
+  if (avatar == null || avatar.isEmpty) return null;
+  if (avatar.startsWith('https://') || avatar.startsWith('http://')) return avatar;
+  return _uuid.hasMatch(avatar) ? '${router.secure ? 'https' : 'http'}://${router.api}/attachments/$avatar' : null;
+}
 
 /// [ChatRepository] over the Duvet API (`duvet_client`): REST for history and
 /// sending, the gateway for everything live.
@@ -44,8 +63,10 @@ class DuvetRepository implements ChatRepository {
     readable: (content) => readableContent(content, nameOf: nameOf, emojiNameOf: emojiNameOf, roomNameOf: _roomNameOf),
   );
 
-  // The saved list's read, which previews catch up after.
+  // The saved list's read, which previews catch up after; and the session's
+  // first list of conversations, which the chats fetched ahead come from too.
   Future<void> _recentsLoaded = Future.value();
+  Future<void> _conversationsLoaded = Future.value();
 
   // Names seen this session: members, conversation members, message authors.
   final _names = <String, String>{};
@@ -66,22 +87,36 @@ class DuvetRepository implements ChatRepository {
   /// Off in tests, which push events through [handleEvent].
   final bool _connectsGateway;
 
+  /// Whether the chats likely to be opened next get their pages, and the
+  /// pictures the lists show, fetched ahead ([_fetchLatest], [_warm]). Off
+  /// with the gateway, in tests, unless asked: they'd see requests they
+  /// don't expect.
+  final bool _preloads;
+
+  // Takes a chat's phone notification away as the chat shows (lib/push); none in tests that don't ask.
+  final Future<void> Function(String chatId)? _forgetNotifications;
+
   DuvetRepository({
     SessionStore? store,
     RecentChatsStore? recentsStore,
-    ApiRouter router = const ApiRouter(),
+    ApiRouter router = duvetRouter,
     http.Client Function()? httpClient,
     @visibleForTesting bool connectGateway = true,
+    @visibleForTesting bool? preload,
     ChatCacheStore? cacheStore,
+    Future<void> Function(String chatId)? forgetNotifications,
   }) : _cache = ChatCache(cacheStore ?? FileChatCacheStore()),
        _store = store ?? const SecureSessionStore(),
        _recentsStore = recentsStore ?? const SecureRecentChatsStore(),
        _router = router,
        _httpClient = httpClient ?? http.Client.new,
-       _connectsGateway = connectGateway {
+       _connectsGateway = connectGateway,
+       _preloads = preload ?? connectGateway,
+       _forgetNotifications = forgetNotifications {
     _typing.stream.listen((e) => _setTyping(e.$1, e.$2.userId, e.$2));
     _messageEvents.stream.listen((e) {
       if (e.$2 case MessageCreated(message: ChatMessage(:final authorId?))) _setTyping(e.$1, authorId);
+      _keep(e.$1, e.$2);
     });
   }
 
@@ -98,7 +133,7 @@ class DuvetRepository implements ChatRepository {
     final was = typingNow.value[chatId] ?? const <TypingUser>[];
     if (user == null && was.every((u) => u.userId != userId)) return;
     if (user != null) {
-      _typingEnds[(chatId, userId)] = Timer(const Duration(seconds: 6), () => _setTyping(chatId, userId));
+      _typingEnds[(chatId, userId)] = Timer(const Duration(seconds: 5), () => _setTyping(chatId, userId));
     }
     typingNow.value = {
       ...typingNow.value,
@@ -152,6 +187,29 @@ class DuvetRepository implements ChatRepository {
   }
 
   @override
+  final ValueNotifier<Set<String>> pinnedChats = ValueNotifier(const {});
+
+  // As with [_collapsedTouched]: what's saved mustn't undo a pin made since.
+  bool _pinnedTouched = false;
+
+  @override
+  void setChatPinned(String key, bool pinned) {
+    if (pinnedChats.value.contains(key) == pinned) return;
+    _pinnedTouched = true;
+    pinnedChats.value = {
+      for (final k in pinnedChats.value)
+        if (k != key) k,
+      if (pinned) key,
+    };
+    _cache.savePinned(pinnedChats.value);
+  }
+
+  Future<void> _loadPinned() async {
+    final keys = await _cache.loadPinned();
+    if (keys != null && !_pinnedTouched) pinnedChats.value = keys;
+  }
+
+  @override
   final ValueNotifier<LiveStatus> status = ValueNotifier(LiveStatus.offline);
 
   // Outlives the sessions: each one's gateway is attached to it.
@@ -167,6 +225,8 @@ class DuvetRepository implements ChatRepository {
   final ValueNotifier<Map<String, ChatMessage>> latest = ValueNotifier(const {});
   @override
   final ValueNotifier<Map<String, int>> mentions = ValueNotifier(const {});
+  @override
+  final ValueNotifier<Map<String, NotificationLevel>> notificationLevels = ValueNotifier(const {});
   @override
   final drafts = <String, ChatDraft>{};
 
@@ -200,6 +260,9 @@ class DuvetRepository implements ChatRepository {
 
   @override
   final ValueNotifier<Set<String>> mobileOnly = ValueNotifier(const {});
+
+  @override
+  final ValueNotifier<Map<String, List<duvet.Activity>>> activities = ValueNotifier(const {});
 
   // Fetched once per session, by space or conversation ID.
   final _spaceMembers = <String, Future<List<Member>>>{};
@@ -247,10 +310,20 @@ class DuvetRepository implements ChatRepository {
   Future<bool> restore() async {
     final saved = await _store.read();
     if (saved == null) return false;
+    // What was kept draws the lists at once, until the API and the gateway
+    // answer ([_publishSpaces] keeps the Spaces READY names until each comes).
+    // Before [_start], whose profile saves the home with them, not empty.
+    final home = await _cache.loadHome();
+    if (home != null) {
+      conversations.value = home.conversations;
+      spaces.value = home.spaces;
+      // Theirs until READY names them: a list published before it keeps them.
+      _spaceOrder = [for (final s in home.spaces) s.id];
+    }
     _api = duvet.RestClient(_httpClient(), router: _router, token: saved.token, sessionToken: saved.sessionToken);
     _saved = saved;
     try {
-      await _start();
+      await _start(keptFor: home?.profile.id);
       return true;
     } catch (e) {
       if (e is duvet.DuvetAuthException && _sessionEnded) {
@@ -262,14 +335,15 @@ class DuvetRepository implements ChatRepository {
       // anything. The tokens as they are now: a renewal may have replaced the
       // ones read.
       _closeSession();
-      final home = await _cache.loadHome();
       if (home == null) rethrow;
       final tokens = _saved ?? saved;
       _api = duvet.RestClient(_httpClient(), router: _router, token: tokens.token, sessionToken: tokens.sessionToken);
       profile.value = home.profile;
       conversations.value = home.conversations;
       spaces.value = home.spaces;
+      _spaceOrder = [for (final s in home.spaces) s.id];
       unawaited(_loadCollapsed());
+      unawaited(_loadPinned());
       status.value = LiveStatus.offline;
       _recentsLoaded = _recents.load(home.profile.id);
       _retry = Timer.periodic(const Duration(seconds: 20), (_) => _comeBack());
@@ -284,7 +358,7 @@ class DuvetRepository implements ChatRepository {
     if (_comingBack) return;
     _comingBack = true;
     try {
-      await _start();
+      await _start(keptFor: profile.value?.id);
       _retry?.cancel();
       _retry = null;
       if (_wasReady) _resumed.add(null);
@@ -332,22 +406,52 @@ class DuvetRepository implements ChatRepository {
 
   @override
   Future<void> logOut() async {
+    // The background task renews the stored session itself when the app
+    // doesn't answer it (lib/push/renewal.dart): its tokens are the session's
+    // then, and the client's would end nothing.
+    final stored = await _store.read().catchError((Object e) {
+      debugPrint('session: the stored session: $e');
+      return null;
+    });
+    if ((_api, stored) case (
+      final api?,
+      final stored?,
+    ) when stored.sessionToken.isNotEmpty && stored.sessionToken != api.sessionToken) {
+      final renewed = duvet.RestClient(
+        _httpClient(),
+        router: _router,
+        token: stored.token,
+        sessionToken: stored.sessionToken,
+      );
+      await renewed.logout();
+      renewed.client.close();
+    }
     await _api?.logout();
     await _endSession();
   }
 
-  Future<void> _start() async {
+  // [keptFor] is whose home was kept and shows already, if any.
+  Future<void> _start({String? keptFor}) async {
     // Before the gateway connects: a renewal during its identify would revoke
     // the token it identifies with. One that timed out, the server
     // unreachable, throws: the session opens offline then, not once `me()`
     // has timed out too.
     await _renewIfDue(renewInFrontAfter);
     final me = await _call((api) => api.me());
+    // Another account's, left by a sign-out that never cleared it: none of it
+    // shows under this one, nor stays on the device.
+    if (keptFor != null && keptFor != me.id) {
+      conversations.value = const [];
+      spaces.value = const [];
+      _spaceOrder = const [];
+      await _cache.clear();
+    }
     _setProfile(me);
     _names[me.id] = profile.value!.displayName;
     _recentsLoaded = _recents.load(me.id);
     unawaited(_loadCollapsed());
-    unawaited(refreshConversations().catchError((Object e) => debugPrint('conversations: $e')));
+    unawaited(_loadPinned());
+    unawaited(_conversationsLoaded = refreshConversations().catchError((Object e) => debugPrint('conversations: $e')));
     _renewals?.cancel();
     _renewals = Timer.periodic(renewalCheck, (_) => _renewQuietly(renewAfter));
     if (_connectsGateway) _connectGateway();
@@ -360,8 +464,11 @@ class DuvetRepository implements ChatRepository {
     // Previews are message text: signing out leaves none on the device.
     unawaited(_recents.close(forget: true));
     unawaited(_cache.clear());
+    unawaited(Future.sync(clearImageCache).catchError((Object e) => debugPrint('pictures: $e')));
     collapsedCategories.value = const {};
     _collapsedTouched = false;
+    pinnedChats.value = const {};
+    _pinnedTouched = false;
     _renewalRetry?.cancel();
     _renewalRetry = null;
     _closeSession();
@@ -388,7 +495,14 @@ class DuvetRepository implements ChatRepository {
     _lastRead.clear();
     drafts.clear();
     _ephemeral.clear();
+    _links.clear();
+    _signedAt.clear();
+    _renewing.clear();
+    _linksSession++;
     mentions.value = const {};
+    _levelsChangedMeanwhile = null;
+    notificationLevels.value = const {};
+    _forgetMentionNotices();
     _voiceSignaling.detach();
     // Destroying the gateway closes the REST client's HTTP client too.
     if (_gateway case final gateway?) {
@@ -398,6 +512,8 @@ class DuvetRepository implements ChatRepository {
     }
     _gateway = null;
     _api = null;
+    _adoptedFrom = null;
+    _adoptedInto = null;
     _spaces.clear();
     _spaceOrder = const [];
     _nicknames.clear();
@@ -422,7 +538,11 @@ class DuvetRepository implements ChatRepository {
     _uploadLimit = null;
     presence.value = const {};
     mobileOnly.value = const {};
+    activities.value = const {};
     _spaceEntries.clear();
+    _ahead.clear();
+    _heard.clear();
+    _lastMessage.clear();
     latest.value = const {};
     unawaited(_recents.close());
     profile.value = null;
@@ -433,18 +553,85 @@ class DuvetRepository implements ChatRepository {
   }
 
   /// Runs a request, then saves the tokens if the client renewed them on the
-  /// way (it does so silently on a 401). A rejected renewal ends the session.
-  Future<T> _call<T>(Future<T> Function(duvet.RestClient api) request) async {
+  /// way (it does so silently on a 401). A rejected renewal ends the session,
+  /// unless the stored session is another one: the background renewal
+  /// (lib/push/renewal.dart) rotated it while this client held the old tokens,
+  /// and the request goes once more with the stored ones. A renewal
+  /// ([renews]) doesn't: the session it takes up was renewed just now. A
+  /// request still on its way with the client such a look replaced goes once
+  /// more too, refused or cut off as that client closed.
+  Future<T> _call<T>(
+    Future<T> Function(duvet.RestClient api) request, {
+    bool again = false,
+    bool renews = false,
+  }) async {
+    assert(!renews || null is T, 'a renewal gives nothing back');
     final api = _rest;
     try {
       return await request(api);
     } on duvet.DuvetAuthException {
-      if (!api.isAuthenticated && identical(api, _api)) await _endSession();
+      if (!api.isAuthenticated && identical(api, _api)) {
+        if (!again && await _adoptStoredSession(api)) return renews ? null as T : _call(request, again: true);
+        // Unless a sign-in started another session during the look.
+        if (identical(api, _api)) await _endSession();
+      } else if (!again && _adoptedAway(api)) {
+        return renews ? null as T : _call(request, again: true);
+      }
+      rethrow;
+    } on http.RequestAbortedException {
+      rethrow;
+    } on http.ClientException {
+      if (!again && _adoptedAway(api)) return renews ? null as T : _call(request, again: true);
       rethrow;
     } finally {
       if (identical(api, _api)) await _persist(api);
     }
   }
+
+  // Requests refused at once share one look at the stored session.
+  Future<bool>? _adopting;
+
+  // The client the last look replaced, and the one it made.
+  duvet.RestClient? _adoptedFrom;
+  duvet.RestClient? _adoptedInto;
+
+  bool _adoptedAway(duvet.RestClient api) => identical(api, _adoptedFrom) && identical(_api, _adoptedInto);
+
+  // Takes up the stored session when it isn't the one this isolate kept: a new client with its tokens, and, as the
+  // gateway is built on the client, a gateway that connects again with it. False when it's the same, or none (the
+  // session ended), when the store can't be read, and when [failed] isn't the session's client any more: a sign-in
+  // came meanwhile.
+  Future<bool> _adoptStoredSession(duvet.RestClient failed) => _adopting ??= () async {
+    final stored = await _store.read().catchError((Object e) {
+      debugPrint('session: the stored session: $e');
+      return null;
+    });
+    final kept = _saved;
+    if (!identical(failed, _api) || stored == null || stored.sessionToken.isEmpty) return false;
+    if (kept != null && stored.token == kept.token && stored.sessionToken == kept.sessionToken) return false;
+    _saved = stored;
+    final adopted = _api = duvet.RestClient(
+      _httpClient(),
+      router: _router,
+      token: stored.token,
+      sessionToken: stored.sessionToken,
+    );
+    _adoptedFrom = failed;
+    _adoptedInto = adopted;
+    if (_gateway case final gateway?) {
+      for (final sub in [_events, _states, _resumes, _closes, _failures]) {
+        unawaited(sub?.cancel());
+      }
+      _voiceSignaling.detach();
+      // Destroying it closes the old client's HTTP client too.
+      gateway.destroy();
+      _gateway = null;
+      _connectGateway();
+    } else {
+      failed.client.close();
+    }
+    return true;
+  }().whenComplete(() => _adopting = null);
 
   // Saves the client's tokens when they changed: the API issued them just now
   // (a login, or a renewal), which dates them for [_renewIfDue].
@@ -492,16 +679,10 @@ class DuvetRepository implements ChatRepository {
   // out: the server can't be reached. Any other failure waits for the next
   // check.
   Future<void> _renewIfDue(Duration after, {bool retry = true}) async {
-    final api = _api;
-    final saved = _saved;
-    if (api == null || saved == null || saved.token != api.token || api.sessionToken.isEmpty) return;
-    final now = clock.now();
-    if (saved.refreshedAt case final at? when !at.isAfter(now) && now.difference(at) < after) return;
     try {
-      await _call((api) => api.refreshSession());
-    } on duvet.DuvetApiException catch (e) {
-      if (e is duvet.DuvetAuthException) rethrow;
-      debugPrint('session: $e');
+      await _renewOnce(after);
+    } on duvet.DuvetAuthException {
+      rethrow;
     } catch (e) {
       if (retry) {
         _renewalRetry ??= Timer(renewalRetry, () {
@@ -514,12 +695,53 @@ class DuvetRepository implements ChatRepository {
     }
   }
 
+  // One renewal, once due as [_renewIfDue] has it. A refusal ends the session
+  // ([_call]) and is thrown, as is a renewal that got no answer; an error the
+  // API answered is only logged.
+  Future<void> _renewOnce(Duration after) async {
+    final api = _api;
+    final saved = _saved;
+    if (api == null || saved == null || saved.token != api.token || api.sessionToken.isEmpty) return;
+    final now = clock.now();
+    if (saved.refreshedAt case final at? when !at.isAfter(now) && now.difference(at) < after) return;
+    try {
+      await _call<void>((api) => api.refreshSession(), renews: true);
+    } on duvet.DuvetApiException catch (e) {
+      if (e is duvet.DuvetAuthException) rethrow;
+      debugPrint('session: $e');
+    }
+  }
+
   // From the timer, or the app coming to the front: a refusal has ended the
   // session already. Settles once the renewal, if one was due, is done.
   Future<void> _renewQuietly(Duration after) => _renewIfDue(after).catchError((Object e) => debugPrint('session: $e'));
 
+  /// Renews the session in this isolate, for the background task
+  /// (lib/push/renewal.dart), which asks the app before it renews the stored
+  /// tokens itself, so the session keeps one owner and the gateway follows the
+  /// renewal: once its tokens are [after] old, as [_renewIfDue] has it. A
+  /// renewal that got no answer goes once more [renewalRetry] later, and this
+  /// waits for it: the task keeps the phone awake until it ends.
+  Future<void> renewForBackground(Duration after) async {
+    try {
+      await _renewOnce(after);
+    } on duvet.DuvetAuthException {
+      // The session ended ([_call]).
+    } catch (_) {
+      await Future<void>.delayed(renewalRetry);
+      await _renewOnce(after).catchError((Object e) => debugPrint('session: $e'));
+    }
+  }
+
+  // Whether the app is in front: in the background its own notices keep quiet.
+  bool _inFront = true;
+
+  @override
+  void wentToBack() => _inFront = false;
+
   @override
   void cameToFront() {
+    _inFront = true;
     final renewing = _renewQuietly(renewInFrontAfter);
     if (status.value == LiveStatus.online) return;
     // Cut off while away. Connecting goes again now, not at the end of its
@@ -649,6 +871,8 @@ class DuvetRepository implements ChatRepository {
         if (mobileOnly.value.any((id) => id != me)) {
           mobileOnly.value = {if (me != null && mobileOnly.value.contains(me)) me};
         }
+        // What they're doing comes again with them too.
+        activities.value = const {};
         _spaceEntries.clear();
         // Profile changes made with no session went unheard: anyone's next
         // one reaches their messages, even with the name and avatar the one
@@ -662,10 +886,15 @@ class DuvetRepository implements ChatRepository {
         } else if (me != null && !presence.value.containsKey(me)) {
           presence.value = {...presence.value, me: Presence.online};
         }
-        if (_spaces.isNotEmpty) _publishSpaces();
+        // Kept ones it no longer names go now, not with the first SPACE_CREATE.
+        if (_spaces.isNotEmpty || spaces.value.isNotEmpty) _publishSpaces();
         unread.value = {...?data.unreadRooms, ...?data.unreadConvs};
         _lastRead.addAll(data.lastReadRooms ?? const {});
         _lastMessage.addAll(data.lastMsgRooms ?? const {});
+        // What came while no socket was open never reached the pages kept,
+        // nor will a page asked for before it.
+        _ahead.clear();
+        _readies++;
         unawaited(_catchUpRooms());
         if (_api != null) {
           unawaited(
@@ -676,6 +905,7 @@ class DuvetRepository implements ChatRepository {
               };
             }, onError: (Object e) => debugPrint('mentions: $e')),
           );
+          unawaited(_loadNotificationLevels());
           // The friends and the requests, as the desktop fetches them on each
           // READY; FRIEND_* events keep them current.
           unawaited(_reloadFriends());
@@ -685,14 +915,23 @@ class DuvetRepository implements ChatRepository {
         // whose dates tell the DMs' previews behind.
         if (_wasReady) {
           _resumed.add(null);
-          unawaited(refreshConversations().catchError((Object e) => debugPrint('conversations: $e')));
+          unawaited(
+            _conversationsLoaded = refreshConversations().catchError((Object e) => debugPrint('conversations: $e')),
+          );
         }
+        if (_preloads) unawaited(_preloadLikeliest());
         _wasReady = true;
 
       case duvet.MentionCreatedEvent(:final data) when data.authorId != me:
         _mentioned(data.conversationId ?? data.roomId);
+        if (data.conversationId case final id?) {
+          _mentionNotice(ConversationTarget(id), data.messageId);
+        } else if (spaces.value.where((s) => s.rooms.any((r) => r.id == data.roomId)).firstOrNull case final space?) {
+          _mentionNotice(RoomTarget(spaceId: space.id, roomId: data.roomId), data.messageId);
+        }
       case duvet.DMMentionCreatedEvent(:final data) when data.authorId != me:
         _mentioned(data.conversationId);
+        _mentionNotice(ConversationTarget(data.conversationId), data.messageId);
 
       case duvet.ReactionAddedEvent(:final data) || duvet.DMReactionAddedEvent(:final data):
         _messageEvents.add((
@@ -712,6 +951,7 @@ class DuvetRepository implements ChatRepository {
         ));
 
       case duvet.SpaceCreateEvent(:final data):
+        _warm([avatarUrl(data.space.icon)]);
         _spaces[data.space.id] = (space: data.space, rooms: {...data.rooms});
         _roles[data.space.id] = {...data.rolesPermissions};
         _overwrites[data.space.id] = {
@@ -761,9 +1001,17 @@ class DuvetRepository implements ChatRepository {
         // status everywhere is now the one it gives; the others keep theirs.
         _keepPlatforms({for (final id in data.memberStatuses.keys) id: data.memberClientStatus[id]});
         presence.value = next;
+        // What those it has connected are doing; its other members, nothing.
+        activities.value = {
+          for (final e in activities.value.entries)
+            if (!members.contains(e.key)) e.key: e.value,
+          for (final e in data.activities.entries)
+            if (e.value.isNotEmpty) e.key: e.value,
+        };
         _readStates(data.readStates);
         _publishSpaces();
       case duvet.SpaceUpdateEvent(:final data):
+        _warm([avatarUrl(data.icon)]);
         if (_spaces[data.id] case final known?) {
           _spaces[data.id] = (space: data, rooms: known.rooms);
           _publishSpaces();
@@ -837,11 +1085,16 @@ class DuvetRepository implements ChatRepository {
           if (data.authorId != me) _markUnread(data.roomId);
           _recents.roomMessage(data.roomId, message);
           _setLatest(data.roomId, message);
+          _arrivedForNotice(message);
+          if (_spaceOfRoom(data.roomId) case final spaceId?) {
+            _noticeEveryMessage(RoomTarget(spaceId: spaceId, roomId: data.roomId), message);
+          }
         }
         _messageEvents.add((data.roomId, MessageCreated(message)));
       case duvet.MessageUpdateEvent(:final data):
         if (data.deletedAt != null) {
           _dropEphemeral(data.roomId, data.id);
+          _dropMentionNotice(data.id);
           _recents.deleted(data.roomId, data.id);
           _latestDeleted(data.roomId, data.id);
           _messageEvents.add((data.roomId, MessageDeleted(data.id)));
@@ -858,6 +1111,7 @@ class DuvetRepository implements ChatRepository {
         }
       case duvet.MessageDeletedEvent(:final data):
         _dropEphemeral(data.roomId, data.id);
+        _dropMentionNotice(data.id);
         _recents.deleted(data.roomId, data.id);
         _latestDeleted(data.roomId, data.id);
         _messageEvents.add((data.roomId, MessageDeleted(data.id)));
@@ -865,18 +1119,34 @@ class DuvetRepository implements ChatRepository {
       case duvet.DMMessageCreatedEvent(:final data):
         final id = data.conversationId;
         if (id == null) break;
-        if (data.authorId != me) _markUnread(id);
+        final message = _directMessage(data);
+        if (message.call case final call?) {
+          _readCallNotice(id, message.id, call, me);
+        } else if (data.authorId != me) {
+          _markUnread(id);
+        }
         final known = conversations.value.where((c) => c.id == id).firstOrNull;
         if (known == null) unawaited(refreshConversations().catchError((_) {}));
-        final message = _directMessage(data);
         _recents.conversationMessage(id, message, title: known?.title);
         _setLatest(id, message);
+        _arrivedForNotice(message);
+        _noticeEveryMessage(ConversationTarget(id), message);
         _messageEvents.add((id, MessageCreated(message)));
       case duvet.DMMessageUpdatedEvent(:final data):
         if (data.conversationId case final id?) _updated(id, _directMessage(data));
       case duvet.DMMessageDeletedEvent(:final data):
+        _dropMentionNotice(data.id);
         _recents.deleted(data.conversationId, data.id);
+        _latestDeleted(data.conversationId, data.id);
         _messageEvents.add((data.conversationId, MessageDeleted(data.id)));
+
+      // The calls the user answered from one of their devices, whose notices
+      // leave the conversation read for them, as the API does. A new call
+      // ringing them there is one they haven't answered yet.
+      case duvet.CallAcceptedEvent(:final data) || duvet.CallDeclinedEvent(:final data) when data.userId == me:
+        _callAnswers.add(data.conversationId);
+      case duvet.CallIncomingPayloadEvent(:final data):
+        _callAnswers.remove(data.conversationId);
 
       case duvet.MessagePinUpdatedEvent(:final data):
         _messageEvents.add((data.roomId, MessagePinned(data.id, pinned: data.pinnedAt != null)));
@@ -910,10 +1180,24 @@ class DuvetRepository implements ChatRepository {
           _choose(chosen);
         }
         if (_spaceMemberIds.values.any((ids) => ids.contains(data.userId))) _publishSpaces();
+        // Gone offline, they lose their activities with no USER_ACTIVITY_UPDATE.
+        if (status == Presence.offline && data.spaceId == null && activities.value.containsKey(data.userId)) {
+          activities.value = {...activities.value}..remove(data.userId);
+        }
+      case duvet.UserActivityUpdatedEvent(:final data):
+        activities.value = {
+          for (final e in activities.value.entries)
+            if (e.key != data.userId) e.key: e.value,
+          if (data.activities.isNotEmpty) data.userId: data.activities,
+        };
       case duvet.SpaceEmojiCreatedEvent(:final data) || duvet.SpaceEmojiUpdatedEvent(:final data):
         _emojis.remove(data.spaceId);
       case duvet.SpaceEmojiDeletedEvent(:final data):
         _emojis.remove(data.spaceId);
+      case duvet.SpaceBanAddedEvent(:final data):
+        _bansChanged.add(data.spaceId);
+      case duvet.SpaceBanRemovedEvent(:final data):
+        _bansChanged.add(data.spaceId);
       case duvet.SpaceStickerCreatedEvent(:final data) || duvet.SpaceStickerUpdatedEvent(:final data):
         _stickers.remove(data.spaceId);
       case duvet.SpaceStickerDeletedEvent(:final data):
@@ -981,6 +1265,17 @@ class DuvetRepository implements ChatRepository {
             _setProfile(me);
           }, onError: (_) {});
         }
+
+      case duvet.NotificationSettingsUpdatedEvent(:final data):
+        final level = switch (data.level) {
+          final level? => _level(level),
+          null => null,
+        };
+        _levelsChangedMeanwhile?[data.targetId] = level;
+        notificationLevels.value = switch (level) {
+          final level? => {...notificationLevels.value, data.targetId: level},
+          null => {...notificationLevels.value}..remove(data.targetId),
+        };
 
       default:
     }
@@ -1115,6 +1410,172 @@ class DuvetRepository implements ChatRepository {
 
   void _mentioned(String chatId) => mentions.value = {...mentions.value, chatId: (mentions.value[chatId] ?? 0) + 1};
 
+  // ---------------------------------------------------------------------------
+  // Mention notices
+  // ---------------------------------------------------------------------------
+
+  @override
+  final ValueNotifier<List<MentionNotice>> mentionNotices = ValueNotifier(const []);
+
+  /// How long a mention's notice shows, and how many show at once: a new one
+  /// goes on top, and the oldest goes past them, as on the desktop.
+  static const noticeTime = Duration(seconds: 6);
+  static const noticesShown = 3;
+
+  ({String chatId, String? threadOf})? _onScreen;
+
+  // The newest messages that came, by ID: a mention's comes over another
+  // subscription, in no set order, and neither event carries the other.
+  final _arrived = <String, ChatMessage>{};
+  static const _arrivedKept = 200;
+
+  // Mentions whose message hasn't come, by its ID: it's being fetched.
+  final _awaited = <String, ChatTarget>{};
+
+  // The messages whose notice showed, or never will (deleted), the newest
+  // last: each shows once. The API sends a mention once and a resume replays
+  // only what came after it, so this is only a guard.
+  final _settled = <String>{};
+  static const _settledKept = 500;
+  final _noticeTimers = <String, Timer>{};
+
+  @override
+  void chatShown(ChatTarget target, {String? threadOf, bool opened = true}) {
+    _onScreen = (chatId: target.id, threadOf: threadOf);
+    // Its phone notification tells of nothing the chat doesn't show.
+    if (threadOf == null) {
+      unawaited(_forgetNotifications?.call(target.id).catchError((Object e) => debugPrint('push: $e')));
+    }
+    // The chat itself is here now: its notices would only open it again.
+    if (opened && threadOf == null) {
+      for (final notice in [...mentionNotices.value.where((n) => n.target == target)]) {
+        dismissMentionNotice(notice.messageId);
+      }
+    }
+  }
+
+  @override
+  void chatHidden(ChatTarget target, {String? threadOf}) {
+    if (_onScreen == (chatId: target.id, threadOf: threadOf)) _onScreen = null;
+  }
+
+  // [messageId] mentions the user in [target]: its notice shows once the
+  // message is here, fetched if it hasn't come.
+  void _mentionNotice(ChatTarget target, String messageId) {
+    if (_settled.contains(messageId) || _awaited.containsKey(messageId)) return;
+    if (_arrived[messageId] case final message?) return _showNotice(target, message);
+    _awaited[messageId] = target;
+    fetchMessage(target, messageId).then(
+      // Unless it came meanwhile, or was deleted.
+      (message) {
+        if (_awaited.remove(messageId) != null) _showNotice(target, message);
+      },
+      onError: (Object e) {
+        // Deleted first, which the API no longer has, or offline: nothing shows.
+        _awaited.remove(messageId);
+        debugPrint('mention: $e');
+      },
+    );
+  }
+
+  void _arrivedForNotice(ChatMessage message) {
+    _arrived[message.id] = message;
+    if (_arrived.length > _arrivedKept) _arrived.remove(_arrived.keys.first);
+    if (_awaited.remove(message.id) case final target?) _showNotice(target, message);
+  }
+
+  // A place at every message shows each message as a mention: not the user's
+  // own, nor one of Duvet's notices (a pin's, a call's). A mention of it
+  // shows once all the same ([_settled]).
+  void _noticeEveryMessage(ChatTarget target, ChatMessage message) {
+    if (message.authorId == profile.value?.id || message.isNotice) return;
+    final level = switch (target) {
+      RoomTarget(:final roomId) => roomLevel(roomId),
+      ConversationTarget(:final conversationId) => conversationLevel(conversationId),
+    };
+    if (level == NotificationLevel.all) _showNotice(target, message);
+  }
+
+  void _showNotice(ChatTarget target, ChatMessage message) {
+    // In the background the phone's notification tells of it (lib/push): this one, settled, never shows.
+    if (!_inFront) return _settle(message.id);
+    // Nor for a chat at nothing ([quiet]): no notice, so no sound either.
+    if (_settled.contains(message.id) || profile.value?.status == Presence.doNotDisturb || quiet(target.id)) return;
+    // The chat on screen shows it already; a thread of it, its replies.
+    if (_onScreen case (
+      :final chatId,
+      :final threadOf,
+    ) when chatId == target.id && (threadOf == null || message.reply?.messageId == threadOf)) {
+      return;
+    }
+    final ({String title, String where})? place = switch (target) {
+      RoomTarget(:final spaceId, :final roomId) => () {
+        final space = spaces.value.where((s) => s.id == spaceId).firstOrNull;
+        final room = space?.rooms.where((r) => r.id == roomId).firstOrNull;
+        return room == null ? null : (title: '# ${room.name}', where: 'in #${room.name} · ${space!.name}');
+      }(),
+      ConversationTarget(:final conversationId) => () {
+        final conversation = conversations.value.where((c) => c.id == conversationId).firstOrNull;
+        return (
+          title: conversation?.title ?? 'Direct message',
+          where: conversation != null && conversation.isGroup ? 'in ${conversation.title}' : 'in a direct message',
+        );
+      }(),
+    };
+    if (place == null) return;
+    _settle(message.id);
+    final notice = MentionNotice(
+      messageId: message.id,
+      target: target,
+      title: place.title,
+      authorName: message.authorName,
+      authorAvatarUrl: message.authorAvatarUrl,
+      where: place.where,
+      text: previewOf(message),
+    );
+    final shown = [notice, ...mentionNotices.value];
+    for (final gone in shown.skip(noticesShown)) {
+      _noticeTimers.remove(gone.messageId)?.cancel();
+    }
+    mentionNotices.value = shown.take(noticesShown).toList();
+    _noticeTimers[message.id] = Timer(noticeTime, () => dismissMentionNotice(message.id));
+  }
+
+  void _settle(String messageId) {
+    _settled
+      ..remove(messageId)
+      ..add(messageId);
+    if (_settled.length > _settledKept) _settled.remove(_settled.first);
+  }
+
+  @override
+  void dismissMentionNotice(String messageId) {
+    _noticeTimers.remove(messageId)?.cancel();
+    if (mentionNotices.value.any((n) => n.messageId == messageId)) {
+      mentionNotices.value = [...mentionNotices.value.where((n) => n.messageId != messageId)];
+    }
+  }
+
+  // A message was deleted: its notice goes, and one on its way never shows.
+  void _dropMentionNotice(String messageId) {
+    _settle(messageId);
+    _arrived.remove(messageId);
+    _awaited.remove(messageId);
+    dismissMentionNotice(messageId);
+  }
+
+  void _forgetMentionNotices() {
+    for (final timer in _noticeTimers.values) {
+      timer.cancel();
+    }
+    _noticeTimers.clear();
+    _arrived.clear();
+    _awaited.clear();
+    _settled.clear();
+    _onScreen = null;
+    mentionNotices.value = const [];
+  }
+
   /// [userId]'s presence everywhere, a person's: it outdates the Spaces' own
   /// entries a SPACE_CREATE gave them.
   Map<String, Presence> _presentEverywhere(String userId, Presence status) {
@@ -1174,6 +1635,26 @@ class DuvetRepository implements ChatRepository {
     if (!unread.value.contains(id)) unread.value = {...unread.value, id};
   }
 
+  // The conversations whose call the user answered from one of their devices
+  // (CALL_ACCEPTED or CALL_DECLINED with their own ID); the call's notice
+  // uses the answer up.
+  final _callAnswers = <String>{};
+
+  /// A call notice came: one the user saw ([callNoticeSeen]) leaves the
+  /// conversation read, as the API leaves it read up to the notice, unless a
+  /// newer message is known; one they missed is news like any message.
+  void _readCallNotice(String conversationId, String noticeId, CallNotice call, String? me) {
+    final answered = _callAnswers.remove(conversationId);
+    if (me == null || !callNoticeSeen(call, me, answered: answered)) {
+      _markUnread(conversationId);
+      return;
+    }
+    final newest = latest.value[conversationId]?.id;
+    if (newest != null && newest != noticeId && newest.compareTo(noticeId) > 0) return;
+    if (unread.value.contains(conversationId)) unread.value = {...unread.value}..remove(conversationId);
+    if (mentions.value.containsKey(conversationId)) mentions.value = {...mentions.value}..remove(conversationId);
+  }
+
   void _publishSpaces() {
     final now = presence.value;
     final published = [
@@ -1183,6 +1664,7 @@ class DuvetRepository implements ChatRepository {
           name: space.name,
           iconUrl: avatarUrl(space.icon),
           bannerUrl: avatarUrl(space.banner),
+          ownerId: space.ownerId,
           sections: _sections(space.id, _visibleRooms(space.id, rooms.values)),
           onlineCount: switch (_spaceMemberIds[space.id]) {
             final ids? when ids.isNotEmpty =>
@@ -1192,6 +1674,10 @@ class DuvetRepository implements ChatRepository {
             _ => null,
           },
         ),
+      // Those READY names whose SPACE_CREATE hasn't come yet, as they were
+      // kept ([restore]): the list doesn't shrink to the first one to come.
+      for (final s in spaces.value)
+        if (!_spaces.containsKey(s.id) && _spaceOrder.contains(s.id)) s,
     ];
     // In the gateway's order (READY's guild_ids); one made or joined since
     // goes after, as it came. Sorting them is the Launchpad's, by the user's
@@ -1245,9 +1731,147 @@ class DuvetRepository implements ChatRepository {
 
   final _loadingLatest = <String>{};
 
+  // The busiest first ([_lastMessage], as message IDs sort by time): they get
+  // the whole pages, even those whose newest message is known.
   @override
-  Future<void> loadLatest(Iterable<ChatTarget> targets) =>
-      _fetchLatest(targets.where((t) => !latest.value.containsKey(t.id)));
+  Future<void> loadLatest(Iterable<ChatTarget> targets) {
+    final busiest = [...targets]..sort((a, b) => (_lastMessage[b.id] ?? '').compareTo(_lastMessage[a.id] ?? ''));
+    final ahead = _preloads ? busiest.take(_pagesAhead).toList() : const <ChatTarget>[];
+    return _fetchLatest([
+      ...ahead.where((t) => !_ahead.contains(t.id)),
+      ...busiest.skip(ahead.length).where((t) => !latest.value.containsKey(t.id)),
+    ]);
+  }
+
+  // The chats whose page kept was fetched, or found to end on the newest
+  // message, since READY: live events keep it so ([_keep]). One kept from
+  // before isn't added to: its page would skip what came between.
+  final _ahead = <String>{};
+
+  /// How many chats a pass fetches at once, and how many of those it fetches
+  /// the whole first page of rather than the newest message alone: the chats
+  /// most likely to be opened next, which then open with their messages
+  /// there. A phone shows about 8 rows of a list; 4 at a time leave the
+  /// network to what the person opens meanwhile, and stay far below the
+  /// API's limits (64 a minute per route and chat, 50 a second in all). Each
+  /// pass has its own [_pagesAhead]: READY starts up to three (the likeliest
+  /// chats, the rooms behind, the DMs behind), 24 pages at most, each chat's
+  /// once, still [_fetchingAtOnce] a pass.
+  static const _fetchingAtOnce = 4;
+  static const _pagesAhead = 8;
+
+  /// After a 429, no chat's newest message or page is fetched for this long,
+  /// fetching ahead or not: the API asked for fewer requests.
+  // shortcut: a fixed wait, as the client drops the Retry-After header the API sends; read it once the client gives it.
+  static const _rateLimitWait = Duration(minutes: 1);
+  DateTime? _waitUntil;
+
+  // After READY: the newest chats of the Chats tab and of the conversations,
+  // whatever the newest message shown.
+  Future<void> _preloadLikeliest() async {
+    await Future.wait([_recentsLoaded, _conversationsLoaded]);
+    final dated = <String, (ChatTarget, DateTime)>{
+      for (final c in conversations.value)
+        if (c.updatedAt case final at?) c.id: (c.target, at),
+      for (final c in _recents.chats.value) c.target.id: (c.target, c.at),
+    };
+    final newest = dated.values.toList()..sort((a, b) => b.$2.compareTo(a.$2));
+    await _fetchLatest([
+      for (final (target, _) in newest.take(_pagesAhead))
+        if (!_ahead.contains(target.id)) target,
+    ]);
+  }
+
+  /// Fetches the pictures [urls] name ahead of their rows ([_preloads]).
+  void _warm(Iterable<String?> urls) {
+    if (!_preloads) return;
+    unawaited(Future.sync(() => prefetchImages(urls)).catchError((Object e) => debugPrint('pictures: $e')));
+  }
+
+  /// [m], a kept page's last, is [target]'s newest message as far as known:
+  /// its page is current since READY ([_ahead]), or, for a room, it's the
+  /// very one READY, its Space or a live event named last (message IDs sort
+  /// by time). Not one newer than that: it was deleted while the app was
+  /// closed, and the API names the one before it. Nothing names a
+  /// conversation's newest message (deleting it leaves its date), so a page
+  /// of one kept from before is always fetched again.
+  // shortcut: READY's last_msg_convs would tell for DMs, which duvet_client 2.7.0 doesn't parse; use it once it does.
+  bool _isNewest(ChatTarget target, ChatMessage m) =>
+      _ahead.contains(target.id) ||
+      switch (target) {
+        RoomTarget(:final roomId) => switch ((_lastMessage[roomId], latest.value[roomId]?.id)) {
+          (final named?, final heard?) => m.id == (named.compareTo(heard) > 0 ? named : heard),
+          (final id, null) || (null, final id) => m.id == id,
+        },
+        ConversationTarget() => false,
+      };
+
+  // How many times READY came, and how many message events each chat had: a
+  // page asked for before one of them and answered after may lack it, or
+  // have what it took away.
+  // shortcut: a reaction's event doesn't say its chat, so one during a fetch isn't counted; the page is fetched again when its chat opens.
+  var _readies = 0;
+  final _heard = <String, int>{};
+
+  /// Answers, later, whether a page of [chatId] asked for now is still what
+  /// the chat holds: no READY and none of its messages' events came since.
+  bool Function() _undisturbed(String chatId) {
+    final (readies, heard) = (_readies, _heard[chatId]);
+    return () => readies == _readies && heard == _heard[chatId];
+  }
+
+  /// What a live event does to the page kept of its chat, as the open chat
+  /// does it ([AuthorChanged] and [AttachmentRenewed] change them where they
+  /// come from): a chat opens on its page as it is now, not as last fetched.
+  void _keep(String chatId, MessageEvent event) {
+    // Signed out meanwhile: the cache is cleared, and stays so.
+    if (_api == null) return;
+    _heard[chatId] = (_heard[chatId] ?? 0) + 1;
+    List<ChatMessage> each(List<ChatMessage> page, String id, ChatMessage Function(ChatMessage m) change) => [
+      for (final m in page) m.id == id ? change(m) : m,
+    ];
+    switch (event) {
+      case MessageCreated(:final message) when !message.isEphemeral && _ahead.contains(chatId):
+        unawaited(
+          _cache.changePage(
+            chatId,
+            (page) => page.any((m) => m.id == message.id) ? each(page, message.id, (_) => message) : [...page, message],
+          ),
+        );
+      case MessageUpdated(message: final update):
+        unawaited(_cache.changePage(chatId, (page) => each(page, update.id, (m) => m.updatedBy(update))));
+      case MessagePinned(:final messageId, :final pinned):
+        unawaited(_cache.changePage(chatId, (page) => each(page, messageId, (m) => m.copyWith(pinned: pinned))));
+      // Gone, and the replies quoting it say so.
+      case MessageDeleted(:final messageId):
+        unawaited(
+          _cache.changePage(
+            chatId,
+            (page) => [
+              for (final m in page)
+                if (m.id != messageId)
+                  switch (m.reply) {
+                    final reply? when reply.messageId == messageId && !reply.deleted => m.copyWith(
+                      reply: reply.asDeleted,
+                    ),
+                    _ => m,
+                  },
+            ],
+          ),
+        );
+      // The event doesn't say in which chat: the pages with the message.
+      case ReactionChanged(:final messageId, :final userId, :final emoji, :final emojiId, :final added):
+        unawaited(
+          _cache.changeMessages(
+            messageId,
+            (_, m) => m.id == messageId && m.reactions.any((r) => r.emoji == emoji && r.users.contains(userId)) != added
+                ? m.reacted(emoji, userId, add: added, emojiId: emojiId)
+                : m,
+          ),
+        );
+      default:
+    }
+  }
 
   // Messages sent while the app wasn't listening (closed, or offline too long
   // to resume) never reached the previews, which still show the last one it
@@ -1277,36 +1901,90 @@ class DuvetRepository implements ChatRepository {
     ]);
   }
 
-  // Each chat's newest message, for its preview here and in the Chats tab.
+  // Each chat's newest message, for its preview here and in the Chats tab,
+  // [_fetchingAtOnce] at a time, in the order given: the first
+  // [_pagesAhead] fetched get their whole page, kept ([cachedMessages]),
+  // unless a kept one ends on the newest message already, which then needs
+  // no fetch. Signing out, or a 429, stops it.
   Future<void> _fetchLatest(Iterable<ChatTarget> targets) async {
+    final api = _api;
     final wanted = [
       for (final t in targets)
         if (_loadingLatest.add(t.id)) t,
     ];
+    var pages = _preloads ? _pagesAhead : 0;
+    var next = 0;
+    // Opened offline, or the network failed on the way: none of the rest.
+    var unreachable = _retry != null;
+    bool going() => identical(api, _api) && !unreachable && !(_waitUntil?.isAfter(clock.now()) ?? false);
+
+    Future<void> fetch(ChatTarget t) async {
+      final current = _undisturbed(t.id);
+      // Only while whole pages are left to fetch: reading a kept one costs
+      // more than asking for the newest message alone.
+      if (pages > 0) {
+        if (await _cache.loadPage(t.id) case [..., final last] when current() && _isNewest(t, last)) {
+          if (!identical(api, _api)) return;
+          _ahead.add(t.id);
+          _newest(t, last);
+          return;
+        }
+      }
+      final whole = pages-- > 0;
+      final page = await _fetchPage(t, null, count: whole ? ChatCache.pageSize : 1);
+      if (!identical(api, _api)) return;
+      // Not one something happened to on its way: the page kept, if current,
+      // has that already, and this one may not.
+      if (whole && current()) {
+        _ahead.add(t.id);
+        _cache.savePage(t.id, page);
+        _warm({for (final m in page) m.authorAvatarUrl});
+      }
+      if (page.lastOrNull case final newest?) _newest(t, newest);
+    }
+
     await Future.wait([
-      for (final t in wanted)
+      for (var i = 0; i < _fetchingAtOnce; i++)
         () async {
-          try {
-            final ChatMessage? newest = switch (t) {
-              RoomTarget(:final roomId) => switch (await _call((api) => api.getMessages(roomId, count: 1))) {
-                [final m, ...] when m.deletedAt == null => _roomMessage(m),
-                _ => null,
-              },
-              ConversationTarget(:final conversationId) => (await _call(
-                (api) => api.getDirectMessages(conversationId, count: 1),
-              )).map(_directMessage).firstOrNull,
-            };
-            if (newest != null) {
-              _setLatest(t.id, newest);
-              _recents.caughtUp(t.id, newest);
+          while (next < wanted.length && going()) {
+            final t = wanted[next++];
+            try {
+              await fetch(t);
+            } on duvet.DuvetApiException catch (e) {
+              if (e.statusCode == 429) _waitUntil = clock.now().add(_rateLimitWait);
+              debugPrint('latest: $e');
+            } on SocketException catch (e) {
+              unreachable = true;
+              debugPrint('latest: $e');
+            } on http.ClientException catch (e) {
+              unreachable = true;
+              debugPrint('latest: $e');
+            } on TimeoutException catch (e) {
+              unreachable = true;
+              debugPrint('latest: $e');
+            } catch (e) {
+              debugPrint('latest: $e');
+            } finally {
+              _loadingLatest.remove(t.id);
             }
-          } catch (e) {
-            debugPrint('latest: $e');
-          } finally {
-            _loadingLatest.remove(t.id);
           }
         }(),
     ]);
+    for (final t in wanted.skip(next)) {
+      _loadingLatest.remove(t.id);
+    }
+  }
+
+  // [m] is [target]'s newest message: its preview here and in the Chats tab,
+  // where a conversation that wasn't listed for one shows it from now on.
+  void _newest(ChatTarget target, ChatMessage m) {
+    _setLatest(target.id, m);
+    if (target is ConversationTarget && _recents.chats.value.every((c) => c.target.id != target.id)) {
+      final known = conversations.value.where((c) => c.id == target.id).firstOrNull;
+      _recents.conversationMessage(target.id, m, title: known?.title);
+    } else {
+      _recents.caughtUp(target.id, m);
+    }
   }
 
   @override
@@ -1407,6 +2085,8 @@ class DuvetRepository implements ChatRepository {
     }
     _fillFriendBanners();
     _saveHome();
+    // As many as the Chats tab lists.
+    _warm([for (final c in conversations.value.take(RecentChats.limit)) c.avatarUrl]);
     unawaited(_catchUpConversations());
   }
 
@@ -1564,9 +2244,16 @@ class DuvetRepository implements ChatRepository {
 
   @override
   Future<List<ChatMessage>> messages(ChatTarget target, {String? before}) async {
+    final api = _api;
+    final current = _undisturbed(target.id);
     try {
       final page = await _fetchPage(target, before);
-      if (before == null) _cache.savePage(target.id, page);
+      // Not once signed out: nothing is kept after. Nor one something
+      // happened to on its way ([_undisturbed]).
+      if (before == null && identical(api, _api) && current()) {
+        _cache.savePage(target.id, page);
+        _ahead.add(target.id);
+      }
       return page;
     } on duvet.DuvetAuthException {
       rethrow;
@@ -1579,15 +2266,20 @@ class DuvetRepository implements ChatRepository {
     }
   }
 
-  Future<List<ChatMessage>> _fetchPage(ChatTarget target, String? before) async {
+  @override
+  Future<List<ChatMessage>?> cachedMessages(ChatTarget target) => _cache.loadPage(target.id);
+
+  // [count] is the client's default.
+  Future<List<ChatMessage>> _fetchPage(ChatTarget target, String? before, {int count = 100}) async {
     // The API answers the newest first.
     final List<ChatMessage> page = switch (target) {
       RoomTarget(:final roomId) => [
-        for (final m in await _call((api) => api.getMessages(roomId, before: before)))
+        for (final m in await _call((api) => api.getMessages(roomId, before: before, count: count)))
           if (m.deletedAt == null) _roomMessage(m),
       ],
       ConversationTarget(:final conversationId) => [
-        for (final m in await _call((api) => api.getDirectMessages(conversationId, before: before))) _directMessage(m),
+        for (final m in await _call((api) => api.getDirectMessages(conversationId, before: before, count: count)))
+          _directMessage(m),
       ],
     };
     return page.reversed.toList();
@@ -1631,6 +2323,70 @@ class DuvetRepository implements ChatRepository {
     ).then(_directMessage),
   };
 
+  // The links the API signed again this session, by attachment ID, when it
+  // signed each, and those it's signing: a file asked for twice at once is
+  // signed once.
+  final _links = <String, String>{};
+  final _signedAt = <String, DateTime>{};
+  final _renewing = <String, Future<String>>{};
+  // Counts the sessions: a renewal that ends after the one it began in is
+  // kept nowhere.
+  var _linksSession = 0;
+
+  /// How long after the API signed a file's link it isn't asked again: a
+  /// link that fails for another reason (a file that won't decode, a
+  /// storage's own refusal) mustn't spend the API's 64 a minute.
+  static const resignCooldown = Duration(minutes: 1);
+
+  @override
+  Future<String> attachmentLink(MessageAttachment attachment, {bool refused = false}) async {
+    final own = attachment.linkExpires;
+    if (own == null) return attachment.url;
+    // A copy of the message older than one renewed here (a gallery opened
+    // before, a bot's answer kept aside) has the old link.
+    final renewed = _links[attachment.id];
+    final known = switch (renewed) {
+      final url? when attachment.withUrl(url).linkExpires?.isAfter(own) ?? false => url,
+      _ => attachment.url,
+    };
+    final now = clock.now();
+    final due = attachment.withUrl(known).linkDueAt(now);
+    // [attachment] has the link that failed: a newer one may not have.
+    if (!due && (!refused || known != attachment.url)) return known;
+    final signedAt = _signedAt[attachment.id];
+    if (!_renewing.containsKey(attachment.id) && signedAt != null && now.difference(signedAt) < resignCooldown) {
+      return known;
+    }
+    try {
+      return await (_renewing[attachment.id] ??= () {
+        final renewing = _renew(attachment.id);
+        // A block: whenComplete would wait for the future remove() answers,
+        // which is this one. One of a session since ended leaves the next's.
+        renewing.whenComplete(() {
+          if (identical(_renewing[attachment.id], renewing)) _renewing.remove(attachment.id);
+        }).ignore();
+        return renewing;
+      }());
+    } catch (e) {
+      // Not found, or offline: its link is all there is.
+      debugPrint('attachment link: $e');
+      return known;
+    }
+  }
+
+  // Asks the API to sign [attachmentId]'s link again; the messages here with
+  // the file load it from the new one, as do the pages kept for offline.
+  Future<String> _renew(String attachmentId) async {
+    final session = _linksSession;
+    final url = _absolute(await _call((api) => api.resignAttachment(attachmentId)), attachmentId);
+    if (session != _linksSession) return url;
+    _links[attachmentId] = url;
+    _signedAt[attachmentId] = clock.now();
+    _messageEvents.add((_anyChat, AttachmentRenewed(attachmentId, url)));
+    unawaited(_cache.changeMessages(attachmentId, (_, m) => m.withAttachmentLink(attachmentId, url)));
+    return url;
+  }
+
   @override
   Future<ChatMessage> edit(ChatTarget target, String messageId, String content) => switch (target) {
     RoomTarget(:final roomId) => _call((api) => api.updateMessage(messageId, content, roomId)).then(_roomMessage),
@@ -1671,18 +2427,43 @@ class DuvetRepository implements ChatRepository {
     List<OutgoingFile> files = const [],
     Sticker? sticker,
     String? replyTo,
+    bool? mentionRepliedUser,
     void Function(double progress)? onProgress,
     Future<void>? cancel,
   }) async {
-    final upload = files.isEmpty ? null : [for (final f in files) File(f.path)];
+    // The folders of the links [_named] makes: deleted once sent, or not.
+    final links = <Directory>[];
     void progress(int sent, int total) => onProgress?.call(total == 0 ? 0 : sent / total);
     try {
-      return await _sendTo(target, content, nonce, upload, sticker, replyTo, progress, cancel);
+      final upload = files.isEmpty ? null : [for (final f in files) await _named(f, links)];
+      return await _sendTo(target, content, nonce, upload, sticker, replyTo, mentionRepliedUser, progress, cancel);
     } on duvet.DuvetApiException catch (e) {
       if (e.statusCode == 413) throw const UploadTooLarge();
       if (_refusal(e) case final reason?) throw ActionFailed(reason);
       rethrow;
+    } finally {
+      // The links go, not the files they point to.
+      for (final dir in links) {
+        try {
+          await dir.delete(recursive: true);
+        } on FileSystemException catch (e) {
+          debugPrint('upload link: $e');
+        }
+      }
     }
+  }
+
+  // duvet_client names an upload after its path's last part: a file named
+  // otherwise (marked as a spoiler, say) goes through a link of its name, in
+  // a folder of its own added to [links]. A name that can't be one file's
+  // (empty, or with a slash) goes as the path names it.
+  static Future<File> _named(OutgoingFile f, List<Directory> links) async {
+    final file = File(f.path);
+    if (f.name.isEmpty || f.name.contains('/') || f.name == '.' || f.name == '..') return file;
+    if (file.uri.pathSegments.last == f.name) return file;
+    final dir = await Directory.systemTemp.createTemp('upload');
+    links.add(dir);
+    return File((await Link('${dir.path}/${f.name}').create(f.path)).path);
   }
 
   // Why the API refused a request, for the user to read: its reason, as the
@@ -1697,9 +2478,12 @@ class DuvetRepository implements ChatRepository {
     List<File>? upload,
     Sticker? sticker,
     String? replyTo,
+    bool? mentionRepliedUser,
     void Function(int sent, int total) progress,
     Future<void>? cancel,
   ) {
+    // Left out, the API pings the replied author.
+    final allowedMentions = mentionRepliedUser == null ? null : duvet.AllowedMentions(repliedUser: mentionRepliedUser);
     return switch (target) {
       RoomTarget(:final roomId) => _call(
         (api) => api.sendMessage(
@@ -1711,6 +2495,7 @@ class DuvetRepository implements ChatRepository {
           messageReference: replyTo == null
               ? null
               : duvet.MessageReference(type: duvet.MessageReferenceType.reply, messageId: replyTo, roomId: roomId),
+          allowedMentions: allowedMentions,
           onProgress: upload == null ? null : progress,
           abortTrigger: upload == null ? null : cancel,
         ),
@@ -1725,6 +2510,7 @@ class DuvetRepository implements ChatRepository {
           messageReference: replyTo == null
               ? null
               : duvet.MessageReference(type: duvet.MessageReferenceType.reply, messageId: replyTo),
+          allowedMentions: allowedMentions,
           onProgress: upload == null ? null : progress,
           abortTrigger: upload == null ? null : cancel,
         ),
@@ -1778,29 +2564,38 @@ class DuvetRepository implements ChatRepository {
   );
 
   @override
-  Future<List<SearchHit>> search(SearchQuery q) async {
+  Future<SearchPage> search(SearchQuery q) async {
     final params = duvet.MessageSearch(
       query: q.text,
-      roomIds: [?q.roomId],
-      has: q.hasFile ? const ['file'] : const [],
-      pinned: q.pinned ? true : null,
-      authorIds: [?q.authorId],
+      roomIds: q.roomIds,
+      authorIds: q.authorIds,
+      mentions: q.mentionIds,
+      has: q.has,
+      pinned: q.pinned,
+      before: q.before,
+      after: q.after,
+      cursor: q.cursor,
     );
     if (q.conversationId case final id?) {
       final page = await _call((api) => api.searchConversationMessages(id, params));
-      return [for (final m in page.messages) SearchHit(target: ConversationTarget(id), message: _directMessage(m))];
+      return (
+        hits: [for (final m in page.messages) SearchHit(target: ConversationTarget(id), message: _directMessage(m))],
+        total: page.totalResults,
+      );
     }
     final spaceId = q.spaceId;
-    if (spaceId == null) return const [];
+    if (spaceId == null) return (hits: const <SearchHit>[], total: 0);
     final page = await _call((api) => api.searchSpaceMessages(spaceId, params));
-    return [
-      for (final m in page.messages)
-        if (m.deletedAt == null)
+    return (
+      hits: [
+        for (final m in page.messages)
           SearchHit(
             target: RoomTarget(spaceId: spaceId, roomId: m.roomId),
             message: _roomMessage(m),
           ),
-    ];
+      ],
+      total: page.totalResults,
+    );
   }
 
   @override
@@ -1912,6 +2707,7 @@ class DuvetRepository implements ChatRepository {
   /// their unread marks and mentions.
   void _forgetSpace(String spaceId) {
     final rooms = {...?_spaces.remove(spaceId)?.rooms.keys, ..._recents.forgetSpace(spaceId)};
+    _spaceOrder = [..._spaceOrder.where((id) => id != spaceId)];
     _nicknames.remove(spaceId);
     _spaceMemberIds.remove(spaceId);
     _forgetMembers(spaceId);
@@ -1937,6 +2733,7 @@ class DuvetRepository implements ChatRepository {
   Future<void> leaveSpace(String spaceId) async {
     await _call((api) => api.leaveSpace(spaceId));
     _spaces.remove(spaceId);
+    _spaceOrder = [..._spaceOrder.where((id) => id != spaceId)];
     _forgetMembers(spaceId);
     _publishSpaces();
   }
@@ -2168,7 +2965,7 @@ class DuvetRepository implements ChatRepository {
 
   @override
   Future<void> sendFriendRequest(String userId) async {
-    await _call((api) => api.sendFriendRequest(userId));
+    await _attempt((api) => api.sendFriendRequest(userId));
     await _reloadFriends();
   }
 
@@ -2244,6 +3041,7 @@ class DuvetRepository implements ChatRepository {
       // An answer that doesn't say keeps the status known (READY's, say).
       status: _chosen(me.status) ?? (profile.value?.id == me.id ? profile.value?.status : null) ?? Presence.online,
     );
+    _warm([profile.value!.avatarUrl]);
     _saveHome();
   }
 
@@ -2276,6 +3074,11 @@ class DuvetRepository implements ChatRepository {
       await api.signIn(username: username, alias: alias, password: password, email: email);
       await api.logIn(email, password);
       await _start();
+    } on duvet.DuvetApiException catch (e) {
+      _closeSession();
+      // The API's own reason for a username or an email it refuses.
+      if (_refusal(e) case final reason? when e.statusCode < 500) throw ActionFailed(reason);
+      rethrow;
     } catch (_) {
       _closeSession();
       rethrow;
@@ -2298,6 +3101,9 @@ class DuvetRepository implements ChatRepository {
   Future<void> sendVerificationEmail() => _call((api) => api.sendVerificationEmail());
 
   @override
+  Future<void> sendResetPasswordEmail() => _call((api) => api.sendResetPasswordEmail());
+
+  @override
   Future<void> verifyEmail(String token) async {
     await _anonymous((api) => api.verifyEmail(token));
     if (_api != null) _setProfile(await _call((api) => api.me()));
@@ -2316,11 +3122,16 @@ class DuvetRepository implements ChatRepository {
   Future<void> changeEmail(String token, String email) => _anonymous((api) => api.changeEmail(token, email));
 
   @override
-  Future<void> updateProfile({required String alias, String? bio}) async {
+  Future<void> updateProfile({required String alias, String? bio, String? username}) async {
     final trimmed = alias.trim();
     final about = bio?.trim();
     final me = await _attempt(
-      (api) => api.updateUser(alias: trimmed.isEmpty ? null : trimmed, clearAlias: trimmed.isEmpty, custom: about),
+      (api) => api.updateUser(
+        username: username?.trim(),
+        alias: trimmed.isEmpty ? null : trimmed,
+        clearAlias: trimmed.isEmpty,
+        custom: about,
+      ),
     );
     _setProfile(me);
     // An API from before bios saves the rest, and answers the bio it had.
@@ -2477,6 +3288,7 @@ class DuvetRepository implements ChatRepository {
       description: space.description,
       iconUrl: avatarUrl(space.icon),
       bannerUrl: avatarUrl(space.banner),
+      locale: space.locale,
       memberCount: _spaceMemberIds[spaceId]?.length ?? 0,
       owner: space.ownerId == profile.value?.id,
       perms: _permsIn(spaceId),
@@ -2489,29 +3301,45 @@ class DuvetRepository implements ChatRepository {
     String spaceId, {
     String? name,
     String? description,
+    String? locale,
     String? iconPath,
     String? bannerPath,
     bool removeBanner = false,
     bool removeIcon = false,
+    NotificationLevel? defaultNotifications,
     void Function(double progress)? onProgress,
   }) async {
     final removesBanner = removeBanner && bannerPath == null;
     final removesIcon = removeIcon && iconPath == null;
     // Pictures, or taking one away, go as a form, where the API skips an
-    // empty description: one cleared goes first, on its own.
+    // empty description or locale: those cleared go first, on their own.
     final multipart = iconPath != null || bannerPath != null || removesBanner || removesIcon;
     final clearsDescription = description != null && description.isEmpty && multipart;
+    final clearsLocale = locale != null && locale.isEmpty && multipart;
     try {
-      if (clearsDescription) await _call((api) => api.updateSpace(spaceId, description: ''));
+      if (clearsDescription || clearsLocale) {
+        await _call(
+          (api) =>
+              api.updateSpace(spaceId, description: clearsDescription ? '' : null, locale: clearsLocale ? '' : null),
+        );
+      }
       await _call(
         (api) => api.updateSpace(
           spaceId,
           name: name,
           description: clearsDescription ? null : description,
+          locale: clearsLocale ? null : locale,
           icon: iconPath == null ? null : File(iconPath),
           banner: bannerPath == null ? null : File(bannerPath),
           removeBanner: removesBanner,
           removeIcon: removesIcon,
+          defaultNotifications: switch (defaultNotifications) {
+            NotificationLevel.all => duvet.NotificationLevel.all,
+            NotificationLevel.mentions => duvet.NotificationLevel.mentions,
+            // Not a default: the client refuses it before sending anything.
+            NotificationLevel.nothing => duvet.NotificationLevel.nothing,
+            null => null,
+          },
           // Pictures' alone: taking the banner away goes as a form too, whose
           // few bytes would say "Uploading · 100%" with nothing going up.
           onProgress: iconPath != null || bannerPath != null ? _bytesSent(onProgress) : null,
@@ -2836,12 +3664,7 @@ class DuvetRepository implements ChatRepository {
 
   @override
   Future<void> setRole(String spaceId, String roleId, String userId, {required bool has}) async {
-    // The API names the member by member ID, which the members list gives.
-    String? memberIdOf() => _memberUsers[spaceId]?.entries.where((e) => e.value == userId).firstOrNull?.key;
-    if (memberIdOf() == null) await _spaceMemberList(spaceId, refresh: true);
-    final memberId = memberIdOf();
-    // What the API answers for someone who isn't in the Space.
-    if (memberId == null) throw const ActionFailed('Member not found');
+    final memberId = await _memberId(spaceId, userId);
     await _explained(
       (api) =>
           has ? api.assignRoleToMember(spaceId, roleId, memberId) : api.removeRoleFromMember(spaceId, roleId, memberId),
@@ -2852,6 +3675,58 @@ class DuvetRepository implements ChatRepository {
     _publishSpaces();
   }
 
+  // The API names a member by member ID, which the members list gives.
+  Future<String> _memberId(String spaceId, String userId) async {
+    String? memberIdOf() => _memberUsers[spaceId]?.entries.where((e) => e.value == userId).firstOrNull?.key;
+    if (memberIdOf() == null) await _spaceMemberList(spaceId, refresh: true);
+    // What the API answers for someone who isn't in the Space.
+    return memberIdOf() ?? (throw const ActionFailed('Member not found'));
+  }
+
+  @override
+  Future<void> kick(String spaceId, String userId) async {
+    final memberId = await _memberId(spaceId, userId);
+    await _explained((api) => api.kickMember(spaceId, memberId));
+  }
+
+  @override
+  Future<void> ban(String spaceId, String userId, {String? reason}) =>
+      _explained((api) => api.banUser(spaceId, userId, reason: reason));
+
+  @override
+  Future<List<SpaceBan>> bans(String spaceId) async {
+    final all = <duvet.SpaceBan>[];
+    // Every page, as the members list: by user ID, a hundred at a time.
+    while (all.length < 5000) {
+      final page = await _call((api) => api.getSpaceBans(spaceId, after: all.lastOrNull?.userId, count: 100));
+      all.addAll(page);
+      if (page.length < 100) break;
+    }
+    return [
+      for (final b in all)
+        SpaceBan(
+          user: Member(
+            userId: b.userId,
+            username: b.user.username,
+            alias: b.user.alias,
+            avatarUrl: avatarUrl(b.user.avatar),
+            isBot: b.user.isBot,
+          ),
+          reason: b.reason,
+          bannedBy: nameOf(b.bannedBy) ?? 'Unknown user',
+          at: b.createdAt.toLocal(),
+        ),
+    ]..sort((a, b) => b.at.compareTo(a.at));
+  }
+
+  @override
+  Future<void> unban(String spaceId, String userId) => _explained((api) => api.unbanUser(spaceId, userId));
+
+  final _bansChanged = StreamController<String>.broadcast();
+
+  @override
+  Stream<String> get bansChanged => _bansChanged.stream;
+
   @override
   Future<List<SpaceInvite>> spaceInvites(String spaceId) async {
     final rooms = _spaces[spaceId]?.rooms ?? const {};
@@ -2861,7 +3736,7 @@ class DuvetRepository implements ChatRepository {
           id: i.id,
           code: i.code,
           roomName: rooms[i.roomId]?.name ?? 'a room',
-          createdBy: nameOf(i.createdBy) ?? 'Someone',
+          createdBy: nameOf(i.createdBy) ?? 'Unknown user',
           createdAt: i.createdAt.toLocal(),
           expiresAt: i.expiresAt?.toLocal(),
         ),
@@ -2940,7 +3815,7 @@ class DuvetRepository implements ChatRepository {
     ]..sort((a, b) => a.name.toLowerCase().compareTo(b.name.toLowerCase()));
   }
 
-  String _webhookUrl(String id, String token) => 'https://${_router.api}/api/webhooks/$id/$token';
+  String _webhookUrl(String id, String token) => '$_origin/api/webhooks/$id/$token';
 
   @override
   Future<String> createWebhook(String spaceId, String roomId, String name) async {
@@ -3127,48 +4002,192 @@ class DuvetRepository implements ChatRepository {
     ).wait;
     return SpaceStorage(
       used: used,
-      buckets: [for (final b in buckets) (name: b.name, used: b.usedBytes, max: b.maxBytes, active: b.isActive)],
+      buckets: [
+        for (final b in buckets)
+          Bucket(
+            id: b.id,
+            name: b.name,
+            region: b.region,
+            endpoint: b.endpoint,
+            bucketName: b.bucketName,
+            accessKey: b.accessKeyId,
+            pathStyle: b.usePathStyle,
+            active: b.isActive,
+            used: b.usedBytes,
+            max: b.maxBytes,
+            uploadLimit: b.uploadLimitBytes,
+          ),
+      ],
       files: [
         for (final f in files)
           if (f.deletedAt == null && f.deleted != true)
-            (name: f.filename, contentType: f.contentType, size: f.sizeBytes, createdAt: f.createdAt.toLocal()),
-      ]..sort((a, b) => b.size.compareTo(a.size)),
+            MyFile(
+              id: f.id,
+              name: f.filename,
+              contentType: f.contentType,
+              sizeBytes: f.sizeBytes,
+              createdAt: f.createdAt.toLocal(),
+              url: attachmentUrl(f.id),
+              inMessage: f.messageId != null,
+            ),
+      ]..sort((a, b) => b.sizeBytes.compareTo(a.sizeBytes)),
     );
   }
+
+  static duvet.BucketPayload _bucketPayload(BucketDraft d) => duvet.BucketPayload(
+    name: d.name,
+    endpoint: d.endpoint,
+    region: d.region.isEmpty ? 'auto' : d.region,
+    bucketName: d.bucketName,
+    accessKeyId: d.accessKey,
+    secretAccessKey: d.secret,
+    usePathStyle: d.pathStyle,
+    maxBytes: d.max,
+    uploadLimitBytes: d.uploadLimit,
+  );
+
+  @override
+  Future<void> createSpaceBucket(String spaceId, BucketDraft draft) =>
+      _explained((api) => api.createSpaceBucket(spaceId, _bucketPayload(draft)));
+
+  @override
+  Future<void> updateSpaceBucket(String spaceId, String bucketId, BucketDraft draft) =>
+      _explained((api) => api.updateSpaceBucket(spaceId, bucketId, _bucketPayload(draft)));
+
+  @override
+  Future<void> deleteSpaceBucket(String spaceId, String bucketId) => _explained((api) async {
+    try {
+      await api.deleteSpaceBucket(spaceId, bucketId);
+    } on duvet.DuvetApiException catch (e) {
+      // Its files would break: the API answers 409 {error, files} and keeps it.
+      if (_filesIn(e) case final n? when e.statusCode == 409) {
+        throw ActionFailed('This bucket still holds $n ${n == 1 ? 'file' : 'files'}. Delete them first.');
+      }
+      rethrow;
+    }
+  });
+
+  static int? _filesIn(duvet.DuvetApiException e) {
+    try {
+      final body = jsonDecode(e.body ?? '') as Map<String, dynamic>;
+      return body['error'] == 'bucket has files' && body['files'] is int ? body['files'] as int : null;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  @override
+  Future<void> setSpaceBucketActive(String spaceId, String bucketId, bool active) => _explained(
+    (api) => active ? api.activateSpaceBucket(spaceId, bucketId) : api.deactivateSpaceBucket(spaceId, bucketId),
+  );
+
+  @override
+  Future<void> deleteSpaceFile(String spaceId, String fileId) =>
+      _explained((api) => api.deleteSpaceAttachment(spaceId, fileId));
+
+  @override
+  Future<void> deleteAllSpaceFiles(String spaceId) => _explained((api) => api.deleteAllSpaceAttachments(spaceId));
 
   @override
   Future<List<BotCommand>> commands(String spaceId) async {
     final all = await _call((api) => api.getSpaceCommands(spaceId));
     final apps = {for (final a in all.applications) a.id: a.name};
+    BotCommand entry(duvet.ApplicationCommand c, BotCommandOption? sub, {String? group}) => BotCommand(
+      id: c.id,
+      applicationId: c.applicationId,
+      appName: apps[c.applicationId] ?? 'Bot',
+      name: c.name,
+      description: sub == null || sub.description.isEmpty ? c.description : sub.description,
+      options: sub?.options ?? [for (final o in c.options) _optionOf(o)],
+      subcommandGroup: group,
+      subcommand: sub?.name,
+    );
     return [
       for (final c in all.commands)
         if (c.type == 1)
-          BotCommand(
-            id: c.id,
-            applicationId: c.applicationId,
-            appName: apps[c.applicationId] ?? 'Bot',
-            name: c.name,
-            description: c.description,
-            options: [
-              for (final o in c.options)
-                BotCommandOption(
-                  type: o.type,
-                  name: o.name,
-                  description: o.description,
-                  required: o.required,
-                  choices: [
-                    for (final ch in o.choices ?? const <duvet.CommandChoice>[]) (name: ch.name, value: ch.value),
-                  ],
-                  minValue: o.minValue,
-                  maxValue: o.maxValue,
-                  minLength: o.minLength,
-                  maxLength: o.maxLength,
-                  roomTypes: [for (final t in o.roomTypes ?? const <duvet.RoomType>[]) t.value],
-                ),
-            ],
-          ),
-    ]..sort((a, b) => a.name.compareTo(b.name));
+          // A command with subcommands is used through one of them: each is
+          // its own entry, as `/perms user get`.
+          if (c.options.map(_optionOf).where((o) => o.isSubcommand).toList() case final subs when subs.isNotEmpty)
+            for (final o in subs)
+              if (o.type == OptionKind.subcommandGroup)
+                for (final s in o.options) entry(c, s, group: o.name)
+              else
+                entry(c, o)
+          else
+            entry(c, null),
+    ]..sort((a, b) => a.path.compareTo(b.path));
   }
+
+  static BotCommandOption _optionOf(duvet.CommandOption o) => BotCommandOption(
+    type: o.type,
+    name: o.name,
+    description: o.description,
+    required: o.required,
+    choices: [for (final ch in o.choices ?? const <duvet.CommandChoice>[]) (name: ch.name, value: ch.value)],
+    minValue: o.minValue,
+    maxValue: o.maxValue,
+    minLength: o.minLength,
+    maxLength: o.maxLength,
+    roomTypes: [for (final t in o.roomTypes ?? const <duvet.RoomType>[]) t.value],
+    options: [for (final s in o.options ?? const <duvet.CommandOption>[]) _optionOf(s)],
+  );
+
+  // What's empty goes as null, which the API's omitempty leaves out.
+  static duvet.CommandOption _wireOption(BotCommandOption o) => duvet.CommandOption(
+    type: o.type,
+    name: o.name,
+    description: o.description,
+    required: o.required,
+    choices: o.choices.isEmpty ? null : [for (final c in o.choices) duvet.CommandChoice(name: c.name, value: c.value)],
+    options: o.options.isEmpty ? null : [for (final s in o.options) _wireOption(s)],
+    minValue: o.minValue,
+    maxValue: o.maxValue,
+    minLength: o.minLength,
+    maxLength: o.maxLength,
+    roomTypes: o.roomTypes.isEmpty ? null : [for (final t in o.roomTypes) duvet.RoomType.fromInt(t)],
+  );
+
+  BotCommand _appCommand(DevApp app, duvet.ApplicationCommand c) => BotCommand(
+    id: c.id,
+    applicationId: app.id,
+    appName: app.name,
+    name: c.name,
+    description: c.description,
+    options: [for (final o in c.options) _optionOf(o)],
+  );
+
+  @override
+  Future<List<BotCommand>> appCommands(DevApp app) async =>
+      [for (final c in await _call((api) => api.listCommands(app.teamId, app.id))) _appCommand(app, c)]
+        ..sort((a, b) => a.name.compareTo(b.name));
+
+  @override
+  Future<BotCommand> saveAppCommand(DevApp app, BotCommand command) async {
+    final options = [for (final o in command.options) _wireOption(o)];
+    return _appCommand(
+      app,
+      await _explained(
+        (api) => command.id.isEmpty
+            ? api.createCommand(
+                app.teamId,
+                app.id,
+                duvet.NewCommand(name: command.name, description: command.description, options: options),
+              )
+            : api.updateCommand(
+                app.teamId,
+                app.id,
+                command.id,
+                name: command.name,
+                description: command.description,
+                options: options,
+              ),
+      ),
+    );
+  }
+
+  @override
+  Future<void> deleteAppCommand(DevApp app, String commandId) =>
+      _explained((api) => api.deleteCommand(app.teamId, app.id, commandId));
 
   BotModal? _modalOf(duvet.InteractionReply reply, String roomId, String? messageId) => reply.isModal
       ? BotModal.fromJson(reply.modal!, applicationId: reply.applicationId!, roomId: roomId, messageId: messageId)
@@ -3181,7 +4200,7 @@ class DuvetRepository implements ChatRepository {
     UiComponent component, {
     List<String>? values,
   }) async {
-    final reply = await _call(
+    final reply = await _interaction(
       (api) => api.useComponent(
         target.roomId,
         messageId,
@@ -3194,13 +4213,15 @@ class DuvetRepository implements ChatRepository {
   @override
   Future<BotModal?> useCommand(RoomTarget target, BotCommand command, Map<String, Object> options) async {
     final types = {for (final o in command.options) o.name: o.type};
-    final reply = await _call(
+    final reply = await _interaction(
       (api) => api.useCommand(
         target.roomId,
         command.applicationId,
         duvet.CommandUse(
           id: command.id,
           name: command.name,
+          subcommandGroup: command.subcommandGroup,
+          subcommand: command.subcommand,
           options: [
             for (final e in options.entries) duvet.UsedOption(name: e.key, type: types[e.key] ?? 3, value: e.value),
           ],
@@ -3211,9 +4232,23 @@ class DuvetRepository implements ChatRepository {
   }
 
   @override
-  Future<void> submitModal(BotModal modal, List<Map<String, dynamic>> components) => _call(
+  Future<void> submitModal(BotModal modal, List<Map<String, dynamic>> components) => _interaction(
     (api) => api.submitModal(modal.roomId, modal.applicationId, modal.customId, components, messageId: modal.messageId),
   );
+
+  /// A command, a component or a modal sent to a bot, failing with the
+  /// desktop's texts: a 504 is the API giving up waiting on the bot.
+  Future<T> _interaction<T>(Future<T> Function(duvet.RestClient api) request) async {
+    try {
+      return await _call(request);
+    } catch (e) {
+      throw ActionFailed(
+        e is duvet.DuvetApiException && e.statusCode == 504
+            ? 'The application did not respond'
+            : 'This interaction failed',
+      );
+    }
+  }
 
   @override
   Future<BotInfo> bot(String userId) async {
@@ -3239,6 +4274,9 @@ class DuvetRepository implements ChatRepository {
 
   @override
   Future<void> addBot(String spaceId, String botId) => _explained((api) => api.addBotToSpace(spaceId, botId));
+
+  @override
+  Future<void> removeBot(String spaceId, String botId) => _explained((api) => api.removeBotFromSpace(spaceId, botId));
 
   @override
   List<({String id, String name})> spaceRoles(String spaceId) => [
@@ -3464,6 +4502,92 @@ class DuvetRepository implements ChatRepository {
   String? _spaceOfRoom(String roomId) =>
       _spaces.entries.where((e) => e.value.rooms.containsKey(roomId)).firstOrNull?.key;
 
+  @override
+  NotificationLevel spaceLevel(String spaceId) => notificationLevels.value[spaceId] ?? spaceDefault(spaceId);
+
+  @override
+  NotificationLevel spaceDefault(String spaceId) =>
+      _level(_spaces[spaceId]?.space.defaultNotifications ?? duvet.NotificationLevel.mentions);
+
+  @override
+  NotificationLevel roomLevel(String roomId) =>
+      notificationLevels.value[roomId] ??
+      switch (_spaceOfRoom(roomId)) {
+        final spaceId? => spaceLevel(spaceId),
+        null => NotificationLevel.mentions,
+      };
+
+  @override
+  NotificationLevel conversationLevel(String conversationId) =>
+      notificationLevels.value[conversationId] ?? NotificationLevel.all;
+
+  @override
+  bool quiet(String chatId) =>
+      (_spaceOfRoom(chatId) == null ? conversationLevel(chatId) : roomLevel(chatId)) == NotificationLevel.nothing;
+
+  @override
+  Future<void> setPushRegistration(String fid) => _call((api) => api.setPushRegistration(fid));
+
+  @override
+  Future<void> deletePushRegistration() => _call((api) => api.deletePushRegistration());
+
+  @override
+  Future<void> setNotificationLevel(String targetId, NotificationTarget target, NotificationLevel? level) =>
+      switch (level) {
+        final level? => _explained(
+          (api) => api.setNotificationLevel(
+            targetId,
+            switch (target) {
+              NotificationTarget.space => duvet.NotificationTarget.space,
+              NotificationTarget.room => duvet.NotificationTarget.room,
+              NotificationTarget.conversation => duvet.NotificationTarget.conversation,
+            },
+            switch (level) {
+              NotificationLevel.all => duvet.NotificationLevel.all,
+              NotificationLevel.mentions => duvet.NotificationLevel.mentions,
+              NotificationLevel.nothing => duvet.NotificationLevel.nothing,
+            },
+          ),
+        ),
+        null => _explained((api) => api.clearNotificationLevel(targetId)),
+      };
+
+  // READY's load of the levels the user chose. One that answers after a newer load, or once the session ended, is
+  // dropped; the changes that came while it was on its way go back on top of its answer, which may have been read
+  // before them. One that fails keeps those it had, as the desktop does: they rarely change.
+  int _levelsLoads = 0;
+  Map<String, NotificationLevel?>? _levelsChangedMeanwhile;
+
+  Future<void> _loadNotificationLevels() async {
+    final api = _api;
+    final load = ++_levelsLoads;
+    final meanwhile = _levelsChangedMeanwhile = {};
+    try {
+      final settings = await _call((api) => api.getNotificationSettings());
+      if (!identical(api, _api) || load != _levelsLoads) return;
+      final levels = {for (final s in settings) s.targetId: _level(s.level)};
+      for (final MapEntry(key: targetId, value: level) in meanwhile.entries) {
+        if (level == null) {
+          levels.remove(targetId);
+        } else {
+          levels[targetId] = level;
+        }
+      }
+      notificationLevels.value = levels;
+    } catch (e) {
+      debugPrint('notification levels: $e');
+    } finally {
+      if (identical(_levelsChangedMeanwhile, meanwhile)) _levelsChangedMeanwhile = null;
+    }
+  }
+
+  // A server's level; one a later server adds notifies of every message, as a level it can't name.
+  static NotificationLevel _level(duvet.NotificationLevel level) => switch (level) {
+    duvet.NotificationLevel.mentions => NotificationLevel.mentions,
+    duvet.NotificationLevel.nothing => NotificationLevel.nothing,
+    _ => NotificationLevel.all,
+  };
+
   ChatMessage _roomMessageNamed(duvet.GatewayMessage m, String authorName) => ChatMessage(
     id: m.id,
     authorId: m.authorId,
@@ -3476,15 +4600,25 @@ class DuvetRepository implements ChatRepository {
     isNotice: m.type == duvet.MessageType.pinNotice,
     isVoice: m.type == duvet.MessageType.voice,
     pinned: m.pinnedAt != null,
-    components: componentsFromJson(m.components),
-    rawComponents: m.components ?? const [],
+    components: componentsFromJson(_wholeMedia(m.components)),
+    rawComponents: _wholeMedia(m.components),
     fromBot: m.user?.isBot ?? false,
     fromWebhook: m.webhookId != null,
     webhookId: m.webhookId,
     isEphemeral: m.flags & duvet.MessageFlag.ephemeral != 0,
     isLoading: m.flags & duvet.MessageFlag.loading != 0,
     isComponentsV2: m.flags & duvet.MessageFlag.isComponentsV2 != 0,
+    interaction: switch (m.interactionMetadata) {
+      final i? => MessageInteraction(
+        userName: i.user.alias ?? i.user.username,
+        userAvatarUrl: avatarUrl(i.user.avatar),
+        command: i.name,
+        interactedMessageId: i.interactedMessageId,
+      ),
+      null => null,
+    },
     attachments: _attachments(m.attachments),
+    deletedAttachments: _attachments(m.attachments, deleted: true),
     stickerUrl: m.stickerAttachmentId == null ? null : attachmentUrl(m.stickerAttachmentId!),
     embeds: _embeds(m.embeds),
     reply: _reply(m.referencedMessage, m.refMessageId),
@@ -3506,11 +4640,20 @@ class DuvetRepository implements ChatRepository {
     createdAt: m.createdAt.toLocal(),
     edited: m.updatedAt.difference(m.createdAt) > const Duration(seconds: 1),
     nonce: m.nonce,
-    isNotice: m.type == duvet.MessageType.pinNotice,
+    isNotice: m.type == duvet.MessageType.pinNotice || m.call != null,
+    call: switch (m.call) {
+      final c? => CallNotice(
+        participants: c.participants,
+        startedAt: c.startedAt.toLocal(),
+        endedAt: c.endedAt.toLocal(),
+      ),
+      null => null,
+    },
     isVoice: m.type == duvet.MessageType.voice,
     pinned: m.pinnedAt != null,
     fromBot: m.user?.isBot ?? false,
     attachments: _attachments(m.attachments),
+    deletedAttachments: _attachments(m.attachments, deleted: true),
     stickerUrl: m.stickerAttachmentId == null ? null : attachmentUrl(m.stickerAttachmentId!),
     embeds: _embeds(m.embeds),
     reply: _reply(m.referencedMessage, null),
@@ -3535,28 +4678,55 @@ class DuvetRepository implements ChatRepository {
       if (r.users.isNotEmpty) Reaction(emoji: r.emojiName, emojiId: r.emojiId, users: {...r.users}),
   ];
 
-  List<MessageAttachment> _attachments(List<duvet.Attachment>? list) => [
+  // Those still there, or with [deleted] those deleted since.
+  List<MessageAttachment> _attachments(List<duvet.Attachment>? list, {bool deleted = false}) => [
     for (final a in list ?? const <duvet.Attachment>[])
-      if (a.deletedAt == null && a.deleted != true)
+      if ((a.deletedAt != null || a.deleted == true) == deleted)
         MessageAttachment(
           id: a.id,
           filename: a.filename,
           contentType: a.contentType,
-          url: switch (a.url) {
-            final url? when url.startsWith('http') => url,
-            final url? when url.startsWith('/') => 'https://${_router.api}$url',
-            _ => attachmentUrl(a.id),
-          },
+          url: _absolute(a.url, a.id),
           width: a.width,
           height: a.height,
           sizeBytes: a.sizeBytes,
         ),
   ];
 
+  // An attachment's link as the API gives it, a path on its host most often,
+  // made whole.
+  String _absolute(String? url, String attachmentId) => switch (url) {
+    final url? when url.startsWith('http') => url,
+    final url? when url.startsWith('/') => '$_origin$url',
+    _ => attachmentUrl(attachmentId),
+  };
+
+  // A component's file that the message carries (a gallery's picture, a
+  // file) comes as a signed path on the API's host, as the desktop's
+  // `mediaSrc` takes it: made whole, so the components and the offline cache
+  // have a link that loads.
+  List<Map<String, dynamic>> _wholeMedia(List<Map<String, dynamic>>? list) {
+    Object? whole(Object? j) => switch (j) {
+      Map<String, dynamic>() => {
+        for (final MapEntry(:key, :value) in j.entries)
+          key: switch (value) {
+            {'url': final String url} when (key == 'media' || key == 'file') && url.startsWith('/') => {
+              ...value as Map<String, dynamic>,
+              'url': _absolute(url, ''),
+            },
+            _ => whole(value),
+          },
+      },
+      List() => [for (final e in j) whole(e)],
+      _ => j,
+    };
+    return [for (final c in list ?? const <Map<String, dynamic>>[]) whole(c)! as Map<String, dynamic>];
+  }
+
   static List<MessageEmbed> _embeds(List<duvet.Embed>? list) => [
     for (final e in list ?? const <duvet.Embed>[])
       MessageEmbed(
-        title: e.title ?? e.author?.name,
+        title: e.title,
         description: e.description,
         url: e.url,
         imageUrl: e.image?.url,
@@ -3566,22 +4736,32 @@ class DuvetRepository implements ChatRepository {
         videoUrl: e.video?.url,
         videoContentType: e.video?.contentType,
         provider: e.provider,
+        colors: [
+          if (e.color case duvet.EmbedColor(colorFrom: final from?, :final colorVia, :final colorTo)) ...[
+            from,
+            if (colorTo != null) ...[?colorVia, colorTo],
+          ],
+        ],
+        authorName: e.author?.name,
+        authorUrl: e.author?.url,
+        authorIconUrl: e.author?.iconUrl,
+        fields: [
+          for (final f in e.fields ?? const <duvet.EmbedField>[]) (name: f.name, value: f.value, inline: f.inline),
+        ],
+        footer: e.footer?.text,
+        timestamp: DateTime.tryParse(e.timestamp ?? '')?.toLocal(),
       ),
   ]..removeWhere((e) => e.isEmpty);
 
   /// An attachment's URL, served outside `/api`.
-  String attachmentUrl(String id) => 'https://${_router.api}/attachments/$id';
+  String attachmentUrl(String id) => '$_origin/attachments/$id';
 
-  static final _uuid = RegExp(r'^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$', caseSensitive: false);
+  // The API's scheme and host, as the client reaches it.
+  String get _origin => '${_router.secure ? 'https' : 'http'}://${_router.api}';
 
-  /// An avatar's or icon's URL: the API names an attachment by its ID, served
-  /// outside `/api`, as the desktop app's `getAvatarURL` does.
+  /// An avatar's or icon's URL ([avatarUrlOn]).
   @override
-  String? avatarUrl(String? avatar) {
-    if (avatar == null || avatar.isEmpty) return null;
-    if (avatar.startsWith('https://') || avatar.startsWith('http://')) return avatar;
-    return _uuid.hasMatch(avatar) ? 'https://${_router.api}/attachments/$avatar' : null;
-  }
+  String? avatarUrl(String? avatar) => avatarUrlOn(_router, avatar);
 
   @override
   void dispose() {
@@ -3590,7 +4770,12 @@ class DuvetRepository implements ChatRepository {
     _voiceSignaling.dispose();
     _signedOut.close();
     _resumed.close();
+    _bansChanged.close();
     mentions.dispose();
+    for (final timer in _noticeTimers.values) {
+      timer.cancel();
+    }
+    mentionNotices.dispose();
     _messageEvents.close();
     _typing.close();
     for (final t in _typingEnds.values) {
@@ -3600,7 +4785,9 @@ class DuvetRepository implements ChatRepository {
     _recents.dispose();
     presence.dispose();
     mobileOnly.dispose();
+    activities.dispose();
     collapsedCategories.dispose();
+    pinnedChats.dispose();
   }
 }
 

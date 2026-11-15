@@ -5,6 +5,8 @@ library;
 import 'dart:math' as math;
 import 'dart:ui' show Color;
 
+import 'models.dart' show BucketUsage, Member, MyFile;
+
 /// The permission bits, as the API's Go constants (`1 << iota`).
 abstract final class Perm {
   static const administrator = 1 << 0;
@@ -26,9 +28,11 @@ abstract final class Perm {
   static const manageWebhooks = 1 << 16;
   static const pinMessages = 1 << 17;
   static const video = 1 << 18;
+  static const kickMembers = 1 << 19;
+  static const banMembers = 1 << 20;
 
   /// Every bit: the owner, or an administrator.
-  static const all = (1 << 19) - 1;
+  static const all = (1 << 21) - 1;
 
   /// Any of these opens Space settings.
   static const anyAdmin =
@@ -40,7 +44,10 @@ abstract final class Perm {
       manageStickers |
       manageWebhooks |
       manageAttachments |
-      manageBuckets;
+      manageBuckets |
+      manageBots |
+      kickMembers |
+      banMembers;
 
   static bool has(int perms, int bit) => perms & administrator != 0 || perms & bit == bit;
 }
@@ -73,6 +80,12 @@ const permissionGroups = <(String, List<PermissionInfo>)>[
       (bit: Perm.createInvites, label: 'Invite people', description: 'Make invite links'),
       (bit: Perm.manageInvites, label: 'Manage invites', description: 'See and revoke every link'),
       (bit: Perm.manageRoles, label: 'Manage roles', description: 'Make roles and give them out'),
+      (
+        bit: Perm.kickMembers,
+        label: 'Kick members',
+        description: 'Remove those below their highest role; they can come back',
+      ),
+      (bit: Perm.banMembers, label: 'Ban members', description: 'Keep those below their highest role out'),
     ],
   ),
   (
@@ -97,6 +110,9 @@ class SpaceProfile {
   final String? description;
   final String? iconUrl;
   final String? bannerUrl;
+
+  /// The language the Space mostly speaks, as free text (e.g. "en").
+  final String? locale;
   final int memberCount;
   final bool owner;
 
@@ -113,6 +129,7 @@ class SpaceProfile {
     this.description,
     this.iconUrl,
     this.bannerUrl,
+    this.locale,
     this.memberCount = 0,
     this.owner = false,
     this.perms = 0,
@@ -241,6 +258,19 @@ class SpaceInvite {
   });
 }
 
+/// Someone banned from a Space: who, why, by whom and when.
+class SpaceBan {
+  final Member user;
+
+  /// Why, as the API keeps it (trimmed); null without one.
+  final String? reason;
+
+  /// Who banned them, by name.
+  final String bannedBy;
+  final DateTime at;
+  const SpaceBan({required this.user, this.reason, required this.bannedBy, required this.at});
+}
+
 enum AssetKind { emoji, sticker }
 
 /// An emoji or sticker of the Space.
@@ -306,10 +336,57 @@ class DevApp {
 /// Where a Space's files are, and how much they take.
 class SpaceStorage {
   final int used;
-  final List<({String name, int used, int? max, bool active})> buckets;
-  final List<({String name, String contentType, int size, DateTime createdAt})> files;
+  final List<Bucket> buckets;
+
+  /// Largest first.
+  final List<MyFile> files;
   const SpaceStorage({required this.used, this.buckets = const [], this.files = const []});
 }
+
+/// An S3-compatible bucket and its settings, all but the secret, which the
+/// API never gives back.
+class Bucket {
+  final String id;
+  final String name;
+  final String region;
+  final String endpoint;
+  final String bucketName;
+  final String accessKey;
+  final bool pathStyle;
+  final bool active;
+  final int used;
+  final int? max;
+  final int? uploadLimit;
+  const Bucket({
+    required this.id,
+    required this.name,
+    this.region = '',
+    this.endpoint = '',
+    this.bucketName = '',
+    this.accessKey = '',
+    this.pathStyle = false,
+    this.active = false,
+    this.used = 0,
+    this.max,
+    this.uploadLimit,
+  });
+
+  BucketUsage get usage => (name: name, used: used, max: max, active: active);
+}
+
+/// A bucket's settings as its form saves them. An empty [secret] keeps the
+/// stored one on an edit; null limits are none.
+typedef BucketDraft = ({
+  String name,
+  String region,
+  String endpoint,
+  String bucketName,
+  String accessKey,
+  String secret,
+  bool pathStyle,
+  int? max,
+  int? uploadLimit,
+});
 
 // -----------------------------------------------------------------------------
 // Role colors

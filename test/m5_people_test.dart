@@ -2,13 +2,16 @@ import 'package:duvet/data/emoji_catalog.dart';
 import 'package:duvet/data/models.dart';
 import 'package:duvet/main.dart';
 import 'package:duvet/members_sheet.dart';
+import 'package:duvet/people.dart' show ProfileActivities, inlineActivityImage, playbackTime;
 import 'package:duvet/theme.dart';
 import 'package:duvet/widgets/chrome.dart';
 import 'package:duvet/widgets/role_name.dart';
 import 'package:duvet/widgets/rows.dart';
+import 'package:duvet_client/duvet.dart' as duvet;
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:forui/forui.dart';
 
@@ -47,7 +50,7 @@ void main() {
   testWidgets('an avatar opens a profile: bio, roles, Add friend, Mention', (tester) async {
     final repository = await pumpApp(
       tester,
-      setUp: (r) => r.roleTags[_leo] = const [RoleTag('Moderator', color: 0xFF2F9E62)],
+      setUp: (r) => r.roleTags[_leo] = const [RoleTag('Moderator', color: 0xFF2F9E62, id: 'role-mod')],
     );
     await tester.tap(find.descendant(of: find.byType(DuvetTabBar), matching: find.text('Spaces')));
     await tester.pumpAndSettle();
@@ -67,6 +70,81 @@ void main() {
     await tapLabel(tester, 'Mention leo');
     expect(find.text('@leo '), findsOneWidget);
     semantics.dispose();
+  });
+
+  testWidgets('a profile shows what they\'re doing: a game with its picture, Spotify\'s song (#22)', (tester) async {
+    const png = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=';
+    final now = DateTime.now().millisecondsSinceEpoch;
+    await pumpApp(
+      tester,
+      setUp: (r) => r.activities.value = {
+        _leo: [
+          duvet.Activity(
+            name: 'Celeste',
+            details: 'Chapter 7',
+            state: 'B-side',
+            timestamps: duvet.ActivityTimestamps(start: now - 65000),
+            assets: const duvet.ActivityAssets(largeImage: 'data:image/png;base64,$png'),
+          ),
+          // A picture by URL isn't loaded: its host would learn who looks.
+          const duvet.Activity(
+            name: 'Tracker',
+            assets: duvet.ActivityAssets(largeImage: 'https://example.com/tracker.png'),
+          ),
+          duvet.Activity(
+            type: duvet.ActivityType.listening,
+            name: 'Spotify',
+            details: 'Clair de Lune',
+            state: 'Debussy',
+            timestamps: duvet.ActivityTimestamps(start: now - 60000, end: now + 240000),
+            assets: const duvet.ActivityAssets(largeText: 'Suite bergamasque'),
+          ),
+          // Ended minutes ago: its app stopped updating it.
+          duvet.Activity(
+            type: duvet.ActivityType.listening,
+            name: 'Spotify',
+            details: 'Old song',
+            timestamps: duvet.ActivityTimestamps(start: now - 600000, end: now - 300000),
+          ),
+        ],
+      },
+    );
+    await tester.tap(find.descendant(of: find.byType(DuvetTabBar), matching: find.text('Spaces')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Design Guild'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('# general'));
+    await tester.pumpAndSettle();
+    await tapLabel(tester, 'Leo’s profile');
+
+    expect(find.text('ACTIVITIES'), findsOneWidget);
+    expect(find.text('Celeste'), findsOneWidget);
+    expect(find.text('Chapter 7'), findsOneWidget);
+    expect(find.text('B-side'), findsOneWidget);
+    expect(find.textContaining('elapsed'), findsOneWidget);
+    expect(find.descendant(of: find.byType(ProfileActivities), matching: find.byType(Image)), findsOneWidget);
+    expect(find.text('Tracker'), findsOneWidget);
+    expect(find.text('?'), findsOneWidget);
+
+    expect(find.text('Listening to Spotify'), findsOneWidget);
+    expect(find.text('Clair de Lune'), findsOneWidget);
+    expect(find.text('by Debussy'), findsOneWidget);
+    expect(find.text('on Suite bergamasque'), findsOneWidget);
+    expect(find.text('5:00'), findsOneWidget);
+    expect(find.bySemanticsLabel('Find Clair de Lune on Spotify'), findsOneWidget);
+    expect(find.text('Old song'), findsNothing);
+    semantics.dispose();
+  });
+
+  test('activity pictures draw only from data URIs of the types the gateway keeps; times read as m:ss', () {
+    expect(inlineActivityImage('data:image/png;base64,iVBORw0KGgo=')?.type, 'image/png');
+    expect(inlineActivityImage('data:image/svg+xml,%3Csvg%2F%3E')?.type, 'image/svg+xml');
+    expect(inlineActivityImage('https://example.com/a.png'), isNull);
+    expect(inlineActivityImage('data:text/html,<b>hi</b>'), isNull);
+    expect(inlineActivityImage(null), isNull);
+    expect(playbackTime(const Duration(seconds: 65)), '1:05');
+    expect(playbackTime(const Duration(hours: 1, minutes: 2, seconds: 3)), '1:02:03');
+    expect(playbackTime(const Duration(seconds: -5)), '0:00');
   });
 
   // #general of Design Guild, with [text] from Leo as its newest message.
@@ -214,7 +292,7 @@ void main() {
     tester,
   ) async {
     await openWith(tester, 'cc <@0a0a0a0a-0000-4000-8000-0000000000ff>');
-    await tester.tapOnText(find.textRange.ofSubstring('@someone'));
+    await tester.tapOnText(find.textRange.ofSubstring('@0a0a0a0a'));
     await tester.pump(kDoubleTapTimeout);
     await tester.pumpAndSettle();
     expect(find.text('Someone'), findsOneWidget);
@@ -473,8 +551,9 @@ void main() {
     expect(tester.widget<RoleName>(maya).colors, gradient.colors);
     expect(find.descendant(of: maya, matching: find.byType(ShaderMask)), findsOneWidget);
 
-    // The others stay text in the line: Leo in his role's color, made
-    // readable; the user, with no colored role, in violet.
+    // The others stay names in the line: Leo in his role's color, the user,
+    // with no colored role, in violet; both made readable on the light the
+    // mention throws on its bubble, at its strongest.
     final spans = <String, Color?>{};
     for (final text in tester.widgetList<RichText>(find.byType(RichText))) {
       text.text.visitChildren((span) {
@@ -483,8 +562,10 @@ void main() {
       });
     }
     final context = tester.element(maya);
-    expect(spans['@leo'], readableOn(const Color(0xFFE5484D), FTheme.of(context).colors.background));
-    expect(spans.values.where((c) => c == context.duvet.violetText), hasLength(1));
+    final light = context.duvet.prism.behindName;
+    expect(spans['@leo'], readableOn(const Color(0xFFE5484D), light));
+    expect(spans['@Gaby'], readableOn(context.duvet.violetText, light));
+    expect(contrastOf(spans['@Gaby']!, light), greaterThanOrEqualTo(4.5));
 
     // Still a mention: tapped, it opens Maya.
     await tester.tap(maya);
@@ -520,7 +601,7 @@ void main() {
     semantics.dispose();
   });
 
-  testWidgets('friends: requests in and out, accept, decline, cancel, add by username', (tester) async {
+  testWidgets('friends: requests in and out, accept, decline, cancel, add by username or user ID', (tester) async {
     final repository = await pumpApp(
       tester,
       setUp: (r) => r.friendsOnServer = Friends(
@@ -559,9 +640,37 @@ void main() {
     await tapLabel(tester, 'Add');
     expect(find.text('No one called @nobody shares a Space or a chat with you'), findsOneWidget);
 
+    // Anyone, by the user ID they share, as on the desktop; the server says why it won't.
+    const stranger = '0a0a0a0a-0000-4000-8000-0000000000ff';
+    repository.friendRequestRefused = 'User not found';
+    await tester.enterText(find.byType(EditableText), stranger);
+    await tapLabel(tester, 'Add');
+    expect(find.text('User not found'), findsOneWidget);
+    repository.friendRequestRefused = null;
+    await tapLabel(tester, 'Add');
+    expect(repository.friendCalls.last, 'send $stranger');
+    expect(find.text('Friend request sent'), findsOneWidget);
+
     await tapLabel(tester, 'Sent 1');
     expect(find.text('WANTS TO BE FRIENDS'), findsNothing);
     expect(find.text('YOU ASKED'), findsOneWidget);
+    await tester.pump(const Duration(seconds: 4));
+    semantics.dispose();
+  });
+
+  testWidgets('Friends copies the user\'s own ID, to share', (tester) async {
+    String? copied;
+    tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(SystemChannels.platform, (call) async {
+      if (call.method == 'Clipboard.setData') copied = (call.arguments as Map)['text'] as String;
+      return null;
+    });
+    addTearDown(() => tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(SystemChannels.platform, null));
+    await pumpApp(tester);
+    await tester.tap(find.bySemanticsLabel('Friends').hitTestable().first);
+    await tester.pumpAndSettle();
+    await tapLabel(tester, 'Copy your ID');
+    expect(copied, FakeRepository.me.id);
+    expect(find.text('ID copied'), findsOneWidget);
     await tester.pump(const Duration(seconds: 4));
     semantics.dispose();
   });

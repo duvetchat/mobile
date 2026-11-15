@@ -1378,6 +1378,41 @@ void main() {
         () => repository.addBot('s-1', 'b-1'),
         reason: 'this bot is private — only team members can add it',
       );
+      await refuses(
+        'DELETE',
+        '/api/spaces/s-1/bots/b-1',
+        () => repository.removeBot('s-1', 'b-1'),
+        reason: 'you need the manage bots permission',
+      );
+    });
+
+    test('removing a bot from a Space', () async {
+      await signIn();
+      var removed = false;
+      routes[('DELETE', '/api/spaces/s-1/bots/b-1')] = (_) {
+        removed = true;
+        return http.Response('', 204);
+      };
+      await repository.removeBot('s-1', 'b-1');
+      expect(removed, isTrue);
+    });
+
+    test('an interaction fails with the desktop\'s texts', () async {
+      await signIn();
+      final modal = BotModal.fromJson(
+        {'custom_id': 'meetup', 'title': 'Plan a meetup', 'components': const []},
+        applicationId: 'app-ballot',
+        roomId: 'r-general',
+      );
+      for (final (status, text) in [(504, 'The application did not respond'), (500, 'This interaction failed')]) {
+        routes[('POST', '/api/interactions')] = (_) =>
+            http.Response(jsonEncode({'error': 'nope'}), status, headers: {'content-type': 'application/json'});
+        await expectLater(
+          repository.submitModal(modal, const []),
+          throwsA(isA<ActionFailed>().having((e) => e.message, 'message', text)),
+          reason: '$status',
+        );
+      }
     });
 
     test('a room\'s description', () async {
@@ -1543,6 +1578,101 @@ void main() {
       expect(s.buckets.single.name, 'Guild bucket');
       expect(bucketReads(), 1);
     });
+
+    test('keeps the IDs, and which files are in a message', () async {
+      await signIn();
+      repository.handleEvent(
+        _event('SPACE_CREATE', _space(roles: {'role-store': Perm.manageBuckets}, mine: ['role-store'])),
+      );
+      storage();
+      routes[('GET', '/api/spaces/s-1/attachments')] = (_) => [
+        {'id': 'a-1', 'filename': 'poster.png', 'content_type': 'image/png', 'size_bytes': 3072, 'created_at': _at},
+        {
+          'id': 'a-2',
+          'message_id': 'm-1',
+          'filename': 'posted.pdf',
+          'content_type': 'application/pdf',
+          'size_bytes': 1024,
+          'created_at': _at,
+        },
+      ];
+      final s = await repository.spaceStorage('s-1');
+      expect([for (final f in s.files) (f.id, f.inMessage)], [('a-1', false), ('a-2', true)]);
+      expect(s.buckets.single.id, 'b-1');
+    });
+
+    test('a bucket saved sends every field: its limits as they are, an empty secret to keep it', () async {
+      await signIn();
+      routes[('PATCH', '/api/spaces/s-1/buckets/b-1')] = (_) => {
+        'id': 'b-1',
+        'owner_id': 's-1',
+        'name': 'Guild R2',
+        'endpoint': 'https://s3.example.com',
+        'bucket_name': 'guild',
+        'access_key_id': 'key',
+        'used_bytes': 0,
+        'created_at': _at,
+        'updated_at': _at,
+      };
+      await repository.updateSpaceBucket('s-1', 'b-1', (
+        name: 'Guild R2',
+        region: '',
+        endpoint: 'https://s3.example.com',
+        bucketName: 'guild',
+        accessKey: 'key',
+        secret: '',
+        pathStyle: true,
+        max: 1024 * 1024,
+        uploadLimit: null,
+      ));
+      final body = jsonDecode(requests.last.body) as Map<String, dynamic>;
+      expect(body, containsPair('max_bytes', 1024 * 1024));
+      expect(body, containsPair('upload_limit_bytes', null), reason: 'null removes the limit');
+      expect(body, containsPair('secret_access_key', ''), reason: 'the API keeps the stored one');
+      expect(body, containsPair('region', 'auto'));
+      expect(body, containsPair('use_path_style', true));
+    });
+
+    test('a bucket that holds files isn\'t deleted, and says how many', () async {
+      await signIn();
+      routes[('DELETE', '/api/spaces/s-1/buckets/b-1')] = (_) => http.Response(
+        jsonEncode({'error': 'bucket has files', 'files': 2}),
+        409,
+        headers: {'content-type': 'application/json'},
+      );
+      await expectLater(
+        repository.deleteSpaceBucket('s-1', 'b-1'),
+        throwsA(
+          isA<ActionFailed>().having(
+            (e) => e.message,
+            'message',
+            'This bucket still holds 2 files. Delete them first.',
+          ),
+        ),
+      );
+    });
+
+    test('a bucket turned on and off, a file deleted, and all of them', () async {
+      await signIn();
+      for (final path in ['/api/spaces/s-1/buckets/b-1/activate', '/api/spaces/s-1/buckets/b-1/deactivate']) {
+        routes[('POST', path)] = (_) => <String, Object?>{};
+      }
+      routes[('DELETE', '/api/spaces/s-1/attachments/a-1')] = (_) => <String, Object?>{};
+      routes[('DELETE', '/api/spaces/s-1/attachments')] = (_) => <String, Object?>{};
+      await repository.setSpaceBucketActive('s-1', 'b-1', true);
+      await repository.setSpaceBucketActive('s-1', 'b-1', false);
+      await repository.deleteSpaceFile('s-1', 'a-1');
+      await repository.deleteAllSpaceFiles('s-1');
+      expect(
+        [for (final r in requests.skip(requests.length - 4)) '${r.method} ${r.url.path}'],
+        [
+          'POST /api/spaces/s-1/buckets/b-1/activate',
+          'POST /api/spaces/s-1/buckets/b-1/deactivate',
+          'DELETE /api/spaces/s-1/attachments/a-1',
+          'DELETE /api/spaces/s-1/attachments',
+        ],
+      );
+    });
   });
 
   test('a bot\'s invite card is for bots: anyone else is refused, as on the desktop', () async {
@@ -1652,6 +1782,18 @@ void main() {
       expect(jsonDecode(patches.first.body), {'description': ''});
       expect(patches.last.body, contains('name="remove_banner"'));
       expect(patches.last.body, isNot(contains('name="description"')));
+    });
+
+    test('a locale cleared as the banner goes is cleared first, alone, as the description is', () async {
+      await signIn();
+      repository.handleEvent(_event('SPACE_CREATE', _spaceOf('s-1', 'Duvet Official', banner: banner)));
+      routes[('PATCH', '/api/spaces/s-1')] = (_) => updated(null);
+      final before = requests.length;
+      await repository.updateSpace('s-1', locale: '', removeBanner: true);
+      final patches = requests.skip(before).where((r) => r.method == 'PATCH').toList();
+      expect(patches, hasLength(2));
+      expect(jsonDecode(patches.first.body), {'locale': ''});
+      expect(patches.last.body, isNot(contains('name="locale"')));
     });
 
     test('removing the banner asks the API to remove it; a new one, given too, wins', () async {
@@ -2032,6 +2174,46 @@ void main() {
       final presence = repository.presence.value;
       expect(presenceIn(presence, _maya, spaceId: 's-1'), Presence.doNotDisturb);
       expect(presenceIn(presence, _leo, spaceId: 's-1'), Presence.online);
+    });
+
+    test('activities: a Space\'s come with it, updates replace them, and offline takes them away (#22)', () async {
+      await signIn();
+      List<String> doing(String id) => [for (final a in repository.activities.value[id] ?? const []) a.name];
+      repository.handleEvent(
+        _event('SPACE_CREATE', {
+          ...withMembers(_space(), {_maya: 1, _leo: 1}),
+          'activities': {
+            _maya: [
+              {
+                'name': 'Celeste',
+                'details': 'Chapter 7',
+                'timestamps': {'start': 1700000000000},
+              },
+            ],
+          },
+        }),
+      );
+      expect(doing(_maya), ['Celeste']);
+      expect(repository.activities.value[_maya]!.single.timestamps!.start, 1700000000000);
+      expect(repository.activities.value.containsKey(_leo), isFalse);
+
+      repository.handleEvent(
+        _event('USER_ACTIVITY_UPDATE', {
+          'user_id': _leo,
+          'activities': [
+            {'type': 2, 'name': 'Spotify', 'details': 'Song', 'state': 'Artist'},
+          ],
+        }),
+      );
+      expect(doing(_leo), ['Spotify']);
+      expect(repository.activities.value[_leo]!.single.type, duvet.ActivityType.listening);
+      // Cleared: an empty list.
+      repository.handleEvent(_event('USER_ACTIVITY_UPDATE', {'user_id': _leo, 'activities': <Object>[]}));
+      expect(repository.activities.value.containsKey(_leo), isFalse);
+
+      // Offline, with no update of its own.
+      repository.handleEvent(_event('USER_STATUS_UPDATE', {'user_id': _maya, 'status_id': 0}));
+      expect(repository.activities.value, isEmpty);
     });
   });
 
