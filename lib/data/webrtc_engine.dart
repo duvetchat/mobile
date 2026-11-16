@@ -23,9 +23,24 @@ import 'voice_engine.dart';
 /// and stops when the last peer connection is disposed; it sees a Bluetooth
 /// headset only with BLUETOOTH_CONNECT granted before it starts.
 class WebRtcVoiceEngine implements VoiceEngine {
-  WebRtcVoiceEngine({@visibleForTesting bool? android}) : _android = android ?? Platform.isAndroid;
+  WebRtcVoiceEngine({
+    @visibleForTesting bool? android,
+    @visibleForTesting bool? ios,
+    @visibleForTesting this.pickerGrace = const Duration(seconds: 5),
+    @visibleForTesting this.pickerTimeout = const Duration(minutes: 1),
+  }) : _android = android ?? Platform.isAndroid,
+       _ios = ios ?? Platform.isIOS;
 
   final bool _android;
+  final bool _ios;
+
+  /// On iOS, how long after the app is back in front of the broadcast picker
+  /// a share that hasn't started counts as cancelled: iOS counts down from 3
+  /// before the extension starts.
+  final Duration pickerGrace;
+
+  /// On iOS, how long the broadcast picker may stay open.
+  final Duration pickerTimeout;
   bool _prepared = false;
   bool _askedNotifications = false;
   final _routes = ValueNotifier(AudioRoutes.none);
@@ -119,7 +134,8 @@ class WebRtcVoiceEngine implements VoiceEngine {
   /// ScreenCaptureService): Android 10 and later capture the screen only under
   /// one, and flutter_background's carries only the microphone type (it starts
   /// with every type it has, and on Android 14 a screen capture type fails to
-  /// start before the consent).
+  /// start before the consent). On iOS, the broadcast extension's start and
+  /// stop (ios/Runner/ScreenShare.swift).
   static const _screenService = MethodChannel('chat.duvet/screen');
 
   // shortcut: flutter_webrtc 1.6.3 ignores MediaProjection's onStop, so a
@@ -127,6 +143,7 @@ class WebRtcVoiceEngine implements VoiceEngine {
   // silent); the user stops it in the app.
   @override
   Future<VoiceScreen?> openScreen() async {
+    if (_ios) return _openBroadcast();
     if (!_android) return null;
     var serviceStarted = false;
     rtc.MediaStream? stream;
@@ -155,6 +172,89 @@ class WebRtcVoiceEngine implements VoiceEngine {
       if (serviceStarted) await _stopScreenService();
       return null;
     }
+  }
+
+  /// iOS shares the whole screen through the broadcast upload extension
+  /// (ios/Broadcast, #264): flutter_webrtc opens iOS's broadcast picker and
+  /// listens on the app group's socket the extension sends its frames to. The
+  /// extension says on [_screenService] when it starts and when it stops, from
+  /// the status bar or Control Center; "stop" there stops it.
+  Future<VoiceScreen?> _openBroadcast() async {
+    _listenToBroadcast();
+    final started = _broadcastStarted = Completer<bool>();
+    rtc.MediaStream? stream;
+    Timer? grace;
+    final lifecycle = AppLifecycleListener(
+      // Back from the picker: a share that was started starts within its countdown.
+      onResume: () {
+        grace?.cancel();
+        grace = Timer(pickerGrace, () {
+          if (!started.isCompleted) started.complete(false);
+        });
+      },
+    );
+    final timeout = Timer(pickerTimeout, () {
+      if (!started.isCompleted) started.complete(false);
+    });
+    try {
+      // 'broadcast' picks the extension, and shows the picker.
+      stream = await rtc.navigator.mediaDevices.getDisplayMedia({
+        'video': {'deviceId': 'broadcast'},
+        'audio': false,
+      });
+      final tracks = stream.getVideoTracks();
+      if (tracks.isEmpty) throw StateError('no screen track');
+      if (!await started.future) throw StateError('the broadcast didn\'t start');
+      final screen = _Screen(stream, tracks.first, _stopBroadcast);
+      _broadcastStopped = screen._end;
+      return screen;
+    } catch (e) {
+      debugPrint('voice: screen: $e');
+      try {
+        await stream?.dispose();
+      } catch (e) {
+        debugPrint('voice: screen: $e');
+      }
+      return null;
+    } finally {
+      lifecycle.dispose();
+      grace?.cancel();
+      timeout.cancel();
+      if (identical(_broadcastStarted, started)) _broadcastStarted = null;
+    }
+  }
+
+  static Completer<bool>? _broadcastStarted;
+  static void Function()? _broadcastStopped;
+  static bool _listeningToBroadcast = false;
+
+  static void _listenToBroadcast() {
+    if (_listeningToBroadcast) return;
+    _listeningToBroadcast = true;
+    _screenService.setMethodCallHandler((call) async {
+      switch (call.method) {
+        case 'started':
+          if (_broadcastStarted case final started? when !started.isCompleted) started.complete(true);
+        case 'stopped':
+          // Before it started: it failed, or nothing listened.
+          if (_broadcastStarted case final started? when !started.isCompleted) started.complete(false);
+          final stopped = _broadcastStopped;
+          _broadcastStopped = null;
+          stopped?.call();
+      }
+    });
+  }
+
+  static Future<void> _stopBroadcast() async {
+    _broadcastStopped = null;
+    await _stopScreenService();
+  }
+
+  @visibleForTesting
+  static void resetBroadcast() {
+    _broadcastStarted = null;
+    _broadcastStopped = null;
+    _listeningToBroadcast = false;
   }
 
   static Future<void> _stopScreenService() async {
@@ -433,9 +533,12 @@ class _Capture implements VoiceVideoSource {
   bool _stopped = false;
 
   _Capture(this.stream, this.track) {
-    track.onEnded = () {
-      if (!_stopped) _ended.add(null);
-    };
+    track.onEnded = _end;
+  }
+
+  // The capture ended on its own.
+  void _end() {
+    if (!_stopped) _ended.add(null);
   }
 
   @override
@@ -477,7 +580,8 @@ class _Camera extends _Capture implements VoiceCamera {
 }
 
 class _Screen extends _Capture implements VoiceScreen {
-  // Stops the screen capture service once the capture is over.
+  // Stops the screen capture service (Android) or the broadcast (iOS) once
+  // the capture is over.
   final Future<void> Function() _release;
 
   _Screen(super.stream, super.track, this._release);

@@ -1,7 +1,6 @@
 import 'dart:async';
 import 'dart:math' as math;
 
-import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:forui/forui.dart';
 
@@ -692,16 +691,14 @@ class _VoiceMoreState extends State<_VoiceMore> {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-              // iOS can't share the screen yet: it needs ReplayKit.
-              if (defaultTargetPlatform != TargetPlatform.iOS)
-                _Disabled(
-                  reason: reason,
-                  child: GlassRow(
-                    icon: voice.screenSharing ? FLucideIcons.screenShareOff : FLucideIcons.screenShare,
-                    label: voice.screenSharing ? 'Stop sharing' : 'Share screen',
-                    onPressed: () => _then(voice.screenSharing ? voice.stopScreenShare : voice.startScreenShare),
-                  ),
+              _Disabled(
+                reason: reason,
+                child: GlassRow(
+                  icon: voice.screenSharing ? FLucideIcons.screenShareOff : FLucideIcons.screenShare,
+                  label: voice.screenSharing ? 'Stop sharing' : 'Share screen',
+                  onPressed: () => _then(voice.screenSharing ? voice.stopScreenShare : voice.startScreenShare),
                 ),
+              ),
               if (routes.available.length > 1)
                 Builder(
                   builder: (anchor) => GlassRow(
