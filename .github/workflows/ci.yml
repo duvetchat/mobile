@@ -46,6 +46,16 @@ jobs:
       - name: Test
         working-directory: mobile
         run: flutter test
+      # What the failed goldens drew, to look at or to commit as the new ones: they are recorded on Linux,
+      # which this runner is.
+      - name: Golden failures
+        if: failure()
+        uses: actions/upload-artifact@v5
+        continue-on-error: true
+        with:
+          name: golden-failures
+          path: mobile/test/failures
+          if-no-files-found: ignore
       # Signed with the release key when the repository has it (base64 keystore and its
       # passwords as secrets); with the debug key otherwise, so forks still build.
       - name: Release key
