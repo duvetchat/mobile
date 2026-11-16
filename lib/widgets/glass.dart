@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import 'package:forui/forui.dart';
 
 import '../data/models.dart' show RoleColors;
+import '../shell.dart';
 import '../theme.dart';
 import 'avatar.dart';
 import 'role_name.dart';
@@ -415,6 +416,8 @@ Future<T?> showGlassSheet<T>(
     context: context,
     isScrollControlled: true,
     useSafeArea: true,
+    // Centered on a wide window, not stretched across it.
+    constraints: const BoxConstraints(maxWidth: ShellSizes.sheet),
     backgroundColor: Colors.transparent,
     elevation: 0,
     barrierColor: const Color(0x52000000),
@@ -463,6 +466,8 @@ Future<T?> showGlassDialogSheet<T>(BuildContext context, {required String label,
     context: context,
     isScrollControlled: true,
     useSafeArea: true,
+    // Centered on a wide window, not stretched across it.
+    constraints: const BoxConstraints(maxWidth: ShellSizes.sheet),
     useRootNavigator: true,
     backgroundColor: Colors.transparent,
     elevation: 0,

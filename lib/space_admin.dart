@@ -20,6 +20,7 @@ import 'data/repository.dart' show ChatRepository;
 import 'data/scope.dart';
 import 'people.dart' show PersonRow, removeBotAsking, removeMemberButtons;
 import 'spaces.dart' show deleteSpace, inviteRoomOf, pickSpaceIcon, showInviteSheet;
+import 'shell.dart';
 import 'theme.dart';
 import 'widgets/avatar.dart';
 import 'widgets/chrome.dart';
@@ -509,7 +510,7 @@ class AdminPage extends StatelessWidget {
           ),
         ],
       ),
-    );
+    ).readable;
   }
 }
 

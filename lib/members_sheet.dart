@@ -24,14 +24,70 @@ Future<(Member, MemberAction)?> showMembersSheet(
   context,
   label: 'Members',
   initialSize: 0.7,
-  builder: (context, scroll) => _MembersSheet(repository: repository, target: target, scroll: scroll),
+  builder: (context, scroll) => _MembersSheet(
+    repository: repository,
+    target: target,
+    scroll: scroll,
+    onPicked: (member, action) => Navigator.of(context).pop((member, action)),
+  ),
 );
+
+/// The same list beside the chat, on a window wide enough: the desktop's members column.
+class MembersPanel extends StatefulWidget {
+  final ChatRepository repository;
+  final ChatTarget target;
+  final void Function(Member member, MemberAction action) onPicked;
+  const MembersPanel({required this.repository, required this.target, required this.onPicked, super.key});
+
+  @override
+  State<MembersPanel> createState() => _MembersPanelState();
+}
+
+class _MembersPanelState extends State<MembersPanel> {
+  final _scroll = ScrollController();
+
+  @override
+  void dispose() {
+    _scroll.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) => Semantics(
+    container: true,
+    explicitChildNodes: true,
+    label: 'Members',
+    child: SafeArea(
+      left: false,
+      right: false,
+      // Its title level with the chat's.
+      minimum: const EdgeInsets.only(top: 8),
+      // The next chat's members, not the last one's.
+      child: _MembersSheet(
+        key: ValueKey(widget.target.id),
+        repository: widget.repository,
+        target: widget.target,
+        scroll: _scroll,
+        onPicked: widget.onPicked,
+      ),
+    ),
+  );
+}
 
 class _MembersSheet extends StatefulWidget {
   final ChatRepository repository;
   final ChatTarget target;
   final ScrollController scroll;
-  const _MembersSheet({required this.repository, required this.target, required this.scroll});
+
+  /// What was picked from a member's profile.
+  final void Function(Member member, MemberAction action) onPicked;
+  const _MembersSheet({
+    required this.repository,
+    required this.target,
+    required this.scroll,
+    required this.onPicked,
+    super.key,
+  });
 
   @override
   State<_MembersSheet> createState() => _MembersSheetState();
@@ -235,6 +291,7 @@ class _MembersSheetState extends State<_MembersSheet> {
                           me: widget.repository.profile.value?.id == members[i].userId,
                           owner: ownerId != null && ownerId == members[i].userId,
                           spaceId: spaceId,
+                          onPicked: widget.onPicked,
                           roleColors: switch (widget.target) {
                             RoomTarget(:final spaceId) => nameColorsOf(
                               widget.repository.rolesOf(spaceId, members[i].userId),
@@ -269,11 +326,13 @@ class _MemberRow extends StatelessWidget {
 
   /// Their highest colored role's colors: they tint the name, or run across it as a gradient.
   final RoleColors? roleColors;
+  final void Function(Member member, MemberAction action) onPicked;
   const _MemberRow({
     required this.member,
     required this.presence,
     required this.mobileOnly,
     required this.me,
+    required this.onPicked,
     this.owner = false,
     this.spaceId,
     this.roleColors,
@@ -308,7 +367,7 @@ class _MemberRow extends StatelessWidget {
         // Their profile over this sheet; it closes only for what's picked there.
         onPressed: () async {
           final action = await showProfileSheet(context, member: member, spaceId: spaceId, canMention: true);
-          if (action != null && context.mounted) Navigator.of(context).pop((member, action));
+          if (action != null && context.mounted) onPicked(member, action);
         },
       ),
     );

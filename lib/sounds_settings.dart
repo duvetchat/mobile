@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:forui/forui.dart';
 
 import 'data/sounds.dart';
+import 'shell.dart';
 import 'theme.dart';
 import 'widgets/chrome.dart';
 import 'widgets/rows.dart';
@@ -73,7 +74,7 @@ class _SoundsPageState extends State<SoundsPage> {
           ),
         ],
       ),
-    );
+    ).readable;
   }
 }
 

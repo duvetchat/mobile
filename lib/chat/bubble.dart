@@ -1,5 +1,8 @@
 part of '../chat_view.dart';
 
+/// A bubble's widest: three quarters of the chat, and no wider than reads well where the chat is wide.
+double bubbleWidth(BuildContext context) => min(MediaQuery.sizeOf(context).width * 0.75, 560);
+
 /// Whether [m] mentions the user [me], as the desktop has it: its text (a v2
 /// message's text displays) names them, or it replies to them and mentions
 /// them. Never their own message.
@@ -131,7 +134,7 @@ class _Bubble extends StatelessWidget {
     // the light frames the whole message.
     final prism = mentionsMe && textBubble ? tokens.prism : null;
     const bubblePadding = EdgeInsets.symmetric(horizontal: 12, vertical: 8);
-    final maxWidth = MediaQuery.sizeOf(context).width * 0.75;
+    final maxWidth = bubbleWidth(context);
     final secondary = DuvetType.caption.copyWith(color: colors.mutedForeground);
     final faded = entry.delivery != _Delivery.sent;
 
@@ -456,7 +459,7 @@ class _MessagesSkeleton extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final maxWidth = MediaQuery.sizeOf(context).width * 0.75;
+    final maxWidth = bubbleWidth(context);
     // A one-line text bubble: the body's line and its padding.
     Widget bubble(double share) => Bone(
       width: maxWidth * share,

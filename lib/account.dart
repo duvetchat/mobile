@@ -23,6 +23,7 @@ import 'people.dart';
 import 'sounds_settings.dart';
 import 'space_admin.dart' show avatarSide, confirmDestructive, saveBannerImage, saveSquareImage;
 import 'tabs.dart' show LiveIndicator;
+import 'shell.dart';
 import 'theme.dart';
 import 'widgets/avatar.dart';
 import 'widgets/chrome.dart';
@@ -87,7 +88,7 @@ class _FormPage extends StatelessWidget {
           ),
         ],
       ),
-    );
+    ).readable;
   }
 }
 
@@ -1148,7 +1149,7 @@ class _EditProfilePageState extends State<EditProfilePage> {
             ),
           ],
         ),
-      ),
+      ).readable,
     );
   }
 }
@@ -1311,7 +1312,7 @@ class _CropPageState extends State<CropPage> {
           );
         },
       ),
-    );
+    ).readable;
   }
 }
 
@@ -1517,7 +1518,7 @@ class _MyFilesPageState extends State<MyFilesPage> {
           ),
         ],
       ),
-    );
+    ).readable;
   }
 }
 
