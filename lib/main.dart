@@ -180,7 +180,15 @@ class _DuvetAppState extends State<DuvetApp> {
   final _navigator = GlobalKey<NavigatorState>();
   late final _appearance = widget.appearance ?? (Appearance()..load());
   late final _launchpad = widget.launchpad ?? (LaunchpadPrefs()..load());
-  late final _sounds = widget.sounds ?? (Sounds()..load());
+  late final Sounds _sounds =
+      widget.sounds ??
+      (Sounds(
+        busy: () =>
+            _voice.inVoice ||
+            VoiceNoteHandler.instance.player.playing ||
+            VideoPage.playing ||
+            RecordVoiceRecorder.recording,
+      )..load());
   late final _voicePrefs = widget.voicePrefs ?? (VoicePrefs()..load());
   late final _voice =
       widget.voice ??

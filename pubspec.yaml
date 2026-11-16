@@ -134,7 +134,11 @@ flutter:
     - assets/logo/app-icon-rounded.svg
     - assets/logo/app-icon-colored.svg
     - assets/logo/mark-on-light.svg
-    - assets/sounds/
+    # The desktop's .ogg for Android; iOS doesn't decode Vorbis and takes the same sounds as AAC (#228).
+    - path: assets/sounds/
+      platforms: [android]
+    - path: assets/sounds/ios/
+      platforms: [ios]
 
   # The Ghost theme's three faces (lib/theme.dart, DuvetType): Fraunces for
   # the smaller headers and Space names (one variable file, axes set in code),

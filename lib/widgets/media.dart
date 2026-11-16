@@ -944,6 +944,11 @@ class VideoPage extends StatefulWidget {
   @visibleForTesting
   static VideoPlayerController Function(Uri url) controllerFor = VideoPlayerController.networkUrl;
 
+  static final _playing = <Object>{};
+
+  /// Whether a video is playing: iOS's sounds then leave the audio session to it (data/sounds.dart).
+  static bool get playing => _playing.isNotEmpty;
+
   @override
   State<VideoPage> createState() => _VideoPageState();
 }
@@ -992,11 +997,17 @@ class _VideoPageState extends State<VideoPage> {
   }
 
   void _changed() {
+    if (_player?.value.isPlaying ?? false) {
+      VideoPage._playing.add(this);
+    } else {
+      VideoPage._playing.remove(this);
+    }
     if (mounted) setState(() {});
   }
 
   @override
   void dispose() {
+    VideoPage._playing.remove(this);
     _player?.removeListener(_changed);
     _player?.dispose();
     super.dispose();
@@ -1133,6 +1144,18 @@ class RecordVoiceRecorder implements VoiceRecorder {
 
   String _format = 'ogg';
 
+  static int _recording = 0;
+  bool _counted = false;
+
+  /// Whether a take is going: iOS's sounds then leave the audio session to it (data/sounds.dart).
+  static bool get recording => _recording > 0;
+
+  void _count(bool on) {
+    if (_counted == on) return;
+    _counted = on;
+    _recording += on ? 1 : -1;
+  }
+
   @override
   Future<bool> start() async {
     if (!await _recorder.hasPermission()) return false;
@@ -1141,10 +1164,17 @@ class RecordVoiceRecorder implements VoiceRecorder {
     _format = opus ? 'ogg' : 'm4a';
     final dir = await getTemporaryDirectory();
     final path = _path = '${dir.path}/voice-${DateTime.now().millisecondsSinceEpoch}.$_format';
-    await _recorder.start(
-      rec.RecordConfig(encoder: opus ? rec.AudioEncoder.opus : rec.AudioEncoder.aacLc, numChannels: 1),
-      path: path,
-    );
+    // From before it starts: starting is what takes the session.
+    _count(true);
+    try {
+      await _recorder.start(
+        rec.RecordConfig(encoder: opus ? rec.AudioEncoder.opus : rec.AudioEncoder.aacLc, numChannels: 1),
+        path: path,
+      );
+    } catch (_) {
+      _count(false);
+      rethrow;
+    }
     _started = DateTime.now();
     return true;
   }
@@ -1157,7 +1187,12 @@ class RecordVoiceRecorder implements VoiceRecorder {
 
   @override
   Future<Recording?> stop() async {
-    final path = await _recorder.stop() ?? _path;
+    final String? path;
+    try {
+      path = await _recorder.stop() ?? _path;
+    } finally {
+      _count(false);
+    }
     final started = _started;
     unawaited(_recorder.dispose());
     if (path == null || started == null) return null;
@@ -1170,7 +1205,11 @@ class RecordVoiceRecorder implements VoiceRecorder {
 
   @override
   Future<void> cancel() async {
-    await _recorder.cancel();
+    try {
+      await _recorder.cancel();
+    } finally {
+      _count(false);
+    }
     unawaited(_recorder.dispose());
   }
 }
