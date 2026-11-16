@@ -86,8 +86,9 @@ class ChatRoute extends MaterialPageRoute<void> with PaneRoute<void> {
   static Widget _none(BuildContext context) => const SizedBox.shrink();
 
   @override
-  Widget buildContent(BuildContext context) =>
-      ChatView(key: _page, target: target, title: title, jumpTo: jumpTo, threadOf: threadOf);
+  Widget buildContent(BuildContext context) => SafeSides(
+    child: ChatView(key: _page, target: target, title: title, jumpTo: jumpTo, threadOf: threadOf),
+  );
 
   @override
   String get paneId => target.id;

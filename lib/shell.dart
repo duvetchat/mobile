@@ -1,4 +1,4 @@
-import 'package:flutter/material.dart';
+import 'package:flutter/widgets.dart';
 import 'package:flutter/scheduler.dart';
 import 'package:forui/forui.dart';
 
@@ -117,7 +117,8 @@ class Shell extends ChangeNotifier {
     final rootNav = root.currentState;
     final paneNav = pane.currentState;
     if (rootNav == null) return;
-    if (!_wide || paneNav == null || (!reveal && rootObserver.routes.skip(1).any((r) => r is PageRoute))) {
+    // Whatever is over the home screen, a sheet being filled as much as a page, stays under a notice's chat.
+    if (!_wide || paneNav == null || (!reveal && rootObserver.routes.length > 1)) {
       rootNav.push(route);
       return;
     }
@@ -146,6 +147,8 @@ class Shell extends ChangeNotifier {
     }
     // A chat pushed over the home screen on a wide window belongs in the pane.
     if (_wide && rootObserver.routes.length > 1) _settleSoon();
+    // The pane's chats, kept there under a page while the window narrowed, go over the home screen once it closes.
+    if (!_wide && _paneOpen && rootObserver.routes.length == 1) _settleSoon();
   }
 
   void _notifySoon() => afterBuild(notifyListeners);
@@ -177,6 +180,9 @@ class Shell extends ChangeNotifier {
         paneNav.push(r);
       }
     } else {
+      // Not over a page open on the home screen (Friends, a video, a call): the chats wait in the pane, under it,
+      // till it closes.
+      if (rootObserver.routes.length > 1) return;
       // What isn't a chat over them (a search waiting for its answer) closes.
       final open = paneObserver.routes.takeWhile((r) => r is PaneRoute).toList();
       if (open.isEmpty) return;
@@ -293,8 +299,12 @@ class PaneEmpty extends StatelessWidget {
   }
 }
 
-/// Keeps the app clear of the notch and the rounded corners at the sides (a phone on its side): everything sits
-/// between them, over the background. The top and bottom insets stay each screen's own.
+/// Keeps a screen clear of the notch and the rounded corners at the sides (a phone on its side): it sits between
+/// them, over the background. The top and bottom insets stay the screen's own.
+///
+/// Around the home screen, a chat and a [ReadablePage], not the app's navigator: a video, a call and a sheet's
+/// scrim still reach the window's edges, and what is placed over the app by where a widget is on screen (a menu, a
+/// message held up) is measured from the same corner.
 class SafeSides extends StatelessWidget {
   final Widget child;
   const SafeSides({required this.child, super.key});
@@ -329,18 +339,21 @@ class ReadablePage extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final media = MediaQuery.of(context);
-    final width = media.size.width < ShellSizes.page ? media.size.width : ShellSizes.page;
-    return ColoredBox(
-      color: context.theme.colors.background,
-      child: Center(
-        child: SizedBox(
-          width: width,
-          child: MediaQuery(
-            data: media.copyWith(size: Size(width, media.size.height)),
-            child: child,
-          ),
-        ),
+    return SafeSides(
+      child: Builder(
+        builder: (context) {
+          final media = MediaQuery.of(context);
+          final width = media.size.width < ShellSizes.page ? media.size.width : ShellSizes.page;
+          return Center(
+            child: SizedBox(
+              width: width,
+              child: MediaQuery(
+                data: media.copyWith(size: Size(width, media.size.height)),
+                child: child,
+              ),
+            ),
+          );
+        },
       ),
     );
   }

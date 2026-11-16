@@ -363,18 +363,15 @@ class _DuvetAppState extends State<DuvetApp> {
               theme: Duvet.material(brightness),
               builder: (context, child) => FTheme(
                 data: theme,
-                // Between the notch's sides, on a phone turned.
-                child: SafeSides(
-                  child: ShellScope(
-                    shell: _shell,
-                    child: FToaster(
-                      child: Stack(
-                        children: [
-                          child!,
-                          // Over every screen, the chats opened from Chats and Spaces too.
-                          MentionNotices(navigator: _navigator),
-                        ],
-                      ),
+                child: ShellScope(
+                  shell: _shell,
+                  child: FToaster(
+                    child: Stack(
+                      children: [
+                        child!,
+                        // Over every screen, the chats opened from Chats and Spaces too.
+                        MentionNotices(navigator: _navigator),
+                      ],
                     ),
                   ),
                 ),
@@ -566,17 +563,32 @@ class _HomeTabsState extends State<HomeTabs> {
   Widget build(BuildContext context) {
     final voice = context.voice;
     final shell = Shell.watch(context);
-    // Outside the app's shell (pumped alone), the phone's layout.
-    final size = shell == null ? SizeClass.compact : SizeClass.of(MediaQuery.sizeOf(context).width);
+    final media = MediaQuery.of(context);
+    // Outside the app's shell (pumped alone), the phone's layout. The width is what the notch's sides leave.
+    final size = shell == null ? SizeClass.compact : SizeClass.of(media.size.width - media.padding.horizontal);
     shell?.layout(wide: size.wide);
     return VoiceListener(
-      child: ListenableBuilder(
-        listenable: Listenable.merge([voice, dockedYouTube]),
-        builder: (context, _) => size.wide
-            ? _wide(context, shell!, size, VoiceBar.shows(voice))
-            : _narrow(context, shell, VoiceBar.shows(voice)),
+      // Between the notch's sides, on a phone turned.
+      child: SafeSides(
+        child: ListenableBuilder(
+          listenable: Listenable.merge([voice, dockedYouTube]),
+          builder: (context, _) => size.wide
+              ? _wide(context, shell!, size, VoiceBar.shows(voice))
+              : _narrow(context, shell, VoiceBar.shows(voice)),
+        ),
       ),
     );
+  }
+
+  // The system's Back, on a wide window: the pane's thread or search first, else the Space the list shows. One
+  // press goes back one step, though both navigators are asked.
+  void _backInSpaces() {
+    final shell = _shell;
+    if (shell != null && shell.wide) {
+      if (shell.pane.currentState?.canPop() ?? false) return;
+      if (index != 1) return;
+    }
+    _spaces.currentState?.maybePop();
   }
 
   Widget _stack() => KeyedSubtree(
@@ -586,7 +598,9 @@ class _HomeTabsState extends State<HomeTabs> {
       children: [
         const ChatsTab(),
         NavigatorPopHandler(
-          onPopWithResult: (_) => _spaces.currentState?.maybePop(),
+          // Behind another tab on a wide window, its Space isn't what Back leaves.
+          enabled: !(_shell?.wide ?? false) || index == 1,
+          onPopWithResult: (_) => _backInSpaces(),
           child: Navigator(
             key: _spaces,
             observers: [_spaceRoutes],
@@ -622,8 +636,12 @@ class _HomeTabsState extends State<HomeTabs> {
     final dockHeight = docked == null ? 0.0 : YouTubeDock.height;
     final below = media.padding.bottom;
     final rule = SizedBox(width: 1, child: ColoredBox(color: context.duvet.hairline));
+    final keyboard = media.viewInsets.bottom;
     return Scaffold(
       backgroundColor: colors.background,
+      // Each column makes room for the keyboard itself, once: the chat's own page does in the pane, the list is
+      // padded here, and the rail stays as it is behind it.
+      resizeToAvoidBottomInset: false,
       body: Row(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
@@ -658,32 +676,36 @@ class _HomeTabsState extends State<HomeTabs> {
           rule,
           _column(
             width: listWidth,
-            child: Stack(
-              children: [
-                // The tab scrolls under the bars: they're its bottom padding.
-                MediaQuery(
-                  data: media.copyWith(
-                    size: Size(listWidth, media.size.height),
-                    padding: media.padding.copyWith(bottom: below + voiceHeight + playbackHeight + dockHeight),
+            child: Padding(
+              padding: EdgeInsets.only(bottom: keyboard),
+              child: Stack(
+                children: [
+                  // The tab scrolls under the bars: they're its bottom padding.
+                  MediaQuery(
+                    data: media.copyWith(
+                      size: Size(listWidth, media.size.height),
+                      padding: media.padding.copyWith(bottom: below + voiceHeight + playbackHeight + dockHeight),
+                      viewInsets: media.viewInsets.copyWith(bottom: 0),
+                    ),
+                    child: _stack(),
                   ),
-                  child: _stack(),
-                ),
-                if (voiceBar) Positioned(left: 0, right: 0, bottom: below, child: const VoiceBar()),
-                if (_playbackBar)
-                  Positioned(
-                    left: 0,
-                    right: 0,
-                    bottom: below + voiceHeight,
-                    child: MediaPlaybackBar(playback: _playback),
-                  ),
-                if (docked != null)
-                  Positioned(
-                    left: 0,
-                    right: 0,
-                    bottom: below + voiceHeight + playbackHeight,
-                    child: YouTubeDock(key: ValueKey(docked), video: docked),
-                  ),
-              ],
+                  if (voiceBar) Positioned(left: 0, right: 0, bottom: below, child: const VoiceBar()),
+                  if (_playbackBar)
+                    Positioned(
+                      left: 0,
+                      right: 0,
+                      bottom: below + voiceHeight,
+                      child: MediaPlaybackBar(playback: _playback),
+                    ),
+                  if (docked != null)
+                    Positioned(
+                      left: 0,
+                      right: 0,
+                      bottom: below + voiceHeight + playbackHeight,
+                      child: YouTubeDock(key: ValueKey(docked), video: docked),
+                    ),
+                ],
+              ),
             ),
           ),
           rule,

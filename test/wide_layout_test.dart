@@ -7,6 +7,7 @@ import 'package:duvet/shell.dart';
 import 'package:duvet/tabs.dart';
 import 'package:duvet/theme.dart';
 import 'package:duvet/widgets/chrome.dart';
+import 'package:duvet/widgets/ghost_art.dart';
 import 'package:duvet/widgets/glass.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -246,21 +247,218 @@ void main() {
     expect(find.text('Pick a chat to open it here'), findsOneWidget);
   });
 
+  Future<FakeRepository> openThread(WidgetTester tester) async {
+    final repository = await pumpApp(tester, tablet);
+    repository.threads['m3'] = [
+      repository.history['r-general']!.single,
+      FakeRepository.message('t1', author: FakeRepository.maya, name: 'Maya', text: 'Looks great'),
+    ];
+    await openGeneral(tester);
+    await tester.longPress(find.text('Pushed the new type ramp'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.bySemanticsLabel('View thread').hitTestable().last);
+    await tester.pumpAndSettle();
+    return repository;
+  }
+
   testWidgets('a thread opens in the pane over its chat, with a way back to it', (tester) async {
-    await pumpApp(tester, tablet);
-    await tester.tap(find.text('Maya'));
-    await tester.pumpAndSettle();
-    final context = tester.element(find.byType(ChatView));
-    Navigator.of(
-      context,
-    ).push(ChatRoute(target: tester.widget<ChatView>(find.byType(ChatView)).target, title: 'Maya', threadOf: 'm1'));
-    await tester.pumpAndSettle();
+    await openThread(tester);
     expect(find.text('Thread'), findsOneWidget);
-    expect(find.byType(ChatsTab), findsOneWidget);
-    await tester.tap(find.bySemanticsLabel('Back'));
+    expect(find.text('Looks great'), findsOneWidget);
+    // Beside the list, not over it.
+    expect(find.byType(SpaceDirectory), findsOneWidget);
+    expect(tester.getRect(find.byType(ChatView).last).left, ShellSizes.rail + ShellSizes.list(tablet.width) + 2);
+    // The thread's own, not the Space's in the list.
+    await tester.tap(find.descendant(of: find.byType(ChatView).last, matching: find.bySemanticsLabel('Back')));
     await tester.pumpAndSettle();
     expect(find.text('Thread'), findsNothing);
     expect(find.byType(ChatView), findsOneWidget);
+  });
+
+  testWidgets('the system\'s Back goes back one step: the pane\'s thread, then the list\'s Space', (tester) async {
+    await openThread(tester);
+    expect(find.text('Thread'), findsOneWidget);
+    expect(find.byType(SpaceDirectory), findsOneWidget);
+
+    await tester.binding.handlePopRoute();
+    await tester.pumpAndSettle();
+    expect(find.text('Thread'), findsNothing);
+    expect(find.byType(ChatView), findsOneWidget);
+    expect(find.byType(SpaceDirectory), findsOneWidget);
+
+    await tester.binding.handlePopRoute();
+    await tester.pumpAndSettle();
+    expect(find.byType(SpaceDirectory), findsNothing);
+    expect(find.byType(SpacesTab), findsOneWidget);
+    expect(find.byType(ChatView), findsOneWidget);
+  });
+
+  testWidgets('the system\'s Back leaves a Space\'s rooms alone behind another tab', (tester) async {
+    await openThread(tester);
+    await tester.tap(find.bySemanticsLabel('Chats').first);
+    await tester.pumpAndSettle();
+    expect(find.byType(ChatsTab), findsOneWidget);
+
+    await tester.binding.handlePopRoute();
+    await tester.pumpAndSettle();
+    expect(find.text('Thread'), findsNothing);
+    expect(find.byType(SpaceDirectory, skipOffstage: false), findsOneWidget);
+  });
+
+  for (final (name, size, padding, keyboard) in [
+    ('a tablet', tablet, FakeViewPadding.zero, 300.0),
+    ('a tablet upright', tabletUpright, FakeViewPadding.zero, 300.0),
+    ('a long phone on its side', phoneOnItsSide, const FakeViewPadding(left: 124, right: 124), 200.0),
+  ]) {
+    testWidgets('the keyboard lifts the pane\'s composer just over it, once, on $name', (tester) async {
+      await pumpApp(tester, size, padding: padding);
+      await tester.tap(find.text('Maya'));
+      await tester.pumpAndSettle();
+      final composer = find.descendant(of: find.byType(ChatView), matching: find.byType(EditableText));
+      final gap = size.height - tester.getRect(composer).bottom;
+
+      tester.view.viewInsets = FakeViewPadding(bottom: keyboard * 2);
+      await tester.pumpAndSettle();
+      expect(tester.takeException(), isNull);
+      // As far over the keyboard as it was over the window's edge.
+      expect(tester.getRect(composer).bottom, size.height - keyboard - gap);
+      // The list ends at the keyboard; the rail stays behind it.
+      expect(tester.getRect(find.byType(ChatsTab)).bottom, size.height - keyboard);
+      expect(tester.getRect(find.byType(DuvetNavRail)).bottom, size.height);
+    });
+  }
+
+  testWidgets('a menu opens at its button in the pane', (tester) async {
+    await pumpApp(tester, tablet);
+    await tester.tap(find.text('Maya'));
+    await tester.pumpAndSettle();
+    final button = find.bySemanticsLabel('Add photos, a sticker or a mention');
+    await tester.tap(button);
+    await tester.pumpAndSettle();
+    expect(find.bySemanticsLabel('Add to message'), findsOneWidget);
+    final menu = tester.getRect(find.byType(GlassSurface).last);
+    expect(menu.width, 248);
+    expect(menu.left, tester.getRect(button).left);
+    expect(menu.bottom, lessThan(tester.getRect(button).top));
+
+    // And under More, a margin from the pane's edge as from a phone's.
+    await tester.tapAt(tester.getRect(find.byType(ChatView)).center);
+    await tester.pumpAndSettle();
+    final more = find.bySemanticsLabel('More');
+    await tester.tap(more);
+    await tester.pumpAndSettle();
+    expect(find.text('Pinned messages'), findsOneWidget);
+    final moreMenu = tester.getRect(find.byType(GlassSurface).last);
+    expect(moreMenu.width, 248);
+    expect(moreMenu.right, tablet.width - 16);
+    expect(moreMenu.top, greaterThan(tester.getRect(more).bottom));
+  });
+
+  testWidgets('a room\'s menu opens at its row in the list beside the rail', (tester) async {
+    await pumpApp(tester, tablet);
+    await tester.tap(find.byType(RailButton).first);
+    await tester.pumpAndSettle();
+    final row = tester.getRect(find.text('# general'));
+    await tester.longPress(find.text('# general'));
+    await tester.pumpAndSettle();
+    final menu = tester.getRect(find.byType(GlassSurface).last);
+    // Inside the list's column, 16 from its edge, not that much further right.
+    expect(menu.left, ShellSizes.rail + 1 + 16);
+    expect(menu.top, greaterThan(row.top));
+  });
+
+  testWidgets('a sheet opened from the pane\'s chat stays in the pane', (tester) async {
+    await pumpApp(tester, tablet);
+    await tester.tap(find.text('Maya'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.bySemanticsLabel('More'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Pinned messages'));
+    await tester.pumpAndSettle();
+    final pane = tester.getRect(find.byType(ChatView));
+    final sheet = tester.getRect(find.byType(GlassSurface).last);
+    expect(sheet.left, greaterThanOrEqualTo(pane.left));
+    expect(sheet.right, lessThanOrEqualTo(pane.right));
+    expect(sheet.width, lessThanOrEqualTo(ShellSizes.sheet));
+    expect(sheet.center.dx, pane.center.dx);
+  });
+
+  testWidgets('a page open over the home screen stays over the pane\'s chat when the window narrows', (tester) async {
+    await pumpApp(tester, tablet);
+    await tester.tap(find.text('Maya'));
+    await tester.pumpAndSettle();
+    final state = tester.state(find.byType(ChatView));
+    await tester.tap(find.bySemanticsLabel('Friends'));
+    await tester.pumpAndSettle();
+
+    await resize(tester, phone);
+    expect(find.byType(FriendsPage).hitTestable(), findsOneWidget);
+    expect(find.byType(ChatView).hitTestable(), findsNothing);
+
+    // The chat is under it, over the tabs once the page closes.
+    await tester.tap(find.bySemanticsLabel('Back').hitTestable().last);
+    await tester.pumpAndSettle();
+    expect(find.byType(FriendsPage), findsNothing);
+    expect(tester.state(find.byType(ChatView)), same(state));
+    expect(tester.getSize(find.byType(ChatView)), phone);
+    await tester.tap(find.bySemanticsLabel('Back').hitTestable().last);
+    await tester.pumpAndSettle();
+    expect(find.byType(ChatView), findsNothing);
+    expect(find.byType(DuvetTabBar), findsOneWidget);
+  });
+
+  testWidgets('a notice\'s chat leaves a sheet open under it, and goes to the pane when it closes', (tester) async {
+    final repository = await pumpApp(tester, tablet);
+    final context = tester.element(find.byType(ChatsTab));
+    showGlassDialogSheet<void>(
+      context,
+      label: 'Form',
+      builder: (_) => const SizedBox(height: 120, child: Text('Half filled')),
+    );
+    await tester.pumpAndSettle();
+    openChatRoute(
+      context,
+      ChatRoute(target: repository.conversations.value.first.target, title: 'Maya'),
+      reveal: false,
+    );
+    await tester.pumpAndSettle();
+    expect(find.text('Half filled', skipOffstage: false), findsOneWidget);
+    expect(tester.getRect(find.byType(ChatView)).left, 0);
+
+    await tester.tap(find.bySemanticsLabel('Back').hitTestable().last);
+    await tester.pumpAndSettle();
+    expect(find.text('Half filled'), findsOneWidget);
+  });
+
+  testWidgets('a full-screen route still reaches the edges of a phone on its side', (tester) async {
+    const size = Size(667, 375);
+    await pumpApp(tester, size, padding: const FakeViewPadding(left: 88, right: 88));
+    final navigator = Navigator.of(tester.element(find.byType(HomeTabs)), rootNavigator: true);
+    navigator.push(
+      PageRouteBuilder<void>(
+        opaque: false,
+        barrierColor: Colors.black,
+        pageBuilder: (_, _, _) => const SizedBox.expand(key: Key('video')),
+      ),
+    );
+    await tester.pumpAndSettle();
+    expect(tester.getRect(find.byKey(const Key('video'))), Offset.zero & size);
+    navigator.pop();
+    await tester.pumpAndSettle();
+
+    // A chat is between the notch's sides, as the tabs are.
+    await tester.tap(find.text('Maya'));
+    await tester.pumpAndSettle();
+    final chat = tester.getRect(find.byType(ChatView));
+    expect(chat.left, 44);
+    expect(chat.right, size.width - 44);
+  });
+
+  testWidgets('the title\'s night sky shows on a narrow phone, not in the wide layout\'s list', (tester) async {
+    await pumpApp(tester, const Size(360, 780));
+    expect(find.descendant(of: find.byType(ChatsTab), matching: find.byType(NightSky)), findsOneWidget);
+    await resize(tester, tablet);
+    expect(find.descendant(of: find.byType(ChatsTab), matching: find.byType(NightSky)), findsNothing);
   });
 
   testWidgets('a full page is centered at a width that reads, and a chat opened from it closes it', (tester) async {

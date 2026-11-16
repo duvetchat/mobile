@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:forui/forui.dart';
 
+import '../shell.dart';
 import '../theme.dart';
 import 'depth.dart';
 import 'duvet_mascot.dart';
@@ -376,8 +377,8 @@ class _LargeTitlePageState extends State<LargeTitlePage> {
               children: [
                 // The night sky beside the title, clear of its buttons (the tab
                 // roots' titles are all one short word); it scrolls away with it.
-                // Not where the title's buttons would sit over it: a narrow phone, the wide layout's list.
-                if (MediaQuery.sizeOf(context).width >= 372)
+                // Not in the wide layout's list, where the title's buttons would sit over it.
+                if (!(Shell.maybeOf(context)?.wide ?? false) || MediaQuery.sizeOf(context).width >= 372)
                   Positioned(
                     left: widget.titleLeading == null ? 128 : 172,
                     top: -6,
