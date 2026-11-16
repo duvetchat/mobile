@@ -3,6 +3,7 @@ import 'dart:io';
 
 import 'package:firebase_core/firebase_core.dart';
 import 'package:firebase_messaging/firebase_messaging.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/scheduler.dart';
 import 'package:flutter/services.dart';
@@ -50,6 +51,8 @@ import 'widgets/youtube_dock.dart';
 
 Future<void> main() async {
   final binding = DuvetBinding();
+  // Asked once, and not of dart:io in a browser, where asking throws.
+  final onAndroid = !kIsWeb && Platform.isAndroid;
   // The theme's mode is the first thing read: the first frame draws by it. The rest of it loads behind.
   final appearance = Appearance();
   unawaited(appearance.load());
@@ -91,7 +94,7 @@ Future<void> main() async {
   // platform yet. Without Firebase set up (no android/app/google-services.json) the app runs without them, and asks
   // nothing of the user for them: a failure here costs the push, never the app's start.
   PushRegistrar? push;
-  if (Platform.isAndroid) {
+  if (onAndroid) {
     try {
       await Firebase.initializeApp();
       FirebaseMessaging.onBackgroundMessage(firebaseMessagingBackgroundHandler);
@@ -111,7 +114,7 @@ Future<void> main() async {
   }
 
   // Waited for: it is what hears a tap. The channels aren't (below).
-  if (Platform.isAndroid) {
+  if (onAndroid) {
     try {
       await initNotifications(onTap: openTapped, onCall: openCall);
     } catch (e) {
@@ -135,7 +138,7 @@ Future<void> main() async {
       readLaunch: () => unawaited(_readLaunch(onTap: openTapped, onCall: openCall)),
     ),
   );
-  if (!Platform.isAndroid) return;
+  if (!onAndroid) return;
   // The channels after the first frame, which they'd hold back; a notification that shows before waits for them
   // itself, as does one on an engine with no screen, where no frame comes.
   binding.addPostFrameCallback((_) => unawaited(ensureChannels()));

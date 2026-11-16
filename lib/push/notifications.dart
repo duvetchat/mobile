@@ -396,7 +396,9 @@ Future<Person> _person(Directory dir, MessagePush push) async {
 /// the URL's query, as the API signs a URL anew each day.
 File? _photoFile(Directory dir, String avatar) {
   if (avatar.isEmpty) return null;
-  var hash = 0xcbf29ce484222325;
+  // FNV-1a's 64-bit offset basis, in two halves: whole, the web's compiler refuses the file for a number it
+  // can't hold, though nothing there asks for a photo's file.
+  var hash = (0xcbf29ce4 << 32) | 0x84222325;
   for (final byte in utf8.encode(avatar.split('?').first)) {
     hash = (hash ^ byte) * 0x100000001b3;
   }
