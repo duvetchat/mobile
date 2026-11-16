@@ -248,48 +248,51 @@ class _MessageTextState extends State<MessageText> {
     // Mentions and custom emoji within a text leaf.
     List<InlineSpan> leaf(String text, TextStyle? style) => [
       for (final token in tokenize(text))
-        switch (token) {
-          TextToken(:final text) => TextSpan(text: text, style: style),
-          MentionToken(:final userId) => mention(
-            '@${mentions[userId] = widget.directory.nameOf(userId) ?? userId.substring(0, 8)}',
-            userId,
-            style,
-          ),
-          RoomToken(:final roomId) => switch (widget.directory.roomOf(roomId)) {
-            // Hidden or gone: no name, nothing to open.
-            null => TextSpan(text: '#unknown', style: style),
-            final room => TextSpan(
-              text: '#${(rooms[roomId] = room).name}',
-              recognizer: switch (widget.onRoom) {
-                final onRoom? => _tap(() => onRoom(room)),
-                null => null,
-              },
-              style: (style ?? const TextStyle()).copyWith(
-                color: widget.onAccent ? null : tokens.accentText,
-                fontWeight: FontWeight.w700,
-              ),
-            ),
-          },
-          EmojiToken(:final emojiId) => switch (widget.directory.emojiOf(emojiId)) {
-            null => TextSpan(text: ':emoji:', style: style),
-            final emoji => WidgetSpan(
-              alignment: PlaceholderAlignment.middle,
-              child: Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 1),
-                child: Image(
-                  image: cachedImage(
-                    emoji.url,
-                    cacheWidth: (emojiSize * MediaQuery.devicePixelRatioOf(context)).round(),
-                  ),
-                  width: emojiSize,
-                  height: emojiSize,
-                  fit: BoxFit.contain,
-                  excludeFromSemantics: true,
-                  errorBuilder: (_, _, _) => Text(':${emoji.name}:'),
+        ...switch (token) {
+          // Emoji at the size the platform's own text sets them.
+          TextToken(:final text) => DuvetType.withEmoji(text, style: style, base: base),
+          MentionToken(:final userId) => [
+            mention('@${mentions[userId] = widget.directory.nameOf(userId) ?? userId.substring(0, 8)}', userId, style),
+          ],
+          RoomToken(:final roomId) => [
+            switch (widget.directory.roomOf(roomId)) {
+              // Hidden or gone: no name, nothing to open.
+              null => TextSpan(text: '#unknown', style: style),
+              final room => TextSpan(
+                text: '#${(rooms[roomId] = room).name}',
+                recognizer: switch (widget.onRoom) {
+                  final onRoom? => _tap(() => onRoom(room)),
+                  null => null,
+                },
+                style: (style ?? const TextStyle()).copyWith(
+                  color: widget.onAccent ? null : tokens.accentText,
+                  fontWeight: FontWeight.w700,
                 ),
               ),
-            ),
-          },
+            },
+          ],
+          EmojiToken(:final emojiId) => [
+            switch (widget.directory.emojiOf(emojiId)) {
+              null => TextSpan(text: ':emoji:', style: style),
+              final emoji => WidgetSpan(
+                alignment: PlaceholderAlignment.middle,
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 1),
+                  child: Image(
+                    image: cachedImage(
+                      emoji.url,
+                      cacheWidth: (emojiSize * MediaQuery.devicePixelRatioOf(context)).round(),
+                    ),
+                    width: emojiSize,
+                    height: emojiSize,
+                    fit: BoxFit.contain,
+                    excludeFromSemantics: true,
+                    errorBuilder: (_, _, _) => Text(':${emoji.name}:'),
+                  ),
+                ),
+              ),
+            },
+          ],
         },
     ];
 

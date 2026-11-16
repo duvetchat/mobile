@@ -121,6 +121,42 @@ abstract final class DuvetType {
   /// fallback it loses ©️ ™️ ‼️ ❤️ #️⃣ and the like to Inter's and Roboto's own glyphs.
   static String get emoji => defaultTargetPlatform == TargetPlatform.iOS ? 'Apple Color Emoji' : 'Twemoji';
 
+  /// How much larger than its size an emoji is set: 1.25 on iOS, where Flutter
+  /// draws Apple Color Emoji at 0.88 of the font size and iOS's own text draws
+  /// it at 1.1 (at 16pt, 42 px against Safari's 53 px), so emoji are the size
+  /// Apple sets them. 1 elsewhere: Twemoji fills its size.
+  static double get emojiScale => defaultTargetPlatform == TargetPlatform.iOS ? 1.25 : 1.0;
+
+  /// [emoji] at [size], as large as the platform's own text sets it; with a
+  /// [height], in the line box [size] would have.
+  static TextStyle emojiStyle(double size, {double? height}) =>
+      TextStyle(fontFamily: emoji, fontSize: size * emojiScale, height: height == null ? null : height / emojiScale);
+
+  /// [text] as spans in [style], its emoji [emojiScale] times the size of the
+  /// [base] text around them, in the same line height. One span when there's
+  /// nothing to scale.
+  static List<TextSpan> withEmoji(String text, {TextStyle? style, required TextStyle base}) {
+    final size = base.merge(style).fontSize;
+    final scale = emojiScale;
+    if (scale == 1 || size == null) return [TextSpan(text: text, style: style)];
+    final height = base.merge(style).height;
+    final emojiStyle = (style ?? const TextStyle()).copyWith(
+      fontSize: size * scale,
+      height: height == null ? null : height / scale,
+    );
+    final spans = <TextSpan>[];
+    var at = 0;
+    for (final m in _emojiRun.allMatches(text)) {
+      if (!_shownAsEmoji.hasMatch(m[0]!)) continue;
+      if (m.start > at) spans.add(TextSpan(text: text.substring(at, m.start), style: style));
+      spans.add(TextSpan(text: m[0], style: emojiStyle));
+      at = m.end;
+    }
+    if (spans.isEmpty) return [TextSpan(text: text, style: style)];
+    if (at < text.length) spans.add(TextSpan(text: text.substring(at), style: style));
+    return spans;
+  }
+
   /// Emoji in every face are [emoji] instead of whatever the phone ships
   /// (older Androids miss the newer ones).
   static List<String> get fallback => [emoji];
@@ -485,3 +521,18 @@ class DuvetTokens {
 extension DuvetTokensContext on BuildContext {
   DuvetTokens get duvet => Duvet.tokens(Theme.of(this).brightness);
 }
+
+// A run of emoji: a pictograph, flag or keycap, with what joins, tones and
+// tags it and the pictographs joined on. The analyzer checks these without the
+// unicode flag, which \p{…} and astral ranges need; the tests run them.
+final _emojiRun = RegExp(
+  // ignore: valid_regexps
+  '(?:[#*0-9]\u{FE0F}?\u{20E3}|[\\p{Extended_Pictographic}\u{1F1E6}-\u{1F1FF}])'
+  // ignore: valid_regexps
+  '[\\p{Extended_Pictographic}\u{FE0F}\u{200D}\u{20E3}\u{1F3FB}-\u{1F3FF}\u{1F1E6}-\u{1F1FF}\u{E0020}-\u{E007F}]*',
+  unicode: true,
+);
+
+// Drawn as an emoji, not text: © and ™ without U+FE0F stay text.
+// ignore: valid_regexps
+final _shownAsEmoji = RegExp('\\p{Emoji_Presentation}|\u{FE0F}|\u{20E3}', unicode: true);

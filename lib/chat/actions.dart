@@ -280,7 +280,7 @@ class _QuickReactions extends StatelessWidget {
                         'React ${catalog?.nameOf(emoji) ?? _quickNames[emoji] ?? emoji}${mine.contains(emoji) ? ', you reacted' : ''}',
                     on: mine.contains(emoji),
                     value: (_Action.react, emoji),
-                    child: Text(emoji, style: TextStyle(fontFamily: DuvetType.emoji, fontSize: 24, height: 1.1)),
+                    child: Text(emoji, style: DuvetType.emojiStyle(24, height: 1.1)),
                   ),
                 ),
               button(

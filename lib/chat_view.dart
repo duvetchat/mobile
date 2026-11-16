@@ -2259,9 +2259,7 @@ class _ChatViewState extends State<ChatView> with SingleTickerProviderStateMixin
         GlassRow(
           label: ':${e.name.replaceAll(' ', '_')}:',
           hint: 'Double tap to insert ${e.name}',
-          leading: ExcludeSemantics(
-            child: Text(e.emoji, style: TextStyle(fontFamily: DuvetType.emoji, fontSize: 26, height: 1.1)),
-          ),
+          leading: ExcludeSemantics(child: Text(e.emoji, style: DuvetType.emojiStyle(26, height: 1.1))),
           onPressed: () {
             EmojiCatalog.used(e.emoji);
             _composer.insertEmoji(e.emoji);
