@@ -30,6 +30,15 @@ class _NoLinks implements DeepLinkSource {
   Stream<Uri> get links => const Stream.empty();
 }
 
+/// Rows down a page, at its width: what [EdgedRow]s are laid in.
+class _Rows extends StatelessWidget {
+  final List<Widget> children;
+  const _Rows({required this.children});
+
+  @override
+  Widget build(BuildContext context) => Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: children);
+}
+
 /// M10 · Space administration.
 void main() {
   late SemanticsHandle semantics;
@@ -947,6 +956,97 @@ void main() {
     final dropped = RegExp(r'^room> r-0 c-work (\d+)$').firstMatch(repository.admin.last);
     expect(int.parse(dropped!.group(1)!), greaterThan(10));
     semantics.dispose();
+  });
+
+  // #65: a row and its edge, laid out once. Each edge fills its row's trailing
+  // side, as it did stretched in a Row under an IntrinsicHeight.
+  void expectEdgesFillRows(WidgetTester tester, Type page, {required int edges, bool rtl = false}) {
+    final within = find.byType(page);
+    expect(find.descendant(of: within, matching: find.byType(IntrinsicHeight)), findsNothing);
+    final rows = find.descendant(of: within, matching: find.byType(EdgedRow));
+    var found = 0;
+    for (final row in rows.evaluate()) {
+      final edge = find.descendant(
+        of: find.byElementPredicate((e) => e == row),
+        matching: find.byWidgetPredicate((w) => w is DragEdge || (w is Icon && w.icon == FLucideIcons.lock)),
+      );
+      if (edge.evaluate().isEmpty) continue;
+      found++;
+      final whole = tester.getRect(find.byElementPredicate((e) => e == row));
+      final body = tester.getRect(find.byWidget((row.widget as EdgedRow).child));
+      expect(
+        tester.getRect(edge),
+        rtl
+            ? Rect.fromLTWH(whole.left, whole.top, EdgedRow.edgeWidth, whole.height)
+            : Rect.fromLTWH(whole.right - EdgedRow.edgeWidth, whole.top, EdgedRow.edgeWidth, whole.height),
+      );
+      expect(body.size, Size(whole.width - EdgedRow.edgeWidth, whole.height), reason: 'the row is as tall as its body');
+      expect(rtl ? body.right : body.left, rtl ? whole.right : whole.left);
+    }
+    expect(found, edges);
+  }
+
+  testWidgets('rooms and roles: each row\'s edge is as tall as the row, with no intrinsic pass (#65)', (tester) async {
+    final repository = await pumpSettings(
+      tester,
+      setUp: (r) {
+        r.adminRoomList['s-guild'] = const [
+          AdminRoom(id: 'r-general', name: 'general', kind: AdminRoomKind.text),
+          AdminRoom(id: 'r-locked', name: 'locked', kind: AdminRoomKind.text, position: 1),
+          AdminRoom(id: 'c-work', name: 'Work', kind: AdminRoomKind.category, position: 2),
+          AdminRoom(id: 'r-standup', name: 'standup', kind: AdminRoomKind.voice, parentId: 'c-work'),
+          AdminRoom(id: 'c-empty', name: 'Empty', kind: AdminRoomKind.category, position: 3),
+        ];
+        r.deniedInRoom['r-locked'] = Perm.manageChannels;
+      },
+    );
+    await tapLabel(tester, RegExp(r'^Rooms'));
+    // general, Work and standup, Empty and its note; locked has none.
+    expectEdgesFillRows(tester, RoomsAdminPage, edges: 5);
+    expect(
+      find.descendant(
+        of: find.widgetWithText(EdgedRow, '# locked', skipOffstage: false),
+        matching: find.byType(DragEdge),
+      ),
+      findsNothing,
+    );
+    await tester.tap(find.bySemanticsLabel('Back').last);
+    await tester.pumpAndSettle();
+
+    await tapLabel(tester, RegExp(r'^Roles'));
+    expectEdgesFillRows(tester, RolesPage, edges: 1);
+    // Not the owner, with no role above Moderator: its edge is a lock.
+    repository.spaceOwner = false;
+    repository.spaces.value = [...repository.spaces.value];
+    await tester.pump();
+    expect(find.byType(DragEdge), findsNothing);
+    expectEdgesFillRows(tester, RolesPage, edges: 1);
+    semantics.dispose();
+  });
+
+  testWidgets('a row\'s edge is on the left where text runs right to left', (tester) async {
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: Duvet.material(Brightness.light),
+        home: FTheme(
+          data: Duvet.theme(Brightness.light),
+          child: Directionality(
+            textDirection: TextDirection.rtl,
+            child: _Rows(
+              children: [
+                for (final h in [40.0, 72.0])
+                  EdgedRow(
+                    edge: const DragEdge(index: 0),
+                    child: SizedBox(height: h),
+                  ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+    expectEdgesFillRows(tester, _Rows, edges: 2, rtl: true);
+    expect(tester.getSize(find.byType(EdgedRow).last).height, 72);
   });
 
   testWidgets('rooms: ManageChannels counts in each room; making one takes it in the Space', (tester) async {

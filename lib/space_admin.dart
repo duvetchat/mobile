@@ -1336,18 +1336,11 @@ class _RoomsAdminPageState extends State<RoomsAdminPage> {
     // list it's nearest to. Down a panel the edges make one ridge.
     Widget grip(int index) => DragEdge(index: index);
     // A plain row on its panel, with its edge to drag by when it may move.
-    Widget row(Widget body, int index, {double indent = 0, bool moves = true}) => IntrinsicHeight(
-      child: Row(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          Expanded(
-            child: Padding(
-              padding: EdgeInsets.only(left: indent),
-              child: body,
-            ),
-          ),
-          if (moves) grip(index),
-        ],
+    Widget row(Widget body, int index, {double indent = 0, bool moves = true}) => EdgedRow(
+      edge: moves ? grip(index) : null,
+      child: Padding(
+        padding: EdgeInsets.only(left: indent),
+        child: body,
       ),
     );
     // One raised panel: the rooms outside any category, or a category's.
@@ -2138,7 +2131,7 @@ class DragEdge extends StatelessWidget {
       index: index,
       child: ExcludeSemantics(
         child: Container(
-          width: 32,
+          width: EdgedRow.edgeWidth,
           decoration: BoxDecoration(
             color: colors.secondary,
             border: BorderDirectional(start: BorderSide(color: context.duvet.hairline)),
@@ -2158,6 +2151,39 @@ class DragEdge extends StatelessWidget {
           ),
         ),
       ),
+    );
+  }
+}
+
+/// A row with [edge] down its trailing side, as tall as the row: a
+/// [DragEdge], or what stands where one would. The row's height is [child]'s
+/// alone and the edge is stretched to it afterwards, so each row is laid out
+/// once: an `IntrinsicHeight` around a stretched `Row` costs a second pass
+/// over every row (#65) for the same pixels, as long as [child] is at least
+/// as tall as what [edge] holds. An edge is never what makes a row taller: a
+/// [child] shorter than a [DragEdge]'s ridges (18) would overflow it.
+class EdgedRow extends StatelessWidget {
+  /// How wide an edge is.
+  static const edgeWidth = 32.0;
+
+  final Widget child;
+  final Widget? edge;
+  const EdgedRow({required this.child, this.edge, super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    final edge = this.edge;
+    if (edge == null) return child;
+    return Stack(
+      // The list's width, not up to it.
+      fit: StackFit.passthrough,
+      children: [
+        Padding(
+          padding: const EdgeInsetsDirectional.only(end: edgeWidth),
+          child: child,
+        ),
+        PositionedDirectional(top: 0, bottom: 0, end: 0, width: edgeWidth, child: edge),
+      ],
     );
   }
 }
@@ -2495,7 +2521,10 @@ class _RolesPageState extends State<RolesPage> {
     Widget grip(int index) => DragEdge(index: index);
     // Above the user's highest role: theirs to see, not to move or change.
     Widget locked() => ExcludeSemantics(
-      child: SizedBox(width: 32, child: Icon(FLucideIcons.lock, size: 14, color: colors.mutedForeground)),
+      child: SizedBox(
+        width: EdgedRow.edgeWidth,
+        child: Icon(FLucideIcons.lock, size: 14, color: colors.mutedForeground),
+      ),
     );
 
     Widget row(SpaceRole r, {int? index}) {
@@ -2548,14 +2577,13 @@ class _RolesPageState extends State<RolesPage> {
           ),
         ),
       );
-      return IntrinsicHeight(
-        child: Row(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            Expanded(child: body),
-            if (moves) grip(index) else if (!r.everyone) locked(),
-          ],
-        ),
+      return EdgedRow(
+        edge: moves
+            ? grip(index)
+            : r.everyone
+            ? null
+            : locked(),
+        child: body,
       );
     }
 
