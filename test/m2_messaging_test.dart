@@ -740,6 +740,37 @@ void main() {
     semantics.dispose();
   });
 
+  testWidgets('a long chat keeps a layer only for the messages near the screen', (tester) async {
+    await openMaya(
+      tester,
+      setUp: (r) => r.history['c-maya'] = [
+        for (var i = 0; i < 1000; i++)
+          FakeRepository.message(
+            'b$i',
+            author: i.isEven ? _maya : _me,
+            name: i.isEven ? 'Maya' : 'Gaby',
+            text: 'line $i',
+          ),
+      ],
+    );
+    expect(find.text('line 999'), findsOneWidget);
+    // Each message built has the layer its dust is taken from, and the list's
+    // own around it: none for the hundreds off screen.
+    final list = find.ancestor(of: find.text('line 999'), matching: find.byType(Scrollable)).first;
+    final built = find.descendant(
+      of: list,
+      matching: find.byWidgetPredicate((w) => w.runtimeType.toString() == '_Vanish'),
+    );
+    final count = built.evaluate().length;
+    expect(count, inInclusiveRange(10, 60));
+    expect(find.descendant(of: list, matching: find.byType(RepaintBoundary)), findsNWidgets(count * 2));
+    expect(
+      find.ancestor(of: built.first, matching: find.byType(RepaintBoundary)).evaluate().first.renderObject,
+      isA<RenderRepaintBoundary>().having((b) => b.size, 'size', tester.getSize(built.first)),
+    );
+    semantics.dispose();
+  });
+
   test('a big message makes no more dust than a small one can', () {
     // A 3x phone's small bubble: specks 3 px wide.
     expect(dustOf(300, 120, 3), (34 * 14, 3.0));
