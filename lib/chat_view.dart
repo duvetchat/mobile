@@ -2260,7 +2260,7 @@ class _ChatViewState extends State<ChatView> with SingleTickerProviderStateMixin
           label: ':${e.name.replaceAll(' ', '_')}:',
           hint: 'Double tap to insert ${e.name}',
           leading: ExcludeSemantics(
-            child: Text(e.emoji, style: const TextStyle(fontFamily: DuvetType.emoji, fontSize: 26, height: 1.1)),
+            child: Text(e.emoji, style: TextStyle(fontFamily: DuvetType.emoji, fontSize: 26, height: 1.1)),
           ),
           onPressed: () {
             EmojiCatalog.used(e.emoji);

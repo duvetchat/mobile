@@ -1,3 +1,4 @@
+import 'package:flutter/foundation.dart' show TargetPlatform, defaultTargetPlatform;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:forui/forui.dart';
@@ -115,13 +116,14 @@ abstract final class DuvetType {
   static const serif = 'Fraunces';
   static const mono = 'Fira Mono';
 
-  /// Twemoji, as on desktop. Set it first on text that is only emoji: as a
+  /// Twemoji, as on desktop; Apple Color Emoji on iOS, which draws no glyph of
+  /// Twemoji's COLR font (#265). Set it first on text that is only emoji: as a
   /// fallback it loses ©️ ™️ ‼️ ❤️ #️⃣ and the like to Inter's and Roboto's own glyphs.
-  static const emoji = 'Twemoji';
+  static String get emoji => defaultTargetPlatform == TargetPlatform.iOS ? 'Apple Color Emoji' : 'Twemoji';
 
-  /// Emoji in every face are Twemoji instead of whatever the phone ships
+  /// Emoji in every face are [emoji] instead of whatever the phone ships
   /// (older Androids miss the newer ones).
-  static const fallback = [emoji];
+  static List<String> get fallback => [emoji];
 
   // Fraunces is one variable font whose default instance is Black and wonky:
   // pin the soft Regular cut, at the optical size its size calls for.
@@ -144,7 +146,7 @@ abstract final class DuvetType {
       const FontVariation('WONK', 0),
     ],
   );
-  static const _text = TextStyle(
+  static final _text = TextStyle(
     fontFamily: family,
     fontFamilyFallback: fallback,
     height: 1.4,
@@ -205,7 +207,7 @@ abstract final class DuvetType {
   static final tabLabel = _text.copyWith(fontSize: 11, fontWeight: FontWeight.w500);
 
   /// Inline and block code.
-  static const code = TextStyle(fontFamily: mono, fontFamilyFallback: fallback, fontSize: 14, height: 1.4);
+  static final code = TextStyle(fontFamily: mono, fontFamilyFallback: fallback, fontSize: 14, height: 1.4);
 }
 
 /// Prism: the light a mention of the user throws on its bubble, as each theme

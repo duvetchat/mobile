@@ -259,7 +259,7 @@ class _PickerState extends State<_Picker> {
                   width: 44,
                   height: 44,
                   child: Center(
-                    child: Text(icon, style: const TextStyle(fontFamily: DuvetType.emoji, fontSize: 22)),
+                    child: Text(icon, style: TextStyle(fontFamily: DuvetType.emoji, fontSize: 22)),
                   ),
                 ),
               ),
@@ -321,7 +321,7 @@ class _PickerState extends State<_Picker> {
     label: e.name,
     onTap: () => _pick(PickedEmoji(e.emoji)),
     onRemove: recent ? () => _forget(e.emoji) : null,
-    child: Text(e.emoji, style: const TextStyle(fontFamily: DuvetType.emoji, fontSize: 28, height: 1.15)),
+    child: Text(e.emoji, style: TextStyle(fontFamily: DuvetType.emoji, fontSize: 28, height: 1.15)),
   );
 
   Widget _customCell(CustomEmoji e, {bool recent = false}) => _Cell(
