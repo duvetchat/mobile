@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../data/models.dart';
+import '../theme.dart';
 
 /// What the composer is completing: a mention after `@`, a room after `#`, or
 /// an emoji after `:` (two letters at least, so "10:30" stays a time).
@@ -170,13 +171,22 @@ class ComposerController extends TextEditingController {
   @override
   TextSpan buildTextSpan({required BuildContext context, TextStyle? style, required bool withComposing}) {
     final tokens = [..._mentions.keys, ..._emojis.keys, ..._rooms.keys].where(text.contains).toList();
-    if (tokens.isEmpty) return super.buildTextSpan(context: context, style: style, withComposing: withComposing);
+    // Emoji as large as in the bubble; while an IME composes, its underline.
+    final composing = withComposing && value.isComposingRangeValid;
+    List<TextSpan> plain(String text) =>
+        style == null || composing ? [TextSpan(text: text)] : DuvetType.withEmoji(text, base: style);
+    if (tokens.isEmpty) {
+      if (composing || style == null || DuvetType.emojiScale == 1) {
+        return super.buildTextSpan(context: context, style: style, withComposing: withComposing);
+      }
+      return TextSpan(style: style, children: plain(text));
+    }
     tokens.sort((a, b) => b.length - a.length);
     final pattern = RegExp(tokens.map(RegExp.escape).join('|'));
     final spans = <TextSpan>[];
     var at = 0;
     for (final m in pattern.allMatches(text)) {
-      if (m.start > at) spans.add(TextSpan(text: text.substring(at, m.start)));
+      if (m.start > at) spans.addAll(plain(text.substring(at, m.start)));
       spans.add(
         TextSpan(
           text: m.group(0),
@@ -185,7 +195,7 @@ class ComposerController extends TextEditingController {
       );
       at = m.end;
     }
-    if (at < text.length) spans.add(TextSpan(text: text.substring(at)));
+    if (at < text.length) spans.addAll(plain(text.substring(at)));
     return TextSpan(style: style, children: spans);
   }
 }

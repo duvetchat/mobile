@@ -5,6 +5,7 @@ import 'package:duvet/theme.dart';
 import 'package:duvet/widgets/chrome.dart';
 import 'package:duvet/widgets/glass.dart';
 import 'package:duvet/widgets/rows.dart';
+import 'package:flutter/foundation.dart' show TargetPlatform, debugDefaultTargetPlatformOverride;
 import 'package:flutter/material.dart';
 import 'dart:ui' show Tristate;
 
@@ -34,6 +35,49 @@ void main() {
     await tester.tap(find.descendant(of: find.byType(DuvetTabBar), matching: find.text(label)));
     await tester.pumpAndSettle();
   }
+
+  test('emoji are Twemoji, but Apple Color Emoji on iOS, which draws none of Twemoji\'s COLR glyphs (#265)', () {
+    expect(DuvetType.emoji, 'Twemoji');
+    expect(DuvetType.fallback, ['Twemoji']);
+    debugDefaultTargetPlatformOverride = TargetPlatform.iOS;
+    addTearDown(() => debugDefaultTargetPlatformOverride = null);
+    expect(DuvetType.emoji, 'Apple Color Emoji');
+    expect(DuvetType.fallback, ['Apple Color Emoji']);
+  });
+
+  test(
+    'on iOS, emoji are set 1.25 times their text, as iOS sets Apple Color Emoji, in the same line height (#265)',
+    () {
+      const base = TextStyle(fontSize: 16, height: 1.4);
+      // Elsewhere, one span as it was.
+      expect(DuvetType.withEmoji('hi 😀', base: base).map((s) => s.text), ['hi 😀']);
+      expect(DuvetType.emojiStyle(28, height: 1.15).fontSize, 28);
+
+      debugDefaultTargetPlatformOverride = TargetPlatform.iOS;
+      addTearDown(() => debugDefaultTargetPlatformOverride = null);
+      final spans = DuvetType.withEmoji('😀 hi ❤️ 👍🏽 👨‍👩‍👧 🇯🇵 1️⃣ © ™ ☺︎ end', base: base);
+      expect(spans.map((s) => (s.text, s.style?.fontSize)), [
+        ('😀', 20),
+        (' hi ', null),
+        ('❤️', 20),
+        (' ', null),
+        ('👍🏽', 20),
+        (' ', null),
+        ('👨‍👩‍👧', 20),
+        (' ', null),
+        ('🇯🇵', 20),
+        (' ', null),
+        ('1️⃣', 20),
+        // Text-style symbols stay text.
+        (' © ™ ☺︎ end', null),
+      ]);
+      expect(spans.first.style!.height, closeTo(1.12, 1e-9));
+      expect(DuvetType.withEmoji('no emoji here', base: base).single.text, 'no emoji here');
+      final emoji = DuvetType.emojiStyle(28, height: 1.15);
+      expect((emoji.fontFamily, emoji.fontSize), ('Apple Color Emoji', 35));
+      expect(emoji.height, closeTo(0.92, 1e-9));
+    },
+  );
 
   test('the type ramp: Fraunces for smaller headlines, Inter for page titles, numbers and the interface, Roboto for '
       'messages', () {

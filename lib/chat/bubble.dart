@@ -1122,7 +1122,7 @@ class _Reactions extends StatelessWidget {
                       )
                     else
                       r.emojiId == null
-                          ? Text(r.emoji, style: const TextStyle(fontFamily: DuvetType.emoji, fontSize: 15))
+                          ? Text(r.emoji, style: DuvetType.emojiStyle(15))
                           : Text(name, style: const TextStyle(fontSize: 15)),
                     const SizedBox(width: 4),
                     Text('${r.count}'),
