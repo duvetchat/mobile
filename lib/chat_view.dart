@@ -106,6 +106,11 @@ class ChatView extends StatefulWidget {
   @visibleForTesting
   static Future<List<OutgoingFile>> Function()? debugPickFiles;
 
+  /// Off, a message has no [RepaintBoundary] of its own: what
+  /// `test/benchmark/message_boundary.dart` measures it against.
+  @visibleForTesting
+  static bool debugMessageBoundary = true;
+
   @override
   State<ChatView> createState() => _ChatViewState();
 }
@@ -2766,9 +2771,8 @@ class _ChatViewState extends State<ChatView> with SingleTickerProviderStateMixin
                       }
                     : KeyedSubtree(
                         key: _keyFor(entry.message.id),
-                        // Its own layer, for the picture a delete breaks up.
-                        child: RepaintBoundary(
-                          child: CompositedTransformTarget(
+                        child: _boundary(
+                          CompositedTransformTarget(
                             link: _linkFor(entry.message.id),
                             child: _Vanish(
                               hidden: _vanishing.contains(entry.message.id),
@@ -2784,6 +2788,15 @@ class _ChatViewState extends State<ChatView> with SingleTickerProviderStateMixin
       ),
     );
   }
+
+  /// Its own layer, for the picture a delete breaks up. Measured for #64
+  /// (`test/benchmark/message_boundary.dart`, the test binding): one more
+  /// OffsetLayer for each message built, 9 to 11 of some 100 layers on a
+  /// phone, in a chat of 300 messages as in one of 3000, as the list only
+  /// builds those near the screen; and a scrolled frame's time on the UI
+  /// thread with it and without differs by less than two runs of either.
+  /// Raster time and memory on a device aren't measured.
+  Widget _boundary(Widget child) => ChatView.debugMessageBoundary ? RepaintBoundary(child: child) : child;
 
   /// The entries, oldest first, with a separator where the day changes, the
   /// "N new messages" divider after the last one read (or above [_unreadFrom]),
