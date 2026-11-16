@@ -5,8 +5,9 @@ import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 /// The tokens that resume a session, the access token and the session
 /// (refresh) token, and when the API issued them: at the login or the last
 /// renewal. Null when that isn't known (saved by an older version of the
-/// app).
-typedef StoredSession = ({String token, String sessionToken, DateTime? refreshedAt});
+/// app). And whose session it is, once the API said: null until then, and in
+/// one an older version saved.
+typedef StoredSession = ({String token, String sessionToken, DateTime? refreshedAt, String? userId});
 
 abstract interface class SessionStore {
   Future<StoredSession?> read();
@@ -26,12 +27,23 @@ class SecureSessionStore implements SessionStore {
   static const _sessionKey = 'duvet_refresh_token';
   static const _refreshedKey = 'duvet_session_refreshed_at';
 
+  // The old keys are known to be gone: a write needn't delete them again, three
+  // round trips to the keychain each time. Static, as the store is const, so
+  // each isolate finds out for itself. A read that finds no session under
+  // [_key] forgets it.
+  static bool _oldKeysGone = false;
+
   final FlutterSecureStorage _storage;
   const SecureSessionStore([this._storage = const FlutterSecureStorage()]);
 
   @override
   Future<StoredSession?> read() async {
-    if (await _storage.read(key: _key) case final kept?) {
+    final kept = await _storage.read(key: _key);
+    // Under the one key, so a write since then took the old ones away. One that
+    // died before it did leaves them until the session is cleared: nothing
+    // reads them, as this key wins.
+    _oldKeysGone = kept != null;
+    if (kept != null) {
       try {
         final session = jsonDecode(kept);
         if (session case {
@@ -43,6 +55,10 @@ class SecureSessionStore implements SessionStore {
             sessionToken: sessionToken,
             refreshedAt: switch (session['refreshed_at']) {
               final int at => DateTime.fromMillisecondsSinceEpoch(at, isUtc: true),
+              _ => null,
+            },
+            userId: switch (session['user_id']) {
+              final String id when id.isNotEmpty => id,
               _ => null,
             },
           );
@@ -60,6 +76,7 @@ class SecureSessionStore implements SessionStore {
       token: token,
       sessionToken: sessionToken ?? '',
       refreshedAt: refreshed == null ? null : DateTime.fromMillisecondsSinceEpoch(refreshed, isUtc: true),
+      userId: null,
     );
   }
 
@@ -71,9 +88,10 @@ class SecureSessionStore implements SessionStore {
         'token': session.token,
         'session_token': session.sessionToken,
         if (session.refreshedAt case final at?) 'refreshed_at': at.millisecondsSinceEpoch,
+        'user_id': ?session.userId,
       }),
     );
-    await _forgetOldKeys();
+    if (!_oldKeysGone) await _forgetOldKeys();
   }
 
   @override
@@ -86,6 +104,7 @@ class SecureSessionStore implements SessionStore {
     for (final key in [_tokenKey, _sessionKey, _refreshedKey]) {
       await _storage.delete(key: key);
     }
+    _oldKeysGone = true;
   }
 }
 

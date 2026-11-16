@@ -23,6 +23,10 @@ BaseCacheManager? imageStore = CacheManager(
   Config('pictures', maxNrOfCacheObjects: 1000, stalePeriod: const Duration(days: 30)),
 );
 
+/// The store for what keeps pictures of its own in it: a playing voice note's artwork (main), which would open a
+/// second store otherwise. Null as [imageStore] is.
+BaseCacheManager? get pictureStore => imageStore;
+
 final _attachment = RegExp(
   r'^/attachments/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$',
   caseSensitive: false,

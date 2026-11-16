@@ -4,6 +4,7 @@ import 'dart:io';
 import 'package:firebase_core/firebase_core.dart';
 import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/scheduler.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_localizations/flutter_localizations.dart';
 import 'package:forui/forui.dart';
@@ -19,6 +20,7 @@ import 'data/launchpad.dart';
 import 'data/recent_emoji.dart';
 import 'data/call_history.dart';
 import 'data/duvet_repository.dart';
+import 'data/images.dart';
 import 'data/models.dart';
 import 'data/repository.dart';
 import 'data/scope.dart';
@@ -38,6 +40,7 @@ import 'welcome.dart';
 import 'tabs.dart';
 import 'theme.dart';
 import 'widgets/chrome.dart';
+import 'widgets/ghost_art.dart';
 import 'widgets/media.dart';
 import 'widgets/notification_menu.dart';
 import 'widgets/playback_bar.dart';
@@ -46,44 +49,57 @@ import 'widgets/scrolling.dart';
 import 'widgets/youtube_dock.dart';
 
 Future<void> main() async {
-  DuvetBinding();
+  final binding = DuvetBinding();
+  // The theme's mode is the first thing read: the first frame draws by it. The rest of it loads behind.
+  final appearance = Appearance();
+  unawaited(appearance.load());
   // Android's Photo Picker for every picture, as Android 16 does anyway: before
   // it, a pick of photos and GIFs opened the file chooser, and one of a single
   // picture Google Photos (#77).
   if (ImagePickerPlatform.instance case final ImagePickerAndroid android) android.useAndroidPhotoPicker = true;
   // A playing voice note in the media notification and quick settings (#42),
-  // before the first player.
+  // before the first player. The start doesn't wait for it: a note plays
+  // without it, and no note plays before the first frame. Its artwork goes
+  // in the pictures' store, not a second one of its own opened at each start.
   // A failure here costs the notification, never the app's start.
-  try {
-    await AudioService.init(
+  unawaited(
+    AudioService.init(
       builder: () => VoiceNoteHandler.instance,
       config: const AudioServiceConfig(
         androidNotificationChannelId: 'chat.duvet.playback',
         androidNotificationChannelName: 'Voice messages',
         androidNotificationIcon: 'mipmap/ic_launcher_monochrome',
       ),
-    );
-  } catch (e) {
-    debugPrint('AudioService.init failed: $e');
-  }
+      cacheManager: pictureStore,
+    ).then((_) {}, onError: (Object e) => debugPrint('AudioService.init failed: $e')),
+  );
   final repository = DuvetRepository(forgetNotifications: forgetChat);
   // The background renewal asks this isolate first: the session keeps one owner while the app runs
   // (lib/push/renewal.dart).
   answerRenewals(() => repository.renewForBackground(renewalEvery));
-  // Push notifications (lib/push). Without Firebase set up (no android/app/google-services.json) the app runs without
-  // them, and asks nothing of the user for them: a failure here costs the push, never the app's start.
-  PushRegistrar? push;
-  try {
-    await Firebase.initializeApp();
-    FirebaseMessaging.onBackgroundMessage(firebaseMessagingBackgroundHandler);
-    push = const FirebasePushRegistrar();
-  } catch (e) {
-    debugPrint("push: Firebase isn't set up: $e");
-  }
-  // Signing out leaves none of the account's notifications on the phone.
+  // Signing out leaves none of the account's notifications on the phone. Before the session starts: one found
+  // ended tells of it at once.
   repository.signedOut.listen(
     (_) => unawaited(forgetAllNotifications().catchError((Object e) => debugPrint('push: forgetting: $e'))),
   );
+  // The session starts here, not with the first screen: its read of the keystore goes ahead of the plugins' work
+  // below, and the API answers while the app builds. Whether the app is in sight is DuvetApp's to say, not said here
+  // too: this early the activity may have given neither a state nor a size yet, and an app counted out of sight
+  // here would stay so, its state never changing again under DuvetApp.
+  final restoring = StartedRestore(repository.restore(), signedOut: repository.signedOut);
+  // Push notifications (lib/push), on Android only: there is no Firebase app or notification setup for another
+  // platform yet. Without Firebase set up (no android/app/google-services.json) the app runs without them, and asks
+  // nothing of the user for them: a failure here costs the push, never the app's start.
+  PushRegistrar? push;
+  if (Platform.isAndroid) {
+    try {
+      await Firebase.initializeApp();
+      FirebaseMessaging.onBackgroundMessage(firebaseMessagingBackgroundHandler);
+      push = const FirebasePushRegistrar();
+    } catch (e) {
+      debugPrint("push: Firebase isn't set up: $e");
+    }
+  }
   // A notification's tap opens its message, once signed in; one that started the app too.
   void openTapped(String? link) {
     if (link != null) unawaited(openWhenSignedIn(repository.profile, Uri.parse(link)));
@@ -94,24 +110,49 @@ Future<void> main() async {
     if (answer) callAnswered.value = conversationId;
   }
 
-  try {
-    await initNotifications(onTap: openTapped, onCall: openCall);
-  } catch (e) {
-    debugPrint('push: notifications: $e');
+  // Waited for: it is what hears a tap. The channels aren't (below).
+  if (Platform.isAndroid) {
+    try {
+      await initNotifications(onTap: openTapped, onCall: openCall);
+    } catch (e) {
+      debugPrint('push: notifications: $e');
+    }
   }
+  // The first frame waits for what the phone itself keeps, never for the network: the theme's mode, so a forced
+  // light or dark is right on it, and the session's read, so a home that was kept is on it instead of a spinner one
+  // frame before it. Both reads began first; a keystore that hangs holds the frame no longer than this.
+  await Future.wait([
+    appearance.modeLoaded,
+    repository.restoreRead,
+  ]).timeout(const Duration(milliseconds: 500), onTimeout: () => const []);
   runApp(
     DuvetApp(
       repository: repository,
+      appearance: appearance,
       push: push,
+      restoring: restoring,
       // It doesn't hold the first frame back.
-      readLaunch: () => unawaited(
-        launchedWith().then((response) {
-          if (response != null) routeNotificationResponse(response, onTap: openTapped, onCall: openCall);
-        }, onError: (Object e) => debugPrint('push: notifications: $e')),
-      ),
+      readLaunch: () => unawaited(_readLaunch(onTap: openTapped, onCall: openCall)),
     ),
   );
+  if (!Platform.isAndroid) return;
+  // The channels after the first frame, which they'd hold back; a notification that shows before waits for them
+  // itself, as does one on an engine with no screen, where no frame comes.
+  binding.addPostFrameCallback((_) => unawaited(ensureChannels()));
   unawaited(_renewInBackground());
+}
+
+// Does what the notification that started the app asks, if one did. Nothing of it fails the app's start.
+Future<void> _readLaunch({
+  required void Function(String? payload) onTap,
+  required void Function(String conversationId, {required bool answer}) onCall,
+}) async {
+  try {
+    final response = await launchedWith();
+    if (response != null) routeNotificationResponse(response, onTap: onTap, onCall: onCall);
+  } catch (e) {
+    debugPrint('push: notifications: $e');
+  }
 }
 
 /// Whether the app shows as it starts: in a state that shows it, or, before any state comes, with a screen to show on.
@@ -123,6 +164,7 @@ bool shownAtStart(AppLifecycleState? state, Size viewSize) => state == null ? !v
 bool _shows(AppLifecycleState state) => state == AppLifecycleState.resumed || state == AppLifecycleState.inactive;
 
 // The session renews every few hours while the app sits closed, so the pushes keep coming (lib/push/renewal.dart).
+// On Android only: iOS runs no such task for the app.
 Future<void> _renewInBackground() async {
   try {
     await Workmanager().initialize(callbackDispatcher);
@@ -162,6 +204,10 @@ class DuvetApp extends StatefulWidget {
   /// Reads the notification whose tap or button started the app, and does what it asks (main), once the app shows:
   /// audio_service's engine may run main() with no screen before the activity a tap launches comes to it.
   final void Function()? readLaunch;
+
+  /// The session's restore, started before the app's widgets (main); without one, as in tests, the session gate
+  /// starts it.
+  final StartedRestore? restoring;
   const DuvetApp({
     required this.repository,
     this.appearance,
@@ -171,6 +217,7 @@ class DuvetApp extends StatefulWidget {
     this.voicePrefs,
     this.push,
     this.readLaunch,
+    this.restoring,
     super.key,
   });
 
@@ -240,7 +287,7 @@ class _DuvetAppState extends State<DuvetApp> {
   late final AppLifecycleListener _lifecycle;
   late final StreamSubscription<void> _signedOut;
   late final PushRegistration? _pushRegistration = switch (widget.push) {
-    final registrar? => PushRegistration(widget.repository, registrar),
+    final registrar? => PushRegistration(widget.repository, registrar, signedOut: widget.restoring?.signedOut ?? false),
     null => null,
   };
 
@@ -386,7 +433,7 @@ class _DuvetAppState extends State<DuvetApp> {
               ),
               // Duvet's links open whether signed in or not: verifying an email
               // and resetting a password come from links too.
-              home: const DeepLinkHandler(child: SessionGate()),
+              home: DeepLinkHandler(child: SessionGate(restoring: widget.restoring)),
             ),
           ),
         ),
@@ -395,43 +442,90 @@ class _DuvetAppState extends State<DuvetApp> {
   }
 }
 
+/// A restore of the session started before the widgets that follow it, and its outcome as soon as it has one: a
+/// future tells of its answer only a turn after it's asked, which would be a frame of the spinner over a restore that
+/// is done. Listening to it here also keeps a failure nobody follows yet from being an unhandled error.
+class StartedRestore {
+  final Future<bool> future;
+
+  /// How it ended; null while it's on its way.
+  AsyncSnapshot<bool>? outcome;
+
+  /// Whether the session signed out since: found ended, it says so on [signedOut] as it happens, which those made
+  /// with the app's widgets are too late to hear (the push registration unregisters the phone on it).
+  bool signedOut = false;
+
+  StartedRestore(this.future, {Stream<void>? signedOut}) {
+    signedOut?.listen((_) => this.signedOut = true);
+    future.then(
+      (signedIn) => outcome = AsyncSnapshot.withData(ConnectionState.done, signedIn),
+      onError: (Object e, StackTrace stack) => outcome = AsyncSnapshot.withError(ConnectionState.done, e, stack),
+    );
+  }
+}
+
 /// Resumes the saved session, then shows the app while signed in and the login
-/// screen otherwise.
+/// screen otherwise. The app shows as soon as there is a profile: a session
+/// whose home was kept has one before the API answers.
 class SessionGate extends StatefulWidget {
-  const SessionGate({super.key});
+  /// The restore main() started; null starts one here.
+  final StartedRestore? restoring;
+  const SessionGate({this.restoring, super.key});
 
   @override
   State<SessionGate> createState() => _SessionGateState();
 }
 
 class _SessionGateState extends State<SessionGate> {
+  // The restore started before this, until another replaces it.
+  late StartedRestore? _started = widget.restoring;
   Future<bool>? _restoring;
 
   @override
   void didChangeDependencies() {
     super.didChangeDependencies();
-    _restoring ??= context.repository.restore();
+    if (_restoring != null) return;
+    _restoring = _started?.future ?? context.repository.restore();
+    // Every screen after this one opens on the app's icon: parsed while the session is on its way, it is there
+    // for that screen's first frame.
+    AppIcon.warm(context);
   }
 
-  void _retry() => setState(() => _restoring = context.repository.restore());
+  // In a block: setState takes no callback that answers a future, and a debug
+  // build throws on one before it rebuilds.
+  void _retry() => setState(() {
+    _started = null;
+    _restoring = context.repository.restore();
+  });
+
+  void _signInInstead() => setState(() {
+    _started = null;
+    _restoring = Future.value(false);
+  });
 
   @override
   Widget build(BuildContext context) {
     final repository = context.repository;
+    // The profile is followed inside the restore, not around it: a sign-out
+    // then finds the restore done, and shows the welcome screen with no frame
+    // of the spinner between.
     return FutureBuilder(
       future: _restoring,
-      builder: (context, snapshot) {
-        if (snapshot.connectionState != ConnectionState.done) {
-          return const FScaffold(child: Center(child: FCircularProgress()));
-        }
-        if (snapshot.hasError) {
-          return _Unreachable(onRetry: _retry, onSignIn: () => setState(() => _restoring = Future.value(false)));
-        }
-        return ValueListenableBuilder<Profile?>(
-          valueListenable: repository.profile,
-          builder: (context, profile, _) => profile == null ? const WelcomeScreen() : const HomeTabs(),
-        );
-      },
+      builder: (context, snapshot) => ValueListenableBuilder<Profile?>(
+        valueListenable: repository.profile,
+        builder: (context, profile, _) {
+          if (profile != null) return const HomeTabs();
+          // A restore that ended before the first build shows its outcome in it.
+          final restore = _started?.outcome ?? snapshot;
+          if (restore.connectionState != ConnectionState.done) {
+            return const FScaffold(child: Center(child: FCircularProgress()));
+          }
+          if (restore.hasError) {
+            return _Unreachable(onRetry: _retry, onSignIn: _signInInstead);
+          }
+          return const WelcomeScreen();
+        },
+      ),
     );
   }
 }
@@ -482,6 +576,9 @@ class HomeTabs extends StatefulWidget {
 
 class _HomeTabsState extends State<HomeTabs> {
   int index = 0;
+  // The tabs built so far: the open one, each opened since, and the others once the home has gone quiet. The rest
+  // are empty slots, so the frame the home first shows in builds one tab, not four.
+  final _built = <int>{0};
   final _spaces = GlobalKey<NavigatorState>();
   // The tabs keep their state as the window crosses between the layouts.
   final _tabs = GlobalKey();
@@ -502,7 +599,23 @@ class _HomeTabsState extends State<HomeTabs> {
   void initState() {
     super.initState();
     _playback.state.addListener(_followPlayback);
+    _buildRestWhenQuiet();
   }
+
+  // The tabs not opened yet, one a frame, each after a frame that ends with nothing animating: a tap then finds
+  // its tab built, and none of them is built in the frames the home comes up in (its icon hops, and it spins
+  // while it connects). Not SchedulerBinding.scheduleTask at Priority.idle: a task of its that finds an animation
+  // running asks again in a timer of no length, on and on until the animation ends.
+  void _buildRestWhenQuiet() => SchedulerBinding.instance.addPostFrameCallback((_) {
+    if (!mounted) return;
+    final next = [
+      for (var i = 0; i < _items.length; i++)
+        if (!_built.contains(i)) i,
+    ].firstOrNull;
+    if (next == null) return;
+    if (SchedulerBinding.instance.transientCallbackCount == 0) setState(() => _built.add(next));
+    _buildRestWhenQuiet();
+  });
 
   @override
   void didChangeDependencies() {
@@ -557,12 +670,18 @@ class _HomeTabsState extends State<HomeTabs> {
   void _select(int i) {
     // The open tab again: back to its root.
     if (i == index && i == 1) _spaces.currentState?.popUntil((r) => r.isFirst);
-    setState(() => index = i);
+    setState(() {
+      index = i;
+      _built.add(i);
+    });
   }
 
   // From the rail: the Space's directory, in place of the one open.
   void _openSpace(Space space) {
-    setState(() => index = 1);
+    setState(() {
+      index = 1;
+      _built.add(1);
+    });
     if (space.id == _spaceId) return;
     _spaces.currentState?.pushAndRemoveUntil(spaceRoute(space, instant: true), (r) => r.isFirst);
   }
@@ -575,6 +694,8 @@ class _HomeTabsState extends State<HomeTabs> {
     // Outside the app's shell (pumped alone), the phone's layout. The width is what the notch's sides leave.
     final size = shell == null ? SizeClass.compact : SizeClass.of(media.size.width - media.padding.horizontal);
     shell?.layout(wide: size.wide);
+    // The rail opens a Space on the Spaces tab's navigator, which has to be there for the first tap.
+    if (size.wide) _built.add(1);
     return VoiceListener(
       // Between the notch's sides, on a phone turned.
       child: SafeSides(
@@ -599,27 +720,33 @@ class _HomeTabsState extends State<HomeTabs> {
     _spaces.currentState?.maybePop();
   }
 
-  Widget _stack() => KeyedSubtree(
-    key: _tabs,
-    child: IndexedStack(
-      index: index,
-      children: [
-        const ChatsTab(),
-        NavigatorPopHandler(
-          // Behind another tab on a wide window, its Space isn't what Back leaves.
-          enabled: !(_shell?.wide ?? false) || index == 1,
-          onPopWithResult: (_) => _backInSpaces(),
-          child: Navigator(
-            key: _spaces,
-            observers: [_spaceRoutes],
-            onGenerateRoute: (_) => MaterialPageRoute<void>(builder: (_) => const SpacesTab()),
+  Widget _stack() {
+    Widget slot(int i, Widget tab) => _built.contains(i) ? tab : const SizedBox.shrink();
+    return KeyedSubtree(
+      key: _tabs,
+      child: IndexedStack(
+        index: index,
+        children: [
+          slot(0, const ChatsTab()),
+          slot(
+            1,
+            NavigatorPopHandler(
+              // Behind another tab on a wide window, its Space isn't what Back leaves.
+              enabled: !(_shell?.wide ?? false) || index == 1,
+              onPopWithResult: (_) => _backInSpaces(),
+              child: Navigator(
+                key: _spaces,
+                observers: [_spaceRoutes],
+                onGenerateRoute: (_) => MaterialPageRoute<void>(builder: (_) => const SpacesTab()),
+              ),
+            ),
           ),
-        ),
-        const CallsTab(),
-        const YouTab(),
-      ],
-    ),
-  );
+          slot(2, const CallsTab()),
+          slot(3, const YouTab()),
+        ],
+      ),
+    );
+  }
 
   // The chats open in the pane; on a compact window only for the frame before they move over everything.
   Widget _pane(Shell shell, {bool roomForMembers = false}) => PaneScope(

@@ -81,10 +81,11 @@ Future<Directory> Function() pushDirectory = getApplicationSupportDirectory;
 /// a second.
 const postSpacing = Duration(milliseconds: 250);
 
-/// Sets the notifications up in this isolate: the channels, and in the app's own isolate what a tap does ([onTap],
-/// with a message notification's payload, its link; [onCall] for a call's: see [routeNotificationResponse]). The
-/// background isolate passes none, so the app's own stay. A call's Decline while the app isn't running goes to
-/// [callActionInBackground].
+/// Sets the notifications up in this isolate: in the app's own isolate what a tap does ([onTap], with a message
+/// notification's payload, its link; [onCall] for a call's: see [routeNotificationResponse]). The background isolate
+/// passes none, so the app's own stay. A call's Decline while the app isn't running goes to
+/// [callActionInBackground]. The channels come apart from it ([ensureChannels]): the app's start waits for this, not
+/// for them.
 Future<void> initNotifications({
   void Function(String? payload)? onTap,
   void Function(String conversationId, {required bool answer})? onCall,
@@ -96,10 +97,28 @@ Future<void> initNotifications({
         : (response) => routeNotificationResponse(response, onTap: onTap, onCall: onCall),
     onDidReceiveBackgroundNotificationResponse: callActionInBackground,
   );
+}
+
+// The channels' creation in this isolate, once it's asked for.
+Future<void>? _channels;
+
+/// Creates the two channels, once in this isolate however often it's asked: the app asks after its first frame, and
+/// every notification waits for it before it shows, so none comes before its channel. A failure is only logged, and
+/// the next one asks again: Android then makes the channel of the notification that shows.
+Future<void> ensureChannels() => _channels ??= _createChannels().catchError((Object e) {
+  _channels = null;
+  debugPrint('push: the channels: $e');
+});
+
+Future<void> _createChannels() async {
   final android = _plugin.resolvePlatformSpecificImplementation<AndroidFlutterLocalNotificationsPlugin>();
   await android?.createNotificationChannel(messagesChannel);
   await android?.createNotificationChannel(callsChannel);
 }
+
+/// Forgets that the channels were created: each test starts as a new isolate does.
+@visibleForTesting
+void forgetChannels() => _channels = null;
 
 /// Where a notification's tap or button goes: a message's to [onTap], with its link; a call's Decline declines it
 /// ([decline]); its Answer or its body to [onCall], which opens the app on it, answering it for Answer.
@@ -137,6 +156,8 @@ Future<void> callActionInBackground(NotificationResponse response) async {
 
 /// The response of the notification whose tap or button started the app, if one did.
 Future<NotificationResponse?> launchedWith() async {
+  // Only Android's notifications are set up ([initNotifications]): elsewhere none of them started the app.
+  if (defaultTargetPlatform != TargetPlatform.android) return null;
   final details = await _plugin.getNotificationAppLaunchDetails();
   return details?.didNotificationLaunchApp == true ? details?.notificationResponse : null;
 }
@@ -175,6 +196,8 @@ Future<void> _showWaiting() async {
     ];
     _waiting.removeWhere(batch.contains);
     try {
+      // After the batch is taken: the first of a burst still shows alone, at once.
+      await ensureChannels();
       switch (next) {
         case MessagePush():
           await _showMessages([for (final (push, _) in batch) push as MessagePush], alert: alert);
@@ -247,6 +270,7 @@ Future<bool> ringCallAway(CallPush push) async {
 Future<bool> _showCall(CallPush push, {bool fromApp = false}) async {
   final started = fromApp ? 0 : push.startedAt.millisecondsSinceEpoch;
   if (_ended.containsKey('${push.conversationId}:$started')) return false;
+  await ensureChannels();
   final window = push.ringUntil.difference(push.startedAt);
   var left = push.ringUntil.difference(DateTime.now());
   if (left <= Duration.zero || left > window) left = window;

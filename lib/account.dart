@@ -1860,12 +1860,21 @@ class _YouTabState extends State<YouTab> {
     }
   }
 
+  // Whether the tab was the one showing when its dependencies last changed.
+  bool _shown = false;
+
   @override
   void didChangeDependencies() {
     super.didChangeDependencies();
-    context.repository.storage().then((s) {
-      if (mounted) setState(() => _storage = s);
-    }, onError: (Object e) => debugPrint('storage: $e'));
+    // Asked each time the tab comes into view, so the figure is fresh when it's read, and never for a tab built
+    // behind another or on a theme's change, which calls this every frame of its fade.
+    final shown = Visibility.of(context);
+    if (shown && !_shown) {
+      context.repository.storage().then((s) {
+        if (mounted) setState(() => _storage = s);
+      }, onError: (Object e) => debugPrint('storage: $e'));
+    }
+    _shown = shown;
   }
 
   void _push(Widget page) =>

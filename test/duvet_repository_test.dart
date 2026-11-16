@@ -4,10 +4,12 @@ import 'dart:convert';
 
 import 'package:clock/clock.dart';
 import 'package:duvet/data/cache.dart';
+import 'package:duvet/data/call_history.dart';
 import 'package:duvet/data/duvet_repository.dart';
 import 'package:duvet/data/models.dart';
 import 'package:duvet/data/recent_chats.dart';
 import 'package:duvet/data/session_store.dart';
+import 'package:duvet/data/voice.dart';
 import 'package:duvet_client/duvet.dart' as duvet;
 import 'package:duvet_client/http/router.dart' show ApiRouter;
 import 'package:fake_async/fake_async.dart';
@@ -16,6 +18,7 @@ import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
 
 import 'support/eventually.dart';
+import 'support/fake_voice.dart';
 
 const _me = '00000000-0000-4000-8000-000000000001';
 const _maya = '00000000-0000-4000-8000-000000000002';
@@ -852,7 +855,7 @@ void main() {
   });
 
   test('a saved session resumes; a rejected one is forgotten', () async {
-    await store.write((token: 'access-1', sessionToken: 'refresh-1', refreshedAt: DateTime.now()));
+    await store.write((token: 'access-1', sessionToken: 'refresh-1', refreshedAt: DateTime.now(), userId: null));
     expect(await repository.restore(), isTrue);
     expect(repository.profile.value?.username, 'gaby');
 
@@ -882,7 +885,9 @@ void main() {
     );
     addTearDown(offline.dispose);
     expect(await offline.restore(), isTrue);
-    expect(offline.status.value, LiveStatus.offline);
+    // Its home shows at once, and it's offline once the start behind it failed.
+    expect(offline.profile.value?.username, 'gaby');
+    await eventually(() => expect(offline.status.value, LiveStatus.offline));
     expect(offline.profile.value?.username, 'gaby');
     expect(offline.conversations.value.single.title, 'Maya');
     final page = await offline.messages(const ConversationTarget('c-1'));
@@ -1140,7 +1145,7 @@ void main() {
   test('a session refused at launch leaves no account\'s recent chats on the phone', () async {
     const someone = '00000000-0000-4000-8000-0000000000ff';
     await recentsStore.write(someone, '[]');
-    await store.write((token: 'access-1', sessionToken: 'refresh-1', refreshedAt: DateTime.now()));
+    await store.write((token: 'access-1', sessionToken: 'refresh-1', refreshedAt: DateTime.now(), userId: null));
     final rejecting = DuvetRepository(
       store: store,
       recentsStore: recentsStore,
@@ -1204,7 +1209,7 @@ void main() {
       var signedOut = 0;
       final sub = repository.signedOut.listen((_) => signedOut++);
       addTearDown(sub.cancel);
-      final renewed = (token: 'access-9', sessionToken: 'refresh-9', refreshedAt: DateTime.now().toUtc());
+      final renewed = (token: 'access-9', sessionToken: 'refresh-9', refreshedAt: DateTime.now().toUtc(), userId: null);
       await store.write(renewed);
       expiredToken = 'access-1';
       rotatedAway = {'refresh-1'};
@@ -1246,7 +1251,12 @@ void main() {
       final kept = _TestStore();
       final local = onStore(kept);
       await local.logIn('gaby@duvet.chat', 'secret');
-      await kept.write((token: 'access-9', sessionToken: 'refresh-9', refreshedAt: DateTime.now().toUtc()));
+      await kept.write((
+        token: 'access-9',
+        sessionToken: 'refresh-9',
+        refreshedAt: DateTime.now().toUtc(),
+        userId: null,
+      ));
       kept.reads = 0;
       expiredToken = 'access-1';
       rotatedAway = {'refresh-1'};
@@ -1270,7 +1280,12 @@ void main() {
     // Its answer came once the client it went with was replaced: the stored session's goes on with it.
     test('a request refused after another one took up the stored session goes once more with it', () async {
       await repository.logIn('gaby@duvet.chat', 'secret');
-      await store.write((token: 'access-9', sessionToken: 'refresh-9', refreshedAt: DateTime.now().toUtc()));
+      await store.write((
+        token: 'access-9',
+        sessionToken: 'refresh-9',
+        refreshedAt: DateTime.now().toUtc(),
+        userId: null,
+      ));
       expiredToken = 'access-1';
       rotatedAway = {'refresh-1'};
       final held = holds['DELETE /api/users/@me/push-registration'] = Completer();
@@ -1326,7 +1341,12 @@ void main() {
 
     test('a stored session whose session token alone changed is taken up', () async {
       await repository.logIn('gaby@duvet.chat', 'secret');
-      await store.write((token: 'access-1', sessionToken: 'refresh-9', refreshedAt: DateTime.now().toUtc()));
+      await store.write((
+        token: 'access-1',
+        sessionToken: 'refresh-9',
+        refreshedAt: DateTime.now().toUtc(),
+        userId: null,
+      ));
       expiredToken = 'access-1';
       rotatedAway = {'refresh-1'};
 
@@ -1343,7 +1363,12 @@ void main() {
 
     test('signing out after the background renewed the session alone ends that session', () async {
       await repository.logIn('gaby@duvet.chat', 'secret');
-      await store.write((token: 'access-9', sessionToken: 'refresh-9', refreshedAt: DateTime.now().toUtc()));
+      await store.write((
+        token: 'access-9',
+        sessionToken: 'refresh-9',
+        refreshedAt: DateTime.now().toUtc(),
+        userId: null,
+      ));
 
       await repository.logOut();
       expect([
@@ -1385,7 +1410,7 @@ void main() {
         // With the session token, and the new tokens kept, dated now.
         final renewal = requests.lastWhere((r) => r.url.path == '/api/auth/refresh');
         expect(renewal.headers['X-Session-Token'], 'refresh-1');
-        expect(saved(async), (token: 'access-2', sessionToken: 'refresh-2', refreshedAt: clock.now()));
+        expect(saved(async), (token: 'access-2', sessionToken: 'refresh-2', refreshedAt: clock.now(), userId: _me));
 
         // The next one, 23 hours after this one.
         async.elapse(const Duration(hours: 22, minutes: 59));
@@ -1415,7 +1440,7 @@ void main() {
         repository.renewForBackground(const Duration(hours: 4)).then((_) => done = true);
         async.flushMicrotasks();
         expect((refreshes, done), (1, true));
-        expect(saved(async), (token: 'access-2', sessionToken: 'refresh-2', refreshedAt: clock.now()));
+        expect(saved(async), (token: 'access-2', sessionToken: 'refresh-2', refreshedAt: clock.now(), userId: _me));
         repository.setPushRegistration('fid-1');
         async.flushMicrotasks();
         expect(requests.last.headers['Authorization'], 'Bearer access-2');
@@ -1458,7 +1483,7 @@ void main() {
         repository.logIn('gaby@duvet.chat', 'secret');
         async.flushMicrotasks();
         async.elapse(const Duration(hours: 22, minutes: 55));
-        final renewed = (token: 'access-9', sessionToken: 'refresh-9', refreshedAt: clock.now());
+        final renewed = (token: 'access-9', sessionToken: 'refresh-9', refreshedAt: clock.now(), userId: null);
         store.write(renewed);
         expiredToken = 'access-1';
         rotatedAway = {'refresh-1'};
@@ -1486,7 +1511,7 @@ void main() {
         requests.clear();
         refreshes = 0;
         renewed.clear();
-        await store.write((token: 'access-1', sessionToken: 'refresh-1', refreshedAt: refreshedAt));
+        await store.write((token: 'access-1', sessionToken: 'refresh-1', refreshedAt: refreshedAt, userId: null));
         final restored = newRepository();
         addTearDown(restored.dispose);
         expect(await restored.restore(), isTrue);
@@ -1500,7 +1525,7 @@ void main() {
       // One renewed less than an hour ago isn't.
       requests.clear();
       final recent = DateTime.now().subtract(const Duration(minutes: 59));
-      await store.write((token: 'access-5', sessionToken: 'refresh-5', refreshedAt: recent));
+      await store.write((token: 'access-5', sessionToken: 'refresh-5', refreshedAt: recent, userId: null));
       final fresh = newRepository();
       addTearDown(fresh.dispose);
       expect(await fresh.restore(), isTrue);
@@ -1512,7 +1537,7 @@ void main() {
       // A session that loaded once, which the cache opens offline.
       await repository.logIn('gaby@duvet.chat', 'secret');
       await eventually(() => expect(cache.data.keys, contains('home')));
-      await store.write((token: 'access-1', sessionToken: 'refresh-1', refreshedAt: null));
+      await store.write((token: 'access-1', sessionToken: 'refresh-1', refreshedAt: null, userId: null));
       meUnreachable = true;
       final offline = newRepository();
       addTearDown(offline.dispose);
@@ -1544,7 +1569,8 @@ void main() {
       );
       addTearDown(offline.dispose);
       expect(await offline.restore(), isTrue);
-      expect(offline.status.value, LiveStatus.offline);
+      // Its home shows at once, and it's offline once the start behind it failed.
+      await eventually(() => expect(offline.status.value, LiveStatus.offline));
 
       // Not at the next try, 20 seconds on.
       reachable = true;
@@ -1554,6 +1580,322 @@ void main() {
       expect(asked, contains('/api/users/@me'));
     });
 
+    // A session that loaded once, with a recent chat, a pinned one and a folded category: its home is kept, and
+    // whose it is noted with its tokens.
+    Future<void> loadedOnce() async {
+      await repository.logIn('gaby@duvet.chat', 'secret');
+      repository.opened(const ConversationTarget('c-1'), 'Maya');
+      repository.setChatPinned('c-1', true);
+      repository.setCategoryCollapsed('cat-1', true);
+      await eventually(() async {
+        expect(cache.data.keys, containsAll(['home', 'pinned', 'collapsed']));
+        expect(await recentsStore.read(_me), isNotNull);
+      });
+      expect((await store.read())!.userId, _me);
+    }
+
+    test('a saved session whose home was kept shows it, signed in, before any request answers', () async {
+      await loadedOnce();
+      final held = holds['GET /api/users/@me'] = Completer();
+      requests.clear();
+      final next = newRepository();
+      addTearDown(next.dispose);
+      final profiles = <String?>[];
+      next.profile.addListener(() => profiles.add(next.profile.value?.id));
+
+      expect(await next.restore(), isTrue);
+      expect(next.profile.value?.id, _me);
+      // Not offline, which the Chats tab would say over the list.
+      expect(next.status.value, LiveStatus.connecting);
+      expect(next.conversations.value.single.id, 'c-1');
+      await pumpEventQueue();
+      expect(next.recents.value.single.target, const ConversationTarget('c-1'));
+      expect(next.pinnedChats.value, {'c-1'});
+      expect(next.collapsedCategories.value, {'cat-1'});
+      expect(requests.map((r) => r.url.path), ['/api/users/@me']);
+
+      // Until the API answered whose session it is, nothing saves the home over the one kept.
+      final kept = cache.data['home'];
+      cache.data['home'] = 'kept';
+      await next.refreshConversations();
+      await Future<void>.delayed(const Duration(milliseconds: 700));
+      expect(cache.data['home'], 'kept');
+      cache.data['home'] = kept!;
+
+      held.complete();
+      await eventually(() => expect(requests.where((r) => r.url.path == '/api/users/@me/conversations'), hasLength(2)));
+      await pumpEventQueue();
+      expect(profiles, everyElement(_me));
+      // Read once: the lists were there already.
+      expect(next.recents.value, hasLength(1));
+      // And the home is saved again from then on.
+      cache.data.remove('home');
+      await next.refreshConversations();
+      await eventually(() => expect(cache.data.keys, contains('home')));
+    });
+
+    // A chat opened from the kept home got its page before the socket was up: what came between is on neither.
+    test('behind a home that showed before it, the first READY tells the chats to catch up', () async {
+      final ready = _event('READY', {'user': _user(_me, 'gaby'), 'sessionToken': 'ws'});
+      // A session that starts with nothing showing doesn't: no chat was open before its socket.
+      var caughtUp = 0;
+      final first = repository.resumed.listen((_) => caughtUp++);
+      addTearDown(first.cancel);
+      await loadedOnce();
+      repository.handleEvent(ready);
+      await pumpEventQueue();
+      expect(caughtUp, 0);
+
+      final next = newRepository();
+      addTearDown(next.dispose);
+      var resumed = 0;
+      final sub = next.resumed.listen((_) => resumed++);
+      addTearDown(sub.cancel);
+      expect(await next.restore(), isTrue);
+      await eventually(() => expect(requests.where((r) => r.url.path == '/api/users/@me'), isNotEmpty));
+      await pumpEventQueue();
+      expect(resumed, 0);
+      next.handleEvent(ready);
+      await pumpEventQueue();
+      expect(resumed, 1);
+      // Once: the next one tells them only after a drop, which this is.
+      next.handleEvent(ready);
+      await pumpEventQueue();
+      expect(resumed, 2);
+    });
+
+    test('opened offline from the cache, the first READY tells the chats to catch up', () async {
+      await loadedOnce();
+      // No account with the tokens: the session waits for the API, which doesn't answer.
+      await store.write((token: 'access-1', sessionToken: 'refresh-1', refreshedAt: DateTime.now(), userId: null));
+      meUnreachable = true;
+      final offline = newRepository();
+      addTearDown(offline.dispose);
+      var resumed = 0;
+      final sub = offline.resumed.listen((_) => resumed++);
+      addTearDown(sub.cancel);
+      expect(await offline.restore(), isTrue);
+      expect(offline.status.value, LiveStatus.offline);
+
+      // Back online, the session starts, and its gateway comes up.
+      meUnreachable = false;
+      offline.cameToFront();
+      await eventually(() async => expect((await store.read())!.userId, _me));
+      expect(resumed, 0);
+      offline.handleEvent(_event('READY', {'user': _user(_me, 'gaby'), 'sessionToken': 'ws'}));
+      await pumpEventQueue();
+      expect(resumed, 1);
+    });
+
+    test('what the phone keeps is read, and said so, before any request answers', () async {
+      // Signed out: nothing to wait for.
+      final none = newRepository();
+      addTearDown(none.dispose);
+      var read = false;
+      unawaited(none.restoreRead.then((_) => read = true));
+      await pumpEventQueue();
+      expect(read, isFalse);
+      expect(await none.restore(), isFalse);
+      await pumpEventQueue();
+      expect(read, isTrue);
+
+      await loadedOnce();
+      // The kept home: its profile is there as the read is done, the API's answer held.
+      final held = holds['GET /api/users/@me'] = Completer();
+      final kept = newRepository();
+      addTearDown(kept.dispose);
+      String? shown;
+      unawaited(kept.restoreRead.then((_) => shown = kept.profile.value?.id));
+      unawaited(kept.restore());
+      await eventually(() => expect(shown, _me));
+
+      // A session that doesn't say whose it is waits for the API, and the read is done all the same.
+      await store.write((token: 'access-1', sessionToken: 'refresh-1', refreshedAt: DateTime.now(), userId: null));
+      final waiting = newRepository();
+      addTearDown(waiting.dispose);
+      bool? opened;
+      var waitingRead = false;
+      unawaited(waiting.restoreRead.then((_) => waitingRead = true));
+      unawaited(waiting.restore().then((r) => opened = r));
+      await eventually(() => expect(waitingRead, isTrue));
+      expect((opened, waiting.profile.value), (null, null));
+      held.complete();
+      await eventually(() => expect(opened, isTrue));
+      await pumpEventQueue();
+    });
+
+    test('a saved session that says no account, or another than the home kept, waits for the API', () async {
+      await loadedOnce();
+      for (final userId in [null, _maya]) {
+        await store.write((token: 'access-1', sessionToken: 'refresh-1', refreshedAt: DateTime.now(), userId: userId));
+        final held = holds['GET /api/users/@me'] = Completer();
+        final next = newRepository();
+        addTearDown(next.dispose);
+        bool? opened;
+        unawaited(next.restore().then((r) => opened = r));
+        await pumpEventQueue();
+        expect((opened, next.profile.value), (null, null));
+        // The lists kept are there, behind the gate.
+        expect(next.conversations.value.single.id, 'c-1');
+
+        held.complete();
+        await eventually(() => expect(opened, isTrue));
+        expect(next.profile.value?.id, _me);
+        // Whose it is, as the API said, for the next launch.
+        expect((await store.read())!.userId, _me);
+        await pumpEventQueue();
+      }
+    });
+
+    test('a session found ended behind the home it showed signs out', () async {
+      await loadedOnce();
+      sessionDead = true;
+      final next = newRepository();
+      addTearDown(next.dispose);
+      var ended = 0;
+      next.signedOut.listen((_) => ended++);
+      expect(await next.restore(), isTrue);
+      expect(next.profile.value?.id, _me);
+
+      await eventually(() => expect(next.profile.value, isNull));
+      await pumpEventQueue();
+      expect(ended, 1);
+      expect(next.conversations.value, isEmpty);
+      expect(next.recents.value, isEmpty);
+      expect(next.pinnedChats.value, isEmpty);
+      expect(await store.read(), isNull);
+      expect(await recentsStore.read(_me), isNull);
+      expect(cache.data.keys, isNot(contains('home')));
+    });
+
+    test('signed out while the start behind its home waits for the API, it stays out', () async {
+      await loadedOnce();
+      final held = holds['GET /api/users/@me'] = Completer();
+      final next = newRepository();
+      addTearDown(next.dispose);
+      expect(await next.restore(), isTrue);
+      await pumpEventQueue();
+      await next.logOut();
+      expect(next.profile.value, isNull);
+
+      held.complete();
+      await pumpEventQueue();
+      expect(next.profile.value, isNull);
+      expect(await store.read(), isNull);
+    });
+
+    test('the server unreachable behind the home it showed: offline, all of it kept, and it tries again', () {
+      fakeAsync((async) {
+        final first = newRepository();
+        first.logIn('gaby@duvet.chat', 'secret');
+        async.elapse(const Duration(seconds: 1));
+        first.opened(const ConversationTarget('c-1'), 'Maya');
+        first.setChatPinned('c-1', true);
+        async.elapse(const Duration(seconds: 1));
+        first.dispose();
+        // Due for its renewal, which times out: `me()` isn't waited for too.
+        store.write((token: 'access-1', sessionToken: 'refresh-1', refreshedAt: null, userId: _me));
+        blackHoled = true;
+        requests.clear();
+
+        final restored = newRepository();
+        final history = MemoryCallHistoryStore()..data[_me] = '[]';
+        final voice = VoiceController(
+          repository: restored,
+          engine: FakeVoiceEngine(),
+          historyStore: history,
+          inFront: () => true,
+          lifecycle: const Stream.empty(),
+        );
+        final profiles = <String?>[];
+        restored.profile.addListener(() => profiles.add(restored.profile.value?.id));
+        var ended = 0;
+        restored.signedOut.listen((_) => ended++);
+        bool? opened;
+        restored.restore().then((r) => opened = r);
+        async.flushMicrotasks();
+        expect(opened, isTrue);
+        expect((restored.profile.value?.id, restored.status.value), (_me, LiveStatus.connecting));
+        // Written while it waits.
+        restored.drafts['c-1'] = const ChatDraft(text: 'on my way');
+
+        async.elapse(duvet.defaultRequestTimeout);
+        expect(restored.status.value, LiveStatus.offline);
+        expect([for (final r in requests) r.url.path], ['/api/auth/refresh']);
+        // The profile never went: a sign-out is what voice forgets the call history on.
+        expect(profiles, everyElement(_me));
+        expect(history.data.keys, [_me]);
+        expect(ended, 0);
+        expect(restored.conversations.value.single.id, 'c-1');
+        expect(restored.recents.value.single.target, const ConversationTarget('c-1'));
+        expect(restored.pinnedChats.value, {'c-1'});
+        expect(restored.drafts['c-1']?.text, 'on my way');
+        expect(saved(async)!.token, 'access-1');
+
+        // The renewal goes once more 3 seconds on, and the session starts at the next try, 20 seconds on.
+        blackHoled = false;
+        async.elapse(const Duration(seconds: 20));
+        final me = requests.lastWhere((r) => r.url.path == '/api/users/@me');
+        expect(me.headers['Authorization'], 'Bearer access-2');
+        expect(requests.last.url.path, '/api/users/@me/conversations');
+        expect((saved(async)!.token, saved(async)!.userId), ('access-2', _me));
+        expect(profiles, everyElement(_me));
+        expect(restored.drafts['c-1']?.text, 'on my way');
+        expect(history.data.keys, [_me]);
+        // Once only: no try 20 seconds later.
+        final asked = requests.length;
+        async.elapse(const Duration(seconds: 40));
+        expect(requests, hasLength(asked));
+        voice.dispose();
+        restored.dispose();
+        async.flushMicrotasks();
+      }, initialTime: DateTime(2026, 10, 24, 9));
+    });
+
+    // The store can't say another account than the API does, short of a fault: all the same, none of the first
+    // one's stays.
+    test('a home shown for an account the API then says the session isn\'t is replaced whole', () async {
+      await loadedOnce();
+      final held = Completer<void>();
+      final other = DuvetRepository(
+        store: store,
+        recentsStore: recentsStore,
+        httpClient: () => MockClient((request) async {
+          if (request.url.path == '/api/users/@me') {
+            await held.future;
+            return http.Response(
+              jsonEncode({..._user(_leo, 'leo'), 'email_verified': true}),
+              200,
+              headers: {'content-type': 'application/json'},
+            );
+          }
+          return http.Response.fromStream(await client.send(request));
+        }),
+        connectGateway: false,
+        cacheStore: cache,
+      );
+      addTearDown(other.dispose);
+      expect(await other.restore(), isTrue);
+      expect(other.profile.value?.id, _me);
+      await pumpEventQueue();
+      expect(other.recents.value, hasLength(1));
+      other.drafts['c-1'] = const ChatDraft(text: 'to Maya');
+
+      held.complete();
+      await eventually(() => expect(other.profile.value?.id, _leo));
+      await pumpEventQueue();
+      expect(other.recents.value, isEmpty);
+      expect(other.pinnedChats.value, isEmpty);
+      expect(other.collapsedCategories.value, isEmpty);
+      expect(other.drafts, isEmpty);
+      expect((await store.read())!.userId, _leo);
+      await eventually(
+        () => expect((jsonDecode(cache.data['home'] ?? '{}') as Map)['profile'], containsPair('id', _leo)),
+      );
+      expect(cache.data.keys, isNot(contains('pinned')));
+    });
+
+    // One saved by a version that didn't note whose it is: the home waits for the API, or for it to fail.
     test('a renewal at launch that times out opens offline at once, rather than after me() times out too', () {
       fakeAsync((async) {
         // A session that loaded once, which the cache opens offline.
@@ -1561,7 +1903,7 @@ void main() {
         first.logIn('gaby@duvet.chat', 'secret');
         async.elapse(const Duration(seconds: 1));
         first.dispose();
-        store.write((token: 'access-1', sessionToken: 'refresh-1', refreshedAt: null));
+        store.write((token: 'access-1', sessionToken: 'refresh-1', refreshedAt: null, userId: null));
         blackHoled = true;
         requests.clear();
         final restored = newRepository();
@@ -1583,7 +1925,7 @@ void main() {
         first.logIn('gaby@duvet.chat', 'secret');
         async.elapse(const Duration(seconds: 1));
         first.dispose();
-        store.write((token: 'access-1', sessionToken: 'refresh-1', refreshedAt: null));
+        store.write((token: 'access-1', sessionToken: 'refresh-1', refreshedAt: null, userId: null));
         // The API renews the session, which revokes the old access token, but
         // its answer is lost; and the answer to the renewal `me()`'s 401 asks
         // for.
@@ -1609,7 +1951,7 @@ void main() {
         expect(paths().skip(3), ['/api/auth/refresh', '/api/auth/refresh', '/api/users/@me', '/api/auth/refresh']);
         expect(restored.profile.value?.username, 'gaby');
         expect(ended, 0);
-        expect(saved(async), (token: 'access-1', sessionToken: 'refresh-1', refreshedAt: null));
+        expect(saved(async), (token: 'access-1', sessionToken: 'refresh-1', refreshedAt: null, userId: null));
 
         // Its renewal goes once more, and gets the tokens the API made, which
         // the next try starts with.
@@ -1623,7 +1965,7 @@ void main() {
         async.flushMicrotasks();
 
         // With no session token to renew with, a 401 is the session's end.
-        store.write((token: 'access-1', sessionToken: '', refreshedAt: clock.now()));
+        store.write((token: 'access-1', sessionToken: '', refreshedAt: clock.now(), userId: null));
         final unrenewable = newRepository();
         unrenewable.restore().then((r) => opened = r);
         async.flushMicrotasks();
@@ -1635,7 +1977,7 @@ void main() {
     });
 
     test('a saved session whose renewal the API refuses at launch is forgotten, not opened offline', () async {
-      await store.write((token: 'access-1', sessionToken: 'refresh-1', refreshedAt: null));
+      await store.write((token: 'access-1', sessionToken: 'refresh-1', refreshedAt: null, userId: null));
       sessionDead = true;
       final dead = newRepository();
       addTearDown(dead.dispose);
@@ -1661,7 +2003,7 @@ void main() {
         repository.cameToFront();
         await pumpEventQueue();
         expect(refreshes, 1);
-        expect(await store.read(), (token: 'access-2', sessionToken: 'refresh-2', refreshedAt: now));
+        expect(await store.read(), (token: 'access-2', sessionToken: 'refresh-2', refreshedAt: now, userId: _me));
 
         // Asleep for a day: no timer ran meanwhile.
         now = now.add(const Duration(hours: 23));
@@ -1691,7 +2033,7 @@ void main() {
         // The same session token, which the API answers with what it made.
         expect(renewals(), ['refresh-1', 'refresh-1']);
         expect(refreshes, 1);
-        expect(saved(async), (token: 'access-2', sessionToken: 'refresh-2', refreshedAt: clock.now()));
+        expect(saved(async), (token: 'access-2', sessionToken: 'refresh-2', refreshedAt: clock.now(), userId: _me));
         repository.dispose();
         async.flushMicrotasks();
       }, initialTime: DateTime(2026, 10, 24, 9));
@@ -1763,7 +2105,7 @@ void main() {
     test('tokens dated ahead of the clock, as it was then, are of unknown age: renewed at once, until it works', () {
       fakeAsync((async) {
         final ahead = clock.now().add(const Duration(days: 2));
-        store.write((token: 'access-1', sessionToken: 'refresh-1', refreshedAt: ahead));
+        store.write((token: 'access-1', sessionToken: 'refresh-1', refreshedAt: ahead, userId: null));
         final repository = newRepository();
         renewalsBroken = true;
         repository.restore();
@@ -1776,7 +2118,7 @@ void main() {
         renewalsBroken = false;
         async.elapse(const Duration(minutes: 10));
         expect(refreshes, 1);
-        expect(saved(async), (token: 'access-2', sessionToken: 'refresh-2', refreshedAt: clock.now()));
+        expect(saved(async), (token: 'access-2', sessionToken: 'refresh-2', refreshedAt: clock.now(), userId: _me));
         async.elapse(const Duration(minutes: 10));
         expect(refreshes, 1);
         repository.dispose();

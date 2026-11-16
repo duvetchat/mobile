@@ -82,7 +82,9 @@ class PushRegistration {
   // A sign-out's unregistering, which a registration waits for: done after it, it would leave the phone with no FID.
   Future<void>? _unregistering;
 
-  PushRegistration(this.repository, this.registrar) {
+  /// [signedOut] is whether a session ended before this listened: one found ended as the app starts tells of it
+  /// before the app's widgets are there (main), and the phone is unregistered for it all the same.
+  PushRegistration(this.repository, this.registrar, {bool signedOut = false}) {
     try {
       _fids = registrar.registered.listen(_sendFid, onError: (Object e) => debugPrint('push: FIDs: $e'));
     } catch (e) {
@@ -90,6 +92,7 @@ class PushRegistration {
       debugPrint('push: FIDs: $e');
     }
     _signedOut = repository.signedOut.listen((_) => _signOut());
+    if (signedOut) _signOut();
     repository.status.addListener(_follow);
     _follow();
   }
