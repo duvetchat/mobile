@@ -103,6 +103,14 @@ void main() {
       expect(((blocks[4] as MdCodeBlock).language, (blocks[4] as MdCodeBlock).code), ('dart', 'final x = 1;'));
     });
 
+    test('a quote needs the space after its marker, as on the desktop: >:v is text (#263)', () {
+      for (final face in ['>:v', '>.<', '>_>', '>:(', '>>>:v', '>']) {
+        expect(parseMarkdown(face).map((b) => b.runtimeType), [MdParagraph], reason: face);
+        expect(plainInline((parseMarkdown(face).single as MdParagraph).inlines), face, reason: face);
+      }
+      expect(parseMarkdown('> quoted\n>:v').map((b) => b.runtimeType), [MdQuote, MdParagraph]);
+    });
+
     test('tables, as the desktop reads them: a header, a |---| line and its alignments, rows with a | (#26)', () {
       final blocks = parseMarkdown(
         'Roles:\n| Name | Role | Since |\n|:--|:-:|--:|\n| **Maya** | mod | 2024\n|Leo|\n\nbye',
