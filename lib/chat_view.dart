@@ -119,7 +119,7 @@ class _ChatViewState extends State<ChatView> with SingleTickerProviderStateMixin
   late final _composer = ComposerController(accent: () => context.duvet.accentText);
   final _scroll = ScrollController();
   final _random = Random();
-  final _focus = FocusNode();
+  late final _focus = FocusNode(onKeyEvent: _composerKey);
 
   late final ChatRepository _repository;
   StreamSubscription<MessageEvent>? _events;
@@ -852,6 +852,27 @@ class _ChatViewState extends State<ChatView> with SingleTickerProviderStateMixin
       mentionReplied: replyTo?.mentionAuthor,
       voice: null,
     ), reply: replyTo);
+  }
+
+  /// A hardware keyboard's Enter sends, as on the desktop, or picks the first
+  /// suggestion while they're open; Shift+Enter starts a new line. The
+  /// on-screen keyboard's Return types its newline through the text input,
+  /// never here, so it still starts a new line (#36). An IME's Enter, while it
+  /// composes, confirms the text.
+  KeyEventResult _composerKey(FocusNode node, KeyEvent event) {
+    if (event is! KeyDownEvent) return KeyEventResult.ignored;
+    if (event.logicalKey != LogicalKeyboardKey.enter && event.logicalKey != LogicalKeyboardKey.numpadEnter) {
+      return KeyEventResult.ignored;
+    }
+    if (HardwareKeyboard.instance.isShiftPressed || !_composer.value.composing.isCollapsed) {
+      return KeyEventResult.ignored;
+    }
+    if (_suggestions().firstOrNull case GlassRow(:final onPressed)) {
+      onPressed();
+    } else {
+      unawaited(_send());
+    }
+    return KeyEventResult.handled;
   }
 
   static String _megabytes(int bytes) => '${(bytes / (1024 * 1024)).round()} MB';
