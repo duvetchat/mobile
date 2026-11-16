@@ -34,6 +34,20 @@ MessagePush _push(int n, {int room = 100, String avatar = ''}) =>
 
 const _plugin = MethodChannel('dexterous.com/flutter/local_notifications');
 
+/// A call in conversation [n] that Maya started just now, ringing for half a minute.
+CallPush _callPush(int n) {
+  final started = DateTime.now();
+  return CallPush(
+    conversationId: _id(n),
+    initiatorId: _id(900),
+    initiatorName: 'Maya',
+    initiatorAvatar: '',
+    place: '',
+    startedAt: started,
+    ringUntil: started.add(const Duration(seconds: 30)),
+  );
+}
+
 /// Waits for [done], on the real clock: files take their time.
 Future<void> _until(bool Function() done) async {
   for (var i = 0; i < 200 && !done(); i++) {
@@ -53,6 +67,9 @@ void main() {
   // The photos fetched, and a wait each fetch takes while it's set.
   late List<Uri> fetched;
   Completer<void>? photoHeld;
+  // A wait each channel's creation takes while it's set, and the methods Android refuses, each the times it's set to.
+  Completer<void>? channelsHeld;
+  late Map<String, int> refused;
 
   setUp(() async {
     dir = await Directory.systemTemp.createTemp('push-notifications');
@@ -64,11 +81,20 @@ void main() {
     allowed = true;
     fetched = [];
     photoHeld = null;
+    channelsHeld = null;
+    refused = {};
+    forgetChannels();
     TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger.setMockMethodCallHandler(_plugin, (call) async {
       calls.add((DateTime.now(), call));
+      if (call.method == 'createNotificationChannel') await channelsHeld?.future;
+      if ((refused[call.method] ?? 0) > 0) {
+        refused[call.method] = refused[call.method]! - 1;
+        throw PlatformException(code: 'refused', message: call.method);
+      }
       return switch (call.method) {
         'getActiveNotifications' => active,
         'areNotificationsEnabled' => allowed,
+        'initialize' => true,
         _ => null,
       };
     });
@@ -100,6 +126,83 @@ void main() {
     for (final message in (post['styleInformation'] as Map)['messages'] as List) message as Map<Object?, Object?>,
   ];
   List<String> texts(Map<Object?, Object?> post) => [for (final m in messages(post)) m['text'] as String];
+
+  List<String> methods() => [for (final (_, call) in calls) call.method];
+  List<Object?> channelsMade() => [
+    for (final (_, call) in calls)
+      if (call.method == 'createNotificationChannel') (call.arguments as Map)['id'],
+  ];
+
+  // The app's start doesn't wait for the channels (main): a notification does, so none comes before its channel.
+  test('a message waits for the channels, which are created once', () async {
+    channelsHeld = Completer();
+    final showing = showPush(_push(1));
+    await _until(() => calls.isNotEmpty);
+    await Future<void>.delayed(const Duration(milliseconds: 50));
+    expect(methods(), ['createNotificationChannel'], reason: 'nothing shows while the channels are made');
+
+    channelsHeld!.complete();
+    await showing;
+    expect(channelsMade(), ['messages', 'calls']);
+    expect(methods().indexOf('show'), greaterThan(methods().lastIndexOf('createNotificationChannel')));
+
+    // Asked again, by the app after its first frame or by the next notification: they're there.
+    await ensureChannels();
+    await showPush(_push(2));
+    expect(channelsMade(), hasLength(2));
+    expect(posts(), hasLength(2));
+  });
+
+  test('a call waits for the channels too, from a push or from the app', () async {
+    channelsHeld = Completer();
+    final ringing = showPush(_callPush(7));
+    final away = ringCallAway(_callPush(8));
+    await _until(() => methods().contains('areNotificationsEnabled'));
+    await Future<void>.delayed(const Duration(milliseconds: 50));
+    expect(methods(), isNot(contains('show')));
+    expect(methods().where((m) => m == 'createNotificationChannel'), hasLength(1), reason: 'one creation for both');
+
+    channelsHeld!.complete();
+    await ringing;
+    expect(await away, isTrue);
+    expect(channelsMade(), ['messages', 'calls']);
+    expect(methods().where((m) => m == 'show'), hasLength(2));
+    expect(methods().indexOf('show'), greaterThan(methods().lastIndexOf('createNotificationChannel')));
+  });
+
+  // Android makes a notification's channel as it shows, when it has none.
+  test("channels that can't be created hold no notification back, and the next asks again", () async {
+    refused['createNotificationChannel'] = 1;
+    await showPush(_push(1));
+    expect(posts(), hasLength(1));
+    expect(channelsMade(), ['messages']);
+
+    await showPush(_push(2));
+    expect(posts(), hasLength(2));
+    expect(channelsMade(), ['messages', 'messages', 'calls']);
+  });
+
+  // FCM keeps its isolate for the pushes that follow, and runs those that waited for it together.
+  test('the background isolate sets the notifications up once for all its pushes, and again after a failure', () async {
+    refused['initialize'] = 1;
+    await expectLater(notificationsReady(), throwsA(isA<PlatformException>()));
+    expect(methods(), ['initialize']);
+
+    await Future.wait([notificationsReady(), notificationsReady()]);
+    await notificationsReady();
+    expect(methods(), ['initialize', 'initialize', 'createNotificationChannel', 'createNotificationChannel']);
+  });
+
+  // Only Android's notifications are set up: on an iPhone the plugin is never asked what started the app.
+  test('no notification started the app where none is set up', () async {
+    debugDefaultTargetPlatformOverride = TargetPlatform.iOS;
+    expect(await launchedWith(), isNull);
+    expect(calls, isEmpty);
+
+    debugDefaultTargetPlatformOverride = TargetPlatform.android;
+    expect(await launchedWith(), isNull);
+    expect(methods(), ['getNotificationAppLaunchDetails']);
+  });
 
   // FCM runs the messages that waited for its isolate together: a closed app gets them as a burst, and Android drops
   // a notification's updates that come faster than about five a second.
@@ -158,7 +261,7 @@ void main() {
     final data = _push(1).toData();
     await showWhileSignedIn(data, MemorySessionStore(), (push) async => shown.add(push));
     expect(shown, isEmpty);
-    final session = (token: 'access-1', sessionToken: 'refresh-1', refreshedAt: null);
+    final session = (token: 'access-1', sessionToken: 'refresh-1', refreshedAt: null, userId: null);
     await showWhileSignedIn(data, MemorySessionStore(session), (push) async => shown.add(push));
     expect(shown, hasLength(1));
   });
@@ -293,7 +396,7 @@ void main() {
       sent.add(request);
       return http.Response('', 204);
     });
-    final store = MemorySessionStore((token: 'access', sessionToken: 'session', refreshedAt: null));
+    final store = MemorySessionStore((token: 'access', sessionToken: 'session', refreshedAt: null, userId: null));
     await declineFromNotification(_id(7), startedAt: 1794702917695, store: store, client: client);
     expect(sent.single.method, 'POST');
     expect(sent.single.url.path, '/api/users/@me/conversations/${_id(7)}/call/decline');

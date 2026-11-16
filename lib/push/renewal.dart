@@ -30,7 +30,8 @@ bool renewalDue(DateTime? refreshedAt, DateTime now) =>
 /// (DuvetRepository). A session the API refuses stays as it was, for the app to find ended. A try that got no answer
 /// goes once more [DuvetRepository.renewalRetry] later, with the same session token, as the app's own renewal does:
 /// the API may have renewed it and the answer been lost. The new tokens are kept only while the store still holds the
-/// session they renew: one signed out meanwhile stays out, and one the app renewed keeps the app's tokens.
+/// session they renew: one signed out meanwhile stays out, and one the app renewed keeps the app's tokens. Whose
+/// session it is stays with them, as the store has it by then: the app may have noted it meanwhile.
 Future<void> renewStoredSession(SessionStore store, http.Client client, ApiRouter router, DateTime now) async {
   final saved = await store.read();
   if (saved == null || saved.sessionToken.isEmpty || !renewalDue(saved.refreshedAt, now)) return;
@@ -47,8 +48,9 @@ Future<void> renewStoredSession(SessionStore store, http.Client client, ApiRoute
   } on duvet.DuvetAuthException {
     return;
   }
-  if (!api.isAuthenticated || (await store.read())?.sessionToken != saved.sessionToken) return;
-  await store.write((token: api.token, sessionToken: api.sessionToken, refreshedAt: now));
+  final kept = await store.read();
+  if (!api.isAuthenticated || kept == null || kept.sessionToken != saved.sessionToken) return;
+  await store.write((token: api.token, sessionToken: api.sessionToken, refreshedAt: now, userId: kept.userId));
 }
 
 /// The name the app's isolate answers the background task under ([answerRenewals]).

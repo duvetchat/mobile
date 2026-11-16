@@ -56,6 +56,29 @@ android {
         }
     }
 
+    // The app's fonts go in the APK as they are, not deflated: the engine maps a stored file, and inflates a deflated
+    // one whole on the main thread at the first text that names its family. That first text is the first frame's,
+    // which names Inter (four faces), Roboto (three) and Twemoji (2 MB, the fallback of every style). Named one by
+    // one: the fonts that packages bring and the app never names would only make the APK larger. About 3 MB more
+    // APK (test/fonts_stored_test.dart keeps this list and pubspec.yaml's together).
+    androidResources {
+        noCompress +=
+            listOf(
+                "assets/fonts/Fraunces.ttf",
+                "assets/fonts/Inter-Regular.ttf",
+                "assets/fonts/Inter-Medium.ttf",
+                "assets/fonts/Inter-SemiBold.ttf",
+                "assets/fonts/Inter-Bold.ttf",
+                "assets/fonts/Roboto-Regular.ttf",
+                "assets/fonts/Roboto-Medium.ttf",
+                "assets/fonts/Roboto-Bold.ttf",
+                "assets/fonts/FiraMono-Regular.ttf",
+                "assets/fonts/Twemoji.ttf",
+                // The icons (LucideIcons).
+                "lucide_icons_flutter/assets/lucide.ttf",
+            )
+    }
+
     buildTypes {
         release {
             signingConfig =

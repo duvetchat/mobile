@@ -403,8 +403,15 @@ void main() {
       expect(cache.data.keys, contains('chat_c-1'));
     });
 
-    // The session saved is Maya's now.
+    // The session saved is Maya's now, and says so: the home kept waits for the API, and never shows.
     me = _maya;
+    final saved = (await sessions.read())!;
+    await sessions.write((
+      token: saved.token,
+      sessionToken: saved.sessionToken,
+      refreshedAt: saved.refreshedAt,
+      userId: _maya,
+    ));
     final next = make();
     addTearDown(next.dispose);
     expect(await next.restore(), isTrue);

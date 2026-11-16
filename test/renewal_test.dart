@@ -48,24 +48,35 @@ void main() {
       lost = 0;
       meanwhile = null;
     });
-    final due = (token: 'access-1', sessionToken: 'refresh-1', refreshedAt: now.subtract(const Duration(hours: 5)));
+    final due = (
+      token: 'access-1',
+      sessionToken: 'refresh-1',
+      refreshedAt: now.subtract(const Duration(hours: 5)),
+      userId: null,
+    );
 
     test('renews a session that\'s due, with its session token, and keeps the new tokens', () async {
       final store = MemorySessionStore((
         token: 'access-1',
         sessionToken: 'refresh-1',
         refreshedAt: now.subtract(const Duration(hours: 5)),
+        userId: null,
       ));
       await renewStoredSession(store, client(), _router, now);
       expect(
         [for (final r in requests) (r.url.path, r.headers['X-Session-Token'])],
         [('/api/auth/refresh', 'refresh-1')],
       );
-      expect(await store.read(), (token: 'access-2', sessionToken: 'refresh-2', refreshedAt: now));
+      expect(await store.read(), (token: 'access-2', sessionToken: 'refresh-2', refreshedAt: now, userId: null));
     });
 
     test('leaves a fresh session alone, and none at all', () async {
-      final fresh = (token: 'access-1', sessionToken: 'refresh-1', refreshedAt: now.subtract(const Duration(hours: 1)));
+      final fresh = (
+        token: 'access-1',
+        sessionToken: 'refresh-1',
+        refreshedAt: now.subtract(const Duration(hours: 1)),
+        userId: null,
+      );
       final store = MemorySessionStore(fresh);
       await renewStoredSession(store, client(), _router, now);
       await renewStoredSession(MemorySessionStore(), client(), _router, now);
@@ -74,7 +85,12 @@ void main() {
     });
 
     test('a session the API refuses stays as it was, for the app to find ended', () async {
-      final old = (token: 'access-1', sessionToken: 'refresh-1', refreshedAt: now.subtract(const Duration(hours: 5)));
+      final old = (
+        token: 'access-1',
+        sessionToken: 'refresh-1',
+        refreshedAt: now.subtract(const Duration(hours: 5)),
+        userId: null,
+      );
       final store = MemorySessionStore(old);
       status = 401;
       await renewStoredSession(store, client(), _router, now);
@@ -95,7 +111,7 @@ void main() {
         StoredSession? kept;
         store.read().then((s) => kept = s);
         async.flushMicrotasks();
-        expect(kept, (token: 'access-2', sessionToken: 'refresh-2', refreshedAt: now));
+        expect(kept, (token: 'access-2', sessionToken: 'refresh-2', refreshedAt: now, userId: null));
       });
     });
 
@@ -115,9 +131,30 @@ void main() {
       expect(await store.read(), isNull);
     });
 
+    test('whose session it is stays with the new tokens, the app having noted it meanwhile or before', () async {
+      final store = MemorySessionStore((
+        token: 'access-1',
+        sessionToken: 'refresh-1',
+        refreshedAt: due.refreshedAt,
+        userId: 'u-1',
+      ));
+      await renewStoredSession(store, client(), _router, now);
+      expect(await store.read(), (token: 'access-2', sessionToken: 'refresh-2', refreshedAt: now, userId: 'u-1'));
+
+      final unowned = MemorySessionStore(due);
+      meanwhile = () => unowned.write((
+        token: due.token,
+        sessionToken: due.sessionToken,
+        refreshedAt: due.refreshedAt,
+        userId: 'u-1',
+      ));
+      await renewStoredSession(unowned, client(), _router, now);
+      expect(await unowned.read(), (token: 'access-2', sessionToken: 'refresh-2', refreshedAt: now, userId: 'u-1'));
+    });
+
     test("a session the app renewed meanwhile keeps the app's tokens", () async {
       final store = MemorySessionStore(due);
-      final app = (token: 'access-5', sessionToken: 'refresh-5', refreshedAt: now);
+      final app = (token: 'access-5', sessionToken: 'refresh-5', refreshedAt: now, userId: null);
       meanwhile = () => store.write(app);
       await renewStoredSession(store, client(), _router, now);
       expect(await store.read(), app);

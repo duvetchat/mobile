@@ -393,7 +393,12 @@ void main() {
     await voice.joinRoom(const Room(id: 'r-voice', spaceId: 's-1', name: 'lounge', kind: RoomKind.voice, position: 0));
     await _until(() => gateway.received.contains((1, 'VOICE_JOIN')));
 
-    await store.write((token: 'access-9', sessionToken: 'refresh-9', refreshedAt: DateTime.now().toUtc()));
+    await store.write((
+      token: 'access-9',
+      sessionToken: 'refresh-9',
+      refreshedAt: DateTime.now().toUtc(),
+      userId: null,
+    ));
     rotated = true;
     gateway.revoked.add('access-1');
     await repository.refreshConversations();

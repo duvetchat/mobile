@@ -12,9 +12,25 @@ import 'push_message.dart';
 Future<void> firebaseMessagingBackgroundHandler(RemoteMessage message) async {
   WidgetsFlutterBinding.ensureInitialized();
   await showWhileSignedIn(message.data, const SecureSessionStore(), (push) async {
-    await initNotifications();
+    await notificationsReady();
     await showPush(push);
   });
+}
+
+// The notifications' setup in this isolate, which FCM keeps for the pushes that follow.
+Future<void>? _ready;
+
+/// Sets the notifications and their channels up in the background isolate, once for all its pushes: those FCM runs
+/// together wait for the one setup. One that failed is forgotten, so the next push tries again.
+@visibleForTesting
+Future<void> notificationsReady() async {
+  final ready = _ready ??= initNotifications().then((_) => ensureChannels());
+  try {
+    await ready;
+  } catch (_) {
+    if (identical(_ready, ready)) _ready = null;
+    rethrow;
+  }
 }
 
 /// Shows the push [data] holds with [show] while [store] keeps a session: signed out, nothing shows. The API may still

@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter/material.dart';
@@ -31,7 +32,23 @@ class Appearance extends ValueNotifier<ThemeMode> {
   /// Your bubbles' fill, as `0xRRGGBB`; null for azure.
   int? bubbleColor;
 
+  /// Completes once [load] has read the mode, the first thing it reads, or failed to: the app's start waits for it
+  /// alone (main), so a forced light or dark theme draws the first frame.
+  Future<void> get modeLoaded => _modeLoaded.future;
+  final _modeLoaded = Completer<void>();
+
   Future<void> load() async {
+    // The mode first: the whole app draws by it, and the rest only shows in a chat.
+    try {
+      value = switch (await _store.read()) {
+        'light' => ThemeMode.light,
+        'dark' => ThemeMode.dark,
+        _ => ThemeMode.system,
+      };
+    } catch (e) {
+      debugPrint('appearance: $e');
+    }
+    if (!_modeLoaded.isCompleted) _modeLoaded.complete();
     try {
       final gesture = ReplyGesture.values.asNameMap()[await _store.readReplyGesture()];
       if (gesture != null && gesture != replyGesture) {
@@ -54,15 +71,6 @@ class Appearance extends ValueNotifier<ThemeMode> {
     }
     // Only for a change: an app closed before this lands has disposed it.
     if (bubbleColor != null || codeTheme != null) notifyListeners();
-    try {
-      value = switch (await _store.read()) {
-        'light' => ThemeMode.light,
-        'dark' => ThemeMode.dark,
-        _ => ThemeMode.system,
-      };
-    } catch (e) {
-      debugPrint('appearance: $e');
-    }
   }
 
   Future<void> set(ThemeMode mode) async {

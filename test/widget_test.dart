@@ -1,15 +1,80 @@
 import 'dart:async';
+import 'dart:io';
 
+import 'package:duvet/account.dart';
 import 'package:duvet/data/models.dart';
 import 'package:duvet/main.dart';
 import 'package:duvet/members_sheet.dart';
+import 'package:duvet/push/registration.dart';
+import 'package:duvet/tabs.dart';
 import 'package:duvet/widgets/avatar.dart';
 import 'package:duvet/widgets/chrome.dart';
 import 'package:duvet/widgets/facehash.dart';
+import 'package:duvet/widgets/ghost_art.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:forui/forui.dart';
 
 import 'support/fake_repository.dart';
+
+/// A repository whose restores the test answers, each in turn. With [keptHome] its profile and lists show before the
+/// answer, as a session whose home was kept has them.
+class _HeldRestore extends FakeRepository {
+  final bool keptHome;
+  _HeldRestore({this.keptHome = false});
+
+  final restores = <Completer<bool>>[];
+
+  @override
+  Future<bool> restore() {
+    if (keptHome) super.restore();
+    restores.add(Completer());
+    return restores.last.future;
+  }
+
+  /// The API answered: the session is up.
+  void signIn() => super.restore();
+}
+
+/// A push registrar that counts the times the phone is unregistered.
+class _CountedRegistrar implements PushRegistrar {
+  int unregisters = 0;
+
+  @override
+  Future<bool> allowed() async => true;
+
+  @override
+  Future<void> register() async {}
+
+  @override
+  Stream<String> get registered => const Stream.empty();
+
+  @override
+  Future<void> unregister() async => unregisters++;
+}
+
+/// A repository that counts the times its storage is asked for.
+class _CountedStorage extends FakeRepository {
+  int asked = 0;
+
+  @override
+  Future<StorageInfo> storage() {
+    asked++;
+    return super.storage();
+  }
+}
+
+/// The app's assets, and each one asked of it.
+class _CountedAssets extends CachingAssetBundle {
+  final asked = <String>[];
+
+  @override
+  Future<ByteData> load(String key) {
+    asked.add(key);
+    return rootBundle.load(key);
+  }
+}
 
 void main() {
   Future<FakeRepository> pumpApp(WidgetTester tester, {bool signedIn = true}) async {
@@ -31,6 +96,341 @@ void main() {
     await tester.pumpAndSettle();
     expect(find.text('Sign in to Duvet'), findsOneWidget);
   }
+
+  group('the session gate', () {
+    testWidgets('shows the app as soon as there is a profile, the restore still on its way', (tester) async {
+      final repository = _HeldRestore(keptHome: true);
+      await tester.pumpWidget(DuvetApp(repository: repository));
+      await tester.pumpAndSettle();
+      expect(find.byType(HomeTabs), findsOneWidget);
+      expect(find.text('Maya'), findsOneWidget);
+      final shown = tester.state(find.byType(HomeTabs));
+
+      // The restore's answer changes nothing of it.
+      repository.restores.single.complete(true);
+      await tester.pumpAndSettle();
+      expect(tester.state(find.byType(HomeTabs)), same(shown));
+
+      // The session found ended: the welcome screen, with no spinner on the way.
+      await repository.endSession();
+      await tester.pump();
+      expect(find.byType(HomeTabs), findsNothing);
+      expect(find.text('Talk with your people.'), findsOneWidget);
+    });
+
+    testWidgets('waits with no profile, and an unreachable server offers to try again', (tester) async {
+      final repository = _HeldRestore();
+      await tester.pumpWidget(DuvetApp(repository: repository));
+      await tester.pump();
+      expect(find.byType(FCircularProgress), findsOneWidget);
+      expect(find.byType(HomeTabs), findsNothing);
+
+      repository.restores.single.completeError(const SocketException('no network'));
+      await tester.pumpAndSettle();
+      expect(find.text('Couldn’t reach Duvet'), findsOneWidget);
+
+      await tester.tap(find.text('Try again'));
+      await tester.pump();
+      expect(repository.restores, hasLength(2));
+      expect(find.byType(FCircularProgress), findsOneWidget);
+      repository.signIn();
+      repository.restores.last.complete(true);
+      await tester.pumpAndSettle();
+      expect(find.byType(HomeTabs), findsOneWidget);
+    });
+
+    testWidgets('signed out, or the session gone, it shows the welcome screen', (tester) async {
+      final repository = _HeldRestore();
+      await tester.pumpWidget(DuvetApp(repository: repository));
+      await tester.pump();
+      repository.restores.single.complete(false);
+      await tester.pumpAndSettle();
+      expect(find.text('Talk with your people.'), findsOneWidget);
+
+      // Unreachable, then signing in instead.
+      final other = _HeldRestore();
+      await tester.pumpWidget(DuvetApp(key: UniqueKey(), repository: other));
+      await tester.pump();
+      other.restores.single.completeError(const SocketException('no network'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Sign in instead'));
+      await tester.pumpAndSettle();
+      expect(find.text('Talk with your people.'), findsOneWidget);
+    });
+
+    // main() starts the restore before the app's widgets: the gate follows that one, and starts none of its own.
+    testWidgets('follows a restore started before it, and starts another only to try again', (tester) async {
+      final repository = _HeldRestore();
+      final started = StartedRestore(repository.restore());
+      await tester.pumpWidget(DuvetApp(repository: repository, restoring: started));
+      await tester.pump();
+      expect(repository.restores, hasLength(1));
+      expect(find.byType(FCircularProgress), findsOneWidget);
+
+      repository.restores.single.completeError(const SocketException('no network'));
+      await tester.pumpAndSettle();
+      expect(find.text('Couldn’t reach Duvet'), findsOneWidget);
+
+      // Trying again restores afresh, and the failure before it shows no more.
+      await tester.tap(find.text('Try again'));
+      await tester.pump();
+      expect(repository.restores, hasLength(2));
+      expect(find.byType(FCircularProgress), findsOneWidget);
+      repository.signIn();
+      repository.restores.last.complete(true);
+      await tester.pumpAndSettle();
+      expect(find.byType(HomeTabs), findsOneWidget);
+    });
+
+    // A future tells of its answer a turn after the first build: the gate reads the outcome kept beside it.
+    testWidgets('a restore that ended before the first frame shows its outcome in it, with no spinner', (tester) async {
+      final repository = _HeldRestore();
+      final started = StartedRestore(repository.restore());
+      expect(started.outcome, isNull);
+      repository.restores.single.complete(false);
+      await tester.pump();
+      expect(started.outcome?.data, isFalse);
+      // One frame, and no more.
+      await tester.pumpWidget(DuvetApp(repository: repository, restoring: started));
+      expect(find.byType(FCircularProgress), findsNothing);
+      expect(find.text('Talk with your people.'), findsOneWidget);
+      expect(repository.restores, hasLength(1));
+      await tester.pumpAndSettle();
+      expect(find.text('Talk with your people.'), findsOneWidget);
+    });
+
+    // Nobody follows the restore until the gate builds: its failure waits there, and fails nothing.
+    testWidgets('a restore that failed before the first frame offers to try again in it', (tester) async {
+      final repository = _HeldRestore();
+      final started = StartedRestore(repository.restore());
+      repository.restores.single.completeError(const SocketException('no network'));
+      await tester.pump();
+      expect(started.outcome?.hasError, isTrue);
+      await tester.pumpWidget(DuvetApp(repository: repository, restoring: started));
+      expect(find.byType(FCircularProgress), findsNothing);
+      expect(find.text('Couldn’t reach Duvet'), findsOneWidget);
+
+      await tester.tap(find.text('Sign in instead'));
+      await tester.pumpAndSettle();
+      expect(find.text('Talk with your people.'), findsOneWidget);
+      expect(repository.restores, hasLength(1));
+    });
+
+    // The API may refuse the session main() restores before the app's widgets are there to hear of the sign-out.
+    testWidgets('a session that ended before the app was built still unregisters the phone', (tester) async {
+      final repository = FakeRepository();
+      final started = StartedRestore(Future.value(false), signedOut: repository.signedOut);
+      expect(started.signedOut, isFalse);
+      await repository.endSession();
+      expect(started.signedOut, isTrue);
+      final registrar = _CountedRegistrar();
+      await tester.pumpWidget(DuvetApp(repository: repository, push: registrar, restoring: started));
+      expect(registrar.unregisters, 1);
+      await tester.pumpAndSettle();
+      expect(find.text('Talk with your people.'), findsOneWidget);
+
+      // One that didn't end unregisters nothing.
+      final signedIn = FakeRepository();
+      final other = _CountedRegistrar();
+      await tester.pumpWidget(
+        DuvetApp(
+          key: UniqueKey(),
+          repository: signedIn,
+          push: other,
+          restoring: StartedRestore(signedIn.restore(), signedOut: signedIn.signedOut),
+        ),
+      );
+      await tester.pumpAndSettle();
+      expect(other.unregisters, 0);
+    });
+  });
+
+  group('the tabs', () {
+    const names = ['Chats', 'Spaces', 'Calls', 'You'];
+    // Each tab that's built, showing or behind the one that is.
+    List<String> built() => [
+      for (final (i, tab) in const [ChatsTab, SpacesTab, CallsTab, YouTab].indexed)
+        if (find.byType(tab, skipOffstage: false).evaluate().isNotEmpty) names[i],
+    ];
+    Future<void> select(WidgetTester tester, String tab) =>
+        tester.tap(find.descendant(of: find.byType(DuvetTabBar), matching: find.text(tab)));
+    // The home's first frame: the restore answers in the one before it.
+    Future<T> pumpHome<T extends FakeRepository>(WidgetTester tester, T repository) async {
+      await tester.pumpWidget(DuvetApp(repository: repository));
+      await tester.pump();
+      expect(find.byType(HomeTabs), findsOneWidget);
+      return repository;
+    }
+
+    testWidgets('only the open one is built at first, and the others once the home is still', (tester) async {
+      await pumpHome(tester, FakeRepository());
+      expect(built(), ['Chats']);
+      expect(find.text('Maya'), findsOneWidget);
+
+      // Not in the frames after it, while the home is still coming up (its icon hops).
+      for (var frame = 0; frame < 5; frame++) {
+        await tester.pump(const Duration(milliseconds: 16));
+        expect(built(), ['Chats'], reason: 'frame $frame');
+      }
+      expect(tester.hasRunningAnimations, isTrue);
+
+      // Still, the others come one a frame.
+      for (var frame = 0; tester.hasRunningAnimations && frame < 100; frame++) {
+        await tester.pump(const Duration(milliseconds: 100));
+      }
+      expect(tester.hasRunningAnimations, isFalse);
+      expect(built(), ['Chats']);
+      await tester.pump();
+      expect(built(), ['Chats', 'Spaces']);
+      await tester.pump();
+      expect(built(), ['Chats', 'Spaces', 'Calls']);
+      await tester.pump();
+      expect(built(), names);
+      await tester.pumpAndSettle();
+      // Behind the open one: Chats is all there is to see.
+      expect(find.byType(SpacesTab), findsNothing);
+      expect(find.byType(ChatsTab), findsOneWidget);
+    });
+
+    testWidgets('a tab is built when it is picked, and keeps its state from then on', (tester) async {
+      await pumpHome(tester, FakeRepository());
+      await select(tester, 'You');
+      await tester.pump();
+      expect(built(), ['Chats', 'You']);
+      expect(find.byType(YouTab), findsOneWidget);
+      final you = tester.state(find.byType(YouTab));
+      final chats = tester.element(find.byType(ChatsTab, skipOffstage: false));
+
+      // Scrolled down, to find it there again.
+      await tester.pumpAndSettle();
+      await tester.drag(find.byType(YouTab), const Offset(0, -300));
+      await tester.pumpAndSettle();
+      final scrolled = tester.state<ScrollableState>(
+        find.descendant(of: find.byType(YouTab), matching: find.byType(Scrollable)).first,
+      );
+      final offset = scrolled.position.pixels;
+      expect(offset, greaterThan(0));
+
+      // The others built meanwhile, another tab picked and this one again: the same tabs, as they were left.
+      expect(built(), names);
+      await select(tester, 'Calls');
+      await tester.pumpAndSettle();
+      expect(find.byType(CallsTab), findsOneWidget);
+      expect(find.byType(YouTab), findsNothing);
+      await select(tester, 'You');
+      await tester.pumpAndSettle();
+      expect(tester.state(find.byType(YouTab)), same(you));
+      expect(tester.element(find.byType(ChatsTab, skipOffstage: false)), same(chats));
+      expect(scrolled.position.pixels, offset);
+
+      // And across the layouts, a wide window and back.
+      addTearDown(tester.view.reset);
+      tester.view.devicePixelRatio = 2;
+      tester.view.physicalSize = const Size(1194, 834) * 2;
+      await tester.pumpAndSettle();
+      expect(find.byType(DuvetNavRail), findsOneWidget);
+      expect(tester.state(find.byType(YouTab)), same(you));
+      tester.view.physicalSize = const Size(390, 844) * 2;
+      await tester.pumpAndSettle();
+      expect(find.byType(DuvetTabBar), findsOneWidget);
+      expect(tester.state(find.byType(YouTab)), same(you));
+      expect(tester.element(find.byType(ChatsTab, skipOffstage: false)), same(chats));
+    });
+
+    testWidgets('a wide window has Spaces built with the first, for its rail', (tester) async {
+      addTearDown(tester.view.reset);
+      tester.view.devicePixelRatio = 2;
+      tester.view.physicalSize = const Size(1194, 834) * 2;
+      await pumpHome(tester, FakeRepository());
+      expect(built(), ['Chats', 'Spaces']);
+
+      // The first tap on a Space opens that Space, not the Spaces tab's root.
+      await tester.tap(find.byType(RailButton).first);
+      await tester.pumpAndSettle();
+      expect(find.byType(SpaceDirectory), findsOneWidget);
+      expect(find.text('# general'), findsOneWidget);
+    });
+
+    testWidgets('a window grown wide before Spaces was built builds it then', (tester) async {
+      addTearDown(tester.view.reset);
+      tester.view.devicePixelRatio = 2;
+      tester.view.physicalSize = const Size(390, 844) * 2;
+      await pumpHome(tester, FakeRepository());
+      expect(built(), ['Chats']);
+      final chats = tester.element(find.byType(ChatsTab));
+
+      tester.view.physicalSize = const Size(1194, 834) * 2;
+      await tester.pump();
+      expect(built(), ['Chats', 'Spaces']);
+      expect(tester.element(find.byType(ChatsTab)), same(chats));
+      await tester.tap(find.byType(RailButton).first);
+      await tester.pumpAndSettle();
+      expect(find.byType(SpaceDirectory), findsOneWidget);
+    });
+
+    testWidgets('You asks for the storage each time it comes into view, and at no other', (tester) async {
+      final repository = await pumpHome(tester, _CountedStorage());
+      // Built behind Chats, it asks for nothing.
+      await tester.pumpAndSettle();
+      expect(built(), names);
+      expect(repository.asked, 0);
+
+      await select(tester, 'You');
+      await tester.pumpAndSettle();
+      expect(repository.asked, 1);
+
+      // A theme's change reaches the tab every frame of its fade, and asks nothing more.
+      addTearDown(tester.platformDispatcher.clearPlatformBrightnessTestValue);
+      final before = Theme.of(tester.element(find.byType(YouTab))).brightness;
+      tester.platformDispatcher.platformBrightnessTestValue = before == Brightness.dark
+          ? Brightness.light
+          : Brightness.dark;
+      await tester.pumpAndSettle();
+      expect(Theme.of(tester.element(find.byType(YouTab))).brightness, isNot(before));
+      expect(repository.asked, 1);
+
+      await select(tester, 'Chats');
+      await tester.pumpAndSettle();
+      expect(repository.asked, 1);
+      await select(tester, 'You');
+      await tester.pumpAndSettle();
+      expect(repository.asked, 2);
+    });
+
+    testWidgets('You asks for the storage when it is the tab picked first', (tester) async {
+      final repository = await pumpHome(tester, _CountedStorage());
+      await select(tester, 'You');
+      await tester.pumpAndSettle();
+      expect(repository.asked, 1);
+    });
+
+    testWidgets('the app\'s icon is parsed while the session restores, once for every screen after', (tester) async {
+      const icon = 'assets/logo/app-icon-rounded.svg';
+      final assets = _CountedAssets();
+      final repository = _HeldRestore();
+      await tester.pumpWidget(
+        DefaultAssetBundle(
+          bundle: assets,
+          child: DuvetApp(repository: repository),
+        ),
+      );
+      await tester.pump();
+      expect(find.byType(FCircularProgress), findsOneWidget);
+      expect(find.byType(AppIcon), findsNothing);
+      expect(assets.asked.where((a) => a == icon), hasLength(1));
+
+      // The icon the home builds finds the picture kept: the file isn't read again.
+      repository.signIn();
+      repository.restores.single.complete(true);
+      await tester.pumpAndSettle();
+      expect(find.byType(AppIcon), findsOneWidget);
+      for (final tab in names.skip(1)) {
+        await select(tester, tab);
+        await tester.pumpAndSettle();
+      }
+      expect(assets.asked.where((a) => a == icon), hasLength(1));
+    });
+  });
 
   testWidgets('signing in shows the conversations', (tester) async {
     await pumpApp(tester, signedIn: false);

@@ -127,6 +127,23 @@ void main() {
     expect((registrar.asked, registrar.registers), (2, 2));
   });
 
+  // A session found ended at launch signs out before the registration is made (main).
+  test('made after a sign-out it was told of, it unregisters, and the next session registers after it', () async {
+    await repository.endSession();
+    repository.status.value = LiveStatus.offline;
+    registrar = _Registrar()..unregisterHeld = Completer();
+    final registration = PushRegistration(repository, registrar, signedOut: true);
+    addTearDown(registration.dispose);
+    expect(registrar.unregisters, 1);
+
+    await repository.restore();
+    await ready();
+    expect(registrar.registers, 0, reason: 'unregistering after it would leave the phone with no FID');
+    registrar.unregisterHeld!.complete();
+    await pumpEventQueue();
+    expect(registrar.log, ['unregister', 'unregistered', 'register']);
+  });
+
   test('a registration that fails goes again at the next READY', () async {
     start();
     registrar.registerFailures = 1;
