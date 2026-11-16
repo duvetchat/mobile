@@ -738,8 +738,9 @@ class VoiceController extends ChangeNotifier {
   // Camera and screen
   // ---------------------------------------------------------------------------
 
-  /// Turns the camera on or off: only ever from the user's tap. It swaps the
-  /// camera transceiver's track, so nothing renegotiates.
+  /// Turns the camera on or off: from the user's tap, or once as a video
+  /// call's voice joins (see [_joinCallVoice]). It swaps the camera
+  /// transceiver's track, so nothing renegotiates.
   ///
   /// One camera opens at a time: a tap while it opens is the user's latest
   /// word on it, and a camera that arrives no longer wanted stops at once
@@ -2014,13 +2015,26 @@ class VoiceController extends ChangeNotifier {
     // Calls ask for no permission.
     _canSpeak = true;
     _canVideo = true;
-    await _begin(target, speaker: false);
+    final begun = _begin(target, speaker: false);
+    final session = _session;
+    await begun;
+    // Left meanwhile, or joined again: a call placed since keeps its camera
+    // for its own join.
+    if (session != _session) return;
     // A video call's camera, once: it asks for the camera as its button
     // does, and refused, the call goes on without.
     final call = _call;
     if (call == null || !call.video || call.conversationId != conversationId) return;
     _call = call._copy(video: false);
-    if (_target == target && _camera == null) await toggleCamera();
+    // The user's own tap meanwhile is the camera this call wanted.
+    if (_camera != null || _cameraOpening == _session) return;
+    // Answered with Duvet off screen: no lifecycle change is still to come
+    // to turn it off there (see [_followBackground]).
+    if (!_inFront()) {
+      _notice('Camera turned off in the background');
+      return;
+    }
+    await toggleCamera();
   }
 
   // Before joining somewhere else: a room's voice is left, a call hung up.
