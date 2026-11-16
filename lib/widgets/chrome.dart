@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:forui/forui.dart';
 
+import '../shell.dart';
 import '../theme.dart';
 import 'depth.dart';
 import 'duvet_mascot.dart';
@@ -376,11 +377,13 @@ class _LargeTitlePageState extends State<LargeTitlePage> {
               children: [
                 // The night sky beside the title, clear of its buttons (the tab
                 // roots' titles are all one short word); it scrolls away with it.
-                Positioned(
-                  left: widget.titleLeading == null ? 128 : 172,
-                  top: -6,
-                  child: const NightSky.title(width: 120),
-                ),
+                // Not in the wide layout's list, where the title's buttons would sit over it.
+                if (!(Shell.maybeOf(context)?.wide ?? false) || MediaQuery.sizeOf(context).width >= 372)
+                  Positioned(
+                    left: widget.titleLeading == null ? 128 : 172,
+                    top: -6,
+                    child: const NightSky.title(width: 120),
+                  ),
                 Row(
                   children: [
                     if (widget.titleLeading case final leading?) ...[leading, const SizedBox(width: 12)],
@@ -518,6 +521,170 @@ class DuvetTabBar extends StatelessWidget {
                 ],
               );
             },
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// The wide layout's rail, in place of the tab bar: the same destinations down the window's edge, the first two
+/// over [children] (the user's Spaces, as the desktop's rail has them) and the rest under.
+class DuvetNavRail extends StatelessWidget {
+  /// The destination shown; none marked when it's one of [children].
+  final int index;
+  final List<TabItem> items;
+  final ValueChanged<int> onChange;
+  final List<Widget> children;
+
+  const DuvetNavRail({
+    required this.index,
+    required this.items,
+    required this.onChange,
+    this.children = const [],
+    super.key,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final tokens = context.duvet;
+    final padding = MediaQuery.paddingOf(context);
+    Widget item(int i) => _RailItem(
+      item: items[i],
+      selected: i == index,
+      hint: 'Tab ${i + 1} of ${items.length}',
+      onTap: () => onChange(i),
+    );
+    final rule = Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 4),
+      child: SizedBox(height: 1, child: ColoredBox(color: tokens.hairline)),
+    );
+    return Padding(
+      padding: EdgeInsets.only(top: padding.top + 4, bottom: padding.bottom + 4),
+      child: Column(
+        children: [
+          for (var i = 0; i < 2 && i < items.length; i++) item(i),
+          if (children.isNotEmpty) rule,
+          Expanded(
+            child: ListView(padding: EdgeInsets.zero, children: children),
+          ),
+          if (children.isNotEmpty) rule,
+          for (var i = 2; i < items.length; i++) item(i),
+        ],
+      ),
+    );
+  }
+}
+
+class _RailItem extends StatelessWidget {
+  final TabItem item;
+  final bool selected;
+  final String hint;
+  final VoidCallback onTap;
+  const _RailItem({required this.item, required this.selected, required this.hint, required this.onTap});
+
+  @override
+  Widget build(BuildContext context) {
+    final tokens = context.duvet;
+    final color = selected ? tokens.accentText : context.theme.colors.mutedForeground;
+    return Semantics(
+      button: true,
+      selected: selected,
+      inMutuallyExclusiveGroup: true,
+      label: item.label,
+      hint: hint,
+      excludeSemantics: true,
+      onTap: onTap,
+      child: Pressable(
+        onTap: onTap,
+        scale: 0.94,
+        builder: (context, _) => SizedBox(
+          width: double.infinity,
+          height: DuvetTokens.sizeTabBar,
+          child: Stack(
+            alignment: Alignment.topCenter,
+            children: [
+              if (selected)
+                Positioned(
+                  top: 4,
+                  width: 56,
+                  height: 32,
+                  child: DecoratedBox(
+                    decoration: BoxDecoration(color: tokens.azureTint, borderRadius: BorderRadius.circular(16)),
+                  ),
+                ),
+              Padding(
+                padding: const EdgeInsets.only(top: 8),
+                child: Column(
+                  children: [
+                    Icon(item.icon, size: 24, color: color),
+                    const SizedBox(height: 4),
+                    Text(item.label, style: DuvetType.tabLabel.copyWith(color: color)),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// One of the rail's own buttons: a Space's icon, say, with a bar at the edge that is short for news in it and
+/// tall while it's the one open.
+class RailButton extends StatelessWidget {
+  final String label;
+  final bool selected;
+  final bool unread;
+  final VoidCallback onTap;
+  final VoidCallback? onLongPress;
+  final Widget child;
+
+  const RailButton({
+    required this.label,
+    required this.onTap,
+    required this.child,
+    this.selected = false,
+    this.unread = false,
+    this.onLongPress,
+    super.key,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = context.theme.colors;
+    return Semantics(
+      button: true,
+      selected: selected,
+      label: unread ? '$label, unread' : label,
+      excludeSemantics: true,
+      onTap: onTap,
+      onLongPress: onLongPress,
+      child: Pressable(
+        onTap: onTap,
+        onLongPress: onLongPress,
+        scale: 0.94,
+        builder: (context, _) => SizedBox(
+          width: double.infinity,
+          height: 52,
+          child: Stack(
+            alignment: Alignment.center,
+            children: [
+              if (selected || unread)
+                Positioned(
+                  left: 0,
+                  width: 3,
+                  height: selected ? 28 : 8,
+                  child: DecoratedBox(
+                    decoration: BoxDecoration(
+                      color: colors.foreground,
+                      borderRadius: const BorderRadius.horizontal(right: Radius.circular(3)),
+                    ),
+                  ),
+                ),
+              child,
+            ],
           ),
         ),
       ),

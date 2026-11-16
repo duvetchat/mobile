@@ -57,10 +57,13 @@ class MentionNotices extends StatelessWidget {
 
   void _open(ChatRepository repository, MentionNotice notice) {
     repository.dismissMentionNotice(notice.messageId);
-    navigator.currentState?.push(
-      MaterialPageRoute<void>(
-        builder: (_) => ChatView(target: notice.target, title: notice.title, jumpTo: notice.messageId),
-      ),
+    final context = navigator.currentContext;
+    if (context == null) return;
+    // Over a page left open (a form half filled): the notice doesn't close it.
+    openChatRoute(
+      context,
+      ChatRoute(target: notice.target, title: notice.title, jumpTo: notice.messageId),
+      reveal: false,
     );
   }
 }

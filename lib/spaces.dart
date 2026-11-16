@@ -14,6 +14,7 @@ import 'data/repository.dart';
 import 'data/scope.dart';
 import 'space_admin.dart';
 import 'tabs.dart' show SpaceDirectory;
+import 'shell.dart';
 import 'theme.dart';
 import 'widgets/chrome.dart';
 import 'widgets/depth.dart';
@@ -599,7 +600,7 @@ class _CreateSpacePageState extends State<CreateSpacePage> {
           ),
         ],
       ),
-    );
+    ).readable;
   }
 
   Future<void> _pickIcon() async {

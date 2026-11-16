@@ -16,6 +16,7 @@ import 'data/models.dart';
 import 'data/scope.dart';
 import 'members_sheet.dart' show MemberAction, PresenceAvatar;
 import 'space_admin.dart' show RoleSwatch, adminTry, confirmDestructive, managesRoleAt, mayRemove;
+import 'shell.dart';
 import 'theme.dart';
 import 'widgets/avatar.dart';
 import 'widgets/chrome.dart';
@@ -276,11 +277,7 @@ class _ProfileState extends State<_Profile> {
     try {
       final dm = await repository.directMessage(widget.member.userId);
       sheet.pop();
-      root.push(
-        MaterialPageRoute<void>(
-          builder: (_) => ChatView(target: dm.target, title: dm.title),
-        ),
-      );
+      if (root.mounted) openChat(root.context, dm.target, dm.title);
     } catch (e) {
       if (mounted) {
         showFToast(
@@ -1409,7 +1406,7 @@ class _FriendsPageState extends State<FriendsPage> {
           );
         },
       ),
-    );
+    ).readable;
   }
 
   Future<void> _confirmUnfriend(Member m) async {
@@ -1547,11 +1544,13 @@ class _NewConversationPageState extends State<NewConversationPage> {
             : _picked.map((p) => p.displayName.split(' ').first).join(', ');
         chat = await repository.createGroup(name, [for (final p in _picked) p.userId]);
       }
-      navigator.pushReplacement(
-        MaterialPageRoute<void>(
-          builder: (_) => ChatView(target: chat.target, title: chat.title),
-        ),
-      );
+      // In place of this page; a wide window shows the chat in its pane instead.
+      if (mounted && (Shell.maybeOf(context)?.wide ?? false)) {
+        navigator.pop();
+        openChat(navigator.context, chat.target, chat.title);
+      } else {
+        navigator.pushReplacement(ChatRoute(target: chat.target, title: chat.title));
+      }
     } catch (e) {
       if (mounted) {
         showFToast(
@@ -1703,7 +1702,7 @@ class _NewConversationPageState extends State<NewConversationPage> {
           ),
         ],
       ),
-    );
+    ).readable;
   }
 }
 
@@ -1998,7 +1997,7 @@ class _GroupInfoPageState extends State<GroupInfoPage> {
               ),
             ],
           ),
-        );
+        ).readable;
       },
     );
   }

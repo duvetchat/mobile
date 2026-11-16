@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import 'package:forui/forui.dart';
 
 import '../data/models.dart' show RoleColors;
+import '../shell.dart';
 import '../theme.dart';
 import 'avatar.dart';
 import 'role_name.dart';
@@ -93,12 +94,15 @@ Future<T?> showGlassMenu<T>(BuildContext anchor, {required List<GlassMenuItem<T>
   return Navigator.of(anchor).push(_GlassMenuRoute<T>(anchor: anchor, items: items, label: label));
 }
 
-/// Where [anchor]'s widget is on screen now, or null once it's gone.
+/// Where [anchor]'s widget is now in its navigator, which the menu is placed in, or null once it's gone. That
+/// isn't the screen for a navigator beside others: the wide layout's pane, the Spaces tab in its list.
 Rect? _rectOf(BuildContext anchor) {
   if (!anchor.mounted) return null;
   final box = anchor.findRenderObject();
   if (box is! RenderBox || !box.attached || !box.hasSize) return null;
-  return box.localToGlobal(Offset.zero) & box.size;
+  final navigator = Navigator.maybeOf(anchor)?.context.findRenderObject();
+  return box.localToGlobal(Offset.zero, ancestor: navigator is RenderBox && navigator.attached ? navigator : null) &
+      box.size;
 }
 
 class _GlassMenuRoute<T> extends PopupRoute<T> {
@@ -415,6 +419,8 @@ Future<T?> showGlassSheet<T>(
     context: context,
     isScrollControlled: true,
     useSafeArea: true,
+    // Centered on a wide window, not stretched across it.
+    constraints: const BoxConstraints(maxWidth: ShellSizes.sheet),
     backgroundColor: Colors.transparent,
     elevation: 0,
     barrierColor: const Color(0x52000000),
@@ -463,6 +469,8 @@ Future<T?> showGlassDialogSheet<T>(BuildContext context, {required String label,
     context: context,
     isScrollControlled: true,
     useSafeArea: true,
+    // Centered on a wide window, not stretched across it.
+    constraints: const BoxConstraints(maxWidth: ShellSizes.sheet),
     useRootNavigator: true,
     backgroundColor: Colors.transparent,
     elevation: 0,

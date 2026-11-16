@@ -877,11 +877,7 @@ class _GlobalSearchState extends State<GlobalSearch> {
               final title = h.target is RoomTarget
                   ? '# ${_where(repository, h.target).substring(1)}'
                   : _where(repository, h.target);
-              Navigator.of(context, rootNavigator: true).push(
-                MaterialPageRoute<void>(
-                  builder: (_) => ChatView(target: h.target, title: title, jumpTo: h.message.id),
-                ),
-              );
+              openChat(context, h.target, title, jumpTo: h.message.id);
             },
           ),
       ],
