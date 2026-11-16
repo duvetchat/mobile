@@ -197,7 +197,7 @@ What the review found and the PR left as it was. Its four bugs are fixed: a dele
 - [ ] **The dust of a big message:** [#61](https://github.com/duvetchat/mobile/issues/61)
 - [ ] **The dust doesn't follow the list:** [#62](https://github.com/duvetchat/mobile/issues/62)
 - [ ] **A failed or overtaken delete:** [#63](https://github.com/duvetchat/mobile/issues/63)
-- [x] **A `RepaintBoundary` per message:** [#64](https://github.com/duvetchat/mobile/issues/64) _measured (`flutter test test/benchmark/message_boundary.dart`) and kept: one more layer for each message built, 9 to 11 on a phone however long the chat, and no change in a scrolled frame's UI-thread time outside the noise between runs (some 20 to 30%). Raster time and memory on a phone aren't measured: that takes a profile build with `ChatView.debugMessageBoundary` on and off._
+- [x] **A `RepaintBoundary` per message:** [#64](https://github.com/duvetchat/mobile/issues/64) _measured (`flutter test benchmark/message_boundary.dart`) and kept: one more layer for each message built, 9 to 11 on a phone however long the chat, and no change in a scrolled frame's UI-thread time outside the noise between runs (some 20 to 30%). Raster time and memory on a phone aren't measured: that takes a profile build with `ChatView.debugMessageBoundary` on and off._
 - [ ] **`IntrinsicHeight` on the rooms page:** [#65](https://github.com/duvetchat/mobile/issues/65)
 - [ ] **The test hook on the drag edges:** [#66](https://github.com/duvetchat/mobile/issues/66)
 

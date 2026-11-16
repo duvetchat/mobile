@@ -107,7 +107,7 @@ class ChatView extends StatefulWidget {
   static Future<List<OutgoingFile>> Function()? debugPickFiles;
 
   /// Off, a message has no [RepaintBoundary] of its own: what
-  /// `test/benchmark/message_boundary.dart` measures it against.
+  /// `benchmark/message_boundary.dart` measures it against.
   @visibleForTesting
   static bool debugMessageBoundary = true;
 
@@ -2790,7 +2790,7 @@ class _ChatViewState extends State<ChatView> with SingleTickerProviderStateMixin
   }
 
   /// Its own layer, for the picture a delete breaks up. Measured for #64
-  /// (`test/benchmark/message_boundary.dart`, the test binding): one more
+  /// (`benchmark/message_boundary.dart`, the test binding): one more
   /// OffsetLayer for each message built, 9 to 11 of some 100 layers on a
   /// phone, in a chat of 300 messages as in one of 3000, as the list only
   /// builds those near the screen; and a scrolled frame's time on the UI

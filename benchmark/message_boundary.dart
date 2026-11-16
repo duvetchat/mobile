@@ -1,4 +1,4 @@
-// Run with: flutter test test/benchmark/message_boundary.dart
+// Run with: flutter test benchmark/message_boundary.dart
 import 'dart:math';
 
 import 'package:duvet/chat_view.dart';
@@ -8,8 +8,8 @@ import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter_test/flutter_test.dart';
 
-import '../support/fake_repository.dart';
-import '../support/fonts.dart';
+import '../test/support/fake_repository.dart';
+import '../test/support/fonts.dart';
 
 /// What the [RepaintBoundary] each message has of its own (for the picture a
 /// delete breaks into dust) costs in a long chat: the same chat, scrolled the
