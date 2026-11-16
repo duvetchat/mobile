@@ -118,6 +118,10 @@ class ActiveCall {
   /// When its voice first connected here: the talk counts from then.
   final DateTime? connectedAt;
 
+  /// Placed or joined with Video call: the camera turns on as its voice
+  /// joins.
+  final bool video;
+
   const ActiveCall({
     required this.conversationId,
     required this.initiatorId,
@@ -127,9 +131,10 @@ class ActiveCall {
     required this.phase,
     required this.startedAt,
     this.connectedAt,
+    this.video = false,
   });
 
-  ActiveCall _copy({CallPhase? phase, DateTime? connectedAt}) => ActiveCall(
+  ActiveCall _copy({CallPhase? phase, DateTime? connectedAt, bool? video}) => ActiveCall(
     conversationId: conversationId,
     initiatorId: initiatorId,
     initiatorName: initiatorName,
@@ -138,6 +143,7 @@ class ActiveCall {
     phase: phase ?? this.phase,
     startedAt: startedAt,
     connectedAt: connectedAt ?? this.connectedAt,
+    video: video ?? this.video,
   );
 
   ActiveCall answered() => _copy(phase: CallPhase.connected);
@@ -1803,8 +1809,8 @@ class VoiceController extends ChangeNotifier {
   }
 
   /// Rings [conversationId]'s members. The caller's voice joins once one of
-  /// them answers.
-  Future<void> startCall(String conversationId) async {
+  /// them answers, with the camera on for a [video] call.
+  Future<void> startCall(String conversationId, {bool video = false}) async {
     if (_call != null) {
       _notice('You’re in a call already');
       return;
@@ -1844,6 +1850,7 @@ class VoiceController extends ChangeNotifier {
       outgoing: true,
       phase: CallPhase.calling,
       startedAt: _now(),
+      video: video,
     );
     _callOn = _signaling.connection;
     _placedWith = ids;
@@ -1859,8 +1866,8 @@ class VoiceController extends ChangeNotifier {
 
   /// Joins the call going on in [conversationId]: one that rang out, or that
   /// the user left. Not the user's own while it still rings the others (see
-  /// [ownCallRinging]).
-  Future<void> joinCall(String conversationId) async {
+  /// [ownCallRinging]). With the camera on for a [video] call.
+  Future<void> joinCall(String conversationId, {bool video = false}) async {
     if (ownCallRinging(conversationId)) return;
     final current = _call;
     if (current != null && current.conversationId != conversationId) {
@@ -1888,6 +1895,7 @@ class VoiceController extends ChangeNotifier {
       outgoing: false,
       phase: CallPhase.connected,
       startedAt: _now(),
+      video: video,
     );
     notifyListeners();
     await _joinCallVoice(conversationId);
@@ -2007,6 +2015,12 @@ class VoiceController extends ChangeNotifier {
     _canSpeak = true;
     _canVideo = true;
     await _begin(target, speaker: false);
+    // A video call's camera, once: it asks for the camera as its button
+    // does, and refused, the call goes on without.
+    final call = _call;
+    if (call == null || !call.video || call.conversationId != conversationId) return;
+    _call = call._copy(video: false);
+    if (_target == target && _camera == null) await toggleCamera();
   }
 
   // Before joining somewhere else: a room's voice is left, a call hung up.
