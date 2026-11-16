@@ -4,6 +4,7 @@ import UIKit
 @main
 @objc class AppDelegate: FlutterAppDelegate, FlutterImplicitEngineDelegate {
   private var screenShare: ScreenShare?
+  private var sounds: Sounds?
 
   override func application(
     _ application: UIApplication,
@@ -16,6 +17,9 @@ import UIKit
     GeneratedPluginRegistrant.register(with: engineBridge.pluginRegistry)
     if let registrar = engineBridge.pluginRegistry.registrar(forPlugin: "ScreenShare") {
       screenShare = ScreenShare(messenger: registrar.messenger())
+    }
+    if let registrar = engineBridge.pluginRegistry.registrar(forPlugin: "Sounds") {
+      sounds = Sounds(messenger: registrar.messenger())
     }
   }
 }
