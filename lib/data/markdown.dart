@@ -188,7 +188,8 @@ void _parseLines(String text, List<MdBlock> blocks) {
     } else if (RegExp(r'^-# (.*)$').firstMatch(line) case final m?) {
       flush();
       blocks.add(MdSubtext(_inline(m.group(1)!)));
-    } else if (RegExp(r'^(?:>>>|>) ?(.*)$').firstMatch(line) case final m?) {
+      // The space is the marker's, as on the desktop: `>:v` and `>_>` are text.
+    } else if (RegExp(r'^(?:>>>|>) (.*)$').firstMatch(line) case final m?) {
       if (paragraph.isNotEmpty) {
         blocks.add(MdParagraph(_inline(paragraph.join('\n'))));
         paragraph.clear();
