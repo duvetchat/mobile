@@ -32,17 +32,17 @@ Future<void> openCall(BuildContext context, String conversationId) => Navigator.
 bool _placing = false;
 
 /// Calls [conversationId], or joins its call going on, and opens the call
-/// screen.
-Future<void> callConversation(BuildContext context, String conversationId) async {
+/// screen. A [video] call turns the camera on as the user's voice joins.
+Future<void> callConversation(BuildContext context, String conversationId, {bool video = false}) async {
   if (_placing) return;
   final voice = context.voice;
   if (voice.call?.conversationId != conversationId) {
     _placing = true;
     try {
       if (voice.callsInProgress.contains(conversationId)) {
-        await voice.joinCall(conversationId);
+        await voice.joinCall(conversationId, video: video);
       } else {
-        await voice.startCall(conversationId);
+        await voice.startCall(conversationId, video: video);
       }
     } finally {
       _placing = false;

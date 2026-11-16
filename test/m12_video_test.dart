@@ -5,6 +5,7 @@ import 'dart:async';
 
 import 'package:duvet/data/admin.dart' show Perm;
 import 'package:duvet/data/call_history.dart';
+import 'package:duvet/data/models.dart' show ConversationSummary;
 import 'package:duvet/data/voice.dart';
 import 'package:duvet/data/voice_engine.dart';
 import 'package:duvet/data/voice_prefs.dart';
@@ -557,6 +558,181 @@ void main() {
     expect(find.byIcon(FLucideIcons.video), findsOneWidget);
     expect(find.byIcon(FLucideIcons.monitorUp), findsOneWidget);
     semantics.dispose();
+    await finish(tester, app);
+  });
+
+  IconAction action(WidgetTester tester, String label) =>
+      tester.widget(find.byWidgetPredicate((w) => w is IconAction && w.label == label));
+  const accepted = duvet.CallAcceptedEvent(duvet.CallResponseEvent(conversationId: 'c-maya', userId: _maya));
+
+  testWidgets('Video call calls as Call does, and turns the camera on once someone answers', (tester) async {
+    final semantics = tester.ensureSemantics();
+    final app = await pumpApp(tester);
+    await tester.tap(find.text('Maya'));
+    await tester.pumpAndSettle();
+    // Just left of Call.
+    expect(tester.getTopRight(find.bySemanticsLabel('Video call')), tester.getTopLeft(find.bySemanticsLabel('Call')));
+
+    await tester.tap(find.bySemanticsLabel('Video call'));
+    await settle(tester);
+    expect(app.gateway.last('CALL_INITIATE'), {
+      'conversation_id': 'c-maya',
+      'member_ids': [FakeRepository.me.id, _maya],
+    });
+    expect(find.text('Calling…'), findsWidgets);
+    // No camera while it rings: nothing shows it yet.
+    expect(app.engine.cameraOpens, 0);
+
+    app.gateway.push(accepted);
+    await settle(tester);
+    expect(app.voice.cameraOn, isTrue);
+    expect(app.engine.cameraOpens, 1);
+    expect(app.engine.peer.camera, isNotNull);
+    expect(app.gateway.last('VOICE_SYNC')!['camera'], isTrue);
+    expect(find.bySemanticsLabel('Camera'), findsOneWidget);
+
+    // Off stays off: only the join turns it on.
+    await tester.tap(find.bySemanticsLabel('Camera'));
+    await settle(tester);
+    app.engine.peer.stateHandler!(PeerState.connected);
+    await settle(tester);
+    expect(app.voice.cameraOn, isFalse);
+    expect(app.engine.cameraOpens, 1);
+    semantics.dispose();
+    await finish(tester, app);
+  });
+
+  testWidgets('a video call whose camera is refused goes on without video', (tester) async {
+    final semantics = tester.ensureSemantics();
+    final app = await pumpApp(tester);
+    app.engine.cameraAllowed = false;
+    await tester.tap(find.text('Maya'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.bySemanticsLabel('Video call'));
+    await settle(tester);
+    app.gateway.push(accepted);
+    await settle(tester);
+    expect(app.engine.cameraOpens, 1);
+    expect(app.voice.cameraOn, isFalse);
+    expect(app.voice.call?.phase, CallPhase.connected);
+    expect(app.voice.target, const CallVoice('c-maya'));
+    expect(app.gateway.types, contains('VOICE_JOIN'));
+    semantics.dispose();
+    await finish(tester, app);
+  });
+
+  testWidgets('Call places a call without the camera; Video call joins a call going on with it', (tester) async {
+    final semantics = tester.ensureSemantics();
+    final app = await pumpApp(tester);
+    await tester.tap(find.text('Maya'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.bySemanticsLabel('Call'));
+    await settle(tester);
+    app.gateway.push(accepted);
+    await settle(tester);
+    expect(app.voice.target, const CallVoice('c-maya'));
+    expect(app.engine.cameraOpens, 0);
+    await tester.tap(find.bySemanticsLabel('Hang up the call'));
+    await settle(tester);
+
+    // Maya is still there: the call goes on, to join.
+    app.gateway.push(_state(_maya, 3, room: 'c-maya'));
+    await settle(tester);
+    expect(find.text('Join'), findsOneWidget);
+    await tester.tap(find.bySemanticsLabel('Video call'));
+    await settle(tester);
+    expect(app.gateway.types, contains('CALL_ACCEPT'));
+    expect(app.voice.cameraOn, isTrue);
+    semantics.dispose();
+    await finish(tester, app);
+  });
+
+  testWidgets('Video call shows where Call does, and is out of reach when it is', (tester) async {
+    final semantics = tester.ensureSemantics();
+    final app = await pumpApp(tester);
+    // The user's own call from another device: neither button until someone answers.
+    app.gateway.push(const duvet.CallOutgoingPayloadEvent(duvet.CallOutgoingEvent(conversationId: 'c-maya')));
+    await settle(tester);
+    await tester.tap(find.text('Maya'));
+    await tester.pumpAndSettle();
+    expect(action(tester, 'Call').onPressed, isNull);
+    expect(action(tester, 'Video call').onPressed, isNull);
+
+    // Answered, and joined from here: in a call, one call at a time.
+    app.gateway.push(accepted);
+    app.gateway.push(_state(FakeRepository.me.id, 1, room: 'c-maya'));
+    app.gateway.push(_state(_maya, 2, room: 'c-maya'));
+    await settle(tester);
+    expect(action(tester, 'Video call').onPressed, isNotNull);
+    await tester.tap(find.text('Join'));
+    await settle(tester);
+    await tester.tap(find.bySemanticsLabel('Back').last);
+    await settle(tester);
+    expect(action(tester, 'Call').onPressed, isNull);
+    expect(action(tester, 'Video call').onPressed, isNull);
+    await tester.tap(find.bySemanticsLabel('Back').last);
+    await settle(tester);
+
+    // A room's chat calls no one.
+    await tester.tap(find.descendant(of: find.byType(DuvetTabBar), matching: find.text('Spaces')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Design Guild'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.textContaining('general', findRichText: true).last);
+    await tester.pumpAndSettle();
+    expect(find.byWidgetPredicate((w) => w is IconAction && w.label == 'Search'), findsOneWidget);
+    expect(
+      find.byWidgetPredicate((w) => w is IconAction && (w.label == 'Call' || w.label == 'Video call')),
+      findsNothing,
+    );
+    semantics.dispose();
+    await finish(tester, app);
+  });
+
+  testWidgets('a narrow phone fits the four buttons, and a long name ends before them', (tester) async {
+    final app = await pumpApp(tester);
+    tester.view.physicalSize = const Size(320 * 3, 568 * 3);
+    const long = 'Maximiliana Featherstonehaugh-Cholmondeley';
+    app.repository.conversations.value = [
+      const ConversationSummary(id: 'c-maya', title: long, isGroup: false, otherUserId: _maya),
+      ...app.repository.conversations.value.skip(1),
+    ];
+    await tester.pumpAndSettle();
+    await tester.tap(find.textContaining('Maximiliana').first);
+    await tester.pumpAndSettle();
+    expect(tester.takeException(), isNull);
+
+    final bar = find.byType(GlassTopBar);
+    final actions = [
+      for (final label in ['Video call', 'Call', 'Search', 'More'])
+        tester.getRect(
+          find.descendant(of: bar, matching: find.byWidgetPredicate((w) => w is IconAction && w.label == label)),
+        ),
+    ];
+    // Full size, side by side, on screen.
+    for (final (i, r) in actions.indexed) {
+      expect(r.size, const Size(40, 40));
+      if (i > 0) expect(r.left, actions[i - 1].right);
+    }
+    expect(actions.last.right, 320 - 8);
+    final back = tester.getRect(
+      find.descendant(of: bar, matching: find.byWidgetPredicate((w) => w is IconAction && w.label == 'Back')),
+    );
+    final title = tester.getRect(find.descendant(of: bar, matching: find.text(long)));
+    expect(title.left, greaterThanOrEqualTo(back.right));
+    expect(title.right, lessThanOrEqualTo(actions.first.left));
+    expect(title.width, greaterThan(90));
+    await finish(tester, app);
+  });
+
+  testWidgets('with four buttons a name that fits stays centered on the screen', (tester) async {
+    final app = await pumpApp(tester);
+    tester.view.physicalSize = const Size(430 * 3, 932 * 3);
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Maya'));
+    await tester.pumpAndSettle();
+    final title = tester.getRect(find.descendant(of: find.byType(GlassTopBar), matching: find.text('Maya')));
+    expect(title.center.dx, moreOrLessEquals(215, epsilon: 0.5));
     await finish(tester, app);
   });
 }

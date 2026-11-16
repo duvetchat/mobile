@@ -118,6 +118,10 @@ class ActiveCall {
   /// When its voice first connected here: the talk counts from then.
   final DateTime? connectedAt;
 
+  /// Placed or joined with Video call: the camera turns on as its voice
+  /// joins.
+  final bool video;
+
   const ActiveCall({
     required this.conversationId,
     required this.initiatorId,
@@ -127,9 +131,10 @@ class ActiveCall {
     required this.phase,
     required this.startedAt,
     this.connectedAt,
+    this.video = false,
   });
 
-  ActiveCall _copy({CallPhase? phase, DateTime? connectedAt}) => ActiveCall(
+  ActiveCall _copy({CallPhase? phase, DateTime? connectedAt, bool? video}) => ActiveCall(
     conversationId: conversationId,
     initiatorId: initiatorId,
     initiatorName: initiatorName,
@@ -138,6 +143,7 @@ class ActiveCall {
     phase: phase ?? this.phase,
     startedAt: startedAt,
     connectedAt: connectedAt ?? this.connectedAt,
+    video: video ?? this.video,
   );
 
   ActiveCall answered() => _copy(phase: CallPhase.connected);
@@ -732,8 +738,9 @@ class VoiceController extends ChangeNotifier {
   // Camera and screen
   // ---------------------------------------------------------------------------
 
-  /// Turns the camera on or off: only ever from the user's tap. It swaps the
-  /// camera transceiver's track, so nothing renegotiates.
+  /// Turns the camera on or off: from the user's tap, or once as a video
+  /// call's voice joins (see [_joinCallVoice]). It swaps the camera
+  /// transceiver's track, so nothing renegotiates.
   ///
   /// One camera opens at a time: a tap while it opens is the user's latest
   /// word on it, and a camera that arrives no longer wanted stops at once
@@ -1803,8 +1810,8 @@ class VoiceController extends ChangeNotifier {
   }
 
   /// Rings [conversationId]'s members. The caller's voice joins once one of
-  /// them answers.
-  Future<void> startCall(String conversationId) async {
+  /// them answers, with the camera on for a [video] call.
+  Future<void> startCall(String conversationId, {bool video = false}) async {
     if (_call != null) {
       _notice('You’re in a call already');
       return;
@@ -1844,6 +1851,7 @@ class VoiceController extends ChangeNotifier {
       outgoing: true,
       phase: CallPhase.calling,
       startedAt: _now(),
+      video: video,
     );
     _callOn = _signaling.connection;
     _placedWith = ids;
@@ -1859,8 +1867,8 @@ class VoiceController extends ChangeNotifier {
 
   /// Joins the call going on in [conversationId]: one that rang out, or that
   /// the user left. Not the user's own while it still rings the others (see
-  /// [ownCallRinging]).
-  Future<void> joinCall(String conversationId) async {
+  /// [ownCallRinging]). With the camera on for a [video] call.
+  Future<void> joinCall(String conversationId, {bool video = false}) async {
     if (ownCallRinging(conversationId)) return;
     final current = _call;
     if (current != null && current.conversationId != conversationId) {
@@ -1888,6 +1896,7 @@ class VoiceController extends ChangeNotifier {
       outgoing: false,
       phase: CallPhase.connected,
       startedAt: _now(),
+      video: video,
     );
     notifyListeners();
     await _joinCallVoice(conversationId);
@@ -2006,7 +2015,26 @@ class VoiceController extends ChangeNotifier {
     // Calls ask for no permission.
     _canSpeak = true;
     _canVideo = true;
-    await _begin(target, speaker: false);
+    final begun = _begin(target, speaker: false);
+    final session = _session;
+    await begun;
+    // Left meanwhile, or joined again: a call placed since keeps its camera
+    // for its own join.
+    if (session != _session) return;
+    // A video call's camera, once: it asks for the camera as its button
+    // does, and refused, the call goes on without.
+    final call = _call;
+    if (call == null || !call.video || call.conversationId != conversationId) return;
+    _call = call._copy(video: false);
+    // The user's own tap meanwhile is the camera this call wanted.
+    if (_camera != null || _cameraOpening == _session) return;
+    // Answered with Duvet off screen: no lifecycle change is still to come
+    // to turn it off there (see [_followBackground]).
+    if (!_inFront()) {
+      _notice('Camera turned off in the background');
+      return;
+    }
+    await toggleCamera();
   }
 
   // Before joining somewhere else: a room's voice is left, a call hung up.

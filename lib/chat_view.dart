@@ -2534,18 +2534,19 @@ class _ChatViewState extends State<ChatView> with SingleTickerProviderStateMixin
                       ? ['Channel $_roomName', ?_room?.description, 'switch channel'].join(', ')
                       : null,
                   actions: [
+                    // One call at a time. Into this conversation's call
+                    // going on they join, as its banner's Join does, but not
+                    // the user's own while it rings from another device.
+                    // Video call is Call with the camera on.
                     if (_callable)
-                      IconAction(
-                        icon: FLucideIcons.phone,
-                        label: 'Call',
-                        // One call at a time. Into this conversation's call
-                        // going on it joins, as its banner's Join does, but
-                        // not the user's own while it rings from another
-                        // device.
-                        onPressed: context.voice.call == null && !callingElsewhere(context.voice, widget.target.id)
-                            ? () => callConversation(context, widget.target.id)
-                            : null,
-                      ),
+                      for (final video in const [true, false])
+                        IconAction(
+                          icon: video ? FLucideIcons.video : FLucideIcons.phone,
+                          label: video ? 'Video call' : 'Call',
+                          onPressed: context.voice.call == null && !callingElsewhere(context.voice, widget.target.id)
+                              ? () => callConversation(context, widget.target.id, video: video)
+                              : null,
+                        ),
                     if (widget.threadOf == null)
                       IconAction(icon: FLucideIcons.search, label: 'Search', onPressed: _openSearch),
                     Builder(

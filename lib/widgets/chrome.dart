@@ -133,6 +133,8 @@ class IconAction extends StatelessWidget {
 
 /// The inline top bar of a pushed screen: glass, 52pt below the status bar, a
 /// back chevron at x8, the title centered in `nav-title`, actions on the right.
+/// Past three actions the title has the room they leave, centered while it
+/// fits there.
 class GlassTopBar extends StatelessWidget {
   final Widget? title;
   final VoidCallback? onBack;
@@ -173,6 +175,65 @@ class GlassTopBar extends StatelessWidget {
     // Text actions (Cancel, Save) take a wider slot than icons.
     final text = leading != null || actions.any((a) => a is! IconAction && a is! Builder);
     final side = text ? 88.0 : 8 + 40.0 * (actions.length > 1 ? actions.length : 1);
+    // Four icons a side would leave a phone's title no room: Back takes its
+    // own width then, and the title moves over only as far as it must.
+    final crowded = !text && actions.length > 3;
+    final leadingSlot = SizedBox(
+      width: crowded ? 48 : side,
+      child: Align(
+        alignment: Alignment.centerLeft,
+        child: leading != null
+            ? Padding(
+                padding: const EdgeInsets.only(left: 8),
+                child: FittedBox(fit: BoxFit.scaleDown, child: leading),
+              )
+            : onBack == null
+            ? null
+            : Padding(
+                padding: const EdgeInsets.only(left: 8),
+                child: IconAction(icon: FLucideIcons.chevronLeft, label: 'Back', onPressed: onBack),
+              ),
+      ),
+    );
+    final titleSlot = DefaultTextStyle.merge(
+      style: DuvetType.navTitle.copyWith(color: colors.foreground),
+      maxLines: 1,
+      overflow: TextOverflow.ellipsis,
+      child: onTitle == null
+          ? Semantics(header: true, child: title ?? const SizedBox.shrink())
+          : Semantics(
+              container: true,
+              header: true,
+              button: true,
+              label: titleLabel,
+              excludeSemantics: titleLabel != null,
+              onTap: onTitle,
+              child: Pressable(
+                onTap: onTitle,
+                builder: (context, _) => Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Flexible(child: title ?? const SizedBox.shrink()),
+                    const SizedBox(width: 4),
+                    Icon(FLucideIcons.chevronDown, size: 14, color: colors.mutedForeground),
+                  ],
+                ),
+              ),
+            ),
+    );
+    final actionsSlot = SizedBox(
+      width: side,
+      child: Padding(
+        padding: const EdgeInsets.only(right: 8),
+        child: Align(
+          alignment: Alignment.centerRight,
+          child: FittedBox(
+            fit: BoxFit.scaleDown,
+            child: Row(mainAxisSize: MainAxisSize.min, children: actions),
+          ),
+        ),
+      ),
+    );
     return GlassChrome(
       hairline: hairline,
       child: Padding(
@@ -182,70 +243,15 @@ class GlassTopBar extends StatelessWidget {
           children: [
             SizedBox(
               height: DuvetTokens.sizeTopBar,
-              child: Row(
-                children: [
-                  SizedBox(
-                    width: side,
-                    child: Align(
-                      alignment: Alignment.centerLeft,
-                      child: leading != null
-                          ? Padding(
-                              padding: const EdgeInsets.only(left: 8),
-                              child: FittedBox(fit: BoxFit.scaleDown, child: leading),
-                            )
-                          : onBack == null
-                          ? null
-                          : Padding(
-                              padding: const EdgeInsets.only(left: 8),
-                              child: IconAction(icon: FLucideIcons.chevronLeft, label: 'Back', onPressed: onBack),
-                            ),
+              child: crowded
+                  ? NavigationToolbar(leading: leadingSlot, middle: titleSlot, trailing: actionsSlot, middleSpacing: 0)
+                  : Row(
+                      children: [
+                        leadingSlot,
+                        Expanded(child: Center(child: titleSlot)),
+                        actionsSlot,
+                      ],
                     ),
-                  ),
-                  Expanded(
-                    child: Center(
-                      child: DefaultTextStyle.merge(
-                        style: DuvetType.navTitle.copyWith(color: colors.foreground),
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        child: onTitle == null
-                            ? Semantics(header: true, child: title ?? const SizedBox.shrink())
-                            : Semantics(
-                                container: true,
-                                header: true,
-                                button: true,
-                                label: titleLabel,
-                                excludeSemantics: titleLabel != null,
-                                onTap: onTitle,
-                                child: Pressable(
-                                  onTap: onTitle,
-                                  builder: (context, _) => Row(
-                                    mainAxisSize: MainAxisSize.min,
-                                    children: [
-                                      Flexible(child: title ?? const SizedBox.shrink()),
-                                      const SizedBox(width: 4),
-                                      Icon(FLucideIcons.chevronDown, size: 14, color: colors.mutedForeground),
-                                    ],
-                                  ),
-                                ),
-                              ),
-                      ),
-                    ),
-                  ),
-                  SizedBox(
-                    width: side,
-                    child: Padding(
-                      padding: const EdgeInsets.only(right: 8),
-                      child: Align(
-                        alignment: Alignment.centerRight,
-                        child: FittedBox(
-                          fit: BoxFit.scaleDown,
-                          child: Row(mainAxisSize: MainAxisSize.min, children: actions),
-                        ),
-                      ),
-                    ),
-                  ),
-                ],
-              ),
             ),
             if (bottom case final bottom?) Padding(padding: const EdgeInsets.fromLTRB(16, 0, 16, 8), child: bottom),
           ],
