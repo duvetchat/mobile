@@ -49,10 +49,7 @@ class _Reactors extends StatefulWidget {
 }
 
 class _ReactorsState extends State<_Reactors> {
-  late var _picked = max(
-    0,
-    widget.reactions.indexWhere((r) => r.emoji == widget.initial?.emoji && r.emojiId == widget.initial?.emojiId),
-  );
+  late var _picked = max(0, widget.reactions.indexWhere((r) => r.key == widget.initial?.key));
 
   /// Those the API gave, and everyone it was asked for.
   final _fetched = <String, Member>{};

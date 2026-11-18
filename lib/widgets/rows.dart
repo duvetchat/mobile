@@ -629,6 +629,9 @@ class DuvetButton extends StatelessWidget {
   final bool expand;
   final bool busy;
 
+  /// Before the label, in [icon]'s place: a picture, such as a bot's custom emoji.
+  final Widget? leading;
+
   const DuvetButton({
     required this.label,
     required this.onPressed,
@@ -636,6 +639,7 @@ class DuvetButton extends StatelessWidget {
     this.variant = ButtonVariant.secondary,
     this.expand = false,
     this.busy = false,
+    this.leading,
     super.key,
   });
 
@@ -684,7 +688,13 @@ class DuvetButton extends StatelessWidget {
                   if (busy)
                     SizedBox.square(dimension: 20, child: CircularProgressIndicator(strokeWidth: 2, color: ink))
                   else ...[
-                    if (icon != null) ...[Icon(icon, size: 24, color: ink), const SizedBox(width: 8)],
+                    if (leading case final leading?) ...[
+                      leading,
+                      const SizedBox(width: 8),
+                    ] else if (icon != null) ...[
+                      Icon(icon, size: 24, color: ink),
+                      const SizedBox(width: 8),
+                    ],
                     // Large text wraps no button off the screen.
                     Flexible(
                       child: Text(

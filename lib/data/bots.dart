@@ -40,13 +40,26 @@ class ComponentOption {
   final String value;
   final String? description;
   final bool isDefault;
-  const ComponentOption({required this.label, required this.value, this.description, this.isDefault = false});
+
+  /// Its emoji: a Unicode one, or a custom one's name, any Space's, by [emojiId].
+  final String? emoji;
+  final String? emojiId;
+  const ComponentOption({
+    required this.label,
+    required this.value,
+    this.description,
+    this.isDefault = false,
+    this.emoji,
+    this.emojiId,
+  });
 
   static ComponentOption fromJson(Map<String, dynamic> j) => ComponentOption(
     label: j['label'] as String? ?? '${j['value']}',
     value: '${j['value']}',
     description: j['description'] as String?,
     isDefault: j['default'] as bool? ?? false,
+    emoji: (j['emoji'] as Map?)?['name'] as String?,
+    emojiId: (j['emoji'] as Map?)?['id'] as String?,
   );
 }
 
@@ -60,7 +73,10 @@ class UiComponent {
   final String? customId;
   final int? style;
   final String? label;
+
+  /// A button's emoji: a Unicode one, or a custom one's name, any Space's, by [emojiId].
   final String? emoji;
+  final String? emojiId;
   final String? url;
   final bool disabled;
   final String? placeholder;
@@ -114,6 +130,7 @@ class UiComponent {
     this.style,
     this.label,
     this.emoji,
+    this.emojiId,
     this.url,
     this.disabled = false,
     this.placeholder,
@@ -153,6 +170,7 @@ class UiComponent {
       style: j['style'] as int?,
       label: j['label'] as String?,
       emoji: (j['emoji'] as Map?)?['name'] as String?,
+      emojiId: (j['emoji'] as Map?)?['id'] as String?,
       url: webUrl(j['url']),
       disabled: j['disabled'] as bool? ?? false,
       placeholder: j['placeholder'] as String?,

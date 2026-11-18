@@ -785,19 +785,20 @@ void main() {
     RecentEmoji.instance = RecentEmoji(store);
     addTearDown(() => RecentEmoji.instance = RecentEmoji(MemoryRecentEmojiStore()));
     EmojiCatalog.used('😀');
-    // A space's emoji: kept, and not shown in a DM.
+    // A Space's emoji: any chat's, a DM's too, recent and in its Space's section.
     EmojiCatalog.used(FakeRepository.party.code);
     await openMaya(tester);
     await tapLabel(tester, 'Emoji and stickers');
     expect(find.text('RECENTLY USED'), findsOneWidget);
-    expect(find.bySemanticsLabel('party'), findsNothing);
+    expect(find.bySemanticsLabel('party'), findsNWidgets(2));
 
     // The first is the recent one; the second sits in its category.
     await tester.longPress(find.bySemanticsLabel('grinning').first);
     await tester.pumpAndSettle();
     await tester.tap(find.text('Remove from recently used'));
     await tester.pumpAndSettle();
-    expect(find.text('RECENTLY USED'), findsNothing);
+    expect(find.bySemanticsLabel('grinning'), findsOneWidget);
+    expect(find.bySemanticsLabel('party'), findsNWidgets(2));
     expect(RecentEmoji.instance.ranked, [FakeRepository.party.code]);
     expect(store.uses, isNot(contains('😀')));
     expect(store.uses, contains(FakeRepository.party.code));

@@ -21,12 +21,14 @@ class FakeRepository implements ChatRepository {
     id: '0e0e0e0e-0000-4000-8000-000000000001',
     name: 'party',
     url: 'https://example.invalid/party.png',
+    spaceId: 's-guild',
   );
   static const wave = Sticker(
     id: '05050505-0000-4000-8000-000000000001',
     name: 'wave',
     attachmentId: '05050505-0000-4000-8000-0000000000aa',
     url: 'https://example.invalid/wave.png',
+    spaceId: 's-guild',
   );
   static const everyone = [
     Member(userId: '0a0a0a0a-0000-4000-8000-000000000001', username: 'gaby', alias: 'Gaby'),
@@ -1779,10 +1781,17 @@ class FakeRepository implements ChatRepository {
   String? emojiNameOf(String emojiId) => emojiId == party.id ? party.name : null;
 
   @override
-  Future<List<CustomEmoji>> customEmojis(ChatTarget target) async => target is RoomTarget ? const [party] : const [];
+  Future<List<CustomEmoji>> customEmojis() async => [...spaceEmojis];
+
+  /// Every emoji and sticker of the user's Spaces, as the API lists them.
+  final spaceEmojis = <CustomEmoji>[party];
+  final spaceStickers = <Sticker>[wave];
 
   @override
-  Future<List<Sticker>> stickers(ChatTarget target) async => target is RoomTarget ? const [wave] : const [];
+  Future<List<Sticker>> stickers() async => [...spaceStickers];
+
+  @override
+  String emojiUrl(String emojiId) => 'https://example.invalid/emojis/$emojiId';
 
   /// Why the server refuses a new DM, if it does.
   String? dmRefused;

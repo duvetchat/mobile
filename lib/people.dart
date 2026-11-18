@@ -550,6 +550,8 @@ class _ProfileState extends State<_Profile> {
                                 me: context.repository.profile.value?.id,
                                 nameOf: context.repository.nameOf,
                                 emojiOf: (_) => null,
+                                // A bio's emojis can be of any Space.
+                                emojiUrl: context.repository.emojiUrl,
                               ),
                               style: DuvetType.body.copyWith(color: colors.foreground),
                             )
