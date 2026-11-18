@@ -1205,6 +1205,37 @@ void main() {
     semantics.dispose();
   });
 
+  for (final theme in Brightness.values) {
+    testWidgets('the image viewer\'s light status bar icons go with it, in the ${theme.name} theme', (tester) async {
+      tester.platformDispatcher.platformBrightnessTestValue = theme;
+      addTearDown(tester.platformDispatcher.clearPlatformBrightnessTestValue);
+      final repository = await openMaya(tester);
+      repository.push(
+        'c-maya',
+        MessageCreated(
+          withFiles('p', const [
+            MessageAttachment(id: 'ph', filename: 'room.jpg', contentType: 'image/jpeg', url: 'https://x/room.jpg'),
+          ]),
+        ),
+      );
+      await tester.pumpAndSettle();
+      // iOS reads the bar's background: light means dark icons.
+      Brightness? bar() => SystemChrome.latestStyle?.statusBarBrightness;
+      expect(bar(), theme);
+
+      await tester.tap(find.bySemanticsLabel('Photo, room.jpg'));
+      await tester.pump(kDoubleTapTimeout);
+      await tester.pumpAndSettle();
+      expect(bar(), Brightness.dark);
+      expect(SystemChrome.latestStyle?.systemNavigationBarColor, isNull, reason: 'Android\'s bar keeps its colour');
+
+      await tapLabel(tester, 'Close');
+      expect(find.byType(ImageViewer), findsNothing);
+      expect(bar(), theme);
+      semantics.dispose();
+    });
+  }
+
   testWidgets('a tap hides the video\'s controls and the system\'s bars; Play and Pause are the button\'s', (
     tester,
   ) async {

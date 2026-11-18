@@ -132,7 +132,11 @@ Future<void> openYouTubeFullScreen(BuildContext context, {required YouTubeSessio
       PageRouteBuilder<void>(
         transitionDuration: DuvetTokens.panelIn,
         reverseTransitionDuration: DuvetTokens.panelOut,
-        pageBuilder: (_, _, _) => _YouTubeFullScreen(session: session, ratio: ratio),
+        // On black: light icons in the system bars, when they're swiped in.
+        pageBuilder: (_, _, _) => AnnotatedRegion<SystemUiOverlayStyle>(
+          value: Duvet.systemBarsOver(Brightness.dark),
+          child: _YouTubeFullScreen(session: session, ratio: ratio),
+        ),
         transitionsBuilder: (_, animation, _, child) => FadeTransition(
           opacity: CurvedAnimation(parent: animation, curve: DuvetTokens.decelerate),
           child: child,

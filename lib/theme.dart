@@ -55,6 +55,20 @@ abstract final class Duvet {
   static DuvetTokens tokens(Brightness brightness) =>
       brightness == Brightness.dark ? DuvetTokens.dark : DuvetTokens.light;
 
+  /// The system bars' icons over a screen whose [background] is light or
+  /// dark: dark icons on light, light on dark. Their brightness only, not the
+  /// bars' colours, which stay the system's: Flutter's `SystemUiOverlayStyle.light`
+  /// and `.dark` also paint Android's navigation bar black.
+  static SystemUiOverlayStyle systemBarsOver(Brightness background) {
+    final icons = background == Brightness.light ? Brightness.dark : Brightness.light;
+    return SystemUiOverlayStyle(
+      // iOS takes the bar's background; Android, its icons'.
+      statusBarBrightness: background,
+      statusBarIconBrightness: icons,
+      systemNavigationBarIconBrightness: icons,
+    );
+  }
+
   static FThemeData theme(Brightness brightness) {
     final colors = brightness == Brightness.dark ? dark : light;
     final face = FTypeface.inherit(

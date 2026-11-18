@@ -927,7 +927,11 @@ void openVideo(BuildContext context, MessageAttachment attachment) => Navigator.
     barrierColor: Colors.black,
     transitionDuration: DuvetTokens.panelIn,
     reverseTransitionDuration: DuvetTokens.panelOut,
-    pageBuilder: (_, _, _) => VideoPage(attachment: attachment),
+    // On near-black, as the image viewer: light icons in the system bars.
+    pageBuilder: (_, _, _) => AnnotatedRegion<SystemUiOverlayStyle>(
+      value: Duvet.systemBarsOver(Brightness.dark),
+      child: VideoPage(attachment: attachment),
+    ),
     transitionsBuilder: (_, animation, _, child) => FadeTransition(
       opacity: CurvedAnimation(parent: animation, curve: DuvetTokens.decelerate),
       child: child,
