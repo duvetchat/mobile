@@ -419,17 +419,23 @@ class _DuvetAppState extends State<DuvetApp> {
               ],
               supportedLocales: FLocalizations.supportedLocales,
               theme: Duvet.material(brightness),
-              builder: (context, child) => FTheme(
-                data: theme,
-                child: ShellScope(
-                  shell: _shell,
-                  child: FToaster(
-                    child: Stack(
-                      children: [
-                        child!,
-                        // Over every screen, the chats opened from Chats and Spaces too.
-                        MentionNotices(navigator: _navigator),
-                      ],
+              // The system bars' icons follow the theme. A screen under them that sets its own (the image
+              // viewer's) wins while it's up; without this, theirs would stay once it's gone, as Flutter keeps
+              // the last style set: light icons on the light theme.
+              builder: (context, child) => AnnotatedRegion<SystemUiOverlayStyle>(
+                value: Duvet.systemBarsOver(brightness),
+                child: FTheme(
+                  data: theme,
+                  child: ShellScope(
+                    shell: _shell,
+                    child: FToaster(
+                      child: Stack(
+                        children: [
+                          child!,
+                          // Over every screen, the chats opened from Chats and Spaces too.
+                          MentionNotices(navigator: _navigator),
+                        ],
+                      ),
                     ),
                   ),
                 ),

@@ -1915,7 +1915,7 @@ class _ImageViewerState extends State<ImageViewer> with TickerProviderStateMixin
     );
     // The viewer is always dark: photos read best on near-black.
     return AnnotatedRegion<SystemUiOverlayStyle>(
-      value: SystemUiOverlayStyle.light,
+      value: Duvet.systemBarsOver(Brightness.dark),
       child: Semantics(
         scopesRoute: true,
         namesRoute: true,
