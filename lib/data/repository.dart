@@ -563,8 +563,11 @@ abstract interface class ChatRepository {
   /// by (a caller's, say); null for none.
   String? avatarUrl(String? avatar);
 
-  /// A custom emoji's name, if its space's emoji were loaded.
+  /// A custom emoji's name, if it's one of the user's Spaces' and they were loaded.
   String? emojiNameOf(String emojiId);
+
+  /// A custom emoji's image by its ID, any Space's: the API's `/emojis/{id}`, which needs no session.
+  String emojiUrl(String emojiId);
 
   /// Who's online, by user ID, as the gateway reports it; someone missing
   /// hasn't been reported this session. A member's status in one Space (a
@@ -585,11 +588,11 @@ abstract interface class ChatRepository {
   /// missing is doing nothing it knows of.
   ValueListenable<Map<String, List<Activity>>> get activities;
 
-  /// The emoji the chat can use beyond Unicode's: its space's. None in DMs.
-  Future<List<CustomEmoji>> customEmojis(ChatTarget target);
+  /// The emoji any chat can use beyond Unicode's: every one of the user's Spaces', as the API lists them.
+  Future<List<CustomEmoji>> customEmojis();
 
-  /// The stickers the chat can send: its space's. None in DMs.
-  Future<List<Sticker>> stickers(ChatTarget target);
+  /// The stickers any chat can send: every one of the user's Spaces'.
+  Future<List<Sticker>> stickers();
 
   /// The DM with [userId], opened if there was none.
   Future<ConversationSummary> directMessage(String userId);

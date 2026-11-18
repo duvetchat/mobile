@@ -18,6 +18,7 @@ import 'data/appearance.dart' show AppearanceScope, ReplyGesture, ownBubble;
 import 'data/call_notices.dart';
 import 'data/images.dart';
 import 'data/emoji_catalog.dart';
+import 'data/launchpad.dart' show LaunchpadScope, SpaceSort, sortedSpaces;
 import 'data/links.dart';
 import 'data/markdown.dart' show parseLine, plainInline;
 import 'data/message_tokens.dart';
@@ -388,7 +389,7 @@ class _ChatViewState extends State<ChatView> with SingleTickerProviderStateMixin
     _repository.members(widget.target).then((m) {
       if (mounted) setState(() => _members = m);
     }, onError: (Object e) => debugPrint('members: $e'));
-    _repository.customEmojis(widget.target).then((e) {
+    _repository.customEmojis().then((e) {
       if (mounted) setState(() => _customEmojis = e);
     }, onError: (Object e) => debugPrint('emojis: $e'));
     if (widget.target case RoomTarget(:final spaceId)) {
@@ -396,7 +397,7 @@ class _ChatViewState extends State<ChatView> with SingleTickerProviderStateMixin
         if (mounted) setState(() => _commands = c);
       }, onError: (Object e) => debugPrint('commands: $e'));
     }
-    _stickers = _repository.stickers(widget.target);
+    _stickers = _repository.stickers();
     _stickers.then((s) {
       if (mounted) setState(() => _stickerList = s);
     }, onError: (Object e) => debugPrint('stickers: $e'));
@@ -410,6 +411,7 @@ class _ChatViewState extends State<ChatView> with SingleTickerProviderStateMixin
       me: _me,
       nameOf: (id) => names[id] ?? _repository.nameOf(id),
       emojiOf: (id) => emojis[id],
+      emojiUrl: _repository.emojiUrl,
       roomOf: (id) => rooms[id],
       nameColorsOf: switch (widget.target) {
         RoomTarget(:final spaceId) => (id) => nameColorsOf(_repository.rolesOf(spaceId, id)),
@@ -417,6 +419,18 @@ class _ChatViewState extends State<ChatView> with SingleTickerProviderStateMixin
       },
     );
   }
+
+  /// The chat's Space; none in a DM or a group.
+  String? get _spaceId => switch (widget.target) {
+    RoomTarget(:final spaceId) => spaceId,
+    ConversationTarget() => null,
+  };
+
+  /// The user's Spaces as their Spaces tab lists them: the pickers group emojis and stickers in that order.
+  List<Space> get _spacesListed => sortedSpaces(
+    _repository.spaces.value,
+    context.getInheritedWidgetOfExactType<LaunchpadScope>()?.notifier?.value.sort ?? SpaceSort.gateway,
+  );
 
   Future<void> _load() async {
     // The page kept on the device shows meanwhile; a thread's or a jump's
@@ -730,8 +744,7 @@ class _ChatViewState extends State<ChatView> with SingleTickerProviderStateMixin
           final i = _entries.indexWhere((e) => e.message.id == messageId);
           // The user's own come back as an echo of what's shown already.
           final m = _entries[i].message;
-          final has = m.reactions.any((r) => r.emoji == emoji && r.users.contains(userId));
-          if (has != added) {
+          if (m.reactedWith(userId, emojiId ?? emoji) != added) {
             _entries[i] = (
               message: m.reacted(emoji, userId, add: added, emojiId: emojiId),
               delivery: _entries[i].delivery,
@@ -1372,7 +1385,8 @@ class _ChatViewState extends State<ChatView> with SingleTickerProviderStateMixin
     final me = _me;
     if (me == null || m.id.startsWith('pending:')) return;
     final current = _entries.where((e) => e.message.id == m.id).firstOrNull?.message ?? m;
-    final add = !current.reactions.any((r) => r.emoji == emoji && r.users.contains(me));
+    // By the emoji itself: another Space's emoji can have this one's name.
+    final add = !current.reactedWith(me, emojiId ?? emoji);
     HapticFeedback.selectionClick();
     _replace(current.reacted(emoji, me, add: add, emojiId: emojiId));
     try {
@@ -1390,7 +1404,8 @@ class _ChatViewState extends State<ChatView> with SingleTickerProviderStateMixin
       context,
       customEmojis: Future.value(_customEmojis),
       stickers: Future.value(const []),
-      inSpace: widget.target is RoomTarget,
+      spaces: _spacesListed,
+      currentSpaceId: _spaceId,
     );
     if (!mounted) return;
     switch (choice) {
@@ -1612,7 +1627,8 @@ class _ChatViewState extends State<ChatView> with SingleTickerProviderStateMixin
       context,
       customEmojis: Future.value(_customEmojis),
       stickers: _stickers,
-      inSpace: widget.target is RoomTarget,
+      spaces: _spacesListed,
+      currentSpaceId: _spaceId,
       tab: tab,
       gifs: true,
     );
@@ -2002,7 +2018,7 @@ class _ChatViewState extends State<ChatView> with SingleTickerProviderStateMixin
     switch (picked) {
       case (_Action.react, final emoji?):
         // A quick reaction counts as a use, as a pick in the picker does; taking one back doesn't.
-        if (!m.reactions.any((r) => r.emoji == emoji && r.users.contains(_me))) EmojiCatalog.used(emoji);
+        if (_me case final me? when !m.reactedWith(me, emoji)) EmojiCatalog.used(emoji);
         await _toggleReaction(m, emoji);
       case (_Action.moreReactions, _):
         await _pickReaction(m);
@@ -2302,7 +2318,12 @@ class _ChatViewState extends State<ChatView> with SingleTickerProviderStateMixin
           ),
       ];
     }
-    final custom = _customEmojis.where((e) => e.name.toLowerCase().contains(needle)).take(3).toList();
+    // Every Space's, the chat's own first.
+    final matching = _customEmojis.where((e) => e.name.toLowerCase().contains(needle));
+    final custom = [
+      ...matching.where((e) => e.spaceId == _spaceId),
+      ...matching.where((e) => e.spaceId != _spaceId),
+    ].take(3).toList();
     final unicode = _catalog?.search(q.query, limit: 5 - custom.length) ?? const <EmojiEntry>[];
     return [
       for (final e in custom)

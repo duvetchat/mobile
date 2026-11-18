@@ -56,7 +56,7 @@ class _BotComponentsState extends State<BotComponents> {
 
   Future<void> _pick(UiComponent select) async {
     final options = widget.choices(select);
-    final picked = await showSelectSheet(context, select: select, options: options);
+    final picked = await showSelectSheet(context, select: select, options: options, directory: widget.directory);
     if (picked != null) await _use(select, picked);
   }
 
@@ -80,7 +80,12 @@ class _BotComponentsState extends State<BotComponents> {
       case ComponentKind.actionRow:
         return Wrap(spacing: 8, runSpacing: 8, children: [for (final child in c.children) _component(context, child)]);
       case ComponentKind.button:
-        return _BotButton(component: c, busy: _busy != null && _busy == c.customId, onPressed: () => _use(c, null));
+        return _BotButton(
+          component: c,
+          directory: widget.directory,
+          busy: _busy != null && _busy == c.customId,
+          onPressed: () => _use(c, null),
+        );
       case final t when ComponentKind.selects.contains(t):
         final chosen = [
           for (final o in widget.choices(c))
@@ -461,17 +466,21 @@ class _SpoilerState extends State<_Spoiler> {
 /// and success, Destructive for danger, Secondary otherwise; a link opens.
 class _BotButton extends StatelessWidget {
   final UiComponent component;
+  final MessageDirectory directory;
   final bool busy;
   final VoidCallback onPressed;
-  const _BotButton({required this.component, required this.busy, required this.onPressed});
+  const _BotButton({required this.component, required this.directory, required this.busy, required this.onPressed});
 
   @override
   Widget build(BuildContext context) {
     final c = component;
-    final label = [?c.emoji, ?c.label].join(' ');
+    // A custom emoji is drawn; a Unicode one goes in the text.
+    final picture = _customEmoji(context, directory, c.emoji, c.emojiId, 24);
+    final text = [if (picture == null) ?c.emoji, ?c.label].join(' ');
     final link = c.style == ButtonStyleKind.link;
     return DuvetButton(
-      label: label.isEmpty ? 'Button' : label,
+      label: text.isEmpty ? c.emoji ?? 'Button' : text,
+      leading: picture,
       icon: link ? FLucideIcons.externalLink : null,
       busy: busy,
       variant: switch (c.style) {
@@ -491,23 +500,40 @@ class _BotButton extends StatelessWidget {
   }
 }
 
+/// A custom emoji's picture, of any Space ([MessageDirectory.emojiImageOf]), at [size]; null for a Unicode one, or
+/// one there's no picture for. Its name stands in if it can't load.
+Widget? _customEmoji(BuildContext context, MessageDirectory directory, String? name, String? id, double size) =>
+    switch (id == null ? null : directory.emojiImageOf(id)) {
+      null => null,
+      final url => Image(
+        image: cachedImage(url, cacheWidth: (size * MediaQuery.devicePixelRatioOf(context)).round()),
+        width: size,
+        height: size,
+        fit: BoxFit.contain,
+        excludeFromSemantics: true,
+        errorBuilder: (_, _, _) => Text(':${name ?? 'emoji'}:'),
+      ),
+    };
+
 /// A select's choices in a glass sheet: one, or as many as it takes, with
-/// Done. Answers the values chosen.
+/// Done. Answers the values chosen. [directory] draws the options' custom emojis.
 Future<List<String>?> showSelectSheet(
   BuildContext context, {
   required UiComponent select,
   required List<ComponentOption> options,
+  MessageDirectory directory = MessageDirectory.empty,
 }) => showGlassSheet<List<String>>(
   context,
   label: select.placeholder ?? 'Choose',
-  builder: (context, scroll) => _Select(select: select, options: options, scroll: scroll),
+  builder: (context, scroll) => _Select(select: select, options: options, directory: directory, scroll: scroll),
 );
 
 class _Select extends StatefulWidget {
   final UiComponent select;
   final List<ComponentOption> options;
+  final MessageDirectory directory;
   final ScrollController scroll;
-  const _Select({required this.select, required this.options, required this.scroll});
+  const _Select({required this.select, required this.options, required this.directory, required this.scroll});
 
   @override
   State<_Select> createState() => _SelectState();
@@ -521,6 +547,11 @@ class _SelectState extends State<_Select> {
 
   int get _max => widget.select.maxValues ?? 1;
   int get _min => widget.select.minValues ?? 1;
+
+  // An option's emoji: a custom one drawn, a Unicode one as text.
+  Widget? _emojiOf(ComponentOption o) => o.emojiId == null
+      ? (o.emoji == null ? null : Text(o.emoji!, style: DuvetType.emojiStyle(22)))
+      : _customEmoji(context, widget.directory, o.emoji, o.emojiId, 24);
 
   @override
   Widget build(BuildContext context) {
@@ -548,6 +579,7 @@ class _SelectState extends State<_Select> {
                       padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
                       child: Row(
                         children: [
+                          if (_emojiOf(o) case final emoji?) ...[emoji, const SizedBox(width: 12)],
                           Expanded(
                             child: Column(
                               crossAxisAlignment: CrossAxisAlignment.start,
@@ -909,7 +941,7 @@ class _ModalState extends State<_Modal> {
   // The choices sheet replaces nothing: it's a route over this one, the one
   // place two sheets stack, as a select needs its list.
   Future<void> _choose(UiComponent input, List<ComponentOption> options) async {
-    final picked = await showSelectSheet(context, select: input, options: options);
+    final picked = await showSelectSheet(context, select: input, options: options, directory: widget.directory);
     if (picked != null && mounted) setState(() => _values[input.customId!] = picked);
   }
 }

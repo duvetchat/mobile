@@ -60,6 +60,16 @@ Map<String, dynamic> _asks(String id, String sender, String username) => {
   'user_username': username,
 };
 
+/// A Space's emoji or sticker, as the API lists them.
+Map<String, dynamic> _asset(String id, String spaceId, String name, String attachmentId) => {
+  'id': id,
+  'space_id': spaceId,
+  'name': name,
+  'attachment_id': attachmentId,
+  'created_at': _at,
+  'updated_at': _at,
+};
+
 /// The gateway's envelope for [type], parsed as the client parses it.
 duvet.GatewayEventPayload _event(String type, Map<String, dynamic> data) => duvet.GatewayEnvelope.fromJson({
   'op': 0,
@@ -301,6 +311,13 @@ void main() {
         },
         ('PUT', '/api/users/@me/status') when apiHasStatus => {..._user(_me, 'gaby'), 'status': body()['status']},
         ('DELETE', '/api/spaces/s-1') => deleteReply,
+        // Every emoji and sticker of the user's Spaces; two emojis share a name.
+        ('GET', '/api/users/@me/emojis') => [
+          _asset('e-1', 's-1', 'party', 'f-1'),
+          _asset('e-2', 's-2', 'party', 'f-2'),
+        ],
+        ('GET', '/api/users/@me/stickers') => [_asset('k-1', 's-2', 'shelf', 'f-3')],
+        ('DELETE', _) when request.url.path.contains('/reactions/') => http.Response('', 204),
         ('PUT', '/api/users/@me/push-registration') => http.Response('', 204),
         ('DELETE', '/api/users/@me/push-registration') => http.Response('', 204),
         // Between friends alone; and a server error.
@@ -2589,6 +2606,74 @@ void main() {
         [for (final e in events.cast<ReactionChanged>()) (e.messageId, e.emoji, e.added)],
         [('m1', '👍', true), ('m1', '👍', false)],
       );
+    });
+
+    test('a reaction taken back says which emoji went', () async {
+      await repository.logIn('gaby@duvet.chat', 'secret');
+      final events = <MessageEvent>[];
+      final sub = repository.messageEvents(const ConversationTarget('c-1')).listen(events.add);
+      addTearDown(sub.cancel);
+      repository.handleEvent(
+        _event('REACTION_REMOVE', {'message_id': 'm1', 'user_id': _maya, 'emoji_name': 'party', 'emoji_id': 'e-2'}),
+      );
+      await pumpEventQueue();
+      final removed = events.single as ReactionChanged;
+      expect((removed.emoji, removed.emojiId, removed.added), ('party', 'e-2', false));
+    });
+
+    test('a custom emoji\'s reaction is taken back by its ID, a Unicode one by itself', () async {
+      await repository.logIn('gaby@duvet.chat', 'secret');
+      const room = RoomTarget(spaceId: 's-1', roomId: 'r-1');
+      await repository.react(room, 'm1', 'party', add: false, emojiId: 'e-2');
+      await repository.react(room, 'm1', '👍', add: false);
+      await repository.react(const ConversationTarget('c-1'), 'm2', 'party', add: false, emojiId: 'e-2');
+      expect(
+        [for (final r in requests.where((r) => r.method == 'DELETE')) (r.url.pathSegments[1], r.url.pathSegments.last)],
+        [('rooms', 'e-2'), ('rooms', '👍'), ('users', 'e-2')],
+      );
+    });
+
+    test('every Space\'s emojis and stickers come from the user\'s own lists, kept until one changes', () async {
+      await repository.logIn('gaby@duvet.chat', 'secret');
+      int asked(String path) => requests.where((r) => r.url.path == path).length;
+      final emojis = await repository.customEmojis();
+      expect(
+        [for (final e in emojis) (e.id, e.name, e.spaceId, e.url)],
+        [
+          ('e-1', 'party', 's-1', 'https://api.duvet.chat/attachments/f-1'),
+          ('e-2', 'party', 's-2', 'https://api.duvet.chat/attachments/f-2'),
+        ],
+      );
+      expect([for (final s in await repository.stickers()) (s.id, s.spaceId, s.attachmentId)], [('k-1', 's-2', 'f-3')]);
+      expect(repository.emojiNameOf('e-2'), 'party');
+      await repository.customEmojis();
+      await repository.stickers();
+      expect((asked('/api/users/@me/emojis'), asked('/api/users/@me/stickers')), (1, 1));
+
+      // Another Space's emoji goes and a third's sticker comes: both lists are asked for again.
+      repository.handleEvent(_event('SPACE_EMOJI_DELETE', {'id': 'e-2', 'space_id': 's-2'}));
+      repository.handleEvent(_event('SPACE_STICKER_CREATE', _asset('k-2', 's-9', 'plant', 'f-4')));
+      await repository.customEmojis();
+      await repository.stickers();
+      expect((asked('/api/users/@me/emojis'), asked('/api/users/@me/stickers')), (2, 2));
+
+      // A Space joined or left changes whose they are.
+      repository.handleEvent(
+        _event('SPACE_CREATE', {
+          'space': {'id': 's-3', 'name': 'Book Club', 'owner_id': _maya, 'created_at': _at, 'updated_at': _at},
+          'rooms': <String, dynamic>{},
+          'roles_permissions': <String, dynamic>{},
+          'owner_id': _maya,
+        }),
+      );
+      await repository.customEmojis();
+      repository.handleEvent(_event('SPACE_DELETE', {'id': 's-3'}));
+      await repository.stickers();
+      expect((asked('/api/users/@me/emojis'), asked('/api/users/@me/stickers')), (3, 3));
+    });
+
+    test('any emoji\'s image is the API\'s, by its ID', () {
+      expect(repository.emojiUrl('e-9'), 'https://api.duvet.chat/emojis/e-9');
     });
 
     test('replies and reactions come with messages; a reply goes out as a reference', () async {
