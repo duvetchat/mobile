@@ -1584,7 +1584,7 @@ Offset clampToPhoto(double scale, Offset pan, Size view, Rect photo) {
   return Offset(axis(pan.dx, photo.left, photo.width, view.width), axis(pan.dy, photo.top, photo.height, view.height));
 }
 
-class _ImageViewerState extends State<ImageViewer> with TickerProviderStateMixin {
+class _ImageViewerState extends State<ImageViewer> with TickerProviderStateMixin, HidingControls {
   late final _pages = PageController(initialPage: widget.initial);
   late int _index = widget.initial;
 
@@ -1634,6 +1634,10 @@ class _ImageViewerState extends State<ImageViewer> with TickerProviderStateMixin
   // Two fingers down is a pinch: swiping to page or to close steps aside, as
   // either would take a pinch with one finger still.
   bool get _pinching => _fingers.length > 1;
+
+  // Two fingers were down since this touch began: the one a pinch held still
+  // and lifted isn't a tap, though the tap's recognizer takes it for one.
+  bool _pinched = false;
 
   static const _ink = DuvetTokens.mediaInk;
   static const _ground = Color(0xFF0A0A0B);
@@ -1779,7 +1783,11 @@ class _ImageViewerState extends State<ImageViewer> with TickerProviderStateMixin
   }
 
   void _press(PointerDownEvent e) {
+    // Reached after the gesture detector under it: a tap still waiting on the
+    // touch before this one is answered by then.
+    if (_fingers.isEmpty) _pinched = false;
     setState(() => _fingers[e.pointer] = e.position);
+    if (_pinching) _pinched = true;
     // A second finger mid-swipe: the photo goes back, and the two pinch.
     if (_pinching && _swiping) {
       _swiping = false;
@@ -1925,6 +1933,10 @@ class _ImageViewerState extends State<ImageViewer> with TickerProviderStateMixin
                 onPointerUp: _lift,
                 onPointerCancel: _lift,
                 child: GestureDetector(
+                  // Once it isn't a double tap's first: the bars go, or come back.
+                  onTap: () {
+                    if (!_pinched) toggleControls();
+                  },
                   onDoubleTapDown: (d) => _tapAt = d.localPosition,
                   onDoubleTap: _toggleZoom,
                   child: Transform.translate(
@@ -1997,60 +2009,63 @@ class _ImageViewerState extends State<ImageViewer> with TickerProviderStateMixin
                 top: 0,
                 left: 0,
                 right: 0,
-                child: Opacity(
-                  opacity: chrome,
-                  child: _DarkGlass(
-                    edge: const Border(bottom: BorderSide(color: DuvetTokens.mediaScrimEdge)),
-                    child: Padding(
-                      padding: EdgeInsets.only(top: padding.top),
-                      child: SizedBox(
-                        height: DuvetTokens.sizeTopBar,
-                        child: Row(
-                          children: [
-                            const SizedBox(width: 8),
-                            Semantics(
-                              button: true,
-                              label: 'Close',
-                              excludeSemantics: true,
-                              onTap: () => Navigator.of(context).pop(),
-                              child: GestureDetector(
+                child: FadingControls(
+                  shown: controlsShown,
+                  child: Opacity(
+                    opacity: chrome,
+                    child: _DarkGlass(
+                      edge: const Border(bottom: BorderSide(color: DuvetTokens.mediaScrimEdge)),
+                      child: Padding(
+                        padding: EdgeInsets.only(top: padding.top),
+                        child: SizedBox(
+                          height: DuvetTokens.sizeTopBar,
+                          child: Row(
+                            children: [
+                              const SizedBox(width: 8),
+                              Semantics(
+                                button: true,
+                                label: 'Close',
+                                excludeSemantics: true,
                                 onTap: () => Navigator.of(context).pop(),
-                                child: const SizedBox.square(dimension: 40, child: Icon(FLucideIcons.x, color: _ink)),
-                              ),
-                            ),
-                            Expanded(
-                              child: Column(
-                                mainAxisAlignment: MainAxisAlignment.center,
-                                children: [
-                                  Text(
-                                    current.displayName,
-                                    maxLines: 1,
-                                    overflow: TextOverflow.ellipsis,
-                                    style: DuvetType.rowTitle.copyWith(color: _ink),
-                                  ),
-                                  if (widget.gallery.length > 1)
-                                    Text(
-                                      '${_index + 1} of ${widget.gallery.length}',
-                                      style: DuvetType.caption.copyWith(color: const Color(0xFF949392)),
-                                    ),
-                                ],
-                              ),
-                            ),
-                            Semantics(
-                              button: true,
-                              label: 'Rotate',
-                              excludeSemantics: true,
-                              onTap: _rotate,
-                              child: GestureDetector(
-                                onTap: _rotate,
-                                child: const SizedBox.square(
-                                  dimension: 40,
-                                  child: Icon(FLucideIcons.rotateCw, color: _ink),
+                                child: GestureDetector(
+                                  onTap: () => Navigator.of(context).pop(),
+                                  child: const SizedBox.square(dimension: 40, child: Icon(FLucideIcons.x, color: _ink)),
                                 ),
                               ),
-                            ),
-                            const SizedBox(width: 8),
-                          ],
+                              Expanded(
+                                child: Column(
+                                  mainAxisAlignment: MainAxisAlignment.center,
+                                  children: [
+                                    Text(
+                                      current.displayName,
+                                      maxLines: 1,
+                                      overflow: TextOverflow.ellipsis,
+                                      style: DuvetType.rowTitle.copyWith(color: _ink),
+                                    ),
+                                    if (widget.gallery.length > 1)
+                                      Text(
+                                        '${_index + 1} of ${widget.gallery.length}',
+                                        style: DuvetType.caption.copyWith(color: const Color(0xFF949392)),
+                                      ),
+                                  ],
+                                ),
+                              ),
+                              Semantics(
+                                button: true,
+                                label: 'Rotate',
+                                excludeSemantics: true,
+                                onTap: _rotate,
+                                child: GestureDetector(
+                                  onTap: _rotate,
+                                  child: const SizedBox.square(
+                                    dimension: 40,
+                                    child: Icon(FLucideIcons.rotateCw, color: _ink),
+                                  ),
+                                ),
+                              ),
+                              const SizedBox(width: 8),
+                            ],
+                          ),
                         ),
                       ),
                     ),
@@ -2062,22 +2077,25 @@ class _ImageViewerState extends State<ImageViewer> with TickerProviderStateMixin
                   left: 0,
                   right: 0,
                   bottom: 0,
-                  child: Opacity(
-                    opacity: chrome,
-                    child: _DarkGlass(
-                      edge: const Border(top: BorderSide(color: DuvetTokens.mediaScrimEdge)),
-                      child: Padding(
-                        padding: EdgeInsets.fromLTRB(16, 8, 16, 8 + padding.bottom),
-                        child: Row(
-                          children: [
-                            action(FLucideIcons.download, 'Save', () => _save(current)),
-                            action(FLucideIcons.share2, 'Share', () => _share(current)),
-                            action(FLucideIcons.link, 'Copy link', () async {
-                              final link = linkSource(context, current);
-                              await Clipboard.setData(ClipboardData(text: await link()));
-                              _toast('Link copied');
-                            }),
-                          ],
+                  child: FadingControls(
+                    shown: controlsShown,
+                    child: Opacity(
+                      opacity: chrome,
+                      child: _DarkGlass(
+                        edge: const Border(top: BorderSide(color: DuvetTokens.mediaScrimEdge)),
+                        child: Padding(
+                          padding: EdgeInsets.fromLTRB(16, 8, 16, 8 + padding.bottom),
+                          child: Row(
+                            children: [
+                              action(FLucideIcons.download, 'Save', () => _save(current)),
+                              action(FLucideIcons.share2, 'Share', () => _share(current)),
+                              action(FLucideIcons.link, 'Copy link', () async {
+                                final link = linkSource(context, current);
+                                await Clipboard.setData(ClipboardData(text: await link()));
+                                _toast('Link copied');
+                              }),
+                            ],
+                          ),
                         ),
                       ),
                     ),
