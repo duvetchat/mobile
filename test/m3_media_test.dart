@@ -143,6 +143,22 @@ class _PendingVideo extends VideoPlayerController {
   Future<void> initialize() => Completer<void>().future;
 }
 
+/// A video that loads at once and plays without a platform.
+class _PlayingVideo extends VideoPlayerController {
+  _PlayingVideo(super.url) : super.networkUrl();
+
+  @override
+  Future<void> initialize() async {
+    value = value.copyWith(isInitialized: true, size: const Size(16, 9), duration: const Duration(seconds: 3));
+  }
+
+  @override
+  Future<void> play() async => value = value.copyWith(isPlaying: true);
+
+  @override
+  Future<void> pause() async => value = value.copyWith(isPlaying: false);
+}
+
 class _Gifs implements GifSource {
   final searched = <String>[];
   static const party = Gif(
@@ -1049,13 +1065,200 @@ void main() {
     expect(tester.getCenter(find.byType(PageView)), start);
 
     // A quick flick, its first move already past the viewer's own pan slop.
-    await open();
     final flick = await tester.startGesture(start);
     await flick.moveBy(const Offset(0, 60), timeStamp: const Duration(milliseconds: 16));
     await flick.moveBy(const Offset(0, 40), timeStamp: const Duration(milliseconds: 32));
     await flick.up(timeStamp: const Duration(milliseconds: 40));
     await tester.pumpAndSettle();
     expect(find.byType(ImageViewer), findsNothing);
+    semantics.dispose();
+  });
+
+  // The system bars hidden with the controls, and back: each SystemChrome mode set, in order.
+  List<String> systemModes(WidgetTester tester) {
+    final modes = <String>[];
+    tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(SystemChannels.platform, (call) async {
+      if (call.method == 'SystemChrome.setEnabledSystemUIMode') modes.add(call.arguments as String);
+      return null;
+    });
+    addTearDown(() => tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(SystemChannels.platform, null));
+    return modes;
+  }
+
+  const hide = 'SystemUiMode.immersive';
+  const show = 'SystemUiMode.edgeToEdge';
+
+  testWidgets('a tap hides the image viewer\'s bars and the system\'s, and another brings them back', (tester) async {
+    final repository = await openMaya(tester);
+    repository.push(
+      'c-maya',
+      MessageCreated(
+        withFiles('p', const [
+          MessageAttachment(id: 'ph', filename: 'room.jpg', contentType: 'image/jpeg', url: 'https://x/room.jpg'),
+          MessageAttachment(id: 'pi', filename: 'porch.jpg', contentType: 'image/jpeg', url: 'https://x/porch.jpg'),
+        ]),
+      ),
+    );
+    await tester.pumpAndSettle();
+    final modes = systemModes(tester);
+    Future<void> open() async {
+      await tester.tap(find.bySemanticsLabel('Photo, room.jpg'));
+      await tester.pump(kDoubleTapTimeout);
+      await tester.pumpAndSettle();
+      expect(find.byType(ImageViewer), findsOneWidget);
+    }
+
+    final page = find.byType(PageView);
+    await open();
+    // Away from the photo: here it doesn't load, and its middle is Try again.
+    final rect = tester.getRect(page);
+    final at = Offset(rect.center.dx, rect.top + rect.height * 0.3);
+    Future<void> tap([Offset? where]) async {
+      await tester.tapAt(where ?? at);
+      // A single tap waits out a double tap's second.
+      await tester.pump(kDoubleTapTimeout);
+      await tester.pumpAndSettle();
+    }
+
+    Future<void> doubleTap() async {
+      await tester.tapAt(at);
+      await tester.pump(const Duration(milliseconds: 50));
+      await tester.tapAt(at);
+      await tester.pumpAndSettle();
+    }
+
+    void shown(bool shown) {
+      for (final label in ['Close', 'Rotate', 'Save', 'Share', 'Copy link']) {
+        expect(find.semantics.byLabel(label), shown ? findsOne : findsNothing, reason: label);
+      }
+    }
+
+    shown(true);
+    final save = tester.getCenter(find.bySemanticsLabel('Save'));
+    await tap();
+    shown(false);
+    expect(modes, [hide]);
+
+    // They stay hidden for the next photo, and through a zoom and a pinch.
+    await tester.drag(page, const Offset(-500, 0));
+    await tester.pumpAndSettle();
+    expect(find.text('2 of 2'), findsOneWidget);
+    shown(false);
+    await doubleTap();
+    shown(false);
+    await doubleTap();
+    // One finger held still and the other moving, as a thumb pinches: the
+    // still one lifted isn't a tap.
+    final a = await tester.startGesture(at);
+    await tester.pump(const Duration(milliseconds: 40));
+    final b = await tester.startGesture(at + const Offset(0, 40));
+    for (var i = 0; i < 10; i++) {
+      await b.moveBy(const Offset(0, 5));
+      await tester.pump();
+    }
+    await a.up();
+    await b.up();
+    await tester.pump(kDoubleTapTimeout);
+    await tester.pumpAndSettle();
+    shown(false);
+    expect(modes, [hide]);
+    await doubleTap();
+
+    // Where Save was, hidden: the tap brings the bars back, it doesn't save.
+    await tap(save);
+    shown(true);
+    expect(actions.calls, isEmpty);
+    expect(modes, [hide, show]);
+
+    // Android's bars swiped back in: the controls come back with them.
+    await tap();
+    expect(modes, [hide, show, hide]);
+    await tester.binding.defaultBinaryMessenger.handlePlatformMessage(
+      SystemChannels.platform.name,
+      SystemChannels.platform.codec.encodeMethodCall(const MethodCall('SystemChrome.systemUIChange', [true])),
+      (_) {},
+    );
+    await tester.pumpAndSettle();
+    shown(true);
+    expect(modes, [hide, show, hide, show]);
+
+    // Swiped away hidden: the system's bars come back as it fades, once.
+    await tap();
+    expect(modes, [hide, show, hide, show, hide]);
+    await tester.drag(page, const Offset(0, 300));
+    await tester.pump();
+    expect(find.byType(ImageViewer), findsOneWidget);
+    expect(modes, [hide, show, hide, show, hide, show]);
+    await tester.pumpAndSettle();
+    expect(find.byType(ImageViewer), findsNothing);
+    expect(modes, [hide, show, hide, show, hide, show]);
+
+    // A screen reader's taps couldn't bring them back: they stay.
+    tester.platformDispatcher.accessibilityFeaturesTestValue = const FakeAccessibilityFeatures(
+      accessibleNavigation: true,
+    );
+    addTearDown(tester.platformDispatcher.clearAccessibilityFeaturesTestValue);
+    await open();
+    await tap();
+    shown(true);
+    expect(modes, [hide, show, hide, show, hide, show]);
+    semantics.dispose();
+  });
+
+  testWidgets('a tap hides the video\'s controls and the system\'s bars; Play and Pause are the button\'s', (
+    tester,
+  ) async {
+    final build = VideoPage.controllerFor;
+    late _PlayingVideo video;
+    VideoPage.controllerFor = (url) => video = _PlayingVideo(url);
+    addTearDown(() => VideoPage.controllerFor = build);
+    final repository = await openMaya(tester);
+    repository.push(
+      'c-maya',
+      MessageCreated(
+        withFiles('v', const [
+          MessageAttachment(id: 'vi', filename: 'tour.mp4', contentType: 'video/mp4', url: 'https://x/tour.mp4'),
+        ]),
+      ),
+    );
+    await tester.pumpAndSettle();
+    final modes = systemModes(tester);
+    await tapLabel(tester, 'Video, tour.mp4. Play');
+    expect(find.byType(VideoPage), findsOneWidget);
+    // The page's, not the tile's first frame under it.
+    final player = find.descendant(of: find.byType(VideoPage), matching: find.byType(VideoPlayer));
+    expect(video.value.isPlaying, isTrue);
+    void shown(bool shown) {
+      for (final label in ['Close', 'Pause']) {
+        expect(find.semantics.byLabel(label), shown ? findsOne : findsNothing, reason: label);
+      }
+    }
+
+    // On the video: the controls go, and it plays on.
+    shown(true);
+    await tester.tapAt(tester.getCenter(player));
+    await tester.pumpAndSettle();
+    shown(false);
+    expect(video.value.isPlaying, isTrue);
+    expect(modes, [hide]);
+
+    // On the black above it: they come back.
+    await tester.tapAt(const Offset(200, 120));
+    await tester.pumpAndSettle();
+    shown(true);
+    expect(modes, [hide, show]);
+
+    await tapLabel(tester, 'Pause');
+    expect(video.value.isPlaying, isFalse);
+    expect(find.bySemanticsLabel('Play'), findsOneWidget);
+
+    // Swiped away hidden: the system's bars come back.
+    await tester.tapAt(tester.getCenter(player));
+    await tester.pumpAndSettle();
+    await tester.dragFrom(tester.getCenter(player), const Offset(0, 300));
+    await tester.pumpAndSettle();
+    expect(find.byType(VideoPage), findsNothing);
+    expect(modes, [hide, show, hide, show]);
     semantics.dispose();
   });
 
