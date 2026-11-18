@@ -42,12 +42,14 @@ final class PickedGif extends PickerChoice {
 enum PickerTab { emoji, stickers, gifs }
 
 /// The emoji and sticker picker, as a glass sheet: search, the recently used,
-/// the space's own emoji, then every category; stickers on their own tab.
+/// each of the user's Spaces' own emoji, then every category; stickers on their own tab, by Space too. The Spaces go
+/// in [spaces]' order, [currentSpaceId]'s first.
 Future<PickerChoice?> showEmojiPicker(
   BuildContext context, {
   required Future<List<CustomEmoji>> customEmojis,
   required Future<List<Sticker>> stickers,
-  bool inSpace = true,
+  required List<Space> spaces,
+  String? currentSpaceId,
   PickerTab tab = PickerTab.emoji,
   bool gifs = false,
 }) => showGlassSheet<PickerChoice>(
@@ -58,7 +60,8 @@ Future<PickerChoice?> showEmojiPicker(
     scroll: scroll,
     customEmojis: customEmojis,
     stickers: stickers,
-    inSpace: inSpace,
+    spaces: spaces,
+    currentSpaceId: currentSpaceId,
     initialTab: tab,
     gifs: gifs,
   ),
@@ -68,7 +71,8 @@ class _Picker extends StatefulWidget {
   final ScrollController scroll;
   final Future<List<CustomEmoji>> customEmojis;
   final Future<List<Sticker>> stickers;
-  final bool inSpace;
+  final List<Space> spaces;
+  final String? currentSpaceId;
   final PickerTab initialTab;
 
   /// With the GIFs tab: the composer's picker, not a reaction's.
@@ -77,7 +81,8 @@ class _Picker extends StatefulWidget {
     required this.scroll,
     required this.customEmojis,
     required this.stickers,
-    required this.inSpace,
+    required this.spaces,
+    required this.currentSpaceId,
     required this.initialTab,
     this.gifs = false,
   });
@@ -173,10 +178,16 @@ class _PickerState extends State<_Picker> {
     final query = _search.text.trim();
     final colors = context.theme.colors;
 
+    // Each Space's, under its name.
+    List<Widget> bySpaces(Iterable<CustomEmoji> emojis) => [
+      for (final g in bySpace(emojis, (e) => e.spaceId, widget.spaces, first: widget.currentSpaceId))
+        ..._section(g.space.name, g.items, key: _spaceKey(g.space)),
+    ];
+
     final List<Widget> slivers;
     if (query.isNotEmpty) {
       final q = query.toLowerCase();
-      final custom = _custom.where((e) => e.name.toLowerCase().contains(q)).toList();
+      final custom = bySpaces(_custom.where((e) => e.name.toLowerCase().contains(q)));
       // Once per query: a rebuild that isn't a keystroke doesn't search again.
       if (_searched?.query != query) _searched = (query: query, found: catalog.search(query));
       final found = _searched!.found;
@@ -192,12 +203,12 @@ class _PickerState extends State<_Picker> {
               ),
             ),
           ),
-        if (custom.isNotEmpty) ..._section('This space', custom),
+        ...custom,
         if (found.isNotEmpty) ..._section('Results', found),
       ];
     } else {
       final customById = {for (final e in _custom) e.code: e};
-      // Cut after leaving out other spaces' emoji, so they take no place.
+      // Cut after leaving out the emoji of Spaces the user left, so they take no place.
       final recent = <Object>[
         for (final r in EmojiCatalog.recent)
           if (customById[r] case final custom?)
@@ -207,7 +218,7 @@ class _PickerState extends State<_Picker> {
       ].take(RecentEmoji.shown).toList();
       slivers = [
         if (recent.isNotEmpty) ..._section('Recently used', recent, recent: true),
-        if (_custom.isNotEmpty) ..._section('This space', _custom),
+        ...bySpaces(_custom),
         for (final c in catalog.categories) ..._section(c.label, c.emojis),
       ];
     }
@@ -234,11 +245,12 @@ class _PickerState extends State<_Picker> {
     );
   }
 
-  // Jumps between sections; each tab is named for screen readers.
+  // Jumps between sections, each Space's with its icon; each tab is named for screen readers.
   Widget _categoryBar(EmojiCatalog catalog) {
-    final entries = [
-      if (_custom.isNotEmpty) ('This space', '✨'),
-      for (final c in catalog.categories) (c.label, c.icon),
+    final entries = <(String, String, Widget)>[
+      for (final g in bySpace(_custom, (e) => e.spaceId, widget.spaces, first: widget.currentSpaceId))
+        (_spaceKey(g.space), g.space.name, SpaceIcon(space: g.space, size: 24)),
+      for (final c in catalog.categories) (c.label, c.label, Text(c.icon, style: DuvetType.emojiStyle(22))),
     ];
     return SizedBox(
       height: 44,
@@ -246,20 +258,16 @@ class _PickerState extends State<_Picker> {
         scrollDirection: Axis.horizontal,
         padding: const EdgeInsets.symmetric(horizontal: 12),
         children: [
-          for (final (label, icon) in entries)
+          for (final (key, label, icon) in entries)
             Semantics(
               button: true,
               label: 'Jump to $label',
               excludeSemantics: true,
-              onTap: () => _jumpTo(label),
+              onTap: () => _jumpTo(key),
               child: InkResponse(
                 radius: 22,
-                onTap: () => _jumpTo(label),
-                child: SizedBox(
-                  width: 44,
-                  height: 44,
-                  child: Center(child: Text(icon, style: DuvetType.emojiStyle(22))),
-                ),
+                onTap: () => _jumpTo(key),
+                child: SizedBox(width: 44, height: 44, child: Center(child: icon)),
               ),
             ),
         ],
@@ -267,8 +275,11 @@ class _PickerState extends State<_Picker> {
     );
   }
 
-  void _jumpTo(String label) {
-    final target = _sectionKeys[label]?.currentContext;
+  // A Space's section: by its ID, as two Spaces can share a name, or take a category's.
+  static String _spaceKey(Space space) => 'space:${space.id}';
+
+  void _jumpTo(String key) {
+    final target = _sectionKeys[key]?.currentContext;
     if (target == null) return;
     Scrollable.ensureVisible(
       target,
@@ -277,22 +288,25 @@ class _PickerState extends State<_Picker> {
     );
   }
 
-  // Each section's cells are built as they scroll into view, from the entries
-  // (an EmojiEntry or a CustomEmoji), not made up front: there are ~1,900.
-  List<Widget> _section(String label, List<Object> entries, {bool recent = false}) => [
-    SliverToBoxAdapter(
-      child: Padding(
-        key: _sectionKeys.putIfAbsent(label, GlobalKey.new),
-        padding: const EdgeInsets.fromLTRB(16, 16, 16, 4),
-        child: Semantics(
-          header: true,
-          child: Text(
-            label.toUpperCase(),
-            style: DuvetType.overline.copyWith(color: context.theme.colors.mutedForeground),
-          ),
+  // A section's title, which [key] (else its label) jumps to.
+  Widget _header(String label, {String? key}) => SliverToBoxAdapter(
+    child: Padding(
+      key: _sectionKeys.putIfAbsent(key ?? label, GlobalKey.new),
+      padding: const EdgeInsets.fromLTRB(16, 16, 16, 4),
+      child: Semantics(
+        header: true,
+        child: Text(
+          label.toUpperCase(),
+          style: DuvetType.overline.copyWith(color: context.theme.colors.mutedForeground),
         ),
       ),
     ),
+  );
+
+  // Each section's cells are built as they scroll into view, from the entries
+  // (an EmojiEntry or a CustomEmoji), not made up front: there are ~1,900.
+  List<Widget> _section(String label, List<Object> entries, {bool recent = false, String? key}) => [
+    _header(label, key: key),
     SliverPadding(
       padding: const EdgeInsets.symmetric(horizontal: 12),
       sliver: SliverGrid(
@@ -348,7 +362,6 @@ class _PickerState extends State<_Picker> {
         ),
       ),
     );
-    if (!widget.inSpace) return message('Stickers belong to spaces. Send one from a space’s room.');
     if (_stickersError != null) return message('Couldn’t load stickers');
     final stickers = _stickers;
     if (stickers == null) {
@@ -363,7 +376,9 @@ class _PickerState extends State<_Picker> {
       );
     }
     final query = _search.text.trim().toLowerCase();
-    final shown = query.isEmpty ? stickers : stickers.where((s) => s.name.toLowerCase().contains(query)).toList();
+    final shown = query.isEmpty ? stickers : stickers.where((s) => s.name.toLowerCase().contains(query));
+    // Each Space's, under its name.
+    final groups = bySpace(shown, (s) => s.spaceId, widget.spaces, first: widget.currentSpaceId);
     return Column(
       children: [
         Padding(
@@ -371,37 +386,51 @@ class _PickerState extends State<_Picker> {
           child: _SearchField(controller: _search, hint: 'Search stickers'),
         ),
         Expanded(
-          child: stickers.isEmpty
-              ? message('This space has no stickers yet')
-              : shown.isEmpty
-              ? message('No stickers match “${_search.text.trim()}”')
-              : GridView.builder(
+          child: groups.isEmpty
+              ? message(
+                  query.isEmpty || stickers.isEmpty
+                      ? 'Your Spaces have no stickers yet'
+                      : 'No stickers match “${_search.text.trim()}”',
+                )
+              : CustomScrollView(
                   controller: widget.scroll,
                   keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
-                  padding: const EdgeInsets.fromLTRB(12, 4, 12, 24),
-                  gridDelegate: const SliverGridDelegateWithMaxCrossAxisExtent(
-                    maxCrossAxisExtent: 112,
-                    mainAxisSpacing: 8,
-                    crossAxisSpacing: 8,
-                  ),
-                  itemCount: shown.length,
-                  itemBuilder: (context, i) {
-                    final s = shown[i];
-                    return _Cell(
-                      label: 'Sticker, ${s.name}',
-                      hint: 'Double tap to send',
-                      onTap: () => _pick(PickedSticker(s)),
-                      child: Padding(
-                        padding: const EdgeInsets.all(6),
-                        child: Image(
-                          image: cachedImage(s.url, cacheWidth: (100 * MediaQuery.devicePixelRatioOf(context)).round()),
-                          fit: BoxFit.contain,
-                          excludeFromSemantics: true,
-                          errorBuilder: (_, _, _) => Center(child: Text(s.name, textAlign: TextAlign.center)),
+                  slivers: [
+                    for (final g in groups) ...[
+                      _header(g.space.name, key: 'stickers:${g.space.id}'),
+                      SliverPadding(
+                        padding: const EdgeInsets.symmetric(horizontal: 12),
+                        sliver: SliverGrid(
+                          gridDelegate: const SliverGridDelegateWithMaxCrossAxisExtent(
+                            maxCrossAxisExtent: 112,
+                            mainAxisSpacing: 8,
+                            crossAxisSpacing: 8,
+                          ),
+                          delegate: SliverChildBuilderDelegate((context, i) {
+                            final s = g.items[i];
+                            return _Cell(
+                              label: 'Sticker, ${s.name}',
+                              hint: 'Double tap to send',
+                              onTap: () => _pick(PickedSticker(s)),
+                              child: Padding(
+                                padding: const EdgeInsets.all(6),
+                                child: Image(
+                                  image: cachedImage(
+                                    s.url,
+                                    cacheWidth: (100 * MediaQuery.devicePixelRatioOf(context)).round(),
+                                  ),
+                                  fit: BoxFit.contain,
+                                  excludeFromSemantics: true,
+                                  errorBuilder: (_, _, _) => Center(child: Text(s.name, textAlign: TextAlign.center)),
+                                ),
+                              ),
+                            );
+                          }, childCount: g.items.length),
                         ),
                       ),
-                    );
-                  },
+                    ],
+                    const SliverToBoxAdapter(child: SizedBox(height: 24)),
+                  ],
                 ),
         ),
       ],

@@ -371,26 +371,30 @@ class ChatMessage {
     );
   }
 
-  /// With [userId]'s reaction [emoji] added or taken away.
+  /// With [userId]'s reaction added or taken away: the custom emoji [emojiId], named [emoji], else the Unicode
+  /// [emoji]. Two Spaces' emojis of one name are two reactions.
   ChatMessage reacted(String emoji, String userId, {required bool add, String? emojiId}) {
     final list = [...reactions];
-    final i = list.indexWhere((r) => r.emoji == emoji);
+    final i = list.indexWhere((r) => r.key == (emojiId ?? emoji));
     if (add) {
       if (i < 0) {
         list.add(Reaction(emoji: emoji, emojiId: emojiId, users: {userId}));
       } else {
-        list[i] = Reaction(emoji: emoji, emojiId: list[i].emojiId ?? emojiId, users: {...list[i].users, userId});
+        list[i] = Reaction(emoji: list[i].emoji, emojiId: list[i].emojiId, users: {...list[i].users, userId});
       }
     } else if (i >= 0) {
       final users = {...list[i].users}..remove(userId);
       if (users.isEmpty) {
         list.removeAt(i);
       } else {
-        list[i] = Reaction(emoji: emoji, emojiId: list[i].emojiId, users: users);
+        list[i] = Reaction(emoji: list[i].emoji, emojiId: list[i].emojiId, users: users);
       }
     }
     return copyWith(reactions: list);
   }
+
+  /// Whether [userId] reacted with the emoji [key] ([Reaction.key]).
+  bool reactedWith(String userId, String key) => reactions.any((r) => r.key == key && r.users.contains(userId));
 }
 
 /// What a call notice says about its call: who was in it, by user ID, its
@@ -480,6 +484,10 @@ class Reaction {
   const Reaction({required this.emoji, required this.users, this.emojiId});
 
   int get count => users.length;
+
+  /// What tells reactions apart, as the API groups them: the custom emoji's ID, else the Unicode emoji. Two Spaces'
+  /// emojis can share a name.
+  String get key => emojiId ?? emoji;
 }
 
 /// A file on a message. [url] is a network URL, or a local path while the
@@ -678,23 +686,49 @@ Presence? presenceIn(Map<String, Presence> presence, String userId, {String? spa
 /// offline, or not reported.
 bool isOffline(Presence? presence) => (presence ?? Presence.offline) == Presence.offline;
 
-/// A space's own emoji, written `<:id:>` in a message.
+/// A Space's emoji, written `<:id:>` in a message; any chat can use those of the user's Spaces.
 class CustomEmoji {
   final String id;
   final String name;
   final String url;
-  const CustomEmoji({required this.id, required this.name, required this.url});
+  final String spaceId;
+  const CustomEmoji({required this.id, required this.name, required this.url, required this.spaceId});
 
   String get code => '<:$id:>';
 }
 
-/// A space's sticker, sent as a message of its own.
+/// A Space's sticker, sent as a message of its own, in any chat.
 class Sticker {
   final String id;
   final String name;
   final String attachmentId;
   final String url;
-  const Sticker({required this.id, required this.name, required this.attachmentId, required this.url});
+  final String spaceId;
+  const Sticker({
+    required this.id,
+    required this.name,
+    required this.attachmentId,
+    required this.url,
+    required this.spaceId,
+  });
+}
+
+/// [items] by their Space ([spaceOf]), as a picker heads them: in [spaces]' order, [first]'s first. Those of a Space
+/// [spaces] doesn't have are left out.
+List<({Space space, List<T> items})> bySpace<T>(
+  Iterable<T> items,
+  String Function(T item) spaceOf,
+  List<Space> spaces, {
+  String? first,
+}) {
+  final groups = <String, List<T>>{};
+  for (final item in items) {
+    (groups[spaceOf(item)] ??= []).add(item);
+  }
+  return [
+    for (final space in [...spaces.where((s) => s.id == first), ...spaces.where((s) => s.id != first)])
+      if (groups[space.id] case final items?) (space: space, items: items),
+  ];
 }
 
 /// A file picked to send.

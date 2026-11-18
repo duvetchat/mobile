@@ -45,13 +45,20 @@ class MessageDirectory {
 
   /// A member's name colors in this Space (see [nameColorsOf]); null outside one or without a colored role.
   final RoleColors? Function(String userId) nameColorsOf;
+
+  /// Any custom emoji's image by its ID, of a Space the user may not be in; null where there's none to load.
+  final String Function(String emojiId)? emojiUrl;
   const MessageDirectory({
     required this.me,
     required this.nameOf,
     required this.emojiOf,
     this.roomOf = _noRoom,
     this.nameColorsOf = _noColors,
+    this.emojiUrl,
   });
+
+  /// The image of the custom emoji [emojiId]: the user's own, else any Space's through [emojiUrl].
+  String? emojiImageOf(String emojiId) => emojiOf(emojiId)?.url ?? emojiUrl?.call(emojiId);
 
   static String? _noName(String _) => null;
   static RoleColors? _noColors(String _) => null;
@@ -272,22 +279,20 @@ class _MessageTextState extends State<MessageText> {
             },
           ],
           EmojiToken(:final emojiId) => [
-            switch (widget.directory.emojiOf(emojiId)) {
+            switch (widget.directory.emojiImageOf(emojiId)) {
               null => TextSpan(text: ':emoji:', style: style),
-              final emoji => WidgetSpan(
+              final url => WidgetSpan(
                 alignment: PlaceholderAlignment.middle,
                 child: Padding(
                   padding: const EdgeInsets.symmetric(horizontal: 1),
                   child: Image(
-                    image: cachedImage(
-                      emoji.url,
-                      cacheWidth: (emojiSize * MediaQuery.devicePixelRatioOf(context)).round(),
-                    ),
+                    image: cachedImage(url, cacheWidth: (emojiSize * MediaQuery.devicePixelRatioOf(context)).round()),
                     width: emojiSize,
                     height: emojiSize,
                     fit: BoxFit.contain,
                     excludeFromSemantics: true,
-                    errorBuilder: (_, _, _) => Text(':${emoji.name}:'),
+                    // Another Space's, gone or never there, reads as `:emoji:`: the text has no name for it.
+                    errorBuilder: (_, _, _) => Text(':${widget.directory.emojiOf(emojiId)?.name ?? 'emoji'}:'),
                   ),
                 ),
               ),

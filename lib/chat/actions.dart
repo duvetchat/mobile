@@ -145,7 +145,7 @@ class _MessageActionsRoute extends PopupRoute<(_Action, String?)> {
                   child: _QuickReactions(
                     mine: {
                       for (final r in reactions)
-                        if (me != null && r.users.contains(me)) r.emoji,
+                        if (me != null && r.users.contains(me)) r.key,
                     },
                     catalog: catalog,
                   ),

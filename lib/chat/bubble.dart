@@ -1096,7 +1096,8 @@ class _Reactions extends StatelessWidget {
           for (final r in reactions)
             () {
               final mine = me != null && r.users.contains(me);
-              final custom = r.emojiId == null ? null : directory.emojiOf(r.emojiId!);
+              // Any Space's: one the user isn't in comes from the API.
+              final image = r.emojiId == null ? null : directory.emojiImageOf(r.emojiId!);
               final name = _reactionName(r, directory);
               return chip(
                 label: '$name ${r.count}${mine ? ', you reacted' : ''}',
@@ -1110,12 +1111,9 @@ class _Reactions extends StatelessWidget {
                 child: Row(
                   mainAxisSize: MainAxisSize.min,
                   children: [
-                    if (custom != null)
+                    if (image != null)
                       Image(
-                        image: cachedImage(
-                          custom.url,
-                          cacheWidth: (18 * MediaQuery.devicePixelRatioOf(context)).round(),
-                        ),
+                        image: cachedImage(image, cacheWidth: (18 * MediaQuery.devicePixelRatioOf(context)).round()),
                         width: 18,
                         height: 18,
                         excludeFromSemantics: true,

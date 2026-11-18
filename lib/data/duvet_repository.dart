@@ -280,8 +280,10 @@ class DuvetRepository implements ChatRepository {
   // Fetched once per session, by space or conversation ID.
   final _spaceMembers = <String, Future<List<Member>>>{};
   final _conversationMembers = <String, List<Member>>{};
-  final _emojis = <String, Future<List<CustomEmoji>>>{};
-  final _stickers = <String, Future<List<Sticker>>>{};
+
+  // The user's Spaces' emojis and stickers, all of them; fetched again once any change.
+  Future<List<CustomEmoji>>? _emojis;
+  Future<List<Sticker>>? _stickers;
 
   // Spaces by ID, with their rooms as the gateway sends them.
   final _spaces = <String, ({duvet.GatewaySpace space, Map<String, duvet.GatewayRoom> rooms})>{};
@@ -661,8 +663,7 @@ class DuvetRepository implements ChatRepository {
     _names.clear();
     _authors.clear();
     _emojiNames.clear();
-    _emojis.clear();
-    _stickers.clear();
+    _assetsChanged();
     _uploadLimit = null;
     presence.value = const {};
     mobileOnly.value = const {};
@@ -1079,11 +1080,19 @@ class DuvetRepository implements ChatRepository {
       case duvet.ReactionRemovedEvent(:final data) || duvet.DMReactionRemovedEvent(:final data):
         _messageEvents.add((
           _anyChat,
-          ReactionChanged(messageId: data.messageId, userId: data.userId, emoji: data.emojiName, added: false),
+          ReactionChanged(
+            messageId: data.messageId,
+            userId: data.userId,
+            emoji: data.emojiName,
+            emojiId: data.emojiId,
+            added: false,
+          ),
         ));
 
       case duvet.SpaceCreateEvent(:final data):
         _warm([avatarUrl(data.space.icon)]);
+        // A Space joined: its emojis and stickers are the user's now.
+        _assetsChanged();
         _spaces[data.space.id] = (space: data.space, rooms: {...data.rooms});
         _roles[data.space.id] = {...data.rolesPermissions};
         _overwrites[data.space.id] = {
@@ -1150,6 +1159,7 @@ class DuvetRepository implements ChatRepository {
         }
       case duvet.SpaceDeletedEvent(:final data):
         _forgetSpace(data.id);
+        _assetsChanged();
 
       case duvet.RoomCreateEvent(:final data) || duvet.RoomUpdateEvent(:final data):
         if (_spaces[data.spaceId] case final known?) {
@@ -1322,18 +1332,14 @@ class DuvetRepository implements ChatRepository {
             if (e.key != data.userId) e.key: e.value,
           if (data.activities.isNotEmpty) data.userId: data.activities,
         };
-      case duvet.SpaceEmojiCreatedEvent(:final data) || duvet.SpaceEmojiUpdatedEvent(:final data):
-        _emojis.remove(data.spaceId);
-      case duvet.SpaceEmojiDeletedEvent(:final data):
-        _emojis.remove(data.spaceId);
+      case duvet.SpaceEmojiCreatedEvent() || duvet.SpaceEmojiUpdatedEvent() || duvet.SpaceEmojiDeletedEvent():
+        _emojis = null;
       case duvet.SpaceBanAddedEvent(:final data):
         _bansChanged.add(data.spaceId);
       case duvet.SpaceBanRemovedEvent(:final data):
         _bansChanged.add(data.spaceId);
-      case duvet.SpaceStickerCreatedEvent(:final data) || duvet.SpaceStickerUpdatedEvent(:final data):
-        _stickers.remove(data.spaceId);
-      case duvet.SpaceStickerDeletedEvent(:final data):
-        _stickers.remove(data.spaceId);
+      case duvet.SpaceStickerCreatedEvent() || duvet.SpaceStickerUpdatedEvent() || duvet.SpaceStickerDeletedEvent():
+        _stickers = null;
       case duvet.SpaceMemberAddedEvent(:final data):
         _spaceMembers.clear();
         if (data.userId case final userId?) {
@@ -1996,7 +2002,7 @@ class DuvetRepository implements ChatRepository {
         unawaited(
           _cache.changeMessages(
             messageId,
-            (_, m) => m.id == messageId && m.reactions.any((r) => r.emoji == emoji && r.users.contains(userId)) != added
+            (_, m) => m.id == messageId && m.reactedWith(userId, emojiId ?? emoji) != added
                 ? m.reacted(emoji, userId, add: added, emojiId: emojiId)
                 : m,
           ),
@@ -2539,12 +2545,15 @@ class DuvetRepository implements ChatRepository {
         (RoomTarget(:final roomId), true) => _call(
           (api) => api.addRoomReaction(roomId, messageId, emoji, emojiId: emojiId),
         ),
-        (RoomTarget(:final roomId), false) => _call((api) => api.removeRoomReaction(roomId, messageId, emoji)),
+        // A custom emoji's by its ID: another Space's emoji can have its name.
+        (RoomTarget(:final roomId), false) => _call(
+          (api) => api.removeRoomReaction(roomId, messageId, emojiId ?? emoji),
+        ),
         (ConversationTarget(:final conversationId), true) => _call(
           (api) => api.addConversationReaction(conversationId, messageId, emoji, emojiId: emojiId),
         ),
         (ConversationTarget(:final conversationId), false) => _call(
-          (api) => api.removeConversationReaction(conversationId, messageId, emoji),
+          (api) => api.removeConversationReaction(conversationId, messageId, emojiId ?? emoji),
         ),
       };
 
@@ -3891,9 +3900,9 @@ class DuvetRepository implements ChatRepository {
     ],
   };
 
-  void _assetsChanged(String spaceId) {
-    _emojis.remove(spaceId);
-    _stickers.remove(spaceId);
+  void _assetsChanged() {
+    _emojis = null;
+    _stickers = null;
   }
 
   @override
@@ -3909,7 +3918,7 @@ class DuvetRepository implements ChatRepository {
           ? api.createEmoji(spaceId, name, File(path), onProgress: _bytesSent(onProgress))
           : api.createSticker(spaceId, name, File(path), onProgress: _bytesSent(onProgress)),
     );
-    _assetsChanged(spaceId);
+    _assetsChanged();
   }
 
   @override
@@ -3917,13 +3926,13 @@ class DuvetRepository implements ChatRepository {
     await _explained(
       (api) => kind == AssetKind.emoji ? api.updateEmoji(spaceId, id, name) : api.updateSticker(spaceId, id, name),
     );
-    _assetsChanged(spaceId);
+    _assetsChanged();
   }
 
   @override
   Future<void> deleteAsset(String spaceId, AssetKind kind, String id) async {
     await _explained((api) => kind == AssetKind.emoji ? api.deleteEmoji(spaceId, id) : api.deleteSticker(spaceId, id));
-    _assetsChanged(spaceId);
+    _assetsChanged();
   }
 
   @override
@@ -4517,48 +4526,52 @@ class DuvetRepository implements ChatRepository {
   };
 
   @override
-  Future<List<CustomEmoji>> customEmojis(ChatTarget target) async {
-    if (target is! RoomTarget) return const [];
-    final spaceId = target.spaceId;
-    final pending = _emojis[spaceId] ??= _call((api) => api.listEmojis(spaceId)).then(
+  Future<List<CustomEmoji>> customEmojis() async {
+    final pending = _emojis ??= _call((api) => api.listMyEmojis()).then(
       (list) => [
         for (final e in list)
-          if (e.deletedAt == null) CustomEmoji(id: e.id, name: e.name, url: attachmentUrl(e.attachmentId)),
+          if (e.deletedAt == null)
+            CustomEmoji(id: e.id, name: e.name, url: attachmentUrl(e.attachmentId), spaceId: e.spaceId),
       ],
     );
-    unawaited(
-      pending.then((list) {
-        for (final e in list) {
-          _emojiNames[e.id] = e.name;
-        }
-      }, onError: (_) {}),
-    );
     try {
-      return await pending;
+      final list = await pending;
+      for (final e in list) {
+        _emojiNames[e.id] = e.name;
+      }
+      return list;
     } catch (_) {
-      if (identical(_emojis[spaceId], pending)) _emojis.remove(spaceId);
+      if (identical(_emojis, pending)) _emojis = null;
       rethrow;
     }
   }
 
   @override
-  Future<List<Sticker>> stickers(ChatTarget target) async {
-    if (target is! RoomTarget) return const [];
-    final spaceId = target.spaceId;
-    final pending = _stickers[spaceId] ??= _call((api) => api.listStickers(spaceId)).then(
+  Future<List<Sticker>> stickers() async {
+    final pending = _stickers ??= _call((api) => api.listMyStickers()).then(
       (list) => [
         for (final s in list)
           if (s.deletedAt == null)
-            Sticker(id: s.id, name: s.name, attachmentId: s.attachmentId, url: attachmentUrl(s.attachmentId)),
+            Sticker(
+              id: s.id,
+              name: s.name,
+              attachmentId: s.attachmentId,
+              url: attachmentUrl(s.attachmentId),
+              spaceId: s.spaceId,
+            ),
       ],
     );
     try {
       return await pending;
     } catch (_) {
-      if (identical(_stickers[spaceId], pending)) _stickers.remove(spaceId);
+      if (identical(_stickers, pending)) _stickers = null;
       rethrow;
     }
   }
+
+  @override
+  String emojiUrl(String emojiId) =>
+      _router.urlFromPath('/emojis/${Uri.encodeComponent(emojiId)}', root: true).toString();
 
   @override
   Future<ConversationSummary> directMessage(String userId) async {
