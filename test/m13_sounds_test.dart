@@ -5,6 +5,7 @@ import 'package:duvet/data/sounds.dart';
 import 'package:duvet/sounds_settings.dart';
 import 'package:duvet/theme.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/semantics.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:forui/forui.dart';
@@ -16,7 +17,7 @@ class _Player implements SoundPlayer {
   VoidCallback? onDone;
 
   @override
-  Future<void> play(Sound sound, double gain, {bool loop = false, VoidCallback? onDone}) async {
+  Future<void> play(Sound sound, double gain, {bool loop = false, bool aloud = false, VoidCallback? onDone}) async {
     played.add((sound, gain, loop));
     this.onDone = onDone;
   }
@@ -190,6 +191,28 @@ void main() {
     await tester.pumpAndSettle();
     expect(sounds.volume(Sound.mention), 0);
     expect(find.text('Off'), findsOneWidget);
+
+    // A screen reader's own slider, as the Slider's semantics empty the app's tree on iOS: each volume once,
+    // adjustable in steps of 10% between Off and 200%.
+    final atMost = tester.getSemantics(find.bySemanticsLabel('Master Volume'));
+    expect(atMost.value, '200%');
+    expect(atMost.getSemanticsData().hasAction(SemanticsAction.increase), isFalse);
+    tester.semantics.decrease(find.semantics.byLabel('Master Volume'));
+    await tester.pumpAndSettle();
+    expect(sounds.master, 190);
+    expect(tester.getSemantics(find.bySemanticsLabel('Master Volume')).value, '190%');
+
+    final off = tester.getSemantics(find.bySemanticsLabel('Notifications volume'));
+    expect(off.value, 'Off');
+    expect(off.increasedValue, '10%');
+    expect(off.getSemanticsData().hasAction(SemanticsAction.decrease), isFalse);
+    tester.semantics.increase(find.semantics.byLabel('Notifications volume'));
+    await tester.pumpAndSettle();
+    expect(sounds.volume(Sound.mention), 10);
+    await tester.drag(find.byType(Slider).at(1), const Offset(-600, 0));
+    await tester.pumpAndSettle();
+    await tester.drag(find.byType(Slider).first, const Offset(600, 0));
+    await tester.pumpAndSettle();
 
     ringer.isQuiet = true;
     await tester.tap(find.bySemanticsLabel('Play Join Voice'));

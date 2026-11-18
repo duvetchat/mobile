@@ -12,6 +12,7 @@ import 'data/voice.dart';
 import 'members_sheet.dart';
 import 'people.dart';
 import 'search.dart';
+import 'shell.dart';
 import 'spaces.dart';
 import 'theme.dart';
 import 'voice_room.dart';
@@ -36,6 +37,7 @@ class ChatsTab extends StatelessWidget {
   Widget build(BuildContext context) {
     final repository = context.repository;
     final voice = context.voice;
+    final shell = Shell.maybeOf(context);
     return ListenableBuilder(
       listenable: Listenable.merge([
         repository.recents,
@@ -52,6 +54,8 @@ class ChatsTab extends StatelessWidget {
         repository.typingNow,
         repository.status,
         voice,
+        // The chat open in the wide layout's pane: its row is marked.
+        ?shell,
       ]),
       builder: (context, _) {
         final rows = _rows(
@@ -161,6 +165,7 @@ class ChatsTab extends StatelessWidget {
                         snippet: typingSentence(repository.typingNow.value[row.target.id] ?? const []) ?? row.snippet,
                         trailing: row.at == null ? null : shortTime(row.at!),
                         unread: repository.shownUnread(row.target.id),
+                        selected: shell?.openId == row.target.id,
                         mentions: repository.shownMentions(row.target.id),
                         detail: row.pinned ? 'pinned' : null,
                         titleIcon: row.pinned
@@ -376,6 +381,22 @@ class _ChatRow {
   );
 }
 
+/// Names a [SpaceDirectory]'s route, before its Space's ID: the wide layout's rail marks the Space open.
+const spaceRoutePrefix = 'space:';
+
+/// A Space's directory in the Spaces tab; [instant] from the rail, which swaps one for another.
+Route<void> spaceRoute(Space space, {bool instant = false}) {
+  final settings = RouteSettings(name: '$spaceRoutePrefix${space.id}');
+  Widget page(BuildContext _) => SpaceDirectory(spaceId: space.id, name: space.name);
+  return instant
+      ? PageRouteBuilder<void>(
+          settings: settings,
+          transitionDuration: Duration.zero,
+          pageBuilder: (context, _, _) => page(context),
+        )
+      : MaterialPageRoute<void>(settings: settings, builder: page);
+}
+
 /// The Launchpad: the user's Spaces as a two-column grid of cards.
 class SpacesTab extends StatelessWidget {
   const SpacesTab({super.key});
@@ -397,11 +418,7 @@ class SpacesTab extends StatelessWidget {
         // A long press chooses the Space's notifications, under its own card or row.
         void notifications(BuildContext anchor, Space space) =>
             showNotificationMenu(anchor, targetId: space.id, target: NotificationTarget.space);
-        void open(Space space) => Navigator.of(context).push(
-          MaterialPageRoute<void>(
-            builder: (_) => SpaceDirectory(spaceId: space.id, name: space.name),
-          ),
-        );
+        void open(Space space) => Navigator.of(context).push(spaceRoute(space));
         // While the first READY comes: the chosen view's own tiles, as bones.
         final placeholders = [
           for (final (i, name) in placeholderNames.indexed) Space(id: 'placeholder-$i', name: name, onlineCount: 12),
@@ -606,8 +623,10 @@ class _SpaceDirectoryState extends State<SpaceDirectory> {
     final repository = context.repository;
     final voice = context.voice;
     final colors = context.theme.colors;
+    final shell = Shell.maybeOf(context);
     return ListenableBuilder(
       listenable: Listenable.merge([
+        ?shell,
         repository.spaces,
         repository.unread,
         repository.notificationLevels,
@@ -707,6 +726,7 @@ class _SpaceDirectoryState extends State<SpaceDirectory> {
                                                 null => null,
                                               },
                                           unread: repository.shownUnread(room.id),
+                                          selected: shell?.openId == room.id,
                                           onTap: () => openChat(context, room.target, '# ${room.name}'),
                                           onLongPress: () => showNotificationMenu(
                                             rowContext,

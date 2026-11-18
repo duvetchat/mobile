@@ -103,6 +103,14 @@ void main() {
       expect(((blocks[4] as MdCodeBlock).language, (blocks[4] as MdCodeBlock).code), ('dart', 'final x = 1;'));
     });
 
+    test('a quote needs the space after its marker, as on the desktop: >:v is text (#263)', () {
+      for (final face in ['>:v', '>.<', '>_>', '>:(', '>>>:v', '>']) {
+        expect(parseMarkdown(face).map((b) => b.runtimeType), [MdParagraph], reason: face);
+        expect(plainInline((parseMarkdown(face).single as MdParagraph).inlines), face, reason: face);
+      }
+      expect(parseMarkdown('> quoted\n>:v').map((b) => b.runtimeType), [MdQuote, MdParagraph]);
+    });
+
     test('tables, as the desktop reads them: a header, a |---| line and its alignments, rows with a | (#26)', () {
       final blocks = parseMarkdown(
         'Roles:\n| Name | Role | Since |\n|:--|:-:|--:|\n| **Maya** | mod | 2024\n|Leo|\n\nbye',
@@ -729,6 +737,37 @@ void main() {
     expect(clip.bottom, lessThan(list.bottom));
     await tester.pump(const Duration(seconds: 3));
     await tester.pumpAndSettle();
+    semantics.dispose();
+  });
+
+  testWidgets('a long chat keeps a layer only for the messages near the screen', (tester) async {
+    await openMaya(
+      tester,
+      setUp: (r) => r.history['c-maya'] = [
+        for (var i = 0; i < 1000; i++)
+          FakeRepository.message(
+            'b$i',
+            author: i.isEven ? _maya : _me,
+            name: i.isEven ? 'Maya' : 'Gaby',
+            text: 'line $i',
+          ),
+      ],
+    );
+    expect(find.text('line 999'), findsOneWidget);
+    // Each message built has the layer its dust is taken from, and the list's
+    // own around it: none for the hundreds off screen.
+    final list = find.ancestor(of: find.text('line 999'), matching: find.byType(Scrollable)).first;
+    final built = find.descendant(
+      of: list,
+      matching: find.byWidgetPredicate((w) => w.runtimeType.toString() == '_Vanish'),
+    );
+    final count = built.evaluate().length;
+    expect(count, inInclusiveRange(10, 60));
+    expect(find.descendant(of: list, matching: find.byType(RepaintBoundary)), findsNWidgets(count * 2));
+    expect(
+      find.ancestor(of: built.first, matching: find.byType(RepaintBoundary)).evaluate().first.renderObject,
+      isA<RenderRepaintBoundary>().having((b) => b.size, 'size', tester.getSize(built.first)),
+    );
     semantics.dispose();
   });
 

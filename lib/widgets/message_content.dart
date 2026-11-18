@@ -248,48 +248,51 @@ class _MessageTextState extends State<MessageText> {
     // Mentions and custom emoji within a text leaf.
     List<InlineSpan> leaf(String text, TextStyle? style) => [
       for (final token in tokenize(text))
-        switch (token) {
-          TextToken(:final text) => TextSpan(text: text, style: style),
-          MentionToken(:final userId) => mention(
-            '@${mentions[userId] = widget.directory.nameOf(userId) ?? userId.substring(0, 8)}',
-            userId,
-            style,
-          ),
-          RoomToken(:final roomId) => switch (widget.directory.roomOf(roomId)) {
-            // Hidden or gone: no name, nothing to open.
-            null => TextSpan(text: '#unknown', style: style),
-            final room => TextSpan(
-              text: '#${(rooms[roomId] = room).name}',
-              recognizer: switch (widget.onRoom) {
-                final onRoom? => _tap(() => onRoom(room)),
-                null => null,
-              },
-              style: (style ?? const TextStyle()).copyWith(
-                color: widget.onAccent ? null : tokens.accentText,
-                fontWeight: FontWeight.w700,
-              ),
-            ),
-          },
-          EmojiToken(:final emojiId) => switch (widget.directory.emojiOf(emojiId)) {
-            null => TextSpan(text: ':emoji:', style: style),
-            final emoji => WidgetSpan(
-              alignment: PlaceholderAlignment.middle,
-              child: Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 1),
-                child: Image(
-                  image: cachedImage(
-                    emoji.url,
-                    cacheWidth: (emojiSize * MediaQuery.devicePixelRatioOf(context)).round(),
-                  ),
-                  width: emojiSize,
-                  height: emojiSize,
-                  fit: BoxFit.contain,
-                  excludeFromSemantics: true,
-                  errorBuilder: (_, _, _) => Text(':${emoji.name}:'),
+        ...switch (token) {
+          // Emoji at the size the platform's own text sets them.
+          TextToken(:final text) => DuvetType.withEmoji(text, style: style, base: base),
+          MentionToken(:final userId) => [
+            mention('@${mentions[userId] = widget.directory.nameOf(userId) ?? userId.substring(0, 8)}', userId, style),
+          ],
+          RoomToken(:final roomId) => [
+            switch (widget.directory.roomOf(roomId)) {
+              // Hidden or gone: no name, nothing to open.
+              null => TextSpan(text: '#unknown', style: style),
+              final room => TextSpan(
+                text: '#${(rooms[roomId] = room).name}',
+                recognizer: switch (widget.onRoom) {
+                  final onRoom? => _tap(() => onRoom(room)),
+                  null => null,
+                },
+                style: (style ?? const TextStyle()).copyWith(
+                  color: widget.onAccent ? null : tokens.accentText,
+                  fontWeight: FontWeight.w700,
                 ),
               ),
-            ),
-          },
+            },
+          ],
+          EmojiToken(:final emojiId) => [
+            switch (widget.directory.emojiOf(emojiId)) {
+              null => TextSpan(text: ':emoji:', style: style),
+              final emoji => WidgetSpan(
+                alignment: PlaceholderAlignment.middle,
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 1),
+                  child: Image(
+                    image: cachedImage(
+                      emoji.url,
+                      cacheWidth: (emojiSize * MediaQuery.devicePixelRatioOf(context)).round(),
+                    ),
+                    width: emojiSize,
+                    height: emojiSize,
+                    fit: BoxFit.contain,
+                    excludeFromSemantics: true,
+                    errorBuilder: (_, _, _) => Text(':${emoji.name}:'),
+                  ),
+                ),
+              ),
+            },
+          ],
         },
     ];
 
@@ -1581,7 +1584,7 @@ Offset clampToPhoto(double scale, Offset pan, Size view, Rect photo) {
   return Offset(axis(pan.dx, photo.left, photo.width, view.width), axis(pan.dy, photo.top, photo.height, view.height));
 }
 
-class _ImageViewerState extends State<ImageViewer> with TickerProviderStateMixin {
+class _ImageViewerState extends State<ImageViewer> with TickerProviderStateMixin, HidingControls {
   late final _pages = PageController(initialPage: widget.initial);
   late int _index = widget.initial;
 
@@ -1631,6 +1634,10 @@ class _ImageViewerState extends State<ImageViewer> with TickerProviderStateMixin
   // Two fingers down is a pinch: swiping to page or to close steps aside, as
   // either would take a pinch with one finger still.
   bool get _pinching => _fingers.length > 1;
+
+  // Two fingers were down since this touch began: the one a pinch held still
+  // and lifted isn't a tap, though the tap's recognizer takes it for one.
+  bool _pinched = false;
 
   static const _ink = DuvetTokens.mediaInk;
   static const _ground = Color(0xFF0A0A0B);
@@ -1776,7 +1783,11 @@ class _ImageViewerState extends State<ImageViewer> with TickerProviderStateMixin
   }
 
   void _press(PointerDownEvent e) {
+    // Reached after the gesture detector under it: a tap still waiting on the
+    // touch before this one is answered by then.
+    if (_fingers.isEmpty) _pinched = false;
     setState(() => _fingers[e.pointer] = e.position);
+    if (_pinching) _pinched = true;
     // A second finger mid-swipe: the photo goes back, and the two pinch.
     if (_pinching && _swiping) {
       _swiping = false;
@@ -1904,7 +1915,7 @@ class _ImageViewerState extends State<ImageViewer> with TickerProviderStateMixin
     );
     // The viewer is always dark: photos read best on near-black.
     return AnnotatedRegion<SystemUiOverlayStyle>(
-      value: SystemUiOverlayStyle.light,
+      value: Duvet.systemBarsOver(Brightness.dark),
       child: Semantics(
         scopesRoute: true,
         namesRoute: true,
@@ -1922,6 +1933,10 @@ class _ImageViewerState extends State<ImageViewer> with TickerProviderStateMixin
                 onPointerUp: _lift,
                 onPointerCancel: _lift,
                 child: GestureDetector(
+                  // Once it isn't a double tap's first: the bars go, or come back.
+                  onTap: () {
+                    if (!_pinched) toggleControls();
+                  },
                   onDoubleTapDown: (d) => _tapAt = d.localPosition,
                   onDoubleTap: _toggleZoom,
                   child: Transform.translate(
@@ -1994,60 +2009,63 @@ class _ImageViewerState extends State<ImageViewer> with TickerProviderStateMixin
                 top: 0,
                 left: 0,
                 right: 0,
-                child: Opacity(
-                  opacity: chrome,
-                  child: _DarkGlass(
-                    edge: const Border(bottom: BorderSide(color: DuvetTokens.mediaScrimEdge)),
-                    child: Padding(
-                      padding: EdgeInsets.only(top: padding.top),
-                      child: SizedBox(
-                        height: DuvetTokens.sizeTopBar,
-                        child: Row(
-                          children: [
-                            const SizedBox(width: 8),
-                            Semantics(
-                              button: true,
-                              label: 'Close',
-                              excludeSemantics: true,
-                              onTap: () => Navigator.of(context).pop(),
-                              child: GestureDetector(
+                child: FadingControls(
+                  shown: controlsShown,
+                  child: Opacity(
+                    opacity: chrome,
+                    child: _DarkGlass(
+                      edge: const Border(bottom: BorderSide(color: DuvetTokens.mediaScrimEdge)),
+                      child: Padding(
+                        padding: EdgeInsets.only(top: padding.top),
+                        child: SizedBox(
+                          height: DuvetTokens.sizeTopBar,
+                          child: Row(
+                            children: [
+                              const SizedBox(width: 8),
+                              Semantics(
+                                button: true,
+                                label: 'Close',
+                                excludeSemantics: true,
                                 onTap: () => Navigator.of(context).pop(),
-                                child: const SizedBox.square(dimension: 40, child: Icon(FLucideIcons.x, color: _ink)),
-                              ),
-                            ),
-                            Expanded(
-                              child: Column(
-                                mainAxisAlignment: MainAxisAlignment.center,
-                                children: [
-                                  Text(
-                                    current.displayName,
-                                    maxLines: 1,
-                                    overflow: TextOverflow.ellipsis,
-                                    style: DuvetType.rowTitle.copyWith(color: _ink),
-                                  ),
-                                  if (widget.gallery.length > 1)
-                                    Text(
-                                      '${_index + 1} of ${widget.gallery.length}',
-                                      style: DuvetType.caption.copyWith(color: const Color(0xFF949392)),
-                                    ),
-                                ],
-                              ),
-                            ),
-                            Semantics(
-                              button: true,
-                              label: 'Rotate',
-                              excludeSemantics: true,
-                              onTap: _rotate,
-                              child: GestureDetector(
-                                onTap: _rotate,
-                                child: const SizedBox.square(
-                                  dimension: 40,
-                                  child: Icon(FLucideIcons.rotateCw, color: _ink),
+                                child: GestureDetector(
+                                  onTap: () => Navigator.of(context).pop(),
+                                  child: const SizedBox.square(dimension: 40, child: Icon(FLucideIcons.x, color: _ink)),
                                 ),
                               ),
-                            ),
-                            const SizedBox(width: 8),
-                          ],
+                              Expanded(
+                                child: Column(
+                                  mainAxisAlignment: MainAxisAlignment.center,
+                                  children: [
+                                    Text(
+                                      current.displayName,
+                                      maxLines: 1,
+                                      overflow: TextOverflow.ellipsis,
+                                      style: DuvetType.rowTitle.copyWith(color: _ink),
+                                    ),
+                                    if (widget.gallery.length > 1)
+                                      Text(
+                                        '${_index + 1} of ${widget.gallery.length}',
+                                        style: DuvetType.caption.copyWith(color: const Color(0xFF949392)),
+                                      ),
+                                  ],
+                                ),
+                              ),
+                              Semantics(
+                                button: true,
+                                label: 'Rotate',
+                                excludeSemantics: true,
+                                onTap: _rotate,
+                                child: GestureDetector(
+                                  onTap: _rotate,
+                                  child: const SizedBox.square(
+                                    dimension: 40,
+                                    child: Icon(FLucideIcons.rotateCw, color: _ink),
+                                  ),
+                                ),
+                              ),
+                              const SizedBox(width: 8),
+                            ],
+                          ),
                         ),
                       ),
                     ),
@@ -2059,22 +2077,25 @@ class _ImageViewerState extends State<ImageViewer> with TickerProviderStateMixin
                   left: 0,
                   right: 0,
                   bottom: 0,
-                  child: Opacity(
-                    opacity: chrome,
-                    child: _DarkGlass(
-                      edge: const Border(top: BorderSide(color: DuvetTokens.mediaScrimEdge)),
-                      child: Padding(
-                        padding: EdgeInsets.fromLTRB(16, 8, 16, 8 + padding.bottom),
-                        child: Row(
-                          children: [
-                            action(FLucideIcons.download, 'Save', () => _save(current)),
-                            action(FLucideIcons.share2, 'Share', () => _share(current)),
-                            action(FLucideIcons.link, 'Copy link', () async {
-                              final link = linkSource(context, current);
-                              await Clipboard.setData(ClipboardData(text: await link()));
-                              _toast('Link copied');
-                            }),
-                          ],
+                  child: FadingControls(
+                    shown: controlsShown,
+                    child: Opacity(
+                      opacity: chrome,
+                      child: _DarkGlass(
+                        edge: const Border(top: BorderSide(color: DuvetTokens.mediaScrimEdge)),
+                        child: Padding(
+                          padding: EdgeInsets.fromLTRB(16, 8, 16, 8 + padding.bottom),
+                          child: Row(
+                            children: [
+                              action(FLucideIcons.download, 'Save', () => _save(current)),
+                              action(FLucideIcons.share2, 'Share', () => _share(current)),
+                              action(FLucideIcons.link, 'Copy link', () async {
+                                final link = linkSource(context, current);
+                                await Clipboard.setData(ClipboardData(text: await link()));
+                                _toast('Link copied');
+                              }),
+                            ],
+                          ),
                         ),
                       ),
                     ),

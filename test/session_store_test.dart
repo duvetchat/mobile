@@ -11,12 +11,12 @@ void main() {
   test('a session is written whole, under one key', () async {
     FlutterSecureStorage.setMockInitialValues({});
     const store = SecureSessionStore();
-    await store.write((token: 'access-1', sessionToken: 'refresh-1', refreshedAt: at));
+    await store.write((token: 'access-1', sessionToken: 'refresh-1', refreshedAt: at, userId: null));
     expect(await storage.readAll(), hasLength(1));
-    expect(await store.read(), (token: 'access-1', sessionToken: 'refresh-1', refreshedAt: at));
+    expect(await store.read(), (token: 'access-1', sessionToken: 'refresh-1', refreshedAt: at, userId: null));
 
-    await store.write((token: 'access-2', sessionToken: 'refresh-2', refreshedAt: null));
-    expect(await store.read(), (token: 'access-2', sessionToken: 'refresh-2', refreshedAt: null));
+    await store.write((token: 'access-2', sessionToken: 'refresh-2', refreshedAt: null, userId: null));
+    expect(await store.read(), (token: 'access-2', sessionToken: 'refresh-2', refreshedAt: null, userId: null));
   });
 
   test('a session an older version kept under three keys is read, and written under one', () async {
@@ -26,17 +26,50 @@ void main() {
       'duvet_session_refreshed_at': '${at.millisecondsSinceEpoch}',
     });
     const store = SecureSessionStore();
-    expect(await store.read(), (token: 'access-1', sessionToken: 'refresh-1', refreshedAt: at));
+    expect(await store.read(), (token: 'access-1', sessionToken: 'refresh-1', refreshedAt: at, userId: null));
 
-    await store.write((token: 'access-2', sessionToken: 'refresh-2', refreshedAt: at));
+    await store.write((token: 'access-2', sessionToken: 'refresh-2', refreshedAt: at, userId: null));
     expect(await storage.readAll(), hasLength(1));
-    expect(await store.read(), (token: 'access-2', sessionToken: 'refresh-2', refreshedAt: at));
+    expect(await store.read(), (token: 'access-2', sessionToken: 'refresh-2', refreshedAt: at, userId: null));
+  });
+
+  test('whose session it is is kept with it, and none in one saved without', () async {
+    FlutterSecureStorage.setMockInitialValues({'duvet_session': '{"token":"access-1","session_token":"refresh-1"}'});
+    const store = SecureSessionStore();
+    expect(await store.read(), (token: 'access-1', sessionToken: 'refresh-1', refreshedAt: null, userId: null));
+
+    await store.write((token: 'access-1', sessionToken: 'refresh-1', refreshedAt: at, userId: 'u-1'));
+    expect(await store.read(), (token: 'access-1', sessionToken: 'refresh-1', refreshedAt: at, userId: 'u-1'));
+    expect(await storage.readAll(), hasLength(1));
+  });
+
+  // Three more round trips to the keychain at each renewal otherwise, for keys that aren't there.
+  test('a write after a read that found the session under its one key leaves the old keys alone', () async {
+    FlutterSecureStorage.setMockInitialValues({'duvet_session': '{"token":"access-1","session_token":"refresh-1"}'});
+    const store = SecureSessionStore();
+    await store.read();
+    // Not there in the app: only so the test sees whether they were deleted.
+    await storage.write(key: 'duvet_session_token', value: 'old');
+    await store.write((token: 'access-2', sessionToken: 'refresh-2', refreshedAt: at, userId: null));
+    expect((await storage.readAll()).keys, containsAll(['duvet_session', 'duvet_session_token']));
+    expect((await store.read())!.token, 'access-2');
+
+    // A read that finds none under it doesn't know them gone: the next write deletes them.
+    await storage.delete(key: 'duvet_session');
+    expect((await store.read())!.token, 'old');
+    await store.write((token: 'access-3', sessionToken: 'refresh-3', refreshedAt: at, userId: null));
+    expect((await storage.readAll()).keys, ['duvet_session']);
+
+    // Clearing always does.
+    await storage.write(key: 'duvet_refresh_token', value: 'old');
+    await store.clear();
+    expect(await storage.readAll(), isEmpty);
   });
 
   test('cleared, nothing of it is left', () async {
     FlutterSecureStorage.setMockInitialValues({'duvet_session_token': 'access-0', 'duvet_refresh_token': 'refresh-0'});
     const store = SecureSessionStore();
-    await store.write((token: 'access-1', sessionToken: 'refresh-1', refreshedAt: at));
+    await store.write((token: 'access-1', sessionToken: 'refresh-1', refreshedAt: at, userId: null));
     await store.clear();
     expect(await store.read(), isNull);
     expect(await storage.readAll(), isEmpty);

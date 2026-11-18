@@ -47,6 +47,7 @@ import 'widgets/link_embeds.dart';
 import 'widgets/media.dart';
 import 'widgets/message_content.dart';
 import 'widgets/prism.dart';
+import 'shell.dart';
 import 'widgets/rows.dart';
 import 'widgets/sheets.dart';
 import 'widgets/skeleton.dart';
@@ -56,12 +57,53 @@ part 'chat/bubble.dart';
 part 'chat/composer.dart';
 part 'chat/reactors.dart';
 
-/// Pushes the Chat View over everything, the tab bar included.
-void openChat(BuildContext context, ChatTarget target, String title) => Navigator.of(context, rootNavigator: true).push(
-  MaterialPageRoute<void>(
-    builder: (_) => ChatView(target: target, title: title),
-  ),
-);
+/// Opens the Chat View: over everything, the tab bar included, or in the wide layout's pane.
+void openChat(BuildContext context, ChatTarget target, String title, {String? jumpTo}) =>
+    openChatRoute(context, ChatRoute(target: target, title: title, jumpTo: jumpTo));
+
+/// The same for a route already made. Outside the app's shell (a widget pumped alone), over everything.
+void openChatRoute(BuildContext context, ChatRoute route, {bool reveal = true}) {
+  final shell = Shell.maybeOf(context);
+  if (shell == null) {
+    Navigator.of(context, rootNavigator: true).push(route);
+  } else {
+    shell.open(route, reveal: reveal);
+  }
+}
+
+/// A Chat View's route. Its page keeps its state when the route moves between the pane and the whole screen.
+class ChatRoute extends MaterialPageRoute<void> with PaneRoute<void> {
+  final ChatTarget target;
+  final String title;
+  final String? jumpTo;
+  final String? threadOf;
+  final GlobalKey _page;
+
+  ChatRoute({required this.target, required this.title, this.jumpTo, this.threadOf, GlobalKey? page})
+    : _page = page ?? GlobalKey(),
+      super(builder: _none);
+
+  static Widget _none(BuildContext context) => const SizedBox.shrink();
+
+  @override
+  Widget buildContent(BuildContext context) => SafeSides(
+    child: ChatView(key: _page, target: target, title: title, jumpTo: jumpTo, threadOf: threadOf),
+  );
+
+  @override
+  String get paneId => target.id;
+
+  @override
+  ChatRoute moved() => ChatRoute(target: target, title: title, jumpTo: jumpTo, threadOf: threadOf, page: _page);
+
+  @override
+  bool same(PaneRoute<Object?> other) =>
+      other is ChatRoute &&
+      other.target == target &&
+      other.jumpTo == null &&
+      threadOf == null &&
+      other.threadOf == null;
+}
 
 enum _Delivery { sent, sending, failed }
 
@@ -106,6 +148,11 @@ class ChatView extends StatefulWidget {
   @visibleForTesting
   static Future<List<OutgoingFile>> Function()? debugPickFiles;
 
+  /// Off, a message has no [RepaintBoundary] of its own: what
+  /// `test/benchmark/message_boundary.dart` measures it against.
+  @visibleForTesting
+  static bool debugMessageBoundary = true;
+
   @override
   State<ChatView> createState() => _ChatViewState();
 }
@@ -119,7 +166,7 @@ class _ChatViewState extends State<ChatView> with SingleTickerProviderStateMixin
   late final _composer = ComposerController(accent: () => context.duvet.accentText);
   final _scroll = ScrollController();
   final _random = Random();
-  final _focus = FocusNode();
+  late final _focus = FocusNode(onKeyEvent: _composerKey);
 
   late final ChatRepository _repository;
   StreamSubscription<MessageEvent>? _events;
@@ -854,6 +901,27 @@ class _ChatViewState extends State<ChatView> with SingleTickerProviderStateMixin
     ), reply: replyTo);
   }
 
+  /// A hardware keyboard's Enter sends, as on the desktop, or picks the first
+  /// suggestion while they're open; Shift+Enter starts a new line. The
+  /// on-screen keyboard's Return types its newline through the text input,
+  /// never here, so it still starts a new line (#36). An IME's Enter, while it
+  /// composes, confirms the text.
+  KeyEventResult _composerKey(FocusNode node, KeyEvent event) {
+    if (event is! KeyDownEvent) return KeyEventResult.ignored;
+    if (event.logicalKey != LogicalKeyboardKey.enter && event.logicalKey != LogicalKeyboardKey.numpadEnter) {
+      return KeyEventResult.ignored;
+    }
+    if (HardwareKeyboard.instance.isShiftPressed || !_composer.value.composing.isCollapsed) {
+      return KeyEventResult.ignored;
+    }
+    if (_suggestions().firstOrNull case GlassRow(:final onPressed)) {
+      onPressed();
+    } else {
+      unawaited(_send());
+    }
+    return KeyEventResult.handled;
+  }
+
   static String _megabytes(int bytes) => '${(bytes / (1024 * 1024)).round()} MB';
 
   void _sendSticker(Sticker sticker) => _sendPicked(sticker: sticker);
@@ -1355,18 +1423,14 @@ class _ChatViewState extends State<ChatView> with SingleTickerProviderStateMixin
       final room = _repository.spaces.value.expand((s) => s.rooms).where((r) => r.id == link.roomId).firstOrNull;
       title = '# ${room?.name ?? 'room'}';
     }
-    Navigator.of(context, rootNavigator: true).push(
-      MaterialPageRoute<void>(
-        builder: (_) => ChatView(target: target, title: title, jumpTo: link.messageId),
-      ),
-    );
+    Navigator.of(context).push(ChatRoute(target: target, title: title, jumpTo: link.messageId));
   }
 
   void _openSpace(String spaceId) {
     final space = _repository.spaces.value.where((s) => s.id == spaceId).firstOrNull;
     Navigator.of(context, rootNavigator: true).push(
       MaterialPageRoute<void>(
-        builder: (_) => SpaceDirectory(spaceId: spaceId, name: space?.name ?? 'Space'),
+        builder: (_) => SpaceDirectory(spaceId: spaceId, name: space?.name ?? 'Space').readable,
       ),
     );
   }
@@ -1631,7 +1695,16 @@ class _ChatViewState extends State<ChatView> with SingleTickerProviderStateMixin
             value: 'invite',
             hint: 'A link to this room',
           ),
-        const GlassMenuItem(icon: FLucideIcons.users, label: 'Members', value: 'members'),
+        // Beside the chat where there's room: the item shows and hides them.
+        GlassMenuItem(
+          icon: FLucideIcons.users,
+          label: !_membersBeside
+              ? 'Members'
+              : PaneScope.maybeOf(context)!.showMembers
+              ? 'Hide members'
+              : 'Show members',
+          value: 'members',
+        ),
         const GlassMenuItem(icon: FLucideIcons.pin, label: 'Pinned messages', value: 'pins'),
         // Running the room, for those who may: ManageChannels in it.
         if (_inRoomMay(Perm.manageChannels) && _room != null) ...[
@@ -1652,7 +1725,11 @@ class _ChatViewState extends State<ChatView> with SingleTickerProviderStateMixin
           rootNavigator: true,
         ).push(MaterialPageRoute<void>(builder: (_) => GroupInfoPage(conversationId: widget.target.id)));
       case 'members':
-        await _openMembers();
+        if (_membersBeside) {
+          PaneScope.maybeOf(context)!.toggleMembers();
+        } else {
+          await _openMembers();
+        }
       case 'pins':
         await _openPins();
     }
@@ -1723,12 +1800,7 @@ class _ChatViewState extends State<ChatView> with SingleTickerProviderStateMixin
     if (space == null) return;
     final room = await showChannelSwitcher(context, space: space, current: target.roomId);
     if (room == null || !mounted || room.id == target.roomId) return;
-    Navigator.of(context).pushReplacement(
-      PageRouteBuilder<void>(
-        transitionDuration: Duration.zero,
-        pageBuilder: (_, _, _) => ChatView(target: room.target, title: '# ${room.name}'),
-      ),
-    );
+    Navigator.of(context).pushReplacement(ChatRoute(target: room.target, title: '# ${room.name}')..instant = true);
   }
 
   Future<void> _openPins() async {
@@ -1759,14 +1831,12 @@ class _ChatViewState extends State<ChatView> with SingleTickerProviderStateMixin
     }
   }
 
-  void _openThread(ChatMessage m) => Navigator.of(context, rootNavigator: true).push(
-    MaterialPageRoute<void>(
-      builder: (_) => ChatView(target: widget.target, title: widget.title, threadOf: m.id),
-    ),
-  );
+  // In the chat's own navigator: beside the list in the pane, over everything on a phone.
+  void _openThread(ChatMessage m) =>
+      Navigator.of(context).push(ChatRoute(target: widget.target, title: widget.title, threadOf: m.id));
 
   Future<void> _openSearch() async {
-    final hit = await Navigator.of(context, rootNavigator: true).push<SearchHit>(
+    final hit = await Navigator.of(context).push<SearchHit>(
       MaterialPageRoute(
         builder: (_) => InChatSearch(target: widget.target, title: widget.title),
       ),
@@ -1781,11 +1851,7 @@ class _ChatViewState extends State<ChatView> with SingleTickerProviderStateMixin
   }
 
   void _openLinkTo(ChatTarget target, String title, String messageId) =>
-      Navigator.of(context, rootNavigator: true).push(
-        MaterialPageRoute<void>(
-          builder: (_) => ChatView(target: target, title: title, jumpTo: messageId),
-        ),
-      );
+      Navigator.of(context).push(ChatRoute(target: target, title: title, jumpTo: messageId));
 
   Future<void> _openMembers() async {
     final picked = await showMembersSheet(context, repository: _repository, target: widget.target);
@@ -2259,9 +2325,7 @@ class _ChatViewState extends State<ChatView> with SingleTickerProviderStateMixin
         GlassRow(
           label: ':${e.name.replaceAll(' ', '_')}:',
           hint: 'Double tap to insert ${e.name}',
-          leading: ExcludeSemantics(
-            child: Text(e.emoji, style: const TextStyle(fontFamily: DuvetType.emoji, fontSize: 26, height: 1.1)),
-          ),
+          leading: ExcludeSemantics(child: Text(e.emoji, style: DuvetType.emojiStyle(26, height: 1.1))),
           onPressed: () {
             EmojiCatalog.used(e.emoji);
             _composer.insertEmoji(e.emoji);
@@ -2293,8 +2357,43 @@ class _ChatViewState extends State<ChatView> with SingleTickerProviderStateMixin
     return false;
   }
 
+  final _chatKey = GlobalKey();
+
+  /// Whether the chat lists members: a room or a group, not a thread or a DM's two.
+  bool get _hasMembers => widget.threadOf == null && (widget.target is RoomTarget || _isGroup);
+
+  /// Whether they go beside the chat (the wide layout's members column, as the desktop has it), not in a sheet.
+  bool get _membersBeside => _hasMembers && (PaneScope.maybeOf(context)?.roomForMembers ?? false);
+
   @override
   Widget build(BuildContext context) {
+    // Keyed: the messages keep their place as the members come and go beside them.
+    final chat = KeyedSubtree(key: _chatKey, child: _chat(context));
+    if (!_membersBeside || !PaneScope.maybeOf(context)!.showMembers) return chat;
+    final media = MediaQuery.of(context);
+    return ColoredBox(
+      color: context.theme.colors.background,
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Expanded(
+            // The chat measures itself without them.
+            child: MediaQuery(
+              data: media.copyWith(size: Size(media.size.width - ShellSizes.members - 1, media.size.height)),
+              child: chat,
+            ),
+          ),
+          SizedBox(width: 1, child: ColoredBox(color: context.duvet.hairline)),
+          SizedBox(
+            width: ShellSizes.members,
+            child: MembersPanel(repository: _repository, target: widget.target, onPicked: _onMember),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _chat(BuildContext context) {
     final suggestions = _suggestions();
     final colors = context.theme.colors;
     final isRoom = widget.target is RoomTarget;
@@ -2372,7 +2471,8 @@ class _ChatViewState extends State<ChatView> with SingleTickerProviderStateMixin
                 ]),
                 builder: (context, _) => GlassTopBar(
                   hairline: _underTop,
-                  onBack: () => Navigator.of(context).maybePop(),
+                  // The pane's own chat has nothing under it to go back to.
+                  onBack: PaneScope.rootOf(context) ? null : () => Navigator.of(context).maybePop(),
                   title: widget.threadOf != null
                       ? Column(
                           mainAxisSize: MainAxisSize.min,
@@ -2434,18 +2534,19 @@ class _ChatViewState extends State<ChatView> with SingleTickerProviderStateMixin
                       ? ['Channel $_roomName', ?_room?.description, 'switch channel'].join(', ')
                       : null,
                   actions: [
+                    // One call at a time. Into this conversation's call
+                    // going on they join, as its banner's Join does, but not
+                    // the user's own while it rings from another device.
+                    // Video call is Call with the camera on.
                     if (_callable)
-                      IconAction(
-                        icon: FLucideIcons.phone,
-                        label: 'Call',
-                        // One call at a time. Into this conversation's call
-                        // going on it joins, as its banner's Join does, but
-                        // not the user's own while it rings from another
-                        // device.
-                        onPressed: context.voice.call == null && !callingElsewhere(context.voice, widget.target.id)
-                            ? () => callConversation(context, widget.target.id)
-                            : null,
-                      ),
+                      for (final video in const [true, false])
+                        IconAction(
+                          icon: video ? FLucideIcons.video : FLucideIcons.phone,
+                          label: video ? 'Video call' : 'Call',
+                          onPressed: context.voice.call == null && !callingElsewhere(context.voice, widget.target.id)
+                              ? () => callConversation(context, widget.target.id, video: video)
+                              : null,
+                        ),
                     if (widget.threadOf == null)
                       IconAction(icon: FLucideIcons.search, label: 'Search', onPressed: _openSearch),
                     Builder(
@@ -2747,9 +2848,8 @@ class _ChatViewState extends State<ChatView> with SingleTickerProviderStateMixin
                       }
                     : KeyedSubtree(
                         key: _keyFor(entry.message.id),
-                        // Its own layer, for the picture a delete breaks up.
-                        child: RepaintBoundary(
-                          child: CompositedTransformTarget(
+                        child: _boundary(
+                          CompositedTransformTarget(
                             link: _linkFor(entry.message.id),
                             child: _Vanish(
                               hidden: _vanishing.contains(entry.message.id),
@@ -2765,6 +2865,15 @@ class _ChatViewState extends State<ChatView> with SingleTickerProviderStateMixin
       ),
     );
   }
+
+  /// Its own layer, for the picture a delete breaks up. Measured for #64
+  /// (`test/benchmark/message_boundary.dart`, the test binding): one more
+  /// OffsetLayer for each message built, 9 to 11 of some 100 layers on a
+  /// phone, in a chat of 300 messages as in one of 3000, as the list only
+  /// builds those near the screen; and a scrolled frame's time on the UI
+  /// thread with it and without differs by less than two runs of either.
+  /// Raster time and memory on a device aren't measured.
+  Widget _boundary(Widget child) => ChatView.debugMessageBoundary ? RepaintBoundary(child: child) : child;
 
   /// The entries, oldest first, with a separator where the day changes, the
   /// "N new messages" divider after the last one read (or above [_unreadFrom]),

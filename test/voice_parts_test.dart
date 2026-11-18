@@ -11,6 +11,7 @@ import 'package:duvet/data/voice_engine.dart';
 import 'package:duvet/data/webrtc_engine.dart';
 import 'package:duvet_client/duvet.dart' as duvet;
 import 'package:flutter/services.dart';
+import 'package:flutter/widgets.dart' show AppLifecycleState;
 import 'package:flutter_webrtc/flutter_webrtc.dart' show RTCRtpCodecCapability;
 import 'package:flutter_test/flutter_test.dart';
 
@@ -231,6 +232,107 @@ void main() {
       final calls = mockScreenCapture(display: {...screenStream, 'videoTracks': <Object?>[]});
       expect(await WebRtcVoiceEngine(android: true).openScreen(), isNull);
       expect(calls, ['requestCapturePermission', 'service start', 'getDisplayMedia', 'streamDispose', 'service stop']);
+    });
+
+    group('on iOS, through the broadcast extension (#264)', () {
+      final binding = TestWidgetsFlutterBinding.instance;
+      late List<String> calls;
+      late List<Object?> displayArguments;
+
+      setUp(() {
+        WebRtcVoiceEngine.resetBroadcast();
+        calls = mockScreenCapture(display: screenStream);
+        displayArguments = [];
+        final webrtc = const MethodChannel('FlutterWebRTC.Method');
+        messenger.setMockMethodCallHandler(webrtc, (call) async {
+          if (call.method != 'initialize') calls.add(call.method);
+          if (call.method == 'getDisplayMedia') displayArguments.add(call.arguments);
+          return call.method == 'getDisplayMedia' ? screenStream : null;
+        });
+      });
+      tearDown(() {
+        WebRtcVoiceEngine.resetBroadcast();
+        _screenService.setMethodCallHandler(null);
+      });
+
+      // The extension, through ios/Runner/ScreenShare.swift.
+      Future<void> extensionSays(String method) => messenger.handlePlatformMessage(
+        _screenService.name,
+        const StandardMethodCodec().encodeMethodCall(MethodCall(method)),
+        (_) {},
+      );
+
+      WebRtcVoiceEngine engine() => WebRtcVoiceEngine(
+        android: false,
+        ios: true,
+        pickerGrace: const Duration(milliseconds: 20),
+        pickerTimeout: const Duration(milliseconds: 300),
+      );
+
+      // Until flutter_webrtc has been asked for the capture, which opens the picker.
+      Future<void> pickerOpen() async {
+        while (!calls.contains('getDisplayMedia')) {
+          await Future<void>.delayed(Duration.zero);
+        }
+      }
+
+      test('asks for the broadcast, and shares once the extension starts; stopping stops the extension', () async {
+        final opening = engine().openScreen();
+        await pickerOpen();
+        final constraints = (displayArguments.single as Map)['constraints'] as Map;
+        expect(((constraints['video'] as Map)['deviceId'], constraints['audio']), ('broadcast', false));
+        await extensionSays('started');
+        final screen = await opening;
+        expect(screen, isNotNull);
+        expect(calls, ['getDisplayMedia']);
+
+        await screen!.stop();
+        await screen.stop();
+        expect(calls.where((c) => c == 'service stop'), hasLength(1));
+      });
+
+      test('stopped from the status bar or Control Center, the share ends', () async {
+        final opening = engine().openScreen();
+        await pickerOpen();
+        await extensionSays('started');
+        final screen = (await opening)!;
+        final ended = expectLater(screen.onEnded, emits(null));
+        await extensionSays('stopped');
+        await ended;
+        // The app stops what's left; the extension has stopped already.
+        await screen.stop();
+        expect(calls.where((c) => c == 'service stop'), hasLength(1));
+      });
+
+      test('back from the picker without starting, nothing is shared and the capture goes', () async {
+        final opening = engine().openScreen();
+        await pickerOpen();
+        binding.handleAppLifecycleStateChanged(AppLifecycleState.inactive);
+        binding.handleAppLifecycleStateChanged(AppLifecycleState.resumed);
+        expect(await opening, isNull);
+        expect(calls, ['getDisplayMedia', 'streamDispose']);
+      });
+
+      test('a start within the countdown after the picker still shares', () async {
+        final opening = engine().openScreen();
+        await pickerOpen();
+        binding.handleAppLifecycleStateChanged(AppLifecycleState.inactive);
+        binding.handleAppLifecycleStateChanged(AppLifecycleState.resumed);
+        await extensionSays('started');
+        expect(await opening, isNotNull);
+      });
+
+      test('a picker that never answers times out', () async {
+        expect(await engine().openScreen(), isNull);
+        expect(calls, ['getDisplayMedia', 'streamDispose']);
+      });
+
+      test('an extension that stops before it starts (nothing listened) shares nothing', () async {
+        final opening = engine().openScreen();
+        await pickerOpen();
+        await extensionSays('stopped');
+        expect(await opening, isNull);
+      });
     });
 
     test('a share stopped while it starts is stopped once its sender is added', () async {

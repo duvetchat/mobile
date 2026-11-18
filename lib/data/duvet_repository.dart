@@ -68,6 +68,19 @@ class DuvetRepository implements ChatRepository {
   Future<void> _recentsLoaded = Future.value();
   Future<void> _conversationsLoaded = Future.value();
 
+  // Whose lists kept on this device were read already this session.
+  String? _keptLoadedFor;
+
+  // What this device keeps for [userId], read once a session: the recent
+  // chats, the folded categories and the pinned chats.
+  void _loadKept(String userId) {
+    if (_keptLoadedFor == userId) return;
+    _keptLoadedFor = userId;
+    _recentsLoaded = _recents.load(userId);
+    unawaited(_loadCollapsed());
+    unawaited(_loadPinned());
+  }
+
   // Names seen this session: members, conversation members, message authors.
   final _names = <String, String>{};
   final _emojiNames = <String, String>{};
@@ -308,12 +321,35 @@ class DuvetRepository implements ChatRepository {
 
   @override
   Future<bool> restore() async {
+    try {
+      return await _restore();
+    } finally {
+      // A read that failed has nothing to show either.
+      _restoreIsRead();
+    }
+  }
+
+  /// Done once [restore] has read what the phone keeps, and knows what shows
+  /// first: the kept home, signed in; the welcome, with no session; or a wait
+  /// for the API. The first frame can wait for this, which no network is in,
+  /// and draw the home rather than a spinner a moment before it.
+  Future<void> get restoreRead => _restoreRead.future;
+  final _restoreRead = Completer<void>();
+
+  void _restoreIsRead() {
+    if (!_restoreRead.isCompleted) _restoreRead.complete();
+  }
+
+  Future<bool> _restore() async {
+    // Read while the session is: neither needs the other. Signed out, it was
+    // read for nothing; a read that fails gives none, and throws nothing.
+    final homeLoading = _cache.loadHome();
     final saved = await _store.read();
     if (saved == null) return false;
     // What was kept draws the lists at once, until the API and the gateway
     // answer ([_publishSpaces] keeps the Spaces READY names until each comes).
     // Before [_start], whose profile saves the home with them, not empty.
-    final home = await _cache.loadHome();
+    final home = await homeLoading;
     if (home != null) {
       conversations.value = home.conversations;
       spaces.value = home.spaces;
@@ -322,6 +358,21 @@ class DuvetRepository implements ChatRepository {
     }
     _api = duvet.RestClient(_httpClient(), router: _router, token: saved.token, sessionToken: saved.sessionToken);
     _saved = saved;
+    if (home != null && saved.userId == home.profile.id) {
+      // The session's own home: it shows now, and the session starts behind
+      // it. Connecting, not offline, which would say so over the chats until
+      // the gateway is up. A home kept for another account, or a session that
+      // doesn't say whose it is (an older version saved it), waits for the API
+      // below: none of another account's shows under this one.
+      _profileKept = true;
+      _shownBeforeReady = true;
+      profile.value = home.profile;
+      status.value = LiveStatus.connecting;
+      _loadKept(home.profile.id);
+      unawaited(_startBehind().catchError((Object e) => debugPrint('session: $e')));
+      return true;
+    }
+    _restoreIsRead();
     try {
       await _start(keptFor: home?.profile.id);
       return true;
@@ -342,12 +393,51 @@ class DuvetRepository implements ChatRepository {
       conversations.value = home.conversations;
       spaces.value = home.spaces;
       _spaceOrder = [for (final s in home.spaces) s.id];
-      unawaited(_loadCollapsed());
-      unawaited(_loadPinned());
+      _loadKept(home.profile.id);
+      _shownBeforeReady = true;
       status.value = LiveStatus.offline;
-      _recentsLoaded = _recents.load(home.profile.id);
       _retry = Timer.periodic(const Duration(seconds: 20), (_) => _comeBack());
       return true;
+    }
+  }
+
+  // The profile showing is the kept one, shown before the API answered
+  // ([restore]): until it has, nothing saves the home over what's kept.
+  bool _profileKept = false;
+
+  // The home showed from what was kept, before the gateway was up
+  // ([restore]): a chat opened since got its page before the socket could
+  // tell it of anything, and what came between is on neither. The first
+  // READY tells the chats to catch up, as one after a drop does.
+  bool _shownBeforeReady = false;
+
+  // How many sessions closed: a start whose answer comes after its session
+  // closed starts nothing.
+  var _sessionsClosed = 0;
+
+  // The session's start, behind the home [restore] shows already. A session
+  // that ended signs out, as at any other time. With no answer from the
+  // server it goes offline and tries again now and then, the session as it
+  // is: the profile, the lists, drafts and recent chats are in use by now, and
+  // a profile gone for a moment would look like a sign-out to those that
+  // follow it (voice forgets its call history on one).
+  Future<void> _startBehind() async {
+    final closed = _sessionsClosed;
+    _comingBack = true;
+    try {
+      await _start(keptFor: profile.value?.id);
+    } catch (e) {
+      // Signed out meanwhile, or ended by the refusal ([_call]).
+      if (closed != _sessionsClosed) return;
+      if (e is duvet.DuvetAuthException && _sessionEnded) {
+        await _endSession();
+        return;
+      }
+      // Nothing of it started: the renewal and `me()` come before the rest.
+      status.value = LiveStatus.offline;
+      _retry ??= Timer.periodic(const Duration(seconds: 20), (_) => _comeBack());
+    } finally {
+      _comingBack = false;
     }
   }
 
@@ -387,13 +477,15 @@ class DuvetRepository implements ChatRepository {
 
   void _saveHome() {
     final p = profile.value;
-    if (p == null || status.value == LiveStatus.offline && _retry != null) return;
+    if (p == null || _profileKept || status.value == LiveStatus.offline && _retry != null) return;
     _cache.saveHome(profile: p, conversations: conversations.value, spaces: spaces.value);
   }
 
   @override
   Future<void> logIn(String email, String password) async {
     _closeSession();
+    // Another session's, if a start left one: whose it was isn't whose this is.
+    _saved = null;
     final api = _api = duvet.RestClient(_httpClient(), router: _router);
     try {
       await api.logIn(email, password);
@@ -436,25 +528,57 @@ class DuvetRepository implements ChatRepository {
     // the token it identifies with. One that timed out, the server
     // unreachable, throws: the session opens offline then, not once `me()`
     // has timed out too.
+    final closed = _sessionsClosed;
     await _renewIfDue(renewInFrontAfter);
     final me = await _call((api) => api.me());
+    // Signed out while it was asked, behind a home that shows already.
+    if (closed != _sessionsClosed) return;
     // Another account's, left by a sign-out that never cleared it: none of it
-    // shows under this one, nor stays on the device.
+    // shows under this one, nor stays on the device. Its lists may be read
+    // already ([_loadKept]), and a read adds to the recent chats listed.
     if (keptFor != null && keptFor != me.id) {
       conversations.value = const [];
       spaces.value = const [];
       _spaceOrder = const [];
+      collapsedCategories.value = const {};
+      _collapsedTouched = false;
+      pinnedChats.value = const {};
+      _pinnedTouched = false;
+      drafts.clear();
+      _keptLoadedFor = null;
+      await _recents.close();
       await _cache.clear();
+      if (closed != _sessionsClosed) return;
     }
+    _profileKept = false;
     _setProfile(me);
     _names[me.id] = profile.value!.displayName;
-    _recentsLoaded = _recents.load(me.id);
-    unawaited(_loadCollapsed());
-    unawaited(_loadPinned());
+    _loadKept(me.id);
     unawaited(_conversationsLoaded = refreshConversations().catchError((Object e) => debugPrint('conversations: $e')));
     _renewals?.cancel();
     _renewals = Timer.periodic(renewalCheck, (_) => _renewQuietly(renewAfter));
     if (_connectsGateway) _connectGateway();
+    await _noteOwner(me.id);
+  }
+
+  // Keeps whose session it is with its tokens, once the API said: the next
+  // launch shows the home kept for them before the API answers ([restore]).
+  // One that can't be kept only costs that.
+  Future<void> _noteOwner(String userId) async {
+    final saved = _saved;
+    if (saved == null || saved.userId == userId) return;
+    final owned = (
+      token: saved.token,
+      sessionToken: saved.sessionToken,
+      refreshedAt: saved.refreshedAt,
+      userId: userId,
+    );
+    _saved = owned;
+    try {
+      await _store.write(owned);
+    } catch (e) {
+      debugPrint('session: whose it is: $e');
+    }
   }
 
   Future<void> _endSession() async {
@@ -477,6 +601,10 @@ class DuvetRepository implements ChatRepository {
   }
 
   void _closeSession() {
+    _sessionsClosed++;
+    _profileKept = false;
+    _shownBeforeReady = false;
+    _keptLoadedFor = null;
     _retry?.cancel();
     _retry = null;
     _renewals?.cancel();
@@ -634,12 +762,13 @@ class DuvetRepository implements ChatRepository {
   }().whenComplete(() => _adopting = null);
 
   // Saves the client's tokens when they changed: the API issued them just now
-  // (a login, or a renewal), which dates them for [_renewIfDue].
+  // (a login, or a renewal), which dates them for [_renewIfDue]. Whose session
+  // it is stays as known: a renewal's tokens are the same session's.
   Future<void> _persist(duvet.RestClient api) async {
     if (!api.isAuthenticated) return;
     final saved = _saved;
     if (saved != null && saved.token == api.token && saved.sessionToken == api.sessionToken) return;
-    final current = (token: api.token, sessionToken: api.sessionToken, refreshedAt: clock.now());
+    final current = (token: api.token, sessionToken: api.sessionToken, refreshedAt: clock.now(), userId: saved?.userId);
     _saved = current;
     await _store.write(current);
   }
@@ -912,9 +1041,12 @@ class DuvetRepository implements ChatRepository {
           unawaited(_reloadTeamInvites());
         }
         // READY again after a drop: chats catch up, and the conversations,
-        // whose dates tell the DMs' previews behind.
+        // whose dates tell the DMs' previews behind. The first one too, for
+        // the chats, behind a home that showed before it; its conversations
+        // [_start] asked for.
+        if (_wasReady || _shownBeforeReady) _resumed.add(null);
+        _shownBeforeReady = false;
         if (_wasReady) {
-          _resumed.add(null);
           unawaited(
             _conversationsLoaded = refreshConversations().catchError((Object e) => debugPrint('conversations: $e')),
           );

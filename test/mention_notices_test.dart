@@ -12,7 +12,8 @@ class _Player implements SoundPlayer {
   final played = <Sound>[];
 
   @override
-  Future<void> play(Sound sound, double gain, {bool loop = false, VoidCallback? onDone}) async => played.add(sound);
+  Future<void> play(Sound sound, double gain, {bool loop = false, bool aloud = false, VoidCallback? onDone}) async =>
+      played.add(sound);
 
   @override
   Future<void> stop(Sound sound) async {}

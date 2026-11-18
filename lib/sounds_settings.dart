@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:forui/forui.dart';
 
 import 'data/sounds.dart';
+import 'shell.dart';
 import 'theme.dart';
 import 'widgets/chrome.dart';
 import 'widgets/rows.dart';
@@ -73,7 +74,7 @@ class _SoundsPageState extends State<SoundsPage> {
           ),
         ],
       ),
-    );
+    ).readable;
   }
 }
 
@@ -92,10 +93,14 @@ class _VolumeRow extends StatelessWidget {
     this.playing = false,
   });
 
+  static const _step = 10;
+  static int _stepped(int value) => value.clamp(0, 200);
+  static String _spoken(int value) => _stepped(value) == 0 ? 'Off' : '${_stepped(value)}%';
+
   @override
   Widget build(BuildContext context) {
     final colors = context.theme.colors;
-    final shown = value == 0 ? 'Off' : '$value%';
+    final shown = _spoken(value);
     return Container(
       margin: const EdgeInsets.symmetric(horizontal: 16),
       padding: const EdgeInsets.fromLTRB(16, 12, 8, 4),
@@ -129,13 +134,18 @@ class _VolumeRow extends StatelessWidget {
           Row(
             children: [
               Expanded(
+                // The slider's own semantics are left out: on iOS (Flutter 3.50) they empty the whole app's
+                // accessibility tree, which stays empty after the page closes. VoiceOver and TalkBack get the
+                // same adjustable control from here, in steps of 10%.
                 child: Semantics(
                   label: label.endsWith('Volume') ? label : '$label volume',
-                  child: Slider(
-                    value: value.toDouble(),
-                    max: 200,
-                    semanticFormatterCallback: (_) => shown,
-                    onChanged: (v) => onChanged(v.round()),
+                  value: shown,
+                  increasedValue: value < 200 ? _spoken(value + _step) : null,
+                  decreasedValue: value > 0 ? _spoken(value - _step) : null,
+                  onIncrease: value < 200 ? () => onChanged(_stepped(value + _step)) : null,
+                  onDecrease: value > 0 ? () => onChanged(_stepped(value - _step)) : null,
+                  child: ExcludeSemantics(
+                    child: Slider(value: value.toDouble(), max: 200, onChanged: (v) => onChanged(v.round())),
                   ),
                 ),
               ),

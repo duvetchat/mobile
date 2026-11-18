@@ -96,7 +96,7 @@ class _Player implements SoundPlayer {
   final stopped = <Sound>[];
 
   @override
-  Future<void> play(Sound sound, double gain, {bool loop = false, VoidCallback? onDone}) async =>
+  Future<void> play(Sound sound, double gain, {bool loop = false, bool aloud = false, VoidCallback? onDone}) async =>
       played.add((sound, loop));
 
   @override
@@ -2405,6 +2405,80 @@ void main() {
       expect(h.engine.noiseSuppression, [true, false]);
       expect(h.engine.mics.first.stopped, isTrue);
       expect(h.engine.mics.last.stopped, isFalse);
+    });
+
+    const answered = duvet.CallAcceptedEvent(
+      duvet.CallResponseEvent(conversationId: 'c-maya', userId: FakeRepository.maya),
+    );
+
+    _voice('a video call answered with Duvet in the background opens no camera', (async, h) {
+      h.gateway.ready(number: 1);
+      h.voice.startCall('c-maya', video: true);
+      async.flushMicrotasks();
+      h.inFront = false;
+      h.lifecycle.add(AppLifecycleState.paused);
+      h.gateway.push(answered);
+      async.flushMicrotasks();
+      expect(h.voice.target, const CallVoice('c-maya'));
+      expect(h.engine.cameraOpens, 0);
+      expect(h.voice.cameraOn, isFalse);
+      expect(h.notices, ['Camera turned off in the background']);
+      expect(h.gateway.last('VOICE_SYNC'), _sync(room: 'c-maya'));
+
+      // Back in front it stays off until the user's tap: the call's camera was its one go.
+      h.inFront = true;
+      h.lifecycle.add(AppLifecycleState.resumed);
+      async.flushMicrotasks();
+      expect(h.engine.cameraOpens, 0);
+      h.voice.toggleCamera();
+      async.flushMicrotasks();
+      expect(h.gateway.last('VOICE_SYNC'), _sync(room: 'c-maya', camera: true));
+    });
+
+    _voice('a video call leaves on the camera the user tapped on while its voice joined', (async, h) {
+      h.gateway.ready(number: 1);
+      h.voice.startCall('c-maya', video: true);
+      async.flushMicrotasks();
+      h.engine.holdPeer = Completer<void>();
+      h.gateway.push(answered);
+      async.flushMicrotasks();
+      h.engine.holdCamera = Completer<void>();
+      h.voice.toggleCamera();
+      async.flushMicrotasks();
+      h.engine.holdPeer!.complete();
+      h.engine.holdPeer = null;
+      async.flushMicrotasks();
+      h.engine.holdCamera!.complete();
+      h.engine.holdCamera = null;
+      async.flushMicrotasks();
+      expect(h.engine.cameraOpens, 1);
+      expect(h.voice.cameraOn, isTrue);
+      expect(h.gateway.last('VOICE_SYNC'), _sync(room: 'c-maya', camera: true));
+    });
+
+    _voice('a join left behind doesn\'t take the camera of the video call placed after it', (async, h) {
+      h.gateway.ready(number: 1);
+      h.voice.startCall('c-maya', video: true);
+      async.flushMicrotasks();
+      final held = h.engine.holdPeer = Completer<void>();
+      h.gateway.push(answered);
+      async.flushMicrotasks();
+      h.voice.hangUp();
+      async.flushMicrotasks();
+      h.voice.startCall('c-maya', video: true);
+      async.flushMicrotasks();
+      h.engine.holdPeer = null;
+      held.complete();
+      async.flushMicrotasks();
+      expect(h.voice.call?.phase, CallPhase.calling);
+      expect(h.voice.call?.video, isTrue);
+      expect(h.engine.cameraOpens, 0);
+
+      h.gateway.push(answered);
+      async.flushMicrotasks();
+      expect(h.voice.target, const CallVoice('c-maya'));
+      expect(h.engine.cameraOpens, 1);
+      expect(h.gateway.last('VOICE_SYNC'), _sync(room: 'c-maya', camera: true));
     });
   });
 

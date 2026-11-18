@@ -57,6 +57,18 @@ class AppIcon extends StatefulWidget {
   final double size;
   const AppIcon({required this.size, super.key});
 
+  static const _onDark = 'assets/logo/mark-on-light.svg';
+  static const _onLight = 'assets/logo/app-icon-rounded.svg';
+
+  static String _assetOf(BuildContext context) => Theme.of(context).brightness == Brightness.dark ? _onDark : _onLight;
+
+  /// Parses the theme's icon ahead of the first screen that shows it. flutter_svg keeps a parsed picture by its
+  /// asset, bundle and theme, which are an [AppIcon]'s own below [context]: the icon then draws in its first frame
+  /// rather than a few later, after an isolate has parsed it.
+  static void warm(BuildContext context) {
+    SvgAssetLoader(_assetOf(context)).loadBytes(context).then((_) {}, onError: (Object e) => debugPrint('icon: $e'));
+  }
+
   @override
   State<AppIcon> createState() => _AppIconState();
 }
@@ -93,7 +105,8 @@ class _AppIconState extends State<AppIcon> with SingleTickerProviderStateMixin {
       borderRadius: radius,
       border: Border.all(color: color),
     );
-    final icon = Theme.of(context).brightness == Brightness.dark
+    final asset = AppIcon._assetOf(context);
+    final icon = asset == AppIcon._onDark
         ? Container(
             width: size,
             height: size,
@@ -101,16 +114,11 @@ class _AppIconState extends State<AppIcon> with SingleTickerProviderStateMixin {
             padding: EdgeInsets.all(size * 0.2),
             decoration: BoxDecoration(color: const Color(0xFFF7F6F3), borderRadius: radius),
             foregroundDecoration: edge(const Color(0x1415172B)),
-            child: SvgPicture.asset('assets/logo/mark-on-light.svg', semanticsLabel: 'Duvet'),
+            child: SvgPicture.asset(asset, semanticsLabel: 'Duvet'),
           )
         : Container(
             foregroundDecoration: edge(const Color(0x14FFFFFF)),
-            child: SvgPicture.asset(
-              'assets/logo/app-icon-rounded.svg',
-              width: size,
-              height: size,
-              semanticsLabel: 'Duvet',
-            ),
+            child: SvgPicture.asset(asset, width: size, height: size, semanticsLabel: 'Duvet'),
           );
     return GestureDetector(
       onTap: _play,

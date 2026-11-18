@@ -23,13 +23,17 @@ enum Sound {
   final String file;
   const Sound(this.file);
 
-  String get asset => 'assets/sounds/$file.ogg';
+  /// The desktop's .ogg, and the same sound as AAC on iOS, which doesn't decode Vorbis: each platform's build
+  /// takes only its own (pubspec.yaml).
+  String get asset =>
+      defaultTargetPlatform == TargetPlatform.iOS ? 'assets/sounds/ios/$file.m4a' : 'assets/sounds/$file.ogg';
 }
 
 /// Plays a [Sound] at a gain from 0 to 1, once or looped until [stop]; [onDone]
-/// runs when that playback ends or is stopped.
+/// runs when that playback ends or is stopped. [aloud] is for a sound the user
+/// asked to hear: it sounds even where the phone would mute it.
 abstract interface class SoundPlayer {
-  Future<void> play(Sound sound, double gain, {bool loop = false, VoidCallback? onDone});
+  Future<void> play(Sound sound, double gain, {bool loop = false, bool aloud = false, VoidCallback? onDone});
   Future<void> stop(Sound sound);
   Future<void> dispose();
 }
@@ -39,7 +43,11 @@ abstract interface class RingerMode {
   Future<bool> quiet();
 }
 
-/// Android's ringer mode and Do not disturb, from MainActivity.
+/// Android's ringer mode and Do not disturb, from MainActivity. iOS has no API
+/// for the ring/silent switch, and tells the Focus only to an app with the
+/// Communication Notifications capability and the user's leave, which this one
+/// doesn't ask for. So this never asks for quiet there: the switch mutes the
+/// sounds itself ([IosSoundPlayer]), and a Focus doesn't.
 class PlatformRingerMode implements RingerMode {
   const PlatformRingerMode();
 
@@ -66,7 +74,7 @@ class PlatformRingerMode implements RingerMode {
 /// SoundPool would do the same but cuts samples past about 1 MB decoded, and
 /// the ring is 10 s of stereo.
 ///
-/// Android only: iOS's AVPlayer doesn't decode .ogg, so it plays nothing there.
+/// Android only: iOS has [IosSoundPlayer].
 class JustAudioSoundPlayer implements SoundPlayer {
   final _players = <Sound, Future<ja.AudioPlayer>>{};
 
@@ -93,8 +101,9 @@ class JustAudioSoundPlayer implements SoundPlayer {
     return player;
   }();
 
+  // Nothing to do for [aloud]: Sounds asks the ringer before a play that isn't.
   @override
-  Future<void> play(Sound sound, double gain, {bool loop = false, VoidCallback? onDone}) async {
+  Future<void> play(Sound sound, double gain, {bool loop = false, bool aloud = false, VoidCallback? onDone}) async {
     if (!Platform.isAndroid) return onDone?.call();
     final player = await _load(sound);
     // A finished sound stays "playing", and play() on a playing player returns at once.
@@ -118,6 +127,78 @@ class JustAudioSoundPlayer implements SoundPlayer {
   }
 }
 
+/// iOS, through AVAudioPlayer in ios/Runner/Sounds.swift. just_audio would play
+/// the .m4a, but in whatever the app's one audio session is at the time: solo
+/// ambient or playback, which stop other apps' audio, and playback sounds with
+/// the switch on silent. The Swift side borrows the session as ambient (mixes,
+/// muted by the switch), or as mixing playback for a sound played aloud (mixes,
+/// not muted), and gives it back, unless [busy]: then a call, a voice note, a
+/// video or a recording has the session, and the sound plays in it untouched,
+/// which the switch doesn't mute.
+class IosSoundPlayer implements SoundPlayer {
+  IosSoundPlayer({this.busy}) {
+    _channel.setMethodCallHandler((call) async {
+      if (call.method != 'done') return;
+      final sound = _playing.keys.where((s) => _playing[s]!.$1 == call.arguments).firstOrNull;
+      if (sound != null) _playing.remove(sound)!.$2?.call();
+    });
+  }
+
+  static const _channel = MethodChannel('chat.duvet/sounds');
+
+  /// Whether the app's other audio is on: asked at each play.
+  final bool Function()? busy;
+
+  int _plays = 0;
+
+  /// The play each sound is on and what to run at its end: a "done" for an older play of it changes nothing.
+  final _playing = <Sound, (int, VoidCallback?)>{};
+
+  @override
+  Future<void> play(Sound sound, double gain, {bool loop = false, bool aloud = false, VoidCallback? onDone}) async {
+    final id = ++_plays;
+    // The play it replaces is over.
+    final before = _playing[sound];
+    _playing[sound] = (id, onDone);
+    before?.$2?.call();
+    try {
+      await _channel.invokeMethod<void>('play', {
+        'id': id,
+        'asset': sound.asset,
+        'gain': gain,
+        'loop': loop,
+        'aloud': aloud,
+        'busy': busy?.call() ?? false,
+      });
+    } catch (_) {
+      if (_playing[sound]?.$1 == id) _playing.remove(sound);
+      rethrow;
+    }
+  }
+
+  @override
+  Future<void> stop(Sound sound) async {
+    final playing = _playing.remove(sound);
+    if (playing == null) return;
+    try {
+      await _channel.invokeMethod<void>('stop', {'asset': sound.asset});
+    } finally {
+      playing.$2?.call();
+    }
+  }
+
+  @override
+  Future<void> dispose() async {
+    _playing.clear();
+    _channel.setMethodCallHandler(null);
+    try {
+      await _channel.invokeMethod<void>('dispose');
+    } catch (e) {
+      debugPrint('sounds: $e');
+    }
+  }
+}
+
 /// The volume of each sound and of all of them, 0 to 200 as on the desktop (100
 /// by default, 0 is off), kept on the device, and the sounds played at them.
 class Sounds extends ChangeNotifier {
@@ -127,10 +208,17 @@ class Sounds extends ChangeNotifier {
   final RingerMode _ringer;
   final FlutterSecureStorage _storage;
 
-  Sounds({SoundPlayer? player, RingerMode? ringer, FlutterSecureStorage storage = const FlutterSecureStorage()})
-    : _player = player ?? JustAudioSoundPlayer(),
-      _ringer = ringer ?? const PlatformRingerMode(),
-      _storage = storage;
+  /// [busy] says whether a call, a voice note, a video or a recording has the phone's audio, for iOS's player.
+  Sounds({
+    SoundPlayer? player,
+    RingerMode? ringer,
+    FlutterSecureStorage storage = const FlutterSecureStorage(),
+    bool Function()? busy,
+  }) : _player =
+           player ??
+           (defaultTargetPlatform == TargetPlatform.iOS ? IosSoundPlayer(busy: busy) : JustAudioSoundPlayer()),
+       _ringer = ringer ?? const PlatformRingerMode(),
+       _storage = storage;
 
   int _master = 100;
   final _volumes = {for (final s in Sound.values) s: 100};
@@ -210,7 +298,7 @@ class Sounds extends ChangeNotifier {
     }
 
     try {
-      await _player.play(sound, gain(sound), onDone: done);
+      await _player.play(sound, gain(sound), aloud: true, onDone: done);
     } catch (e) {
       debugPrint('sounds: $e');
       done();

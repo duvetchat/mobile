@@ -6,6 +6,7 @@ import 'package:audio_service/audio_service.dart' as svc;
 import 'package:clock/clock.dart' as time show clock;
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:forui/forui.dart';
 import 'package:just_audio/just_audio.dart' as ja;
 import 'package:path_provider/path_provider.dart';
@@ -926,7 +927,11 @@ void openVideo(BuildContext context, MessageAttachment attachment) => Navigator.
     barrierColor: Colors.black,
     transitionDuration: DuvetTokens.panelIn,
     reverseTransitionDuration: DuvetTokens.panelOut,
-    pageBuilder: (_, _, _) => VideoPage(attachment: attachment),
+    // On near-black, as the image viewer: light icons in the system bars.
+    pageBuilder: (_, _, _) => AnnotatedRegion<SystemUiOverlayStyle>(
+      value: Duvet.systemBarsOver(Brightness.dark),
+      child: VideoPage(attachment: attachment),
+    ),
     transitionsBuilder: (_, animation, _, child) => FadeTransition(
       opacity: CurvedAnimation(parent: animation, curve: DuvetTokens.decelerate),
       child: child,
@@ -934,8 +939,83 @@ void openVideo(BuildContext context, MessageAttachment attachment) => Navigator.
   ),
 );
 
-/// A video, full screen on near-black: play and pause, a scrub bar, the time;
-/// swipe down or Close to leave.
+/// The controls over a full-screen picture or video: a tap hides them, and the
+/// system bars with them, to leave it the whole screen; another brings them
+/// back. With a screen reader on they stay, as nothing would bring them back.
+mixin HidingControls<T extends StatefulWidget> on State<T> {
+  bool _hidden = false;
+  bool _barsHidden = false;
+  ModalRoute<Object?>? _route;
+
+  /// Whether the controls show.
+  bool get controlsShown => !_hidden || MediaQuery.accessibleNavigationOf(context);
+
+  /// A tap on the picture or the video.
+  void toggleControls() {
+    if (MediaQuery.accessibleNavigationOf(context)) return;
+    setState(() => _hidden = !_hidden);
+    _hideBars(_hidden);
+  }
+
+  void _hideBars(bool hide) {
+    if (hide == _barsHidden) return;
+    _barsHidden = hide;
+    SystemChrome.setSystemUIChangeCallback(hide ? _barsChanged : null);
+    // Not sticky: Android would pass the swipe that brings its bars back to
+    // the page too, and the picture would close.
+    SystemChrome.setEnabledSystemUIMode(hide ? SystemUiMode.immersive : SystemUiMode.edgeToEdge);
+  }
+
+  // Android's bars back (swiped in, or the app left and come back to): the
+  // controls come back with them.
+  Future<void> _barsChanged(bool visible) async {
+    if (!visible || !_barsHidden || !mounted) return;
+    setState(() => _hidden = false);
+    _hideBars(false);
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    final route = ModalRoute.of(context);
+    if (identical(route, _route)) return;
+    _route = route;
+    // Closed with the controls hidden: the bars come back as the page fades,
+    // not once it's gone.
+    route?.popped.then((_) => _hideBars(false));
+  }
+
+  @override
+  void dispose() {
+    _hideBars(false);
+    super.dispose();
+  }
+}
+
+/// Controls over a full-screen picture or video ([HidingControls]): hidden,
+/// they fade out, and neither taps nor the screen reader reach them.
+class FadingControls extends StatelessWidget {
+  final bool shown;
+  final Widget child;
+  const FadingControls({required this.shown, required this.child, super.key});
+
+  @override
+  Widget build(BuildContext context) => IgnorePointer(
+    ignoring: !shown,
+    child: ExcludeSemantics(
+      excluding: !shown,
+      child: AnimatedOpacity(
+        opacity: shown ? 1 : 0,
+        duration: MediaQuery.disableAnimationsOf(context) ? Duration.zero : const Duration(milliseconds: 200),
+        curve: DuvetTokens.decelerate,
+        child: child,
+      ),
+    ),
+  );
+}
+
+/// A video, full screen on near-black: play and pause, a scrub bar, the time,
+/// which a tap hides and brings back; swipe down or Close to leave.
 class VideoPage extends StatefulWidget {
   final MessageAttachment attachment;
   const VideoPage({required this.attachment, super.key});
@@ -944,11 +1024,16 @@ class VideoPage extends StatefulWidget {
   @visibleForTesting
   static VideoPlayerController Function(Uri url) controllerFor = VideoPlayerController.networkUrl;
 
+  static final _playing = <Object>{};
+
+  /// Whether a video is playing: iOS's sounds then leave the audio session to it (data/sounds.dart).
+  static bool get playing => _playing.isNotEmpty;
+
   @override
   State<VideoPage> createState() => _VideoPageState();
 }
 
-class _VideoPageState extends State<VideoPage> {
+class _VideoPageState extends State<VideoPage> with HidingControls {
   // Null until its link is there: a new one, when its own is about to expire.
   VideoPlayerController? _player;
   Object? _error;
@@ -992,11 +1077,17 @@ class _VideoPageState extends State<VideoPage> {
   }
 
   void _changed() {
+    if (_player?.value.isPlaying ?? false) {
+      VideoPage._playing.add(this);
+    } else {
+      VideoPage._playing.remove(this);
+    }
     if (mounted) setState(() {});
   }
 
   @override
   void dispose() {
+    VideoPage._playing.remove(this);
     _player?.removeListener(_changed);
     _player?.dispose();
     super.dispose();
@@ -1017,6 +1108,9 @@ class _VideoPageState extends State<VideoPage> {
       child: Scaffold(
         backgroundColor: Color.fromRGBO(10, 10, 11, (1 - _drag.abs() / 400).clamp(0.3, 1)),
         body: GestureDetector(
+          // The whole screen, the black about the video too.
+          behavior: HitTestBehavior.opaque,
+          onTap: toggleControls,
           onVerticalDragUpdate: (d) => setState(() => _drag += d.delta.dy),
           onVerticalDragEnd: (_) {
             if (_drag.abs() > 120) {
@@ -1034,10 +1128,7 @@ class _VideoPageState extends State<VideoPage> {
                     child: _error != null
                         ? Text('Couldn’t play this video', style: DuvetType.body.copyWith(color: ink))
                         : value.isInitialized && controller != null
-                        ? GestureDetector(
-                            onTap: () => value.isPlaying ? controller.pause() : controller.play(),
-                            child: AspectRatio(aspectRatio: value.aspectRatio, child: VideoPlayer(controller)),
-                          )
+                        ? AspectRatio(aspectRatio: value.aspectRatio, child: VideoPlayer(controller))
                         : const CircularProgressIndicator(color: ink),
                   ),
                 ),
@@ -1045,14 +1136,19 @@ class _VideoPageState extends State<VideoPage> {
               Positioned(
                 top: MediaQuery.paddingOf(context).top + 6,
                 left: 8,
-                child: Semantics(
-                  button: true,
-                  label: 'Close',
-                  excludeSemantics: true,
-                  onTap: () => Navigator.of(context).pop(),
-                  child: GestureDetector(
+                child: FadingControls(
+                  shown: controlsShown,
+                  child: Semantics(
+                    button: true,
+                    label: 'Close',
+                    excludeSemantics: true,
                     onTap: () => Navigator.of(context).pop(),
-                    child: const SizedBox.square(dimension: 40, child: Icon(FLucideIcons.x, color: ink)),
+                    child: GestureDetector(
+                      // A tap just off the icon is still Close's, not one that hides the controls.
+                      behavior: HitTestBehavior.opaque,
+                      onTap: () => Navigator.of(context).pop(),
+                      child: const SizedBox.square(dimension: 40, child: Icon(FLucideIcons.x, color: ink)),
+                    ),
                   ),
                 ),
               ),
@@ -1061,36 +1157,40 @@ class _VideoPageState extends State<VideoPage> {
                   left: 16,
                   right: 16,
                   bottom: MediaQuery.paddingOf(context).bottom + 16,
-                  child: Row(
-                    children: [
-                      Semantics(
-                        button: true,
-                        label: value.isPlaying ? 'Pause' : 'Play',
-                        excludeSemantics: true,
-                        onTap: () => value.isPlaying ? controller.pause() : controller.play(),
-                        child: GestureDetector(
+                  child: FadingControls(
+                    shown: controlsShown,
+                    child: Row(
+                      children: [
+                        Semantics(
+                          button: true,
+                          label: value.isPlaying ? 'Pause' : 'Play',
+                          excludeSemantics: true,
                           onTap: () => value.isPlaying ? controller.pause() : controller.play(),
-                          child: SizedBox.square(
-                            dimension: 40,
-                            child: Icon(value.isPlaying ? FLucideIcons.pause : FLucideIcons.play, color: ink),
+                          child: GestureDetector(
+                            behavior: HitTestBehavior.opaque,
+                            onTap: () => value.isPlaying ? controller.pause() : controller.play(),
+                            child: SizedBox.square(
+                              dimension: 40,
+                              child: Icon(value.isPlaying ? FLucideIcons.pause : FLucideIcons.play, color: ink),
+                            ),
                           ),
                         ),
-                      ),
-                      const SizedBox(width: 8),
-                      Expanded(
-                        child: _Scrub(
-                          progress: progress.clamp(0, 1),
-                          track: const Color(0x3DFFFFFF),
-                          fill: ink,
-                          onSeek: (f) => controller.seekTo(duration * f),
+                        const SizedBox(width: 8),
+                        Expanded(
+                          child: _Scrub(
+                            progress: progress.clamp(0, 1),
+                            track: const Color(0x3DFFFFFF),
+                            fill: ink,
+                            onSeek: (f) => controller.seekTo(duration * f),
+                          ),
                         ),
-                      ),
-                      const SizedBox(width: 12),
-                      Text(
-                        '${clock(value.position)} / ${clock(duration)}',
-                        style: DuvetType.caption.copyWith(color: ink),
-                      ),
-                    ],
+                        const SizedBox(width: 12),
+                        Text(
+                          '${clock(value.position)} / ${clock(duration)}',
+                          style: DuvetType.caption.copyWith(color: ink),
+                        ),
+                      ],
+                    ),
                   ),
                 ),
             ],
@@ -1133,6 +1233,18 @@ class RecordVoiceRecorder implements VoiceRecorder {
 
   String _format = 'ogg';
 
+  static int _recording = 0;
+  bool _counted = false;
+
+  /// Whether a take is going: iOS's sounds then leave the audio session to it (data/sounds.dart).
+  static bool get recording => _recording > 0;
+
+  void _count(bool on) {
+    if (_counted == on) return;
+    _counted = on;
+    _recording += on ? 1 : -1;
+  }
+
   @override
   Future<bool> start() async {
     if (!await _recorder.hasPermission()) return false;
@@ -1141,10 +1253,17 @@ class RecordVoiceRecorder implements VoiceRecorder {
     _format = opus ? 'ogg' : 'm4a';
     final dir = await getTemporaryDirectory();
     final path = _path = '${dir.path}/voice-${DateTime.now().millisecondsSinceEpoch}.$_format';
-    await _recorder.start(
-      rec.RecordConfig(encoder: opus ? rec.AudioEncoder.opus : rec.AudioEncoder.aacLc, numChannels: 1),
-      path: path,
-    );
+    // From before it starts: starting is what takes the session.
+    _count(true);
+    try {
+      await _recorder.start(
+        rec.RecordConfig(encoder: opus ? rec.AudioEncoder.opus : rec.AudioEncoder.aacLc, numChannels: 1),
+        path: path,
+      );
+    } catch (_) {
+      _count(false);
+      rethrow;
+    }
     _started = DateTime.now();
     return true;
   }
@@ -1157,7 +1276,12 @@ class RecordVoiceRecorder implements VoiceRecorder {
 
   @override
   Future<Recording?> stop() async {
-    final path = await _recorder.stop() ?? _path;
+    final String? path;
+    try {
+      path = await _recorder.stop() ?? _path;
+    } finally {
+      _count(false);
+    }
     final started = _started;
     unawaited(_recorder.dispose());
     if (path == null || started == null) return null;
@@ -1170,7 +1294,11 @@ class RecordVoiceRecorder implements VoiceRecorder {
 
   @override
   Future<void> cancel() async {
-    await _recorder.cancel();
+    try {
+      await _recorder.cancel();
+    } finally {
+      _count(false);
+    }
     unawaited(_recorder.dispose());
   }
 }

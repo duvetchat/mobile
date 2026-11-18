@@ -135,11 +135,8 @@ class _DeepLinkHandlerState extends State<DeepLinkHandler> {
           final room = repository.spaces.value.expand((s) => s.rooms).where((r) => r.id == link.roomId).firstOrNull;
           title = '# ${room?.name ?? 'room'}';
         }
-        Navigator.of(context, rootNavigator: true).push(
-          MaterialPageRoute<void>(
-            builder: (_) => ChatView(target: target, title: title, jumpTo: link.messageId),
-          ),
-        );
+        // Over a page left open (a form half filled): a link from outside doesn't close it.
+        openChatRoute(context, ChatRoute(target: target, title: title, jumpTo: link.messageId), reveal: false);
       case null:
     }
   }

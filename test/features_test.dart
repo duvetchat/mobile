@@ -396,6 +396,43 @@ void main() {
       semantics.dispose();
     });
 
+    testWidgets(
+      'a hardware keyboard: Enter sends or picks the suggestion, Shift+Enter and an IME\'s Enter don\'t (#266)',
+      (tester) async {
+        final repository = await openGeneral(tester);
+        await tester.enterText(find.byType(EditableText), 'thanks @ma');
+        await tester.pumpAndSettle();
+        await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+        await tester.pumpAndSettle();
+        expect(find.text('thanks @Maya '), findsOneWidget);
+        expect(repository.sent, isEmpty);
+
+        await tester.sendKeyDownEvent(LogicalKeyboardKey.shiftLeft);
+        await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+        await tester.sendKeyUpEvent(LogicalKeyboardKey.shiftLeft);
+        await tester.pump();
+        expect(repository.sent, isEmpty);
+
+        tester.testTextInput.updateEditingValue(
+          const TextEditingValue(
+            text: 'thanks @Maya にほん',
+            selection: TextSelection.collapsed(offset: 16),
+            composing: TextRange(start: 13, end: 16),
+          ),
+        );
+        await tester.pump();
+        await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+        await tester.pump();
+        expect(repository.sent, isEmpty);
+
+        await tester.enterText(find.byType(EditableText), 'see you');
+        await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+        await tester.pumpAndSettle();
+        expect(repository.sent.single.content, 'see you');
+        semantics.dispose();
+      },
+    );
+
     testWidgets('typing :name suggests emoji, Unicode and the space\'s own', (tester) async {
       final repository = await openGeneral(tester);
       await tester.enterText(find.byType(EditableText), 'nice :grinni');
