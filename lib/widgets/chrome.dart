@@ -133,8 +133,8 @@ class IconAction extends StatelessWidget {
 
 /// The inline top bar of a pushed screen: glass, 52pt below the status bar, a
 /// back chevron at x8, the title centered in `nav-title`, actions on the right.
-/// Past three actions the title has the room they leave, centered while it
-/// fits there.
+/// From three icon actions the title has the room they leave, centered while
+/// it fits there.
 class GlassTopBar extends StatelessWidget {
   final Widget? title;
   final VoidCallback? onBack;
@@ -175,9 +175,10 @@ class GlassTopBar extends StatelessWidget {
     // Text actions (Cancel, Save) take a wider slot than icons.
     final text = leading != null || actions.any((a) => a is! IconAction && a is! Builder);
     final side = text ? 88.0 : 8 + 40.0 * (actions.length > 1 ? actions.length : 1);
-    // Four icons a side would leave a phone's title no room: Back takes its
-    // own width then, and the title moves over only as far as it must.
-    final crowded = !text && actions.length > 3;
+    // Three icons a side would leave a narrow phone's title little room (64pt
+    // of 320): Back takes its own width then, and the title moves over only as
+    // far as it must.
+    final crowded = !text && actions.length > 2;
     final leadingSlot = SizedBox(
       width: crowded ? 48 : side,
       child: Align(

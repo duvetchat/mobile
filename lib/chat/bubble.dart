@@ -126,13 +126,20 @@ class _Bubble extends StatelessWidget {
     final colors = context.theme.colors;
     final tokens = context.duvet;
     final m = entry.message;
+    final appearance = AppearanceScope.maybeOf(context);
+    // Bubbles, or the desktop's flat rows (#292): no bubble, everyone's on the
+    // left, a group's first row headed by the avatar, the name and the time.
+    final flat = appearance?.messageLayout == MessageLayout.flat;
+    // On azure and on the right: the user's own, in bubbles.
+    final own = mine && !flat;
     final mentionsMe = !mine && _mentionsUser(m, directory.me);
     final text = withoutPreviewedLinks(m.content, m.embeds, cards: !lifted);
     final textBubble = text.isNotEmpty && !isJumboEmoji(text);
     // Prism: a text bubble that mentions the user, in its text or as a reply
     // to them, is lit. With no text bubble (a sticker, a bot's components),
-    // the light frames the whole message.
-    final prism = mentionsMe && textBubble ? tokens.prism : null;
+    // the light frames the whole message. A flat row has the light as a wash
+    // behind it instead, as on the desktop: no rim, and nothing that moves.
+    final prism = mentionsMe && textBubble && !flat ? tokens.prism : null;
     const bubblePadding = EdgeInsets.symmetric(horizontal: 12, vertical: 8);
     final maxWidth = bubbleWidth(context);
     final secondary = DuvetType.caption.copyWith(color: colors.mutedForeground);
@@ -143,7 +150,7 @@ class _Bubble extends StatelessWidget {
     // keep their single taps at once. A long press anywhere is the bubble's. A
     // bot's answer to the user alone takes no reply.
     final repliable = entry.delivery == _Delivery.sent && !m.isEphemeral;
-    final gesture = AppearanceScope.maybeOf(context)?.replyGesture ?? ReplyGesture.swipeLeft;
+    final gesture = appearance?.replyGesture ?? ReplyGesture.swipeLeft;
     final onDoubleTap = repliable && !lifted && gesture == ReplyGesture.doubleTap ? onReply : null;
     // The message's own actions for screen readers. A text bubble offers them
     // with its text's (its mentions, links, spoilers), so all of it is one
@@ -172,6 +179,21 @@ class _Bubble extends StatelessWidget {
                 style: DuvetType.body.copyWith(color: colors.foreground),
               ),
             )
+          else if (flat)
+            // A flat row's text: no bubble, and nothing pressed in, but its
+            // double tap.
+            Pressable(
+              scale: 1,
+              onDoubleTap: onDoubleTap,
+              builder: (context, _) => MessageText(
+                content: text,
+                directory: directory,
+                style: DuvetType.body.copyWith(color: colors.foreground),
+                onMention: onOpenMention,
+                onRoom: onOpenRoom,
+                messageActions: anchor == null ? const {} : actionsAt(anchor),
+              ),
+            )
           else
             Pressable(
               scale: 0.98,
@@ -181,7 +203,7 @@ class _Bubble extends StatelessWidget {
                   content: text,
                   directory: directory,
                   onAccent: mine,
-                  style: DuvetType.body.copyWith(color: mine ? ownBubble(context).ink : colors.foreground),
+                  style: DuvetType.body.copyWith(color: mine ? ownBubble.ink : colors.foreground),
                   onMention: onOpenMention,
                   onRoom: onOpenRoom,
                   messageActions: anchor == null ? const {} : actionsAt(anchor),
@@ -191,7 +213,7 @@ class _Bubble extends StatelessWidget {
                     padding: bubblePadding,
                     constraints: BoxConstraints(maxWidth: maxWidth),
                     decoration: BoxDecoration(
-                      color: mine ? ownBubble(context).fill : colors.card,
+                      color: mine ? ownBubble.fill : colors.card,
                       borderRadius: BorderRadius.circular(DuvetTokens.radiusButton),
                       boxShadow: editing ? null : (lifted ? tokens.shadowFloat : tokens.shadowRest),
                     ),
@@ -220,7 +242,7 @@ class _Bubble extends StatelessWidget {
         if (m.isVoice && m.attachments.isNotEmpty)
           VoiceNotePlayer(
             attachment: m.attachments.first,
-            mine: mine,
+            mine: own,
             authorName: m.authorName,
             authorAvatarUrl: m.authorAvatarUrl,
           )
@@ -247,7 +269,7 @@ class _Bubble extends StatelessWidget {
       ];
 
       Widget content = Column(
-        crossAxisAlignment: mine ? CrossAxisAlignment.end : CrossAxisAlignment.start,
+        crossAxisAlignment: own ? CrossAxisAlignment.end : CrossAxisAlignment.start,
         mainAxisSize: MainAxisSize.min,
         children: [
           for (final (i, part) in parts.indexed)
@@ -260,7 +282,7 @@ class _Bubble extends StatelessWidget {
       // A mention with no text bubble to light (a bot's components, a
       // sticker): a frame of the same light round the whole message, 8 out
       // from it, with no fill and no shadow, which would show through it.
-      if (mentionsMe && !textBubble) {
+      if (mentionsMe && !textBubble && !flat) {
         content = PrismBubble(
           palette: tokens.prism,
           radius: DuvetTokens.radiusButton,
@@ -274,13 +296,14 @@ class _Bubble extends StatelessWidget {
     if (lifted) {
       return Transform.scale(
         scale: 1.02,
-        alignment: mine ? Alignment.centerRight : Alignment.centerLeft,
+        alignment: own ? Alignment.centerRight : Alignment.centerLeft,
         child: bodyAt(null),
       );
     }
 
-    // The time under the run's last bubble; "edited" under the edited one.
-    final meta = [if (lastOfRun) _time(m.createdAt), if (m.edited) 'edited'].join(' · ');
+    // The time under the run's last bubble, or on a flat group's head line;
+    // "edited" under the edited one.
+    final meta = [if (lastOfRun && !flat) _time(m.createdAt), if (m.edited) 'edited'].join(' · ');
     final status = switch (entry.delivery) {
       _ when editing => _Caption(icon: FLucideIcons.pencil, text: 'Editing', style: secondary),
       _Delivery.failed => _FailedActions(onRetry: tooLarge ? null : onRetry, onDiscard: onDiscard, tooLarge: tooLarge),
@@ -299,10 +322,28 @@ class _Bubble extends StatelessWidget {
       _ => null,
     };
 
+    // Their avatar or name tapped: their profile.
+    Widget avatar(double size) => Semantics(
+      container: true,
+      button: true,
+      label:
+          '${m.authorName}${m.fromWebhook
+              ? ', webhook,'
+              : m.fromBot
+              ? ', bot,'
+              : ''}’s profile',
+      excludeSemantics: true,
+      onTap: onOpenAuthor,
+      child: GestureDetector(
+        onTap: onOpenAuthor,
+        child: m.fromBot ? BotAvatar(size: size) : UserAvatar(name: m.authorName, url: m.authorAvatarUrl, size: size),
+      ),
+    );
+
     final column = Column(
-      crossAxisAlignment: mine ? CrossAxisAlignment.end : CrossAxisAlignment.start,
+      crossAxisAlignment: own ? CrossAxisAlignment.end : CrossAxisAlignment.start,
       children: [
-        if (firstOfRun && !mine)
+        if (firstOfRun && !mine && !flat)
           GestureDetector(
             onTap: onOpenAuthor,
             child: Padding(
@@ -330,6 +371,8 @@ class _Bubble extends StatelessWidget {
               null => null,
             },
           ),
+        // A flat group's head, under a reply's quote as on the desktop.
+        if (firstOfRun && flat) _FlatHead(message: m, directory: directory, onOpenAuthor: onOpenAuthor),
         Builder(
           builder: (anchor) => GestureDetector(
             onLongPress: switch (onLongPress) {
@@ -368,21 +411,50 @@ class _Bubble extends StatelessWidget {
         child: AnimatedContainer(
           duration: const Duration(milliseconds: 300),
           curve: DuvetTokens.decelerate,
-          padding: const EdgeInsets.all(4),
-          decoration: BoxDecoration(
-            color: flash ? tokens.accentTint : const Color(0x00000000),
-            borderRadius: BorderRadius.circular(DuvetTokens.radiusButton),
-          ),
-          child: column,
+          // A flat group's rows 6pt apart, as the desktop's.
+          padding: flat ? EdgeInsets.fromLTRB(4, firstOfRun ? 6 : 3, 4, 3) : const EdgeInsets.all(4),
+          decoration: switch (flat && mentionsMe && !flash) {
+            // No color with the wash: a color's alpha is the gradient's too.
+            true => BoxDecoration(
+              gradient: _prismWash(tokens.prism),
+              borderRadius: BorderRadius.circular(DuvetTokens.radiusButton),
+            ),
+            false => BoxDecoration(
+              color: flash ? tokens.accentTint : const Color(0x00000000),
+              borderRadius: BorderRadius.circular(DuvetTokens.radiusButton),
+            ),
+          },
+          // A flat row: the avatar's column, the avatar on a group's first
+          // row, then the message.
+          child: flat
+              ? Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    SizedBox(
+                      width: _flatGutter,
+                      child: firstOfRun
+                          ? Align(alignment: Alignment.topLeft, heightFactor: 1, child: avatar(36))
+                          : null,
+                    ),
+                    Expanded(child: column),
+                  ],
+                )
+              : column,
         ),
       ),
     );
 
     // 4pt between bubbles of a run, 12pt between runs (less the highlight's
-    // own 4pt).
-    final gap = EdgeInsets.only(top: firstOfRun ? 8 : 0);
+    // own 4pt); 21pt above a flat group, as the desktop's.
+    final gap = EdgeInsets.only(top: firstOfRun ? (flat ? 12 : 8) : 0);
     final onSwipe = repliable && gesture != ReplyGesture.doubleTap ? onReply : null;
     final left = gesture != ReplyGesture.swipeRight;
+    if (flat) {
+      return Padding(
+        padding: gap,
+        child: _SwipeToReply(onReply: onSwipe, left: left, child: highlighted),
+      );
+    }
     if (mine) {
       return Padding(
         padding: gap,
@@ -413,24 +485,7 @@ class _Bubble extends StatelessWidget {
                             (m.reactions.isEmpty ? 0 : 32) +
                             (m.isEphemeral ? _EphemeralNote.height : 0),
                       ),
-                      child: Semantics(
-                        container: true,
-                        button: true,
-                        label:
-                            '${m.authorName}${m.fromWebhook
-                                ? ', webhook,'
-                                : m.fromBot
-                                ? ', bot,'
-                                : ''}’s profile',
-                        excludeSemantics: true,
-                        onTap: onOpenAuthor,
-                        child: GestureDetector(
-                          onTap: onOpenAuthor,
-                          child: m.fromBot
-                              ? const BotAvatar()
-                              : UserAvatar(name: m.authorName, url: m.authorAvatarUrl, size: 32),
-                        ),
-                      ),
+                      child: avatar(32),
                     )
                   : null,
             ),
@@ -441,8 +496,75 @@ class _Bubble extends StatelessWidget {
     );
   }
 
+  /// A flat row's avatar column, as the desktop's.
+  static const _flatGutter = 52.0;
+
   static String _time(DateTime t) => '${t.hour.toString().padLeft(2, '0')}:${t.minute.toString().padLeft(2, '0')}';
 }
+
+/// A flat group's head, as the desktop's: the author's name, in their role's
+/// colours where they have one, the BOT or WEBHOOK tag, then the time: "Today
+/// at 09:14" for a message of today, the time alone under an older day's
+/// separator. The name opens their profile, as their avatar does.
+class _FlatHead extends StatelessWidget {
+  final ChatMessage message;
+  final MessageDirectory directory;
+  final VoidCallback onOpenAuthor;
+  const _FlatHead({required this.message, required this.directory, required this.onOpenAuthor});
+
+  static final _name = DuvetType.label.copyWith(fontSize: 15, fontWeight: FontWeight.w600);
+
+  static String _when(DateTime t) {
+    final now = time.clock.now();
+    final today = t.year == now.year && t.month == now.month && t.day == now.day;
+    return today ? 'Today at ${_Bubble._time(t)}' : _Bubble._time(t);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = context.theme.colors;
+    final m = message;
+    final role = m.authorId == null || m.fromWebhook ? null : directory.nameColorsOf(m.authorId!);
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 2),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.baseline,
+        textBaseline: TextBaseline.alphabetic,
+        children: [
+          Flexible(
+            child: GestureDetector(
+              onTap: onOpenAuthor,
+              child: switch (role) {
+                final role? => RoleName(m.authorName, colors: role, style: _name),
+                null => Text(
+                  m.authorName,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: _name.copyWith(color: colors.foreground),
+                ),
+              },
+            ),
+          ),
+          if (m.fromBot || m.fromWebhook) ...[const SizedBox(width: 6), BotTag(webhook: m.fromWebhook)],
+          const SizedBox(width: 8),
+          Text(_when(m.createdAt), style: DuvetType.caption.copyWith(color: colors.mutedForeground)),
+        ],
+      ),
+    );
+  }
+}
+
+/// A flat row that mentions the user: the light as a wash behind it, the
+/// desktop's PRISM_WASH, in the light's own colours at the strength its bubble
+/// spills them.
+LinearGradient _prismWash(PrismPalette palette) => LinearGradient(
+  colors: [
+    palette.gem.withValues(alpha: palette.intensity * palette.mainSpill),
+    palette.cool.withValues(alpha: palette.intensity * palette.coolSpill),
+    palette.cool.withValues(alpha: 0),
+  ],
+  stops: const [0, 0.55, 1],
+);
 
 /// A chat's messages while its first page loads, as the desktop draws them
 /// (every third one longer), in [_Bubble]'s places: the avatar beside a run's
@@ -452,10 +574,16 @@ class _Bubble extends StatelessWidget {
 class _MessagesSkeleton extends StatelessWidget {
   /// The list's own, so the blocks land where the messages will.
   final EdgeInsets padding;
-  const _MessagesSkeleton({required this.padding});
 
-  // The shortest run, a lone one-line bubble with its name and time.
+  /// Flat rows' blocks instead: everyone's on the left, a group's avatar
+  /// beside its name and lines.
+  final bool flat;
+  const _MessagesSkeleton({required this.padding, this.flat = false});
+
+  // The shortest run, a lone one-line bubble with its name and time, or a
+  // flat group of one line.
   static const _shortest = 96.0;
+  static const _shortestFlat = 68.0;
 
   @override
   Widget build(BuildContext context) {
@@ -470,6 +598,39 @@ class _MessagesSkeleton extends StatelessWidget {
     Widget run(int i) {
       final wide = i % 3 == 0;
       final mine = i % 3 == 1;
+      if (flat) {
+        // A line of text as tall as the body's.
+        Widget line(double share) => Bone(
+          width: maxWidth * share,
+          height: DuvetType.body.fontSize! * DuvetType.body.height! - 6,
+          borderRadius: const BorderRadius.all(Radius.circular(4)),
+        );
+        return Padding(
+          padding: const EdgeInsets.fromLTRB(4, 18, 4, 3),
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const SizedBox(
+                width: _Bubble._flatGutter,
+                child: Align(alignment: Alignment.topLeft, heightFactor: 1, child: Bone.circle(size: 36)),
+              ),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Padding(
+                      padding: EdgeInsets.fromLTRB(4, 3, 0, 9),
+                      child: Bone(width: 120, height: 12, borderRadius: BorderRadius.all(Radius.circular(4))),
+                    ),
+                    line(wide ? 0.8 : 0.45),
+                    if (wide) ...[const SizedBox(height: 9), line(0.6)],
+                  ],
+                ),
+              ),
+            ],
+          ),
+        );
+      }
       return Padding(
         padding: const EdgeInsets.only(top: 8),
         child: Row(
@@ -516,7 +677,10 @@ class _MessagesSkeleton extends StatelessWidget {
               child: DuvetSkeleton(
                 child: Column(
                   mainAxisSize: MainAxisSize.min,
-                  children: [for (var i = (constraints.maxHeight / _shortest).ceil(); i >= 0; i--) run(i)],
+                  children: [
+                    for (var i = (constraints.maxHeight / (flat ? _shortestFlat : _shortest)).ceil(); i >= 0; i--)
+                      run(i),
+                  ],
                 ),
               ),
             ),

@@ -189,7 +189,7 @@ class _MessageTextState extends State<MessageText> {
     final dark = Theme.of(context).brightness == Brightness.dark;
     final appearance = AppearanceScope.maybeOf(context);
     // Overlays on your bubble are its ink, faint: white on azure.
-    final ink = ownBubble(context).ink;
+    final ink = ownBubble.ink;
     final codeFill = widget.onAccent
         ? ink.withAlpha(0x29)
         : dark
@@ -440,7 +440,7 @@ class _MessageTextState extends State<MessageText> {
                 final style = DuvetType.code.copyWith(fontSize: 13, height: 1.5, color: base.color);
                 // Its language's colors, as the desktop's; on your bubble,
                 // those for its ink.
-                final onDark = widget.onAccent ? ownBubble(context).onDark : dark;
+                final onDark = widget.onAccent ? ownBubble.onDark : dark;
                 final custom = appearance?.codeTheme;
                 final colored = language == null
                     ? null

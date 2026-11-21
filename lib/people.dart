@@ -1712,9 +1712,8 @@ class _NewConversationPageState extends State<NewConversationPage> {
 // Group info
 // -----------------------------------------------------------------------------
 
-/// A group's info: its people (as people: overlapping circles), leave. Its
-/// owner renames it, and adds and removes people, as the API allows only the
-/// owner.
+/// A group's info: its mark and name, its people, leave. Its owner renames
+/// it, and adds and removes people, as the API allows only the owner.
 class GroupInfoPage extends StatefulWidget {
   final String conversationId;
   const GroupInfoPage({required this.conversationId, super.key});
@@ -1862,7 +1861,6 @@ class _GroupInfoPageState extends State<GroupInfoPage> {
       builder: (context, conversations, _) {
         final group = conversations.where((c) => c.id == widget.conversationId).firstOrNull;
         final owner = group != null && group.ownerId == me;
-        final faces = _members.take(3).toList();
         final title = Text(
           group?.title ?? 'Group',
           maxLines: 1,
@@ -1877,31 +1875,8 @@ class _GroupInfoPageState extends State<GroupInfoPage> {
                 child: ListView(
                   padding: EdgeInsets.fromLTRB(16, GlassTopBar.heightOf(context) + 16, 16, padding.bottom + 24),
                   children: [
-                    // A group is people, so it's drawn as people.
-                    ExcludeSemantics(
-                      child: Center(
-                        child: SizedBox(
-                          width: 56.0 + 24 * (faces.length - 1).clamp(0, 2),
-                          height: 72,
-                          child: Stack(
-                            children: [
-                              for (final (i, m) in faces.indexed)
-                                Positioned(
-                                  left: 24.0 * i,
-                                  top: i.isOdd ? 0 : 12,
-                                  child: DecoratedBox(
-                                    decoration: BoxDecoration(
-                                      shape: BoxShape.circle,
-                                      border: Border.all(color: colors.background, width: 3),
-                                    ),
-                                    child: UserAvatar(name: m.displayName, url: m.avatarUrl, size: 56),
-                                  ),
-                                ),
-                            ],
-                          ),
-                        ),
-                      ),
-                    ),
+                    // The group's mark, as wherever it shows: its people are listed under it, each with their face.
+                    const GroupMark(size: 72),
                     const SizedBox(height: 12),
                     Center(
                       child: owner

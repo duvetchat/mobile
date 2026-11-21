@@ -173,7 +173,8 @@ class _CallScreenState extends State<CallScreen> {
                     ? _EverySecond(
                         builder: (_) => _Waiting(
                           name: title,
-                          avatarUrl: summary?.isGroup == true ? null : summary?.avatarUrl,
+                          avatarUrl: summary?.avatarUrl,
+                          group: summary?.isGroup == true,
                           status: status(),
                         ),
                       )
@@ -247,12 +248,13 @@ class _CallScreenState extends State<CallScreen> {
   }
 }
 
-/// While the call rings out: who's called, large.
+/// While the call rings out: who's called, large; a group, its mark.
 class _Waiting extends StatelessWidget {
   final String name;
   final String? avatarUrl;
+  final bool group;
   final String status;
-  const _Waiting({required this.name, required this.avatarUrl, required this.status});
+  const _Waiting({required this.name, required this.avatarUrl, required this.group, required this.status});
 
   @override
   Widget build(BuildContext context) {
@@ -262,7 +264,7 @@ class _Waiting extends StatelessWidget {
         mainAxisSize: MainAxisSize.min,
         children: [
           ExcludeSemantics(
-            child: UserAvatar(name: name, url: avatarUrl, size: 120),
+            child: group ? const GroupMark(size: 120) : UserAvatar(name: name, url: avatarUrl, size: 120),
           ),
           const SizedBox(height: 20),
           Text(name, style: DuvetType.title.copyWith(color: colors.foreground)),
@@ -705,7 +707,10 @@ class CallHistoryList extends StatelessWidget {
                 key: ValueKey('${c.conversationId}-${c.at.microsecondsSinceEpoch}'),
                 call: c,
                 title: title,
-                avatarUrl: summary?.isGroup == true ? null : summary?.avatarUrl,
+                avatarUrl: summary?.avatarUrl,
+                // A DM's row shows the other person; a group's, or one of a conversation no longer listed (a group
+                // left), the group's mark, as the desktop's calls have it.
+                group: summary?.otherUserId == null,
                 onOpen: () => openChat(context, ConversationTarget(c.conversationId), title),
                 // As the banner's Join, it waits for someone to answer the
                 // user's own call ringing from another device.
@@ -725,12 +730,14 @@ class _CallRow extends StatelessWidget {
   final CallRecord call;
   final String title;
   final String? avatarUrl;
+  final bool group;
   final VoidCallback onOpen;
   final VoidCallback? onCall;
   const _CallRow({
     required this.call,
     required this.title,
     required this.avatarUrl,
+    required this.group,
     required this.onOpen,
     required this.onCall,
     super.key,
@@ -743,7 +750,7 @@ class _CallRow extends StatelessWidget {
       children: [
         Expanded(
           child: ListRow(
-            leading: UserAvatar(name: title, url: avatarUrl, size: 48),
+            leading: group ? const GroupMark(size: 48) : UserAvatar(name: title, url: avatarUrl, size: 48),
             title: title,
             snippet: CallHistoryList.describe(call),
             trailing: shortTime(call.at),

@@ -1,6 +1,6 @@
 import 'dart:convert';
 
-import 'package:duvet/data/appearance.dart' show bubbleColors, bubbleDarkInk;
+import 'package:duvet/data/appearance.dart' show ownBubble;
 import 'package:duvet/data/code_theme.dart';
 import 'package:duvet/theme.dart';
 import 'package:duvet/widgets/code_highlight.dart';
@@ -161,10 +161,9 @@ void main() {
     );
   });
 
-  test('your bubble: azure with white as today; a pale swatch gets dark ink', () {
-    expect(bubbleColors(null), (fill: Duvet.azure, ink: const Color(0xFFFFFFFF), onDark: true));
-    expect(bubbleColors(0xD6A400), (fill: const Color(0xFFD6A400), ink: bubbleDarkInk, onDark: false));
-    expect(bubbleColors(0x8E4EC6).ink, const Color(0xFFFFFFFF));
+  // #293: no colour to pick; code on your bubbles takes a dark theme.
+  test('your bubbles are azure with white ink', () {
+    expect(ownBubble, (fill: Duvet.azure, ink: const Color(0xFFFFFFFF), onDark: true));
   });
 
   test('a hex code is #RRGGBB, exactly', () {

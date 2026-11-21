@@ -337,20 +337,20 @@ Future<bool?> _showDeleteSheet(
                 child: Container(
                   padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
                   decoration: BoxDecoration(
-                    color: mine ? ownBubble(context).fill : colors.card,
+                    color: mine ? ownBubble.fill : colors.card,
                     borderRadius: BorderRadius.circular(DuvetTokens.radiusButton),
                   ),
                   child: message.content.isEmpty
                       ? Text(
                           readableAttachments(message),
-                          style: DuvetType.body.copyWith(color: mine ? ownBubble(context).ink : colors.foreground),
+                          style: DuvetType.body.copyWith(color: mine ? ownBubble.ink : colors.foreground),
                         )
                       : MessageText(
                           content: message.content,
                           directory: directory,
                           onAccent: mine,
                           singleLine: true,
-                          style: DuvetType.body.copyWith(color: mine ? ownBubble(context).ink : colors.foreground),
+                          style: DuvetType.body.copyWith(color: mine ? ownBubble.ink : colors.foreground),
                         ),
                 ),
               ),

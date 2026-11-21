@@ -2,64 +2,91 @@ import 'package:flutter/material.dart';
 import 'package:forui/forui.dart';
 
 import 'data/sounds.dart';
+import 'data/voice_prefs.dart';
 import 'shell.dart';
 import 'theme.dart';
 import 'widgets/chrome.dart';
 import 'widgets/rows.dart';
 
-/// The volume of every sound and of each one, as the desktop's Audio settings:
-/// 0 to 200%, 0 is off, and a button to hear it or stop it.
-class SoundsPage extends StatefulWidget {
-  final Sounds sounds;
-  const SoundsPage({required this.sounds, super.key});
+/// Audio, as the desktop's section (#284): the volume of every sound and of
+/// each one, 0 to 200%, 0 is off, with a button to hear it or stop it; then
+/// the microphone's noise suppression, which the desktop has with its voice
+/// controls.
+class AudioPage extends StatefulWidget {
+  final Sounds? sounds;
+  final VoicePrefs? prefs;
+  const AudioPage({this.sounds, this.prefs, super.key});
 
   @override
-  State<SoundsPage> createState() => _SoundsPageState();
+  State<AudioPage> createState() => _AudioPageState();
 }
 
-class _SoundsPageState extends State<SoundsPage> {
-  Sounds get sounds => widget.sounds;
-
+class _AudioPageState extends State<AudioPage> {
   // The desktop's order and names, not the enum's.
   static const _labels = [
     (Sound.mention, 'Notifications'),
-    (Sound.voiceJoin, 'Join Voice'),
-    (Sound.voiceLeave, 'Leave Voice'),
-    (Sound.incomingCall, 'Incoming Call'),
-    (Sound.screenShareOn, 'Screen Share On'),
-    (Sound.screenShareOff, 'Screen Share Off'),
+    (Sound.voiceJoin, 'Join voice'),
+    (Sound.voiceLeave, 'Leave voice'),
+    (Sound.incomingCall, 'Incoming call'),
+    (Sound.screenShareOn, 'Screen share on'),
+    (Sound.screenShareOff, 'Screen share off'),
   ];
 
   @override
   void dispose() {
     // A preview doesn't outlive the page.
-    sounds.stopPreview();
+    widget.sounds?.stopPreview();
     super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
     final padding = MediaQuery.paddingOf(context);
+    final colors = context.theme.colors;
+    final sounds = widget.sounds;
+    final prefs = widget.prefs;
     return Scaffold(
-      backgroundColor: context.theme.colors.background,
+      backgroundColor: colors.background,
       body: Stack(
         children: [
           Positioned.fill(
             child: ListenableBuilder(
-              listenable: Listenable.merge([sounds, sounds.previewing]),
+              listenable: Listenable.merge([sounds, sounds?.previewing, prefs]),
               builder: (context, _) => ListView(
-                padding: EdgeInsets.only(top: GlassTopBar.heightOf(context) + 16, bottom: padding.bottom + 24),
+                padding: EdgeInsets.only(top: GlassTopBar.heightOf(context), bottom: padding.bottom + 24),
                 children: [
-                  _VolumeRow(label: 'Master Volume', value: sounds.master, onChanged: sounds.setMaster),
-                  const Overline('Sounds'),
-                  for (final (sound, label) in _labels) ...[
-                    if (sound != Sound.mention) const SizedBox(height: 12),
-                    _VolumeRow(
-                      label: label,
-                      value: sounds.volume(sound),
-                      onChanged: (v) => sounds.setVolume(sound, v),
-                      playing: sounds.previewing.value == sound,
-                      onPreview: () => sounds.previewing.value == sound ? sounds.stopPreview() : sounds.preview(sound),
+                  if (sounds != null) ...[
+                    const Overline('All sounds'),
+                    _VolumeRow(label: 'Master volume', value: sounds.master, onChanged: sounds.setMaster),
+                    const Overline('Each sound'),
+                    for (final (sound, label) in _labels) ...[
+                      if (sound != Sound.mention) const SizedBox(height: 12),
+                      _VolumeRow(
+                        label: label,
+                        value: sounds.volume(sound),
+                        onChanged: (v) => sounds.setVolume(sound, v),
+                        playing: sounds.previewing.value == sound,
+                        onPreview: () =>
+                            sounds.previewing.value == sound ? sounds.stopPreview() : sounds.preview(sound),
+                      ),
+                    ],
+                  ],
+                  if (prefs != null) ...[
+                    const Overline('Voice'),
+                    Container(
+                      margin: const EdgeInsets.symmetric(horizontal: 16),
+                      padding: const EdgeInsets.all(4),
+                      decoration: BoxDecoration(
+                        color: colors.card,
+                        borderRadius: BorderRadius.circular(DuvetTokens.radiusCard),
+                        boxShadow: context.duvet.shadowRest,
+                      ),
+                      child: SettingToggle(
+                        label: 'Noise suppression',
+                        detail: 'Filters background noise from your microphone',
+                        value: prefs.noiseSuppression,
+                        onChanged: prefs.setNoiseSuppression,
+                      ),
                     ),
                   ],
                 ],
@@ -70,7 +97,7 @@ class _SoundsPageState extends State<SoundsPage> {
             top: 0,
             left: 0,
             right: 0,
-            child: GlassTopBar(title: const Text('Sounds'), onBack: () => Navigator.of(context).maybePop()),
+            child: GlassTopBar(title: const Text('Audio'), onBack: () => Navigator.of(context).maybePop()),
           ),
         ],
       ),
@@ -138,7 +165,7 @@ class _VolumeRow extends StatelessWidget {
                 // accessibility tree, which stays empty after the page closes. VoiceOver and TalkBack get the
                 // same adjustable control from here, in steps of 10%.
                 child: Semantics(
-                  label: label.endsWith('Volume') ? label : '$label volume',
+                  label: label.endsWith('volume') ? label : '$label volume',
                   value: shown,
                   increasedValue: value < 200 ? _spoken(value + _step) : null,
                   decreasedValue: value > 0 ? _spoken(value - _step) : null,

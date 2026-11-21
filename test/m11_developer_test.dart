@@ -71,7 +71,7 @@ void main() {
     setUp?.call(repository);
     await tester.tap(find.descendant(of: find.byType(DuvetTabBar), matching: find.text('You')));
     await tester.pumpAndSettle();
-    if (open) await tapLabel(tester, RegExp(r'^Developer portal'));
+    if (open) await tapLabel(tester, RegExp(r'^Developer(, |$)'));
     return repository;
   }
 
@@ -169,9 +169,9 @@ void main() {
       open: false,
       setUp: (r) => r.teamInvites.value = const [TeamInvite(id: 'i1', teamName: 'Acme', invitedBy: 'maya')],
     );
-    expect(find.bySemanticsLabel(RegExp(r'^Developer portal.*1 invite')), findsOneWidget);
+    expect(find.bySemanticsLabel(RegExp(r'^Developer, 1 invite')), findsOneWidget);
 
-    await tapLabel(tester, RegExp(r'^Developer portal'));
+    await tapLabel(tester, RegExp(r'^Developer(, |$)'));
     expect(find.text('Invited by maya'), findsOneWidget);
 
     // TEAM_INVITE_CREATE while the page is open.

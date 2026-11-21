@@ -254,31 +254,32 @@ void main() {
       }),
     );
 
-    Future<void> youVoice(WidgetTester tester) async {
+    // A section's page, from the You tab (#284).
+    Future<void> section(WidgetTester tester, String name) async {
       await tester.tap(find.descendant(of: find.byType(DuvetTabBar), matching: find.text('You')));
       await tester.pumpAndSettle();
-      await Scrollable.ensureVisible(tester.element(find.text('Faces in voice')), alignment: 0.3);
+      await tester.tap(find.text(name));
       await tester.pumpAndSettle();
     }
 
     testWidgets(
-      'the You page\'s Voice section, ${b.name}',
+      'the Appearance page\'s Voice group, ${b.name}',
       (tester) => withShadows(() async {
         final app = await pumpApp(tester);
-        await youVoice(tester);
-        await golden(tester, 'you_voice');
+        await section(tester, 'Appearance');
+        await Scrollable.ensureVisible(tester.element(find.text('Faces in voice')), alignment: 0.3);
+        await tester.pumpAndSettle();
+        await golden(tester, 'appearance_voice');
         await finish(tester, app);
       }),
     );
 
     testWidgets(
-      'the Sounds page, ${b.name}',
+      'the Audio page, ${b.name}',
       (tester) => withShadows(() async {
         final app = await pumpApp(tester);
-        await youVoice(tester);
-        await tester.tap(find.text('Sounds'));
-        await tester.pumpAndSettle();
-        await golden(tester, 'sounds');
+        await section(tester, 'Audio');
+        await golden(tester, 'audio');
         await finish(tester, app);
       }),
     );

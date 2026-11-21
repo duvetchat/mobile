@@ -273,7 +273,7 @@ void main() {
     await finish(tester, app);
   });
 
-  testWidgets('two quick taps on Call place one call and open one call screen', (tester) async {
+  testWidgets('Voice call picked twice quickly places one call and opens one call screen', (tester) async {
     final semantics = tester.ensureSemantics();
     final app = await pumpApp(tester);
     await tester.tap(find.text('Maya'));
@@ -281,10 +281,12 @@ void main() {
 
     // The microphone's permission dialog: the call isn't placed yet.
     app.engine.holdMic = Completer<void>();
-    await tester.tap(find.bySemanticsLabel('Call'));
-    await tester.pump();
-    await tester.tap(find.bySemanticsLabel('Call'));
-    await tester.pump();
+    for (var i = 0; i < 2; i++) {
+      await tester.tap(find.bySemanticsLabel('Call'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.bySemanticsLabel('Voice call'));
+      await tester.pumpAndSettle();
+    }
     app.engine.holdMic!.complete();
     app.engine.holdMic = null;
     await settle(tester);
@@ -294,13 +296,15 @@ void main() {
     await finish(tester, app);
   });
 
-  testWidgets('a DM\'s Call button calls; cancelled before an answer', (tester) async {
+  testWidgets('a DM\'s Voice call calls; cancelled before an answer', (tester) async {
     final semantics = tester.ensureSemantics();
     final app = await pumpApp(tester);
     await tester.tap(find.text('Maya'));
     await tester.pumpAndSettle();
 
     await tester.tap(find.bySemanticsLabel('Call'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.bySemanticsLabel('Voice call'));
     await settle(tester);
     expect(app.gateway.last('CALL_INITIATE'), {
       'conversation_id': 'c-maya',
@@ -468,6 +472,8 @@ void main() {
     expect(find.text('Join'), findsOneWidget);
     expect(button(tester, 'Call').onPressed, isNotNull);
     await tester.tap(find.bySemanticsLabel('Call'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.bySemanticsLabel('Voice call'));
     await settle(tester);
     expect(app.gateway.types, ['CALL_INITIATE', 'CALL_ACCEPT', 'VOICE_JOIN', 'VOICE_SYNC']);
     expect(find.bySemanticsLabel(RegExp('^Call with Maya')), findsOneWidget);
