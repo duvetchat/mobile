@@ -13,8 +13,12 @@ import 'code_theme.dart';
 /// on a picture wait to rule out a second one.
 enum ReplyGesture { swipeLeft, swipeRight, doubleTap }
 
-/// System, light or dark, the reply gesture and the code theme, kept on the
-/// device.
+/// How a chat draws its messages (#292): bubbles, or flat rows as the
+/// desktop's, which fit more on screen.
+enum MessageLayout { bubbles, flat }
+
+/// System, light or dark, the reply gesture, the message layout and the code
+/// theme, kept on the device.
 class Appearance extends ValueNotifier<ThemeMode> {
   final AppearanceStore _store;
   final http.Client Function() _client;
@@ -24,6 +28,9 @@ class Appearance extends ValueNotifier<ThemeMode> {
       super(ThemeMode.system);
 
   ReplyGesture replyGesture = ReplyGesture.swipeLeft;
+
+  /// Bubbles until the user picks flat rows, on every platform.
+  MessageLayout messageLayout = MessageLayout.bubbles;
 
   /// A custom code theme; null for GitHub's.
   CodeTheme? codeTheme;
@@ -49,6 +56,15 @@ class Appearance extends ValueNotifier<ThemeMode> {
       final gesture = ReplyGesture.values.asNameMap()[await _store.readReplyGesture()];
       if (gesture != null && gesture != replyGesture) {
         replyGesture = gesture;
+        notifyListeners();
+      }
+    } catch (e) {
+      debugPrint('appearance: $e');
+    }
+    try {
+      final layout = MessageLayout.values.asNameMap()[await _store.readMessageLayout()];
+      if (layout != null && layout != messageLayout) {
+        messageLayout = layout;
         notifyListeners();
       }
     } catch (e) {
@@ -93,6 +109,16 @@ class Appearance extends ValueNotifier<ThemeMode> {
     }
   }
 
+  Future<void> setMessageLayout(MessageLayout layout) async {
+    messageLayout = layout;
+    notifyListeners();
+    try {
+      await _store.writeMessageLayout(layout.name);
+    } catch (e) {
+      debugPrint('appearance: $e');
+    }
+  }
+
   /// Fetches the VS Code theme at [url] and uses it for code. Throws, with
   /// nothing changed, when it can't be fetched or read.
   Future<void> applyCodeTheme(String url) async {
@@ -131,6 +157,8 @@ abstract interface class AppearanceStore {
   Future<void> write(String mode);
   Future<String?> readReplyGesture();
   Future<void> writeReplyGesture(String gesture);
+  Future<String?> readMessageLayout();
+  Future<void> writeMessageLayout(String layout);
 
   /// The custom code theme: its URL and the JSON fetched from it.
   Future<({String url, String json})?> readCodeTheme();
@@ -147,6 +175,7 @@ class SecureAppearanceStore implements AppearanceStore {
   const SecureAppearanceStore();
   static const _key = 'duvet_appearance';
   static const _replyKey = 'duvet_reply_gesture';
+  static const _layoutKey = 'duvet_message_layout';
   static const _codeThemeKey = 'duvet_code_theme_url';
   static const _bubbleKey = 'duvet_bubble_color';
   static const _storage = FlutterSecureStorage();
@@ -170,6 +199,12 @@ class SecureAppearanceStore implements AppearanceStore {
 
   @override
   Future<void> writeReplyGesture(String gesture) => _storage.write(key: _replyKey, value: gesture);
+
+  @override
+  Future<String?> readMessageLayout() => _storage.read(key: _layoutKey);
+
+  @override
+  Future<void> writeMessageLayout(String layout) => _storage.write(key: _layoutKey, value: layout);
 
   @override
   Future<({String url, String json})?> readCodeTheme() async {
@@ -199,6 +234,7 @@ class SecureAppearanceStore implements AppearanceStore {
 class MemoryAppearanceStore implements AppearanceStore {
   String? mode;
   String? replyGesture;
+  String? messageLayout;
   ({String url, String json})? codeTheme;
 
   /// The colour of the user's bubbles, as versions before #293 kept it.
@@ -214,6 +250,12 @@ class MemoryAppearanceStore implements AppearanceStore {
 
   @override
   Future<void> writeReplyGesture(String gesture) async => replyGesture = gesture;
+
+  @override
+  Future<String?> readMessageLayout() async => messageLayout;
+
+  @override
+  Future<void> writeMessageLayout(String layout) async => messageLayout = layout;
 
   @override
   Future<({String url, String json})?> readCodeTheme() async => codeTheme;

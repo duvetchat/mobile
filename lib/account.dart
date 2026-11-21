@@ -2029,6 +2029,21 @@ class _YouTabState extends State<YouTab> {
                         value: appearance.codeTheme == null ? 'GitHub' : 'Custom',
                       ),
                     ]),
+                    // The desktop's Messages: bubbles, or its flat rows.
+                    const Overline('Messages'),
+                    Segmented<MessageLayout>(
+                      label: 'Message layout',
+                      value: appearance.messageLayout,
+                      options: const {MessageLayout.bubbles: 'Bubbles', MessageLayout.flat: 'Flat rows'},
+                      onChanged: appearance.setMessageLayout,
+                    ),
+                    Padding(
+                      padding: const EdgeInsets.fromLTRB(4, 8, 4, 0),
+                      child: Text(
+                        'Flat rows fit more on screen; bubbles are easier to follow.',
+                        style: DuvetType.caption.copyWith(color: colors.mutedForeground),
+                      ),
+                    ),
                     const Overline('Reply to a message'),
                     _ReplyGesturePicker(value: appearance.replyGesture, onChanged: appearance.setReplyGesture),
                     const _LauncherIconPicker(),

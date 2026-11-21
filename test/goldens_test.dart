@@ -194,6 +194,55 @@ void main() {
       ),
     );
 
+    // #292: the desktop's flat rows: the user's own on the left too, a
+    // group's second message under its first, a reply's quote over its head
+    // line, and a mention of the user washed.
+    testWidgets(
+      'chat in flat rows, ${b.name}',
+      (tester) => withClock(
+        Clock.fixed(DateTime(2026, 10, 23, 12)),
+        () => withShadows(() async {
+          phone(tester);
+          final repository = FakeRepository();
+          final appearance = Appearance(MemoryAppearanceStore())
+            ..value = b == Brightness.dark ? ThemeMode.dark : ThemeMode.light
+            ..messageLayout = MessageLayout.flat;
+          await tester.pumpWidget(DuvetApp(repository: repository, appearance: appearance));
+          await tester.pumpAndSettle();
+          repository.history['c-maya']!.addAll([
+            FakeRepository.message(
+              'm5',
+              author: FakeRepository.maya,
+              name: 'Maya',
+              text: '**Release checklist** for v3:\n- swap to `shadow-float`\n- retest the ||pressed inset||',
+              at: DateTime(2026, 10, 23, 9, 1),
+              reactions: [
+                Reaction(emoji: '👍', users: {FakeRepository.maya, FakeRepository.me.id}),
+              ],
+            ),
+            FakeRepository.message(
+              'm6',
+              author: FakeRepository.maya,
+              name: 'Maya',
+              text: '<@${FakeRepository.me.id}> can you check them in dark?',
+              at: DateTime(2026, 10, 23, 9, 2),
+            ),
+            FakeRepository.message(
+              'm7',
+              author: FakeRepository.me.id,
+              name: 'Gaby',
+              text: 'Checking dark now',
+              at: DateTime(2026, 10, 23, 9, 3),
+              reply: const MessageReply(messageId: 'm5', authorName: 'Maya', content: 'Release checklist'),
+            ),
+          ]);
+          await tester.tap(find.text('Maya'));
+          await tester.pumpAndSettle();
+          await expectLater(find.byType(DuvetApp), matchesGoldenFile('goldens/chat_flat_${b.name}.png'));
+        }),
+      ),
+    );
+
     // Animations off: the bubble lit as it is mid-list.
     testWidgets(
       'a mention of the user lighting its bubble, at rest, ${b.name}',
