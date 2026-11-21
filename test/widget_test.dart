@@ -706,4 +706,17 @@ void main() {
     // Let a blink run its course, then tear down with no timer left.
     await tester.pump(const Duration(seconds: 7));
   });
+
+  // The talking mouth was a dark opening with a black "upper lip" oval over its top: where the two overlapped, the mouth
+  // had a black smudge (#294). It's the dark opening alone.
+  testWidgets('a talking facehash draws its mouth as one dark opening', (tester) async {
+    await tester.pumpWidget(const MaterialApp(home: Facehash(name: 'maya', mouthOpen: 0.5)));
+    final mouth = find.descendant(of: find.byType(Facehash), matching: find.byType(CustomPaint));
+    expect(mouth, paintsExactlyCountTimes(#drawOval, 1));
+    expect(
+      mouth,
+      paints..something((method, args) => method == #drawOval && (args[1] as Paint).color.toARGB32() == 0xBF000000),
+    );
+    await tester.pump(const Duration(seconds: 7));
+  });
 }
