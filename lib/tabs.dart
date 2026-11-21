@@ -224,7 +224,11 @@ class ChatsTab extends StatelessWidget {
     return CallPresenceCard(
       key: ValueKey('call-$conversationId'),
       icon: FLucideIcons.phoneCall,
-      leading: summary == null ? null : UserAvatar(name: title, url: summary.avatarUrl, size: 40),
+      leading: switch (summary) {
+        null => null,
+        ConversationSummary(otherUserId: null) => const GroupMark(),
+        _ => UserAvatar(name: title, url: summary.avatarUrl, size: 40),
+      },
       title: title,
       detail: voice.participants(conversationId).isEmpty
           ? 'Call in progress'
@@ -245,7 +249,9 @@ class ChatsTab extends StatelessWidget {
     final conversationsById = {for (final c in conversations) c.id: c};
     final spacesById = {for (final s in spaces) s.id: s};
 
-    // A DM's avatar shows the other person's presence; a group's doesn't.
+    // A DM's avatar shows the other person's presence. A group, or a
+    // conversation not loaded yet, has no one's face: its mark, as the
+    // desktop's chats have it.
     Widget avatar(String title, ConversationSummary? c) => switch (c?.otherUserId) {
       final id? => PresenceAvatar(
         member: Member(userId: id, username: title, avatarUrl: c!.avatarUrl),
@@ -253,7 +259,7 @@ class ChatsTab extends StatelessWidget {
         mobileOnly: mobileOnly.contains(id),
         size: 48,
       ),
-      null => UserAvatar(name: title, url: c?.avatarUrl, size: 48),
+      null => const GroupMark(size: 48),
     };
 
     // "You:" for the user's own; the author for a room or a group.
