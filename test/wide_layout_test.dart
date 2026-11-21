@@ -1,4 +1,6 @@
 import 'package:duvet/chat_view.dart';
+import 'package:duvet/data/links.dart';
+import 'package:duvet/data/models.dart';
 import 'package:duvet/deep_links.dart';
 import 'package:duvet/main.dart';
 import 'package:duvet/members_sheet.dart';
@@ -60,6 +62,32 @@ void main() {
     await tester.pumpAndSettle();
     await tester.tap(find.text('# general'));
     await tester.pumpAndSettle();
+  }
+
+  // Maya's conversation under IDs a link can name, with more messages than a screen shows: the first is off screen
+  // as it opens.
+  const longChat = ConversationTarget('01920000-0000-7000-8000-000000000001');
+  String messageId(int i) => '01920000-0000-7000-8000-${i.toString().padLeft(12, '0')}';
+
+  Future<FakeRepository> pumpLongChat(WidgetTester tester, Size size) async {
+    final repository = await pumpApp(tester, size);
+    repository.conversations.value = [
+      ConversationSummary(id: longChat.id, title: 'Maya', isGroup: false, otherUserId: FakeRepository.maya),
+      ...repository.conversations.value.skip(1),
+    ];
+    repository.history[longChat.id] = [
+      for (var i = 0; i < 60; i++)
+        FakeRepository.message(messageId(i), author: FakeRepository.maya, name: 'Maya', text: 'Message $i'),
+    ];
+    await tester.pumpAndSettle();
+    return repository;
+  }
+
+  Future<FakeRepository> openLongChat(WidgetTester tester, Size size) async {
+    final repository = await pumpLongChat(tester, size);
+    await tester.tap(find.text('Maya'));
+    await tester.pumpAndSettle();
+    return repository;
   }
 
   test('the size classes go by width', () {
@@ -502,6 +530,143 @@ void main() {
     await tester.tap(find.bySemanticsLabel('Back').last);
     await tester.pumpAndSettle();
     expect(find.byType(FriendsPage), findsOneWidget);
+  });
+
+  testWidgets('on a phone, the chat on top opened again isn\'t stacked over itself: one Back leaves it', (
+    tester,
+  ) async {
+    final repository = await pumpApp(tester, phone);
+    await tester.tap(find.text('Maya'));
+    await tester.pumpAndSettle();
+    final state = tester.state(find.byType(ChatView));
+
+    // As Message on her profile, opened from the chat, opens it.
+    openChat(tester.element(find.byType(ChatView)), repository.conversations.value.first.target, 'Maya');
+    await tester.pumpAndSettle();
+    expect(find.byType(ChatView, skipOffstage: false), findsOneWidget);
+    expect(tester.state(find.byType(ChatView)), same(state));
+
+    await tester.tap(find.bySemanticsLabel('Back').last);
+    await tester.pumpAndSettle();
+    expect(find.byType(ChatView, skipOffstage: false), findsNothing);
+    expect(find.byType(DuvetTabBar), findsOneWidget);
+  });
+
+  testWidgets('on a phone, a link to a message near the view of the chat on top scrolls to it: one Back leaves it', (
+    tester,
+  ) async {
+    await openLongChat(tester, phone);
+    final state = tester.state(find.byType(ChatView));
+    // Just above the screen, its bubble built.
+    final message = find.text('Message 42', skipOffstage: false);
+    expect(tester.getCenter(message).dy, lessThan(0));
+
+    // As a notification's tap and a link in a message's text open it.
+    DeepLinkSource.tapped.add(Uri.parse(messageLink(longChat, messageId(42))));
+    await tester.pumpAndSettle();
+    expect(find.byType(ChatView, skipOffstage: false), findsOneWidget);
+    expect(tester.state(find.byType(ChatView)), same(state));
+    // Scrolled to, as a reply's quote scrolls to its message.
+    expect(tester.getCenter(message).dy, inInclusiveRange(0, phone.height));
+    // The message's flash.
+    await tester.pump(const Duration(seconds: 1));
+
+    await tester.tap(find.bySemanticsLabel('Back').last);
+    await tester.pumpAndSettle();
+    expect(find.byType(ChatView, skipOffstage: false), findsNothing);
+    expect(find.byType(DuvetTabBar), findsOneWidget);
+  });
+
+  testWidgets('on a phone, a message the chat on top can\'t show where it is opens it afresh there, in its place', (
+    tester,
+  ) async {
+    final repository = await openLongChat(tester, phone);
+    final state = tester.state(find.byType(ChatView));
+    expect(find.text('Message 0'), findsNothing);
+
+    // Far up the chat.
+    DeepLinkSource.tapped.add(Uri.parse(messageLink(longChat, messageId(0))));
+    await tester.pumpAndSettle();
+    expect(find.byType(ChatView, skipOffstage: false), findsOneWidget);
+    expect(tester.state(find.byType(ChatView)), isNot(same(state)));
+    expect(tester.getCenter(find.text('Message 0')).dy, inInclusiveRange(0, phone.height));
+    await tester.pump(const Duration(seconds: 1));
+
+    // Not in the chat yet, as a notification can come before its message does: found in the chat's list, not on its
+    // own in a sheet.
+    repository.history[longChat.id]!.add(
+      FakeRepository.message(messageId(60), author: FakeRepository.maya, name: 'Maya', text: 'Just sent'),
+    );
+    DeepLinkSource.tapped.add(Uri.parse(messageLink(longChat, messageId(60))));
+    await tester.pumpAndSettle();
+    expect(find.byType(ChatView, skipOffstage: false), findsOneWidget);
+    expect(find.bySemanticsLabel('Original message'), findsNothing);
+    expect(find.descendant(of: find.byType(ChatView), matching: find.text('Just sent')), findsOneWidget);
+    await tester.pump(const Duration(seconds: 1));
+
+    await tester.tap(find.bySemanticsLabel('Back').last);
+    await tester.pumpAndSettle();
+    expect(find.byType(ChatView, skipOffstage: false), findsNothing);
+    expect(find.byType(DuvetTabBar), findsOneWidget);
+  });
+
+  testWidgets('on a phone, a chat still coming in gives way to itself opened at a message it can\'t show yet', (
+    tester,
+  ) async {
+    await pumpLongChat(tester, phone);
+    await tester.tap(find.text('Maya'));
+    // Its first frame: the chat has only started to come in.
+    await tester.pump();
+
+    DeepLinkSource.tapped.add(Uri.parse(messageLink(longChat, messageId(0))));
+    await tester.pumpAndSettle();
+    expect(find.byType(ChatView, skipOffstage: false), findsOneWidget);
+    // All the way in, not stopped where the first one's transition was.
+    expect(ModalRoute.of(tester.element(find.byType(ChatView)))!.animation!.isCompleted, isTrue);
+    expect(tester.getCenter(find.text('Message 0')).dy, inInclusiveRange(0, phone.height));
+    await tester.pump(const Duration(seconds: 1));
+
+    await tester.tap(find.bySemanticsLabel('Back').last);
+    await tester.pumpAndSettle();
+    expect(find.byType(ChatView, skipOffstage: false), findsNothing);
+  });
+
+  testWidgets('on a phone, a chat under another one opens again over it: Back retraces the way', (tester) async {
+    final repository = await pumpApp(tester, phone);
+    final [maya, leo, ...] = [for (final c in repository.conversations.value) c.target];
+    await tester.tap(find.text('Maya'));
+    await tester.pumpAndSettle();
+    openChat(tester.element(find.byType(ChatView)), leo, 'Leo');
+    await tester.pumpAndSettle();
+    openChat(tester.element(find.byType(ChatView)), maya, 'Maya');
+    await tester.pumpAndSettle();
+    expect(find.byType(ChatView, skipOffstage: false), findsNWidgets(3));
+    expect(tester.widget<ChatView>(find.byType(ChatView)).target, maya);
+
+    for (final under in [leo, maya]) {
+      await tester.tap(find.bySemanticsLabel('Back').last);
+      await tester.pumpAndSettle();
+      expect(tester.widget<ChatView>(find.byType(ChatView)).target, under);
+    }
+    await tester.tap(find.bySemanticsLabel('Back').last);
+    await tester.pumpAndSettle();
+    expect(find.byType(ChatView, skipOffstage: false), findsNothing);
+  });
+
+  testWidgets('a link to a message near the view of the pane\'s chat scrolls to it there, the chat as it was', (
+    tester,
+  ) async {
+    await openLongChat(tester, tablet);
+    final state = tester.state(find.byType(ChatView));
+    final message = find.text('Message 42', skipOffstage: false);
+    expect(tester.getCenter(message).dy, lessThan(0));
+
+    DeepLinkSource.tapped.add(Uri.parse(messageLink(longChat, messageId(42))));
+    await tester.pumpAndSettle();
+    expect(find.byType(ChatView, skipOffstage: false), findsOneWidget);
+    expect(tester.state(find.byType(ChatView)), same(state));
+    expect(tester.getCenter(message).dy, inInclusiveRange(0, tablet.height));
+    await tester.pump(const Duration(seconds: 1));
   });
 
   testWidgets('screen readers get the rail\'s destinations and Spaces, with a chat open too', (tester) async {
