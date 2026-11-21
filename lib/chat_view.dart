@@ -99,11 +99,15 @@ class ChatRoute extends MaterialPageRoute<void> with PaneRoute<void> {
 
   @override
   bool same(PaneRoute<Object?> other) =>
-      other is ChatRoute &&
-      other.target == target &&
-      other.jumpTo == null &&
-      threadOf == null &&
-      other.threadOf == null;
+      other is ChatRoute && other.target == target && threadOf == null && other.threadOf == null;
+
+  // The message [other] opens at, shown in this chat as it is when it's in view or near it.
+  @override
+  bool reopen(PaneRoute<Object?> other) => switch ((other, _page.currentState)) {
+    (ChatRoute(jumpTo: null), _) => true,
+    (ChatRoute(:final jumpTo?), final _ChatViewState chat) => chat._showNear(jumpTo),
+    _ => false,
+  };
 }
 
 enum _Delivery { sent, sending, failed }
@@ -1439,6 +1443,16 @@ class _ChatViewState extends State<ChatView> with SingleTickerProviderStateMixin
       title = '# ${room?.name ?? 'room'}';
     }
     Navigator.of(context).push(ChatRoute(target: target, title: title, jumpTo: link.messageId));
+  }
+
+  /// The chat opened again at [messageId] from outside it (its notification, a link in a message's text), the
+  /// message in view or near it: scrolled to and flashed, as for a link to one of the chat's own messages. Answers
+  /// whether it was. One further off is for a fresh chat opened at it: [_jumpTo] only looks back from where the list
+  /// is, and a notification's message may not have come yet.
+  bool _showNear(String messageId) {
+    if (_keys[messageId]?.currentContext == null) return false;
+    _jumpTo(messageId);
+    return true;
   }
 
   void _openSpace(String spaceId) {

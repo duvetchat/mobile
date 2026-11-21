@@ -58,8 +58,12 @@ mixin PaneRoute<T> on PageRoute<T> {
   /// The same page for another navigator, its state kept.
   PaneRoute<T> moved();
 
-  /// Whether it shows what [other] does, so opening [other] over it changes nothing.
+  /// Whether it shows what [other] does, so opening [other] over it opens nothing new: it [reopen]s instead.
   bool same(PaneRoute<Object?> other) => false;
+
+  /// Opened again as [other], the [same] page: shows what [other] asks for besides, such as a message to open at,
+  /// and answers whether it could. Where it can't, [other] takes its place.
+  bool reopen(PaneRoute<Object?> other) => true;
 
   @override
   Duration get transitionDuration => instant ? Duration.zero : super.transitionDuration;
@@ -109,7 +113,9 @@ class Shell extends ChangeNotifier {
     _settleSoon();
   }
 
-  /// Opens [route]: in the pane on a wide window, in place of what it shows; else over everything.
+  /// Opens [route]: in the pane on a wide window, in place of what it shows; else over everything. Never over
+  /// itself: where the route on top shows the same ([PaneRoute.same]), as for a chat opened from inside it, that
+  /// one [PaneRoute.reopen]s as [route], or [route] takes its place, so one Back still leaves it.
   ///
   /// Pages over the home screen (Friends, a settings page) close for it when [reveal], as following a link from
   /// one does; a notice tapped over one leaves it open and puts the chat over it.
@@ -119,12 +125,24 @@ class Shell extends ChangeNotifier {
     if (rootNav == null) return;
     // Whatever is over the home screen, a sheet being filled as much as a page, stays under a notice's chat.
     if (!_wide || paneNav == null || (!reveal && rootObserver.routes.length > 1)) {
-      rootNav.push(route);
+      final top = rootObserver.routes.lastOrNull;
+      // Only the route on top: a chat further down opens again over the others, and Back retraces the way.
+      if (top is! PaneRoute<Object?> || !top.same(route)) {
+        rootNav.push(route);
+      } else if (!top.reopen(route)) {
+        // In its place at once, as the pane swaps a chat; one still coming in gives way as it comes, as replacing
+        // it would leave the new one where its transition stood.
+        if (top.animation?.isCompleted ?? true) {
+          rootNav.replace(oldRoute: top, newRoute: route);
+        } else {
+          rootNav.pushReplacement(route);
+        }
+      }
       return;
     }
     rootNav.popUntil((r) => r.isFirst);
-    final shown = paneObserver.routes;
-    if (shown.length == 1 && shown.single is PaneRoute && (shown.single as PaneRoute).same(route)) return;
+    final shown = paneObserver.routes.singleOrNull;
+    if (shown is PaneRoute<Object?> && shown.same(route) && shown.reopen(route)) return;
     paneNav.pushAndRemoveUntil(route..instant = true, (_) => false);
   }
 
