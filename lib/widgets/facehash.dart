@@ -206,8 +206,8 @@ class _FacehashState extends State<Facehash> {
   }
 }
 
-/// The patched facehash mouth: a dark opening, viewBox 40×24, with the upper
-/// lip lifting as it opens.
+/// The patched facehash mouth: a dark opening, viewBox 40×24, as tall as it's
+/// open. Alone: a black upper lip over its top made a smudge.
 class _MouthPainter extends CustomPainter {
   final double open;
   const _MouthPainter(this.open);
@@ -219,10 +219,6 @@ class _MouthPainter extends CustomPainter {
     canvas.drawOval(
       Rect.fromCenter(center: const Offset(20, 12), width: 32, height: ry * 2),
       Paint()..color = const Color(0xBF000000),
-    );
-    canvas.drawOval(
-      Rect.fromCenter(center: Offset(20, 12 - math.max(0.5, open * 3.5)), width: 26, height: 4),
-      Paint()..color = const Color(0xB3000000),
     );
   }
 
