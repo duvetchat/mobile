@@ -1679,6 +1679,28 @@ class _ChatViewState extends State<ChatView> with SingleTickerProviderStateMixin
   // A DM or a group can be called; a room or a thread can't.
   bool get _callable => widget.target is ConversationTarget && widget.threadOf == null;
 
+  /// Whether Call may place or join a call now: none going on here, and not
+  /// the user's own while it rings from another device.
+  bool get _canCall => context.voice.call == null && !callingElsewhere(context.voice, widget.target.id);
+
+  /// Call's menu, as the desktop's (desktop#370): a voice call, or a video
+  /// call, which turns the camera on as the user's voice joins. Asked again
+  /// once picked: a call may have come in while the menu was open.
+  Future<void> _openCallMenu(BuildContext anchor) async {
+    // Out of the composer: or the menu hands the keyboard back as it closes.
+    _focus.unfocus();
+    final video = await showGlassMenu<bool>(
+      anchor,
+      label: 'Start a call',
+      items: const [
+        GlassMenuItem(icon: FLucideIcons.phone, label: 'Voice call', value: false),
+        GlassMenuItem(icon: FLucideIcons.video, label: 'Video call', value: true),
+      ],
+    );
+    if (video == null || !mounted || !_canCall) return;
+    await callConversation(context, widget.target.id, video: video);
+  }
+
   /// A DM's other person's presence, under its name: none in a group, a room
   /// or a thread, nor before the gateway or the friends list has told it.
   Presence? get _dmPresence {
@@ -2579,16 +2601,16 @@ class _ChatViewState extends State<ChatView> with SingleTickerProviderStateMixin
                     // One call at a time. Into this conversation's call
                     // going on they join, as its banner's Join does, but not
                     // the user's own while it rings from another device.
-                    // Video call is Call with the camera on.
+                    // One button, as the desktop's: its menu has Voice call
+                    // and Video call, which is a voice call with the camera on.
                     if (_callable)
-                      for (final video in const [true, false])
-                        IconAction(
-                          icon: video ? FLucideIcons.video : FLucideIcons.phone,
-                          label: video ? 'Video call' : 'Call',
-                          onPressed: context.voice.call == null && !callingElsewhere(context.voice, widget.target.id)
-                              ? () => callConversation(context, widget.target.id, video: video)
-                              : null,
+                      Builder(
+                        builder: (anchor) => IconAction(
+                          icon: FLucideIcons.phone,
+                          label: 'Call',
+                          onPressed: _canCall ? () => _openCallMenu(anchor) : null,
                         ),
+                      ),
                     if (widget.threadOf == null)
                       IconAction(icon: FLucideIcons.search, label: 'Search', onPressed: _openSearch),
                     Builder(

@@ -98,6 +98,8 @@ void main() {
     await tester.tap(find.text('Design crew'));
     await tester.pumpAndSettle();
     await tester.tap(find.bySemanticsLabel('Call'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.bySemanticsLabel('Voice call'));
     await settle(tester);
     expect(find.text('Calling…'), findsWidgets);
     expect(mark, findsOneWidget);
