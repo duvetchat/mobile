@@ -522,6 +522,31 @@ void main() {
     semantics.dispose();
   });
 
+  testWidgets('a pinned message below the view is scrolled down to, not shown on its own (#301)', (tester) async {
+    await openMaya(
+      tester,
+      setUp: (r) {
+        r.history['c-maya'] = [
+          for (var i = 0; i < 100; i++) FakeRepository.message('h$i', author: _maya, name: 'Maya', text: 'Message $i'),
+        ];
+        r.pinned['c-maya'] = [r.history['c-maya']![97]];
+      },
+    );
+    // Up into the history: the newest messages, Message 97 among them, are below the view and not built.
+    await tester.fling(find.text('Message 99'), const Offset(0, 2000), 3000);
+    await tester.pumpAndSettle();
+    expect(find.text('Message 97'), findsNothing);
+
+    await tapLabel(tester, 'More');
+    await tapLabel(tester, 'Pinned messages');
+    await tapLabel(tester, 'Jump to Maya’s message');
+    expect(find.bySemanticsLabel('Original message'), findsNothing);
+    expect(find.text('Message 97'), findsOneWidget);
+    expect(tester.getCenter(find.text('Message 97')).dy, inInclusiveRange(0, 844));
+    await tester.pump(const Duration(seconds: 1)); // the message's flash runs out
+    semantics.dispose();
+  });
+
   testWidgets('a pin notice links its message and the pins, and those who may delete it (#26)', (tester) async {
     final repository = await openMaya(
       tester,

@@ -1470,14 +1470,18 @@ class _ChatViewState extends State<ChatView> with SingleTickerProviderStateMixin
   final _links = <String, LayerLink>{};
   LayerLink _linkFor(String id) => _links.putIfAbsent(id, LayerLink.new);
 
-  /// Scrolls toward older messages until [find] has a context (its item got
-  /// built), or the list runs out. Answers whether it was found.
-  Future<bool> _scrollUntilBuilt(BuildContext? Function() find) async {
+  /// Scrolls toward older messages, or toward newer ones when [newer], until [find] has a context (its item got
+  /// built), or the list runs out that way. Answers whether it was found.
+  Future<bool> _scrollUntilBuilt(BuildContext? Function() find, {bool newer = false}) async {
     for (var tries = 0; tries < 40 && mounted; tries++) {
       if (find() != null) return true;
       if (!_scroll.hasClients) return false;
       final position = _scroll.position;
-      if (position.pixels >= position.maxScrollExtent) {
+      if (newer) {
+        // Down toward the newest, which the list has all of: no page to load that way.
+        if (position.pixels <= position.minScrollExtent) return find() != null;
+        _scroll.jumpTo(max(position.pixels - position.viewportDimension * 0.8, position.minScrollExtent));
+      } else if (position.pixels >= position.maxScrollExtent) {
         if (!_hasOlder) return find() != null;
         await _loadOlder();
       } else {
@@ -1491,8 +1495,11 @@ class _ChatViewState extends State<ChatView> with SingleTickerProviderStateMixin
   /// Shows the message a reply quotes: scrolled to and flashed if it's in the
   /// chat (paging back for it), else on its own in a sheet.
   Future<void> _jumpTo(String messageId) async {
-    final found = _entries.any((e) => e.message.id == messageId) || _hasOlder
-        ? await _scrollUntilBuilt(() => _keys[messageId]?.currentContext)
+    final at = _entries.indexWhere((e) => e.message.id == messageId);
+    // Newer than every message built, it's below the view (#301): the list builds those in view and a little past.
+    final newestBuilt = _entries.lastIndexWhere((e) => _keys[e.message.id]?.currentContext != null);
+    final found = at >= 0 || _hasOlder
+        ? await _scrollUntilBuilt(() => _keys[messageId]?.currentContext, newer: newestBuilt >= 0 && at > newestBuilt)
         : false;
     if (!mounted) return;
     final ctx = _keys[messageId]?.currentContext;
