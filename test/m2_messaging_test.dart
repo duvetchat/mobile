@@ -6,6 +6,7 @@ import 'package:duvet/data/markdown.dart';
 import 'package:duvet/data/models.dart';
 import 'package:duvet/data/appearance.dart';
 import 'package:duvet/main.dart';
+import 'package:duvet/theme.dart' show Duvet;
 import 'package:duvet/widgets/disintegrate.dart' show dustOf;
 import 'package:duvet/widgets/code_highlight.dart';
 import 'package:duvet/widgets/message_content.dart';
@@ -28,6 +29,7 @@ void main() {
     WidgetTester tester, {
     void Function(FakeRepository r)? setUp,
     ReplyGesture reply = ReplyGesture.swipeLeft,
+    // A bubble colour an older version kept on the device.
     int? bubble,
   }) async {
     semantics = tester.ensureSemantics();
@@ -327,21 +329,18 @@ void main() {
     semantics.dispose();
   });
 
-  testWidgets('your bubbles take your color; on a pale one, the text is dark', (tester) async {
+  // #293: there's no colour to pick, so one an older version kept doesn't show.
+  testWidgets('your bubbles are azure with white text, whatever colour an older version kept', (tester) async {
     await openMaya(tester, bubble: 0xD6A400);
     await tester.enterText(find.byType(EditableText), 'sunny side');
     await tester.pump();
     await tapLabel(tester, 'Send');
-    expect(
-      find.byWidgetPredicate(
-        (w) =>
-            w is Container &&
-            w.decoration is BoxDecoration &&
-            (w.decoration! as BoxDecoration).color == const Color(0xFFD6A400),
-      ),
-      findsWidgets,
+    Finder filled(Color color) => find.byWidgetPredicate(
+      (w) => w is Container && w.decoration is BoxDecoration && (w.decoration! as BoxDecoration).color == color,
     );
-    expect(tester.widget<Text>(find.text('sunny side').last).textSpan?.style?.color, bubbleDarkInk);
+    expect(filled(const Color(0xFFD6A400)), findsNothing);
+    expect(find.ancestor(of: find.text('sunny side').last, matching: filled(Duvet.azure)), findsOneWidget);
+    expect(tester.widget<Text>(find.text('sunny side').last).textSpan?.style?.color, const Color(0xFFFFFFFF));
     semantics.dispose();
   });
 

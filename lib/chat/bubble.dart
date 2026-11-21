@@ -181,7 +181,7 @@ class _Bubble extends StatelessWidget {
                   content: text,
                   directory: directory,
                   onAccent: mine,
-                  style: DuvetType.body.copyWith(color: mine ? ownBubble(context).ink : colors.foreground),
+                  style: DuvetType.body.copyWith(color: mine ? ownBubble.ink : colors.foreground),
                   onMention: onOpenMention,
                   onRoom: onOpenRoom,
                   messageActions: anchor == null ? const {} : actionsAt(anchor),
@@ -191,7 +191,7 @@ class _Bubble extends StatelessWidget {
                     padding: bubblePadding,
                     constraints: BoxConstraints(maxWidth: maxWidth),
                     decoration: BoxDecoration(
-                      color: mine ? ownBubble(context).fill : colors.card,
+                      color: mine ? ownBubble.fill : colors.card,
                       borderRadius: BorderRadius.circular(DuvetTokens.radiusButton),
                       boxShadow: editing ? null : (lifted ? tokens.shadowFloat : tokens.shadowRest),
                     ),

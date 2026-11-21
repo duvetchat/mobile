@@ -25,9 +25,9 @@ class _OrderedStore extends MemoryAppearanceStore {
   }
 
   @override
-  Future<String?> readBubbleColor() {
-    reads.add('bubble');
-    return super.readBubbleColor();
+  Future<void> forgetBubbleColor() {
+    reads.add('forget bubble');
+    return super.forgetBubbleColor();
   }
 
   @override
@@ -53,14 +53,12 @@ void main() {
     expect(appearance.value.name, 'dark');
     expect(appearance.resolve(Brightness.light), Brightness.dark);
     expect(appearance.replyGesture, ReplyGesture.swipeLeft, reason: 'the rest is still on its way');
-    expect(appearance.bubbleColor, isNull);
 
     store.gestureHeld.complete();
     await loaded;
-    expect(store.reads, ['mode', 'gesture', 'bubble', 'code theme']);
+    expect(store.reads, ['mode', 'gesture', 'code theme', 'forget bubble']);
     expect(appearance.value.name, 'dark');
     expect(appearance.replyGesture, ReplyGesture.doubleTap);
-    expect(appearance.bubbleColor, 0xD6A400);
   });
 
   test("a mode that can't be read holds nothing: the system's stays, and the rest loads", () async {
@@ -75,6 +73,16 @@ void main() {
     expect(appearance.value.name, 'system');
     await loaded;
     expect(appearance.replyGesture, ReplyGesture.swipeRight);
+  });
+
+  // #293: bubbles are azure, so a colour an older version kept for them goes as the appearance loads.
+  test('a bubble colour an older version kept is deleted as the appearance loads', () async {
+    final store = _OrderedStore()..bubbleColor = '${0xD6A400}';
+    store.gestureHeld.complete();
+    final appearance = Appearance(store);
+    addTearDown(appearance.dispose);
+    await appearance.load();
+    expect(store.bubbleColor, isNull);
   });
 
   test('loaded again, the mode is read again, first', () async {

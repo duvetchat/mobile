@@ -28,7 +28,6 @@ import 'theme.dart';
 import 'widgets/avatar.dart';
 import 'widgets/chrome.dart';
 import 'widgets/code_highlight.dart';
-import 'widgets/color_picker.dart';
 import 'widgets/ghost_art.dart';
 import 'widgets/glass.dart';
 import 'widgets/picture_edit.dart';
@@ -2032,8 +2031,6 @@ class _YouTabState extends State<YouTab> {
                     ]),
                     const Overline('Reply to a message'),
                     _ReplyGesturePicker(value: appearance.replyGesture, onChanged: appearance.setReplyGesture),
-                    const Overline('Your bubbles'),
-                    _BubbleColorPicker(value: appearance.bubbleColor, onChanged: appearance.setBubbleColor),
                     const _LauncherIconPicker(),
                     if (voicePrefs != null) ...[
                       const Overline('Voice'),
@@ -2151,10 +2148,7 @@ class _CodeThemeSheetState extends State<_CodeThemeSheet> {
     final style = DuvetType.code.copyWith(fontSize: 13, height: 1.5, color: surface.foreground);
     final where = theme == null
         ? 'GitHub’s colors, as on the desktop'
-        : [
-            'Used in ${dark ? 'dark' : 'light'} mode',
-            if (ownBubble(context).onDark == dark) 'and on your bubbles',
-          ].join(' ');
+        : ['Used in ${dark ? 'dark' : 'light'} mode', if (ownBubble.onDark == dark) 'and on your bubbles'].join(' ');
     return Padding(
       padding: const EdgeInsets.fromLTRB(16, 8, 16, 24),
       child: Column(
@@ -2219,71 +2213,6 @@ class _CodeThemeSheetState extends State<_CodeThemeSheet> {
           ],
         ],
       ),
-    );
-  }
-}
-
-/// Your bubbles' color: azure, a role swatch or any custom color, on a bubble
-/// as the chat draws it. Solid fills only; the ink on them is picked for
-/// contrast.
-class _BubbleColorPicker extends StatefulWidget {
-  final int? value;
-  final ValueChanged<int?> onChanged;
-  const _BubbleColorPicker({required this.value, required this.onChanged});
-
-  @override
-  State<_BubbleColorPicker> createState() => _BubbleColorPickerState();
-}
-
-class _BubbleColorPickerState extends State<_BubbleColorPicker> {
-  // [roleSwatches]' names, in its order.
-  static const _names = ['Red', 'Orange', 'Yellow', 'Green', 'Teal', 'Blue', 'Indigo', 'Purple', 'Pink'];
-
-  // Shown while the wheel is dragged; saved, app-wide, once it's let go.
-  late int? _shown = widget.value;
-
-  @override
-  void didUpdateWidget(_BubbleColorPicker oldWidget) {
-    super.didUpdateWidget(oldWidget);
-    if (widget.value != oldWidget.value) _shown = widget.value;
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final colors = context.theme.colors;
-    final bubble = bubbleColors(_shown);
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.stretch,
-      children: [
-        Container(
-          padding: const EdgeInsets.all(16),
-          decoration: BoxDecoration(
-            color: colors.secondary,
-            borderRadius: BorderRadius.circular(DuvetTokens.radiusField),
-          ),
-          alignment: Alignment.centerRight,
-          child: ExcludeSemantics(
-            child: Container(
-              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-              decoration: BoxDecoration(
-                color: bubble.fill,
-                borderRadius: BorderRadius.circular(DuvetTokens.radiusButton),
-                boxShadow: context.duvet.shadowRest,
-              ),
-              child: Text('Looks good to me', style: DuvetType.body.copyWith(color: bubble.ink)),
-            ),
-          ),
-        ),
-        const SizedBox(height: 12),
-        ColorPick(
-          value: _shown,
-          presets: [null, ...roleSwatches],
-          label: (rgb) => rgb == null ? 'Azure' : _names[roleSwatches.indexOf(rgb)],
-          fill: (rgb) => bubbleColors(rgb).fill,
-          onChanged: (rgb) => setState(() => _shown = rgb),
-          onChangeEnd: widget.onChanged,
-        ),
-      ],
     );
   }
 }
@@ -2543,7 +2472,7 @@ class _ReplyGestureDemo extends StatelessWidget {
       width: 44,
       height: 22,
       decoration: BoxDecoration(
-        color: picked ? ownBubble(context).fill : colors.mutedForeground.withValues(alpha: 0.35),
+        color: picked ? ownBubble.fill : colors.mutedForeground.withValues(alpha: 0.35),
         borderRadius: BorderRadius.circular(11),
       ),
     );

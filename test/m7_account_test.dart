@@ -355,38 +355,13 @@ void main() {
     semantics.dispose();
   });
 
-  testWidgets('You: your bubbles take a swatch; a pale one gets dark ink', (tester) async {
+  // #293: bubbles are azure, as on the desktop, which has no such setting.
+  testWidgets('You: no colour to pick for your bubbles', (tester) async {
     await pumpApp(tester);
     await openYou(tester);
-    // Mid-screen: the Voice section above pushes the swatches down to the tab bar's glass.
-    await Scrollable.ensureVisible(tester.element(find.bySemanticsLabel('Yellow')), alignment: 0.5);
-    await tester.pumpAndSettle();
-    Color? ink() => tester.widget<Text>(find.text('Looks good to me')).style?.color;
-    expect(ink(), const Color(0xFFFFFFFF));
-
-    await tapLabel(tester, 'Yellow');
-    expect(appearance.bubbleColor, 0xD6A400);
-    expect(store.bubbleColor, '${0xD6A400}');
-    expect(ink(), bubbleDarkInk);
-
-    await tapLabel(tester, 'Azure');
-    expect(appearance.bubbleColor, isNull);
-    expect(store.bubbleColor, isNull);
-    expect(ink(), const Color(0xFFFFFFFF));
-    semantics.dispose();
-  });
-
-  testWidgets('You: your bubbles take any color, typed as #RRGGBB', (tester) async {
-    await pumpApp(tester);
-    await openYou(tester);
-    await Scrollable.ensureVisible(tester.element(find.bySemanticsLabel('Custom color')), alignment: 0.5);
-    await tester.pumpAndSettle();
-    await tapLabel(tester, 'Custom color');
-    await tester.enterText(find.descendant(of: find.byType(ColorPick), matching: find.byType(EditableText)), '#F0F0F0');
-    await tester.pumpAndSettle();
-    expect(appearance.bubbleColor, 0xF0F0F0);
-    expect(store.bubbleColor, '${0xF0F0F0}');
-    expect(tester.widget<Text>(find.text('Looks good to me')).style?.color, bubbleDarkInk);
+    expect(find.text('YOUR BUBBLES'), findsNothing);
+    expect(find.text('Looks good to me'), findsNothing);
+    expect(find.byType(ColorPick), findsNothing);
     semantics.dispose();
   });
 
