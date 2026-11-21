@@ -75,7 +75,8 @@ void main() {
   });
 
   test("each platform's build takes only its own files", () {
-    final pubspec = File('pubspec.yaml').readAsStringSync();
+    // With LF line breaks, as committed: a Windows checkout has CRLF (#300).
+    final pubspec = File('pubspec.yaml').readAsStringSync().replaceAll('\r\n', '\n');
     expect(pubspec, contains('    - path: assets/sounds/\n      platforms: [android]\n'));
     expect(pubspec, contains('    - path: assets/sounds/ios/\n      platforms: [ios]\n'));
     expect(Directory('assets/sounds').listSync().whereType<File>().every((f) => f.path.endsWith('.ogg')), isTrue);
