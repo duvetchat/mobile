@@ -21,7 +21,7 @@ import 'developer.dart' show DeveloperPage;
 import 'login.dart';
 import 'people.dart';
 import 'sounds_settings.dart';
-import 'space_admin.dart' show avatarSide, confirmDestructive, saveBannerImage, saveSquareImage;
+import 'space_admin.dart' show AdminPage, AdminPanel, avatarSide, confirmDestructive, saveBannerImage, saveSquareImage;
 import 'tabs.dart' show LiveIndicator;
 import 'shell.dart';
 import 'theme.dart';
@@ -756,6 +756,8 @@ class _ChangeEmailPageState extends State<ChangeEmailPage> {
 Future<String?> Function() pickProfilePicture = () async =>
     (await ImagePicker().pickImage(source: ImageSource.gallery))?.path;
 
+/// My account, as the desktop's section: the profile as others see it, then
+/// its fields.
 class EditProfilePage extends StatefulWidget {
   const EditProfilePage({super.key});
 
@@ -1098,7 +1100,8 @@ class _EditProfilePageState extends State<EditProfilePage> {
                     ),
                   ),
                   UploadNote(_upload),
-                  const SizedBox(height: 24),
+                  // The desktop's group, under the card.
+                  const Overline('Profile'),
                   // At most 32 characters, as the API takes; empty, the username shows.
                   DuvetTextField(
                     label: 'Display name',
@@ -1136,7 +1139,7 @@ class _EditProfilePageState extends State<EditProfilePage> {
               left: 0,
               right: 0,
               child: GlassTopBar(
-                title: const Text('Edit profile'),
+                title: const Text('My account'),
                 leading: TextAction(label: 'Cancel', onPressed: () => Navigator.of(context).maybePop()),
                 actions: [
                   TextAction(
@@ -1328,7 +1331,8 @@ String formatBytes(int bytes) {
 
 enum _FileFilter { all, largest, images, voice }
 
-/// My files: the storage used, by kind, and every file, to delete.
+/// Attachments, as the desktop's section: the storage used, by kind, and
+/// every file, to delete.
 class MyFilesPage extends StatefulWidget {
   const MyFilesPage({super.key});
 
@@ -1513,7 +1517,7 @@ class _MyFilesPageState extends State<MyFilesPage> {
             top: 0,
             left: 0,
             right: 0,
-            child: GlassTopBar(title: const Text('My files'), onBack: () => Navigator.of(context).maybePop()),
+            child: GlassTopBar(title: const Text('Attachments'), onBack: () => Navigator.of(context).maybePop()),
           ),
         ],
       ),
@@ -1820,7 +1824,11 @@ class BucketMeter extends StatelessWidget {
 // You
 // -----------------------------------------------------------------------------
 
-/// You: the profile card (Edit), friends, appearance, storage, account.
+/// You: the profile card (Edit), friends and status, then the settings in
+/// the desktop's sections (#284, SettingsScreen.svelte), each a page of its
+/// own: My account, Attachments, Security, Audio, Appearance, then Developer
+/// apart, and Sign out. The desktop's Activity privacy (its app's alone) and
+/// S3 buckets (added and edited there) have nothing here to hold.
 class YouTab extends StatefulWidget {
   const YouTab({super.key});
 
@@ -1829,52 +1837,8 @@ class YouTab extends StatefulWidget {
 }
 
 class _YouTabState extends State<YouTab> {
-  StorageInfo? _storage;
-
   // The status chosen while the server takes it: shown meanwhile.
   Presence? _choosing;
-
-  // A reset link on its way: a second tap doesn't send another.
-  bool _sendingReset = false;
-
-  // The emailed link opens the reset page, as Forgot password's does.
-  Future<void> _sendResetPassword() async {
-    if (_sendingReset) return;
-    final sure = await confirmDestructive(
-      context,
-      title: 'Reset your password?',
-      body: 'We’ll email you a link to set a new one. Your password stays as it is until you do.',
-      action: 'Send link',
-      destructive: false,
-    );
-    if (!sure || !mounted) return;
-    setState(() => _sendingReset = true);
-    try {
-      await context.repository.sendResetPasswordEmail();
-      if (mounted) _toast(context, 'We emailed you a link to set a new password');
-    } catch (e) {
-      if (mounted) _toast(context, e is ActionFailed ? e.message : 'Couldn’t send the link');
-    } finally {
-      if (mounted) setState(() => _sendingReset = false);
-    }
-  }
-
-  // Whether the tab was the one showing when its dependencies last changed.
-  bool _shown = false;
-
-  @override
-  void didChangeDependencies() {
-    super.didChangeDependencies();
-    // Asked each time the tab comes into view, so the figure is fresh when it's read, and never for a tab built
-    // behind another or on a theme's change, which calls this every frame of its fade.
-    final shown = Visibility.of(context);
-    if (shown && !_shown) {
-      context.repository.storage().then((s) {
-        if (mounted) setState(() => _storage = s);
-      }, onError: (Object e) => debugPrint('storage: $e'));
-    }
-    _shown = shown;
-  }
 
   void _push(Widget page) =>
       Navigator.of(context, rootNavigator: true).push(MaterialPageRoute<void>(builder: (_) => page));
@@ -1896,8 +1860,7 @@ class _YouTabState extends State<YouTab> {
   @override
   Widget build(BuildContext context) {
     final repository = context.repository;
-    final appearance = AppearanceScope.of(context);
-    // Null where the app doesn't hand them down (a test's bare app): no Voice section.
+    // Null where the app doesn't hand them down (a test's bare app): no Audio section without either.
     final voicePrefs = VoicePrefsScope.maybeOf(context);
     final sounds = SoundsScope.maybeOf(context);
     final colors = context.theme.colors;
@@ -1916,28 +1879,12 @@ class _YouTabState extends State<YouTab> {
           ),
           child: Column(children: rows),
         );
-        Widget row(String label, VoidCallback onTap, {String? value, bool warn = false}) =>
-            GlassRow(label: label, detail: value, destructive: warn, onPressed: onTap);
-        Widget toggle(String label, String detail, bool value, ValueChanged<bool> onChanged) => Semantics(
-          container: true,
-          child: Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-            child: Row(
-              children: [
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(label, style: DuvetType.rowTitle.copyWith(color: colors.foreground)),
-                      Text(detail, style: DuvetType.caption.copyWith(color: colors.mutedForeground)),
-                    ],
-                  ),
-                ),
-                const SizedBox(width: 12),
-                DuvetSwitch(label: label, value: value, onChanged: onChanged),
-              ],
-            ),
-          ),
+        // A section, its icon on its colour as the desktop lists them.
+        Widget section(String label, IconData icon, Color tile, Widget page, {String? detail}) => GlassRow(
+          label: label,
+          detail: detail,
+          leading: _SectionTile(icon: icon, color: tile),
+          onPressed: () => _push(page),
         );
         return LargeTitlePage(
           title: 'You',
@@ -1946,8 +1893,8 @@ class _YouTabState extends State<YouTab> {
           slivers: [
             SliverPadding(
               padding: const EdgeInsets.fromLTRB(16, 16, 16, 0),
-              // Built whole, not lazily: a short page, and every row (Storage,
-              // the Developer portal) exists for finders and screen readers alike.
+              // Built whole, not lazily: a short page, and every row (Sign
+              // out last) exists for finders and screen readers alike.
               sliver: SliverToBoxAdapter(
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -1982,24 +1929,19 @@ class _YouTabState extends State<YouTab> {
                               ],
                             ),
                           ),
+                          // My account, as the desktop's head opens it.
                           DuvetButton(label: 'Edit', onPressed: () => _push(const EditProfilePage())),
                         ],
                       ),
                     ),
-                    if (!profile.emailVerified) ...[
-                      const SizedBox(height: 16),
-                      panel([
-                        row('Verify your email', () => _push(const VerifyEmailPage()), value: 'Not verified yet'),
-                      ]),
-                    ],
                     const SizedBox(height: 16),
                     panel([
-                      row(
-                        'Friends',
-                        () => _push(const FriendsPage()),
-                        value: repository.friends.value.incoming.isEmpty
+                      GlassRow(
+                        label: 'Friends',
+                        detail: repository.friends.value.incoming.isEmpty
                             ? null
                             : '${repository.friends.value.incoming.length} waiting',
+                        onPressed: () => _push(const FriendsPage()),
                       ),
                     ]),
                     // What others see while you're connected.
@@ -2010,98 +1952,43 @@ class _YouTabState extends State<YouTab> {
                       options: const {Presence.online: 'Online', Presence.doNotDisturb: 'Do not disturb'},
                       onChanged: _setStatus,
                     ),
-                    const Overline('Appearance'),
-                    Segmented<ThemeMode>(
-                      label: 'Appearance',
-                      value: appearance.value,
-                      options: const {ThemeMode.system: 'System', ThemeMode.light: 'Light', ThemeMode.dark: 'Dark'},
-                      onChanged: appearance.set,
-                    ),
-                    const SizedBox(height: 12),
+                    const Overline('Settings'),
                     panel([
-                      row(
-                        'Code theme',
-                        () => showGlassDialogSheet<void>(
-                          context,
-                          label: 'Code theme',
-                          builder: (_) => const _CodeThemeSheet(),
+                      section('My account', FLucideIcons.user, const Color(0xFF5E6380), const EditProfilePage()),
+                      section('Attachments', FLucideIcons.paperclip, const Color(0xFF0B6FE8), const MyFilesPage()),
+                      section(
+                        'Security',
+                        FLucideIcons.shield,
+                        const Color(0xFF2F9E62),
+                        const SecurityPage(),
+                        detail: profile.emailVerified ? null : 'Email not verified',
+                      ),
+                      if (sounds != null || voicePrefs != null)
+                        section(
+                          'Audio',
+                          FLucideIcons.volume2,
+                          const Color(0xFFF97316),
+                          AudioPage(sounds: sounds, prefs: voicePrefs),
                         ),
-                        value: appearance.codeTheme == null ? 'GitHub' : 'Custom',
-                      ),
+                      section('Appearance', FLucideIcons.palette, const Color(0xFF2F4CFF), const AppearancePage()),
                     ]),
-                    // The desktop's Messages: bubbles, or its flat rows.
-                    const Overline('Messages'),
-                    Segmented<MessageLayout>(
-                      label: 'Message layout',
-                      value: appearance.messageLayout,
-                      options: const {MessageLayout.bubbles: 'Bubbles', MessageLayout.flat: 'Flat rows'},
-                      onChanged: appearance.setMessageLayout,
-                    ),
-                    Padding(
-                      padding: const EdgeInsets.fromLTRB(4, 8, 4, 0),
-                      child: Text(
-                        'Flat rows fit more on screen; bubbles are easier to follow.',
-                        style: DuvetType.caption.copyWith(color: colors.mutedForeground),
-                      ),
-                    ),
-                    const Overline('Reply to a message'),
-                    _ReplyGesturePicker(value: appearance.replyGesture, onChanged: appearance.setReplyGesture),
-                    const _LauncherIconPicker(),
-                    if (voicePrefs != null) ...[
-                      const Overline('Voice'),
-                      ListenableBuilder(
-                        listenable: voicePrefs,
-                        builder: (context, _) => panel([
-                          toggle(
-                            'Faces in voice',
-                            'Voice tiles show everyone’s animated face instead of their picture',
-                            voicePrefs.facesInVoice,
-                            voicePrefs.setFacesInVoice,
-                          ),
-                          toggle(
-                            'Noise suppression',
-                            'Filters background noise from your microphone',
-                            voicePrefs.noiseSuppression,
-                            voicePrefs.setNoiseSuppression,
-                          ),
-                          if (sounds != null) row('Sounds', () => _push(SoundsPage(sounds: sounds))),
-                        ]),
-                      ),
-                    ],
-                    const Overline('Storage'),
-                    Semantics(
-                      container: true,
-                      button: true,
-                      label: 'My files',
-                      onTap: () => _push(const MyFilesPage()),
-                      child: GestureDetector(
-                        onTap: () => _push(const MyFilesPage()),
-                        // Where the uploads go: the user's own bucket while one is active.
-                        child: switch (_storage) {
-                          null => panel([row('My files', () => _push(const MyFilesPage()))]),
-                          StorageInfo(:final activeBucket?) => BucketMeter(bucket: activeBucket),
-                          final storage => StorageMeter(storage: storage, images: 0, files: storage.used, voice: 0),
-                        },
-                      ),
-                    ),
-                    const Overline('Developer'),
+                    // Apart, as the desktop's.
+                    const SizedBox(height: 16),
                     panel([
-                      row(
-                        'Developer portal',
-                        () => _push(const DeveloperPage()),
-                        value: switch (repository.teamInvites.value.length) {
+                      section(
+                        'Developer',
+                        FLucideIcons.code,
+                        const Color(0xFF5F45B5),
+                        const DeveloperPage(),
+                        detail: switch (repository.teamInvites.value.length) {
                           0 => null,
                           1 => '1 invite',
                           final n => '$n invites',
                         },
                       ),
                     ]),
-                    const Overline('Account'),
-                    panel([
-                      row('Change email', () => _push(const ChangeEmailPage())),
-                      row('Reset password', _sendResetPassword, value: _sendingReset ? 'Sending…' : null),
-                      row('Sign out', repository.logOut, warn: true),
-                    ]),
+                    const SizedBox(height: 16),
+                    panel([GlassRow(label: 'Sign out', destructive: true, onPressed: repository.logOut)]),
                   ],
                 ),
               ),
@@ -2109,6 +1996,185 @@ class _YouTabState extends State<YouTab> {
           ],
         );
       },
+    );
+  }
+}
+
+/// A section's icon on its colour, white, as the desktop's settings list has
+/// them.
+class _SectionTile extends StatelessWidget {
+  final IconData icon;
+  final Color color;
+  const _SectionTile({required this.icon, required this.color});
+
+  @override
+  Widget build(BuildContext context) => ExcludeSemantics(
+    child: Container(
+      width: 30,
+      height: 30,
+      alignment: Alignment.center,
+      decoration: BoxDecoration(color: color, borderRadius: BorderRadius.circular(9)),
+      child: Icon(icon, size: 18, color: const Color(0xFFFFFFFF)),
+    ),
+  );
+}
+
+/// Security, as the desktop's section: whether the email is verified, then
+/// signing in: the password, and the email.
+class SecurityPage extends StatefulWidget {
+  const SecurityPage({super.key});
+
+  @override
+  State<SecurityPage> createState() => _SecurityPageState();
+}
+
+class _SecurityPageState extends State<SecurityPage> {
+  // A reset link on its way: a second tap doesn't send another.
+  bool _sendingReset = false;
+
+  void _push(Widget page) =>
+      Navigator.of(context, rootNavigator: true).push(MaterialPageRoute<void>(builder: (_) => page));
+
+  // The emailed link opens the reset page, as Forgot password's does.
+  Future<void> _sendResetPassword() async {
+    if (_sendingReset) return;
+    final sure = await confirmDestructive(
+      context,
+      title: 'Reset your password?',
+      body: 'We’ll email you a link to set a new one. Your password stays as it is until you do.',
+      action: 'Send link',
+      destructive: false,
+    );
+    if (!sure || !mounted) return;
+    setState(() => _sendingReset = true);
+    try {
+      await context.repository.sendResetPasswordEmail();
+      if (mounted) _toast(context, 'We emailed you a link to set a new password');
+    } catch (e) {
+      if (mounted) _toast(context, e is ActionFailed ? e.message : 'Couldn’t send the link');
+    } finally {
+      if (mounted) setState(() => _sendingReset = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = context.theme.colors;
+    return ValueListenableBuilder(
+      valueListenable: context.repository.profile,
+      builder: (context, profile, _) => AdminPage(
+        title: 'Security',
+        children: [
+          AdminPanel(
+            children: [
+              if (profile?.emailVerified ?? true)
+                Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 14),
+                  child: Row(
+                    children: [
+                      ExcludeSemantics(child: Icon(FLucideIcons.mailCheck, size: 24, color: context.duvet.live)),
+                      const SizedBox(width: 12),
+                      Expanded(
+                        child: Text('Email verified', style: DuvetType.label.copyWith(color: colors.foreground)),
+                      ),
+                    ],
+                  ),
+                )
+              else
+                GlassRow(
+                  icon: FLucideIcons.mail,
+                  label: 'Verify your email',
+                  detail: 'Not verified yet',
+                  onPressed: () => _push(const VerifyEmailPage()),
+                ),
+            ],
+          ),
+          const Overline('Sign-in'),
+          AdminPanel(
+            children: [
+              GlassRow(
+                icon: FLucideIcons.keyRound,
+                label: 'Reset password',
+                detail: _sendingReset ? 'Sending…' : null,
+                onPressed: _sendResetPassword,
+              ),
+              GlassRow(icon: FLucideIcons.mail, label: 'Change email', onPressed: () => _push(const ChangeEmailPage())),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// Appearance, as the desktop's section: the theme, how messages show, then
+/// what the desktop has no need of (the gesture that replies, the app's icon)
+/// beside code blocks and faces in voice.
+class AppearancePage extends StatelessWidget {
+  const AppearancePage({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    final appearance = AppearanceScope.of(context);
+    // Null where the app doesn't hand them down (a test's bare app): no Voice group.
+    final voicePrefs = VoicePrefsScope.maybeOf(context);
+    final colors = context.theme.colors;
+    return AdminPage(
+      title: 'Appearance',
+      children: [
+        const Overline('Theme'),
+        Segmented<ThemeMode>(
+          label: 'Theme',
+          value: appearance.value,
+          options: const {ThemeMode.system: 'System', ThemeMode.light: 'Light', ThemeMode.dark: 'Dark'},
+          onChanged: appearance.set,
+        ),
+        // The desktop's Messages: bubbles, or its flat rows.
+        const Overline('Messages'),
+        Segmented<MessageLayout>(
+          label: 'Message layout',
+          value: appearance.messageLayout,
+          options: const {MessageLayout.bubbles: 'Bubbles', MessageLayout.flat: 'Flat rows'},
+          onChanged: appearance.setMessageLayout,
+        ),
+        Padding(
+          padding: const EdgeInsets.fromLTRB(4, 8, 4, 0),
+          child: Text(
+            'Flat rows fit more on screen; bubbles are easier to follow.',
+            style: DuvetType.caption.copyWith(color: colors.mutedForeground),
+          ),
+        ),
+        const Overline('Reply to a message'),
+        _ReplyGesturePicker(value: appearance.replyGesture, onChanged: appearance.setReplyGesture),
+        const Overline('Code blocks'),
+        AdminPanel(
+          children: [
+            GlassRow(
+              label: 'Code theme',
+              detail: appearance.codeTheme == null ? 'GitHub' : 'Custom',
+              onPressed: () =>
+                  showGlassDialogSheet<void>(context, label: 'Code theme', builder: (_) => const _CodeThemeSheet()),
+            ),
+          ],
+        ),
+        const _LauncherIconPicker(),
+        if (voicePrefs != null) ...[
+          const Overline('Voice'),
+          ListenableBuilder(
+            listenable: voicePrefs,
+            builder: (context, _) => AdminPanel(
+              children: [
+                SettingToggle(
+                  label: 'Faces in voice',
+                  detail: 'Voice tiles show everyone’s animated face instead of their picture',
+                  value: voicePrefs.facesInVoice,
+                  onChanged: voicePrefs.setFacesInVoice,
+                ),
+              ],
+            ),
+          ),
+        ],
+      ],
     );
   }
 }

@@ -171,14 +171,14 @@ void main() {
         theme: Duvet.material(Brightness.light),
         home: FTheme(
           data: Duvet.theme(Brightness.light),
-          child: SoundsPage(sounds: sounds),
+          child: AudioPage(sounds: sounds),
         ),
       ),
     );
-    for (final label in ['Master Volume', 'Notifications', 'Join Voice', 'Leave Voice', 'Incoming Call']) {
+    for (final label in ['Master volume', 'Notifications', 'Join voice', 'Leave voice', 'Incoming call']) {
       expect(find.text(label), findsOneWidget);
     }
-    expect(find.bySemanticsLabel('Play Master Volume'), findsNothing);
+    expect(find.bySemanticsLabel('Play Master volume'), findsNothing);
 
     final master = find.byType(Slider).first;
     await tester.drag(master, const Offset(600, 0));
@@ -194,13 +194,13 @@ void main() {
 
     // A screen reader's own slider, as the Slider's semantics empty the app's tree on iOS: each volume once,
     // adjustable in steps of 10% between Off and 200%.
-    final atMost = tester.getSemantics(find.bySemanticsLabel('Master Volume'));
+    final atMost = tester.getSemantics(find.bySemanticsLabel('Master volume'));
     expect(atMost.value, '200%');
     expect(atMost.getSemanticsData().hasAction(SemanticsAction.increase), isFalse);
-    tester.semantics.decrease(find.semantics.byLabel('Master Volume'));
+    tester.semantics.decrease(find.semantics.byLabel('Master volume'));
     await tester.pumpAndSettle();
     expect(sounds.master, 190);
-    expect(tester.getSemantics(find.bySemanticsLabel('Master Volume')).value, '190%');
+    expect(tester.getSemantics(find.bySemanticsLabel('Master volume')).value, '190%');
 
     final off = tester.getSemantics(find.bySemanticsLabel('Notifications volume'));
     expect(off.value, 'Off');
@@ -215,7 +215,7 @@ void main() {
     await tester.pumpAndSettle();
 
     ringer.isQuiet = true;
-    await tester.tap(find.bySemanticsLabel('Play Join Voice'));
+    await tester.tap(find.bySemanticsLabel('Play Join voice'));
     await tester.pumpAndSettle();
     expect(player.played, [(Sound.voiceJoin, 0.5, false)]);
     semantics.dispose();
@@ -265,16 +265,16 @@ void main() {
       theme: Duvet.material(Brightness.light),
       home: FTheme(data: Duvet.theme(Brightness.light), child: child),
     );
-    await tester.pumpWidget(page(SoundsPage(sounds: sounds)));
-    await tester.tap(find.bySemanticsLabel('Play Incoming Call'));
+    await tester.pumpWidget(page(AudioPage(sounds: sounds)));
+    await tester.tap(find.bySemanticsLabel('Play Incoming call'));
     await tester.pump();
-    expect(find.bySemanticsLabel('Play Incoming Call'), findsNothing);
-    await tester.tap(find.bySemanticsLabel('Pause Incoming Call'));
+    expect(find.bySemanticsLabel('Play Incoming call'), findsNothing);
+    await tester.tap(find.bySemanticsLabel('Pause Incoming call'));
     await tester.pump();
     expect(player.stopped, [Sound.incomingCall]);
-    expect(find.bySemanticsLabel('Play Incoming Call'), findsOneWidget);
+    expect(find.bySemanticsLabel('Play Incoming call'), findsOneWidget);
 
-    await tester.tap(find.bySemanticsLabel('Play Join Voice'));
+    await tester.tap(find.bySemanticsLabel('Play Join voice'));
     await tester.pump();
     await tester.pumpWidget(page(const SizedBox()));
     expect(player.stopped, [Sound.incomingCall, Sound.voiceJoin]);

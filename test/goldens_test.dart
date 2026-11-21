@@ -301,6 +301,17 @@ void main() {
       }),
     );
 
+    // #284: You, with the desktop's settings sections, each a page of its own.
+    testWidgets(
+      'you, ${b.name}',
+      (tester) => withShadows(() async {
+        await app(tester);
+        await tester.tap(find.descendant(of: find.byType(DuvetTabBar), matching: find.text('You')));
+        await tester.pumpAndSettle();
+        await expectLater(find.byType(DuvetApp), matchesGoldenFile('goldens/you_${b.name}.png'));
+      }),
+    );
+
     testWidgets(
       'empty DM, ${b.name}',
       (tester) => withShadows(() async {

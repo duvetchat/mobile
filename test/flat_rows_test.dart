@@ -83,13 +83,22 @@ void main() {
     await tester.pumpAndSettle();
   }
 
+  // The You tab's Appearance page, where the layout is picked (#284), and back to the tab.
+  Future<void> pick(WidgetTester tester, String layout) async {
+    await tab(tester, 'You');
+    await tester.tap(find.text('Appearance'));
+    await tester.pumpAndSettle();
+    await tapLabel(tester, layout);
+    await tester.tap(find.bySemanticsLabel('Back').last);
+    await tester.pumpAndSettle();
+  }
+
   bool checked(WidgetTester tester, String label) =>
       tester.getSemantics(find.bySemanticsLabel(label).last).flagsCollection.isChecked.toString().contains('isTrue');
 
   // Appearance's choice, then Maya's chat.
   Future<void> openMaya(WidgetTester tester, {String layout = 'Flat rows'}) async {
-    await tab(tester, 'You');
-    await tapLabel(tester, layout);
+    await pick(tester, layout);
     await tab(tester, 'Chats');
     await tester.tap(find.text('Maya').first);
     await tester.pumpAndSettle();
@@ -105,10 +114,14 @@ void main() {
   testWidgets('Appearance has Bubbles and Flat rows, Bubbles by default, and a chat follows the pick', (tester) async {
     await pumpApp(tester);
     await tab(tester, 'You');
+    await tester.tap(find.text('Appearance'));
+    await tester.pumpAndSettle();
     expect(checked(tester, 'Bubbles'), isTrue);
     expect(checked(tester, 'Flat rows'), isFalse);
     await tapLabel(tester, 'Flat rows');
     expect(checked(tester, 'Flat rows'), isTrue);
+    await tester.tap(find.bySemanticsLabel('Back').last);
+    await tester.pumpAndSettle();
 
     // The user's own message on the left as everyone's, with no azure.
     await tab(tester, 'Chats');
@@ -252,8 +265,7 @@ void main() {
         (e.renderObject! as RenderBox).localToGlobal(Offset.zero) & (e.renderObject! as RenderBox).size,
     ];
     Future<void> openHeld(String layout) async {
-      await tab(tester, 'You');
-      await tapLabel(tester, layout);
+      await pick(tester, layout);
       await tab(tester, 'Chats');
       repository.holdHistory = Completer<void>();
       await tester.tap(find.text('Maya').first);

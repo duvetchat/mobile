@@ -368,18 +368,19 @@ void main() {
       expect(find.byType(SpaceDirectory), findsOneWidget);
     });
 
-    testWidgets('You asks for the storage each time it comes into view, and at no other', (tester) async {
+    // The storage shows on Attachments, its section's page (#284), which asks for it as it opens; the tab, built
+    // behind another, in view, or through a theme's fade, asks for nothing.
+    testWidgets('You asks for no storage; its Attachments page asks each time it opens', (tester) async {
       final repository = await pumpHome(tester, _CountedStorage());
-      // Built behind Chats, it asks for nothing.
       await tester.pumpAndSettle();
       expect(built(), names);
       expect(repository.asked, 0);
 
       await select(tester, 'You');
       await tester.pumpAndSettle();
-      expect(repository.asked, 1);
+      expect(repository.asked, 0);
 
-      // A theme's change reaches the tab every frame of its fade, and asks nothing more.
+      // A theme's change reaches the tab every frame of its fade, and asks nothing.
       addTearDown(tester.platformDispatcher.clearPlatformBrightnessTestValue);
       final before = Theme.of(tester.element(find.byType(YouTab))).brightness;
       tester.platformDispatcher.platformBrightnessTestValue = before == Brightness.dark
@@ -387,21 +388,15 @@ void main() {
           : Brightness.dark;
       await tester.pumpAndSettle();
       expect(Theme.of(tester.element(find.byType(YouTab))).brightness, isNot(before));
-      expect(repository.asked, 1);
+      expect(repository.asked, 0);
 
-      await select(tester, 'Chats');
-      await tester.pumpAndSettle();
-      expect(repository.asked, 1);
-      await select(tester, 'You');
-      await tester.pumpAndSettle();
-      expect(repository.asked, 2);
-    });
-
-    testWidgets('You asks for the storage when it is the tab picked first', (tester) async {
-      final repository = await pumpHome(tester, _CountedStorage());
-      await select(tester, 'You');
-      await tester.pumpAndSettle();
-      expect(repository.asked, 1);
+      for (final opened in [1, 2]) {
+        await tester.tap(find.text('Attachments'));
+        await tester.pumpAndSettle();
+        expect(repository.asked, opened);
+        await tester.binding.handlePopRoute();
+        await tester.pumpAndSettle();
+      }
     });
 
     testWidgets('the app\'s icon is parsed while the session restores, once for every screen after', (tester) async {
