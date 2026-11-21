@@ -60,6 +60,35 @@ class UserAvatar extends StatelessWidget {
   }
 }
 
+/// A group's mark, where a group shows in a person's place: its row in the
+/// chats, its call, its calls in the history, its info. A group has no
+/// picture, and a face made from its name, as a person without one gets,
+/// would read as someone's (#288). The desktop's (desktop#376): lucide's
+/// users-round on the chosen fill. Its name is written beside it wherever it
+/// shows, so it says nothing to screen readers.
+class GroupMark extends StatelessWidget {
+  final double size;
+  const GroupMark({this.size = 40, super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    final tokens = context.duvet;
+    return ExcludeSemantics(
+      child: Center(
+        widthFactor: 1,
+        heightFactor: 1,
+        child: Container(
+          width: size,
+          height: size,
+          alignment: Alignment.center,
+          decoration: BoxDecoration(color: tokens.selectedFill, shape: BoxShape.circle),
+          child: Icon(FLucideIcons.usersRound, size: size * 0.6, color: tokens.violetText),
+        ),
+      ),
+    );
+  }
+}
+
 /// A person in voice as the desktop draws everyone with "Faces in voice" on:
 /// their [Facehash] whatever their picture, its mouth opening with their voice.
 class VoiceFace extends StatelessWidget {

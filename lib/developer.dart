@@ -95,7 +95,7 @@ class _DeveloperPageState extends State<DeveloperPage> {
           final invites = repository.teamInvites.value;
           final teams = snapshot.data;
           return AdminPage(
-            title: 'Developer portal',
+            title: 'Developer',
             actions: [IconAction(icon: FLucideIcons.plus, label: 'New team', onPressed: _new)],
             children: [
               if (invites.isNotEmpty) ...[

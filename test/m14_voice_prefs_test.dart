@@ -110,7 +110,7 @@ void main() {
     expect(await _stored(), {'facesInVoice': false, 'noiseSuppression': false});
   });
 
-  group('the Voice section', () {
+  group('the voice settings', () {
     setUpAll(() async {
       TestWidgetsFlutterBinding.ensureInitialized();
       EmojiCatalog.debugUse(await EmojiCatalog.load());
@@ -139,32 +139,49 @@ void main() {
 
     Finder switchFor(String label) => find.byWidgetPredicate((w) => w is DuvetSwitch && w.label == label);
 
-    testWidgets('its switches turn faces and noise suppression on and off', (tester) async {
-      final (prefs, _) = await pumpYou(tester);
-      expect(find.text('Voice tiles show everyone’s animated face instead of their picture'), findsOneWidget);
-      expect(find.text('Filters background noise from your microphone'), findsOneWidget);
+    // A section of the You tab's, then its page (#284).
+    Future<void> open(WidgetTester tester, String section) async {
+      final row = find.text(section);
+      await tester.ensureVisible(row);
+      await tester.pumpAndSettle();
+      await tester.tap(row);
+      await tester.pumpAndSettle();
+    }
 
+    testWidgets('their switches turn faces (Appearance) and noise suppression (Audio) on and off', (tester) async {
+      final (prefs, _) = await pumpYou(tester);
+      await open(tester, 'Appearance');
+      expect(find.text('Voice tiles show everyone’s animated face instead of their picture'), findsOneWidget);
       await tester.ensureVisible(switchFor('Faces in voice'));
       await tester.pumpAndSettle();
       await tester.tap(switchFor('Faces in voice'));
       await tester.pumpAndSettle();
       expect(prefs.facesInVoice, isTrue);
       expect(tester.widget<DuvetSwitch>(switchFor('Faces in voice')).value, isTrue);
+      await tester.tap(find.bySemanticsLabel('Back').last);
+      await tester.pumpAndSettle();
 
+      await open(tester, 'Audio');
+      // After every sound's volume.
+      await tester.scrollUntilVisible(
+        switchFor('Noise suppression'),
+        200,
+        scrollable: find.descendant(of: find.byType(AudioPage), matching: find.byType(Scrollable)).first,
+      );
+      await tester.pumpAndSettle();
+      expect(find.text('Filters background noise from your microphone'), findsOneWidget);
       await tester.tap(switchFor('Noise suppression'));
       await tester.pumpAndSettle();
       expect(prefs.noiseSuppression, isFalse);
       expect(tester.widget<DuvetSwitch>(switchFor('Noise suppression')).value, isFalse);
     });
 
-    testWidgets('Sounds opens the sounds page', (tester) async {
-      final (_, sounds) = await pumpYou(tester);
-      final row = find.text('Sounds');
-      await tester.ensureVisible(row);
-      await tester.pumpAndSettle();
-      await tester.tap(row);
-      await tester.pumpAndSettle();
-      expect(tester.widget<SoundsPage>(find.byType(SoundsPage)).sounds, same(sounds));
+    testWidgets("Audio opens its page, with the app's sounds and voice settings", (tester) async {
+      final (prefs, sounds) = await pumpYou(tester);
+      await open(tester, 'Audio');
+      final page = tester.widget<AudioPage>(find.byType(AudioPage));
+      expect(page.sounds, same(sounds));
+      expect(page.prefs, same(prefs));
     });
   });
 

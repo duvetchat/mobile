@@ -84,6 +84,22 @@ void main() {
     await tester.pumpAndSettle();
   }
 
+  // A section's row on the You tab, then its page (#284).
+  Future<void> openSection(WidgetTester tester, String section) async {
+    await tester.ensureVisible(find.text(section));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text(section));
+    await tester.pumpAndSettle();
+  }
+
+  Future<void> back(WidgetTester tester) async {
+    await tester.tap(find.bySemanticsLabel('Back').last);
+    await tester.pumpAndSettle();
+  }
+
+  // The profile's page, My account, open: its title in its bar, not the tab's row of that name.
+  Finder editor() => find.descendant(of: find.byType(GlassTopBar), matching: find.text('My account'));
+
   test('password strength grows with length and kinds of characters', () {
     expect(passwordStrength('abc').score, lessThan(2));
     expect(passwordStrength('abc').hint, startsWith('Too short'));
@@ -265,19 +281,20 @@ void main() {
     expect(repository.account, ['alias Gabriela']);
     expect(find.text('Gabriela'), findsWidgets);
 
+    await openSection(tester, 'Appearance');
     await tapLabel(tester, 'Dark');
     expect(appearance.value, ThemeMode.dark);
     expect(store.mode, 'dark');
-    expect(Theme.of(tester.element(find.text('Gabriela').first)).brightness, Brightness.dark);
+    expect(Theme.of(tester.element(find.byType(AppearancePage))).brightness, Brightness.dark);
 
     expect(appearance.replyGesture, ReplyGesture.swipeLeft);
     await tester.ensureVisible(find.text('Swipe right'));
     await tapLabel(tester, 'Swipe right');
     expect(appearance.replyGesture, ReplyGesture.swipeRight);
     expect(store.replyGesture, 'swipeRight');
+    await back(tester);
 
-    await tester.ensureVisible(find.text('Change email'));
-    await tester.pumpAndSettle();
+    await openSection(tester, 'Security');
     await tapLabel(tester, 'Change email');
     await tester.enterText(find.byType(EditableText), 'new@example.com');
     await tapLabel(tester, 'Send link');
@@ -297,7 +314,8 @@ void main() {
     );
     await pumpApp(tester);
     await openYou(tester);
-    // Centered: aligned to the top, the row would sit under the collapsed title bar.
+    await openSection(tester, 'Appearance');
+    // Centered: aligned to the top, the row would sit under the bar.
     await Scrollable.ensureVisible(tester.element(find.text('Code theme')), alignment: 0.5);
     await tester.pumpAndSettle();
     await tapLabel(tester, 'Code theme, GitHub');
@@ -330,8 +348,7 @@ void main() {
   testWidgets('You: reset password emails a link, and says why when refused', (tester) async {
     final repository = await pumpApp(tester);
     await openYou(tester);
-    await Scrollable.ensureVisible(tester.element(find.text('Reset password')), alignment: 0.5);
-    await tester.pumpAndSettle();
+    await openSection(tester, 'Security');
     // It asks first: Cancel sends nothing.
     await tapLabel(tester, 'Reset password');
     expect(find.text('Reset your password?'), findsOneWidget);
@@ -355,38 +372,14 @@ void main() {
     semantics.dispose();
   });
 
-  testWidgets('You: your bubbles take a swatch; a pale one gets dark ink', (tester) async {
+  // #293: bubbles are azure, as on the desktop, which has no such setting.
+  testWidgets('You: no colour to pick for your bubbles', (tester) async {
     await pumpApp(tester);
     await openYou(tester);
-    // Mid-screen: the Voice section above pushes the swatches down to the tab bar's glass.
-    await Scrollable.ensureVisible(tester.element(find.bySemanticsLabel('Yellow')), alignment: 0.5);
-    await tester.pumpAndSettle();
-    Color? ink() => tester.widget<Text>(find.text('Looks good to me')).style?.color;
-    expect(ink(), const Color(0xFFFFFFFF));
-
-    await tapLabel(tester, 'Yellow');
-    expect(appearance.bubbleColor, 0xD6A400);
-    expect(store.bubbleColor, '${0xD6A400}');
-    expect(ink(), bubbleDarkInk);
-
-    await tapLabel(tester, 'Azure');
-    expect(appearance.bubbleColor, isNull);
-    expect(store.bubbleColor, isNull);
-    expect(ink(), const Color(0xFFFFFFFF));
-    semantics.dispose();
-  });
-
-  testWidgets('You: your bubbles take any color, typed as #RRGGBB', (tester) async {
-    await pumpApp(tester);
-    await openYou(tester);
-    await Scrollable.ensureVisible(tester.element(find.bySemanticsLabel('Custom color')), alignment: 0.5);
-    await tester.pumpAndSettle();
-    await tapLabel(tester, 'Custom color');
-    await tester.enterText(find.descendant(of: find.byType(ColorPick), matching: find.byType(EditableText)), '#F0F0F0');
-    await tester.pumpAndSettle();
-    expect(appearance.bubbleColor, 0xF0F0F0);
-    expect(store.bubbleColor, '${0xF0F0F0}');
-    expect(tester.widget<Text>(find.text('Looks good to me')).style?.color, bubbleDarkInk);
+    await openSection(tester, 'Appearance');
+    expect(find.text('YOUR BUBBLES'), findsNothing);
+    expect(find.text('Looks good to me'), findsNothing);
+    expect(find.byType(ColorPick), findsNothing);
     semantics.dispose();
   });
 
@@ -533,7 +526,7 @@ void main() {
     await tapLabel(tester, 'Save');
     final dir = File(path).parent.path;
     expect(repository.account, ['avatar $dir/avatar.png', 'banner $dir/banner.png', 'alias Gaby']);
-    expect(find.text('Edit profile'), findsNothing);
+    expect(editor(), findsNothing);
     semantics.dispose();
   });
 
@@ -546,7 +539,7 @@ void main() {
     await tapLabel(tester, 'Cancel');
     expect(find.text('Unsaved changes'), findsOneWidget);
     await tapLabel(tester, 'Discard');
-    expect(find.text('Edit profile'), findsNothing);
+    expect(editor(), findsNothing);
     expect(repository.account, isEmpty);
     semantics.dispose();
   });
@@ -585,7 +578,7 @@ void main() {
     await tapLabel(tester, 'Save');
     expect(repository.account, ['remove avatar', 'alias Gaby']);
     expect(repository.profile.value!.avatarUrl, isNull);
-    expect(find.text('Edit profile'), findsNothing);
+    expect(editor(), findsNothing);
     semantics.dispose();
   });
 
@@ -598,7 +591,7 @@ void main() {
     await tapLabel(tester, 'Cancel');
     expect(find.text('Unsaved changes'), findsOneWidget);
     await tapLabel(tester, 'Discard');
-    expect(find.text('Edit profile'), findsNothing);
+    expect(editor(), findsNothing);
     expect(repository.account, isEmpty);
     expect(repository.profile.value!.avatarUrl, isNotNull);
     semantics.dispose();
@@ -612,7 +605,7 @@ void main() {
     await tapLabel(tester, 'Edit');
     await tapLabel(tester, 'Cancel');
     expect(find.text('Unsaved changes'), findsNothing);
-    expect(find.text('Edit profile'), findsNothing);
+    expect(editor(), findsNothing);
 
     await tapLabel(tester, 'Edit');
     await tester.enterText(find.byType(EditableText).first, 'Gabriela');
@@ -621,12 +614,12 @@ void main() {
     await tester.pumpAndSettle();
     expect(find.text('Unsaved changes'), findsOneWidget);
     await tapLabel(tester, 'Keep editing');
-    expect(find.text('Edit profile'), findsOneWidget);
+    expect(editor(), findsOneWidget);
     // The field, and the card above it showing the name as typed.
     expect(find.text('Gabriela'), findsNWidgets(2));
     await tapLabel(tester, 'Save');
     expect(repository.account, ['alias Gabriela']);
-    expect(find.text('Edit profile'), findsNothing);
+    expect(editor(), findsNothing);
     semantics.dispose();
   });
 
@@ -639,7 +632,7 @@ void main() {
     repository.pictureRefused = 'File is too large';
     await tapLabel(tester, 'Save');
     expect(find.text('File is too large'), findsOneWidget);
-    expect(find.text('Edit profile'), findsOneWidget);
+    expect(editor(), findsOneWidget);
     expect(repository.account, isEmpty);
 
     repository.pictureRefused = null;
@@ -663,7 +656,7 @@ void main() {
     expect(find.text('Uploading · 42%'), findsOneWidget);
     repository.holdUploads!.complete();
     await tester.pumpAndSettle();
-    expect(find.text('Edit profile'), findsNothing);
+    expect(editor(), findsNothing);
     semantics.dispose();
   });
 
@@ -806,7 +799,7 @@ void main() {
   testWidgets('with a bucket of their own active, storage shows it, then the default storage and every bucket', (
     tester,
   ) async {
-    // Before the app starts: the You tab reads the storage once, as it's built.
+    // Before the app starts: the Attachments page reads the storage as it opens.
     await pumpApp(
       tester,
       setUp: (r) => r.usage = const StorageInfo(
@@ -819,14 +812,13 @@ void main() {
       ),
     );
     await openYou(tester);
-    await tester.ensureVisible(find.byType(BucketMeter));
-    await tester.pumpAndSettle();
-    expect(find.byType(StorageMeter), findsNothing, reason: 'the active bucket keeps the uploads');
-    expect(find.bySemanticsLabel('Your own storage, Backblaze: 3.0 MB used · no quota'), findsOneWidget);
-
-    await tester.tap(find.byType(BucketMeter));
-    await tester.pumpAndSettle();
-    expect(find.bySemanticsLabel(RegExp(r'^Default storage: 0 B of 5\.0 GB used')), findsOneWidget);
+    await openSection(tester, 'Attachments');
+    // The active bucket first: it keeps the uploads.
+    final active = find.bySemanticsLabel('Your own storage, Backblaze: 3.0 MB used · no quota');
+    final standard = find.bySemanticsLabel(RegExp(r'^Default storage: 0 B of 5\.0 GB used'));
+    expect(active, findsOneWidget);
+    expect(standard, findsOneWidget);
+    expect(tester.getTopLeft(active).dy, lessThan(tester.getTopLeft(standard).dy));
     expect(find.text('YOUR BUCKETS'), findsOneWidget);
     expect(find.text('3.0 MB used · Active'), findsOneWidget);
     expect(find.text('1.0 MB of 10.0 MB · Off'), findsOneWidget);
@@ -855,10 +847,7 @@ void main() {
     ];
     repository.usage = const StorageInfo(used: 3 * 1024 * 1024 + 200 * 1024, max: 5 * 1024 * 1024 * 1024);
     await openYou(tester);
-    await tester.ensureVisible(find.byType(StorageMeter));
-    await tester.pumpAndSettle();
-    await tester.tap(find.byType(StorageMeter));
-    await tester.pumpAndSettle();
+    await openSection(tester, 'Attachments');
     expect(find.bySemanticsLabel(RegExp(r'^3\.2 MB of 5\.0 GB used: images 3\.0 MB')), findsOneWidget);
     await tester.ensureVisible(find.text('Voice'));
     await tester.pumpAndSettle();

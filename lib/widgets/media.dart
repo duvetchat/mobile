@@ -339,7 +339,7 @@ class _PlaySquare extends StatelessWidget {
     final colors = context.theme.colors;
     final tokens = context.duvet;
     const radius = BorderRadius.all(Radius.circular(DuvetTokens.radiusField));
-    final ink = ownBubble(context).ink;
+    final ink = ownBubble.ink;
     return Semantics(
       container: true,
       button: true,
@@ -389,7 +389,7 @@ class VoiceNotePlayer extends StatelessWidget {
     final colors = context.theme.colors;
     final tokens = context.duvet;
     final playback = AudioPlayback.instance;
-    final bubble = ownBubble(context);
+    final bubble = ownBubble;
     final ink = mine ? bubble.ink : colors.foreground;
     final bars = fallbackBars(attachment.id, 30);
     return ValueListenableBuilder(
@@ -479,7 +479,7 @@ class _SpeedButton extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final colors = context.theme.colors;
-    final ink = ownBubble(context).ink;
+    final ink = ownBubble.ink;
     final playback = AudioPlayback.instance;
     return ValueListenableBuilder(
       valueListenable: playback.speeds,

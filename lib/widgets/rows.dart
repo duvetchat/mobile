@@ -1109,6 +1109,48 @@ class DuvetSwitch extends StatelessWidget {
   }
 }
 
+/// A setting that's on or off, in a panel: its name and what it does, then
+/// its [DuvetSwitch].
+class SettingToggle extends StatelessWidget {
+  final String label;
+  final String detail;
+  final bool value;
+  final ValueChanged<bool> onChanged;
+  const SettingToggle({
+    required this.label,
+    required this.detail,
+    required this.value,
+    required this.onChanged,
+    super.key,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = context.theme.colors;
+    return Semantics(
+      container: true,
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+        child: Row(
+          children: [
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(label, style: DuvetType.rowTitle.copyWith(color: colors.foreground)),
+                  Text(detail, style: DuvetType.caption.copyWith(color: colors.mutedForeground)),
+                ],
+              ),
+            ),
+            const SizedBox(width: 12),
+            DuvetSwitch(label: label, value: value, onChanged: onChanged),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
 /// One of a few choices, side by side in a recess, the chosen one raised
 /// (Appearance's System, Light, Dark). Each choice's text is its label.
 class Segmented<T> extends StatelessWidget {

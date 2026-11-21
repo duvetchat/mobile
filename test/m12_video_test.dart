@@ -563,17 +563,65 @@ void main() {
 
   IconAction action(WidgetTester tester, String label) =>
       tester.widget(find.byWidgetPredicate((w) => w is IconAction && w.label == label));
+
+  // The chat's Call, then [which] of its menu (#286).
+  Future<void> call(WidgetTester tester, String which) async {
+    await tester.tap(find.bySemanticsLabel('Call'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.bySemanticsLabel(which));
+  }
+
   const accepted = duvet.CallAcceptedEvent(duvet.CallResponseEvent(conversationId: 'c-maya', userId: _maya));
 
-  testWidgets('Video call calls as Call does, and turns the camera on once someone answers', (tester) async {
+  // #286: one call button, as the desktop's (desktop#370), whose menu has both: the bar had a Video call button too.
+  testWidgets('one Call button opens Voice call and Video call; nothing calls before one is picked', (tester) async {
     final semantics = tester.ensureSemantics();
     final app = await pumpApp(tester);
     await tester.tap(find.text('Maya'));
     await tester.pumpAndSettle();
-    // Just left of Call.
-    expect(tester.getTopRight(find.bySemanticsLabel('Video call')), tester.getTopLeft(find.bySemanticsLabel('Call')));
+    final buttons = find.descendant(
+      of: find.byType(GlassTopBar),
+      matching: find.byWidgetPredicate((w) => w is IconAction && (w.label == 'Call' || w.label == 'Video call')),
+    );
+    expect(tester.widgetList<IconAction>(buttons).map((b) => b.label), ['Call']);
 
-    await tester.tap(find.bySemanticsLabel('Video call'));
+    await tester.tap(find.bySemanticsLabel('Call'));
+    await tester.pumpAndSettle();
+    expect(app.gateway.sent, isEmpty);
+    expect(find.bySemanticsLabel('Start a call'), findsOneWidget);
+    expect(find.bySemanticsLabel('Voice call'), findsOneWidget);
+    expect(find.bySemanticsLabel('Video call'), findsOneWidget);
+
+    // Closed without a pick: nothing called.
+    await tester.tapAt(const Offset(20, 600));
+    await tester.pumpAndSettle();
+    expect(find.bySemanticsLabel('Voice call'), findsNothing);
+    expect(app.gateway.sent, isEmpty);
+
+    await tester.tap(find.bySemanticsLabel('Call'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.bySemanticsLabel('Voice call'));
+    await settle(tester);
+    expect(app.gateway.last('CALL_INITIATE'), {
+      'conversation_id': 'c-maya',
+      'member_ids': [FakeRepository.me.id, _maya],
+    });
+    expect(find.text('Calling…'), findsWidgets);
+    app.gateway.push(accepted);
+    await settle(tester);
+    expect(app.voice.target, const CallVoice('c-maya'));
+    expect(app.engine.cameraOpens, 0);
+    semantics.dispose();
+    await finish(tester, app);
+  });
+
+  testWidgets('Video call calls as Voice call does, and turns the camera on once someone answers', (tester) async {
+    final semantics = tester.ensureSemantics();
+    final app = await pumpApp(tester);
+    await tester.tap(find.text('Maya'));
+    await tester.pumpAndSettle();
+
+    await call(tester, 'Video call');
     await settle(tester);
     expect(app.gateway.last('CALL_INITIATE'), {
       'conversation_id': 'c-maya',
@@ -608,7 +656,7 @@ void main() {
     app.engine.cameraAllowed = false;
     await tester.tap(find.text('Maya'));
     await tester.pumpAndSettle();
-    await tester.tap(find.bySemanticsLabel('Video call'));
+    await call(tester, 'Video call');
     await settle(tester);
     app.gateway.push(accepted);
     await settle(tester);
@@ -621,12 +669,12 @@ void main() {
     await finish(tester, app);
   });
 
-  testWidgets('Call places a call without the camera; Video call joins a call going on with it', (tester) async {
+  testWidgets('Voice call places a call without the camera; Video call joins a call going on with it', (tester) async {
     final semantics = tester.ensureSemantics();
     final app = await pumpApp(tester);
     await tester.tap(find.text('Maya'));
     await tester.pumpAndSettle();
-    await tester.tap(find.bySemanticsLabel('Call'));
+    await call(tester, 'Voice call');
     await settle(tester);
     app.gateway.push(accepted);
     await settle(tester);
@@ -639,7 +687,7 @@ void main() {
     app.gateway.push(_state(_maya, 3, room: 'c-maya'));
     await settle(tester);
     expect(find.text('Join'), findsOneWidget);
-    await tester.tap(find.bySemanticsLabel('Video call'));
+    await call(tester, 'Video call');
     await settle(tester);
     expect(app.gateway.types, contains('CALL_ACCEPT'));
     expect(app.voice.cameraOn, isTrue);
@@ -647,7 +695,7 @@ void main() {
     await finish(tester, app);
   });
 
-  testWidgets('Video call shows where Call does, and is out of reach when it is', (tester) async {
+  testWidgets("Call is out of reach while the user's own call rings elsewhere and while in a call", (tester) async {
     final semantics = tester.ensureSemantics();
     final app = await pumpApp(tester);
     // The user's own call from another device: neither button until someone answers.
@@ -656,20 +704,18 @@ void main() {
     await tester.tap(find.text('Maya'));
     await tester.pumpAndSettle();
     expect(action(tester, 'Call').onPressed, isNull);
-    expect(action(tester, 'Video call').onPressed, isNull);
 
     // Answered, and joined from here: in a call, one call at a time.
     app.gateway.push(accepted);
     app.gateway.push(_state(FakeRepository.me.id, 1, room: 'c-maya'));
     app.gateway.push(_state(_maya, 2, room: 'c-maya'));
     await settle(tester);
-    expect(action(tester, 'Video call').onPressed, isNotNull);
+    expect(action(tester, 'Call').onPressed, isNotNull);
     await tester.tap(find.text('Join'));
     await settle(tester);
     await tester.tap(find.bySemanticsLabel('Back').last);
     await settle(tester);
     expect(action(tester, 'Call').onPressed, isNull);
-    expect(action(tester, 'Video call').onPressed, isNull);
     await tester.tap(find.bySemanticsLabel('Back').last);
     await settle(tester);
 
@@ -689,7 +735,7 @@ void main() {
     await finish(tester, app);
   });
 
-  testWidgets('a narrow phone fits the four buttons, and a long name ends before them', (tester) async {
+  testWidgets('a narrow phone fits the three buttons, and a long name ends before them', (tester) async {
     final app = await pumpApp(tester);
     tester.view.physicalSize = const Size(320 * 3, 568 * 3);
     const long = 'Maximiliana Featherstonehaugh-Cholmondeley';
@@ -704,7 +750,7 @@ void main() {
 
     final bar = find.byType(GlassTopBar);
     final actions = [
-      for (final label in ['Video call', 'Call', 'Search', 'More'])
+      for (final label in ['Call', 'Search', 'More'])
         tester.getRect(
           find.descendant(of: bar, matching: find.byWidgetPredicate((w) => w is IconAction && w.label == label)),
         ),
@@ -725,7 +771,7 @@ void main() {
     await finish(tester, app);
   });
 
-  testWidgets('with four buttons a name that fits stays centered on the screen', (tester) async {
+  testWidgets('with three buttons a name that fits stays centered on the screen', (tester) async {
     final app = await pumpApp(tester);
     tester.view.physicalSize = const Size(430 * 3, 932 * 3);
     await tester.pumpAndSettle();

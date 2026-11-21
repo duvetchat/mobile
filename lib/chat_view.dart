@@ -14,7 +14,7 @@ import 'package:file_picker/file_picker.dart';
 import 'package:image_picker/image_picker.dart';
 
 import 'calls.dart';
-import 'data/appearance.dart' show AppearanceScope, ReplyGesture, ownBubble;
+import 'data/appearance.dart' show AppearanceScope, MessageLayout, ReplyGesture, ownBubble;
 import 'data/call_notices.dart';
 import 'data/images.dart';
 import 'data/emoji_catalog.dart';
@@ -48,6 +48,7 @@ import 'widgets/link_embeds.dart';
 import 'widgets/media.dart';
 import 'widgets/message_content.dart';
 import 'widgets/prism.dart';
+import 'widgets/role_name.dart';
 import 'shell.dart';
 import 'widgets/rows.dart';
 import 'widgets/sheets.dart';
@@ -1679,6 +1680,28 @@ class _ChatViewState extends State<ChatView> with SingleTickerProviderStateMixin
   // A DM or a group can be called; a room or a thread can't.
   bool get _callable => widget.target is ConversationTarget && widget.threadOf == null;
 
+  /// Whether Call may place or join a call now: none going on here, and not
+  /// the user's own while it rings from another device.
+  bool get _canCall => context.voice.call == null && !callingElsewhere(context.voice, widget.target.id);
+
+  /// Call's menu, as the desktop's (desktop#370): a voice call, or a video
+  /// call, which turns the camera on as the user's voice joins. Asked again
+  /// once picked: a call may have come in while the menu was open.
+  Future<void> _openCallMenu(BuildContext anchor) async {
+    // Out of the composer: or the menu hands the keyboard back as it closes.
+    _focus.unfocus();
+    final video = await showGlassMenu<bool>(
+      anchor,
+      label: 'Start a call',
+      items: const [
+        GlassMenuItem(icon: FLucideIcons.phone, label: 'Voice call', value: false),
+        GlassMenuItem(icon: FLucideIcons.video, label: 'Video call', value: true),
+      ],
+    );
+    if (video == null || !mounted || !_canCall) return;
+    await callConversation(context, widget.target.id, video: video);
+  }
+
   /// A DM's other person's presence, under its name: none in a group, a room
   /// or a thread, nor before the gateway or the friends list has told it.
   Presence? get _dmPresence {
@@ -2579,16 +2602,16 @@ class _ChatViewState extends State<ChatView> with SingleTickerProviderStateMixin
                     // One call at a time. Into this conversation's call
                     // going on they join, as its banner's Join does, but not
                     // the user's own while it rings from another device.
-                    // Video call is Call with the camera on.
+                    // One button, as the desktop's: its menu has Voice call
+                    // and Video call, which is a voice call with the camera on.
                     if (_callable)
-                      for (final video in const [true, false])
-                        IconAction(
-                          icon: video ? FLucideIcons.video : FLucideIcons.phone,
-                          label: video ? 'Video call' : 'Call',
-                          onPressed: context.voice.call == null && !callingElsewhere(context.voice, widget.target.id)
-                              ? () => callConversation(context, widget.target.id, video: video)
-                              : null,
+                      Builder(
+                        builder: (anchor) => IconAction(
+                          icon: FLucideIcons.phone,
+                          label: 'Call',
+                          onPressed: _canCall ? () => _openCallMenu(anchor) : null,
                         ),
+                      ),
                     if (widget.threadOf == null)
                       IconAction(icon: FLucideIcons.search, label: 'Search', onPressed: _openSearch),
                     Builder(
@@ -2791,6 +2814,7 @@ class _ChatViewState extends State<ChatView> with SingleTickerProviderStateMixin
         ? KeyedSubtree(
             key: const ValueKey('skeleton'),
             child: _MessagesSkeleton(
+              flat: AppearanceScope.maybeOf(context)?.messageLayout == MessageLayout.flat,
               padding: EdgeInsets.fromLTRB(
                 16,
                 (_topHeight == 0 ? GlassTopBar.heightOf(context) : _topHeight) + 8,
@@ -2830,7 +2854,7 @@ class _ChatViewState extends State<ChatView> with SingleTickerProviderStateMixin
       }
       return const EmptyState(mascot: MascotState.empty, text: 'No messages yet. Say hi!');
     }
-    final items = _items();
+    final items = _items(flat: AppearanceScope.maybeOf(context)?.messageLayout == MessageLayout.flat);
     final count = items.length + (_loadingOlder ? 1 : 0);
     final top = _topHeight == 0 ? GlassTopBar.heightOf(context) : _topHeight;
     // Where each message is now: one kept alive off screen (a YouTube video playing) follows it as newer ones come.
@@ -2923,7 +2947,8 @@ class _ChatViewState extends State<ChatView> with SingleTickerProviderStateMixin
   /// apart. A webhook has no author ID: its own ID and the name it posts under
   /// stand in, as on the desktop. A person's name isn't compared: the history
   /// names them by their Space nickname, which live messages may not know.
-  List<_Item> _items() {
+  /// In [flat] rows a reply starts a run too (see [_sameRun]).
+  List<_Item> _items({required bool flat}) {
     final items = <_Item>[];
     for (var i = 0; i < _entries.length; i++) {
       final m = _entries[i].message;
@@ -2939,8 +2964,8 @@ class _ChatViewState extends State<ChatView> with SingleTickerProviderStateMixin
       items.add(
         _Message(
           _entries[i],
-          first: newDay || unreadStart || !_sameRun(previous, m),
-          last: nextBreaks || !_sameRun(m, next),
+          first: newDay || unreadStart || !_sameRun(previous, m, flat: flat),
+          last: nextBreaks || !_sameRun(m, next, flat: flat),
         ),
       );
     }
@@ -2949,7 +2974,10 @@ class _ChatViewState extends State<ChatView> with SingleTickerProviderStateMixin
 
   static bool _sameDay(DateTime a, DateTime b) => a.year == b.year && a.month == b.month && a.day == b.day;
 
-  static bool _sameRun(ChatMessage? a, ChatMessage? b) =>
+  /// Whether [b] goes on [a]'s run. In [flat] rows, as the desktop groups
+  /// them (`message-groups.ts`), a reply or a bot's answer to an interaction
+  /// starts a group of its own: its quote goes over its own head line.
+  static bool _sameRun(ChatMessage? a, ChatMessage? b, {bool flat = false}) =>
       a != null &&
       b != null &&
       !a.isNotice &&
@@ -2959,7 +2987,8 @@ class _ChatViewState extends State<ChatView> with SingleTickerProviderStateMixin
       (a.authorId != null || a.authorName == b.authorName) &&
       a.isEphemeral == b.isEphemeral &&
       _sameDay(a.createdAt, b.createdAt) &&
-      b.createdAt.difference(a.createdAt).abs() <= const Duration(minutes: 5);
+      b.createdAt.difference(a.createdAt).abs() <= const Duration(minutes: 5) &&
+      (!flat || (b.reply == null && b.interaction == null));
 }
 
 /// A message on its way out: hidden while it goes to dust, its place held,
