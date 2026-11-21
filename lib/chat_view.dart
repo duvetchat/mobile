@@ -99,11 +99,15 @@ class ChatRoute extends MaterialPageRoute<void> with PaneRoute<void> {
 
   @override
   bool same(PaneRoute<Object?> other) =>
-      other is ChatRoute &&
-      other.target == target &&
-      other.jumpTo == null &&
-      threadOf == null &&
-      other.threadOf == null;
+      other is ChatRoute && other.target == target && threadOf == null && other.threadOf == null;
+
+  // The message [other] opens at, shown in this chat as it is when it's in view or near it.
+  @override
+  bool reopen(PaneRoute<Object?> other) => switch ((other, _page.currentState)) {
+    (ChatRoute(jumpTo: null), _) => true,
+    (ChatRoute(:final jumpTo?), final _ChatViewState chat) => chat._showNear(jumpTo),
+    _ => false,
+  };
 }
 
 enum _Delivery { sent, sending, failed }
@@ -1441,6 +1445,16 @@ class _ChatViewState extends State<ChatView> with SingleTickerProviderStateMixin
     Navigator.of(context).push(ChatRoute(target: target, title: title, jumpTo: link.messageId));
   }
 
+  /// The chat opened again at [messageId] from outside it (its notification, a link in a message's text), the
+  /// message in view or near it: scrolled to and flashed, as for a link to one of the chat's own messages. Answers
+  /// whether it was. One further off is for a fresh chat opened at it: [_jumpTo] only looks back from where the list
+  /// is, and a notification's message may not have come yet.
+  bool _showNear(String messageId) {
+    if (_keys[messageId]?.currentContext == null) return false;
+    _jumpTo(messageId);
+    return true;
+  }
+
   void _openSpace(String spaceId) {
     final space = _repository.spaces.value.where((s) => s.id == spaceId).firstOrNull;
     Navigator.of(context, rootNavigator: true).push(
@@ -1456,14 +1470,18 @@ class _ChatViewState extends State<ChatView> with SingleTickerProviderStateMixin
   final _links = <String, LayerLink>{};
   LayerLink _linkFor(String id) => _links.putIfAbsent(id, LayerLink.new);
 
-  /// Scrolls toward older messages until [find] has a context (its item got
-  /// built), or the list runs out. Answers whether it was found.
-  Future<bool> _scrollUntilBuilt(BuildContext? Function() find) async {
+  /// Scrolls toward older messages, or toward newer ones when [newer], until [find] has a context (its item got
+  /// built), or the list runs out that way. Answers whether it was found.
+  Future<bool> _scrollUntilBuilt(BuildContext? Function() find, {bool newer = false}) async {
     for (var tries = 0; tries < 40 && mounted; tries++) {
       if (find() != null) return true;
       if (!_scroll.hasClients) return false;
       final position = _scroll.position;
-      if (position.pixels >= position.maxScrollExtent) {
+      if (newer) {
+        // Down toward the newest, which the list has all of: no page to load that way.
+        if (position.pixels <= position.minScrollExtent) return find() != null;
+        _scroll.jumpTo(max(position.pixels - position.viewportDimension * 0.8, position.minScrollExtent));
+      } else if (position.pixels >= position.maxScrollExtent) {
         if (!_hasOlder) return find() != null;
         await _loadOlder();
       } else {
@@ -1477,8 +1495,11 @@ class _ChatViewState extends State<ChatView> with SingleTickerProviderStateMixin
   /// Shows the message a reply quotes: scrolled to and flashed if it's in the
   /// chat (paging back for it), else on its own in a sheet.
   Future<void> _jumpTo(String messageId) async {
-    final found = _entries.any((e) => e.message.id == messageId) || _hasOlder
-        ? await _scrollUntilBuilt(() => _keys[messageId]?.currentContext)
+    final at = _entries.indexWhere((e) => e.message.id == messageId);
+    // Newer than every message built, it's below the view (#301): the list builds those in view and a little past.
+    final newestBuilt = _entries.lastIndexWhere((e) => _keys[e.message.id]?.currentContext != null);
+    final found = at >= 0 || _hasOlder
+        ? await _scrollUntilBuilt(() => _keys[messageId]?.currentContext, newer: newestBuilt >= 0 && at > newestBuilt)
         : false;
     if (!mounted) return;
     final ctx = _keys[messageId]?.currentContext;
