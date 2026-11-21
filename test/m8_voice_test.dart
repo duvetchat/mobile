@@ -112,6 +112,17 @@ void main() {
     expect(find.bySemanticsLabel('Maya, speaking'), findsOneWidget);
     expect(find.byWidgetPredicate((w) => w is Facehash && w.name == 'Maya' && w.mouthOpen > 0.5), findsOneWidget);
 
+    // Gaby's face looks at Maya, who talks: above her in the grid, and above the strip once Maya is shown large there,
+    // where the faces looked straight ahead (#296).
+    Offset eyesOf(String name) =>
+        tester.widget<Facehash>(find.byWidgetPredicate((w) => w is Facehash && w.name == name)).eyeOffset;
+    expect(eyesOf('Gaby'), const Offset(0, -0.8));
+    await tester.tap(find.bySemanticsLabel('Maya, speaking'));
+    await settle(tester);
+    expect(eyesOf('Gaby'), const Offset(0, -0.8));
+    await tester.binding.handlePopRoute();
+    await settle(tester);
+
     await tester.tap(find.bySemanticsLabel('Mute'));
     await settle(tester);
     expect(app.voice.muted, isTrue);

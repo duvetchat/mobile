@@ -46,23 +46,38 @@ class VoicePerson {
   });
 }
 
-/// The faces in a grid of [columns] look at whoever is speaking, as on the
-/// desktop: each one's eyes turned toward the speaker's tile, and straight
-/// ahead in silence.
-Map<String, Offset> eyesToward(List<VoicePerson> people, Map<String, double> levels, int columns) {
-  final speaker = people.indexWhere((p) => (levels[p.id] ?? 0) > 0);
-  if (speaker < 0) return const {};
-  final (sr, sc) = (speaker ~/ columns, speaker % columns);
+/// The faces look at whoever is speaking, as on the desktop: each one's eyes
+/// turned toward the speaker's tile, and straight ahead in silence. [places]
+/// are where the people's tiles sit, by person ID: a grid's ([gridPlaces]), or
+/// the stage's while a tile is shown large ([stagePlaces]).
+Map<String, Offset> eyesToward(List<VoicePerson> people, Map<String, double> levels, Map<String, Offset> places) {
+  final speaker = people.where((p) => (levels[p.id] ?? 0) > 0).firstOrNull;
+  final at = places[speaker?.id];
+  if (speaker == null || at == null) return const {};
   return {
-    for (final (i, p) in people.indexed)
-      if (i != speaker)
-        p.id: () {
-          final (dx, dy) = ((sc - i % columns).toDouble(), (sr - i ~/ columns).toDouble());
-          final length = math.sqrt(dx * dx + dy * dy);
-          return Offset(dx / length, dy / length) * 0.8;
-        }(),
+    for (final p in people)
+      if (places[p.id] case final mine? when p.id != speaker.id) p.id: _toward(at - mine),
   };
 }
+
+// A look along [way], 0.8 of the eyes' reach: straight ahead for no way.
+Offset _toward(Offset way) => way.distance == 0 ? Offset.zero : way / way.distance * 0.8;
+
+/// Where the people's tiles sit in a grid of [columns], people first and in
+/// their order: x the column, y the row.
+Map<String, Offset> gridPlaces(List<VoicePerson> people, int columns) => {
+  for (final (i, p) in people.indexed) p.id: Offset((i % columns).toDouble(), (i ~/ columns).toDouble()),
+};
+
+/// Where the people's tiles sit with [focused] shown large over the strip of
+/// [others], as on the desktop's stage: the large one above the strip's middle,
+/// the others along the strip. A screen takes its place in the strip, with no
+/// face to aim.
+Map<String, Offset> stagePlaces(VoiceTile focused, List<VoiceTile> others) => {
+  if (!focused.screen) focused.person.id: Offset((others.length - 1) / 2, -1),
+  for (final (i, t) in others.indexed)
+    if (!t.screen) t.person.id: Offset(i.toDouble(), 0),
+};
 
 IconData routeIcon(AudioRouteKind? kind) => switch (kind) {
   AudioRouteKind.bluetooth => FLucideIcons.bluetooth,
@@ -96,7 +111,8 @@ Future<void> pickAudioRoute(BuildContext anchor, VoiceController voice) async {
   if (picked != null) await voice.selectRoute(picked);
 }
 
-typedef _Tile = ({String key, VoicePerson person, bool screen});
+/// A tile of the voice stage: a person's, or the [screen] they share.
+typedef VoiceTile = ({String key, VoicePerson person, bool screen});
 
 /// The people in voice, a tile each with their camera or their face, and a
 /// tile per screen shared. Its layout follows the count: one large, up to
@@ -141,7 +157,7 @@ class _VoiceStageState extends State<VoiceStage> {
   Widget build(BuildContext context) {
     final people = widget.people;
     // People first, so a person's tile index is their place in the grid, for the eyes.
-    final tiles = <_Tile>[
+    final tiles = <VoiceTile>[
       for (final p in people) (key: 'person:${p.id}', person: p, screen: false),
       for (final p in people)
         if (p.screenSharing) (key: 'screen:${p.id}', person: p, screen: true),
@@ -177,11 +193,12 @@ class _VoiceStageState extends State<VoiceStage> {
   Widget? _keep(String tile, Widget? video) =>
       video == null ? null : KeyedSubtree(key: _videos.putIfAbsent(tile, GlobalKey.new), child: video);
 
-  Widget _grid(List<_Tile> tiles) => LayoutBuilder(
+  Widget _grid(List<VoiceTile> tiles) => LayoutBuilder(
     builder: (context, box) {
       final n = tiles.length;
       // Three stacked, not two over one beside a hole.
       final columns = n <= 3 ? 1 : 2;
+      final places = gridPlaces(widget.people, columns);
       final rows = (n / columns).ceil();
       final fill = (box.maxHeight - widget.padding.vertical - (rows - 1) * 12) / rows;
       final extent = n <= 4 ? math.max(156.0, fill) : 180.0;
@@ -199,18 +216,19 @@ class _VoiceStageState extends State<VoiceStage> {
           final i = tiles.indexWhere((t) => ValueKey(t.key) == key);
           return i < 0 ? null : i;
         },
-        itemBuilder: (context, i) => _tile(tiles[i], columns: columns, size: extent),
+        itemBuilder: (context, i) => _tile(tiles[i], places: places, size: extent),
       );
     },
   );
 
-  Widget _focus(List<_Tile> tiles, _Tile focused) {
+  Widget _focus(List<VoiceTile> tiles, VoiceTile focused) {
     final others = tiles.where((t) => t != focused).toList();
+    final places = stagePlaces(focused, others);
     return Padding(
       padding: widget.padding,
       child: Column(
         children: [
-          Expanded(child: _tile(focused, size: 300)),
+          Expanded(child: _tile(focused, places: places, size: 300)),
           if (others.isNotEmpty) ...[
             const SizedBox(height: 12),
             SizedBox(
@@ -219,7 +237,7 @@ class _VoiceStageState extends State<VoiceStage> {
                 scrollDirection: Axis.horizontal,
                 itemCount: others.length,
                 separatorBuilder: (_, _) => const SizedBox(width: 12),
-                itemBuilder: (context, i) => SizedBox(width: 160, child: _tile(others[i], size: 120)),
+                itemBuilder: (context, i) => SizedBox(width: 160, child: _tile(others[i], places: places, size: 120)),
               ),
             ),
           ],
@@ -228,18 +246,18 @@ class _VoiceStageState extends State<VoiceStage> {
     );
   }
 
-  /// [columns] is the grid's, for the eyes; null out of the grid, where they look ahead.
-  Widget _tile(_Tile t, {int? columns, required double size}) {
+  /// [places] are where the people's tiles sit, for the eyes.
+  Widget _tile(VoiceTile t, {required Map<String, Offset> places, required double size}) {
     final focused = _focused == t.key;
     void toggle() => setState(() => _focused = focused ? null : t.key);
     return t.screen
         ? _screenTile(t.person, focused: focused, onTap: toggle, key: ValueKey(t.key))
-        : _personTile(t.person, columns: columns, size: size, focused: focused, onTap: toggle, key: ValueKey(t.key));
+        : _personTile(t.person, places: places, size: size, focused: focused, onTap: toggle, key: ValueKey(t.key));
   }
 
   Widget _personTile(
     VoicePerson p, {
-    required int? columns,
+    required Map<String, Offset> places,
     required double size,
     required bool focused,
     required VoidCallback onTap,
@@ -271,7 +289,7 @@ class _VoiceStageState extends State<VoiceStage> {
       builder: (context, levels, video) {
         final level = levels[p.id] ?? 0;
         final speaking = level > 0 && !p.muted;
-        final eyes = columns == null ? Offset.zero : eyesToward(widget.people, levels, columns)[p.id] ?? Offset.zero;
+        final eyes = eyesToward(widget.people, levels, places)[p.id] ?? Offset.zero;
         return _TileFrame(
           label: [
             p.isMe ? '${p.name} (you)' : p.name,
