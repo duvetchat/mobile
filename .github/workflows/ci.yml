@@ -1,9 +1,10 @@
-# Analyze, test and build a release APK on every pull request into dev, as api and desktop do.
+# Analyze, test and build a release APK on every pull request into dev, as api and desktop do, and into e2e,
+# where the end-to-end encryption work waits for its day.
 name: CI
 
 on:
   pull_request:
-    branches: [dev]
+    branches: [dev, e2e]
   workflow_dispatch:
 
 permissions:
