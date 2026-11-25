@@ -1,0 +1,138 @@
+import 'package:duvet/e2e/legacy.dart';
+import 'package:duvet/e2e/store.dart';
+import 'package:duvet/e2e/sync.dart';
+import 'package:flutter_test/flutter_test.dart';
+
+import '../support/core_lib.dart';
+import '../support/engines.dart';
+import '../support/fake_api.dart';
+
+// A conversation from before the cutover (PLAN-E2E-CLIENTES.md, «Entrar a un grupo», its record; Ruling 14): its
+// members as this device first saw them, which its group must have, until the person says the members of today are
+// fine. The desktop's legacy.test.ts, with its review's rulings.
+const _slow = Timeout(Duration(minutes: 3));
+
+void main() {
+  setUpAll(() async {
+    if (coreLibrary != null) await loadCore();
+  });
+
+  test(
+    "a_legacy_group_is_held_to_its_record;_the_person's_yes_drops_the_record_and_joins_by_external_commit",
+    () async {
+      final fake = FakeApi();
+      final (ana, bo, cy, dee) = (fake.addUser(), fake.addUser(), fake.addUser(), fake.addUser());
+      final conversation = fake.addConversation(group: true, members: [ana, bo, cy], owner: ana, legacy: true);
+      // Cy's device sees the conversation first, with its three members: that's its record.
+      final c = await firstDevice(fake, cy);
+      expect(c.store.read(legacyRecords), {
+        conversation: {
+          'owner': ana,
+          'members': [ana, bo, cy],
+        },
+      });
+
+      // Then a member the record doesn't have shows up, and Ana makes the group with the members of today.
+      fake.addMembers(conversation, [dee]);
+      final a = await firstDevice(fake, ana);
+      await a.engine.openConversation(conversation);
+      expect((await groupOf(a, conversation))!.epoch, 1);
+
+      // Cy's device refuses its welcome: the group isn't the one it knew. It says so, and offers to go on.
+      await until(() => c.engine.conversationState(conversation) == ConversationState.membersChanged);
+      expect(await groupOf(c, conversation), isNull);
+
+      // Cy says yes: the record goes, and the device joins by an external commit, with no record to hold it to.
+      await c.engine.acceptMembers(conversation);
+      await sameGroup([a, c], conversation);
+      expect(c.engine.conversationState(conversation), isNull);
+      expect(c.store.read(legacyRecords), {conversation: false});
+      final entries = (await c.api.queue(conversation, 2)).entries;
+      expect([for (final e in entries) (e.kind, e.senderUser)], [('commit', cy)]);
+      await a.engine.stop();
+      await c.engine.stop();
+    },
+    skip: noCore,
+    timeout: _slow,
+  );
+
+  // M4 of the desktop's review: a record the storage didn't take is kept for the session, so the conversation is still
+  // held to the members this device first saw, not to whatever the next look finds.
+  test(
+    "a_record_the_storage_can't_keep_holds_for_the_session",
+    () async {
+      final fake = FakeApi();
+      final (ana, bo, cy, dee) = (fake.addUser(), fake.addUser(), fake.addUser(), fake.addUser());
+      final conversation = fake.addConversation(group: true, members: [ana, bo, cy], owner: ana, legacy: true);
+      final store = KeyRefusingStore(legacyRecords);
+      final c = await firstDevice(fake, cy, store: store);
+      expect(store.read(legacyRecords), isNull);
+      fake.addMembers(conversation, [dee]);
+      final a = await firstDevice(fake, ana);
+      await a.engine.openConversation(conversation);
+      await until(() => c.engine.conversationState(conversation) == ConversationState.membersChanged);
+      expect(await groupOf(c, conversation), isNull);
+      await a.engine.stop();
+      await c.engine.stop();
+    },
+    skip: noCore,
+    timeout: _slow,
+  );
+
+  // M6 of the desktop's review: the person's yes makes the group where there's none, without the record it dropped.
+  test(
+    "the_person's_yes_makes_the_group_of_a_conversation_that_has_none",
+    () async {
+      final fake = FakeApi();
+      final (ana, bo, cy) = (fake.addUser(), fake.addUser(), fake.addUser());
+      final conversation = fake.addConversation(group: true, members: [ana, bo], owner: ana, legacy: true);
+      // Bo's device keeps the conversation's two members; then Cy joins it, as the server alone changes it, before Ana's
+      // and Cy's devices first see it.
+      final b = await firstDevice(fake, bo);
+      fake.addMembers(conversation, [cy]);
+      final a = await firstDevice(fake, ana);
+      final c = await firstDevice(fake, cy);
+      // Opened, Bo's device won't make a group with members its record doesn't have.
+      await b.engine.openConversation(conversation);
+      expect(b.engine.conversationState(conversation), ConversationState.membersChanged);
+      expect(await groupOf(b, conversation), isNull);
+      // Bo says yes: the group is made with the members of today, and the others come in.
+      await b.engine.acceptMembers(conversation);
+      final held = await sameGroup([a, b, c], conversation);
+      expect({for (final d in held.devices) d.user}, {ana, bo, cy});
+      expect(b.store.read(legacyRecords), {conversation: false});
+      for (final d in [a, b, c]) {
+        await d.engine.stop();
+      }
+    },
+    skip: noCore,
+    timeout: _slow,
+  );
+
+  test('a_record_is_its_owner_and_members_as_the_core_takes_them', () {
+    expect(expectedOf((owner: 'o', members: ['o', 'm'])), {
+      'owner': 'o',
+      'members': ['o', 'm'],
+    });
+    expect(expectedOf((owner: null, members: ['a', 'b'])), {
+      'members': ['a', 'b'],
+    });
+    // What the record reads: a record; anything else (a dropped one's false included) is none.
+    final read = recordIn({
+      'owner': 'a',
+      'members': ['a', 'b'],
+    })!;
+    expect(read.owner, 'a');
+    expect(read.members, ['a', 'b']);
+    expect(
+      recordIn({
+        'members': ['a'],
+      })?.owner,
+      isNull,
+    );
+    expect(recordIn(false), isNull);
+    expect(recordIn({'members': 'a'}), isNull);
+    expect(recordIn({'owner': 1, 'members': <String>[]}), isNull);
+    expect(deviceRecord, isNot(contains(legacyRecords)));
+  });
+}

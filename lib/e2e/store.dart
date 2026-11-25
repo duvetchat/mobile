@@ -25,6 +25,9 @@ const keptLater = 'later';
 /// What a new device of this installation starts without.
 const deviceRecord = [keptDevice, deviceKeys, keptApprovals, keptTransfers, keptLater];
 
+/// The API's external sender as this installation first saw it (Ruling 32), which a new device of it keeps.
+const externalSender = 'external_sender';
+
 abstract interface class EngineStore {
   /// The JSON value kept under [key], or null.
   Object? read(String key);

@@ -1,8 +1,9 @@
 // The API as the encryption engine sees it, in memory, for the engine's tests (PLAN-E2E-CLIENTES.md, Task 9): the
 // desktop's testing/fake-api.ts in Dart, with the same routes (PLAN-E2E-API.md, its routes A to K), answers, events and
 // switches. It answers through an http.Client, as the API does, so duvet_client's own RestClient runs against it; a
-// connection to the gateway hears its events. Switches lose an answer, answer 426, 503, 409 or any refusal, hold events
-// to let them go backwards or twice, and take an entry's data out of its event. A request's events go out after its
+// connection to the gateway hears its events. Switches lose an answer, cut a request before it reaches the API, hold
+// requests until several have come, answer 426, 503, 409 or any refusal, hold events to let them go backwards, twice or
+// a kind at a time, and take an entry's data out of its event. A request's events go out after its
 // answer, at the next turn of the event loop, once the code that awaited the answer ran on to its next timer or I/O (on
 // the desktop, two microtasks after it); each is its data as it was when the request sent it; holdEvents gives any
 // other order. It reads what the core signs (CBOR, Ed25519) and an MLS message's framing as the API does, but runs no
@@ -377,6 +378,9 @@ class _Conversation {
 
   /// The last number its queue gave: commits, welcomes, proposals, edits, deletions and messages share it.
   var seq = 0;
+
+  /// The number its queue is whole from: what comes before it is gone (expireQueue).
+  var floor = 1;
   final entries = <Map<String, Object?>>[];
   final messages = <Map<String, Object?>>[];
   final deleted = <String>{};
@@ -466,13 +470,18 @@ const _noContent = _Answer(204);
 /// A copy of JSON's values, so what's sent is what was there then.
 T _clone<T>(T value) => jsonDecode(jsonEncode(value)) as T;
 
+// A switch's effects but an answer of its own: the answer lost, or the request never reaching the API.
+const _lose = #lose;
+const _cut = #cut;
+
 class FakeApi {
   FakeApi() {
     _routes = _table();
   }
 
-  /// The API's Ed25519 public key, its groups' one external sender, in base64 (GET /api/e2e's).
-  final String externalSender = base64Encode(ed25519PublicKey(_randomBytes(32)));
+  /// The API's Ed25519 public key, its groups' one external sender, in base64 (GET /api/e2e's). A test that sets another
+  /// plays a server that changed it: the fake checks no commit against it.
+  String externalSender = base64Encode(ed25519PublicKey(_randomBytes(32)));
 
   /// The cutover's instant, as GET /api/e2e gives it.
   String? cutoverAt;
@@ -510,7 +519,13 @@ class FakeApi {
 
   /// Events held for [releaseEvents], while holding.
   List<({_Connection connection, GatewayEvent event})>? _held;
-  final _switches = <({RouteMatch match, _Answer? answer})>[];
+
+  /// What the next request a switch takes gets: an answer of its own, its answer lost ([_lose]), or never reaching the
+  /// API ([_cut]).
+  final _switches = <({RouteMatch match, Object effect})>[];
+
+  /// Requests held until as many as each gate counts have come ([gather]).
+  final _gates = <({RouteMatch match, int count, List<Completer<void>> waiting})>[];
   late final List<_Route> _routes;
   var _lastId = '';
 
@@ -554,29 +569,48 @@ class FakeApi {
   }
 
   /// A connection to the gateway of the session's, identified with its device (null for none): it hears READY at
-  /// once, with each conversation's group as READY gives it, then the events for its user, and for its device. Its end.
+  /// once, which says nothing of conversations or their groups, as the gateway's doesn't, then the events for its user,
+  /// and for its device. Its end.
   void Function() connect(String token, String? device, void Function(GatewayEvent event) listener) {
     final session = _sessions[token];
     if (session == null) throw StateError('no such session');
     final connection = _Connection(session.user, device, listener);
     _connections.add(connection);
-    final conversations = [
-      for (final conv in _conversationsOf(session.user))
-        // Only REST answers have joined_seq.
-        _view(conv, null)..update('mls', (mls) => mls == null ? null : ((mls as Map)..remove('joined_seq'))),
-    ];
     listener((
       type: 'READY',
-      data: _clone({
+      data: {
         'user': {'id': session.user},
-        'conversations': conversations,
-      }),
+      },
     ));
     return () => _connections.remove(connection);
   }
 
+  _Conversation _conversation(String id) => _conversations[id] ?? (throw StateError('no conversation $id'));
+
+  /// The conversation's members change as the server alone changes them: these users join it, with no commit.
+  void addMembers(String conversationId, List<String> users) {
+    final conv = _conversation(conversationId);
+    for (final user in users) {
+      final at = _now();
+      conv.members.add({'id': _id(), 'conversation_id': conv.id, 'user_id': user, 'created_at': at, 'updated_at': at});
+    }
+  }
+
+  /// The conversation is deleted, as the API deletes one: no list has it, and its routes answer 404.
+  void deleteConversation(String conversationId) => _conversations.remove(_conversation(conversationId).id);
+
+  /// The conversation's queue is whole only from [floor] on: a read from before it is a 410, as the API's once it
+  /// expired.
+  void expireQueue(String conversationId, int floor) => _conversation(conversationId).floor = floor;
+
+  /// The next request [match] takes never reaches the API: the client fails, and nothing is done.
+  void cutRequest(RouteMatch match) => _switches.add((match: match, effect: _cut));
+
+  /// The requests [match] takes wait until [count] of them have come, then go on in the order they came: once.
+  void gather(RouteMatch match, int count) => _gates.add((match: match, count: count, waiting: []));
+
   /// The next request [match] takes does its work, and its answer is lost: the client fails, as with a cut connection.
-  void loseAnswer(RouteMatch match) => _switches.add((match: match, answer: null));
+  void loseAnswer(RouteMatch match) => _switches.add((match: match, effect: _lose));
 
   /// The next request [match] takes is refused, and does nothing: 426 and 503 in the API's words (503 with its
   /// Retry-After), any other with the [body] given.
@@ -588,18 +622,31 @@ class FakeApi {
     };
     _switches.add((
       match: match,
-      answer: _Answer(status, body: body ?? own.body, headers: {...own.headers, ...headers}),
+      effect: _Answer(status, body: body ?? own.body, headers: {...own.headers, ...headers}),
     ));
   }
 
   /// Events wait from now on, until [releaseEvents].
   void holdEvents() => _held ??= [];
 
-  /// The events held, sent: in their order or backwards, and each once or twice. Then events go at once again.
-  void releaseEvents({bool reverse = false, bool repeat = false}) {
-    final held = _held ?? const [];
-    _held = null;
-    for (final (:connection, :event) in reverse ? held.reversed : held) {
+  /// The events held, sent: in their order or backwards, and each once or twice. Then events go at once again, unless
+  /// [only] picks those that go now: the others stay held, as does what comes after, until a release without it.
+  void releaseEvents({bool reverse = false, bool repeat = false, bool Function(GatewayEvent event)? only}) {
+    final held = _held;
+    if (held == null) return;
+    final going = only == null
+        ? held
+        : [
+            for (final one in held)
+              if (only(one.event)) one,
+          ];
+    _held = only == null
+        ? null
+        : [
+            for (final one in held)
+              if (!only(one.event)) one,
+          ];
+    for (final (:connection, :event) in reverse ? going.reversed : going) {
       for (var times = repeat ? 2 : 1; times > 0; times--) {
         connection.listener((type: event.type, data: _clone(event.data)));
       }
@@ -614,13 +661,25 @@ class FakeApi {
 
   Future<http.Response> _handle(http.Request request) async {
     final path = request.url.path;
+    if (_gates.where((g) => _matches(g.match, request.method, path)).firstOrNull case final gate?) {
+      final held = Completer<void>();
+      gate.waiting.add(held);
+      if (gate.waiting.length == gate.count) {
+        _gates.remove(gate);
+        for (final go in gate.waiting) {
+          go.complete();
+        }
+      }
+      await held.future;
+    }
     final switched = _switches.indexWhere((s) => _matches(s.match, request.method, path));
-    final effect = switched < 0 ? null : _switches.removeAt(switched);
-    if (effect?.answer case final answer?) return _respond(answer);
+    final effect = switched < 0 ? null : _switches.removeAt(switched).effect;
+    if (effect == _cut) throw http.ClientException('the request never reached the API', request.url);
+    if (effect case final _Answer answer) return _respond(answer);
     final (answer, events) = _answer(request);
     // Its events go once its answer is made, lost or not: after the code that awaited it ran on.
     Timer.run(() => _send(events));
-    if (effect != null) throw http.ClientException('the answer was lost', request.url);
+    if (effect == _lose) throw http.ClientException('the answer was lost', request.url);
     return _respond(answer);
   }
 
@@ -1337,7 +1396,7 @@ class FakeApi {
               'generation': group.generation,
               'epoch': group.epoch,
               'last_seq': conv.seq,
-              'floor_seq': 1,
+              'floor_seq': conv.floor,
               'joined_seq': device == null ? null : conv.leaves[device.id],
             },
     };
@@ -1376,10 +1435,14 @@ class FakeApi {
   }
 
   _Answer _queue(_Conversation conv, Map<String, String> query) {
+    // As the API binds them (its MlsQueueQuery): a number from 0, and 1 to 500 of them.
+    final after = query.containsKey('after') ? int.tryParse(query['after']!) : 0;
+    final limit = query.containsKey('limit') ? int.tryParse(query['limit']!) : 200;
+    if (after == null || after < 0) throw _fail(400, 'after is a number from 0');
+    if (limit == null || limit < 1 || limit > 500) throw _fail(400, 'limit is 1 to 500');
     final group = conv.group;
     if (group == null) throw _fail(404, 'no group yet');
-    final after = int.tryParse(query['after'] ?? '') ?? 0;
-    final limit = min(_positive(query['limit']) ?? 200, 500);
+    if (after + 1 < conv.floor) throw _fail(410, 'queue expired', {'floor_seq': conv.floor});
     final all = [
       ...conv.entries,
       for (final m in conv.messages)
@@ -1395,7 +1458,7 @@ class FakeApi {
     return _ok({
       'entries': entries,
       'last_seq': conv.seq,
-      'floor_seq': 1,
+      'floor_seq': conv.floor,
       'generation': group.generation,
       'epoch': group.epoch,
     });
@@ -1509,36 +1572,46 @@ class FakeApi {
     return answer;
   }
 
+  /// An addition: the owner's commit of exactly that user, which goes to the members after it, the one it adds among
+  /// them, as the API sends it. It answers with the member and the commit's answer, as the API's MemberAdded.
   _Answer _addMember(_Context ctx) {
     final conv = _memberOf(ctx);
     final user = _uuidIn(ctx['user_id'], 'user_id');
     // The same addition again gets the answer it got.
     final added = conv.members.where((m) => m['user_id'] == user).firstOrNull;
-    if (added != null && conv.commits.containsKey(ctx['commit'])) return _ok(added, 201);
+    final sent = conv.commits[ctx['commit']];
+    if (added != null && sent != null) return _ok({...added, 'commit': sent}, 201);
     if (conv.type != 2) throw _fail(400, "a DM's members don't change");
     if (conv.ownerId != ctx.me.user) throw _fail(403, "only the group's owner adds members");
     if (!_users.contains(user)) throw _fail(404, 'user not found');
     if (added != null) throw _fail(409, 'already a member');
     if (conv.members.length >= _limit('group_members')) throw _fail(400, 'a group can have 20 members at most');
-    _commit(conv, ctx, 'add');
     final at = _now();
     final member = {'id': _id(), 'conversation_id': conv.id, 'user_id': user, 'created_at': at, 'updated_at': at};
     conv.members.add(member);
-    return _ok(member, 201);
+    try {
+      return _ok({...member, 'commit': _commit(conv, ctx, 'add')}, 201);
+    } on _Refusal {
+      // Refused: nothing changed, the members neither.
+      conv.members.removeLast();
+      rethrow;
+    }
   }
 
+  /// A removal: the owner's commit of exactly that user, which they hear too. It answers with the commit's answer
+  /// (200), as the API does.
   _Answer _removeMember(_Context ctx) {
     final conv = _memberOf(ctx);
     if (conv.ownerId != ctx.me.user) throw _fail(403, "only the group's owner removes members");
     // The same removal again.
-    if (conv.commits.containsKey(ctx['commit'])) return _noContent;
+    if (conv.commits[ctx['commit']] case final sent?) return _ok(sent);
     if (!conv.members.any((m) => m['user_id'] == ctx.params['user'])) throw _fail(404, 'not a member');
-    _commit(conv, ctx, 'remove');
+    final commit = _commit(conv, ctx, 'remove');
     conv.members = [
       for (final m in conv.members)
         if (m['user_id'] != ctx.params['user']) m,
     ];
-    return _noContent;
+    return _ok(commit);
   }
 
   /// Leaving: the user's statement, signed by the session's device, of this conversation's generation and an epoch it

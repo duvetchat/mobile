@@ -176,4 +176,43 @@ void main() {
     skip: skip ?? noCore,
     timeout: const Timeout(Duration(minutes: 3)),
   );
+
+  // Conversation groups (PLAN-E2E-CLIENTES.md, Task 15): a DM's group, which one of its members makes as they open it,
+  // through the API's validator, and the other's device joins by its welcome. Carol and Dave, whom the case above left
+  // without identities.
+  test(
+    "two_users'_devices_reach_the_same_epoch_and_authenticator",
+    () async {
+      await loadCore();
+      final router = _router();
+      final (carol, dave) = (_account(2), _account(3));
+      final c = await _Live.start(router, carol);
+      final d = await _Live.start(router, dave);
+      for (final live in [c, d]) {
+        await live.engine.start();
+        await live.engine.makeIdentity();
+        await live.engine.keySaved();
+        expect(live.engine.state.value, EngineState.ready);
+      }
+      // Friends, and a DM Carol starts, which Dave opens first: either member of a DM makes its group.
+      final asked = await c.rest.sendFriendRequest(dave.id);
+      await d.rest.acceptFriendRequest(asked.id);
+      final dm = await c.rest.createDM(dave.id);
+      await d.engine.openConversation(dm.id);
+      expect(d.engine.conversationState(dm.id), isNull);
+
+      // Carol's device hears the welcome and comes in: both hold the group at one epoch, with one authenticator.
+      Future<Map<String, Object?>?> groupOf(_Live live) => live.host.gate
+          .handle<Map<String, Object?>>({'cmd': 'group', 'conversation_id': dm.id})
+          .then<Map<String, Object?>?>((held) => held, onError: (Object _) => null);
+      Map<String, Object?>? daveHeld;
+      await eventually(() async {
+        daveHeld = await groupOf(d);
+        expect(await groupOf(c), allOf(isNotNull, equals(daveHeld)));
+      }, timeout: const Duration(seconds: 30));
+      expect(daveHeld, allOf(containsPair('generation', 0), containsPair('epoch', 1)));
+    },
+    skip: skip ?? noCore,
+    timeout: const Timeout(Duration(minutes: 3)),
+  );
 }

@@ -1,0 +1,356 @@
+import 'dart:convert';
+
+import 'package:duvet/e2e/engine.dart';
+import 'package:duvet_client/duvet.dart' as duvet;
+import 'package:flutter_test/flutter_test.dart';
+import 'package:http/http.dart' as http;
+
+import '../support/core_lib.dart';
+import '../support/engines.dart';
+import '../support/fake_api.dart';
+
+// Joining and making a conversation's group (PLAN-E2E-CLIENTES.md, «Entrar a un grupo»), and a blocked group's
+// restart: who makes a group, and how the others come into it. The desktop's groups.test.ts, case for case, with its
+// review's rulings.
+const _slow = Timeout(Duration(minutes: 3));
+
+/// What a device posted to the conversation's commits route.
+List<String> _commitsPosted(List<http.Request> seen, String conversation) => [
+  for (final request in requestsOf(seen))
+    if (request == 'POST ${commitsPath(conversation)}') request,
+];
+
+/// A group of Ana's, Bo's and Cy's first devices, Ana its owner, whose group Ana made as she opened it.
+Future<({FakeApi fake, String ana, String bo, String cy, String conversation, List<TestDevice> devices})> _group({
+  List<http.Request>? boSeen,
+}) async {
+  final fake = FakeApi();
+  final (ana, bo, cy) = (fake.addUser(), fake.addUser(), fake.addUser());
+  final conversation = fake.addConversation(group: true, members: [ana, bo, cy], owner: ana);
+  final a = await firstDevice(fake, ana);
+  final b = await firstDevice(fake, bo, client: boSeen == null ? null : watchedClient(fake, seen: boSeen.add));
+  final c = await firstDevice(fake, cy);
+  await a.engine.openConversation(conversation);
+  await sameGroup([a, b, c], conversation);
+  return (fake: fake, ana: ana, bo: bo, cy: cy, conversation: conversation, devices: [a, b, c]);
+}
+
+/// The group blocked on every device: a commit no device can process gets in, as a server that takes anything would
+/// let it: Ana's leaf renewal, one byte of its signature changed, sent under Bo's session. Ana's own renewal never
+/// went. Her device again after its app restarted, with the two others.
+Future<List<TestDevice>> _blocked(FakeApi fake, String conversation, List<TestDevice> devices) async {
+  var [a, b, c] = devices;
+  final before = (await groupOf(a, conversation))!;
+  await stoppedByHand(a);
+  final made = await byHand(a, {'cmd': 'refresh', 'conversation_id': conversation});
+  final bytes = base64Decode(made['commit']! as String);
+  bytes[bytes.length - 1] ^= 0xff;
+  await b.api.commit(
+    conversation,
+    duvet.Commit(
+      generation: before.generation,
+      epoch: before.epoch,
+      commit: base64Encode(bytes),
+      groupInfo: made['group_info']! as String,
+    ),
+  );
+  await a.host.handle<Object?>({
+    'cmd': 'commit_result',
+    'conversation_id': conversation,
+    'accepted': false,
+    'invalid': true,
+  });
+  a = await restarted(fake, a);
+  await until(
+    () => [a, b, c].every((d) => d.engine.conversationState(conversation)?.name == ConversationNotice.blocked),
+  );
+  return [a, b, c];
+}
+
+/// The owner's removal of a user, by hand (Task 23 does it in the app): its commit, posted, and taken.
+Future<duvet.CommitTaken> _removeByHand(TestDevice owner, String conversation, String user) async {
+  final held = (await groupOf(owner, conversation))!;
+  final made = await byHand(owner, {
+    'cmd': 'remove_members',
+    'conversation_id': conversation,
+    'users': [user],
+  });
+  final taken = await owner.api.removeMember(
+    conversation,
+    user,
+    duvet.Commit(
+      generation: held.generation,
+      epoch: held.epoch,
+      commit: made['commit']! as String,
+      groupInfo: made['group_info']! as String,
+    ),
+  );
+  await owner.host.handle<Object?>({
+    'cmd': 'commit_result',
+    'conversation_id': conversation,
+    'accepted': true,
+    'seq': taken.seq,
+  });
+  return taken;
+}
+
+void main() {
+  setUpAll(() async {
+    if (coreLibrary != null) await loadCore();
+  });
+
+  test(
+    'the_owner_makes_a_new_group_and_the_others_wait',
+    () async {
+      final fake = FakeApi();
+      final (ana, bo, cy) = (fake.addUser(), fake.addUser(), fake.addUser());
+      final conversation = fake.addConversation(group: true, members: [ana, bo, cy], owner: ana);
+      final seen = <http.Request>[];
+      final a = await firstDevice(fake, ana);
+      final b = await firstDevice(fake, bo, client: watchedClient(fake, seen: seen.add));
+      final c = await firstDevice(fake, cy);
+      // Bo opens the group before its owner: he waits for her, and nothing is made.
+      await b.engine.openConversation(conversation);
+      expect(b.engine.conversationState(conversation), ConversationState.waitOwner(ana));
+      expect(_commitsPosted(seen, conversation), isEmpty);
+      expect(await groupOf(b, conversation), isNull);
+
+      // Ana opens it: she makes it, and the others come in by its welcome.
+      await a.engine.openConversation(conversation);
+      final held = await sameGroup([a, b, c], conversation);
+      expect({for (final d in held.devices) d.user}, {ana, bo, cy});
+      await until(() => b.engine.conversationState(conversation) == null);
+      expect(a.engine.conversationState(conversation), isNull);
+      for (final d in [a, b, c]) {
+        await d.engine.stop();
+      }
+    },
+    skip: noCore,
+    timeout: _slow,
+  );
+
+  test(
+    "either_member_makes_a_DM's",
+    () async {
+      final fake = FakeApi();
+      final (ana, bo) = (fake.addUser(), fake.addUser());
+      final conversation = fake.addConversation(group: false, members: [ana, bo], owner: ana);
+      final a = await firstDevice(fake, ana);
+      final b = await firstDevice(fake, bo);
+      // Bo, who isn't the one who started the DM, opens it first and makes its group.
+      await b.engine.openConversation(conversation);
+      await sameGroup([a, b], conversation);
+      final creation = (await a.api.queue(conversation, 0)).entries.first;
+      expect((creation.kind, creation.senderUser, creation.generation, creation.epoch), ('commit', bo, 0, 0));
+      expect(b.engine.conversationState(conversation), isNull);
+      await a.engine.stop();
+      await b.engine.stop();
+    },
+    skip: noCore,
+    timeout: _slow,
+  );
+
+  test(
+    'two_members_make_a_legacy_group_at_once_and_end_in_the_same_one',
+    () async {
+      final fake = FakeApi();
+      final (ana, bo, cy) = (fake.addUser(), fake.addUser(), fake.addUser());
+      final conversation = fake.addConversation(group: true, members: [ana, bo, cy], owner: ana, legacy: true);
+      final [a, b, c] = [await firstDevice(fake, ana), await firstDevice(fake, bo), await firstDevice(fake, cy)];
+      // Both open it at once: both make a group, and their creations reach the API together.
+      fake.gather((method: 'POST', path: commitsPath(conversation)), 2);
+      await Future.wait([a.engine.openConversation(conversation), b.engine.openConversation(conversation)]);
+      await sameGroup([a, b, c], conversation);
+      // One creation took epoch 0; the other's maker came in by the winner's welcome.
+      final entries = (await a.api.queue(conversation, 0)).entries;
+      expect([
+        for (final e in entries)
+          if (e.kind == 'commit' && e.epoch == 0) e.seq,
+      ], hasLength(1));
+      for (final d in [a, b, c]) {
+        await d.engine.stop();
+      }
+    },
+    skip: noCore,
+    timeout: _slow,
+  );
+
+  test(
+    'a_blocked_group_offers_its_restart_to_its_owner,_and_everyone_joins_the_next_generation',
+    () async {
+      final (:fake, :ana, bo: _, cy: _, :conversation, :devices) = await _group();
+      final [a, b, c] = await _blocked(fake, conversation, devices);
+      // Its owner is offered the restart, the others wait for her.
+      expect(a.engine.conversationState(conversation), ConversationState.blocked(restart: Restart.mine, owner: ana));
+      expect(b.engine.conversationState(conversation), ConversationState.blocked(restart: Restart.owner, owner: ana));
+      expect(c.engine.conversationState(conversation), ConversationState.blocked(restart: Restart.owner, owner: ana));
+
+      // Bo can't restart it; Ana can, and everyone joins the next generation, the notices gone.
+      await b.engine.restartGroup(conversation);
+      expect((await groupOf(b, conversation))!.generation, 0);
+      await a.engine.restartGroup(conversation);
+      final after = await sameGroup([a, b, c], conversation);
+      expect((after.generation, after.blocked), (1, false));
+      await until(() => [a, b, c].every((d) => d.engine.conversationState(conversation) == null));
+      for (final d in [a, b, c]) {
+        await d.engine.stop();
+      }
+    },
+    skip: noCore,
+    timeout: _slow,
+  );
+
+  // I1 of the desktop's review: the restart's commit and its welcome are two messages of the gateway's. A device that
+  // hears the commit first reads the welcome from the queue, after the commit it counted: no external commit races.
+  test(
+    "a_restart's_welcome_brings_every_device_in,_though_its_event_comes_after_the_commit's_turn",
+    () async {
+      final (:fake, ana: _, bo: _, cy: _, :conversation, :devices) = await _group();
+      final [a, b, c] = await _blocked(fake, conversation, devices);
+      fake.holdEvents();
+      await a.engine.restartGroup(conversation);
+      final restart = (await a.api.queue(conversation, 0)).entries.last;
+      expect(restart.kind, 'welcome');
+      // The commit's event alone, and the engines' turns for it; then the welcome's.
+      fake.releaseEvents(only: (event) => event.type == 'MLS_COMMIT');
+      await turnEnded(b);
+      await turnEnded(c);
+      fake.releaseEvents();
+      final after = await sameGroup([a, b, c], conversation);
+      expect((after.generation, after.blocked), (1, false));
+      // Nothing after the restart's welcome: no device made an external commit.
+      expect((await a.api.queue(conversation, restart.seq)).entries, isEmpty);
+      for (final d in [a, b, c]) {
+        await d.engine.stop();
+      }
+    },
+    skip: noCore,
+    timeout: _slow,
+  );
+
+  // I2 of the desktop's review: a commit that takes a user out of the group is answered by listing the conversations
+  // again, which no longer have them: their device doesn't try to come back, and nothing is retried.
+  test(
+    "a_removed_user's_device_doesn't_try_to_come_back",
+    () async {
+      final seen = <http.Request>[];
+      final (:fake, ana: _, :bo, cy: _, :conversation, :devices) = await _group(boSeen: seen);
+      final [a, b, c] = devices;
+      // Ana, its owner, takes Bo out, by hand (Task 23 does it in the app).
+      await stoppedByHand(a);
+      final before = seen.length;
+      await _removeByHand(a, conversation, bo);
+      // Bo's device applies its removal; Cy's goes on with Ana's.
+      await until(() async => await groupOf(b, conversation) == null);
+      await sameGroup([a, c], conversation);
+      await turnEnded(b);
+      // Later, and a few minutes on: never the group's info, a commit or the queue again.
+      for (var n = 0; n < 5; n++) {
+        b.clock.advance(const Duration(minutes: 1));
+        await turnEnded(b);
+      }
+      final after = requestsOf(seen.sublist(before));
+      expect(after.where((r) => r.contains('/mls/')), isEmpty);
+      expect(after, contains('GET /api/users/@me/conversations'));
+      expect(b.engine.conversationState(conversation), isNull);
+      await a.host.close();
+      await b.engine.stop();
+      await c.engine.stop();
+    },
+    skip: noCore,
+    timeout: _slow,
+  );
+
+  // I1 of the desktop's review, for an addition: a user removed and added back has a count in the queue, and the welcome
+  // that brings them back follows the addition's commit there.
+  test(
+    'a_user_removed_and_added_back_comes_in_by_the_new_welcome',
+    () async {
+      final (:fake, :ana, bo: _, :cy, :conversation, :devices) = await _group();
+      final [a, b, c] = devices;
+      // Key packages of Cy's, claimed while they share the group: Ana can't claim them once Cy is out of hers.
+      final keyPackages = await a.api.claimKeyPackages(cy);
+      await stoppedByHand(a);
+      final removal = await _removeByHand(a, conversation, cy);
+      await until(() async => await groupOf(c, conversation) == null);
+      await turnEnded(c);
+
+      // Ana adds Cy back. Cy's device hears nothing of it while minutes pass, then the addition's commit, and its turn
+      // ends; then the welcome.
+      fake.holdEvents();
+      final held = (await groupOf(a, conversation))!;
+      final made = await byHand(a, {
+        'cmd': 'add_members',
+        'conversation_id': conversation,
+        'users': [
+          {
+            'user_id': cy,
+            'key_packages': [for (final kp in keyPackages) kp.data],
+          },
+        ],
+      });
+      final added = await a.api.addMember(
+        conversation,
+        cy,
+        duvet.Commit(
+          generation: held.generation,
+          epoch: held.epoch,
+          commit: made['commit']! as String,
+          groupInfo: made['group_info']! as String,
+          welcome: made['welcome'] as String?,
+        ),
+      );
+      await a.host.handle<Object?>({
+        'cmd': 'commit_result',
+        'conversation_id': conversation,
+        'accepted': true,
+        'seq': added.commit.seq,
+      });
+      for (var minute = 0; minute < 3; minute++) {
+        c.clock.advance(const Duration(minutes: 1));
+        await turnEnded(c);
+      }
+      fake.releaseEvents(only: (event) => event.type == 'MLS_COMMIT');
+      await turnEnded(c);
+      fake.releaseEvents();
+      await until(() async => await groupOf(c, conversation) != null);
+      final since = [
+        for (final e in (await b.api.queue(conversation, removal.seq)).entries)
+          if (e.kind == 'commit') e.senderUser,
+      ];
+      expect(since, [ana]);
+      await sameGroup([a, b, c], conversation);
+      await a.host.close();
+      await b.engine.stop();
+      await c.engine.stop();
+    },
+    skip: noCore,
+    timeout: _slow,
+  );
+
+  // M6 of the desktop's review: a conversation shown while the engine can't work yet (here, before the person set up
+  // their first device) gets its group once the engine is ready.
+  test(
+    'a_conversation_opened_before_the_device_is_ready_gets_its_group_once_it_is',
+    () async {
+      final fake = FakeApi();
+      final (ana, bo) = (fake.addUser(), fake.addUser());
+      final conversation = fake.addConversation(group: false, members: [ana, bo], owner: ana);
+      final a = await firstDevice(fake, ana);
+      final b = testDevice(fake, bo);
+      await b.engine.start();
+      expect(b.state, const EngineState.firstDevice());
+      await b.engine.openConversation(conversation);
+      expect(await groupOf(b, conversation), isNull);
+      await b.engine.makeIdentity();
+      await b.engine.keySaved();
+      await sameGroup([a, b], conversation);
+      final creation = (await a.api.queue(conversation, 0)).entries.first;
+      expect(creation.senderUser, bo);
+      await a.engine.stop();
+      await b.engine.stop();
+    },
+    skip: noCore,
+    timeout: _slow,
+  );
+}

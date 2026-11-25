@@ -127,20 +127,58 @@ class TestHost {
   }
 }
 
-/// A host that tells what it's asked (each command's name, in order, and the commands themselves) and fails a command
-/// when [fail] gives an error for it.
+/// A record in memory whose storage refuses [key], as a full disk's would: the write fails, and nothing is kept.
+class KeyRefusingStore extends MemoryStore {
+  KeyRefusingStore(this.key);
+  final String key;
+
+  @override
+  Future<void> write(String key, Object? value) async {
+    if (key == this.key) throw const FileSystemException('the disk is full');
+    await super.write(key, value);
+  }
+}
+
+/// A host whose first open finds the database locked, as another engine holds it: the core opens after.
+class LockedOnce implements CoreHost {
+  LockedOnce(this._host);
+  final CoreHost _host;
+  var _locked = true;
+
+  @override
+  Future<Opened> open(String userId) async {
+    if (!_locked) return _host.open(userId);
+    _locked = false;
+    return (state: HostState.locked, keyStorage: null, reason: null);
+  }
+
+  @override
+  Future<T> handle<T>(Map<String, Object?> command) => _host.handle<T>(command);
+
+  @override
+  Future<void> close() => _host.close();
+
+  @override
+  Future<void> destroy(String userId) => _host.destroy(userId);
+}
+
+/// A host that tells what it's asked (each command's name, in order, and the commands themselves), fails a command
+/// when [fail] gives an error for it, and answers one itself when [answer] gives an answer.
 class WatchedHost implements CoreHost {
-  WatchedHost(this._host, this.log, {this.fail, List<Map<String, Object?>>? commands}) : commands = commands ?? [];
+  WatchedHost(this._host, this.log, {this.fail, this.answer, List<Map<String, Object?>>? commands})
+    : commands = commands ?? [];
   final CoreHost _host;
   final List<String> log;
   final List<Map<String, Object?>> commands;
   final CoreError? Function(Map<String, Object?> command)? fail;
+  final Object? Function(Map<String, Object?> command)? answer;
 
   @override
   Future<T> handle<T>(Map<String, Object?> command) async {
     log.add(command['cmd']! as String);
     commands.add(command);
     if (fail?.call(command) case final error?) throw error;
+    if (answer?.call(command) case final answered?) return answered as T;
     return _host.handle<T>(command);
   }
 
@@ -248,6 +286,7 @@ TestDevice testDevice(
   http.Client? client,
   bool Function(GatewayEvent event)? hears,
   DateTime? challengedAt,
+  double Function()? random,
 }) {
   final signedIn = token == null ? fake.signIn(user) : null;
   final session = token ?? signedIn!.token;
@@ -285,6 +324,7 @@ TestDevice testDevice(
       if (device != (registered.length > 1 ? registered[registered.length - 2] : null)) connect(device);
     },
     loginChallenge: signedIn == null ? null : (challenge: signedIn.deviceChallenge, at: challengedAt ?? DateTime.now()),
+    random: random ?? () => 0.5,
   );
   final states = <EngineState>[];
   engine.state.addListener(() => states.add(engine.state.value));
@@ -310,6 +350,174 @@ Future<TestDevice> firstDevice(
 
 /// The recovery key a first device's state shows, or null.
 String? shownKey(EngineState state) => state.stage == EngineStage.firstDevice ? state.recoveryKey : null;
+
+/// The group as a device's core holds it (the core's `group`): its devices by user and ID.
+typedef HeldGroup = ({
+  int generation,
+  int epoch,
+  String authenticator,
+  bool blocked,
+  List<({String user, String device})> devices,
+});
+
+/// The conversation's group as the device's core holds it, or null without one.
+Future<HeldGroup?> groupOf(TestDevice device, String conversation) async {
+  final Map<String, Object?> held;
+  try {
+    held = await device.host.handle<Map<String, Object?>>({'cmd': 'group', 'conversation_id': conversation});
+  } on CoreError {
+    return null;
+  }
+  return (
+    generation: held['generation']! as int,
+    epoch: held['epoch']! as int,
+    authenticator: held['authenticator']! as String,
+    blocked: held['blocked'] == true,
+    devices: [
+      for (final d in (held['devices']! as List).cast<Map<String, Object?>>())
+        (user: d['user_id']! as String, device: d['device_id']! as String),
+    ],
+  );
+}
+
+/// Waits until every device holds the conversation's group at one generation and epoch, with one authenticator.
+Future<HeldGroup> sameGroup(List<TestDevice> devices, String conversation, {Duration? timeout}) async {
+  late HeldGroup held;
+  await until(() async {
+    final groups = [for (final device in devices) await groupOf(device, conversation)];
+    final first = groups.first;
+    if (first == null) return false;
+    held = first;
+    return groups.every(
+      (g) =>
+          g != null && (g.generation, g.epoch, g.authenticator) == (first.generation, first.epoch, first.authenticator),
+    );
+  }, timeout: timeout);
+  return held;
+}
+
+/// How long a test waits for what an engine does in its own time: a minute, or E2E_WAIT_SECONDS.
+final _wait = Duration(seconds: int.tryParse(Platform.environment['E2E_WAIT_SECONDS'] ?? '') ?? 60);
+
+/// Waits until [holds] is true, as an engine's work after an event ends in its own time: past [timeout], it fails.
+Future<void> until(FutureOr<bool> Function() holds, {Duration? timeout}) async {
+  final end = DateTime.now().add(timeout ?? _wait);
+  while (!await holds()) {
+    if (DateTime.now().isAfter(end)) fail('what the test waited for never came');
+    await Future<void>.delayed(const Duration(milliseconds: 20));
+  }
+}
+
+/// Waits for the work the device's engine took on until now, what the events delivered so far asked for included: a
+/// tap that does nothing on a ready device, which waits its turn after them.
+Future<void> turnEnded(TestDevice device) async {
+  await pumpEventQueue();
+  await device.engine.uploadLater();
+}
+
+/// A command run by hand on the device's core, the users it asks for observed first, as the engine does.
+Future<Map<String, Object?>> byHand(TestDevice device, Map<String, Object?> command) async {
+  for (var round = 1; ; round++) {
+    try {
+      return await device.host.handle<Map<String, Object?>>(command);
+    } on CoreError catch (error) {
+      if (error.code != 'needs_identities' || round >= 3) rethrow;
+      for (final identity in await device.api.identities(error.users!)) {
+        await device.host.handle<Object?>({
+          'cmd': 'observe_user',
+          'user_id': identity.userId,
+          'identity_key': identity.identityKey,
+          'device_list': identity.deviceList,
+          'certificates': identity.certificates,
+        });
+      }
+    }
+  }
+}
+
+/// A commit of the device's own, made and sent by hand, with its engine stopped (its core open): its leaf's renewal,
+/// posted, and the API's answer told to the core.
+Future<duvet.CommitTaken> commitByHand(TestDevice device, String conversation) async {
+  final held = (await groupOf(device, conversation))!;
+  final made = await byHand(device, {'cmd': 'refresh', 'conversation_id': conversation});
+  final taken = await device.api.commit(
+    conversation,
+    duvet.Commit(
+      generation: held.generation,
+      epoch: held.epoch,
+      commit: made['commit']! as String,
+      groupInfo: made['group_info']! as String,
+    ),
+  );
+  await device.host.handle<Object?>({
+    'cmd': 'commit_result',
+    'conversation_id': conversation,
+    'accepted': true,
+    'seq': taken.seq,
+  });
+  return taken;
+}
+
+/// The device's engine stopped, and its core opened again, for commits by hand.
+Future<void> stoppedByHand(TestDevice device) async {
+  await device.engine.stop();
+  await device.host.open(device.user);
+}
+
+/// The device again after its app restarted: a new engine on the same core, record and session, started.
+Future<TestDevice> restarted(
+  FakeApi fake,
+  TestDevice device, {
+  CoreHost? host,
+  http.Client? client,
+  bool Function(GatewayEvent event)? hears,
+}) async {
+  await device.engine.stop();
+  final again = testDevice(
+    fake,
+    device.user,
+    host: host ?? device.host,
+    store: device.store,
+    token: device.token,
+    client: client,
+    hears: hears,
+  );
+  await again.engine.start();
+  return again;
+}
+
+/// Another device of the first one's user, set up by the first one's approval by QR (Task 27 does it in the app) and
+/// on the user's list: its engine started and ready.
+Future<TestDevice> approvedDevice(FakeApi fake, TestDevice first, {CoreHost? host}) async {
+  final fresh = testDevice(fake, first.user, host: host);
+  await fresh.engine.start();
+  if (fresh.state != EngineState.newDevice) throw StateError('the new device is ${fresh.state}');
+  await stoppedByHand(fresh);
+  final begun = await fresh.host.handle<Map<String, Object?>>({'cmd': 'approval_begin'});
+  final approved = await first.host.handle<Map<String, Object?>>({'cmd': 'approval_from_qr', 'qr': begun['qr']});
+  await fresh.host.handle<Object?>({'cmd': 'approval_receive', 'transfer': approved['transfer']});
+  final served = await fresh.api.identity(first.user);
+  final version = await fresh.api.putDeviceList(
+    duvet.DeviceListUpload(
+      deviceList: approved['device_list']! as String,
+      certificate: approved['certificate']! as String,
+      baseVersion: served.deviceListVersion,
+    ),
+  );
+  await fresh.host.handle<Object?>({'cmd': 'device_list_uploaded', 'version': version});
+  final again = await restarted(fake, fresh);
+  if (again.state != EngineState.ready) throw StateError('the approved device is ${again.state}');
+  return again;
+}
+
+/// The path of a conversation's commits, for the fake's switches.
+String commitsPath(String conversation) => '/api/users/@me/conversations/$conversation/mls/commits';
+
+/// What a device asked the API: each request's method and path, with its query.
+List<String> requestsOf(List<http.Request> seen) => [
+  for (final request in seen)
+    '${request.method} ${request.url.path}${request.url.hasQuery ? '?${request.url.query}' : ''}',
+];
 
 /// A recovery key as the core makes one (decision 22): 48 base58 characters.
 final recoveryKeyShape = matches(RegExp(r'^[1-9A-HJ-NP-Za-km-z]{48}$'));

@@ -3,9 +3,10 @@
 /// runs one (lib/data/duvet_repository.dart) and a test as many as it needs, each with its own core, session and
 /// gateway connection. The desktop's engine is its twin in TypeScript, and the two share their tests' names.
 ///
-/// Its work goes one flow at a time, in the order it came: the start («Arranque», steps 1 to 7, here without the
-/// conversations), the person's taps, and what the gateway's events ask for. bootstrap.dart, identity.dart,
-/// key_packages.dart and inbox.dart hold the steps; this class keeps the state the app shows, and what's due later.
+/// Its work goes one flow at a time, in the order it came: the start («Arranque», steps 1 to 7), the person's taps,
+/// and what the gateway's events ask for. bootstrap.dart, identity.dart, key_packages.dart and inbox.dart hold the
+/// steps, sync.dart each conversation's queue and group; this class keeps the state the app shows, and what's due
+/// later.
 library;
 
 import 'dart:async';
@@ -19,8 +20,12 @@ import 'bootstrap.dart';
 import 'host.dart';
 import 'identity.dart';
 import 'inbox.dart';
+import 'failures.dart';
 import 'key_packages.dart';
 import 'store.dart';
+import 'sync.dart';
+
+export 'sync.dart' show ConversationNotice, ConversationState, Restart;
 
 /// What the engine waits with: the system's timers in the app, a test's clock in its tests.
 abstract interface class EngineClock {
@@ -120,7 +125,9 @@ class E2EEngine {
     required this.deviceName,
     required this.registered,
     ({String challenge, DateTime at})? loginChallenge,
-  }) : _challenge = loginChallenge;
+    double Function()? random,
+  }) : _challenge = loginChallenge,
+       random = random ?? Random().nextDouble;
 
   final CoreHost host;
 
@@ -140,6 +147,9 @@ class E2EEngine {
 
   /// The session is bound to this device, which every identify names from now on (Ruling 30).
   final void Function(String deviceId) registered;
+
+  /// A number from 0 to 1, at random: how much of its 5 s a due commit waits.
+  final double Function() random;
 
   /// How long a login's challenge is taken for: the API's 10 minutes (its challengeLife), less one for the way there.
   static const challengeLife = Duration(minutes: 9);
@@ -180,6 +190,52 @@ class E2EEngine {
   /// How many rounds each inbox message's call was cut (inbox.dart).
   final _tries = <String, int>{};
 
+  /// What failed to open, waiting for its report.
+  late final _failures = Failures(api, clock);
+
+  /// The conversations' queues and groups.
+  late final _groups = Conversations(this, (work) => _soon(() => _whenReady(work)), _failures, _conversationChanged);
+
+  /// The API's external sender as this device pinned it, for the session too.
+  String? _sender;
+
+  /// The conversations the person has open: they get their groups once the engine can (M6 of the desktop's review).
+  final _shown = <String>{};
+
+  final _conversations = ValueNotifier<Map<String, ConversationState>>(const {});
+
+  /// What each conversation says over its message box of its group, by its ID: none while its group goes on.
+  ValueListenable<Map<String, ConversationState>> get conversations => _conversations;
+
+  /// What the conversation says of its group: null while it goes on.
+  ConversationState? conversationState(String conversationId) => _conversations.value[conversationId];
+
+  /// The person opened the conversation: its group goes on, or is made here when it has none and this user may. One
+  /// opened before the engine can work goes once it's ready, while it stays open ([closeConversation]).
+  Future<void> openConversation(String conversationId) {
+    _shown.add(conversationId);
+    return _queue(() => _whenReady(() => _groups.open(conversationId)));
+  }
+
+  /// The person left the conversation.
+  void closeConversation(String conversationId) => _shown.remove(conversationId);
+
+  /// The person's tap on Restart encryption, over a blocked group they may restart.
+  Future<void> restartGroup(String conversationId) => _queue(() => _whenReady(() => _groups.restart(conversationId)));
+
+  /// The person's yes to a conversation's members of today, which its record from before the cutover didn't have.
+  Future<void> acceptMembers(String conversationId) => _queue(() => _whenReady(() => _groups.accept(conversationId)));
+
+  void _conversationChanged(String conversationId, ConversationState? state) {
+    final next = {..._conversations.value};
+    if (state == null) {
+      next.remove(conversationId);
+    } else {
+      next[conversationId] = state;
+    }
+    _conversations.value = next;
+  }
+
   /// Starts: hears the gateway's events, then runs «Arranque». It settles when the start's flow ended, whatever state.
   Future<void> start() {
     _heard ??= events.listen(_hear);
@@ -195,6 +251,8 @@ class E2EEngine {
     _retry = null;
     _daily?.call();
     _daily = null;
+    _groups.stop();
+    _failures.stop();
     await _turn;
     await host.close();
   }
@@ -249,7 +307,28 @@ class E2EEngine {
     if (now.stage == EngineStage.removed || (now.stage == EngineStage.failed && now.lostKey)) await _startOver();
   });
 
-  void _set(EngineState state) => _state.value = state;
+  void _set(EngineState state) {
+    final was = _state.value.stage;
+    _state.value = state;
+    if (state.stage != EngineStage.ready) {
+      // Nothing heard is kept while the device can't work: the queue keeps it all (M3 of the desktop's review).
+      _groups.dropHeard();
+    } else if (was != EngineStage.ready) {
+      for (final id in [..._shown]) {
+        _soon(() => _whenReady(() => _groups.open(id)));
+      }
+    }
+  }
+
+  /// Conversations' work, only while this device is ready: a client too old for it waits for its update.
+  Future<void> _whenReady(Future<void> Function() work) async {
+    if (_state.value.stage != EngineStage.ready) return;
+    try {
+      await work();
+    } on duvet.DuvetUpdateRequiredException catch (error) {
+      _set(EngineState.update(error.minimum));
+    }
+  }
 
   /// Runs [work] once the flow before it ended (nothing once stopped). What it throws fails this call alone.
   Future<void> _queue(Future<void> Function() work) {
@@ -264,15 +343,18 @@ class E2EEngine {
   void _soon(Future<void> Function() work) => unawaited(_queue(work).catchError((Object _) {}));
 
   void _hear(duvet.GatewayEventPayload event) {
+    if (_state.value.stage == EngineStage.ready) _groups.heard(event);
     switch (event) {
       case duvet.ReadyEvent():
-        // A new gateway session: a start that failed goes again now, and the inbox may have filled meanwhile.
+        // A new gateway session: a start that failed goes again now, and the inbox and the conversations' queues may
+        // have filled meanwhile.
         if (_retry case final retry?) {
           retry();
           _retry = null;
           _soon(_boot);
         } else if (_device != null) {
           _soon(_inbox);
+          _soon(() => _whenReady(_groups.all));
         }
       case duvet.DeviceMessagePayloadEvent(:final data) when data.deviceId == _device:
         _soon(_inbox);
@@ -286,7 +368,10 @@ class E2EEngine {
         _soon(() async {
           final now = _state.value;
           if (now.stage == EngineStage.ready) {
+            // Its own list may now leave out a device that still has leaves: the groups say whether a commit is due to
+            // take them out.
             _set(await _identity());
+            await _whenReady(_groups.all);
           } else if (now.stage == EngineStage.firstDevice && now.recoveryKey == null) {
             await _stillFirst();
           }
@@ -312,17 +397,17 @@ class E2EEngine {
   }
 
   /// Step 5, with the inbox for a rotation's transfer this device may need first.
-  Future<EngineState> _identity() => identityState(this, () => takeInbox(this, _tries));
+  Future<EngineState> _identity() => identityState(this, () => takeInbox(this, _tries, _failures));
 
   /// The inbox; once it brought a rotation's transfer, the own user observed, which may change what this device is.
   Future<void> _inbox() async {
-    if (await takeInbox(this, _tries)) _set(await _identity());
+    if (await takeInbox(this, _tries, _failures)) _set(await _identity());
   }
 
   /// «Arranque»: the API's configuration, the user's database, this installation's device and the session bound to it.
   Future<void> _boot() async {
     try {
-      await api.config();
+      _groups.start(await _pin((await api.config()).externalSender));
       final opened = await host.open(user);
       if (opened.state != HostState.ready) return _closed(opened);
       final (:status, :keys) = await ownDevice(this);
@@ -358,12 +443,20 @@ class E2EEngine {
     _later();
   }
 
-  /// Steps 5 to 7: what the user's identity makes of this device, the inbox, and a listed device's key packages.
+  /// Steps 5 to 7: what the user's identity makes of this device, the inbox, then a listed device's conversations'
+  /// queues, before its key packages, so a welcome waiting there takes its keys before key_packages lets them go; then
+  /// the leaf renewals due («Lo periódico»), as every day after: a phone seldom runs a whole day.
   Future<void> _settle() async {
     _set(await _identity());
     await _inbox();
     if (_state.value.stage != EngineStage.ready) return;
+    await _whenReady(_groups.all);
     await _keyPackages();
+    try {
+      await _whenReady(_groups.renew);
+    } catch (error) {
+      debugPrint("e2e: the leaf renewals wait for tomorrow's: $error");
+    }
     _daily ??= _everyDay();
   }
 
@@ -375,7 +468,29 @@ class E2EEngine {
   void Function() _everyDay() => clock.later(_day, () {
     _daily = _everyDay();
     _soon(_keyPackages);
+    _soon(() => _whenReady(_groups.renew));
   });
+
+  /// The API's external sender as this device pinned it (Ruling 32): the first one it saw, which the record keeps, and
+  /// this session where the record can't (its storage full or refused), so a later start in it keeps it too; the
+  /// record is asked again each time (M4 of the desktop's review). Another one served later is refused, said in the
+  /// log, and the pinned one stays: groups under it are the only ones this device goes into.
+  Future<String> _pin(String served) async {
+    final recorded = switch (store.read(externalSender)) {
+      final String key when key.isNotEmpty => key,
+      _ => null,
+    };
+    final pinned = recorded ?? _sender ?? served;
+    if (recorded == null) {
+      await store.write(externalSender, pinned).catchError((Object error) => debugPrint('e2e: the pin: $error'));
+    }
+    if (pinned != served) {
+      debugPrint(
+        'e2e: the API serves another external sender than the one this device pinned: it stays the pinned one.',
+      );
+    }
+    return _sender = pinned;
+  }
 
   /// The core didn't open: unsupported for good, a lost key until the person starts over, anything else again later.
   void _closed(Opened opened) {
@@ -407,6 +522,7 @@ class E2EEngine {
     _made = null;
     _device = null;
     _tries.clear();
+    _groups.forget();
     _daily?.call();
     _daily = null;
     _set(EngineState.starting);

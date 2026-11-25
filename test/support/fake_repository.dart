@@ -5,6 +5,7 @@ import 'package:duvet/data/recent_chats.dart';
 import 'package:duvet/data/recent_chats.dart' as recent show previewOf;
 import 'package:duvet/data/repository.dart';
 import 'package:duvet/e2e/engine.dart' show EngineState;
+import 'package:duvet/e2e/sync.dart' show ConversationState;
 import 'package:duvet_client/duvet.dart' show Activity;
 import 'package:flutter/foundation.dart';
 
@@ -1593,6 +1594,16 @@ class FakeRepository implements ChatRepository {
 
   @override
   Future<void> startOver() async => encryptionTaps.add('startOver');
+
+  /// What each encrypted conversation says over its message box; a test sets it.
+  @override
+  final ValueNotifier<Map<String, ConversationState>> conversationStates = ValueNotifier(const {});
+
+  @override
+  Future<void> restartGroup(String conversationId) async => encryptionTaps.add('restartGroup $conversationId');
+
+  @override
+  Future<void> acceptMembers(String conversationId) async => encryptionTaps.add('acceptMembers $conversationId');
 
   @override
   Future<void> logIn(String email, String password) async {
