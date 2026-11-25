@@ -5158,12 +5158,24 @@ void Function(int sent, int total)? _bytesSent(void Function(double progress)? o
 
 /// The session's REST client as the encryption engine's routes see it (duvet_client's E2eApi): each request through the
 /// repository's [DuvetRepository._call], so a renewal on the way is saved, a session found ended signs out, and a
-/// client that took another's place (a stored session taken up, Ruling 30's reopen) is followed.
+/// client that took another's place (a stored session taken up, Ruling 30's reopen) is followed. Only while the session
+/// it was made for goes on: an engine still running after its session closed asks nothing more, of the next session's
+/// client least of all (M5 of the review). Neither the session taken up nor the reopen closes it.
 class _SessionRest with duvet.RestMethods {
-  _SessionRest(this._repository);
+  _SessionRest(this._repository) : _session = _repository._sessionsClosed;
   final DuvetRepository _repository;
 
-  duvet.RestClient get _rest => _repository._rest;
+  /// How many sessions had closed when it was made: its session's place.
+  final int _session;
+
+  duvet.RestClient get _rest {
+    _ensureOpen();
+    return _repository._rest;
+  }
+
+  void _ensureOpen() {
+    if (_repository._sessionsClosed != _session) throw StateError('the session the engine was for ended');
+  }
 
   @override
   http.Client get client => _rest.client;
@@ -5195,21 +5207,24 @@ class _SessionRest with duvet.RestMethods {
     Duration? timeout,
     void Function(int sent, int total)? onProgress,
     Future<void>? abortTrigger,
-  }) => _repository._call(
-    (api) => api.request(
-      method,
-      path,
-      action,
-      query: query,
-      root: root,
-      json: json,
-      bytes: bytes,
-      fields: fields,
-      files: files,
-      renew: renew,
-      timeout: timeout,
-      onProgress: onProgress,
-      abortTrigger: abortTrigger,
-    ),
-  );
+  }) async {
+    _ensureOpen();
+    return _repository._call(
+      (api) => api.request(
+        method,
+        path,
+        action,
+        query: query,
+        root: root,
+        json: json,
+        bytes: bytes,
+        fields: fields,
+        files: files,
+        renew: renew,
+        timeout: timeout,
+        onProgress: onProgress,
+        abortTrigger: abortTrigger,
+      ),
+    );
+  }
 }

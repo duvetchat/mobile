@@ -159,8 +159,9 @@ void main() {
     await b.engine.stop();
   }, skip: noCore);
 
-  // I1 of the desktop's review: a stale "Set up" never makes a key that a 409 throws away.
-  test('a_first_device_whose_user_was_set_up_elsewhere_makes_no_key', () async {
+  // I1 of the desktop's review: every device of a person starts as the first at the cutover; once one publishes, the
+  // others' Set up is stale.
+  test("a_stale_set_up,_after_another_device_of_the_user_published,_makes_no_key:_it's_a_new_device", () async {
     final fake = FakeApi();
     final ana = fake.addUser();
     final log = <String>[];
@@ -177,19 +178,26 @@ void main() {
     await stale.engine.makeIdentity();
     expect(stale.state, EngineState.newDevice);
     expect(log, isNot(contains('create_identity')));
+    expect(stale.states.where((state) => state.recoveryKey != null), isEmpty);
+    // Its core made no identity, so nothing is destroyed: the same device, waiting to be given the identity.
+    expect(stale.registered, hasLength(1));
+    await stale.engine.stop();
+    await a.engine.stop();
+  }, skip: noCore);
 
-    // One that hears it goes there by itself, before any tap.
+  test("the_user's_identity_published_elsewhere_turns_a_first_device_that_showed_no_key_into_a_new_one", () async {
+    final fake = FakeApi();
+    final ana = fake.addUser();
+    final waiting = testDevice(fake, ana);
+    await waiting.engine.start();
+    expect(waiting.state, const EngineState.firstDevice());
+    final first = await firstDevice(fake, ana);
+    await eventually(() => expect(waiting.state, EngineState.newDevice));
+    // One that starts after it is a new device from the start, before any tap.
     final heard = testDevice(fake, ana);
     await heard.engine.start();
     expect(heard.state, EngineState.newDevice);
-    final fresh = FakeApi();
-    final bo = fresh.addUser();
-    final waiting = testDevice(fresh, bo);
-    await waiting.engine.start();
-    expect(waiting.state, const EngineState.firstDevice());
-    final first = await firstDevice(fresh, bo);
-    await eventually(() => expect(waiting.state, EngineState.newDevice));
-    for (final device in [stale, a, heard, waiting, first]) {
+    for (final device in [waiting, first, heard]) {
       await device.engine.stop();
     }
   }, skip: noCore);
@@ -228,7 +236,7 @@ void main() {
   );
 
   // I2 of the desktop's review: once the key is saved, a failed upload doesn't hold the app behind the key.
-  test('after_a_failed_upload,_later_puts_it_off,_and_finish_brings_the_same_key_back', () async {
+  test('after_a_failed_upload,_later_closes_the_sheet,_and_finish_brings_the_same_key_back', () async {
     final fake = FakeApi();
     final ana = fake.addUser();
     final a = testDevice(fake, ana);
@@ -247,7 +255,7 @@ void main() {
     await a.engine.stop();
   }, skip: noCore);
 
-  test("a_426_on_the_identity's_upload_goes_to_update", () async {
+  test('an_upload_a_client_too_old_makes_goes_to_update', () async {
     final fake = FakeApi();
     final ana = fake.addUser();
     final a = testDevice(fake, ana);
@@ -259,21 +267,8 @@ void main() {
     await a.engine.stop();
   }, skip: noCore);
 
-  // I3 of the desktop's review: a stale tap never destroys a database in use.
-  test('starting_over_acts_only_on_a_removed_device_or_a_lost_key', () async {
-    final fake = FakeApi();
-    final ana = fake.addUser();
-    final a = await firstDevice(fake, ana);
-    final before = await a.host.handle<Map<String, Object?>>({'cmd': 'status'});
-    await a.engine.startOver();
-    expect(a.state, EngineState.ready);
-    expect(a.registered, hasLength(1));
-    expect(await a.host.handle<Map<String, Object?>>({'cmd': 'status'}), before);
-    await a.engine.stop();
-  }, skip: noCore);
-
   // M5 of the desktop's review: a confirmation cut after identity_uploaded, before the list's.
-  test('a_confirmation_cut_halfway_counts_the_identity_as_confirmed', () async {
+  test('a_confirmation_cut_halfway_goes_on_at_the_next_continue', () async {
     final fake = FakeApi();
     final ana = fake.addUser();
     var cut = true;

@@ -138,7 +138,8 @@ duvet.E2eApi clientOf(FakeApi fake, Device d) => duvet.E2eApi(
   ),
 );
 
-/// What the API's routes answer for a download: a path on its own host, signed until `exp` (storage.SignedAttachmentURL).
+/// What the API's routes answer for a download: a path on its own host, signed until `exp`
+/// (storage.SignedAttachmentURL).
 final signedPath = matches(RegExp(r'^/attachments/[0-9a-f-]{36}\?sig=[0-9a-f]{64}&exp=\d+$'));
 
 /// A signed path with its query changed (another signature, an expiry that isn't a number), fetched with no session.

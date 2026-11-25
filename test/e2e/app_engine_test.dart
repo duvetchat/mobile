@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
@@ -8,6 +9,8 @@ import 'package:duvet/data/session_store.dart';
 import 'package:duvet/e2e/client.dart';
 import 'package:duvet/e2e/engine.dart';
 import 'package:duvet/e2e/host.dart';
+import 'package:duvet/push/call_decline.dart';
+import 'package:duvet/push/renewal.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
@@ -46,6 +49,27 @@ class _Host implements CoreHost {
   Future<void> destroy(String userId) async {}
 }
 
+/// A core whose open waits for [opens], then opens with a device: an engine whose session ends while its core opens
+/// goes on from there.
+class _OpeningHost extends _Host {
+  final opens = Completer<void>();
+  final asked = <String>[];
+
+  @override
+  Future<Opened> open(String userId) async {
+    opened.add(userId);
+    await opens.future;
+    return (state: HostState.ready, keyStorage: null, reason: null);
+  }
+
+  @override
+  Future<T> handle<T>(Map<String, Object?> command) async {
+    asked.add(command['cmd']! as String);
+    if (command['cmd'] == 'status') return {'device_id': '01936d4e-8f00-7000-8000-000000000001'} as T;
+    throw CoreError('internal', message: 'no core');
+  }
+}
+
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
@@ -76,6 +100,8 @@ void main() {
     late DuvetRepository repository;
     late _Host host;
     var shown = false;
+    // Each sign-in's access token is a new one: access-1, access-2…
+    var logins = 0;
     const paths = MethodChannel('plugins.flutter.io/path_provider');
     final messenger = TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
 
@@ -85,11 +111,12 @@ void main() {
       requests = [];
       host = _Host();
       shown = false;
+      logins = 0;
       final client = MockClient((request) async {
         requests.add(request);
         final json = switch ((request.method, request.url.path)) {
           ('POST', '/api/auth/login') => {
-            'token': 'access-1',
+            'token': 'access-${++logins}',
             'session_token': 'refresh-1',
             'device_challenge': base64Encode(List.filled(32, 7)),
           },
@@ -157,6 +184,60 @@ void main() {
       for (final request in requests) {
         expect(request.headers['X-Duvet-Client'], 'android/${_version()}', reason: request.url.path);
       }
+    });
+
+    // M1 of the review: the requests the app makes from the background say it too: the session's renewal
+    // (WorkManager's) and a call's Decline from its notification.
+    test("says_what_it_is_from_the_background_too:_the_session's_renewal_and_a_call's_decline", () async {
+      final sent = <http.BaseRequest>[];
+      final client = MockClient((request) async {
+        sent.add(request);
+        if (request.url.path == '/api/auth/refresh') {
+          return http.Response(jsonEncode({'token': 'access-2', 'session_token': 'refresh-2'}), 200);
+        }
+        return http.Response('', 204);
+      });
+      final now = DateTime.utc(2026, 11, 25, 12);
+      final store = MemorySessionStore((
+        token: 'access-1',
+        sessionToken: 'refresh-1',
+        refreshedAt: now.subtract(const Duration(hours: 5)),
+        userId: _me,
+      ));
+      await renewStoredSession(store, client, duvetRouter, now);
+      const conversation = '00000000-0000-4000-8000-000000000002';
+      await declineFromNotification(conversation, startedAt: 0, store: store, client: client);
+      expect(
+        [for (final request in sent) request.url.path],
+        ['/api/auth/refresh', '/api/users/@me/conversations/$conversation/call/decline'],
+      );
+      for (final request in sent) {
+        expect(request.headers['X-Duvet-Client'], 'android/${_version()}', reason: request.url.path);
+      }
+    });
+
+    // M5 of the review: an engine whose session ended asks nothing more of the API, nor of the next session's client.
+    // The reopen keeps its session: gateway_session_test.dart's engine goes on through the new client.
+    test('an_engine_whose_session_ended_asks_nothing_of_the_next_one', () async {
+      final opening = _OpeningHost();
+      host = opening;
+      shown = true;
+      await repository.logIn('gaby@duvet.chat', 'secret');
+      await eventually(() => expect(opening.opened, [_me]));
+      // Signed out while its core opens, and in again; the new session's engine waits for the screen.
+      await repository.logOut();
+      shown = false;
+      await repository.logIn('gaby@duvet.chat', 'secret');
+      final asked = requests.length;
+
+      opening.opens.complete();
+      await eventually(() => expect(opening.closed, 1));
+      // It went on from the core's open: its device, then the binding, whose first request never went.
+      expect(opening.asked, contains('status'));
+      expect([
+        for (final request in requests.skip(asked))
+          if (request.url.path.startsWith('/api/users/@me/devices')) request.headers['Authorization'],
+      ], isEmpty);
     });
 
     // Review Focus 2: main() runs on audio_service's engine too, which may start with no screen.

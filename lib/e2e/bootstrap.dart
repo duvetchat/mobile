@@ -43,7 +43,8 @@ DeviceKeys? _keysOf(Object? kept, String deviceId) => switch (kept) {
 };
 
 /// The user's database's device, made the first time with an ID of the client's (a UUIDv7), and its keys: kept in
-/// the record with its ID, or just made (a record that refused them still registers the new device).
+/// the record with its ID, or just made (a record that refused them still registers the new device). Keys that don't
+/// read leave the record none, as the desktop's does: an older record's are another device's.
 Future<({CoreStatus status, DeviceKeys? keys})> ownDevice(E2EEngine engine) async {
   final status = await coreStatus(engine.host);
   if (status.deviceId case final id?) return (status: status, keys: _keysOf(engine.store.read(deviceKeys), id));
@@ -54,11 +55,12 @@ Future<({CoreStatus status, DeviceKeys? keys})> ownDevice(E2EEngine engine) asyn
     'device_id': id,
   });
   final keys = _keysOf({...made, 'device_id': id}, id);
-  if (keys != null) {
-    await engine.store
-        .write(deviceKeys, {'device_id': id, 'signature_key': keys.signatureKey, 'hpke_key': keys.hpkeKey})
-        .catchError((Object error) => debugPrint("e2e: the device's keys: $error"));
-  }
+  await engine.store
+      .write(
+        deviceKeys,
+        keys == null ? null : {'device_id': id, 'signature_key': keys.signatureKey, 'hpke_key': keys.hpkeKey},
+      )
+      .catchError((Object error) => debugPrint("e2e: the device's keys: $error"));
   return (status: await coreStatus(engine.host), keys: keys);
 }
 

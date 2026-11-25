@@ -161,7 +161,7 @@ void main() {
 
   // I4 of the desktop's review: a message's sender certificate goes with it, and one the core takes only with what a
   // later task gives (a history or a catch-up key) waits in the record instead of going.
-  test("a_message_goes_to_the_core_with_its_sender's_certificate,_and_one_for_later_is_kept", () async {
+  test("a_message_goes_to_the_core_with_its_sender's_certificate,_and_one_its_task_takes_is_kept_for_it", () async {
     final fake = FakeApi();
     final (ana, bo) = (fake.addUser(), fake.addUser());
     fake.addConversation(group: false, members: [ana, bo]);
@@ -201,7 +201,7 @@ void main() {
   }, skip: noCore);
 
   // M3 of the desktop's review: approvals are between the user's own devices.
-  test("only_the_user's_own_devices'_approval_frames_are_kept", () async {
+  test("an_approval's_step_from_another_user_is_dropped,_never_kept", () async {
     final fake = FakeApi();
     final (ana, bo) = (fake.addUser(), fake.addUser());
     fake.addConversation(group: false, members: [ana, bo]);

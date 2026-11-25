@@ -2,10 +2,10 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:math';
 
+import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:forui/forui.dart';
-import 'package:share_plus/share_plus.dart';
 
 import '../e2e/notices.dart';
 import '../theme.dart';
@@ -27,9 +27,9 @@ List<String> keyGroups(String key) => [
 
 /// The first device's recovery key (decision 23): its 48 characters in 12 groups of 4, which the person copies or saves
 /// to a file, then says they saved; nothing goes on before, and Back leaves nothing (Ruling 13). Continue uploads the
-/// identity ([onSaved]): a failure keeps the key here, says so, and offers Later ([onLater]), which closes the screen
-/// while the upload waits for Finish, as the key is saved by then (I2 of the desktop's review). Whoever shows the screen
-/// takes it away once the key is done with.
+/// identity ([onSaved]): a failure keeps the key here, says so, and offers Later ([onLater]), which closes the
+/// screen while the upload waits for Finish, as the key is saved by then (I2 of the desktop's review). Whoever shows
+/// the screen takes it away once the key is done with.
 class RecoveryKeyPage extends StatefulWidget {
   const RecoveryKeyPage({required this.recoveryKey, required this.onSaved, required this.onLater, super.key});
 
@@ -66,14 +66,15 @@ class _RecoveryKeyPageState extends State<RecoveryKeyPage> {
     });
   }
 
-  // A text file of its own, through the phone's share sheet: Files, Drive or a password manager keep it.
+  // A text file of its own, written only where the person picks in Android's save dialog (ACTION_CREATE_DOCUMENT):
+  // file_picker hands the dialog's document the bytes and keeps no copy. Never the share sheet, whose copies stay in
+  // the app's cache, as the key opens the identity and the backup (I1 of the review).
   Future<void> _saveFile() async {
-    final file = Uint8List.fromList(utf8.encode('Duvet recovery key\n\n$_text\n'));
     try {
-      await SharePlus.instance.share(
-        ShareParams(
-          files: [XFile.fromData(file, name: 'duvet-recovery-key.txt', mimeType: 'text/plain')],
-        ),
+      await FilePicker.saveFile(
+        fileName: 'duvet-recovery-key.txt',
+        bytes: Uint8List.fromList(utf8.encode('Duvet recovery key\n\n$_text\n')),
+        mimeType: 'text/plain',
       );
     } catch (error) {
       debugPrint("e2e: the recovery key's file: ${error.runtimeType}");

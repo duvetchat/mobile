@@ -41,6 +41,27 @@ class _ClosedHost implements CoreHost {
   Future<void> destroy(String userId) async {}
 }
 
+/// A core whose create_device answers keys that don't read, the device made all the same.
+class _KeysUnread implements CoreHost {
+  _KeysUnread(this._core);
+  final CoreHost _core;
+
+  @override
+  Future<Opened> open(String userId) => _core.open(userId);
+
+  @override
+  Future<T> handle<T>(Map<String, Object?> command) async {
+    final answer = await _core.handle<T>(command);
+    return command['cmd'] == 'create_device' ? <String, Object?>{} as T : answer;
+  }
+
+  @override
+  Future<void> close() => _core.close();
+
+  @override
+  Future<void> destroy(String userId) => _core.destroy(userId);
+}
+
 String _said(http.Request request) => '${request.method} ${request.url.path}';
 
 void main() {
@@ -133,7 +154,7 @@ void main() {
   }, skip: noCore);
 
   // M10 of the desktop's review: DEVICE_REMOVE, with no IDENTITY_UPDATE before it.
-  test('device_remove_of_this_device_says_removed', () async {
+  test('a_device_taken_away_while_it_runs_hears_so', () async {
     final fake = FakeApi();
     final ana = fake.addUser();
     final a = await firstDevice(fake, ana);
@@ -250,36 +271,87 @@ void main() {
     await elsewhere.engine.stop();
   }, skip: noCore);
 
-  // M7 of the desktop's review: the registration's 409 has three causes, and only the bind route's 404 is removed.
-  test("the_registration's_409_tries_the_bind,_whose_404_alone_is_removed", () async {
+  // I3 of the desktop's review: a stale tap (a bar from before) never destroys a database in use.
+  test('starting_over_is_only_for_a_removed_device_or_a_lost_key', () async {
     final fake = FakeApi();
     final ana = fake.addUser();
     final a = await firstDevice(fake, ana);
+    final b = testDevice(fake, ana);
+    await b.engine.start();
+    for (final device in [a, b]) {
+      final before = await device.host.handle<Map<String, Object?>>({'cmd': 'status'});
+      final state = device.state;
+      await device.engine.startOver();
+      expect(device.state, state);
+      expect(device.registered, hasLength(1));
+      expect(await device.host.handle<Map<String, Object?>>({'cmd': 'status'}), before);
+    }
     await a.engine.stop();
-    // The record's keys are another's (a key changed): the registration is refused, and the bind binds the device.
-    final kept = (a.store.read(deviceKeys)! as Map).cast<String, Object?>();
-    await a.store.write(deviceKeys, {...kept, 'hpke_key': base64Encode(Uint8List(32))});
-    final requests = <String>[];
-    final again = testDevice(
-      fake,
-      ana,
-      host: a.host,
-      store: a.store,
-      client: watchedClient(fake, seen: (request) => requests.add(_said(request))),
-    );
-    await again.engine.start();
-    expect(again.state, EngineState.ready);
-    expect(again.registered, a.registered);
-    final device = a.registered.single;
-    expect(requests.where((r) => r.startsWith('POST /api/users/@me/devices') && !r.endsWith('challenge')), [
-      'POST /api/users/@me/devices',
-      'POST /api/users/@me/devices/$device/bind',
-    ]);
-    await again.engine.stop();
+    await b.engine.stop();
+  }, skip: noCore);
+
+  // M7 of the desktop's review: the record's keys are a device's, by its ID; a registration's 409 is no answer about
+  // the device yet (a device of the user's deleted, the same ID with other keys, or another user's).
+  test(
+    "keys_the_record_kept_for_another_device_aren't_sent,_and_a_refused_registration_binds_by_the_bind_route",
+    () async {
+      final fake = FakeApi();
+      final ana = fake.addUser();
+      final a = await firstDevice(fake, ana);
+      await a.engine.stop();
+      final b = testDevice(fake, ana);
+      await b.engine.start();
+      final others = (b.store.read(deviceKeys)! as Map).cast<String, Object?>();
+      final device = a.registered.single;
+      final requests = <String>[];
+      http.Client watched() => watchedClient(fake, seen: (request) => requests.add(_said(request)));
+      List<String> registrations() => [
+        for (final request in requests)
+          if (request.startsWith('POST /api/users/@me/devices') && !request.endsWith('challenge')) request,
+      ];
+
+      // The record holds another device's keys, as when the database was made again and the record wasn't: none goes,
+      // and the bind route binds the device.
+      await a.store.write(deviceKeys, others);
+      final again = testDevice(fake, ana, host: a.host, store: a.store, client: watched());
+      await again.engine.start();
+      expect(again.state, EngineState.ready);
+      expect(again.registered, a.registered);
+      expect(registrations(), ['POST /api/users/@me/devices/$device/bind']);
+      await again.engine.stop();
+
+      // Under this device's ID, keys that aren't its own (a key changed): the API refuses them, and the bind binds it.
+      requests.clear();
+      await a.store.write(deviceKeys, {...others, 'device_id': device});
+      final later = testDevice(fake, ana, host: a.host, store: a.store, client: watched());
+      await later.engine.start();
+      expect(later.state, EngineState.ready);
+      expect(later.registered, a.registered);
+      expect(registrations(), ['POST /api/users/@me/devices', 'POST /api/users/@me/devices/$device/bind']);
+      await later.engine.stop();
+      await b.engine.stop();
+    },
+    skip: noCore,
+  );
+
+  // M6 of the review: a new device whose keys don't read keeps none of an older record's, as the desktop writes none.
+  test("a_new_device_whose_keys_don't_read_keeps_none_of_the_record's_older_ones", () async {
+    final fake = FakeApi();
+    final ana = fake.addUser();
+    final store = MemoryStore();
+    await store.write(deviceKeys, {
+      'device_id': '01936d4e-8f00-7000-8000-00000000000f',
+      'signature_key': base64Encode(Uint8List(32)),
+      'hpke_key': base64Encode(Uint8List(32)),
+    });
+    final a = testDevice(fake, ana, host: _KeysUnread(TestHost().gate), store: store);
+    await a.engine.start();
+    expect(store.read(deviceKeys), isNull);
+    await a.engine.stop();
   }, skip: noCore);
 
   // M7: a refusal no try changes ends the tries, with the failed state.
-  test('a_binding_refused_for_good_ends_in_failed,_tried_no_more', () async {
+  test('a_binding_the_api_refuses_for_good_ends_the_tries_with_the_failed_bar', () async {
     final fake = FakeApi();
     final ana = fake.addUser();
     final requests = <String>[];

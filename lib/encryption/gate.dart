@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:forui/forui.dart';
@@ -27,9 +29,10 @@ typedef _Bar = ({String text, String? action, Future<void> Function(BuildContext
 
 /// What the app says of encrypted conversations by its engine's state (PLAN-E2E-CLIENTES.md, «El motor», its states),
 /// in the Chats tab's header where the offline banner is: nothing while it starts or once it's ready, else a strip with
-/// what the person can do, which its × hides until the state changes. A first device's tap makes its identity and shows
-/// its recovery key ([RecoveryKeyPage]) until it's done with. What deletes the device's data asks first (M6 of the
-/// desktop's review). The DMs' own views take the states with tasks 15 and 17.
+/// what the person can do, which its × hides until the state changes. A first device's tap makes its identity; its
+/// recovery key's page ([RecoveryKeyPage]) is up whenever the state has the key, as the desktop's dialog is, and no
+/// strip stands in for it (M3 of the review). What deletes the device's data asks first (M6 of the desktop's review).
+/// The DMs' own views take the states with tasks 15 and 17.
 class EncryptionBanner extends StatefulWidget {
   const EncryptionBanner({super.key});
 
@@ -40,13 +43,34 @@ class EncryptionBanner extends StatefulWidget {
 class _EncryptionBannerState extends State<EncryptionBanner> {
   EngineStage? _hiddenFor;
   var _busy = false;
+  ChatRepository? _watched;
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    final repository = context.repository;
+    if (identical(repository, _watched)) return;
+    _watched?.encryption.removeListener(_follow);
+    _watched = repository..encryption.addListener(_follow);
+    // A key the state had before this strip was built shows once this frame is drawn.
+    WidgetsBinding.instance.addPostFrameCallback((_) => _follow());
+  }
+
+  @override
+  void dispose() {
+    _watched?.encryption.removeListener(_follow);
+    super.dispose();
+  }
+
+  void _follow() {
+    if (_watched case final repository? when mounted) {
+      _showKeyPage(Navigator.of(context, rootNavigator: true), repository);
+    }
+  }
 
   _Bar? _bar(EngineState state) => switch (state.stage) {
-    EngineStage.firstDevice when state.recoveryKey != null => (
-      text: Notice.recoveryTitle.text,
-      action: 'Show key',
-      run: _showKey,
-    ),
+    // The key's page has the screen.
+    EngineStage.firstDevice when state.recoveryKey != null => null,
     EngineStage.firstDevice when state.finishing => (
       text: 'Finish setting up end-to-end encryption for your direct messages.',
       action: 'Finish',
@@ -84,20 +108,8 @@ class _EncryptionBannerState extends State<EncryptionBanner> {
     EngineStage.starting || EngineStage.ready => null,
   };
 
-  // Set up, or Finish: the identity made (or the one the core kept), then its key.
-  Future<void> _setUp(BuildContext context) async {
-    await context.repository.makeIdentity();
-    if (context.mounted) await _showKey(context);
-  }
-
-  Future<void> _showKey(BuildContext context) async {
-    final repository = context.repository;
-    if (repository.encryption.value.recoveryKey == null) return;
-    await Navigator.of(
-      context,
-      rootNavigator: true,
-    ).push(MaterialPageRoute<void>(fullscreenDialog: true, builder: (_) => _KeyScreen(repository)));
-  }
+  // Set up, or Finish: the identity made (or the one the core kept), whose key's page the state brings up.
+  Future<void> _setUp(BuildContext context) => context.repository.makeIdentity();
 
   Future<void> _startOver(BuildContext context, String action) async {
     final repository = context.repository;
@@ -136,12 +148,31 @@ class _EncryptionBannerState extends State<EncryptionBanner> {
   );
 }
 
-/// The key's screen while the engine shows that key: it goes once the key is saved and uploaded, put off (Later), or
-/// done with otherwise (an update, another first device that came first).
+/// The key's page while one is up, whichever strip put it there: never two.
+Route<void>? _keyPage;
+
+/// Puts the key's page up on [navigator] while [repository]'s state has a key and none is up. One taken away while the
+/// key is still there, by another hand (a link that empties the navigator), goes up again after that frame.
+void _showKeyPage(NavigatorState navigator, ChatRepository repository) {
+  final key = repository.encryption.value.recoveryKey;
+  if (key == null || (_keyPage?.isActive ?? false) || !navigator.mounted) return;
+  final route = _keyPage = MaterialPageRoute<void>(fullscreenDialog: true, builder: (_) => _KeyScreen(repository, key));
+  unawaited(
+    navigator.push(route).whenComplete(() {
+      if (identical(_keyPage, route)) _keyPage = null;
+      WidgetsBinding.instance.addPostFrameCallback((_) => _showKeyPage(navigator, repository));
+    }),
+  );
+}
+
+/// The key's page while the state shows its key. It goes once the key is saved and uploaded, put off (Later), or done
+/// with otherwise (an update, another first device that came first), taking its own route away: never the one above
+/// it, an incoming call's (M3 of the review).
 class _KeyScreen extends StatefulWidget {
-  const _KeyScreen(this.repository);
+  const _KeyScreen(this.repository, this.recoveryKey);
 
   final ChatRepository repository;
+  final String recoveryKey;
 
   @override
   State<_KeyScreen> createState() => _KeyScreenState();
@@ -149,13 +180,13 @@ class _KeyScreen extends StatefulWidget {
 
 class _KeyScreenState extends State<_KeyScreen> {
   late final ValueListenable<EngineState> _state = widget.repository.encryption;
-  late final String _key = _state.value.recoveryKey!;
-  var _closed = false;
 
   @override
   void initState() {
     super.initState();
     _state.addListener(_follow);
+    // The key may have gone between the push and this first build.
+    WidgetsBinding.instance.addPostFrameCallback((_) => _follow());
   }
 
   @override
@@ -165,14 +196,17 @@ class _KeyScreenState extends State<_KeyScreen> {
   }
 
   void _follow() {
-    if (_closed || _state.value.recoveryKey == _key) return;
-    _closed = true;
-    Navigator.of(context).pop();
+    if (!mounted || _state.value.recoveryKey == widget.recoveryKey) return;
+    final route = ModalRoute.of(context);
+    if (route != null && route.isActive) route.navigator?.removeRoute(route);
   }
 
   @override
-  Widget build(BuildContext context) =>
-      RecoveryKeyPage(recoveryKey: _key, onSaved: widget.repository.keySaved, onLater: widget.repository.uploadLater);
+  Widget build(BuildContext context) => RecoveryKeyPage(
+    recoveryKey: widget.recoveryKey,
+    onSaved: widget.repository.keySaved,
+    onLater: widget.repository.uploadLater,
+  );
 }
 
 /// A state as the offline banner says one, with its action and its ×.

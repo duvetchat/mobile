@@ -134,7 +134,7 @@ void main() {
 
   // The engine's start (PLAN-E2E-CLIENTES.md, Task 13): a first device, from its registration to its key packages.
   test(
-    'a_device_registers,_binds_its_session_and_publishes_its_identity',
+    'a_device_registers,_binds_its_session,_publishes_its_identity_and_its_key_packages',
     () async {
       await loadCore();
       final router = _router();
