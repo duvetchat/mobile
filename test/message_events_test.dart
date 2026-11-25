@@ -477,9 +477,20 @@ void main() {
     test('the pages kept for offline show it too, written or not yet; a room\'s by their nickname there', () async {
       await listen(_room);
       repository.handleEvent(_event('SPACE_CREATE', _space()));
-      // The DM's history, written: her message, and the user's reply to it.
-      await repository.messages(_dm);
-      await eventually(() => expect(cache.data.keys, contains('chat_c-1')));
+      // A room's page kept from before, written: her message, and the user's reply to it. A room of no Space known
+      // here, which names her as she's named everywhere.
+      ChatCache(cache).savePage('r-2', [
+        _keptMessage('5', _maya, 'Maya'),
+        ChatMessage(
+          id: '6',
+          authorId: _me,
+          authorName: 'Gaby',
+          content: 'yes',
+          createdAt: DateTime(2026, 10, 23),
+          reply: const MessageReply(messageId: '5', authorId: _maya, authorName: 'Maya', content: '5'),
+        ),
+      ]);
+      await eventually(() => expect(cache.data.keys, contains('chat_r-2')));
       // The room's, where the history names her Nick: not written yet.
       await repository.messages(_room);
 
@@ -488,9 +499,9 @@ void main() {
 
       // The room's page once written, a moment after.
       await eventually(() async {
-        final dm = (await ChatCache(cache).loadPage('c-1'))!;
+        final before = (await ChatCache(cache).loadPage('r-2'))!;
         expect(
-          [for (final m in dm) (m.authorName, m.authorAvatarUrl, m.reply?.authorName)],
+          [for (final m in before) (m.authorName, m.authorAvatarUrl, m.reply?.authorName)],
           [('Maya O.', avatarUrl, null), ('Gaby', null, 'Maya O.')],
         );
         final room = (await ChatCache(cache).loadPage('r-1'))!.single;
@@ -532,10 +543,10 @@ void main() {
     });
 
     test('the same name and avatar again, from another Space or with a new bio, read no page again', () async {
-      await listen(_dm);
+      await listen(_room);
       // A page kept that names her.
-      await repository.messages(_dm);
-      await eventually(() => expect(cache.data.keys, contains('chat_c-1')));
+      await repository.messages(_room);
+      await eventually(() => expect(cache.data.keys, contains('chat_r-1')));
       for (final update in [
         renamed(),
         // The API sends it once per Space she shares with the user.
@@ -548,7 +559,7 @@ void main() {
         await pumpEventQueue();
       }
       expect(cache.listed, 1);
-      expect((await ChatCache(cache).loadPage('c-1'))!.first.authorName, 'Maya O.');
+      expect((await ChatCache(cache).loadPage('r-1'))!.first.authorName, 'Maya O.');
     });
 
     test('changes queued while the pages change wait for one pass, which makes the latest of each', () async {

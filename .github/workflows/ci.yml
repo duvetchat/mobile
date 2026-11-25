@@ -44,8 +44,11 @@ jobs:
       - name: Analyze
         working-directory: mobile
         run: flutter analyze
+      # The end-to-end encryption core's tests load its Linux build, vendored with its plugin: nothing compiles Rust.
       - name: Test
         working-directory: mobile
+        env:
+          DUVET_E2E_LIB: ${{ github.workspace }}/mobile/packages/duvet_e2e/linux-x64/libduvet_e2e.so
         run: flutter test
       # What the failed goldens drew, to look at or to commit as the new ones: they are recorded on Linux,
       # which this runner is.
@@ -78,6 +81,24 @@ jobs:
       - name: Build
         working-directory: mobile
         run: flutter build apk --release --target-platform android-arm64
+      # The core's plugin comes with its library prebuilt (packages/duvet_e2e): the APK carries it, every LOAD segment
+      # aligned to 16 KiB, as Android's 16 KB pages need, and the log keeps the APK's size.
+      - name: The core in the APK
+        working-directory: mobile
+        run: |
+          apk=build/app/outputs/flutter-apk/app-release.apk
+          echo "APK: $(stat -c %s "$apk") bytes"
+          unzip -lv "$apk" lib/arm64-v8a/libduvet_e2e.so
+          unzip -o -q "$apk" lib/arm64-v8a/libduvet_e2e.so -d "$RUNNER_TEMP/apk"
+          readelf=$(command -v llvm-readelf || command -v readelf ||
+            ls "${ANDROID_HOME:-/opt/android-sdk}"/ndk/*/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-readelf | tail -1)
+          "$readelf" -lW "$RUNNER_TEMP/apk/lib/arm64-v8a/libduvet_e2e.so" | tee "$RUNNER_TEMP/segments.txt"
+          aligns=$(awk '$1 == "LOAD" { print $NF }' "$RUNNER_TEMP/segments.txt")
+          test -n "$aligns"
+          for align in $aligns; do
+            if (( align % 16384 != 0 )); then echo "a LOAD segment is aligned to $align, not 16 KiB"; exit 1; fi
+          done
+          echo "Every LOAD segment is aligned to 16 KiB: $(echo $aligns)"
       # Storage is billed in GB-hours: 1-day APKs fit the monthly allowance (372), and once it is
       # used up the upload fails, which shouldn't fail a run whose build and tests passed (#196).
       - uses: actions/upload-artifact@v5

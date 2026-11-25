@@ -1,0 +1,2 @@
+# The vendored core is a byte-for-byte copy, which its SOURCE.json pins: no checkout changes its line endings.
+packages/duvet_e2e/** -text

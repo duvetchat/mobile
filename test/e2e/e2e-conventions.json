@@ -1,0 +1,675 @@
+{
+	"about": "What the desktop and the mobile app do alike, as PLAN-E2E-CLIENTES.md's conventions between clients and its notices say: the same file in both repositories (desktop-electrobun's src/mainview/src/lib/e2e/testing, mobile's test/e2e), which a test in each reads. A change here goes to both.",
+	"sniff_prefix": 65536,
+	"notices": {
+		"recovery_title": "Save your recovery key",
+		"recovery_saved": "I saved it",
+		"waiting": "Waiting for this message",
+		"waiting_detail": "It will show up when the sender's device delivers it.",
+		"no_device": "{name} can't receive encrypted messages yet. Your device will pass them on when they can.",
+		"key_changed": "{name}'s security key changed.",
+		"key_changed_verified": "You had verified {name}. Check their security number before you send.",
+		"cutover": "Messages from before end-to-end encryption were deleted on {date}",
+		"update": "Update Duvet",
+		"no_e2e_here": "Direct messages aren't available in this app yet. Use Duvet on the web.",
+		"paused": "Encrypted conversations are paused. Your message will be sent when they're back.",
+		"unsupported_browser": "This browser can't open encrypted conversations.",
+		"before_joining": "Messages from before you joined aren't on this device. Any member can share them.",
+		"shared": "{a} shared {range} with {b}",
+		"shared_by": "shared by {name}",
+		"range_day": "the last 24 hours",
+		"range_week": "the last 7 days",
+		"range_month": "the last 30 days",
+		"range_all": "the conversation's history",
+		"inactive_device": "Not seen in 45 days",
+		"inactive_warning": "{device} hasn't connected in over 45 days. Remove it if you don't use it.",
+		"blocked": "This conversation can't go on securely.",
+		"blocked_owner": "Restart encryption",
+		"blocked_wait": "Waiting for {owner} to restart it.",
+		"removed_device": "This device was removed from your account.",
+		"locked": "Encrypted conversations are open in another Duvet window.",
+		"wait_owner": "Waiting for {owner} to open this group",
+		"wait_rejoin": "You'll be back in this conversation when another member opens it.",
+		"members_changed": "This conversation's members changed since you last saw it.",
+		"members_accept": "Open with these members",
+		"backup_paused": "Your encrypted backup is paused: your storage is full.",
+		"device_added": "A new device was added to your account: {name}.",
+		"delete_device": "Remove this device and delete its data",
+		"too_long": "Message too long"
+	},
+	"filled_notices": [
+		{
+			"key": "shared",
+			"values": {
+				"a": "Ana",
+				"range": "the last 7 days",
+				"b": "Bo"
+			},
+			"text": "Ana shared the last 7 days with Bo"
+		},
+		{
+			"key": "no_device",
+			"values": {
+				"name": "{owner}"
+			},
+			"text": "{owner} can't receive encrypted messages yet. Your device will pass them on when they can."
+		}
+	],
+	"envelopes": [
+		{
+			"case": "a text message is its text as content carries it today, mentions and emojis included",
+			"text": "hi <@0193a4b2-0000-7000-8000-000000000001>, see <#0193a4b2-0000-7000-8000-000000000002> <:0193a4b2-0000-7000-8000-000000000003:>",
+			"attachments": [],
+			"envelope": {
+				"text": "hi <@0193a4b2-0000-7000-8000-000000000001>, see <#0193a4b2-0000-7000-8000-000000000002> <:0193a4b2-0000-7000-8000-000000000003:>"
+			}
+		},
+		{
+			"case": "a sticker's message has neither text nor files: the empty envelope",
+			"text": "",
+			"attachments": [],
+			"envelope": {}
+		},
+		{
+			"case": "a voice note is a message without text, with one audio file and its waveform and duration",
+			"text": "",
+			"attachments": [
+				{
+					"id": "0193a4b2-6b1c-7d3e-8f00-000000000a01",
+					"key": "AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA=",
+					"sha256": "oKGio6SlpqeoqaqrrK2ur7CxsrO0tba3uLm6u7y9vr8=",
+					"name": "voice-note.webm",
+					"type": "audio/webm",
+					"size": 18235,
+					"duration_ms": 4200,
+					"waveform": "AAQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyAhIiMkJSYnKCkqKywtLi8wMTIzNDU2Nzg5Ojs8PT4/A=="
+				}
+			],
+			"envelope": {
+				"attachments": [
+					{
+						"id": "0193a4b2-6b1c-7d3e-8f00-000000000a01",
+						"key": "AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA=",
+						"sha256": "oKGio6SlpqeoqaqrrK2ur7CxsrO0tba3uLm6u7y9vr8=",
+						"name": "voice-note.webm",
+						"type": "audio/webm",
+						"size": 18235,
+						"duration_ms": 4200,
+						"waveform": "AAQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyAhIiMkJSYnKCkqKywtLi8wMTIzNDU2Nzg5Ojs8PT4/A=="
+					}
+				]
+			}
+		}
+	],
+	"messages": [
+		{
+			"case": "the empty envelope with a sticker is the sticker",
+			"message": {
+				"text": null,
+				"attachments": []
+			},
+			"sticker": true,
+			"drawn": "sticker"
+		},
+		{
+			"case": "the empty envelope without a sticker isn't drawn",
+			"message": {
+				"text": null,
+				"attachments": []
+			},
+			"sticker": false,
+			"drawn": "nothing"
+		},
+		{
+			"case": "a voice note",
+			"message": {
+				"text": null,
+				"attachments": [
+					{
+						"id": "0193a4b2-6b1c-7d3e-8f00-000000000a01",
+						"key": "AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA=",
+						"sha256": "oKGio6SlpqeoqaqrrK2ur7CxsrO0tba3uLm6u7y9vr8=",
+						"name": "voice-note.webm",
+						"type": "audio/webm",
+						"size": 18235,
+						"duration_ms": 4200,
+						"waveform": "AAQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyAhIiMkJSYnKCkqKywtLi8wMTIzNDU2Nzg5Ojs8PT4/A=="
+					}
+				]
+			},
+			"sticker": false,
+			"drawn": "voice_note"
+		},
+		{
+			"case": "an audio file with text is a message with a file",
+			"message": {
+				"text": "listen",
+				"attachments": [
+					{
+						"id": "0193a4b2-6b1c-7d3e-8f00-000000000a01",
+						"key": "AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA=",
+						"sha256": "oKGio6SlpqeoqaqrrK2ur7CxsrO0tba3uLm6u7y9vr8=",
+						"name": "voice-note.webm",
+						"type": "audio/webm",
+						"size": 18235,
+						"duration_ms": 4200,
+						"waveform": "AAQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyAhIiMkJSYnKCkqKywtLi8wMTIzNDU2Nzg5Ojs8PT4/A=="
+					}
+				]
+			},
+			"sticker": false,
+			"drawn": "message"
+		},
+		{
+			"case": "an audio file without its waveform is a file",
+			"message": {
+				"text": null,
+				"attachments": [
+					{
+						"id": "0193a4b2-6b1c-7d3e-8f00-000000000a01",
+						"key": "AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA=",
+						"sha256": "oKGio6SlpqeoqaqrrK2ur7CxsrO0tba3uLm6u7y9vr8=",
+						"name": "voice-note.webm",
+						"type": "audio/webm",
+						"size": 18235,
+						"duration_ms": 4200
+					}
+				]
+			},
+			"sticker": false,
+			"drawn": "message"
+		},
+		{
+			"case": "a waveform of 63 samples isn't a voice note's",
+			"message": {
+				"text": null,
+				"attachments": [
+					{
+						"id": "0193a4b2-6b1c-7d3e-8f00-000000000a01",
+						"key": "AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA=",
+						"sha256": "oKGio6SlpqeoqaqrrK2ur7CxsrO0tba3uLm6u7y9vr8=",
+						"name": "voice-note.webm",
+						"type": "audio/webm",
+						"size": 18235,
+						"duration_ms": 4200,
+						"waveform": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8gISIjJCUmJygpKissLS4vMDEyMzQ1Njc4OTo7PD0+"
+					}
+				]
+			},
+			"sticker": false,
+			"drawn": "message"
+		},
+		{
+			"case": "a voice note that says it's a picture is a file",
+			"message": {
+				"text": null,
+				"attachments": [
+					{
+						"id": "0193a4b2-6b1c-7d3e-8f00-000000000a01",
+						"key": "AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA=",
+						"sha256": "oKGio6SlpqeoqaqrrK2ur7CxsrO0tba3uLm6u7y9vr8=",
+						"name": "voice-note.webm",
+						"type": "image/png",
+						"size": 18235,
+						"duration_ms": 4200,
+						"waveform": "AAQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyAhIiMkJSYnKCkqKywtLi8wMTIzNDU2Nzg5Ojs8PT4/A=="
+					}
+				]
+			},
+			"sticker": false,
+			"drawn": "message"
+		},
+		{
+			"case": "two audio files are files",
+			"message": {
+				"text": null,
+				"attachments": [
+					{
+						"id": "0193a4b2-6b1c-7d3e-8f00-000000000a01",
+						"key": "AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA=",
+						"sha256": "oKGio6SlpqeoqaqrrK2ur7CxsrO0tba3uLm6u7y9vr8=",
+						"name": "voice-note.webm",
+						"type": "audio/webm",
+						"size": 18235,
+						"duration_ms": 4200,
+						"waveform": "AAQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyAhIiMkJSYnKCkqKywtLi8wMTIzNDU2Nzg5Ojs8PT4/A=="
+					},
+					{
+						"id": "0193a4b2-6b1c-7d3e-8f00-000000000a02",
+						"key": "AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA=",
+						"sha256": "oKGio6SlpqeoqaqrrK2ur7CxsrO0tba3uLm6u7y9vr8=",
+						"name": "voice-note.webm",
+						"type": "audio/webm",
+						"size": 18235,
+						"duration_ms": 4200,
+						"waveform": "AAQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyAhIiMkJSYnKCkqKywtLi8wMTIzNDU2Nzg5Ojs8PT4/A=="
+					}
+				]
+			},
+			"sticker": false,
+			"drawn": "message"
+		},
+		{
+			"case": "a text message",
+			"message": {
+				"text": "hi",
+				"attachments": []
+			},
+			"sticker": false,
+			"drawn": "message"
+		}
+	],
+	"names": [
+		{
+			"case": "a name with a path keeps its last part",
+			"name": "../../etc/passwd",
+			"clean": "passwd"
+		},
+		{
+			"case": "a Windows path too",
+			"name": "C:\\Users\\ana\\Desktop\\notes.txt",
+			"clean": "notes.txt"
+		},
+		{
+			"case": "a plain name stays",
+			"name": "photo 2026-11-24.jpg",
+			"clean": "photo 2026-11-24.jpg"
+		},
+		{
+			"case": "a bidirectional control goes: it disguises an extension",
+			"name": "invoice\u202ecod.exe",
+			"clean": "invoicecod.exe"
+		},
+		{
+			"case": "every bidirectional control goes",
+			"name": "a\u061c\u200e\u200f\u202a\u202b\u202c\u202d\u202e\u2066\u2067\u2068\u2069b.txt",
+			"clean": "ab.txt"
+		},
+		{
+			"case": "control characters go",
+			"name": "bell\u0007\u0000\n\u0085\u007f.txt",
+			"clean": "bell.txt"
+		},
+		{
+			"case": "format characters go: a zero-width space, a word joiner, a byte order mark and a soft hyphen",
+			"name": "in\u200bvi\u2060si\ufeffble\u00ad.txt",
+			"clean": "invisible.txt"
+		},
+		{
+			"case": "tag characters go",
+			"name": "flag\udb40\udc67\udb40\udc62\udb40\udc7f.png",
+			"clean": "flag.png"
+		},
+		{
+			"case": "a line separator goes, so the name stays on one line",
+			"name": "photo.jpg\u2028.exe",
+			"clean": "photo.jpg.exe"
+		},
+		{
+			"case": "a paragraph separator goes",
+			"name": "photo.jpg\u2029.exe",
+			"clean": "photo.jpg.exe"
+		},
+		{
+			"case": "a zero-width joiner stays: it holds an emoji sequence together",
+			"name": "👨\u200d👩\u200d👧.png",
+			"clean": "👨\u200d👩\u200d👧.png"
+		},
+		{
+			"case": "the spaces around it go",
+			"name": "  spaced.pdf \t",
+			"clean": "spaced.pdf"
+		},
+		{
+			"case": "a name that leaves nothing is file",
+			"name": "../",
+			"clean": "file"
+		},
+		{
+			"case": "two dots are no name",
+			"name": "a/..",
+			"clean": "file"
+		},
+		{
+			"case": "a name of hidden characters alone is file",
+			"name": "\u200b\u202e\ufeff",
+			"clean": "file"
+		},
+		{
+			"case": "an empty name is file",
+			"name": "",
+			"clean": "file"
+		},
+		{
+			"case": "255 characters at most, counted by code point",
+			"name": "😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀",
+			"clean": "😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀"
+		}
+	],
+	"types": [
+		{
+			"case": "a PNG",
+			"bytes": "iVBORw0KGgoAAAANSUhEUg==",
+			"type": "image/png"
+		},
+		{
+			"case": "a JPEG",
+			"bytes": "/9j/4AAQSkZJRgA=",
+			"type": "image/jpeg"
+		},
+		{
+			"case": "a GIF",
+			"bytes": "R0lGODlhAQABAA==",
+			"type": "image/gif"
+		},
+		{
+			"case": "a GIF of 1987",
+			"bytes": "R0lGODdhAQABAA==",
+			"type": "image/gif"
+		},
+		{
+			"case": "a WebP",
+			"bytes": "UklGRiQAAABXRUJQVlA4IA==",
+			"type": "image/webp"
+		},
+		{
+			"case": "an AVIF",
+			"bytes": "AAAAGGZ0eXBhdmlmAAAAAGlzb20=",
+			"type": "image/avif"
+		},
+		{
+			"case": "a HEIC is a file: neither app draws one",
+			"bytes": "AAAAGGZ0eXBoZWljAAAAAGlzb20=",
+			"type": "application/octet-stream"
+		},
+		{
+			"case": "a HEIF of no brand the clients draw is a file",
+			"bytes": "AAAAGGZ0eXBtaWYxAAAAAGlzb20=",
+			"type": "application/octet-stream"
+		},
+		{
+			"case": "an ISO media file of a brand the clients don't know is a file",
+			"bytes": "AAAAGGZ0eXBjcnggAAAAAGlzb20=",
+			"type": "application/octet-stream"
+		},
+		{
+			"case": "an MP4 of the brand isom",
+			"bytes": "AAAAGGZ0eXBpc29tAAAAAGlzb20=",
+			"type": "video/mp4"
+		},
+		{
+			"case": "an MP4 of the brand iso2",
+			"bytes": "AAAAGGZ0eXBpc28yAAAAAGlzb20=",
+			"type": "video/mp4"
+		},
+		{
+			"case": "an MP4 of the brand iso4",
+			"bytes": "AAAAGGZ0eXBpc280AAAAAGlzb20=",
+			"type": "video/mp4"
+		},
+		{
+			"case": "an MP4 of the brand iso5",
+			"bytes": "AAAAGGZ0eXBpc281AAAAAGlzb20=",
+			"type": "video/mp4"
+		},
+		{
+			"case": "an MP4 of the brand iso6",
+			"bytes": "AAAAGGZ0eXBpc282AAAAAGlzb20=",
+			"type": "video/mp4"
+		},
+		{
+			"case": "an MP4 of the brand mp41",
+			"bytes": "AAAAGGZ0eXBtcDQxAAAAAGlzb20=",
+			"type": "video/mp4"
+		},
+		{
+			"case": "an MP4 of the brand mp42",
+			"bytes": "AAAAGGZ0eXBtcDQyAAAAAGlzb20=",
+			"type": "video/mp4"
+		},
+		{
+			"case": "an MP4 of the brand avc1",
+			"bytes": "AAAAGGZ0eXBhdmMxAAAAAGlzb20=",
+			"type": "video/mp4"
+		},
+		{
+			"case": "an MP4 of the brand M4V",
+			"bytes": "AAAAGGZ0eXBNNFYgAAAAAGlzb20=",
+			"type": "video/mp4"
+		},
+		{
+			"case": "an MP4 of the brand dash",
+			"bytes": "AAAAGGZ0eXBkYXNoAAAAAGlzb20=",
+			"type": "video/mp4"
+		},
+		{
+			"case": "an MP4 of the brand mmp4",
+			"bytes": "AAAAGGZ0eXBtbXA0AAAAAGlzb20=",
+			"type": "video/mp4"
+		},
+		{
+			"case": "an MP4 of the brand 3gp4",
+			"bytes": "AAAAGGZ0eXAzZ3A0AAAAAGlzb20=",
+			"type": "video/mp4"
+		},
+		{
+			"case": "an MP4 of the brand 3gp5",
+			"bytes": "AAAAGGZ0eXAzZ3A1AAAAAGlzb20=",
+			"type": "video/mp4"
+		},
+		{
+			"case": "an MP4 of the brand 3gp6",
+			"bytes": "AAAAGGZ0eXAzZ3A2AAAAAGlzb20=",
+			"type": "video/mp4"
+		},
+		{
+			"case": "a QuickTime movie",
+			"bytes": "AAAAGGZ0eXBxdCAgAAAAAGlzb20=",
+			"type": "video/quicktime"
+		},
+		{
+			"case": "an M4A",
+			"bytes": "AAAAGGZ0eXBNNEEgAAAAAGlzb20=",
+			"type": "audio/mp4"
+		},
+		{
+			"case": "a WebM with only an audio track is audio: the desktop's voice notes",
+			"bytes": "GkXfo4dCgoR3ZWJtGFOAZwH/////////FUmpZoQq17GAFlSua4iuhteBAYOBAh9DtnUB/////////w==",
+			"type": "audio/webm"
+		},
+		{
+			"case": "a WebM with a video track is video",
+			"bytes": "GkXfo4dCgoR3ZWJtGFOAZwH/////////FUmpZoQq17GAFlSua5CuhteBAYOBAa6G14ECg4ECH0O2dQH/////////",
+			"type": "video/webm"
+		},
+		{
+			"case": "a Matroska that isn't a WebM is a file",
+			"bytes": "GkXfo4tCgohtYXRyb3NrYRhTgGcB/////////xVJqWaEKtexgBZUrmuQrobXgQGDgQGuhteBAoOBAh9DtnUB/////////w==",
+			"type": "application/octet-stream"
+		},
+		{
+			"case": "a DocType that runs past what's sniffed is no WebM's",
+			"bytes": "GkXfoxAQyOZCghAQyOA=",
+			"zeros": 1100000,
+			"type": "application/octet-stream"
+		},
+		{
+			"case": "a WebM's tracks past the sniffed prefix aren't read",
+			"bytes": "GkXfo4dCgoR3ZWJtGFOAZwH/////////7BABEXA=",
+			"zeros": 70000,
+			"tail": "FlSua4iuhteBAYOBAg==",
+			"type": "application/octet-stream"
+		},
+		{
+			"case": "an Ogg: Android's voice notes",
+			"bytes": "T2dnUwACAAAAAAAAAAA=",
+			"type": "audio/ogg"
+		},
+		{
+			"case": "a WAV",
+			"bytes": "UklGRiQAAABXQVZFZm10IA==",
+			"type": "audio/wav"
+		},
+		{
+			"case": "a FLAC",
+			"bytes": "ZkxhQwAAACI=",
+			"type": "audio/flac"
+		},
+		{
+			"case": "an MP3 with its tag",
+			"bytes": "SUQzBAAAAAAAAA==",
+			"type": "audio/mpeg"
+		},
+		{
+			"case": "an MP3 from its first frame, FF FB",
+			"bytes": "//uQZAAAAAA=",
+			"type": "audio/mpeg"
+		},
+		{
+			"case": "an MP3 from its first frame, FF FA",
+			"bytes": "//qQZAAAAAA=",
+			"type": "audio/mpeg"
+		},
+		{
+			"case": "an MP3 from its first frame, FF F3",
+			"bytes": "//OQZAAAAAA=",
+			"type": "audio/mpeg"
+		},
+		{
+			"case": "an MP3 from its first frame, FF F2",
+			"bytes": "//KQZAAAAAA=",
+			"type": "audio/mpeg"
+		},
+		{
+			"case": "an AAC stream isn't an MP3",
+			"bytes": "//FQgAAAAAA=",
+			"type": "application/octet-stream"
+		},
+		{
+			"case": "a PDF is a file: neither app draws one",
+			"bytes": "JVBERi0xLjcK",
+			"type": "application/octet-stream"
+		},
+		{
+			"case": "a page named as a picture is no picture",
+			"name": "cat.png",
+			"claimed": "image/png",
+			"bytes": "PCFkb2N0eXBlIGh0bWw+PHNjcmlwdD5hbGVydCgxKTwvc2NyaXB0Pg==",
+			"type": "application/octet-stream"
+		},
+		{
+			"case": "an SVG is never drawn: it runs script",
+			"bytes": "PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIG9ubG9hZD0iYWxlcnQoMSkiLz4=",
+			"type": "application/octet-stream"
+		},
+		{
+			"case": "text is a file",
+			"bytes": "anVzdCBzb21lIG5vdGVzCg==",
+			"type": "application/octet-stream"
+		},
+		{
+			"case": "a ZIP is a file",
+			"bytes": "UEsDBBQAAAA=",
+			"type": "application/octet-stream"
+		},
+		{
+			"case": "the start of a PNG cut short is a file",
+			"bytes": "iVBO",
+			"type": "application/octet-stream"
+		},
+		{
+			"case": "an empty file is a file",
+			"bytes": "",
+			"type": "application/octet-stream"
+		}
+	],
+	"approval_frames": [
+		{
+			"case": "a commitment with the new device's name",
+			"frame": {
+				"duvet": "approval",
+				"step": "commitment",
+				"data": "Y29tbWl0bWVudA==",
+				"name": "Duvet for Windows"
+			},
+			"message": "eyJkdXZldCI6ImFwcHJvdmFsIiwic3RlcCI6ImNvbW1pdG1lbnQiLCJkYXRhIjoiWTI5dGJXbDBiV1Z1ZEE9PSIsIm5hbWUiOiJEdXZldCBmb3IgV2luZG93cyJ9"
+		},
+		{
+			"case": "a reveal",
+			"frame": {
+				"duvet": "approval",
+				"step": "reveal",
+				"data": "cmV2ZWFs"
+			},
+			"message": "eyJkdXZldCI6ImFwcHJvdmFsIiwic3RlcCI6InJldmVhbCIsImRhdGEiOiJjbVYyWldGcyJ9"
+		},
+		{
+			"case": "a name's hidden characters go, as a file's do",
+			"message": "eyJkdXZldCI6ImFwcHJvdmFsIiwic3RlcCI6ImNvbW1pdG1lbnQiLCJkYXRhIjoiWTI5dGJXbDBiV1Z1ZEE9PSIsIm5hbWUiOiJEdXZldOKAriBmb3IgV2luZG93c+KAiyJ9",
+			"frame": {
+				"duvet": "approval",
+				"step": "commitment",
+				"data": "Y29tbWl0bWVudA==",
+				"name": "Duvet for Windows"
+			},
+			"rewritten": "eyJkdXZldCI6ImFwcHJvdmFsIiwic3RlcCI6ImNvbW1pdG1lbnQiLCJkYXRhIjoiWTI5dGJXbDBiV1Z1ZEE9PSIsIm5hbWUiOiJEdXZldCBmb3IgV2luZG93cyJ9"
+		},
+		{
+			"case": "a name of hidden characters alone is no frame",
+			"message": "eyJkdXZldCI6ImFwcHJvdmFsIiwic3RlcCI6ImNvbW1pdG1lbnQiLCJkYXRhIjoiWTI5dGJXbDBiV1Z1ZEE9PSIsIm5hbWUiOiLigK7igIsifQ==",
+			"frame": null
+		},
+		{
+			"case": "a byte order mark before the JSON is no frame: JSON doesn't take one",
+			"message": "77u/eyJkdXZldCI6ImFwcHJvdmFsIiwic3RlcCI6InJldmVhbCIsImRhdGEiOiJjbVYyWldGcyJ9",
+			"frame": null
+		},
+		{
+			"case": "a step that isn't one is no frame",
+			"message": "eyJkdXZldCI6ImFwcHJvdmFsIiwic3RlcCI6ImdpZnQiLCJkYXRhIjoiWTI5dGJXbDBiV1Z1ZEE9PSJ9",
+			"frame": null
+		},
+		{
+			"case": "data that isn't base64 is no frame",
+			"message": "eyJkdXZldCI6ImFwcHJvdmFsIiwic3RlcCI6Im9mZmVyIiwiZGF0YSI6Im5vdCBiYXNlNjQhIn0=",
+			"frame": null
+		},
+		{
+			"case": "a name past 64 characters is no frame",
+			"message": "eyJkdXZldCI6ImFwcHJvdmFsIiwic3RlcCI6Im9mZmVyIiwiZGF0YSI6ImIyWm1aWEk9IiwibmFtZSI6Inh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4In0=",
+			"frame": null
+		},
+		{
+			"case": "a field a frame doesn't have is no frame",
+			"message": "eyJkdXZldCI6ImFwcHJvdmFsIiwic3RlcCI6Im9mZmVyIiwiZGF0YSI6ImIyWm1aWEk9IiwiZXh0cmEiOnRydWV9",
+			"frame": null
+		},
+		{
+			"case": "JSON of something else is no frame",
+			"message": "eyJkdXZldCI6Im90aGVyIiwic3RlcCI6Im9mZmVyIiwiZGF0YSI6ImIyWm1aWEk9In0=",
+			"frame": null
+		},
+		{
+			"case": "a message of the core is no frame",
+			"message": "omRib2R5QwECA2NzaWdYQAcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc=",
+			"frame": null
+		}
+	],
+	"approval_fingerprints": [
+		{
+			"case": "a commitment's fingerprint, as both screens show it",
+			"commitment": "pmF2AWR1c2VyUKLgH8+1CUkdpF80a3LaYMxmZGV2aWNlUFHSeAS+y0MRs5yOiTKrdiZtc2lnbmF0dXJlX2tleVggzQQsc4UHPdXvqvWRiAtaJX12QfPk8yncBPXtxl4b3v1oaHBrZV9rZXlYIM+D0XJ/CWr8l8GHOGXCprBMYf27PV9qSU7EpJI2TVlpZGhhc2hYIH2jIbEpIfHwR32hUJ8JcLwov99Z/jsnL4CLkYtNvrMw",
+			"fingerprint": "f659 7e38 db18 1f49"
+		},
+		{
+			"case": "the same device's ID with another key is another fingerprint",
+			"commitment": "pmF2AWR1c2VyUKLgH8+1CUkdpF80a3LaYMxmZGV2aWNlUFHSeAS+y0MRs5yOiTKrdiZtc2lnbmF0dXJlX2tleVggzQQsc4UHPdXvqvWRiAtaJX12QfPk8yncBPXtxl4b3v1oaHBrZV9rZXlYIM6D0XJ/CWr8l8GHOGXCprBMYf27PV9qSU7EpJI2TVlpZGhhc2hYIH2jIbEpIfHwR32hUJ8JcLwov99Z/jsnL4CLkYtNvrMw",
+			"fingerprint": "c7b3 cd4e ca7f 6c0e"
+		},
+		{
+			"case": "any bytes a frame carries",
+			"commitment": "Y29tbWl0bWVudA==",
+			"fingerprint": "a200 9367 b562 c028"
+		}
+	]
+}

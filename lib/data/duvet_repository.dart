@@ -347,11 +347,17 @@ class DuvetRepository implements ChatRepository {
     // read for nothing; a read that fails gives none, and throws nothing.
     final homeLoading = _cache.loadHome();
     final saved = await _store.read();
+    final home = await homeLoading;
+    // The pages of conversations a version before this one kept, their text
+    // in the clear, go before anything shows: only rooms' are kept now.
+    await _cache.keepRoomPages({
+      for (final space in home?.spaces ?? const <Space>[])
+        for (final room in space.rooms) room.id,
+    });
     if (saved == null) return false;
     // What was kept draws the lists at once, until the API and the gateway
     // answer ([_publishSpaces] keeps the Spaces READY names until each comes).
     // Before [_start], whose profile saves the home with them, not empty.
-    final home = await homeLoading;
     if (home != null) {
       conversations.value = home.conversations;
       spaces.value = home.spaces;
@@ -2075,7 +2081,7 @@ class DuvetRepository implements ChatRepository {
       // has that already, and this one may not.
       if (whole && current()) {
         _ahead.add(t.id);
-        _cache.savePage(t.id, page);
+        _keepPage(t, page);
         _warm({for (final m in page) m.authorAvatarUrl});
       }
       if (page.lastOrNull case final newest?) _newest(t, newest);
@@ -2389,7 +2395,7 @@ class DuvetRepository implements ChatRepository {
       // Not once signed out: nothing is kept after. Nor one something
       // happened to on its way ([_undisturbed]).
       if (before == null && identical(api, _api) && current()) {
-        _cache.savePage(target.id, page);
+        _keepPage(target, page);
         _ahead.add(target.id);
       }
       return page;
@@ -2406,6 +2412,12 @@ class DuvetRepository implements ChatRepository {
 
   @override
   Future<List<ChatMessage>?> cachedMessages(ChatTarget target) => _cache.loadPage(target.id);
+
+  // A room's newest page is kept for offline; a conversation's never is: it's
+  // end-to-end encrypted, and what it says stays in the core's database alone.
+  void _keepPage(ChatTarget target, List<ChatMessage> page) {
+    if (target is RoomTarget) _cache.savePage(target.id, page);
+  }
 
   // [count] is the client's default.
   Future<List<ChatMessage>> _fetchPage(ChatTarget target, String? before, {int count = 100}) async {

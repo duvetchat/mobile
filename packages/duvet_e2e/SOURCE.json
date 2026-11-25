@@ -1,0 +1,18 @@
+{
+  "repository": "duvetchat/e2e",
+  "commit": "867309e42fabc120c8fa2ee2d640b489c53e352c",
+  "files": {
+    "packages/duvet_e2e/README.md": "033b784287e0969704e4006ec5cbead0369b38c4adb249a552df4b54bb46f3ea",
+    "packages/duvet_e2e/android/build.gradle": "0da9cd4927c0a6fc45807619309314dc0e6d39cffa4d2c8a42a9f8af4a0d92b1",
+    "packages/duvet_e2e/android/settings.gradle": "b0563273727e73ab52b9af9c2139a1a64f445b4392280deff57c8f8cbfe09c6a",
+    "packages/duvet_e2e/android/src/main/AndroidManifest.xml": "81b1e7fde9429805f50708ceb58e072efc425b6f6883f94bc21bf4d00f1ff7bf",
+    "packages/duvet_e2e/android/src/main/jniLibs/arm64-v8a/libduvet_e2e.so": "b1c654ddc9f89d0179d9a3d55ad17e548c3cf5c5f03a7ab85d21477bb34b5f4e",
+    "packages/duvet_e2e/lib/duvet_e2e.dart": "8bdc48c80a9c25d30151535c6b296c4c331bbda78aebb5ce4ecfd79bd1caa880",
+    "packages/duvet_e2e/lib/src/rust/api/core.dart": "8a359d40f7c4f353f8103c7bcbd2b6eb98e2462b1c73c315ceca616baec8ea0a",
+    "packages/duvet_e2e/lib/src/rust/frb_generated.dart": "1f933817c8e74ee4c795d70de0140e14ffd8961ffb30ed8ea7d33cef72220a11",
+    "packages/duvet_e2e/lib/src/rust/frb_generated.io.dart": "fba8e4cf0cd62641aae19bf791ac8d04a6aff8579535f51e760f9458f2272892",
+    "packages/duvet_e2e/lib/src/rust/frb_generated.web.dart": "515787e8e841ea897dddb10af4493d8c1d32feb91835937f1162255501cf5664",
+    "packages/duvet_e2e/linux-x64/libduvet_e2e.so": "5ca0b9eb2786a44162c6c9990d43a519b108a77a5148af45a230ec95ed9f097b",
+    "packages/duvet_e2e/pubspec.yaml": "ea79c13a0c58d1a9d3a721c48f7a494779e54af2ae6fd3ea40a721d40cf08730"
+  }
+}

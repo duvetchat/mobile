@@ -887,11 +887,37 @@ void main() {
     expect(await store.read(), isNull);
   });
 
-  test('offline, a saved session opens from the cache, history too', () async {
+  test("offline, a saved session opens from the cache, a room's history too; a conversation's isn't kept", () async {
+    const general = RoomTarget(spaceId: 's-1', roomId: 'r-general');
     await repository.logIn('gaby@duvet.chat', 'secret');
+    repository.handleEvent(_event('READY', {'user': _user(_me, 'gaby'), 'sessionToken': 'ws'}));
+    repository.handleEvent(
+      _event('SPACE_CREATE', {
+        'space': {'id': 's-1', 'name': 'Design Guild', 'owner_id': _me, 'created_at': _at, 'updated_at': _at},
+        'rooms': {
+          'r-general': {
+            'id': 'r-general',
+            'space_id': 's-1',
+            'type': 1,
+            'name': 'general',
+            'position': 0,
+            'created_at': _at,
+            'updated_at': _at,
+          },
+        },
+        'roles_permissions': <String, dynamic>{},
+        'owner_id': _me,
+      }),
+    );
+    await repository.messages(general);
+    // End-to-end encrypted: what it says stays in the core's database alone.
     await repository.messages(const ConversationTarget('c-1'));
     // The cache writes a moment after the changes.
-    await eventually(() => expect(cache.data.keys, containsAll(['home', 'chat_c-1'])));
+    await eventually(() {
+      expect(cache.data.keys, containsAll(['home', 'chat_r-general']));
+      expect((jsonDecode(cache.data['home']!) as Map)['spaces'], hasLength(1));
+    });
+    expect(cache.data.keys, isNot(contains('chat_c-1')));
 
     final offline = DuvetRepository(
       store: store,
@@ -907,8 +933,9 @@ void main() {
     await eventually(() => expect(offline.status.value, LiveStatus.offline));
     expect(offline.profile.value?.username, 'gaby');
     expect(offline.conversations.value.single.title, 'Maya');
-    final page = await offline.messages(const ConversationTarget('c-1'));
-    expect(page.map((m) => m.content), ['first', 'second']);
+    final page = await offline.messages(general);
+    expect(page.map((m) => m.content), ['newest']);
+    await expectLater(offline.messages(const ConversationTarget('c-1')), throwsA(anything));
   });
 
   test('history comes oldest first, and sending passes the nonce', () async {
