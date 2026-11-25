@@ -340,11 +340,12 @@ void main() {
       repository.handleEvent(_event('DM_MESSAGE_UPDATE', _dmMessage('9', 'see https://duvet.chat', withUser: false)));
       await pumpEventQueue();
 
+      // Its text is what this device's own database holds of it (none here), never the API's words.
       expect(repository.recents.value.single.previewAuthor, 'Maya');
-      expect(repository.recents.value.single.previewText, 'see https://duvet.chat');
-      expect(repository.latest.value['c-1']!.content, 'see https://duvet.chat');
+      expect(repository.recents.value.single.previewText, 'Sent a message');
+      expect(repository.latest.value['c-1']!.content, '');
       expect(repository.latest.value['c-1']!.authorName, 'Maya');
-      expect((events.last as MessageUpdated).message.content, 'see https://duvet.chat');
+      expect((events.last as MessageUpdated).message.content, '');
     });
   });
 
@@ -798,9 +799,10 @@ void main() {
       );
       await pumpEventQueue();
       final notice = repository.mentionNotices.value.single;
+      // None of the API's words: what the device holds reaches notices with the notifications' task.
       expect(
         (notice.target, notice.where, notice.authorName, notice.text),
-        (_dm, 'in a direct message', 'Maya', 'fetched in the DM'),
+        (_dm, 'in a direct message', 'Maya', 'Sent a message'),
       );
     });
   });
@@ -931,7 +933,8 @@ void main() {
     test('a DM shows one (conversations default to every message), but not one at only mentions', () async {
       repository.handleEvent(_event('DM_MESSAGE_CREATE', _dmMessage('8', 'hi there')));
       final notice = repository.mentionNotices.value.single;
-      expect((notice.target, notice.where, notice.text), (_dm, 'in a direct message', 'hi there'));
+      // None of the API's words: what the device holds reaches notices with the notifications' task.
+      expect((notice.target, notice.where, notice.text), (_dm, 'in a direct message', 'Sent a message'));
       level('c-1', 2, 1);
       repository.handleEvent(_event('DM_MESSAGE_CREATE', _dmMessage('9', 'not this one')));
       expect(shown(), ['8']);

@@ -195,6 +195,35 @@ void main() {
       ),
     );
 
+    // An encrypted conversation's message this device doesn't hold yet waits for it, with why (Task 17).
+    testWidgets(
+      'a waiting row, ${b.name}',
+      (tester) => withClock(
+        Clock.fixed(DateTime(2026, 10, 23, 12)),
+        () => withShadows(() async {
+          phone(tester);
+          final repository = FakeRepository();
+          final appearance = Appearance(MemoryAppearanceStore())
+            ..value = b == Brightness.dark ? ThemeMode.dark : ThemeMode.light;
+          await tester.pumpWidget(DuvetApp(repository: repository, appearance: appearance));
+          await tester.pumpAndSettle();
+          repository.history['c-maya']!.add(
+            ChatMessage(
+              id: 'm5',
+              authorId: FakeRepository.maya,
+              authorName: 'Maya',
+              content: '',
+              createdAt: DateTime(2026, 10, 23, 9, 5),
+              waiting: true,
+            ),
+          );
+          await tester.tap(find.text('Maya'));
+          await tester.pumpAndSettle();
+          await expectLater(find.byType(DuvetApp), matchesGoldenFile('goldens/waiting_${b.name}.png'));
+        }),
+      ),
+    );
+
     // #292: the desktop's flat rows: the user's own on the left too, a
     // group's second message under its first, a reply's quote over its head
     // line, and a mention of the user washed.

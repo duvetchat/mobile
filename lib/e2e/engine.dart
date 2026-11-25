@@ -17,14 +17,19 @@ import 'package:duvet_client/duvet.dart' as duvet;
 import 'package:flutter/foundation.dart';
 
 import 'bootstrap.dart';
+import 'content.dart';
+import 'content.dart' as content show heldBefore, sentUnder;
 import 'host.dart';
 import 'identity.dart';
 import 'inbox.dart';
 import 'failures.dart';
 import 'key_packages.dart';
+import 'send.dart';
 import 'store.dart';
 import 'sync.dart';
 
+export 'content.dart' show MessageStatus, ShownMessage;
+export 'send.dart' show Outgoing, Pending, TooManyWaiting;
 export 'sync.dart' show ConversationNotice, ConversationState, Restart;
 
 /// What the engine waits with: the system's timers in the app, a test's clock in its tests.
@@ -194,7 +199,112 @@ class E2EEngine {
   late final _failures = Failures(api, clock);
 
   /// The conversations' queues and groups.
-  late final _groups = Conversations(this, (work) => _soon(() => _whenReady(work)), _failures, _conversationChanged);
+  late final _groups = Conversations(
+    this,
+    (work) => _soon(() => _whenReady(work)),
+    _failures,
+    _conversationChanged,
+    _messageChanged,
+  );
+
+  /// The messages this device sends, edits and deletes.
+  late final _sends = Sends(
+    this,
+    _groups,
+    (work) => _soon(() => _whenReady(work)),
+    _messageChanged,
+    _messageSent,
+    _changeRefused,
+  );
+
+  /// The cutover's instant, as GET /api/e2e gave it: a conversation from before it says when its messages went.
+  DateTime? cutoverAt;
+
+  final _messagesChanged = StreamController<String>.broadcast();
+  final _sent = StreamController<({String conversationId, String nonce, duvet.DirectMessage message})>.broadcast();
+  final _refused = StreamController<({String conversationId, String messageId, String kind})>.broadcast();
+
+  /// Each conversation whose messages changed on this device (an apply, a send, an edit, a deletion): what shows of
+  /// them is read again.
+  Stream<String> get messagesChanged => _messagesChanged.stream;
+
+  /// Each message of the person's that the API took, by the nonce they sent it with ([nonce]): their copy of it is the
+  /// API's [message], whose nonce is another when no member could open the first bytes any more.
+  Stream<({String conversationId, String nonce, duvet.DirectMessage message})> get sent => _sent.stream;
+
+  /// Each edit (`edit`) or deletion (`delete`) of the person's the API refused for good with nobody waiting for its
+  /// answer: shown done here, it never reached the others, which the person is told.
+  Stream<({String conversationId, String messageId, String kind})> get changesRefused => _refused.stream;
+
+  void _changeRefused(String conversationId, String messageId, String kind) {
+    if (!_refused.isClosed) _refused.add((conversationId: conversationId, messageId: messageId, kind: kind));
+  }
+
+  void _messageChanged(String conversationId) {
+    if (!_messagesChanged.isClosed) _messagesChanged.add(conversationId);
+  }
+
+  void _messageSent(String conversationId, String nonce, duvet.DirectMessage message) {
+    if (!_sent.isClosed) _sent.add((conversationId: conversationId, nonce: nonce, message: message));
+  }
+
+  /// The person's message, sent after what waits in its conversation (PLAN-E2E-CLIENTES.md, «Enviar»): the API's
+  /// message, or null when it was sent already. A refusal or a lost answer throws, the message kept for Retry and
+  /// Dismiss; while this device isn't ready nothing is sent or kept.
+  Future<duvet.DirectMessage?> sendMessage(Outgoing message) => _act(() => _sends.send(message));
+
+  /// The person's Retry of their message [nonce] that waits on this device: what the record keeps of it goes with it.
+  Future<duvet.DirectMessage?> resendMessage(String conversationId, String nonce) =>
+      _act(() => _sends.resend(conversationId, nonce));
+
+  /// An edit of the user's message: shown here at once, sent, and its answer's entry applied.
+  Future<void> editMessage(String conversationId, String messageId, String text) =>
+      _act(() => _sends.change(conversationId, messageId, text));
+
+  /// A deletion of the user's message, for everyone: done here at once, sent, and its answer's entry applied.
+  Future<void> deleteMessage(String conversationId, String messageId) =>
+      _act(() => _sends.change(conversationId, messageId, null));
+
+  /// The person's Dismiss of a message the API never took: whatever the device's state, as it only drops it here.
+  Future<void> discardMessage(String conversationId, String nonce) =>
+      _queue(() => _sends.discard(conversationId, nonce)).then((_) => _messageChanged(conversationId));
+
+  /// What this device's database shows of these messages of the conversation: a row for each it holds.
+  Future<List<ShownMessage>> messages(String conversationId, List<String> ids) =>
+      shownMessages(host, conversationId, ids);
+
+  /// The person's messages of the conversation still being sent, in their order, with what goes with them.
+  Future<List<Pending>> pendingMessages(String conversationId) => _sends.pending(conversationId);
+
+  /// Whether this device's database holds any message of the conversation numbered before [seq].
+  Future<bool> heldBefore(String conversationId, int seq) => content.heldBefore(host, conversationId, seq);
+
+  /// How far this device applied the conversation's queue this run (null before its first apply, or out of its group):
+  /// a message numbered past it isn't applied yet, and loads.
+  int? appliedThrough(String conversationId) => _groups.through(conversationId);
+
+  /// The person's message this device sent under [nonce], as its database holds it once the API has it.
+  Future<ShownMessage?> sentUnder(String conversationId, String nonce) =>
+      content.sentUnder(host, conversationId, nonce);
+
+  /// The person's act on a conversation's messages, in the engine's turn: refused while this device isn't ready, or
+  /// once the engine stopped; a client too old for it waits for its update.
+  Future<T> _act<T>(Future<T> Function() work) async {
+    late T value;
+    var done = false;
+    await _queue(() async {
+      if (_state.value.stage != EngineStage.ready) throw StateError("encrypted conversations aren't ready here");
+      try {
+        value = await work();
+        done = true;
+      } on duvet.DuvetUpdateRequiredException catch (error) {
+        _set(EngineState.update(error.minimum));
+        rethrow;
+      }
+    });
+    if (!done) throw StateError('the encryption engine stopped');
+    return value;
+  }
 
   /// The API's external sender as this device pinned it, for the session too.
   String? _sender;
@@ -252,9 +362,13 @@ class E2EEngine {
     _daily?.call();
     _daily = null;
     _groups.stop();
+    _sends.stop();
     _failures.stop();
     await _turn;
     await host.close();
+    await _messagesChanged.close();
+    await _sent.close();
+    await _refused.close();
   }
 
   /// The person's tap on a first device: create_identity, whose recovery key the app shows next. A device whose user
@@ -355,6 +469,8 @@ class E2EEngine {
         } else if (_device != null) {
           _soon(_inbox);
           _soon(() => _whenReady(_groups.all));
+          // What waits to be sent goes once the queues are applied («Enviar»).
+          _soon(() => _whenReady(_sends.resendAll));
         }
       case duvet.DeviceMessagePayloadEvent(:final data) when data.deviceId == _device:
         _soon(_inbox);
@@ -407,7 +523,9 @@ class E2EEngine {
   /// «Arranque»: the API's configuration, the user's database, this installation's device and the session bound to it.
   Future<void> _boot() async {
     try {
-      _groups.start(await _pin((await api.config()).externalSender));
+      final config = await api.config();
+      cutoverAt = config.cutoverAt;
+      _groups.start(await _pin(config.externalSender));
       final opened = await host.open(user);
       if (opened.state != HostState.ready) return _closed(opened);
       final (:status, :keys) = await ownDevice(this);
@@ -451,6 +569,12 @@ class E2EEngine {
     await _inbox();
     if (_state.value.stage != EngineStage.ready) return;
     await _whenReady(_groups.all);
+    // What waits to be sent goes once the queues are applied, before anything new («Enviar»).
+    try {
+      await _whenReady(_sends.resendAll);
+    } catch (error) {
+      debugPrint('e2e: what waits to be sent waits for the next READY: $error');
+    }
     await _keyPackages();
     try {
       await _whenReady(_groups.renew);
@@ -523,6 +647,7 @@ class E2EEngine {
     _device = null;
     _tries.clear();
     _groups.forget();
+    _sends.stop();
     _daily?.call();
     _daily = null;
     _set(EngineState.starting);

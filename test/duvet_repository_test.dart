@@ -409,6 +409,7 @@ void main() {
           {..._command, ...jsonDecode(request.body) as Map<String, dynamic>, 'id': 'cmd-1'},
         ('DELETE', '/api/users/@me/teams/t-1/applications/a-1/commands/cmd-1') => http.Response('', 204),
         ('GET', '/api/rooms/r-general/messages') => [roomNewest],
+        ('POST', '/api/rooms/r-general/messages') => roomNewest,
         ('GET', '/api/spaces/s-1/commands') => {
           'applications': [
             {
@@ -938,18 +939,24 @@ void main() {
     await expectLater(offline.messages(const ConversationTarget('c-1')), throwsA(anything));
   });
 
-  test('history comes oldest first, and sending passes the nonce', () async {
-    await repository.logIn('gaby@duvet.chat', 'secret');
-    const target = ConversationTarget('c-1');
+  // An encrypted conversation's text is only ever its devices' (PLAN-E2E-CLIENTES.md; I1 of the desktop's task 16
+  // review): what the API lists of it shows none of what it says, and nothing goes to it in the clear.
+  test(
+    "a conversation's history comes oldest first with no text from the API, and nothing goes in the clear",
+    () async {
+      await repository.logIn('gaby@duvet.chat', 'secret');
+      const target = ConversationTarget('c-1');
 
-    final history = await repository.messages(target);
-    expect(history.map((m) => m.content), ['first', 'second']);
-    expect(history.first.authorName, 'maya');
+      final history = await repository.messages(target);
+      expect(history.map((m) => m.id), ['1', '2']);
+      expect(history.map((m) => m.content), ['', '']);
+      expect(history.first.authorName, 'maya');
 
-    final sent = await repository.send(target, 'hello', nonce: 'n-1');
-    expect(sent.content, 'hello');
-    expect(sent.nonce, 'n-1');
-  });
+      // Without an engine on a screen, a conversation's message isn't sent at all.
+      await expectLater(repository.send(target, 'hello', nonce: 'n-1'), throwsA(isA<ActionFailed>()));
+      expect(requests.where((r) => r.method == 'POST' && r.url.path.endsWith('/conversations/c-1/messages')), isEmpty);
+    },
+  );
 
   test('a file marked as a spoiler uploads under its SPOILER_ name, and the picked file stays', () async {
     await repository.logIn('gaby@duvet.chat', 'secret');
@@ -958,7 +965,7 @@ void main() {
     final picked = await File('${dir.path}/scaled_1.jpg').writeAsBytes([1, 2, 3]);
 
     await repository.send(
-      const ConversationTarget('c-1'),
+      const RoomTarget(spaceId: 's-1', roomId: 'r-general'),
       '',
       nonce: 'n-1',
       files: [OutgoingFile(path: picked.path, name: 'SPOILER_cat.jpg', contentType: 'image/jpeg')],
@@ -1021,7 +1028,9 @@ void main() {
     addTearDown(sub.cancel);
     repository.handleEvent(_event('DM_MESSAGE_CREATE', _dm('9', _maya, 'live')));
     await pumpEventQueue();
-    expect((events.single as MessageCreated).message.content, 'live');
+    // A conversation's text is what this device's own database holds: none of the API's words (PLAN-E2E-CLIENTES.md).
+    final live = (events.single as MessageCreated).message;
+    expect((live.id, live.content), ('9', ''));
     expect(repository.unread.value, contains('c-1'));
 
     repository.markRead(const ConversationTarget('c-1'), '9');
@@ -2723,22 +2732,19 @@ void main() {
       );
       await pumpEventQueue();
       final m = (events.single as MessageCreated).message;
-      expect((m.reply?.messageId, m.reply?.authorName, m.reply?.content), ('1', 'Gaby', 'ship it?'));
+      // A conversation's quote has no text but what this device holds of the message it quotes.
+      expect((m.reply?.messageId, m.reply?.authorName, m.reply?.content), ('1', 'Gaby', ''));
       expect((m.reactions.single.emoji, m.reactions.single.count), ('🎉', 2));
 
-      await repository.send(const ConversationTarget('c-1'), 'yes', nonce: 'n1', replyTo: '9');
+      // A room's reply goes out as a reference (a conversation's goes through its engine: test/e2e/send_test.dart).
+      const room = RoomTarget(spaceId: 's-1', roomId: 'r-general');
+      await repository.send(room, 'yes', nonce: 'n1', replyTo: '9');
       final send = requests.lastWhere((r) => r.method == 'POST');
       final body = jsonDecode(send.body) as Map;
       expect((body['message_reference'] as Map)['message_id'], '9');
       expect(body.containsKey('allowed_mentions'), isFalse);
 
-      await repository.send(
-        const ConversationTarget('c-1'),
-        'quietly',
-        nonce: 'n2',
-        replyTo: '9',
-        mentionRepliedUser: false,
-      );
+      await repository.send(room, 'quietly', nonce: 'n2', replyTo: '9', mentionRepliedUser: false);
       final quiet = jsonDecode(requests.lastWhere((r) => r.method == 'POST').body) as Map;
       expect(quiet['allowed_mentions'], {'replied_user': false});
     });
@@ -2756,7 +2762,8 @@ void main() {
           cursor: '9',
         ),
       );
-      expect((page.total, page.hits.single.message.content), (40, 'second'));
+      // A conversation's hit shows what this device's own database holds of it: none of the API's words.
+      expect((page.total, page.hits.single.message.content), (40, ''));
       final url = requests.lastWhere((r) => r.url.path.endsWith('/messages/search')).url;
       expect(url.queryParametersAll['has'], ['image', 'link']);
       expect(url.queryParameters['author_id'], _me);
@@ -2800,10 +2807,11 @@ void main() {
       int fetches() => requests.where((r) => r.method == 'GET' && r.url.path.endsWith('/messages')).length;
       String? preview(String id) => repository.recents.value.firstWhere((c) => c.target.id == id).previewText;
 
-      // The list of conversations dates the DM after its preview.
+      // The list of conversations dates the DM after its preview: its newest message, whose text only this device's own
+      // database holds, none here.
       await repository.logIn('gaby@duvet.chat', 'secret');
       await pumpEventQueue();
-      expect(preview('c-1'), 'second');
+      expect(preview('c-1'), 'Sent a message');
 
       // READY names a newer message than the room's preview.
       repository.handleEvent(_event('READY', ready('last')));

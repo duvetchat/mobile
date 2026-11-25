@@ -164,6 +164,10 @@ class _Bubble extends StatelessWidget {
     Widget bodyAt(BuildContext? anchor) {
       final parts = <Widget>[
         if (m.isLoading) _Thinking(name: m.authorName, since: m.createdAt),
+        // An encrypted conversation's message this device doesn't hold opened yet.
+        if (m.waiting) _WaitingRow(maxWidth: maxWidth),
+        // One this device hasn't applied yet: it loads, neither empty nor waiting.
+        if (m.loading) _LoadingRow(maxWidth: maxWidth),
         if (m.stickerUrl != null)
           GestureDetector(
             onDoubleTap: onDoubleTap,
@@ -259,6 +263,8 @@ class _Bubble extends StatelessWidget {
             else if (parseInviteCode(url) case final code?)
               InviteCard(code: code, onOpenSpace: onOpenSpace),
         for (final e in m.embeds) EmbedCard(embed: e),
+        // Brought to this device by someone's shared history.
+        if (m.sharedBy case final name?) _Caption(text: Notice.sharedBy.fill({'name': name}), style: secondary),
         if (m.components.isNotEmpty && !lifted)
           BotComponents(
             components: m.components,
@@ -1527,6 +1533,57 @@ class _TypingLine extends StatelessWidget {
             ],
           ),
         ),
+      ),
+    );
+  }
+}
+
+/// An encrypted conversation's message this device doesn't hold opened yet (PLAN-E2E-CLIENTES.md, «La vista de una
+/// conversación», its notices): what it is, and that it shows once the sender's device delivers it.
+/// An encrypted conversation's message this device hasn't applied yet: a line of the skeleton, as text loads.
+class _LoadingRow extends StatelessWidget {
+  const _LoadingRow({required this.maxWidth});
+  final double maxWidth;
+
+  @override
+  Widget build(BuildContext context) => Semantics(
+    label: 'Loading message',
+    child: SkeletonBox(width: min(maxWidth, 160), height: 14, borderRadius: BorderRadius.circular(4)),
+  );
+}
+
+class _WaitingRow extends StatelessWidget {
+  const _WaitingRow({required this.maxWidth});
+  final double maxWidth;
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = context.theme.colors;
+    final quiet = DuvetType.snippet.copyWith(color: colors.mutedForeground);
+    return Container(
+      constraints: BoxConstraints(maxWidth: maxWidth),
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+      decoration: BoxDecoration(
+        border: Border.all(color: colors.border),
+        borderRadius: BorderRadius.circular(DuvetTokens.radiusButton),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(FLucideIcons.clock, size: 14, color: colors.mutedForeground),
+              const SizedBox(width: 6),
+              Flexible(
+                child: Text(Notice.waiting.text, style: quiet.copyWith(fontStyle: FontStyle.italic)),
+              ),
+            ],
+          ),
+          const SizedBox(height: 2),
+          Text(Notice.waitingDetail.text, style: DuvetType.caption.copyWith(color: colors.mutedForeground)),
+        ],
       ),
     );
   }

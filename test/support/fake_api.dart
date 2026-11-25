@@ -587,6 +587,10 @@ class FakeApi {
 
   _Conversation _conversation(String id) => _conversations[id] ?? (throw StateError('no conversation $id'));
 
+  /// The ID of [user]'s membership of the conversation, which a removal and an addition make anew.
+  String membershipOf(String conversationId, String user) =>
+      _conversation(conversationId).members.firstWhere((member) => member['user_id'] == user)['id']! as String;
+
   /// The conversation's members change as the server alone changes them: these users join it, with no commit.
   void addMembers(String conversationId, List<String> users) {
     final conv = _conversation(conversationId);
@@ -874,6 +878,35 @@ class FakeApi {
       route('DELETE', '$conv/members/@me', _Needs.listed, _leave),
       route('DELETE', '$conv/members/(?<user>$_uuidPath)', _Needs.listed, _removeMember),
       route('POST', '$conv/messages', _Needs.listed, _sendMessage),
+      // A page of the conversation's messages as the API lists them: the newest first, `count` of them (100 at most)
+      // before `before`'s, the deleted left out.
+      route('GET', '$conv/messages', _Needs.session, (ctx) {
+        final conv = _memberOf(ctx);
+        final before = ctx.query['before'];
+        final count = min(_positive(ctx.query['count']) ?? 50, 100);
+        return _ok(
+          [
+            for (final m in conv.messages.reversed)
+              if (!conv.deleted.contains(m['id']) && (before == null || (m['id']! as String).compareTo(before) < 0)) m,
+          ].take(count).toList(),
+        );
+      }),
+      // A thread: its message, then those that answer it, oldest first.
+      route('GET', '$conv/messages/(?<message>$_uuidPath)/thread', _Needs.session, (ctx) {
+        final conv = _memberOf(ctx);
+        final root = ctx.params['message'];
+        return _ok([
+          for (final m in conv.messages)
+            if (!conv.deleted.contains(m['id']) && (m['id'] == root || _repliesTo[m['id']] == root)) m,
+        ]);
+      }),
+      route('GET', '$conv/messages/(?<message>$_uuidPath)', _Needs.session, (ctx) {
+        final conv = _memberOf(ctx);
+        final id = ctx.params['message'];
+        final message = conv.messages.where((m) => m['id'] == id && !conv.deleted.contains(id)).firstOrNull;
+        if (message == null) throw _fail(404, 'direct message not found');
+        return _ok(message);
+      }),
       route('GET', '$conv/messages/deleted', _Needs.session, (ctx) {
         final after = ctx.query['after'] ?? '';
         final limit = min(_positive(ctx.query['limit']) ?? 1000, 1000);
@@ -1717,6 +1750,16 @@ class FakeApi {
           if (user != session.user && members.contains(user)) user,
       ],
       'message_reference': ctx['message_reference'],
+      // What it answers, as the API's reads and events carry it: no text, which only the devices have.
+      'referenced_message': replied == null
+          ? null
+          : {
+              'type': 0,
+              'message_id': replied['id'],
+              'author_id': replied['author_id'],
+              'created_at': replied['created_at'],
+              'mention_author': mentionReplied && !notice && replied['author_id'] != session.user,
+            },
       'attachment_ids': <String>[],
       'sticker_attachment_id': ctx['sticker_attachment_id'],
     };

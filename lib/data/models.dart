@@ -177,6 +177,28 @@ class ChatMessage {
   /// A bot's answer to a command or a component: who used which.
   final MessageInteraction? interaction;
 
+  /// An encrypted conversation's message this device's own database doesn't hold opened (PLAN-E2E-CLIENTES.md, «La
+  /// vista de una conversación»): it shows as waiting for it, with no text.
+  final bool waiting;
+
+  /// The user's own message this device still sends, from before the app started again: a failed send, with Retry
+  /// and Dismiss.
+  final bool pending;
+
+  /// Who shared it with this device, by name, when a shared history brought it.
+  final String? sharedBy;
+
+  /// An encrypted conversation's message's number in its conversation's queue: its text and files are what this
+  /// device's own database holds of it.
+  final int? seq;
+
+  /// An encrypted conversation's message, whose text and files are what this device's own database holds of it.
+  bool get encrypted => seq != null;
+
+  /// An encrypted conversation's message this device hasn't applied yet (numbered past what it applied): it loads,
+  /// neither empty nor waiting (M2 of the desktop's task 16 review).
+  final bool loading;
+
   const ChatMessage({
     required this.id,
     required this.authorId,
@@ -205,6 +227,11 @@ class ChatMessage {
     this.isLoading = false,
     this.isComponentsV2 = false,
     this.interaction,
+    this.waiting = false,
+    this.pending = false,
+    this.sharedBy,
+    this.seq,
+    this.loading = false,
   });
 
   int get attachmentCount => attachments.length;
@@ -227,6 +254,10 @@ class ChatMessage {
     List<Reaction>? reactions,
     bool? pinned,
     MessageReply? reply,
+    bool? waiting,
+    String? sharedBy,
+    int? seq,
+    bool? loading,
   }) => ChatMessage(
     id: id ?? this.id,
     authorId: authorId,
@@ -255,6 +286,11 @@ class ChatMessage {
     isLoading: isLoading,
     isComponentsV2: isComponentsV2,
     interaction: interaction,
+    waiting: waiting ?? this.waiting,
+    pending: pending,
+    sharedBy: sharedBy ?? this.sharedBy,
+    seq: seq ?? this.seq,
+    loading: loading ?? this.loading,
   );
 
   /// This message as an edit, or a link preview that came late, leaves it.
@@ -291,6 +327,11 @@ class ChatMessage {
     isLoading: update.isLoading,
     isComponentsV2: update.isComponentsV2,
     interaction: update.interaction ?? interaction,
+    waiting: update.waiting,
+    pending: pending,
+    sharedBy: sharedBy,
+    seq: seq,
+    loading: update.loading,
   );
 
   /// This message once [change] took place: the name and avatar of its
@@ -333,6 +374,11 @@ class ChatMessage {
       isLoading: isLoading,
       isComponentsV2: isComponentsV2,
       interaction: interaction,
+      waiting: waiting,
+      pending: pending,
+      sharedBy: sharedBy,
+      seq: seq,
+      loading: loading,
     );
   }
 
@@ -368,6 +414,11 @@ class ChatMessage {
       isLoading: isLoading,
       isComponentsV2: isComponentsV2,
       interaction: interaction,
+      waiting: waiting,
+      pending: pending,
+      sharedBy: sharedBy,
+      seq: seq,
+      loading: loading,
     );
   }
 
@@ -395,6 +446,32 @@ class ChatMessage {
 
   /// Whether [userId] reacted with the emoji [key] ([Reaction.key]).
   bool reactedWith(String userId, String key) => reactions.any((r) => r.key == key && r.users.contains(userId));
+
+  /// This message with what this device's own database holds of it now, as [held] has it (an encrypted conversation's,
+  /// read again): its text, whether it was edited, waits or was shared, and its reply's quote; what else it shows
+  /// (reactions, a pin) stays. Itself when that's what it has.
+  ChatMessage heldAs(ChatMessage held) {
+    final quote = switch ((reply, held.reply)) {
+      (final shown?, final now?) when shown.content != now.content && !shown.deleted => shown.withContent(now.content),
+      _ => reply,
+    };
+    if (content == held.content &&
+        edited == held.edited &&
+        waiting == held.waiting &&
+        loading == held.loading &&
+        sharedBy == held.sharedBy &&
+        identical(quote, reply)) {
+      return this;
+    }
+    return copyWith(
+      content: held.content,
+      edited: held.edited,
+      waiting: held.waiting,
+      loading: held.loading,
+      sharedBy: held.sharedBy,
+      reply: quote,
+    );
+  }
 }
 
 /// What a call notice says about its call: who was in it, by user ID, its
@@ -997,6 +1074,29 @@ final class MessageDeleted extends MessageEvent {
   final String messageId;
   const MessageDeleted(this.messageId);
 }
+
+/// What this device's own database holds of the chat's messages changed (an encrypted conversation's, after an apply,
+/// a send, an edit, a deletion or an import): what shows of them is read again ([ChatRepository.withContent]).
+final class ContentChanged extends MessageEvent {
+  const ContentChanged();
+}
+
+/// An edit or a deletion of the user's the server refused for good with nobody waiting for its answer (one made again
+/// as the app started, or one that waited behind another of its message): shown done on this device, it never reached
+/// the others, which the chat says (I3 of the desktop's task 16 review).
+final class ChangeRefused extends MessageEvent {
+  const ChangeRefused(this.messageId, {required this.deletion});
+  final String messageId;
+  final bool deletion;
+}
+
+/// What the start of a chat says (PLAN-E2E-CLIENTES.md, «La vista de una conversación»): a conversation from before
+/// end-to-end encryption ([legacy]) says when its older messages went ([cutoverAt], as the server gives it), and one
+/// whose rows from before the user joined it gave way says so, once ([beforeJoining]).
+typedef ChatStart = ({bool legacy, DateTime? cutoverAt, bool beforeJoining});
+
+/// A chat's start that says nothing: a room's, or a conversation's from after the cutover.
+const ChatStart quietStart = (legacy: false, cutoverAt: null, beforeJoining: false);
 
 /// Someone pinned a message, or unpinned it, here or on another device.
 final class MessagePinned extends MessageEvent {

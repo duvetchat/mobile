@@ -1,0 +1,196 @@
+import 'dart:convert';
+import 'dart:io';
+
+import 'package:duvet/data/cache.dart';
+import 'package:duvet/data/duvet_repository.dart';
+import 'package:duvet/data/models.dart';
+import 'package:duvet/data/recent_chats.dart';
+import 'package:duvet/data/session_store.dart';
+import 'package:duvet/e2e/core_gate.dart';
+import 'package:duvet/e2e/engine.dart';
+import 'package:duvet/e2e/store.dart';
+import 'package:duvet/e2e/uuid.dart';
+import 'package:flutter/foundation.dart';
+import 'package:flutter/services.dart';
+import 'package:flutter_test/flutter_test.dart';
+import 'package:http/http.dart' as http;
+import 'package:http/testing.dart';
+
+import '../support/core_lib.dart';
+import '../support/engines.dart';
+import '../support/fake_api.dart';
+
+// Plain text stays in the core's database (PLAN-E2E-CLIENTES.md, Review Focus 1): Ana's app, its repository with its
+// engine, and Bo's device converse with a witness string, sent, read, quoted, edited, deleted and left waiting after a
+// cut request, the chat's page drawn and its preview shown. Then no file of the app's (the engine's record, the core's
+// database, the notifications' history), no record of Bo's engine, no page of the chat cache, no recent chat kept, no
+// body the API saw and no log line holds it. The desktop's e2e-witness.test.ts, over what the phone keeps too.
+const _slow = Timeout(Duration(minutes: 3));
+
+/// The recent chats as they're kept, each write of them.
+class _KeptRecents implements RecentChatsStore {
+  final written = <String>[];
+
+  @override
+  Future<String?> read(String userId) async => null;
+
+  @override
+  Future<void> write(String userId, String json) async => written.add(json);
+
+  @override
+  Future<void> clearAll() async {}
+}
+
+void main() {
+  TestWidgetsFlutterBinding.ensureInitialized();
+  setUpAll(() async {
+    if (coreLibrary != null) await loadCore();
+  });
+
+  test(
+    'a_witness_string_sent_and_received_is_nowhere_but_in_the_cores',
+    () async {
+      final witness = 'witness-${uuidv4()}';
+      final logged = <String>[];
+      final print = debugPrint;
+      debugPrint = (message, {wrapWidth}) => logged.add(message ?? '');
+      addTearDown(() => debugPrint = print);
+      // The app's support folder: the engine's record, the core's database and the notifications' history go there.
+      final support = Directory.systemTemp.createTempSync('duvet-witness-');
+      const paths = MethodChannel('plugins.flutter.io/path_provider');
+      final messenger = TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
+      messenger.setMockMethodCallHandler(paths, (_) async => support.path);
+      addTearDown(() {
+        messenger.setMockMethodCallHandler(paths, null);
+        support.deleteSync(recursive: true);
+      });
+
+      final fake = FakeApi();
+      final (ana, bo) = (fake.addUser(), fake.addUser());
+      final conversation = fake.addConversation(group: false, members: [ana, bo]);
+      final target = ConversationTarget(conversation);
+      // Ana's app on the fake: it signs her in, and every request it makes goes to the fake, its body noted.
+      final bodies = <String>[];
+      final session = fake.signIn(ana);
+      final client = MockClient((request) async {
+        bodies.add(request.body);
+        final at = DateTime.now().toUtc().toIso8601String();
+        final Object? own = switch ((request.method, request.url.path)) {
+          ('POST', '/api/auth/login') => {
+            'token': session.token,
+            'session_token': 'refresh',
+            'device_challenge': session.deviceChallenge,
+          },
+          ('GET', '/api/users/@me') => {'id': ana, 'username': 'ana', 'created_at': at, 'updated_at': at},
+          _ => null,
+        };
+        if (own != null) return http.Response(jsonEncode(own), 200, headers: {'content-type': 'application/json'});
+        final copy = http.Request(request.method, request.url)
+          ..headers.addAll(request.headers)
+          ..bodyBytes = request.bodyBytes;
+        return http.Response.fromStream(await fake.client.send(copy));
+      });
+      final recents = _KeptRecents();
+      final cache = MemoryChatCacheStore();
+      late CoreGate anaCore;
+      final repository = DuvetRepository(
+        store: MemorySessionStore(),
+        recentsStore: recents,
+        httpClient: () => client,
+        connectGateway: false,
+        cacheStore: cache,
+        encryptionHost: () => anaCore = TestHost(folder: Directory('${support.path}/core')..createSync()).gate,
+        onScreen: () => true,
+      );
+      await repository.logIn('ana@duvet.chat', 'secret');
+      // Her gateway's events, as its connection hands them to the repository.
+      final end = fake.connect(session.token, null, (event) {
+        if (payloadOf(event, ana) case final payload?) repository.handleEvent(payload);
+      });
+      await until(() => repository.encryption.value.stage == EngineStage.firstDevice);
+      await repository.makeIdentity();
+      await repository.keySaved();
+      await until(() => repository.encryption.value == EngineState.ready);
+      final boStore = MemoryStore();
+      final b = await firstDevice(
+        fake,
+        bo,
+        store: boStore,
+        client: watchedClient(fake, seen: (request) => bodies.add(request.body)),
+      );
+      // Ana opens the DM: her device makes its group, and Bo's joins it.
+      repository.chatShown(target);
+      Future<int?> anaEpoch() => anaCore
+          .handle<Map<String, Object?>>({'cmd': 'group', 'conversation_id': conversation})
+          .then<int?>((held) => held['epoch'] as int?, onError: (Object _) => null);
+      await until(() async => await anaEpoch() != null && await groupOf(b, conversation) != null);
+
+      // Sent, read on Bo's device, quoted in his answer, which Ana's chat and its preview show.
+      final sent = await repository.send(target, witness, nonce: uuidv4());
+      Future<String?> textOnBo(String id) async => switch ((await b.engine.messages(conversation, [id])).firstOrNull) {
+        final shown? when shown.status == MessageStatus.ok => shown.text,
+        _ => null,
+      };
+      await until(() async => await textOnBo(sent.id) == witness);
+      final reply = (await b.engine.sendMessage(
+        Outgoing(conversationId: conversation, nonce: uuidv4(), text: 're: $witness', replyTo: sent.id),
+      ))!;
+      await until(() => repository.recents.value.any((chat) => chat.previewText?.contains(witness) ?? false));
+      final page = await repository.messages(target);
+      expect([for (final m in page) m.content], [witness, 're: $witness']);
+      expect(page.last.reply?.content, witness);
+      // A thread's quotes take their text from the device too (Missing 2 of the desktop's task 16 review).
+      final thread = await repository.thread(target, sent.id);
+      expect(thread.where((m) => m.id == reply.id).single.reply?.content, witness);
+      repository.opened(target, 'Bo', latest: page.last);
+
+      // Edited, and Bo's answer deleted.
+      await repository.edit(target, sent.id, '$witness, edited');
+      await until(() async => await textOnBo(sent.id) == '$witness, edited');
+      await b.engine.deleteMessage(conversation, reply.id);
+      // One whose request never reached the API waits on Ana's device, its reply in the clear beside it.
+      fake.cutRequest((method: 'POST', path: '/api/users/@me/conversations/$conversation/messages'));
+      await expectLater(
+        repository.send(target, '$witness, waiting', nonce: uuidv4(), replyTo: sent.id),
+        throwsA(anything),
+      );
+      final waiting = await repository.messages(target);
+      expect(
+        [
+          for (final m in waiting)
+            if (m.pending) m.content,
+        ],
+        ['$witness, waiting'],
+      );
+      await b.engine.stop();
+      end();
+      repository.dispose();
+      await pumpEventQueue();
+
+      bool holds(String text) => text.contains(witness) || text.contains(base64Encode(utf8.encode(witness)));
+      // The app's files: what the engine keeps, the core's database (sealed), the notifications' history.
+      final files = support.listSync(recursive: true).whereType<File>().toList();
+      expect([for (final file in files) file.path], contains(endsWith('client.json')));
+      expect([
+        for (final file in files)
+          if (holds(latin1.decode(file.readAsBytesSync()))) file.path,
+      ], isEmpty);
+      // Bo's engine's record, the chat cache, the recent chats kept, the API's bodies, the log.
+      expect(
+        holds(
+          jsonEncode([
+            for (final key in [keptDevice, pendingSends, keptLater]) boStore.read(key),
+          ]),
+        ),
+        isFalse,
+      );
+      expect(cache.data.values.where(holds), isEmpty);
+      expect(recents.written, isNotEmpty);
+      expect(recents.written.where(holds), isEmpty);
+      expect(bodies.where(holds), isEmpty);
+      expect(logged.where(holds), isEmpty);
+    },
+    skip: noCore,
+    timeout: _slow,
+  );
+}

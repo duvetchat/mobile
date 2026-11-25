@@ -5,6 +5,7 @@ import 'package:duvet/data/emoji_catalog.dart';
 import 'package:duvet/data/markdown.dart';
 import 'package:duvet/data/models.dart';
 import 'package:duvet/data/appearance.dart';
+import 'package:duvet/e2e/notices.dart';
 import 'package:duvet/main.dart';
 import 'package:duvet/theme.dart' show Duvet;
 import 'package:duvet/widgets/disintegrate.dart' show dustOf;
@@ -1004,5 +1005,128 @@ void main() {
     await tapLabel(tester, 'Delete');
     expect(find.text('into the void'), findsNothing);
     semantics.dispose();
+  });
+
+  // Encrypted conversations (PLAN-E2E-CLIENTES.md, Task 17, «La vista de una conversación»): what this device's own
+  // database holds of each row.
+  group('a conversation drawn from the device', () {
+    ChatMessage held(String id, {String text = '', bool waiting = false, String? sharedBy, bool pending = false}) =>
+        ChatMessage(
+          id: id,
+          authorId: pending ? _me : _maya,
+          authorName: pending ? 'Gaby' : 'Maya',
+          content: text,
+          createdAt: DateTime(2026, 10, 23, 9, 10),
+          nonce: pending ? id.substring('pending:'.length) : null,
+          waiting: waiting,
+          sharedBy: sharedBy,
+          pending: pending,
+        );
+
+    testWidgets("a message the device doesn't hold waits, and shows once it's read again", (tester) async {
+      final repository = await openMaya(tester, setUp: (r) => r.history['c-maya']!.add(held('w1', waiting: true)));
+      expect(find.text(Notice.waiting.text), findsOneWidget);
+      expect(find.text(Notice.waitingDetail.text), findsOneWidget);
+
+      // The device's database changed (an import filled it): the chat reads what it shows again.
+      repository.contents['w1'] = held('w1', text: 'here now', sharedBy: 'Leo');
+      repository.push('c-maya', const ContentChanged());
+      await tester.pumpAndSettle();
+      expect(find.text('here now'), findsOneWidget);
+      expect(find.text(Notice.waiting.text), findsNothing);
+      expect(find.text(Notice.sharedBy.fill({'name': 'Leo'})), findsOneWidget);
+      semantics.dispose();
+    });
+
+    testWidgets("a message the device hasn't applied yet loads, neither empty nor waiting", (tester) async {
+      final repository = await openMaya(
+        tester,
+        setUp: (r) => r.history['c-maya']!.add(held('l1').copyWith(loading: true)),
+      );
+      // Read as one stop with its author and time.
+      expect(find.bySemanticsLabel(RegExp('Loading message')), findsOneWidget);
+      expect(find.text(Notice.waiting.text), findsNothing);
+      // Applied: the chat reads it again, and it shows.
+      repository.contents['l1'] = held('l1', text: 'applied now');
+      repository.push('c-maya', const ContentChanged());
+      await tester.pumpAndSettle();
+      expect(find.text('applied now'), findsOneWidget);
+      expect(find.bySemanticsLabel(RegExp('Loading message')), findsNothing);
+      semantics.dispose();
+    });
+
+    testWidgets('an edit or a deletion refused with nobody waiting for it is told', (tester) async {
+      final repository = await openMaya(tester);
+      repository.push('c-maya', const ChangeRefused('m1', deletion: false));
+      await tester.pumpAndSettle();
+      expect(find.text('Couldn’t save your edit'), findsOneWidget);
+      repository.push('c-maya', const ChangeRefused('m1', deletion: true));
+      await tester.pumpAndSettle();
+      expect(find.text('Couldn’t delete the message'), findsOneWidget);
+      await tester.pump(const Duration(seconds: 4));
+      await tester.pumpAndSettle();
+      semantics.dispose();
+    });
+
+    testWidgets('a message the device turns out not to hold, read again, waits', (tester) async {
+      // Listed before the device could be read: neither its text nor waiting. Read again, the device holds none of it.
+      final repository = await openMaya(
+        tester,
+        setUp: (r) => r.history['c-maya']!.add(held('w2').copyWith(content: '')),
+      );
+      expect(find.text(Notice.waiting.text), findsNothing);
+      repository.contents['w2'] = held('w2', waiting: true);
+      repository.push('c-maya', const ContentChanged());
+      await tester.pumpAndSettle();
+      expect(find.text(Notice.waiting.text), findsOneWidget);
+      semantics.dispose();
+    });
+
+    testWidgets('a message that waits on the device to be sent offers Retry and Dismiss', (tester) async {
+      final repository = await openMaya(
+        tester,
+        setUp: (r) => r.history['c-maya']!.addAll([
+          held('pending:n1', text: 'stuck once', pending: true),
+          held('pending:n2', text: 'stuck twice', pending: true),
+        ]),
+      );
+      expect(find.bySemanticsLabel('Retry'), findsNWidgets(2));
+      // Retry sends one again as the device keeps it, by its nonce.
+      await tester.tap(find.bySemanticsLabel('Retry').first);
+      await tester.pumpAndSettle();
+      expect(repository.resent, hasLength(1));
+      expect(find.bySemanticsLabel('Retry'), findsOneWidget);
+      // Dismiss drops the other on the device.
+      await tapLabel(tester, 'Delete');
+      expect({...repository.resent, ...repository.discarded}, {'n1', 'n2'});
+      final dismissed = repository.discarded.single;
+      expect(find.text(dismissed == 'n1' ? 'stuck once' : 'stuck twice'), findsNothing);
+      semantics.dispose();
+    });
+
+    testWidgets('a conversation from before the cutover says when its messages went, and who joined late is told', (
+      tester,
+    ) async {
+      await openMaya(
+        tester,
+        setUp: (r) =>
+            r.chatStarts['c-maya'] = (legacy: true, cutoverAt: DateTime.utc(2026, 12, 1, 9, 30), beforeJoining: true),
+      );
+      expect(find.text(Notice.cutover.fill({'date': '1 December 2026'})), findsOneWidget);
+      expect(find.text(Notice.beforeJoining.text), findsOneWidget);
+      semantics.dispose();
+    });
+
+    testWidgets("a conversation's message goes with a UUID as its nonce", (tester) async {
+      final repository = await openMaya(tester);
+      await tester.enterText(find.byType(EditableText), 'with a nonce');
+      await tester.pump();
+      await tapLabel(tester, 'Send');
+      expect(
+        repository.sent.last.nonce,
+        matches(RegExp(r'^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$')),
+      );
+      semantics.dispose();
+    });
   });
 }

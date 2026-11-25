@@ -11,6 +11,7 @@ import 'dart:io';
 
 import 'package:duvet/e2e/client.dart';
 import 'package:duvet/e2e/engine.dart';
+import 'package:duvet/e2e/uuid.dart';
 import 'package:duvet_client/duvet.dart' as duvet;
 import 'package:duvet_client/http/router.dart' show ApiRouter;
 import 'package:flutter_test/flutter_test.dart';
@@ -52,10 +53,12 @@ class _Live {
 
   duvet.E2eApi get api => duvet.E2eApi(rest);
 
-  static Future<_Live> start(ApiRouter router, ({String id, String email}) account) async {
+  /// [kept]: the device outlives its test, for the cases after it, until the file's tests end.
+  static Future<_Live> start(ApiRouter router, ({String id, String email}) account, {bool kept = false}) async {
     final rest = duvet.RestClient(http.Client(), router: router, duvetClient: duvetClient());
     final signedIn = await rest.logIn(account.email, _env['E2E_LIVE_PASSWORD'] ?? '');
-    final live = _Live._(rest, TestHost(), []);
+    final folder = kept ? Directory.systemTemp.createTempSync('duvet-live-') : null;
+    final live = _Live._(rest, TestHost(folder: folder), []);
     final events = StreamController<duvet.GatewayEventPayload>.broadcast();
     String? named;
     Future<void> connect() async {
@@ -100,16 +103,25 @@ class _Live {
         null => null,
       },
     );
-    addTearDown(() async {
+    Future<void> end() async {
       await live.engine.stop();
       await live._heard?.cancel();
       live._gateway?.destroy();
       await events.close();
       rest.client.close();
-    });
+      if (folder != null && folder.existsSync()) folder.deleteSync(recursive: true);
+    }
+
+    kept ? _keptLive.add(end) : addTearDown(end);
     return live;
   }
 }
+
+/// The ends of the devices kept for later cases ([_Live.start]'s kept), run once the file's tests end.
+final _keptLive = <Future<void> Function()>[];
+
+/// Carol's and Dave's devices and their DM, which the groups' case leaves to the messages' case after it.
+({_Live c, _Live d, String dm})? _carolAndDave;
 
 void main() {
   final skip = _env['E2E_LIVE_API'] == null ? "only against a stack, in the API's clients-mobile suite" : null;
@@ -186,8 +198,8 @@ void main() {
       await loadCore();
       final router = _router();
       final (carol, dave) = (_account(2), _account(3));
-      final c = await _Live.start(router, carol);
-      final d = await _Live.start(router, dave);
+      final c = await _Live.start(router, carol, kept: true);
+      final d = await _Live.start(router, dave, kept: true);
       for (final live in [c, d]) {
         await live.engine.start();
         await live.engine.makeIdentity();
@@ -211,8 +223,56 @@ void main() {
         expect(await groupOf(c), allOf(isNotNull, equals(daveHeld)));
       }, timeout: const Duration(seconds: 30));
       expect(daveHeld, allOf(containsPair('generation', 0), containsPair('epoch', 1)));
+      _carolAndDave = (c: c, d: d, dm: dm.id);
     },
     skip: skip ?? noCore,
     timeout: const Timeout(Duration(minutes: 3)),
   );
+
+  // Encrypted messages (PLAN-E2E-CLIENTES.md, Task 17): Carol's and Dave's devices, in the DM the case above left them,
+  // send, answer, edit and delete through the API, which never holds their text.
+  test(
+    'two_users_converse,_edit_and_delete',
+    () async {
+      final pair = _carolAndDave;
+      if (pair == null) fail('the case before left no conversation');
+      final (:c, :d, :dm) = pair;
+      final carol = _account(2);
+      Future<String?> textOn(_Live live, String id) async => (await live.engine.messages(dm, [id])).firstOrNull?.text;
+      const wait = Duration(seconds: 30);
+
+      // Carol's message: Dave's device opens it.
+      final sent = (await c.engine.sendMessage(Outgoing(conversationId: dm, nonce: uuidv4(), text: 'hello Dave')))!;
+      await eventually(() async => expect(await textOn(d, sent.id), 'hello Dave'), timeout: wait);
+      // Dave answers it, mentioning her: hers opens it.
+      final reply = (await d.engine.sendMessage(
+        Outgoing(conversationId: dm, nonce: uuidv4(), text: 'hi <@${carol.id}>', replyTo: sent.id),
+      ))!;
+      await eventually(() async => expect(await textOn(c, reply.id), 'hi <@${carol.id}>'), timeout: wait);
+      // The API holds their ciphertexts, whom the reply mentions and what it answers, and none of their text.
+      final listed = await c.rest.getDirectMessages(dm);
+      final [first, answer] = [
+        for (final id in [sent.id, reply.id]) listed.firstWhere((m) => m.id == id),
+      ];
+      expect([first.ciphertext, answer.ciphertext], everyElement(isNotNull));
+      expect([first.content, answer.content], everyElement(isNull));
+      expect(answer.mentions, [carol.id]);
+      expect(answer.referencedMessage?.messageId, sent.id);
+
+      // Carol edits hers: Dave's device shows the edit. Dave deletes his answer: it's gone from both, and from the API.
+      await c.engine.editMessage(dm, sent.id, 'hello again');
+      await eventually(() async => expect(await textOn(d, sent.id), 'hello again'), timeout: wait);
+      await d.engine.deleteMessage(dm, reply.id);
+      await eventually(() async => expect(await c.engine.messages(dm, [reply.id]), isEmpty), timeout: wait);
+      expect([for (final m in await c.rest.getDirectMessages(dm)) m.id], isNot(contains(reply.id)));
+    },
+    skip: skip ?? noCore,
+    timeout: const Timeout(Duration(minutes: 3)),
+  );
+
+  tearDownAll(() async {
+    for (final end in _keptLive) {
+      await end();
+    }
+  });
 }

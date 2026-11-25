@@ -339,8 +339,9 @@ Future<TestDevice> firstDevice(
   CoreHost? host,
   EngineStore? store,
   http.Client? client,
+  bool Function(GatewayEvent event)? hears,
 }) async {
-  final device = testDevice(fake, user, host: host, store: store, client: client);
+  final device = testDevice(fake, user, host: host, store: store, client: client, hears: hears);
   await device.engine.start();
   await device.engine.makeIdentity();
   await device.engine.keySaved();

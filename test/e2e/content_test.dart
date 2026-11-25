@@ -1,0 +1,236 @@
+import 'dart:convert';
+import 'dart:typed_data';
+
+import 'package:duvet/data/duvet_repository.dart' show readFrom, withRow;
+import 'package:duvet/data/models.dart';
+import 'package:duvet/e2e/content.dart';
+import 'package:duvet/e2e/core_gate.dart';
+import 'package:duvet/e2e/notices.dart';
+import 'package:duvet/e2e/send.dart';
+import 'package:duvet/e2e/sync.dart' show entryOf;
+import 'package:duvet/e2e/uuid.dart';
+import 'package:duvet/encryption/conversation_start.dart';
+import 'package:duvet/theme.dart';
+import 'package:flutter/material.dart';
+import 'package:flutter_test/flutter_test.dart';
+import 'package:forui/forui.dart';
+
+import '../support/core_lib.dart';
+import '../support/engines.dart';
+import '../support/fake_api.dart';
+
+// A conversation as the device draws it (PLAN-E2E-CLIENTES.md, «La vista de una conversación»): the API's rows, each
+// with what this device's own database holds of it; a row it doesn't hold waits for it, rows from before the user
+// joined give way to a notice, and a conversation from before the cutover says when its older messages went. The
+// desktop's content.test.ts, case for case.
+const _slow = Timeout(Duration(minutes: 3));
+
+/// An encrypted message as the API lists it, before this device's database is asked.
+ChatMessage _listed(String id, {String author = 'a'}) =>
+    ChatMessage(id: id, authorId: author, authorName: 'Ana', content: '', createdAt: DateTime(2026, 11, 25));
+
+/// A row of the device's own database, as `messages` gives it.
+ShownMessage _shown(String id, {String status = 'ok', String? text, String? sharedBy}) => ShownMessage.of({
+  'conversation_id': 'c',
+  'message_id': id,
+  'seq': 1,
+  'user_id': 'a',
+  'device_id': 'd',
+  'sent_at': 0,
+  'edited_at': null,
+  'status': status,
+  'text': text,
+  'attachments': <Object?>[],
+  'shared_by': sharedBy,
+  'reply_to': null,
+});
+
+Widget _drawn({required bool legacy, DateTime? cutoverAt, required bool beforeJoining}) => MaterialApp(
+  home: FTheme(
+    data: Duvet.theme(Brightness.light),
+    child: Material(
+      child: ConversationStart(legacy: legacy, cutoverAt: cutoverAt, beforeJoining: beforeJoining),
+    ),
+  ),
+);
+
+void main() {
+  setUpAll(() async {
+    if (coreLibrary != null) await loadCore();
+  });
+
+  test(
+    "a_row_the_core_doesn't_hold_waits,_and_an_import_fills_it",
+    () async {
+      final fake = FakeApi();
+      final (ana, bo) = (fake.addUser(), fake.addUser());
+      final conversation = fake.addConversation(group: false, members: [ana, bo]);
+      final a = await firstDevice(fake, ana);
+      var b = await firstDevice(fake, bo);
+      await a.engine.openConversation(conversation);
+      await sameGroup([a, b], conversation);
+
+      // Ana sends a message, while Bo's device is away; its copy of it doesn't open there (one byte of it spoiled).
+      await b.engine.stop();
+      final sent = (await a.engine.sendMessage(
+        Outgoing(conversationId: conversation, nonce: uuidv4(), text: 'kept for Bo'),
+      ))!;
+      await b.host.open(bo);
+      final entry = (await a.api.queue(conversation, 0)).entries.firstWhere((e) => e.messageId == sent.id);
+      final spoiled = Uint8List.fromList(base64Decode(entry.data!));
+      spoiled[spoiled.length - 1] ^= 0xff;
+      await b.host.handle<Object?>({
+        'cmd': 'apply',
+        'conversation_id': conversation,
+        'entries': [
+          {...entryOf(entry), 'data': base64Encode(spoiled)},
+        ],
+      });
+      b = await restarted(fake, b);
+
+      // The row waits on Bo's device: the chat draws it as waiting, as one his core never had.
+      final [waiting] = await b.engine.messages(conversation, [sent.id]);
+      expect((waiting.messageId, waiting.status, waiting.text), (sent.id, MessageStatus.waiting, null));
+      String name(String user) => user == ana ? 'Ana' : 'someone';
+      final listed = _listed(sent.id, author: ana);
+      expect(withRow(listed, waiting, nameOf: name), isA<ChatMessage>().having((m) => m.waiting, 'waiting', isTrue));
+      expect(await b.engine.messages(conversation, [uuidv4()]), isEmpty);
+      expect(withRow(listed, null, nameOf: name).waiting, isTrue);
+      // Not yet asked: neither waiting nor any text.
+      expect((listed.waiting, listed.content), (false, ''));
+
+      // Ana shares the conversation's history with Bo: the import fills the row, which then shows its text.
+      final certificates = (await a.api.identity(bo)).certificates;
+      final gate = a.host as CoreGate;
+      final made = await gate.share({
+        'cmd': 'history_share',
+        'conversation_id': conversation,
+        'to_user': bo,
+        'range': 'all',
+        'devices': certificates,
+      });
+      final from = (await b.api.identity(ana)).certificates.first;
+      for (final key in (made['keys']! as List).cast<Map<String, Object?>>()) {
+        await b.host.handle<Object?>({'cmd': 'receive_direct', 'message': key['message'], 'from_certificate': from});
+      }
+      final shareId = made['share_id']! as String;
+      final parts = [for (var n = 0; n < (made['parts']! as int); n++) await gate.sharePart(shareId, n)];
+      expect(await (b.host as CoreGate).importShare(shareId, parts), containsPair('imported', isA<int>()));
+      final [filled] = await b.engine.messages(conversation, [sent.id]);
+      expect((filled.status, filled.text, filled.sharedBy), (MessageStatus.ok, 'kept for Bo', ana));
+      final drawn = withRow(listed, filled, nameOf: name);
+      expect((drawn.waiting, drawn.content, drawn.sharedBy), (false, 'kept for Bo', 'Ana'));
+      await a.engine.stop();
+      await b.engine.stop();
+    },
+    skip: noCore,
+    timeout: _slow,
+  );
+
+  test("a_chat's_messages_read_again_take_what_the_device_holds,_and_wait_for_what_it_doesn't", () {
+    // Listed before the device could be read (no text, not waiting), then read again: the one it holds shows its text,
+    // the encrypted one it holds nothing of waits, and a notice and a message still being sent stay as they are.
+    final shown = _listed('a').copyWith(seq: 1);
+    final unheld = _listed('b').copyWith(seq: 2);
+    final notice = ChatMessage(id: 'c', authorId: 'a', authorName: 'Ana', content: '', createdAt: DateTime(2026));
+    final sending = ChatMessage(
+      id: 'pending:n',
+      authorId: 'a',
+      authorName: 'Ana',
+      content: 'on its way',
+      createdAt: DateTime(2026),
+      pending: true,
+    );
+    final read = readFrom([shown, unheld, notice, sending], {'a': _shown('a', text: 'here')}, nameOf: (_) => 'Bo');
+    expect(
+      [for (final m in read) (m.content, m.waiting)],
+      [('here', false), ('', true), ('', false), ('on its way', false)],
+    );
+  });
+
+  // M4 of the desktop's task 16 review: a row of another author's, under an ID the API names for this one, isn't theirs.
+  // The review of task 16: what a conversation draws comes from the device alone (I1, M4: the API's words never reach
+  // this, as the repository lists a conversation's message with no text, embeds or files), and a row not applied yet
+  // loads (M2).
+  test('an_encrypted_row_draws_only_what_the_device_holds_of_it', () {
+    final row = _shown('m', text: 'said by a');
+    final quoted = _shown('q', text: 'quoted');
+    final replying = _listed('m').copyWith(
+      seq: 2,
+      reply: const MessageReply(messageId: 'q', authorId: 'a', authorName: 'Ana', content: ''),
+    );
+    // Held: its text, and its quote's from the quoted row.
+    final drawn = withRow(replying, row, nameOf: (_) => '', quoted: quoted);
+    expect((drawn.content, drawn.reply?.content, drawn.waiting), ('said by a', 'quoted', false));
+    // Nothing held: waiting, with no text, its quote's neither.
+    final none = withRow(replying, null, nameOf: (_) => '');
+    expect((none.content, none.reply?.content, none.waiting), ('', '', true));
+    // A held row whose sender isn't the author the API names: waiting, never its text under another's name.
+    final other = withRow(_listed('m', author: 'b').copyWith(seq: 2), row, nameOf: (_) => '');
+    expect((other.content, other.waiting), ('', true));
+  });
+
+  test("a_row_the_engine_hasn't_applied_yet_is_loading,_neither_empty_nor_waiting", () {
+    final late = _listed('x').copyWith(seq: 7);
+    final loading = withRow(late, null, nameOf: (_) => '', through: 5);
+    expect((loading.loading, loading.waiting, loading.content), (true, false, ''));
+    final applied = withRow(late, null, nameOf: (_) => '', through: 7);
+    expect((applied.loading, applied.waiting), (false, true));
+    // Before the conversation's first apply this run (or out of its group): waiting, as nothing says it's coming.
+    final unknown = withRow(late, null, nameOf: (_) => '');
+    expect((unknown.loading, unknown.waiting), (false, true));
+    // Held as waiting (its copy came, not opened): waiting, whatever the number.
+    final copy = withRow(late, _shown('x', status: 'waiting'), nameOf: (_) => '', through: 5);
+    expect((copy.loading, copy.waiting), (false, true));
+  });
+
+  testWidgets("the_line_about_the_cutover_shows_on_a_legacy_conversation,_with_the_server's_date", (tester) async {
+    final cutoverAt = await tester.runAsync(() async {
+      final fake = FakeApi()..cutoverAt = '2026-12-01T09:30:00Z';
+      final a = await firstDevice(fake, fake.addUser());
+      final at = a.engine.cutoverAt;
+      await a.engine.stop();
+      return at;
+    });
+    expect(cutoverAt, DateTime.utc(2026, 12, 1, 9, 30));
+    final line = Notice.cutover.fill({'date': '1 December 2026'});
+    await tester.pumpWidget(_drawn(legacy: true, cutoverAt: cutoverAt, beforeJoining: false));
+    expect(find.text(line), findsOneWidget);
+    await tester.pumpWidget(_drawn(legacy: false, cutoverAt: cutoverAt, beforeJoining: false));
+    expect(find.textContaining('end-to-end encryption'), findsNothing);
+    await tester.pumpWidget(_drawn(legacy: true, cutoverAt: null, beforeJoining: false));
+    expect(find.textContaining('end-to-end encryption'), findsNothing);
+  }, skip: noCore != null);
+
+  testWidgets('rows_from_before_the_user_joined_give_way_to_one_notice', (tester) async {
+    const joined = '0193a4b2-0000-7000-8000-000000000050';
+    ({String id, int? seq}) row(String id, {int? seq = 1}) => (id: id, seq: seq);
+    final early = row('0193a4b2-0000-7000-8000-000000000010');
+    final shared = row('0193a4b2-0000-7000-8000-000000000020');
+    final notice = row('0193a4b2-0000-7000-8000-000000000030', seq: null);
+    final later = row('0193a4b2-0000-7000-8000-000000000060');
+    bool held(String id) => id == shared.id;
+    (List<String>, bool) draw(List<({String id, int? seq})> rows, String? joinedAs) {
+      final drawn = drawnRows(rows, joinedAs, idOf: (r) => r.id, encrypted: (r) => r.seq != null, held: held);
+      return ([for (final r in drawn.rows) r.id], drawn.beforeJoining);
+    }
+
+    // The one the device doesn't hold goes; the one it holds (shared with it), the call notice and the row since stay.
+    final (drawn, noticed) = draw([early, shared, notice, later], joined);
+    expect(drawn, [shared.id, notice.id, later.id]);
+    expect(noticed, isTrue);
+    // None from before: no notice.
+    expect(draw([later], joined).$1, [later.id]);
+    expect(draw([later], joined).$2, isFalse);
+    // Without the membership, nothing goes.
+    expect(draw([early, later], null).$1, [early.id, later.id]);
+    expect(draw([early, later], null).$2, isFalse);
+    expect(_shown(shared.id).status, MessageStatus.ok);
+
+    // The notice shows once, above the chat.
+    await tester.pumpWidget(_drawn(legacy: false, beforeJoining: true));
+    expect(find.text(Notice.beforeJoining.text), findsOneWidget);
+    await tester.pumpWidget(_drawn(legacy: false, beforeJoining: false));
+    expect(find.byType(Text), findsNothing);
+  });
+}

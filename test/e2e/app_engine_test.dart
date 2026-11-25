@@ -4,7 +4,7 @@ import 'dart:io';
 
 import 'package:duvet/data/cache.dart';
 import 'package:duvet/data/duvet_repository.dart';
-import 'package:duvet/data/models.dart' show ConversationTarget;
+import 'package:duvet/data/models.dart' show ActionFailed, ConversationTarget;
 import 'package:duvet/data/recent_chats.dart';
 import 'package:duvet/data/session_store.dart';
 import 'package:duvet/e2e/client.dart';
@@ -405,6 +405,19 @@ void main() {
       await repository.logOut();
       expect(repository.encryption.value, EngineState.starting);
       await eventually(() => expect(host.closed, 1));
+    });
+
+    // Review Focus 2 of task 17: only the app's engine on a screen encrypts or reads messages. Off a screen (a push's
+    // engine, audio_service's, WorkManager's) the core isn't opened, and a conversation's message goes nowhere.
+    test("off_a_screen_a_conversation's_message_is_neither_encrypted_nor_sent", () async {
+      await repository.logIn('gaby@duvet.chat', 'secret');
+      await pumpEventQueue();
+      await expectLater(
+        repository.send(const ConversationTarget('c-1'), 'not here', nonce: 'n-1'),
+        throwsA(isA<ActionFailed>()),
+      );
+      expect(host.opened, isEmpty);
+      expect(requests.where((r) => r.method == 'POST' && r.url.path.contains('/conversations/')), isEmpty);
     });
   });
 }
