@@ -13,6 +13,7 @@ import 'dart:convert';
 import 'dart:math';
 import 'dart:typed_data';
 
+import 'package:crypto/crypto.dart';
 import 'package:duvet/e2e/uuid.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
@@ -316,6 +317,16 @@ int _numberIn(Object? value, String field) {
   return value;
 }
 
+// RFC 3339, as Go's time.Time reads one from JSON: a date, a time and its offset.
+final _rfc3339 = RegExp(r'^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?(Z|[+-]\d{2}:\d{2})$');
+
+/// A time as the API binds one (time.Time): RFC 3339 text, never a number; the instant it names, in UTC.
+DateTime _timeIn(Object? value, String field) {
+  final time = value is String && _rfc3339.hasMatch(value) ? DateTime.tryParse(value) : null;
+  if (time == null) throw _fail(400, "$field isn't an RFC 3339 time");
+  return time.toUtc();
+}
+
 /// A rotation's transfers, as the API binds them: an array of objects, each a device, its certificate and its message.
 List<({String deviceId, String certificate, String message})> _transfersIn(Object? value) {
   if (value == null) return const [];
@@ -467,7 +478,7 @@ class _Share {
   final String toUser;
   final String kind;
   final String range;
-  final int startsAt;
+  final DateTime startsAt;
   final int size;
   final int parts;
   final uploaded = <int, String>{};
@@ -505,6 +516,7 @@ typedef _Route = ({String method, RegExp path, _Needs needs, _Answer Function(_C
 typedef _Outgoing = ({String user, String? device, GatewayEvent event});
 
 String _now() => DateTime.now().toUtc().toIso8601String();
+int _unixNow() => DateTime.now().millisecondsSinceEpoch ~/ 1000;
 _Answer _ok(Object? body, [int status = 200]) => _Answer(status, body: body);
 const _noContent = _Answer(204);
 
@@ -897,7 +909,7 @@ class FakeApi {
         if (share == null || file == null || ![share.toUser, share.fromUser].contains(ctx.me.user)) {
           throw _fail(404, 'no such part');
         }
-        return _ok({'url': '$fakeApiUrl/files/$file'});
+        return _ok({'url': _signedPath(file)});
       }),
       route('POST', '/api/history-shares/(?<share>$_uuidPath)/ack', _Needs.device, (ctx) {
         final share = _shares[ctx.params['share']];
@@ -936,13 +948,20 @@ class FakeApi {
       route('GET', '$me/backup/segments/(?<segment>$_uuidPath)', _Needs.device, (ctx) {
         final segment = _segments[ctx.params['segment']];
         if (segment == null || segment.identity != _identities[ctx.me.user]?.id) throw _fail(404, 'no such segment');
-        return _ok({'url': '$fakeApiUrl/files/${segment.file}'});
+        return _ok({'url': _signedPath(segment.file)});
       }),
-      // A file at its signed URL, which the part's and the segment's routes answer: it takes no session.
-      route('GET', '/files/(?<file>$_uuidPath)', _Needs.nothing, (ctx) {
-        final file = _files[ctx.params['file']];
-        if (file == null) throw _fail(404, 'no such file');
-        return _Answer(200, body: file);
+      // A file at the signed path the part's and the segment's routes answer, as the API serves one: with its
+      // signature, before it expires, and with no session.
+      route('GET', '/attachments/(?<file>$_uuidPath)', _Needs.nothing, (ctx) {
+        final (sig, exp) = (ctx.query['sig'] ?? '', ctx.query['exp'] ?? '');
+        if (sig.isEmpty || exp.isEmpty) throw _fail(403, 'invalid or expired signature');
+        final until = int.tryParse(exp);
+        if (until == null) throw _fail(400, 'invalid expiry');
+        final file = ctx.params['file']!;
+        if (until < _unixNow() || sig != _signature(file, until)) throw _fail(403, 'invalid or expired signature');
+        final bytes = _files[file];
+        if (bytes == null) throw _fail(404, 'no such file');
+        return _Answer(200, body: bytes);
       }),
     ];
   }
@@ -1769,13 +1788,25 @@ class FakeApi {
     return id;
   }
 
+  // What signs the files' paths, the fake's own (the API's ATTACHMENT_SIGNING_KEY).
+  final _signingKey = _randomBytes(32);
+
+  String _signature(String file, int exp) => '${Hmac(sha256, _signingKey).convert(utf8.encode('$file:$exp'))}';
+
+  /// Where a file is downloaded from, as the API's routes answer it (storage.SignedAttachmentURL): a path on its own
+  /// host, signed for a day.
+  String _signedPath(String file) {
+    final exp = _unixNow() + 24 * 3600;
+    return '/attachments/$file?sig=${_signature(file, exp)}&exp=$exp';
+  }
+
   Map<String, Object?> _shareView(_Share share) => {
     'id': share.id,
     'conversation_id': share.conversationId,
     'from_user_id': share.fromUser,
     'kind': share.kind,
     'range': share.range,
-    'starts_at': share.startsAt,
+    'starts_at': share.startsAt.toIso8601String(),
     'size': share.size,
     'parts': share.parts,
   };
@@ -1797,7 +1828,7 @@ class FakeApi {
       to,
       kind! as String,
       '${ctx['range']}',
-      _numberIn(ctx['starts_at'], 'starts_at'),
+      _timeIn(ctx['starts_at'], 'starts_at'),
       _numberIn(ctx['size'], 'size'),
       parts,
     );

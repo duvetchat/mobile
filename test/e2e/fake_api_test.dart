@@ -5,6 +5,8 @@ import 'dart:typed_data';
 import 'package:duvet/e2e/conventions.dart';
 import 'package:duvet/e2e/core_gate.dart';
 import 'package:duvet/e2e/uuid.dart';
+import 'package:duvet_client/duvet.dart' as duvet;
+import 'package:duvet_client/http/router.dart' show ApiRouter;
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
@@ -125,8 +127,26 @@ Future<({List<dynamic> keyPackages, List<dynamic> handedOut})> uploadKeyPackages
   return (keyPackages: made['key_packages'] as List<dynamic>, handedOut: put.body['handed_out'] as List<dynamic>);
 }
 
-/// A file at the signed URL a download's route answers, fetched as the client fetches one: with no app header.
-Future<Uint8List> download(FakeApi fake, String url) async => (await fake.client.get(Uri.parse(url))).bodyBytes;
+/// The routes as duvet_client calls them, for the device's session: its downloads fetch the URL a route answers as the
+/// app does, against the API's host when it has none, and with no app header.
+duvet.E2eApi clientOf(FakeApi fake, Device d) => duvet.E2eApi(
+  duvet.RestClient(
+    fake.client,
+    router: const ApiRouter(api: 'fake-api.test'),
+    token: d.token,
+    duvetClient: client,
+  ),
+);
+
+/// What the API's routes answer for a download: a path on its own host, signed until `exp` (storage.SignedAttachmentURL).
+final signedPath = matches(RegExp(r'^/attachments/[0-9a-f-]{36}\?sig=[0-9a-f]{64}&exp=\d+$'));
+
+/// A signed path with its query changed (another signature, an expiry that isn't a number), fetched with no session.
+Future<Reply> fetchAltered(FakeApi fake, String signed, Map<String, String> query) {
+  final url = Uri.parse(signed);
+  final altered = url.replace(queryParameters: {...url.queryParameters, ...query});
+  return call(fake, null, 'GET', '${altered.path}?${altered.query}', null, null);
+}
 
 /// A conversation as the API's list gives it to the device: its group as that device has it.
 Future<Json> conversationOf(FakeApi fake, Device d, String id) async =>
@@ -638,8 +658,13 @@ void main() {
         }),
       ]);
       final signed = await call(fake, a.token, 'GET', '/api/users/@me/backup/segments/${second.body['id']}');
-      expect(signed.body, has({'url': isA<String>()}));
-      expect(base64Encode(await download(fake, signed.body['url'] as String)), segment['data']);
+      // The API's own: a signed path on its host (#315), which the client fetches with no session.
+      expect(signed.body, {'url': signedPath});
+      expect(base64Encode(await clientOf(fake, a).segment(second.body['id'] as String)), segment['data']);
+      final url = signed.body['url'] as String;
+      expect(await fetchAltered(fake, url, {'sig': '0' * 64}), refusedWith(403));
+      expect(await call(fake, null, 'GET', Uri.parse(url).path, null, null), refusedWith(403));
+      expect(await fetchAltered(fake, url, {'exp': 'soon'}), refusedWith(400));
       // The header names its conversation and its day: another route's isn't taken.
       expect(
         (await call(
@@ -666,6 +691,8 @@ void main() {
       });
       expect([for (final key in made['keys']! as List) key['device_id']], [b.id]);
       final share = '$conversations/$conversation/history-shares/${made['share_id']}';
+      // The core's start in ms; the API binds a time.Time, RFC 3339 (#315).
+      final startsAt = DateTime.fromMillisecondsSinceEpoch(made['start']! as int, isUtc: true);
       final about = {
         'to_user_id': bo,
         'kind': 'share',
@@ -674,7 +701,9 @@ void main() {
         'size': made['size'],
         'parts': made['parts'],
       };
-      expect((await call(fake, a.token, 'PUT', share, about)).status, 201);
+      expect(await call(fake, a.token, 'PUT', share, about), refusedWith(400));
+      final put = await call(fake, a.token, 'PUT', share, {...about, 'starts_at': startsAt.toIso8601String()});
+      expect(put, answers(201, has({'starts_at': startsAt.toIso8601String()})));
       expect((await call(fake, a.token, 'POST', '$share/complete')).status, 409); // its parts aren't up yet
       for (var n = 0; n < (made['parts']! as int); n++) {
         final part = await a.core.sharePart(made['share_id']! as String, n);
@@ -724,13 +753,18 @@ void main() {
           has({'type': 'history.key'}),
         );
       }
+      // Each part from the API's signed path (#315), as the client fetches it.
+      final signed = await call(fake, b.token, 'GET', '/api/history-shares/${made['share_id']}/parts/0');
+      expect(signed.body, {'url': signedPath});
+      expect(await fetchAltered(fake, signed.body['url'] as String, {'sig': 'f' * 64}), refusedWith(403));
+      expect(
+        (await clientOf(fake, b).shares()).single.startsAt,
+        startsAt,
+        reason: "a share's starts_at reads as the time it was made with",
+      );
       final parts = <Uint8List>[
         for (var n = 0; n < (made['parts']! as int); n++)
-          await download(
-            fake,
-            (await call(fake, b.token, 'GET', '/api/history-shares/${made['share_id']}/parts/$n')).body['url']
-                as String,
-          ),
+          await clientOf(fake, b).sharePart(made['share_id']! as String, n),
       ];
       expect(await b.core.importShare(made['share_id']! as String, parts), has({'imported': isA<int>()}));
       expect((await call(fake, b.token, 'POST', '/api/history-shares/${made['share_id']}/ack')).status, 204);
