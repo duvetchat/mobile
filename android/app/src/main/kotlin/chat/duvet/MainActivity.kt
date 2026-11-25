@@ -34,6 +34,13 @@ class MainActivity : AudioServiceActivity() {
                 else -> result.notImplemented()
             }
         }
+        // The phone's model, which names this installation's device among the user's (lib/e2e/bootstrap.dart).
+        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "chat.duvet/device").setMethodCallHandler { call, result ->
+            when (call.method) {
+                "model" -> result.success(Build.MODEL)
+                else -> result.notImplemented()
+            }
+        }
         // The launcher icon picked in Appearance (LauncherIcon).
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "chat.duvet/icon").setMethodCallHandler { call, result ->
             when (call.method) {

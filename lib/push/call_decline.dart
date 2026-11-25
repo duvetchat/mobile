@@ -9,6 +9,7 @@ import 'package:http/http.dart' as http;
 import '../data/duvet_repository.dart' show duvetRouter;
 import '../data/links.dart' show isDuvetId;
 import '../data/session_store.dart';
+import '../e2e/client.dart';
 
 /// Declines the call of [conversationId] that started at [startedAt] (Unix ms, as its ring gave it; 0, when the app put
 /// the notification up not knowing it, is whatever call goes on there) for the user signed in on this phone, through
@@ -27,7 +28,13 @@ Future<void> declineFromNotification(
   if (saved == null) return;
   final httpClient = client ?? http.Client();
   try {
-    final api = duvet.RestClient(httpClient, router: duvetRouter, token: saved.token, sessionToken: saved.sessionToken);
+    final api = duvet.RestClient(
+      httpClient,
+      router: duvetRouter,
+      duvetClient: duvetClient(),
+      token: saved.token,
+      sessionToken: saved.sessionToken,
+    );
     await api.request(
       'POST',
       '/api/users/@me/conversations/$conversationId/call/decline',

@@ -1,0 +1,84 @@
+/// The engine's record (PLAN-E2E-CLIENTES.md, «El motor», its store): small and with no secret, by user, kept in
+/// `e2e/<user_id>/client.json` beside the user's database. What it holds is the engine's, and each reader checks what
+/// it reads.
+library;
+
+import 'dart:convert';
+import 'dart:io';
+
+import 'package:flutter/foundation.dart';
+import 'package:path_provider/path_provider.dart';
+
+/// The device this installation registered for the user, which each identify names (Ruling 30): kept so the app
+/// identifies before its core opens.
+const keptDevice = 'device';
+
+/// This installation's device's public keys, with its ID, which each sign-in registers again (bootstrap.dart).
+const deviceKeys = 'device_keys';
+
+/// The inbox's approval frames waiting for their flow (Task 27), the transfers kept for later, and the messages whose
+/// type a later task takes (a history or catch-up key: Tasks 23 and 31), as inbox.dart keeps them.
+const keptApprovals = 'approvals';
+const keptTransfers = 'transfers';
+const keptLater = 'later';
+
+/// What a new device of this installation starts without.
+const deviceRecord = [keptDevice, deviceKeys, keptApprovals, keptTransfers, keptLater];
+
+abstract interface class EngineStore {
+  /// The JSON value kept under [key], or null.
+  Object? read(String key);
+
+  /// Keeps the JSON [value] under [key], null forgetting it: done once it's kept for good.
+  Future<void> write(String key, Object? value);
+}
+
+final _uuid = RegExp(r'^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$');
+
+/// The record on disk, read once as it opens: a file that doesn't read is an empty record. Each write replaces the
+/// whole file, written beside it then renamed, so a cut write leaves the one before.
+class FileEngineStore implements EngineStore {
+  FileEngineStore._(this._file, this._values);
+
+  /// [userId]'s record, in the app's support folder (or [folder], a test's).
+  static Future<FileEngineStore> open(String userId, {Future<Directory> Function()? folder}) async {
+    if (!_uuid.hasMatch(userId)) throw ArgumentError.value(userId, 'userId', 'a user ID is a UUID');
+    final file = File('${(await (folder ?? getApplicationSupportDirectory)()).path}/e2e/$userId/client.json');
+    var values = <String, Object?>{};
+    try {
+      if (await file.exists()) values = (jsonDecode(await file.readAsString()) as Map).cast<String, Object?>();
+    } catch (error) {
+      debugPrint("e2e: the engine's record didn't read: ${error.runtimeType}");
+    }
+    return FileEngineStore._(file, values);
+  }
+
+  final File _file;
+  final Map<String, Object?> _values;
+
+  // The writes one at a time, in order: one that failed doesn't hold up the next.
+  Future<void> _writing = Future.value();
+
+  @override
+  Object? read(String key) => _values[key];
+
+  @override
+  Future<void> write(String key, Object? value) {
+    if (value == null) {
+      _values.remove(key);
+    } else {
+      _values[key] = value;
+    }
+    final whole = jsonEncode(_values);
+    final done = _writing.catchError((Object _) {}).then((_) => _save(whole));
+    _writing = done;
+    return done;
+  }
+
+  Future<void> _save(String whole) async {
+    await _file.parent.create(recursive: true);
+    final next = File('${_file.path}.next');
+    await next.writeAsString(whole, flush: true);
+    await next.rename(_file.path);
+  }
+}

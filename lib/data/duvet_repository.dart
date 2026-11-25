@@ -8,6 +8,11 @@ import 'package:duvet_client/http/router.dart' show ApiRouter;
 import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 
+import '../e2e/bootstrap.dart' show phoneName;
+import '../e2e/client.dart';
+import '../e2e/engine.dart';
+import '../e2e/host.dart';
+import '../e2e/store.dart';
 import 'links.dart' show duvetDomain;
 import 'cache.dart';
 import 'call_notices.dart';
@@ -118,6 +123,8 @@ class DuvetRepository implements ChatRepository {
     @visibleForTesting bool? preload,
     ChatCacheStore? cacheStore,
     Future<void> Function(String chatId)? forgetNotifications,
+    CoreHost Function()? encryptionHost,
+    bool Function()? onScreen,
   }) : _cache = ChatCache(cacheStore ?? FileChatCacheStore()),
        _store = store ?? const SecureSessionStore(),
        _recentsStore = recentsStore ?? const SecureRecentChatsStore(),
@@ -125,7 +132,9 @@ class DuvetRepository implements ChatRepository {
        _httpClient = httpClient ?? http.Client.new,
        _connectsGateway = connectGateway,
        _preloads = preload ?? connectGateway,
-       _forgetNotifications = forgetNotifications {
+       _forgetNotifications = forgetNotifications,
+       _encryptionHost = encryptionHost,
+       _appShown = onScreen ?? _always {
     _typing.stream.listen((e) => _setTyping(e.$1, e.$2.userId, e.$2));
     _messageEvents.stream.listen((e) {
       if (e.$2 case MessageCreated(message: ChatMessage(:final authorId?))) _setTyping(e.$1, authorId);
@@ -268,6 +277,9 @@ class DuvetRepository implements ChatRepository {
   StreamSubscription<duvet.GatewayEventPayload>? _events;
   StoredSession? _saved;
 
+  /// What the app is, which every request and identify says (X-Duvet-Client, lib/e2e/client.dart).
+  final _client = duvetClient();
+
   @override
   final ValueNotifier<Map<String, Presence>> presence = ValueNotifier(const {});
 
@@ -364,7 +376,13 @@ class DuvetRepository implements ChatRepository {
       // Theirs until READY names them: a list published before it keeps them.
       _spaceOrder = [for (final s in home.spaces) s.id];
     }
-    _api = duvet.RestClient(_httpClient(), router: _router, token: saved.token, sessionToken: saved.sessionToken);
+    _api = duvet.RestClient(
+      _httpClient(),
+      router: _router,
+      duvetClient: _client,
+      token: saved.token,
+      sessionToken: saved.sessionToken,
+    );
     _saved = saved;
     if (home != null && saved.userId == home.profile.id) {
       // The session's own home: it shows now, and the session starts behind
@@ -396,7 +414,13 @@ class DuvetRepository implements ChatRepository {
       _closeSession();
       if (home == null) rethrow;
       final tokens = _saved ?? saved;
-      _api = duvet.RestClient(_httpClient(), router: _router, token: tokens.token, sessionToken: tokens.sessionToken);
+      _api = duvet.RestClient(
+        _httpClient(),
+        router: _router,
+        duvetClient: _client,
+        token: tokens.token,
+        sessionToken: tokens.sessionToken,
+      );
       profile.value = home.profile;
       conversations.value = home.conversations;
       spaces.value = home.spaces;
@@ -494,9 +518,9 @@ class DuvetRepository implements ChatRepository {
     _closeSession();
     // Another session's, if a start left one: whose it was isn't whose this is.
     _saved = null;
-    final api = _api = duvet.RestClient(_httpClient(), router: _router);
+    final api = _api = duvet.RestClient(_httpClient(), router: _router, duvetClient: _client);
     try {
-      await api.logIn(email, password);
+      _keepChallenge(await api.logIn(email, password));
       await _start();
     } catch (_) {
       _closeSession();
@@ -520,6 +544,7 @@ class DuvetRepository implements ChatRepository {
       final renewed = duvet.RestClient(
         _httpClient(),
         router: _router,
+        duvetClient: _client,
         token: stored.token,
         sessionToken: stored.sessionToken,
       );
@@ -565,6 +590,9 @@ class DuvetRepository implements ChatRepository {
     unawaited(_conversationsLoaded = refreshConversations().catchError((Object e) => debugPrint('conversations: $e')));
     _renewals?.cancel();
     _renewals = Timer.periodic(renewalCheck, (_) => _renewQuietly(renewAfter));
+    // Before the gateway connects: its identify names the device this installation registered for the user.
+    await _prepareEncryption(me.id);
+    if (closed != _sessionsClosed) return;
     if (_connectsGateway) _connectGateway();
     await _noteOwner(me.id);
   }
@@ -610,6 +638,7 @@ class DuvetRepository implements ChatRepository {
 
   void _closeSession() {
     _sessionsClosed++;
+    _stopEncryption();
     _profileKept = false;
     _shownBeforeReady = false;
     _keptLoadedFor = null;
@@ -748,20 +777,14 @@ class DuvetRepository implements ChatRepository {
     final adopted = _api = duvet.RestClient(
       _httpClient(),
       router: _router,
+      duvetClient: _client,
       token: stored.token,
       sessionToken: stored.sessionToken,
     );
     _adoptedFrom = failed;
     _adoptedInto = adopted;
     if (_gateway case final gateway?) {
-      for (final sub in [_events, _states, _resumes, _closes, _failures]) {
-        unawaited(sub?.cancel());
-      }
-      _voiceSignaling.detach();
-      // Destroying it closes the old client's HTTP client too.
-      gateway.destroy();
-      _gateway = null;
-      _connectGateway();
+      _replaceGateway(gateway);
     } else {
       failed.client.close();
     }
@@ -878,6 +901,7 @@ class DuvetRepository implements ChatRepository {
   @override
   void cameToFront() {
     _inFront = true;
+    unawaited(_startEncryption());
     final renewing = _renewQuietly(renewInFrontAfter);
     if (status.value == LiveStatus.online) return;
     // Cut off while away. Connecting goes again now, not at the end of its
@@ -893,6 +917,171 @@ class DuvetRepository implements ChatRepository {
       // gateway would refuse, and the wait after it grow.
       unawaited(renewing.whenComplete(() => _gateway?.retryNow()));
     }
+  }
+
+  // ---------------------------------------------------------------------------
+  // End-to-end encryption (lib/e2e)
+  // ---------------------------------------------------------------------------
+
+  /// Makes the core's host of each session's engine (main's: a gate of the app's), so an engine stopping late closes
+  /// no other's core; none in tests, which run no engine.
+  final CoreHost Function()? _encryptionHost;
+
+  /// Whether the app is on a screen. The engine runs only in the engine with one (PLAN-E2E-CLIENTES.md, Android: the
+  /// engine that has the core): main() runs on audio_service's engine too, which may start with none, and the engine
+  /// then waits for the app to come to the front.
+  final bool Function() _appShown;
+  static bool _always() => true;
+
+  @override
+  final ValueNotifier<EngineState> encryption = ValueNotifier(EngineState.starting);
+
+  /// The gateway's events for the engine, across the session's gateways.
+  final _gatewayEvents = StreamController<duvet.GatewayEventPayload>.broadcast();
+
+  E2EEngine? _engine;
+  var _engineComing = false;
+
+  // The engine before this one letting go of the app's gate: the next opens it once it has, 3 s at most.
+  Future<void> _engineStopped = Future.value();
+
+  // Whose session the engine is for, and their record, once read: an engine waiting for the screen starts from it.
+  ({String user, EngineStore store})? _encryptionFor;
+
+  // The login's device_challenge and when it came, kept in memory for the session's first binding
+  // (PLAN-E2E-CLIENTES.md, Task 13).
+  ({String challenge, DateTime at})? _loginChallenge;
+
+  void _keepChallenge(duvet.SignIn signIn) => _loginChallenge = switch (signIn.deviceChallenge) {
+    final challenge? => (challenge: challenge, at: clock.now()),
+    null => null,
+  };
+
+  // Ruling 30: the device each identify names (the record's, then the one the engine registers), whether this
+  // gateway identified yet, the device the latest identify named, and the one its session was identified with.
+  String? _identifyDevice;
+  var _identified = false;
+  String? _sentDevice;
+  String? _sessionDevice;
+
+  @override
+  Future<void> makeIdentity() => _engine?.makeIdentity() ?? Future.value();
+
+  @override
+  Future<void> keySaved() => _engine?.keySaved() ?? Future.value();
+
+  @override
+  Future<void> uploadLater() => _engine?.uploadLater() ?? Future.value();
+
+  @override
+  Future<void> startOver() => _engine?.startOver() ?? Future.value();
+
+  // The user's record, and the device it kept, which the gateway's identify names; then the engine, once on a screen.
+  Future<void> _prepareEncryption(String userId) async {
+    if (_encryptionHost == null || _encryptionFor?.user == userId) return;
+    try {
+      final store = await FileEngineStore.open(userId);
+      _identifyDevice = switch (store.read(keptDevice)) {
+        final String device => device,
+        _ => null,
+      };
+      _encryptionFor = (user: userId, store: store);
+    } catch (error) {
+      debugPrint("e2e: the engine's record: $error");
+      return;
+    }
+    unawaited(_startEncryption());
+  }
+
+  Future<void> _startEncryption() async {
+    final makeHost = _encryptionHost;
+    final session = _encryptionFor;
+    if (makeHost == null || session == null || _engine != null || _engineComing || !_appShown()) return;
+    _engineComing = true;
+    try {
+      final name = await phoneName();
+      await _engineStopped.timeout(const Duration(seconds: 3), onTimeout: () {});
+      // Signed out, or another account, meanwhile.
+      if (!identical(session, _encryptionFor)) return;
+      final challenge = _loginChallenge;
+      _loginChallenge = null;
+      final engine = _engine = E2EEngine(
+        host: makeHost(),
+        api: duvet.E2eApi(_SessionRest(this)),
+        events: _gatewayEvents.stream,
+        store: session.store,
+        clock: const SystemClock(),
+        user: session.user,
+        deviceName: name,
+        registered: _deviceRegistered,
+        loginChallenge: challenge,
+      );
+      engine.state.addListener(_showEncryption);
+      unawaited(engine.start());
+    } finally {
+      _engineComing = false;
+    }
+  }
+
+  void _showEncryption() {
+    if (_engine case final engine?) encryption.value = engine.state.value;
+  }
+
+  // The session ended: its engine closes the core, whose database stays (decision 13).
+  void _stopEncryption() {
+    final engine = _engine;
+    _engine = null;
+    _encryptionFor = null;
+    _loginChallenge = null;
+    _identifyDevice = null;
+    encryption.value = EngineState.starting;
+    if (engine == null) return;
+    engine.state.removeListener(_showEncryption);
+    _engineStopped = engine.stop().catchError((Object error) => debugPrint("e2e: the engine's stop: $error"));
+  }
+
+  /// Whether a gateway session must start again so its identify names [device] (Ruling 30): not when its session was
+  /// identified with it, nor when an identify naming it is on its way (a new one, whose READY says so), nor before
+  /// the gateway's first identify, which reads it.
+  @visibleForTesting
+  static bool reopensFor(String device, {required bool identified, String? sent, String? session}) =>
+      identified && device != session && device != sent;
+
+  // The engine registered this installation's device for the user, or bound this session to it.
+  void _deviceRegistered(String device) {
+    _identifyDevice = device;
+    if (reopensFor(device, identified: _identified, sent: _sentDevice, session: _sessionDevice)) _reopenGateway();
+  }
+
+  // Ruling 30: a gateway session identified without the device starts again, once, as a new one, which names it: a
+  // resumed session keeps the device its first identify named. The manager can't drop its socket, and destroying it
+  // closes the client's HTTP client, so a client with the session's tokens takes its place first, as taking up a
+  // stored session does (_adoptStoredSession), and a request the old one had on its way goes once more.
+  void _reopenGateway() {
+    final (api, gateway) = (_api, _gateway);
+    if (api == null || gateway == null) return;
+    final next = _api = duvet.RestClient(
+      _httpClient(),
+      router: _router,
+      duvetClient: _client,
+      token: api.token,
+      sessionToken: api.sessionToken,
+    );
+    _adoptedFrom = api;
+    _adoptedInto = next;
+    _replaceGateway(gateway);
+  }
+
+  // A new gateway in the place of [gateway], on the session's client as it is now.
+  void _replaceGateway(duvet.GatewayManager gateway) {
+    for (final sub in [_events, _states, _resumes, _closes, _failures]) {
+      unawaited(sub?.cancel());
+    }
+    _voiceSignaling.detach();
+    // Destroying it closes the old client's HTTP client too.
+    gateway.destroy();
+    _gateway = null;
+    _connectGateway();
   }
 
   // ---------------------------------------------------------------------------
@@ -913,6 +1102,9 @@ class DuvetRepository implements ChatRepository {
   }
 
   void _connectGateway() {
+    _identified = false;
+    _sentDevice = null;
+    _sessionDevice = null;
     final gateway = _gateway = duvet.GatewayManager(
       _rest,
       router: _router,
@@ -923,6 +1115,11 @@ class DuvetRepository implements ChatRepository {
       // no READY (see [handleResume]), when it still keeps the session.
       resume: true,
       platform: platformOf(),
+      // Read as each identify goes out (Ruling 30).
+      identifyDevice: () {
+        _identified = true;
+        return _sentDevice = _identifyDevice;
+      },
     );
     _voiceSignaling.attach(gateway);
     // Listen before connecting: READY comes right after IDENTIFY, on a
@@ -989,8 +1186,12 @@ class DuvetRepository implements ChatRepository {
   void handleEvent(duvet.GatewayEventPayload event) {
     final me = profile.value?.id;
     final reconnected = event is duvet.ReadyEvent && _wasReady;
+    // The encryption engine's, after this handler: its own work goes in its own turn.
+    if (!_gatewayEvents.isClosed) _gatewayEvents.add(event);
     switch (event) {
       case duvet.ReadyEvent(:final data):
+        // A new session, with the device its identify named (a resume keeps the one before).
+        _sessionDevice = _sentDevice;
         status.value = LiveStatus.online;
         // The Spaces' order, as the desktop lists them: the gateway's.
         _spaceOrder = data.guildIds;
@@ -3222,10 +3423,10 @@ class DuvetRepository implements ChatRepository {
     String? alias,
   }) async {
     _closeSession();
-    final api = _api = duvet.RestClient(_httpClient(), router: _router);
+    final api = _api = duvet.RestClient(_httpClient(), router: _router, duvetClient: _client);
     try {
       await api.signIn(username: username, alias: alias, password: password, email: email);
-      await api.logIn(email, password);
+      _keepChallenge(await api.logIn(email, password));
       await _start();
     } on duvet.DuvetApiException catch (e) {
       _closeSession();
@@ -3242,7 +3443,7 @@ class DuvetRepository implements ChatRepository {
   Future<T> _anonymous<T>(Future<T> Function(duvet.RestClient api) request) async {
     final api = _api;
     if (api != null) return _call(request);
-    final client = duvet.RestClient(_httpClient(), router: _router);
+    final client = duvet.RestClient(_httpClient(), router: _router, duvetClient: _client);
     try {
       return await request(client);
     } finally {
@@ -4924,6 +5125,8 @@ class DuvetRepository implements ChatRepository {
   void dispose() {
     _renewalRetry?.cancel();
     _closeSession();
+    unawaited(_gatewayEvents.close());
+    encryption.dispose();
     _voiceSignaling.dispose();
     _signedOut.close();
     _resumed.close();
@@ -4952,3 +5155,76 @@ class DuvetRepository implements ChatRepository {
 /// their total.
 void Function(int sent, int total)? _bytesSent(void Function(double progress)? onProgress) =>
     onProgress == null ? null : (sent, total) => onProgress(total == 0 ? 0 : sent / total);
+
+/// The session's REST client as the encryption engine's routes see it (duvet_client's E2eApi): each request through the
+/// repository's [DuvetRepository._call], so a renewal on the way is saved, a session found ended signs out, and a
+/// client that took another's place (a stored session taken up, Ruling 30's reopen) is followed. Only while the session
+/// it was made for goes on: an engine still running after its session closed asks nothing more, of the next session's
+/// client least of all (M5 of the review). Neither the session taken up nor the reopen closes it.
+class _SessionRest with duvet.RestMethods {
+  _SessionRest(this._repository) : _session = _repository._sessionsClosed;
+  final DuvetRepository _repository;
+
+  /// How many sessions had closed when it was made: its session's place.
+  final int _session;
+
+  duvet.RestClient get _rest {
+    _ensureOpen();
+    return _repository._rest;
+  }
+
+  void _ensureOpen() {
+    if (_repository._sessionsClosed != _session) throw StateError('the session the engine was for ended');
+  }
+
+  @override
+  http.Client get client => _rest.client;
+
+  @override
+  ApiRouter get router => _rest.router;
+
+  @override
+  Map<String, String> get authHeaders => _rest.authHeaders;
+
+  @override
+  String? get duvetClient => _rest.duvetClient;
+
+  @override
+  Duration get requestTimeout => _rest.requestTimeout;
+
+  @override
+  Future<http.Response> request(
+    String method,
+    String path,
+    String action, {
+    Map<String, dynamic>? query,
+    bool root = false,
+    Object? json,
+    List<int>? bytes,
+    Map<String, Object>? fields,
+    List<duvet.FilePart>? files,
+    bool renew = true,
+    Duration? timeout,
+    void Function(int sent, int total)? onProgress,
+    Future<void>? abortTrigger,
+  }) async {
+    _ensureOpen();
+    return _repository._call(
+      (api) => api.request(
+        method,
+        path,
+        action,
+        query: query,
+        root: root,
+        json: json,
+        bytes: bytes,
+        fields: fields,
+        files: files,
+        renew: renew,
+        timeout: timeout,
+        onProgress: onProgress,
+        abortTrigger: abortTrigger,
+      ),
+    );
+  }
+}

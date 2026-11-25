@@ -22,111 +22,18 @@ import 'package:flutter/foundation.dart';
 import 'package:path_provider/path_provider.dart';
 
 import 'db_key.dart';
+import 'host.dart';
+
+export 'host.dart';
 
 /// The name the app's engine answers the others under.
 const corePortName = 'duvet-e2e-core';
 
-/// What opening a user's database came to: open; another engine has it ([HostState.locked]); no core for this
-/// platform ([HostState.unsupported]); or it can't be opened, its key gone, say ([HostState.failed]).
-enum HostState { ready, locked, unsupported, failed }
+const _ready = (state: HostState.ready, keyStorage: 'provided', reason: null);
+const _failed = (state: HostState.failed, keyStorage: null, reason: null);
 
-typedef Opened = ({HostState state, String? keyStorage});
-
-const _ready = (state: HostState.ready, keyStorage: 'provided');
-const _failed = (state: HostState.failed, keyStorage: null);
-
-/// An error of the core, as the engine decides by it: its stable code, never its message, and what it names beside it.
-class CoreError implements Exception {
-  CoreError(
-    this.code, {
-    String? message,
-    this.field,
-    this.what,
-    this.from,
-    this.users,
-    this.rule,
-    this.kind,
-    this.limit,
-  }) : message = message == null || message.isEmpty ? code : message;
-
-  /// The error of a core's reply, `{error: {code, message, ...}}`: its code, its message, and those of the fields it
-  /// names that are what the core writes there.
-  factory CoreError.of(Map<String, Object?> error) {
-    String? text(String key) => switch (error[key]) {
-      final String value => value,
-      _ => null,
-    };
-    int? number(String key) => switch (error[key]) {
-      final int value => value,
-      _ => null,
-    };
-    return CoreError(
-      text('code') ?? 'internal',
-      message: text('message'),
-      field: text('field'),
-      what: text('what'),
-      from: number('from'),
-      users: switch (error['users']) {
-        final List<Object?> users when users.every((user) => user is String) => users.cast<String>().toList(),
-        _ => null,
-      },
-      rule: text('rule'),
-      kind: text('kind'),
-      limit: number('limit'),
-    );
-  }
-
-  final String code;
-  final String message;
-
-  /// bad_command: the field of the command it refused.
-  final String? field;
-
-  /// not_found: what isn't there (a group, a message, a device...).
-  final String? what;
-
-  /// gap: the first number missing.
-  final int? from;
-
-  /// needs_identities: the users to observe before the command goes again.
-  final List<String>? users;
-
-  /// rule_violation: the rule.
-  final String? rule;
-
-  /// decrypt_failed: what didn't open.
-  final String? kind;
-
-  /// too_large: the limit passed.
-  final int? limit;
-
-  Map<String, Object?> toJson() => {
-    'code': code,
-    'message': message,
-    'field': ?field,
-    'what': ?what,
-    'from': ?from,
-    'users': ?users,
-    'rule': ?rule,
-    'kind': ?kind,
-    'limit': ?limit,
-  };
-
-  @override
-  String toString() => 'CoreError($code): $message';
-}
-
-/// A core's reply, as every host reads one: its `ok`, else its error thrown as a [CoreError]; anything else is
-/// internal.
-Object? replyOk(Object? reply) {
-  if (reply is Map) {
-    if (reply.containsKey('ok') && !reply.containsKey('error')) return reply['ok'];
-    if (reply case {'error': final Map error} when !reply.containsKey('ok') && error['code'] is String) {
-      throw CoreError.of(error.cast<String, Object?>());
-    }
-  }
-  throw CoreError('internal', message: "the core's reply is neither ok nor an error");
-}
+// A database whose key is gone, or that the key kept doesn't open: no other key opens it, nor will another open.
+const _lostKey = (state: HostState.failed, keyStorage: null, reason: 'bad_key');
 
 /// The commands [CoreGate.handle] refuses: each has a way of its own, which keeps its bytes out of one JSON.
 const ownWay = {'attachment_encrypt', 'attachment_decrypt', 'history_share', 'catch_up', 'history_import'};
@@ -152,7 +59,7 @@ class _Gone implements Exception {
 }
 
 /// The core of one engine: its own, or the one the app's engine has, through the port.
-final class CoreGate {
+final class CoreGate implements CoreHost {
   CoreGate({
     required this.serves,
     DbKeys keys = const DbKeys(),
@@ -210,6 +117,7 @@ final class CoreGate {
   }
 
   /// Opens [userId]'s database on this phone, or makes it (the app's engine only), closing what this engine had open.
+  @override
   Future<Opened> open(String userId) async {
     if (!_uuid.hasMatch(userId)) throw CoreError('bad_command', message: "a user's ID is a UUID", field: 'user_id');
     return _inTurn(() => _open(userId));
@@ -224,7 +132,11 @@ final class CoreGate {
       if (app != null && app != gone) {
         try {
           final answer = jsonDecode((await _ask(app, 'open', userId))! as String) as Map<String, Object?>;
-          final opened = (state: HostState.values.byName(answer['state']! as String), keyStorage: 'provided');
+          final opened = (
+            state: HostState.values.byName(answer['state']! as String),
+            keyStorage: 'provided',
+            reason: null,
+          );
           if (opened.state != HostState.ready) return _failed;
           _app = app;
           _engine = Isolate(_taker!);
@@ -253,7 +165,7 @@ final class CoreGate {
       await DuvetE2e.init();
     } catch (error) {
       debugPrint('e2e: no core here: ${error.runtimeType}');
-      return (state: HostState.unsupported, keyStorage: null);
+      return (state: HostState.unsupported, keyStorage: null, reason: null);
     }
     final String path;
     final Uint8List? key;
@@ -265,9 +177,12 @@ final class CoreGate {
       key = serves && !made ? await _keys.readOrMake(userId) : (made ? await _keys.read(userId) : null);
       if (key == null) {
         debugPrint(made ? "e2e: the database's key is gone" : 'e2e: no database yet');
-        return _failed;
+        return made ? _lostKey : _failed;
       }
       await File(path).parent.create(recursive: true);
+    } on FormatException {
+      debugPrint("e2e: the database's key isn't one");
+      return _lostKey;
     } catch (error) {
       debugPrint("e2e: the database's key or folder: ${error.runtimeType}");
       return _failed;
@@ -276,9 +191,9 @@ final class CoreGate {
       _core = await DuvetE2e.open(jsonEncode({'path': path}), key);
       return _ready;
     } on DuvetE2eException catch (error) {
-      if (error.code == 'locked') return (state: HostState.locked, keyStorage: null);
+      if (error.code == 'locked') return (state: HostState.locked, keyStorage: null, reason: null);
       debugPrint('e2e: the database refused to open: ${error.code}');
-      return _failed;
+      return error.code == 'bad_key' ? _lostKey : _failed;
     } finally {
       key.fillRange(0, key.length, 0);
     }
@@ -429,6 +344,7 @@ final class CoreGate {
   // What the engine sees of the core.
 
   /// Runs one command, and gives the reply's `ok`; throws a [CoreError] (its code and extra fields).
+  @override
   Future<T> handle<T>(Map<String, Object?> command) async {
     final cmd = command['cmd'];
     if (ownWay.contains(cmd)) {
@@ -572,6 +488,7 @@ final class CoreGate {
   }
 
   /// Closes what this engine has open: the database, or its use of the app's engine's, which stays open there.
+  @override
   Future<void> close() => _inTurn(_close);
 
   Future<void> _close() async {
@@ -589,6 +506,7 @@ final class CoreGate {
   /// database is taken first, here or by the app's engine, so no engine has it open while it goes: one that's locked
   /// is refused. One no key opens is deleted all the same, as nothing can read it. The core's lock file stays, empty,
   /// as the core's own destroy leaves it: an open racing this one takes the same lock.
+  @override
   Future<void> destroy(String userId) async {
     if (!_uuid.hasMatch(userId)) throw CoreError('bad_command', message: "a user's ID is a UUID", field: 'user_id');
     return _inTurn(() => _destroy(userId));

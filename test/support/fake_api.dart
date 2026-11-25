@@ -13,6 +13,8 @@ import 'dart:convert';
 import 'dart:math';
 import 'dart:typed_data';
 
+import 'package:crypto/crypto.dart';
+import 'package:duvet/e2e/cbor.dart';
 import 'package:duvet/e2e/uuid.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
@@ -93,53 +95,6 @@ const _bindLabel = 'duvet device bind v1';
 // -----------------------------------------------------------------------------------------------------------------
 // What the fake reads of what the core makes.
 
-/// One CBOR value, as the core writes them: definite lengths, text keys, no tags; null for anything else.
-Object? _cbor(Uint8List bytes) {
-  final r = _Reader(bytes);
-  int uint(int info) {
-    if (info < 24) return info;
-    if (info > 27) throw const FormatException('no definite length');
-    return r.uint(1 << (info - 24));
-  }
-
-  Object? item(int depth) {
-    if (depth > 32) throw const FormatException('nested too deep');
-    final head = r.uint(1);
-    final info = head & 31;
-    switch (head >> 5) {
-      case 0:
-        return uint(info);
-      case 1:
-        return -1 - uint(info);
-      case 2:
-        return Uint8List.fromList(r.take(uint(info)));
-      case 3:
-        return utf8.decode(r.take(uint(info)));
-      case 4:
-        return [for (var n = uint(info); n > 0; n--) item(depth + 1)];
-      case 5:
-        final map = <String, Object?>{};
-        for (var n = uint(info); n > 0; n--) {
-          final key = item(depth + 1);
-          if (key is! String || map.containsKey(key)) throw const FormatException('not a text key, or one twice');
-          map[key] = item(depth + 1);
-        }
-        return map;
-      case 7:
-        if (info == 20 || info == 21) return info == 21;
-        if (info == 22) return null;
-    }
-    throw const FormatException('not a value the core writes');
-  }
-
-  try {
-    final value = item(0);
-    return r.left == 0 ? value : null;
-  } on FormatException {
-    return null;
-  }
-}
-
 class _Reader {
   _Reader(this.bytes);
   final Uint8List bytes;
@@ -167,17 +122,6 @@ class _Reader {
   int get left => bytes.length - at;
 }
 
-Map<String, Object?>? _asMap(Object? value) => value is Map<String, Object?> ? value : null;
-Uint8List? _asBytes(Object? value, [int? length]) =>
-    value is Uint8List && (length == null || value.length == length) ? value : null;
-String? _asUuid(Object? value) {
-  final bytes = _asBytes(value, 16);
-  if (bytes == null) return null;
-  final hex = [for (final byte in bytes) byte.toRadixString(16).padLeft(2, '0')].join();
-  return '${hex.substring(0, 8)}-${hex.substring(8, 12)}-${hex.substring(12, 16)}-${hex.substring(16, 20)}-'
-      '${hex.substring(20)}';
-}
-
 bool _equal(List<int> a, List<int> b) {
   if (a.length != b.length) return false;
   for (var i = 0; i < a.length; i++) {
@@ -188,12 +132,12 @@ bool _equal(List<int> a, List<int> b) {
 
 /// A signed object's body, once its Ed25519 signature over label || 0x00 || body verifies with [key]; else null.
 Map<String, Object?>? _signedBody(String label, Uint8List signed, Uint8List key) {
-  final object = _asMap(_cbor(signed));
-  final body = _asBytes(object?['body']);
-  final sig = _asBytes(object?['sig'], 64);
+  final object = asMap(cbor(signed));
+  final body = asBytes(object?['body']);
+  final sig = asBytes(object?['sig'], 64);
   if (body == null || sig == null || key.length != 32) return null;
   if (!verifyEd25519(key, [...utf8.encode(label), 0, ...body], sig)) return null;
-  final fields = _asMap(_cbor(body));
+  final fields = asMap(cbor(body));
   return fields?['v'] == 1 ? fields : null;
 }
 
@@ -201,8 +145,8 @@ typedef _Certificate = ({String user, String device, Uint8List signatureKey, Uin
 
 _Certificate? _readCertificate(Uint8List signed, Uint8List identityKey) {
   final body = _signedBody(_certificateLabel, signed, identityKey);
-  final (user, device) = (_asUuid(body?['user']), _asUuid(body?['device']));
-  final (signatureKey, hpkeKey) = (_asBytes(body?['signature_key'], 32), _asBytes(body?['hpke_key'], 32));
+  final (user, device) = (asUuid(body?['user']), asUuid(body?['device']));
+  final (signatureKey, hpkeKey) = (asBytes(body?['signature_key'], 32), asBytes(body?['hpke_key'], 32));
   if (user == null || device == null || signatureKey == null || hpkeKey == null) return null;
   return (user: user, device: device, signatureKey: signatureKey, hpkeKey: hpkeKey);
 }
@@ -211,15 +155,15 @@ typedef _DeviceList = ({String user, int version, List<String> devices});
 
 _DeviceList? _readDeviceList(Uint8List signed, Uint8List identityKey) {
   final body = _signedBody(_listLabel, signed, identityKey);
-  final user = _asUuid(body?['user']);
-  final key = _asBytes(body?['identity_key'], 32);
+  final user = asUuid(body?['user']);
+  final key = asBytes(body?['identity_key'], 32);
   final version = body?['version'];
   final listed = body?['devices'];
   if (user == null || key == null || !_equal(key, identityKey) || version is! int || listed is! List) return null;
   // The devices are in order, each once.
   final devices = <String>[];
   for (final raw in listed) {
-    final device = _asUuid(raw);
+    final device = asUuid(raw);
     if (device == null || device.compareTo(devices.lastOrNull ?? '') <= 0) return null;
     devices.add(device);
   }
@@ -281,7 +225,7 @@ _Framing? _framing(Uint8List data) {
     final group = r.vector();
     if (group.length != 20) return null;
     final epoch = r.uint(8);
-    final conversation = _asUuid(Uint8List.fromList(group.sublist(0, 16)));
+    final conversation = asUuid(Uint8List.fromList(group.sublist(0, 16)));
     final generation = group.sublist(16).fold(0, (value, byte) => value * 256 + byte);
     return wire == _public
         ? framed(conversation: conversation, generation: generation, epoch: epoch, sender: r.uint(1))
@@ -314,6 +258,16 @@ String _uuidIn(Object? value, String field) {
 int _numberIn(Object? value, String field) {
   if (value is! int || value < 0) throw _fail(400, "$field isn't a number");
   return value;
+}
+
+// RFC 3339, as Go's time.Time reads one from JSON: a date, a time and its offset.
+final _rfc3339 = RegExp(r'^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?(Z|[+-]\d{2}:\d{2})$');
+
+/// A time as the API binds one (time.Time): RFC 3339 text, never a number; the instant it names, in UTC.
+DateTime _timeIn(Object? value, String field) {
+  final time = value is String && _rfc3339.hasMatch(value) ? DateTime.tryParse(value) : null;
+  if (time == null) throw _fail(400, "$field isn't an RFC 3339 time");
+  return time.toUtc();
 }
 
 /// A rotation's transfers, as the API binds them: an array of objects, each a device, its certificate and its message.
@@ -467,7 +421,7 @@ class _Share {
   final String toUser;
   final String kind;
   final String range;
-  final int startsAt;
+  final DateTime startsAt;
   final int size;
   final int parts;
   final uploaded = <int, String>{};
@@ -505,6 +459,7 @@ typedef _Route = ({String method, RegExp path, _Needs needs, _Answer Function(_C
 typedef _Outgoing = ({String user, String? device, GatewayEvent event});
 
 String _now() => DateTime.now().toUtc().toIso8601String();
+int _unixNow() => DateTime.now().millisecondsSinceEpoch ~/ 1000;
 _Answer _ok(Object? body, [int status = 200]) => _Answer(status, body: body);
 const _noContent = _Answer(204);
 
@@ -686,7 +641,7 @@ class FakeApi {
       Map<String, Object?>? body;
       if ((request.headers['content-type'] ?? '').contains('json') && request.bodyBytes.isNotEmpty) {
         try {
-          body = _asMap(jsonDecode(utf8.decode(request.bodyBytes)));
+          body = asMap(jsonDecode(utf8.decode(request.bodyBytes)));
         } on FormatException {
           throw _fail(400, "the body isn't JSON");
         }
@@ -897,7 +852,7 @@ class FakeApi {
         if (share == null || file == null || ![share.toUser, share.fromUser].contains(ctx.me.user)) {
           throw _fail(404, 'no such part');
         }
-        return _ok({'url': '$fakeApiUrl/files/$file'});
+        return _ok({'url': _signedPath(file)});
       }),
       route('POST', '/api/history-shares/(?<share>$_uuidPath)/ack', _Needs.device, (ctx) {
         final share = _shares[ctx.params['share']];
@@ -936,13 +891,20 @@ class FakeApi {
       route('GET', '$me/backup/segments/(?<segment>$_uuidPath)', _Needs.device, (ctx) {
         final segment = _segments[ctx.params['segment']];
         if (segment == null || segment.identity != _identities[ctx.me.user]?.id) throw _fail(404, 'no such segment');
-        return _ok({'url': '$fakeApiUrl/files/${segment.file}'});
+        return _ok({'url': _signedPath(segment.file)});
       }),
-      // A file at its signed URL, which the part's and the segment's routes answer: it takes no session.
-      route('GET', '/files/(?<file>$_uuidPath)', _Needs.nothing, (ctx) {
-        final file = _files[ctx.params['file']];
-        if (file == null) throw _fail(404, 'no such file');
-        return _Answer(200, body: file);
+      // A file at the signed path the part's and the segment's routes answer, as the API serves one: with its
+      // signature, before it expires, and with no session.
+      route('GET', '/attachments/(?<file>$_uuidPath)', _Needs.nothing, (ctx) {
+        final (sig, exp) = (ctx.query['sig'] ?? '', ctx.query['exp'] ?? '');
+        if (sig.isEmpty || exp.isEmpty) throw _fail(403, 'invalid or expired signature');
+        final until = int.tryParse(exp);
+        if (until == null) throw _fail(400, 'invalid expiry');
+        final file = ctx.params['file']!;
+        if (until < _unixNow() || sig != _signature(file, until)) throw _fail(403, 'invalid or expired signature');
+        final bytes = _files[file];
+        if (bytes == null) throw _fail(404, 'no such file');
+        return _Answer(200, body: bytes);
       }),
     ];
   }
@@ -953,9 +915,9 @@ class FakeApi {
   /// A bind proof's word that the session is this device's: its fields, once its device's key signed them.
   void _checkProof(_Session session, String deviceId, Uint8List signatureKey, Uint8List hpkeKey, Uint8List proof) {
     final body = _signedBody(_bindLabel, proof, signatureKey);
-    final challenge = _asBytes(body?['challenge'], 32);
-    final key = _asBytes(body?['hpke_key'], 32);
-    final fits = _asUuid(body?['user']) == session.user && _asUuid(body?['device']) == deviceId;
+    final challenge = asBytes(body?['challenge'], 32);
+    final key = asBytes(body?['hpke_key'], 32);
+    final fits = asUuid(body?['user']) == session.user && asUuid(body?['device']) == deviceId;
     if (!fits || challenge == null || !_equal(challenge, session.challenge) || key == null || !_equal(key, hpkeKey)) {
       throw _fail(403, "the proof doesn't verify");
     }
@@ -1588,9 +1550,9 @@ class FakeApi {
       final said = _signedBody(_leaveLabel, _bytesIn(ctx['statement'], 'statement', max: 1024), device.signatureKey);
       final epoch = said?['epoch'];
       final fits =
-          _asUuid(said?['user']) == session.user &&
-          _asUuid(said?['conversation']) == conv.id &&
-          _asUuid(said?['device']) == device.id &&
+          asUuid(said?['user']) == session.user &&
+          asUuid(said?['conversation']) == conv.id &&
+          asUuid(said?['device']) == device.id &&
           said?['generation'] == group.generation &&
           epoch is int &&
           epoch <= group.epoch;
@@ -1769,13 +1731,25 @@ class FakeApi {
     return id;
   }
 
+  // What signs the files' paths, the fake's own (the API's ATTACHMENT_SIGNING_KEY).
+  final _signingKey = _randomBytes(32);
+
+  String _signature(String file, int exp) => '${Hmac(sha256, _signingKey).convert(utf8.encode('$file:$exp'))}';
+
+  /// Where a file is downloaded from, as the API's routes answer it (storage.SignedAttachmentURL): a path on its own
+  /// host, signed for a day.
+  String _signedPath(String file) {
+    final exp = _unixNow() + 24 * 3600;
+    return '/attachments/$file?sig=${_signature(file, exp)}&exp=$exp';
+  }
+
   Map<String, Object?> _shareView(_Share share) => {
     'id': share.id,
     'conversation_id': share.conversationId,
     'from_user_id': share.fromUser,
     'kind': share.kind,
     'range': share.range,
-    'starts_at': share.startsAt,
+    'starts_at': share.startsAt.toIso8601String(),
     'size': share.size,
     'parts': share.parts,
   };
@@ -1797,7 +1771,7 @@ class FakeApi {
       to,
       kind! as String,
       '${ctx['range']}',
-      _numberIn(ctx['starts_at'], 'starts_at'),
+      _timeIn(ctx['starts_at'], 'starts_at'),
       _numberIn(ctx['size'], 'size'),
       parts,
     );
@@ -1847,12 +1821,12 @@ class FakeApi {
   _Answer _putSegment(_Context ctx) {
     final identity = _identities[ctx.me.user];
     if (identity == null) throw _fail(404, 'no identity');
-    final header = _asMap(_cbor(ctx.bytes));
-    final keyId = _asBytes(header?['key_id'], 8);
+    final header = asMap(cbor(ctx.bytes));
+    final keyId = asBytes(header?['key_id'], 8);
     final fits =
         header?['v'] == 1 &&
-        _asUuid(header!['user']) == ctx.me.user &&
-        _asUuid(header['conversation']) == ctx.params['conversation'] &&
+        asUuid(header!['user']) == ctx.me.user &&
+        asUuid(header['conversation']) == ctx.params['conversation'] &&
         header['day'] == ctx.params['day'] &&
         header['complete'] is bool;
     if (!fits || keyId == null) throw _fail(400, "the segment's header isn't this route's");

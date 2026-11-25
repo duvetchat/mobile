@@ -3,6 +3,7 @@ import 'package:duvet/data/appearance.dart';
 import 'package:duvet/data/emoji_catalog.dart';
 import 'package:duvet/data/models.dart';
 import 'package:duvet/deep_links.dart';
+import 'package:duvet/encryption/recovery_key.dart';
 import 'package:duvet/main.dart';
 import 'package:duvet/people.dart' show RoleChip;
 import 'package:duvet/theme.dart';
@@ -348,6 +349,26 @@ void main() {
       await tester.pumpAndSettle();
       await expectLater(find.byType(MaterialApp), matchesGoldenFile('goldens/role_chips_${b.name}.png'));
     });
+
+    // The first device's recovery key, before it's saved (PLAN-E2E-CLIENTES.md, Task 13).
+    testWidgets(
+      'recovery key, ${b.name}',
+      (tester) => withShadows(() async {
+        phone(tester);
+        await tester.pumpWidget(
+          themed(
+            b,
+            RecoveryKeyPage(
+              recoveryKey: 'abcdEFGHjkmnPQRS23456789ABCDEFGHJKLMNPQRSTUVWXYZ',
+              onSaved: () async {},
+              onLater: () async {},
+            ),
+          ),
+        );
+        await tester.pumpAndSettle();
+        await expectLater(find.byType(MaterialApp), matchesGoldenFile('goldens/recovery_key_${b.name}.png'));
+      }),
+    );
   }
 }
 
