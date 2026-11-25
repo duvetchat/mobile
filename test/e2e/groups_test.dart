@@ -1,6 +1,7 @@
 import 'dart:convert';
 
 import 'package:duvet/e2e/engine.dart';
+import 'package:duvet/e2e/uuid.dart';
 import 'package:duvet_client/duvet.dart' as duvet;
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
@@ -65,33 +66,6 @@ Future<List<TestDevice>> _blocked(FakeApi fake, String conversation, List<TestDe
     () => [a, b, c].every((d) => d.engine.conversationState(conversation)?.name == ConversationNotice.blocked),
   );
   return [a, b, c];
-}
-
-/// The owner's removal of a user, by hand (Task 23 does it in the app): its commit, posted, and taken.
-Future<duvet.CommitTaken> _removeByHand(TestDevice owner, String conversation, String user) async {
-  final held = (await groupOf(owner, conversation))!;
-  final made = await byHand(owner, {
-    'cmd': 'remove_members',
-    'conversation_id': conversation,
-    'users': [user],
-  });
-  final taken = await owner.api.removeMember(
-    conversation,
-    user,
-    duvet.Commit(
-      generation: held.generation,
-      epoch: held.epoch,
-      commit: made['commit']! as String,
-      groupInfo: made['group_info']! as String,
-    ),
-  );
-  await owner.host.handle<Object?>({
-    'cmd': 'commit_result',
-    'conversation_id': conversation,
-    'accepted': true,
-    'seq': taken.seq,
-  });
-  return taken;
 }
 
 void main() {
@@ -239,7 +213,7 @@ void main() {
       // Ana, its owner, takes Bo out, by hand (Task 23 does it in the app).
       await stoppedByHand(a);
       final before = seen.length;
-      await _removeByHand(a, conversation, bo);
+      await removeByHand(a, conversation, bo);
       // Bo's device applies its removal; Cy's goes on with Ana's.
       await until(() async => await groupOf(b, conversation) == null);
       await sameGroup([a, c], conversation);
@@ -261,6 +235,36 @@ void main() {
     timeout: _slow,
   );
 
+  // I4 of the desktop's task 16 review: a member removed and added back has a new membership, after the rows of their
+  // absence, which this device doesn't hold. Those give way to the notice, and the pages go on to what the device holds
+  // from before (Ruling 15 hides rows; it doesn't end the list): they end only where it holds nothing older.
+  test(
+    'a_member_removed_and_added_back_pages_on_to_the_history_the_device_holds',
+    () async {
+      final (:fake, ana: _, bo: _, :cy, :conversation, :devices) = await _group();
+      final [a, b, c] = devices;
+      final mine = (await c.engine.sendMessage(Outgoing(conversationId: conversation, nonce: uuidv4(), text: 'mine')))!;
+      final keyPackages = await a.api.claimKeyPackages(cy);
+      await stoppedByHand(a);
+      await removeByHand(a, conversation, cy);
+      await until(() async => await groupOf(c, conversation) == null);
+      final away = (await b.engine.sendMessage(Outgoing(conversationId: conversation, nonce: uuidv4(), text: 'away')))!;
+      await addByHand(a, conversation, cy, keyPackages);
+      await until(() async => await groupOf(c, conversation) != null);
+      expect(away.id.compareTo(fake.membershipOf(conversation, cy)), lessThan(0));
+      // The row of Cy's absence isn't on Cy's device, and Cy's own message from before is: the pages go on to it.
+      expect(await c.engine.messages(conversation, [away.id]), isEmpty);
+      expect(await c.engine.heldBefore(conversation, away.seq!), isTrue);
+      // Nothing older than it: there they end.
+      expect(await c.engine.heldBefore(conversation, mine.seq!), isFalse);
+      await a.host.close();
+      await b.engine.stop();
+      await c.engine.stop();
+    },
+    skip: noCore,
+    timeout: _slow,
+  );
+
   // I1 of the desktop's review, for an addition: a user removed and added back has a count in the queue, and the
   // welcome that brings them back follows the addition's commit there.
   test(
@@ -271,41 +275,14 @@ void main() {
       // Key packages of Cy's, claimed while they share the group: Ana can't claim them once Cy is out of hers.
       final keyPackages = await a.api.claimKeyPackages(cy);
       await stoppedByHand(a);
-      final removal = await _removeByHand(a, conversation, cy);
+      final removal = await removeByHand(a, conversation, cy);
       await until(() async => await groupOf(c, conversation) == null);
       await turnEnded(c);
 
       // Ana adds Cy back. Cy's device hears nothing of it while minutes pass, then the addition's commit, and its turn
       // ends; then the welcome.
       fake.holdEvents();
-      final held = (await groupOf(a, conversation))!;
-      final made = await byHand(a, {
-        'cmd': 'add_members',
-        'conversation_id': conversation,
-        'users': [
-          {
-            'user_id': cy,
-            'key_packages': [for (final kp in keyPackages) kp.data],
-          },
-        ],
-      });
-      final added = await a.api.addMember(
-        conversation,
-        cy,
-        duvet.Commit(
-          generation: held.generation,
-          epoch: held.epoch,
-          commit: made['commit']! as String,
-          groupInfo: made['group_info']! as String,
-          welcome: made['welcome'] as String?,
-        ),
-      );
-      await a.host.handle<Object?>({
-        'cmd': 'commit_result',
-        'conversation_id': conversation,
-        'accepted': true,
-        'seq': added.commit.seq,
-      });
+      await addByHand(a, conversation, cy, keyPackages);
       for (var minute = 0; minute < 3; minute++) {
         c.clock.advance(const Duration(minutes: 1));
         await turnEnded(c);

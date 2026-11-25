@@ -4,6 +4,7 @@ import 'dart:convert';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 
+import '../e2e/notices.dart';
 import 'call_notices.dart' show callDuration;
 import 'models.dart';
 
@@ -53,7 +54,9 @@ class RecentChat {
     'previewId': previewId,
     'previewAuthorId': previewAuthorId,
     'previewAuthor': previewAuthor,
-    'previewText': previewText,
+    // A conversation's preview is its text, which only the core keeps (PLAN-E2E-CLIENTES.md, its global constraints):
+    // it's shown, never kept.
+    if (target is RoomTarget) 'previewText': previewText,
   };
 
   static RecentChat? fromJson(Object? json) {
@@ -75,7 +78,9 @@ class RecentChat {
       previewId: json['previewId'] as String?,
       previewAuthorId: json['previewAuthorId'] as String?,
       previewAuthor: json['previewAuthor'] as String?,
-      previewText: json['previewText'] as String?,
+      // A version before this one kept a conversation's preview, its text in the clear: it's read no more, and the
+      // next write leaves it out.
+      previewText: target is RoomTarget ? json['previewText'] as String? : null,
     );
   }
 }
@@ -89,6 +94,7 @@ String previewOf(ChatMessage m, String Function(String content) readable) {
         : 'started a call. No one answered.';
   }
   if (m.isNotice) return 'pinned a message';
+  if (m.waiting) return Notice.waiting.text;
   if (m.stickerUrl != null) return 'Sticker';
   if (m.content.isNotEmpty) return readable(m.content).replaceAll('\n', ' ');
   if (m.attachments.isNotEmpty) {
@@ -245,6 +251,24 @@ class RecentChats {
           previewAuthorId: known.previewAuthorId,
           previewAuthor: known.previewAuthor,
           previewText: previewOf(m, _readable),
+        ),
+      );
+    }
+  }
+
+  /// The previewed message's text as this device's own database holds it (an encrypted conversation's): shown, never
+  /// kept ([RecentChat.toJson]).
+  void previewed(String chatId, String messageId, String text) {
+    if (_find(chatId) case final known? when known.previewId == messageId && known.previewText != text) {
+      _put(
+        RecentChat(
+          target: known.target,
+          title: known.title,
+          at: known.at,
+          previewId: known.previewId,
+          previewAuthorId: known.previewAuthorId,
+          previewAuthor: known.previewAuthor,
+          previewText: text,
         ),
       );
     }

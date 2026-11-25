@@ -186,10 +186,11 @@ void main() {
     // is, the next test's).
     expect(fetched('/api/users/@me/conversations/c-1/messages'), ['${ChatCache.pageSize}']);
     expect(await repository.cachedMessages(_dm), isNull);
-    // Its preview, here and in the Chats tab, where it shows from now on.
-    expect(repository.latest.value['c-1']?.content, 'second');
+    // Its preview, here and in the Chats tab, where it shows from now on: its newest message, whose text only this
+    // device's own database holds (none here), never the API's.
+    expect(repository.latest.value['c-1']?.content, '');
     expect(repository.recents.value.single.target, _dm);
-    expect(repository.recents.value.single.previewText, 'second');
+    expect(repository.recents.value.single.previewText, 'Sent a message');
   });
 
   test('a Space\'s busiest rooms get their pages, the rest their newest message', () async {

@@ -22,8 +22,16 @@ const keptApprovals = 'approvals';
 const keptTransfers = 'transfers';
 const keptLater = 'later';
 
+/// What goes in the clear with each message of the person's still being sent, by its nonce (send.dart): never its
+/// text, which the core keeps.
+const pendingSends = 'pending_sends';
+
+/// The person's edits and deletions not answered yet, in their order: each one's conversation, message and kind, never
+/// its text (send.dart), made again at the next start.
+const pendingChanges = 'pending_changes';
+
 /// What a new device of this installation starts without.
-const deviceRecord = [keptDevice, deviceKeys, keptApprovals, keptTransfers, keptLater];
+const deviceRecord = [keptDevice, deviceKeys, keptApprovals, keptTransfers, keptLater, pendingSends, pendingChanges];
 
 /// The API's external sender as this installation first saw it (Ruling 32), which a new device of it keeps.
 const externalSender = 'external_sender';

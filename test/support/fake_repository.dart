@@ -1648,6 +1648,55 @@ class FakeRepository implements ChatRepository {
     history[target.id]?.removeWhere((m) => m.id == messageId);
   }
 
+  /// What the device's database holds of a message now, by its ID, which [withContent] gives in its place.
+  final contents = <String, ChatMessage>{};
+
+  @override
+  Future<List<ChatMessage>> withContent(ChatTarget target, List<ChatMessage> messages) async => [
+    for (final m in messages)
+      if (!dropped.contains(m.id)) contents[m.id] ?? m,
+  ];
+
+  /// Messages a read of the device leaves out, as Ruling 15 drops rows from before the user joined.
+  final dropped = <String>{};
+
+  /// The nonces of the messages waiting on the device that the user sent again, and those they dismissed.
+  final resent = <String>[];
+  final discarded = <String>[];
+
+  @override
+  Future<ChatMessage> resend(ChatTarget target, String nonce) async {
+    resent.add(nonce);
+    if (failSends) throw Exception('offline');
+    final waiting = history[target.id]?.where((m) => m.nonce == nonce).firstOrNull;
+    return ChatMessage(
+      id: 'sent-$nonce',
+      authorId: me.id,
+      authorName: me.displayName,
+      content: waiting?.content ?? '',
+      createdAt: DateTime(2026, 10, 23, 9, 30),
+      nonce: nonce,
+    );
+  }
+
+  @override
+  Future<void> discard(ChatTarget target, String nonce) async => discarded.add(nonce);
+
+  /// What [changesRefused] tells, as a test hands it.
+  final changeRefusals = StreamController<ChangeRefused>.broadcast();
+
+  @override
+  Stream<ChangeRefused> get changesRefused => changeRefusals.stream;
+
+  @override
+  bool olderBeyond(ChatTarget target, String oldestId) => false;
+
+  /// What each chat's start says, by chat ID.
+  final chatStarts = <String, ChatStart>{};
+
+  @override
+  ChatStart chatStart(ChatTarget target) => chatStarts[target.id] ?? quietStart;
+
   @override
   Future<void> react(ChatTarget target, String messageId, String emoji, {required bool add, String? emojiId}) async {
     reactions.add((messageId, emoji, add));

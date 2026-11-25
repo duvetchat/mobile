@@ -478,6 +478,30 @@ abstract interface class ChatRepository {
   /// Joins the Space an invite leads to; answers its ID.
   Future<String> joinInvite(String code);
 
+  /// [messages] of the chat with what this device's own database holds of each now ([ChatMessage.heldAs]): an
+  /// encrypted conversation's text, edits, waiting rows and quotes (PLAN-E2E-CLIENTES.md, «La vista de una
+  /// conversación»), read again on [ContentChanged]; a room's as they are. Those it can't read now stay as they are.
+  Future<List<ChatMessage>> withContent(ChatTarget target, List<ChatMessage> messages);
+
+  /// Sends again the user's message [nonce] that waits on this device ([ChatMessage.pending]), with what the device
+  /// kept of it: the message as sent.
+  Future<ChatMessage> resend(ChatTarget target, String nonce);
+
+  /// Drops the user's message [nonce] that wasn't sent: it waits on this device no more.
+  Future<void> discard(ChatTarget target, String nonce);
+
+  /// What the chat's start says: [quietStart] for a room.
+  ChatStart chatStart(ChatTarget target);
+
+  /// Whether [target] has messages older than [oldestId], its oldest shown, though its last page came back short: a
+  /// conversation's, whose rows from before the user joined gave way while this device holds older ones, and which
+  /// reads a few of the API's pages at a time (M7 of task 17's review).
+  bool olderBeyond(ChatTarget target, String oldestId);
+
+  /// Each edit or deletion of the user's in an encrypted conversation that the server refused for good: shown done on
+  /// this device, it never reached the others, which the app says wherever the person is.
+  Stream<ChangeRefused> get changesRefused;
+
   /// Replaces the text of the user's own message.
   Future<ChatMessage> edit(ChatTarget target, String messageId, String content);
 

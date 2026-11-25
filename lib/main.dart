@@ -31,6 +31,7 @@ import 'calls.dart';
 import 'deep_links.dart';
 // The core's gate needs dart:io and isolates, which the web build lacks.
 import 'e2e/app_host_web.dart' if (dart.library.io) 'e2e/app_host.dart';
+import 'encryption/change_refusals.dart';
 import 'mention_notices.dart';
 import 'push/background.dart';
 import 'push/notifications.dart';
@@ -438,12 +439,16 @@ class _DuvetAppState extends State<DuvetApp> {
                   child: ShellScope(
                     shell: _shell,
                     child: FToaster(
-                      child: Stack(
-                        children: [
-                          child!,
-                          // Over every screen, the chats opened from Chats and Spaces too.
-                          MentionNotices(navigator: _navigator),
-                        ],
+                      // An encrypted conversation's change the server refused, told over every screen.
+                      child: ChangeRefusals(
+                        refusals: widget.repository.changesRefused,
+                        child: Stack(
+                          children: [
+                            child!,
+                            // Over every screen, the chats opened from Chats and Spaces too.
+                            MentionNotices(navigator: _navigator),
+                          ],
+                        ),
                       ),
                     ),
                   ),

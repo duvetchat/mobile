@@ -219,8 +219,13 @@ const _finalRules = {'member_list_mismatch', 'external_sender_mismatch', 'group_
 
 int? _statusOf(Object error) => error is duvet.DuvetApiException ? error.statusCode : null;
 
+/// The entries that are a conversation's messages, and what an apply did to one that changes what it shows.
+const _messageKinds = {'message', 'edit', 'delete'};
+const _shownChanges = {'applied', 'own', 'undecryptable'};
+
 class Conversations {
-  Conversations(this._engine, this._soon, this._failures, this._changed) : _legacy = LegacyRecords(_engine.store);
+  Conversations(this._engine, this._soon, this._failures, this._changed, this._messages)
+    : _legacy = LegacyRecords(_engine.store);
 
   final E2EEngine _engine;
 
@@ -228,6 +233,9 @@ class Conversations {
   final void Function(Future<void> Function() work) _soon;
   final Failures _failures;
   final void Function(String conversationId, ConversationState? state) _changed;
+
+  /// A conversation's messages changed on this device: an apply opened, kept or took some.
+  final void Function(String conversationId) _messages;
   final LegacyRecords _legacy;
 
   CoreHost get _host => _engine.host;
@@ -251,6 +259,16 @@ class Conversations {
   /// Commits whose bytes went with the app, or that the API refused but for the validator: the queue settles them, or
   /// they're said to be refused (Ruling 25).
   final _settling = <String>{};
+
+  /// How far the core applied each conversation's queue, as its last apply this run said: null out of its group, and
+  /// no entry before its first apply. A row past it isn't applied yet, and draws as loading (M2 of the desktop's task
+  /// 16 review; M1 of task 17's).
+  final _through = <String, int?>{};
+
+  /// How far this device applied the conversation's queue this run: none before its first apply, `through` null while
+  /// this device is out of its group.
+  ({int? through})? applied(String conversationId) =>
+      _through.containsKey(conversationId) ? (through: _through[conversationId]) : null;
 
   /// Due commits' waits, and failed turns' retries, by conversation.
   final _due = <String, void Function()>{};
@@ -334,18 +352,60 @@ class Conversations {
     final carried = _carried(event);
     if (carried == null) return;
     final (:conversation, :entry, :generation) = carried;
-    final seq = entry['seq']! as int;
-    (_heard[conversation] ??= {})[seq] = entry;
-    if (_known[conversation]?.group case final group?) {
-      group.lastSeq = max(group.lastSeq, seq);
-      group.generation = max(group.generation, generation ?? 0);
-    }
+    _hear(conversation, entry, generation);
     if (!_turns.add(conversation)) return;
     _soon(() async {
       await Future<void>.delayed(Duration.zero);
       _turns.remove(conversation);
       await sync(conversation);
     });
+  }
+
+  /// Entries an answer gave (an edit's, a deletion's): applied now, in this turn, as heard ones are.
+  Future<void> take(String conversationId, List<Map<String, Object?>> entries) async {
+    for (final entry in entries) {
+      _hear(conversationId, entry, null);
+    }
+    await sync(conversationId);
+  }
+
+  /// An entry kept by its number until the conversation's turn, and the queue's end it says.
+  void _hear(String conversation, Map<String, Object?> entry, int? generation) {
+    final seq = entry['seq']! as int;
+    (_heard[conversation] ??= {})[seq] = entry;
+    if (_known[conversation]?.group case final group?) {
+      group.lastSeq = max(group.lastSeq, seq);
+      group.generation = max(group.generation, generation ?? 0);
+    }
+  }
+
+  /// Before this device sends there (PLAN-E2E-CLIENTES.md, «Enviar»): the conversation's group as it is now, its queue
+  /// applied, joined or made where it has none. Without it, or blocked, nothing can be sent: the conversation says why.
+  Future<void> current(String conversationId) async {
+    await open(conversationId);
+    final held = await _group(conversationId);
+    if (held == null || held.blocked) throw StateError("this device can't send in this conversation now");
+  }
+
+  /// A commit of this device's waits for its word (encrypt's `pending_commit`): the request of one in flight goes
+  /// again, which the API answers as it did; one whose bytes went with the app is told no answer came, and the queue
+  /// settles it, or, read whole a minute past the start, it's said to be refused («Un commit sin respuesta»).
+  Future<void> settleCommit(String conversationId) async {
+    if (_inFlight.containsKey(conversationId)) return _resend(conversationId);
+    final answered = await _host.handle<Map<String, Object?>>({
+      'cmd': 'commit_result',
+      'conversation_id': conversationId,
+      'accepted': false,
+    });
+    if (answered['epoch'] != null) _settling.add(conversationId);
+    await sync(conversationId, read: true);
+  }
+
+  /// The proposals and leaves off their lists that keep this device from sending (encrypt's pending_proposals),
+  /// committed.
+  Future<void> commitDue(String conversationId) async {
+    final conv = _known[conversationId] ?? await _fresh(conversationId);
+    if (conv != null && !_inFlight.containsKey(conversationId)) await _own(conv, 'commit_pending', _Purpose.due);
   }
 
   /// At the start and at each READY: the API's conversations, each one's record made the first time it's seen, the
@@ -591,6 +651,13 @@ class Conversations {
         if (entry['deleted'] == true) entry['seq']! as int,
     };
     failedKinds(results, deleted).forEach(_failures.note);
+    final through = applied['applied_through'] as int?;
+    final moved = !_through.containsKey(conv.id) || _through[conv.id] != through;
+    _through[conv.id] = through;
+    // What a chat shows of the conversation is read again: a message changed, or its rows past the queue applied.
+    if (moved || results.any((r) => _messageKinds.contains(r.kind) && _shownChanges.contains(r.result))) {
+      _messages(conv.id);
+    }
     for (final (:kind, :result, :rule, seq: _, epoch: _, reason: _) in results) {
       final refused = kind == 'welcome' && result == 'rejected';
       if (refused && rule == 'external_sender_mismatch') _otherSender.add(conv.id);

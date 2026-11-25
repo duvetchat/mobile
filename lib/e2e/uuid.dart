@@ -10,7 +10,15 @@ String uuidv7([int? now]) {
   for (var i = 5, ms = now ?? DateTime.now().millisecondsSinceEpoch; i >= 0; i--, ms ~/= 256) {
     bytes[i] = ms % 256;
   }
-  bytes[6] = (bytes[6] & 0x0f) | 0x70;
+  return _text(bytes, 0x70);
+}
+
+/// A UUIDv4 (RFC 9562), all its bits random but its version's and variant's: a message's nonce, which says nothing of
+/// when it was made (PLAN-E2E-CLIENTES.md, its conventions between clients).
+String uuidv4() => _text(List.generate(16, (_) => _random.nextInt(256)), 0x40);
+
+String _text(List<int> bytes, int version) {
+  bytes[6] = (bytes[6] & 0x0f) | version;
   bytes[8] = (bytes[8] & 0x3f) | 0x80;
   final hex = [for (final byte in bytes) byte.toRadixString(16).padLeft(2, '0')].join();
   return '${hex.substring(0, 8)}-${hex.substring(8, 12)}-${hex.substring(12, 16)}-${hex.substring(16, 20)}-'

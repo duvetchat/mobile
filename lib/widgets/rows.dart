@@ -747,6 +747,9 @@ String dayLabel(DateTime day, [DateTime? now]) {
   return '${_weekdays[day.weekday - 1]}, $date';
 }
 
+/// A day in full, with its year: "1 December 2026".
+String fullDate(DateTime day) => '${day.day} ${_months[day.month - 1]} ${day.year}';
+
 /// A quiet line for a list's state: loading, empty.
 class ListNote extends StatelessWidget {
   final String text;

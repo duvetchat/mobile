@@ -26,6 +26,9 @@ import 'data/models.dart';
 import 'data/repository.dart';
 import 'data/scope.dart';
 import 'data/voice.dart' show VoiceController;
+import 'e2e/notices.dart';
+import 'e2e/uuid.dart';
+import 'encryption/conversation_start.dart';
 import 'encryption/conversation_state.dart';
 import 'members_sheet.dart';
 import 'people.dart';
@@ -426,6 +429,14 @@ class _ChatViewState extends State<ChatView> with SingleTickerProviderStateMixin
     );
   }
 
+  /// What an encrypted conversation's start says (PLAN-E2E-CLIENTES.md, «La vista de una conversación»): null when it
+  /// says nothing, a room's always.
+  Widget? get _start {
+    final start = _repository.chatStart(widget.target);
+    if (!(start.legacy && start.cutoverAt != null) && !start.beforeJoining) return null;
+    return ConversationStart(legacy: start.legacy, cutoverAt: start.cutoverAt, beforeJoining: start.beforeJoining);
+  }
+
   /// The chat's Space; none in a DM or a group.
   String? get _spaceId => switch (widget.target) {
     RoomTarget(:final spaceId) => spaceId,
@@ -488,8 +499,12 @@ class _ChatViewState extends State<ChatView> with SingleTickerProviderStateMixin
           if (!shown.contains(m.id)) m,
       ];
       setState(() {
-        _entries = [for (final m in _byTime(page, ephemeral)) (message: m, delivery: _Delivery.sent), ...pushed];
-        _hasOlder = thread == null && page.length >= _pageSize;
+        _entries = [
+          for (final m in _byTime(page, ephemeral))
+            (message: m, delivery: m.pending ? _Delivery.failed : _Delivery.sent),
+          ...pushed,
+        ];
+        _hasOlder = thread == null && (page.length >= _pageSize || _olderBeyond(page));
         _loading = false;
         _kept = null;
         // shortcut: this page's only, an unread mention further back doesn't
@@ -600,6 +615,10 @@ class _ChatViewState extends State<ChatView> with SingleTickerProviderStateMixin
 
   Future<void> _loadOlder() => _olderPage ??= _fetchOlder().whenComplete(() => _olderPage = null);
 
+  /// A short page with more behind it: a conversation's, whose rows from before the user joined gave way, read a few of
+  /// the API's pages at a time (M7 of task 17's review).
+  bool _olderBeyond(List<ChatMessage> page) => page.isNotEmpty && _repository.olderBeyond(widget.target, page.first.id);
+
   Future<void> _fetchOlder() async {
     final oldest = _history.firstOrNull;
     if (_loadingOlder || !_hasOlder || oldest == null) return;
@@ -614,7 +633,7 @@ class _ChatViewState extends State<ChatView> with SingleTickerProviderStateMixin
             if (!known.contains(m.id)) (message: m, delivery: _Delivery.sent),
           ..._entries,
         ];
-        _hasOlder = page.length >= _pageSize;
+        _hasOlder = page.length >= _pageSize || _olderBeyond(page);
       });
     } catch (_) {
       // Scrolling up again retries.
@@ -702,6 +721,10 @@ class _ChatViewState extends State<ChatView> with SingleTickerProviderStateMixin
   };
 
   void _onEvent(MessageEvent event) {
+    if (event is ContentChanged) {
+      if (widget.target is ConversationTarget) unawaited(_readAgain());
+      return;
+    }
     if (event case ReactionChanged(:final messageId) when !_entries.any((e) => e.message.id == messageId)) return;
     // A profile change that shows nothing new on the messages here.
     if (event is AuthorChanged && _entries.every((e) => identical(e.message.changedBy(event), e.message))) return;
@@ -764,6 +787,8 @@ class _ChatViewState extends State<ChatView> with SingleTickerProviderStateMixin
             final changed = m.changedBy(event);
             if (!identical(changed, m)) _entries[i] = (message: changed, delivery: _entries[i].delivery);
           }
+        case ContentChanged():
+          break;
         // A file's new link, once its old one expired.
         case AttachmentRenewed(:final attachmentId, :final url):
           for (var i = 0; i < _entries.length; i++) {
@@ -790,6 +815,38 @@ class _ChatViewState extends State<ChatView> with SingleTickerProviderStateMixin
     if (_atBottom) _showDividerOnReturn = true;
   }
 
+  /// What this device's own database holds of the messages shown changed (an encrypted conversation's): each takes
+  /// what it holds of it now, as it is when the answer comes ([ChatMessage.heldAs]).
+  Future<void> _readAgain() async {
+    final shown = [..._entries];
+    final List<ChatMessage> held;
+    try {
+      held = await _repository.withContent(widget.target, [for (final e in shown) e.message]);
+    } catch (e) {
+      debugPrint('read again: $e');
+      return;
+    }
+    if (!mounted) return;
+    final byId = {for (final m in held) m.id: m};
+    final read = {for (final e in shown) e.message.id};
+    var dropped = false;
+    setState(() {
+      // A row the reading dropped goes: one from before the user joined that the device doesn't hold (Ruling 15).
+      final count = _entries.length;
+      _entries.removeWhere((e) => read.contains(e.message.id) && !byId.containsKey(e.message.id));
+      dropped = _entries.length < count;
+      for (var i = 0; i < _entries.length; i++) {
+        final (:message, :delivery) = _entries[i];
+        if (byId[message.id] case final now? when !identical(now, message)) {
+          _entries[i] = (message: message.heldAs(now), delivery: delivery);
+        }
+      }
+    });
+    // Every row of a page read before the device could be read gave way: the page is read again, which reads on past
+    // them to what the device holds (N5 of task 17's re-review).
+    if (dropped && _history.isEmpty) unawaited(_load());
+  }
+
   /// An edit, or a link preview that came late, merged into the message (see
   /// [ChatMessage.updatedBy]); the replies quoting it follow its text, as on
   /// the desktop.
@@ -798,7 +855,7 @@ class _ChatViewState extends State<ChatView> with SingleTickerProviderStateMixin
       final m = _entries[i].message;
       if (m.id == update.id) {
         _entries[i] = (message: m.updatedBy(update), delivery: _Delivery.sent);
-      } else if (m.reply case final reply? when reply.messageId == update.id) {
+      } else if (m.reply case final reply? when reply.messageId == update.id && !update.encrypted) {
         _entries[i] = (message: m.copyWith(reply: reply.withContent(update.content)), delivery: _entries[i].delivery);
       }
     }
@@ -810,7 +867,10 @@ class _ChatViewState extends State<ChatView> with SingleTickerProviderStateMixin
     final i = _entries.indexWhere(
       (e) => e.message.id == message.id || (message.nonce != null && e.message.nonce == message.nonce),
     );
-    final entry = (message: message, delivery: _Delivery.sent);
+    // An encrypted message's copy that brings no text (the API's) keeps what the chat shows of it: the device's text,
+    // or the person's own as typed, until a read gives the device's (I4 of task 17's review).
+    final keeps = i >= 0 && message.encrypted && message.content.isEmpty && _entries[i].message.content.isNotEmpty;
+    final entry = (message: keeps ? message.heldAs(_entries[i].message) : message, delivery: _Delivery.sent);
     if (i >= 0) {
       _entries[i] = entry;
       if (message.nonce != null) _outgoing.remove(message.nonce);
@@ -865,7 +925,10 @@ class _ChatViewState extends State<ChatView> with SingleTickerProviderStateMixin
     _repository.sendTyping(widget.target);
   }
 
-  String _nonce() => '${DateTime.now().microsecondsSinceEpoch}${_random.nextInt(1 << 20)}';
+  // A conversation's is a UUIDv4, as the conventions between clients have it (PLAN-E2E-CLIENTES.md).
+  String _nonce() => widget.target is ConversationTarget
+      ? uuidv4()
+      : '${DateTime.now().microsecondsSinceEpoch}${_random.nextInt(1 << 20)}';
 
   // ---------------------------------------------------------------------------
   // Sending
@@ -1102,6 +1165,10 @@ class _ChatViewState extends State<ChatView> with SingleTickerProviderStateMixin
 
   void _retry(_Entry entry) {
     final nonce = entry.message.nonce;
+    if (nonce != null && !_outgoing.containsKey(nonce) && entry.message.pending) {
+      unawaited(_resend(entry, nonce));
+      return;
+    }
     if (nonce == null || !_outgoing.containsKey(nonce)) return;
     setState(() {
       final i = _entries.indexOf(entry);
@@ -1110,12 +1177,46 @@ class _ChatViewState extends State<ChatView> with SingleTickerProviderStateMixin
     _deliver(nonce);
   }
 
-  /// Drops a message that failed to send, and what it carried.
+  /// The user's message this device kept from before the app started again, sent again as the device keeps it.
+  Future<void> _resend(_Entry entry, String nonce) async {
+    setState(() {
+      final i = _entries.indexOf(entry);
+      if (i >= 0) _entries[i] = (message: entry.message, delivery: _Delivery.sending);
+    });
+    // The row retried, by its own ID: a copy of the message a page or the gateway brought has its nonce too.
+    final retried = entry.message.id;
+    try {
+      final sent = await _repository.resend(widget.target, nonce);
+      if (!mounted) return;
+      setState(() {
+        // It takes the message, and any other row of it goes (N1 of task 17's re-review). One a copy replaced
+        // meanwhile is that copy already.
+        final i = _entries.indexWhere((e) => e.message.id == retried);
+        if (i < 0) return;
+        final kept = (message: sent, delivery: _Delivery.sent);
+        _entries[i] = kept;
+        _entries.removeWhere((e) => e.message.id == sent.id && !identical(e, kept));
+      });
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        final i = _entries.indexWhere((e) => e.message.id == retried);
+        if (i >= 0) _entries[i] = (message: _entries[i].message, delivery: _Delivery.failed);
+      });
+      _announce('Message not sent');
+      if (e is ActionFailed) _toast(e.message);
+    }
+  }
+
+  /// Drops a message that failed to send, and what it carried: a conversation's waits on this device no more.
   void _discard(_Entry entry) {
     setState(() {
       _entries.remove(entry);
       _outgoing.remove(entry.message.nonce);
     });
+    if (entry.message.nonce case final nonce? when widget.target is ConversationTarget) {
+      unawaited(_repository.discard(widget.target, nonce).catchError((Object e) => debugPrint('discard: $e')));
+    }
     _announce('Message deleted');
   }
 
@@ -2857,7 +2958,8 @@ class _ChatViewState extends State<ChatView> with SingleTickerProviderStateMixin
     if (_entries.isEmpty) {
       // A new DM: the ghost tucked in, and a first line to start with.
       if (widget.target is ConversationTarget && widget.threadOf == null) {
-        return EmptyState(
+        final start = _start;
+        final empty = EmptyState(
           mascot: MascotState.underDuvet,
           text: 'Just you and ${widget.title}',
           action: Wrap(
@@ -2870,6 +2972,15 @@ class _ChatViewState extends State<ChatView> with SingleTickerProviderStateMixin
             ],
           ),
         );
+        return start == null
+            ? empty
+            : Column(
+                children: [
+                  SizedBox(height: _topHeight == 0 ? GlassTopBar.heightOf(context) : _topHeight),
+                  start,
+                  Expanded(child: empty),
+                ],
+              );
       }
       return const EmptyState(mascot: MascotState.empty, text: 'No messages yet. Say hi!');
     }
@@ -2904,6 +3015,7 @@ class _ChatViewState extends State<ChatView> with SingleTickerProviderStateMixin
               );
             }
             return switch (items[items.length - 1 - index]) {
+              _Start() => _start ?? const SizedBox.shrink(),
               _Day(:final day) => _DaySeparator(day: day),
               _NewMessages(:final count) => _NewMessagesDivider(
                 key: _dividerKey,
@@ -2968,7 +3080,8 @@ class _ChatViewState extends State<ChatView> with SingleTickerProviderStateMixin
   /// names them by their Space nickname, which live messages may not know.
   /// In [flat] rows a reply starts a run too (see [_sameRun]).
   List<_Item> _items({required bool flat}) {
-    final items = <_Item>[];
+    // Over the oldest message, once no older page is left: what an encrypted conversation's start says.
+    final items = <_Item>[if (!_hasOlder && widget.threadOf == null && _start != null) const _Start()];
     for (var i = 0; i < _entries.length; i++) {
       final m = _entries[i].message;
       final previous = i > 0 ? _entries[i - 1].message : null;
@@ -3038,6 +3151,11 @@ class _Vanish extends StatelessWidget {
 
 sealed class _Item {
   const _Item();
+}
+
+/// The chat's start, over its oldest message: what an encrypted conversation says there ([ConversationStart]).
+class _Start extends _Item {
+  const _Start();
 }
 
 class _Day extends _Item {

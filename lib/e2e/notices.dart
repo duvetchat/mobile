@@ -35,7 +35,13 @@ enum Notice {
   backupPaused('Your encrypted backup is paused: your storage is full.'),
   deviceAdded('A new device was added to your account: {name}.'),
   deleteDevice('Remove this device and delete its data'),
-  tooLong('Message too long');
+  tooLong('Message too long'),
+  editRefused("Your edit couldn't be saved for everyone."),
+  deleteRefused("Your message couldn't be deleted for everyone."),
+  loadingMessage('Loading message'),
+  filesWait("Files and voice messages can't be sent in encrypted conversations yet"),
+  notReady("Encrypted conversations aren't ready on this device"),
+  tooManyWaiting('Too many messages wait to be sent here: send or dismiss them first');
 
   const Notice(this.text);
 
