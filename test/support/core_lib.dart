@@ -15,5 +15,6 @@ final String? coreLibrary =
 /// Why a test that needs the core is skipped here, or null when it runs.
 final String? noCore = coreLibrary == null ? 'no core for this host: DUVET_E2E_LIB names one' : null;
 
-/// Loads the core in this isolate, once: an isolate that opens a database loads it for itself.
-Future<void> loadCore() => DuvetE2e.init(library: ExternalLibrary.open(coreLibrary!));
+/// Loads the core in this isolate, once, however many tests ask: an isolate that opens a database loads it for itself.
+Future<void> loadCore() => _loaded ??= DuvetE2e.init(library: ExternalLibrary.open(coreLibrary!));
+Future<void>? _loaded;

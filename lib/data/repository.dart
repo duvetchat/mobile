@@ -2,6 +2,7 @@ import 'package:duvet_client/duvet.dart' show Activity;
 import 'package:flutter/foundation.dart';
 
 import '../e2e/engine.dart' show EngineState;
+import '../e2e/sync.dart' show ConversationState;
 import 'models.dart';
 import 'recent_chats.dart';
 import 'voice_signaling.dart';
@@ -79,6 +80,16 @@ abstract interface class ChatRepository {
   Future<void> keySaved();
   Future<void> uploadLater();
   Future<void> startOver();
+
+  /// What each encrypted conversation says over its message box of its group (lib/e2e/sync.dart), by its ID: none
+  /// while its group goes on. A conversation on screen ([chatShown]) gets its group, made where this user may.
+  ValueListenable<Map<String, ConversationState>> get conversationStates;
+
+  /// The person's taps on it: Restart encryption, over a blocked group they may restart, and Open with these members,
+  /// over a conversation whose members aren't those this device first saw. Each does nothing in another state.
+  Future<void> restartGroup(String conversationId);
+
+  Future<void> acceptMembers(String conversationId);
 
   Future<void> logIn(String email, String password);
 

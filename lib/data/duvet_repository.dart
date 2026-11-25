@@ -976,6 +976,18 @@ class DuvetRepository implements ChatRepository {
   @override
   Future<void> startOver() => _engine?.startOver() ?? Future.value();
 
+  @override
+  final ValueNotifier<Map<String, ConversationState>> conversationStates = ValueNotifier(const {});
+
+  @override
+  Future<void> restartGroup(String conversationId) => _engine?.restartGroup(conversationId) ?? Future.value();
+
+  @override
+  Future<void> acceptMembers(String conversationId) => _engine?.acceptMembers(conversationId) ?? Future.value();
+
+  /// The conversation on screen, whose group the engine opens: at once, or once it's made and ready.
+  String? _conversationOnScreen;
+
   // The user's record, and the device it kept, which the gateway's identify names; then the engine, once on a screen.
   Future<void> _prepareEncryption(String userId) async {
     if (_encryptionHost == null || _encryptionFor?.user == userId) return;
@@ -1017,7 +1029,9 @@ class DuvetRepository implements ChatRepository {
         loginChallenge: challenge,
       );
       engine.state.addListener(_showEncryption);
+      engine.conversations.addListener(_showConversations);
       unawaited(engine.start());
+      if (_conversationOnScreen case final id?) unawaited(engine.openConversation(id).catchError(_groupFailed));
     } finally {
       _engineComing = false;
     }
@@ -1027,6 +1041,12 @@ class DuvetRepository implements ChatRepository {
     if (_engine case final engine?) encryption.value = engine.state.value;
   }
 
+  void _showConversations() {
+    if (_engine case final engine?) conversationStates.value = engine.conversations.value;
+  }
+
+  void _groupFailed(Object error) => debugPrint("e2e: the conversation's group didn't open: $error");
+
   // The session ended: its engine closes the core, whose database stays (decision 13).
   void _stopEncryption() {
     final engine = _engine;
@@ -1035,8 +1055,10 @@ class DuvetRepository implements ChatRepository {
     _loginChallenge = null;
     _identifyDevice = null;
     encryption.value = EngineState.starting;
+    conversationStates.value = const {};
     if (engine == null) return;
     engine.state.removeListener(_showEncryption);
+    engine.conversations.removeListener(_showConversations);
     _engineStopped = engine.stop().catchError((Object error) => debugPrint("e2e: the engine's stop: $error"));
   }
 
@@ -1787,6 +1809,11 @@ class DuvetRepository implements ChatRepository {
   @override
   void chatShown(ChatTarget target, {String? threadOf, bool opened = true}) {
     _onScreen = (chatId: target.id, threadOf: threadOf);
+    // A conversation's group goes on as it shows, or is made here where it has none and this user may.
+    if (target case ConversationTarget(:final conversationId)) {
+      _conversationOnScreen = conversationId;
+      unawaited(_engine?.openConversation(conversationId).catchError(_groupFailed));
+    }
     // Its phone notification tells of nothing the chat doesn't show.
     if (threadOf == null) {
       unawaited(_forgetNotifications?.call(target.id).catchError((Object e) => debugPrint('push: $e')));
@@ -1801,7 +1828,13 @@ class DuvetRepository implements ChatRepository {
 
   @override
   void chatHidden(ChatTarget target, {String? threadOf}) {
-    if (_onScreen == (chatId: target.id, threadOf: threadOf)) _onScreen = null;
+    // Another view on screen by now (a thread over its chat, whose own hide comes after) keeps what it showed.
+    if (_onScreen != (chatId: target.id, threadOf: threadOf)) return;
+    _onScreen = null;
+    if (target case ConversationTarget(:final conversationId) when _conversationOnScreen == conversationId) {
+      _conversationOnScreen = null;
+      _engine?.closeConversation(conversationId);
+    }
   }
 
   // [messageId] mentions the user in [target]: its notice shows once the
@@ -5127,6 +5160,7 @@ class DuvetRepository implements ChatRepository {
     _closeSession();
     unawaited(_gatewayEvents.close());
     encryption.dispose();
+    conversationStates.dispose();
     _voiceSignaling.dispose();
     _signedOut.close();
     _resumed.close();

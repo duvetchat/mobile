@@ -1220,5 +1220,51 @@ void main() {
       });
       expect(refused, refusedWith(403, {'error': "this device isn't in the group"}));
     });
+
+    test('the queue binds its numbers as the API does, and a read from before its floor is a 410', () async {
+      final (:fake, ana: _, bo: _, a: _, :b, :conversation) = await dmWithGroup();
+      Future<Reply> queue(String query) => call(fake, b.token, 'GET', '$conversations/$conversation/mls/queue$query');
+      for (final query in ['?after=x', '?after=-1', '?after=1.5', '?limit=0', '?limit=501']) {
+        expect((query, (await queue(query)).status), (query, 400));
+      }
+      expect((await queue('?after=0&limit=1')).body['entries'], hasLength(1));
+      fake.expireQueue(conversation, 3);
+      expect(await queue('?after=1'), refusedWith(410, {'error': 'queue expired', 'floor_seq': 3}));
+      expect((await queue('?after=2')).body, has({'floor_seq': 3}));
+      final listed = (await call(fake, b.token, 'GET', conversations)).body as List;
+      expect(listed.single['mls'], has({'floor_seq': 3}));
+    });
+
+    test('a cut request never reaches the API, and gathered requests wait for each other', () async {
+      final fake = FakeApi();
+      final ana = fake.addUser();
+      final a = await device(fake, ana);
+      // READY says nothing of conversations, as the gateway's doesn't.
+      expect(a.heard.first.type, 'READY');
+      expect(a.heard.first.data, {
+        'user': {'id': ana},
+      });
+      final made = await a.run({'cmd': 'create_identity'});
+      fake.cutRequest((method: 'PUT', path: '/api/users/@me/identity'));
+      await expectLater(
+        call(fake, a.token, 'PUT', '/api/users/@me/identity', {
+          for (final field in identityFields) field: made[field],
+          'replaces': null,
+        }),
+        throwsA(isA<http.ClientException>()),
+      );
+      expect((await call(fake, a.token, 'GET', '/api/users/$ana/identity')).status, 404);
+
+      // Two reads gathered: the first answers only once the second has come.
+      fake.gather((method: 'GET', path: '/api/users/@me/devices'), 2);
+      final order = <String>[];
+      Future<void> devices(String name) =>
+          call(fake, a.token, 'GET', '/api/users/@me/devices').then((_) => order.add(name));
+      final first = devices('first');
+      await Future<void>.delayed(const Duration(milliseconds: 20));
+      order.add('second sent');
+      await Future.wait([first, devices('second')]);
+      expect(order, ['second sent', 'first', 'second']);
+    });
   }, skip: noCore);
 }

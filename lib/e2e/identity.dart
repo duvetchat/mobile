@@ -3,6 +3,8 @@
 /// only after the API took it; every device holds itself to the one the API serves.
 library;
 
+import 'dart:math';
+
 import 'package:duvet_client/duvet.dart' as duvet;
 
 import 'bootstrap.dart';
@@ -34,6 +36,35 @@ Future<duvet.Identity?> servedIdentity(E2EEngine engine) async {
   } on duvet.DuvetApiException catch (error) {
     if (error.statusCode == 404) return null;
     rethrow;
+  }
+}
+
+/// observe_user of each user, as the API serves their identities, 50 at a time: one it doesn't serve stays as it was.
+Future<void> observeUsers(E2EEngine engine, List<String> users) async {
+  for (var at = 0; at < users.length; at += 50) {
+    for (final identity in await engine.api.identities(users.sublist(at, min(at + 50, users.length)))) {
+      await engine.host.handle<Object?>({
+        'cmd': 'observe_user',
+        'user_id': identity.userId,
+        'identity_key': identity.identityKey,
+        'device_list': identity.deviceList,
+        'certificates': identity.certificates,
+      });
+    }
+  }
+}
+
+/// A command that may first ask for users' identities (`needs_identities`): they're observed, and it runs again.
+/// Three rounds at most: the core asks once for what it knows of each user, and goes on with that the next time.
+Future<T> withIdentities<T>(E2EEngine engine, Future<T> Function() run) async {
+  for (var round = 1; ; round++) {
+    try {
+      return await run();
+    } on CoreError catch (error) {
+      final asked = error.code == 'needs_identities' ? error.users : null;
+      if (asked == null || asked.isEmpty || round >= 3) rethrow;
+      await observeUsers(engine, asked);
+    }
   }
 }
 

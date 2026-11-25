@@ -4,6 +4,7 @@ import 'dart:io';
 
 import 'package:duvet/data/cache.dart';
 import 'package:duvet/data/duvet_repository.dart';
+import 'package:duvet/data/models.dart' show ConversationTarget;
 import 'package:duvet/data/recent_chats.dart';
 import 'package:duvet/data/session_store.dart';
 import 'package:duvet/e2e/client.dart';
@@ -70,6 +71,61 @@ class _OpeningHost extends _Host {
   }
 }
 
+/// A core with this device set up and listed, whose groups it doesn't hold yet: the engine goes ready on it, and its
+/// conversations' commands are noted ([asked]), none of which makes a group.
+class _ReadyHost extends _Host {
+  static const device = '01936d4e-8f00-7000-8000-000000000002';
+  static const identityKey = 'AQID';
+  final asked = <Map<String, Object?>>[];
+
+  @override
+  Future<Opened> open(String userId) async {
+    opened.add(userId);
+    return (state: HostState.ready, keyStorage: null, reason: null);
+  }
+
+  @override
+  Future<T> handle<T>(Map<String, Object?> command) async {
+    asked.add(command);
+    final Object ok = switch (command['cmd']) {
+      'status' => {'device_id': device, 'identity_key': identityKey, 'has_identity': true},
+      'observe_user' => {'state': 'same', 'verified': false},
+      'key_packages' => {'key_packages': <Object?>[]},
+      'refresh_due' => {'conversations': <Object?>[]},
+      'group' => throw CoreError('not_found', what: 'group'),
+      _ => throw CoreError('internal', message: 'not in this core'),
+    };
+    return ok as T;
+  }
+
+  /// The commands the engine sent this core of a conversation's, by their names.
+  List<String> of(String conversation) => [
+    for (final command in asked)
+      if (command['conversation_id'] == conversation) command['cmd']! as String,
+  ];
+}
+
+/// A conversation without a group yet, as the conversations' list gives it: a DM of [_me]'s, or a group of another's.
+Map<String, Object?> _conversation(String id, {required bool group}) {
+  const other = '00000000-0000-4000-8000-000000000002';
+  const at = '2026-11-25T00:00:00Z';
+  return {
+    'id': id,
+    'type': group ? 2 : 1,
+    'name': null,
+    'owner_id': group ? other : _me,
+    'created_at': at,
+    'updated_at': at,
+    'deleted_at': null,
+    'members': [
+      for (final (n, user) in [_me, other].indexed)
+        {'id': '$id-$n', 'conversation_id': id, 'user_id': user, 'created_at': at, 'updated_at': at},
+    ],
+    'legacy': false,
+    'mls': null,
+  };
+}
+
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
@@ -100,6 +156,8 @@ void main() {
     late DuvetRepository repository;
     late _Host host;
     var shown = false;
+    // What a test answers besides the session's routes (the engine's): null for none.
+    late Object? Function(http.Request request) routes;
     // Each sign-in's access token is a new one: access-1, access-2…
     var logins = 0;
     const paths = MethodChannel('plugins.flutter.io/path_provider');
@@ -112,8 +170,12 @@ void main() {
       host = _Host();
       shown = false;
       logins = 0;
+      routes = (_) => null;
       final client = MockClient((request) async {
         requests.add(request);
+        if (routes(request) case final answer?) {
+          return http.Response(jsonEncode(answer), 200, headers: {'content-type': 'application/json'});
+        }
         final json = switch ((request.method, request.url.path)) {
           ('POST', '/api/auth/login') => {
             'token': 'access-${++logins}',
@@ -238,6 +300,90 @@ void main() {
         for (final request in requests.skip(asked))
           if (request.url.path.startsWith('/api/users/@me/devices')) request.headers['Authorization'],
       ], isEmpty);
+    });
+
+    /// The engine's routes for a device set up and listed, with [conversations] listed and no group in them.
+    Object? Function(http.Request request) engineRoutes(List<Map<String, Object?>> conversations) => (request) {
+      final path = request.url.path;
+      return switch (request.method) {
+        'GET' when path == '/api/users/@me/devices' => [
+          {
+            'id': _ReadyHost.device,
+            'name': 'Pixel 8 Pro',
+            'client': 'android/1.1.0',
+            'listed': true,
+            'current': true,
+            'created_at': '2026-11-25T00:00:00Z',
+            'last_seen_at': '2026-11-25T00:00:00Z',
+          },
+        ],
+        'GET' when path == '/api/users/$_me/identity' => {
+          'user_id': _me,
+          'identity_key': _ReadyHost.identityKey,
+          'device_list': 'AQID',
+          'device_list_version': 1,
+          'certificates': <Object?>[],
+          'active': true,
+          'changed_at': '2026-11-25T00:00:00Z',
+        },
+        'GET' when path == '/api/users/@me/devices/@me/inbox' => <Object?>[],
+        'GET' when path == '/api/users/@me/conversations' => conversations,
+        'PUT' when path == '/api/users/@me/devices/@me/key-packages' => {'handed_out': <Object?>[]},
+        'POST' when path.endsWith('/key-packages/claim') => {'key_packages': <Object?>[]},
+        _ => null,
+      };
+    };
+
+    // M3 of the review: the repository's wiring of a conversation's group. A conversation on screen before the engine
+    // exists gets its group once the engine is ready, and what each conversation says shows until the session ends.
+    test("a_conversation_shown_before_the_engine_exists_gets_its_group_once_it's_ready", () async {
+      final ready = _ReadyHost();
+      host = ready;
+      routes = engineRoutes([
+        _conversation('dm-1', group: false),
+        _conversation('dm-2', group: false),
+        _conversation('group-1', group: true),
+      ]);
+      await repository.logIn('gaby@duvet.chat', 'secret');
+      repository.chatShown(const ConversationTarget('dm-1'));
+      await pumpEventQueue();
+      expect(host.opened, isEmpty);
+
+      shown = true;
+      repository.cameToFront();
+      await eventually(() => expect(repository.encryption.value, EngineState.ready));
+      // The DM's group is made here, as either member may (this core makes none).
+      await eventually(() => expect(ready.of('dm-1'), contains('create_group')));
+      // Another, shown with the engine ready, gets its group at once.
+      expect(ready.of('dm-2'), isNot(contains('create_group')));
+      repository.chatShown(const ConversationTarget('dm-2'));
+      await eventually(() => expect(ready.of('dm-2'), contains('create_group')));
+      // The group of another's waits for its owner, which the app shows; then the session ends, and it goes.
+      await eventually(
+        () => expect(repository.conversationStates.value, {
+          'group-1': const ConversationState.waitOwner('00000000-0000-4000-8000-000000000002'),
+        }),
+      );
+      await repository.logOut();
+      expect(repository.conversationStates.value, isEmpty);
+    });
+
+    // M1 of the review: a thread shown over its chat, whose own hide the chat reports after, leaves the conversation
+    // open in the engine: a view of it is still on screen.
+    test('a_thread_over_its_chat_keeps_the_conversation_open', () async {
+      final ready = _ReadyHost();
+      host = ready;
+      routes = engineRoutes([_conversation('dm-1', group: false)]);
+      await repository.logIn('gaby@duvet.chat', 'secret');
+      repository
+        ..chatShown(const ConversationTarget('dm-1'))
+        ..chatShown(const ConversationTarget('dm-1'), threadOf: 'message-1')
+        ..chatHidden(const ConversationTarget('dm-1'));
+      shown = true;
+      repository.cameToFront();
+      await eventually(() => expect(repository.encryption.value, EngineState.ready));
+      await eventually(() => expect(ready.of('dm-1'), contains('create_group')));
+      await repository.logOut();
     });
 
     // Review Focus 2: main() runs on audio_service's engine too, which may start with no screen.

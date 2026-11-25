@@ -26,6 +26,7 @@ import 'data/models.dart';
 import 'data/repository.dart';
 import 'data/scope.dart';
 import 'data/voice.dart' show VoiceController;
+import 'encryption/conversation_state.dart';
 import 'members_sheet.dart';
 import 'people.dart';
 import 'search.dart';
@@ -2644,6 +2645,24 @@ class _ChatViewState extends State<ChatView> with SingleTickerProviderStateMixin
                   child: Column(
                     mainAxisSize: MainAxisSize.min,
                     children: [
+                      // What a conversation says of its encrypted group, over its message box.
+                      if (widget.target case ConversationTarget(:final conversationId))
+                        Padding(
+                          padding: const EdgeInsets.symmetric(horizontal: 16),
+                          child: ValueListenableBuilder(
+                            valueListenable: _repository.conversationStates,
+                            builder: (context, states, _) {
+                              final state = states[conversationId];
+                              return ConversationStateBar(
+                                state: state,
+                                ownerName:
+                                    _members.where((m) => m.userId == state?.owner).firstOrNull?.displayName ?? '',
+                                onRestart: () => _repository.restartGroup(conversationId),
+                                onAccept: () => _repository.acceptMembers(conversationId),
+                              );
+                            },
+                          ),
+                        ),
                       Padding(
                         padding: const EdgeInsets.symmetric(horizontal: 16),
                         child: _TypingLine(
