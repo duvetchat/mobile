@@ -496,13 +496,14 @@ void main() {
     timeout: _slow,
   );
 
-  // M5 of the desktop's task 16 review: the device reads 100 of a conversation's messages that wait; a new one past
-  // them is refused.
+  // M5 of the desktop's task 16 review, and N2 of task 17's re-review: the device reads 100 of a conversation's rows
+  // that wait, and a message made again has two of them for a moment, its new bytes made before its old ones go. So a
+  // new message is refused once 99 wait: the extra row stays in the device's sight, and nothing is sent twice.
   test(
-    'a_new_message_is_refused_once_100_wait_in_its_conversation',
+    "a_new_message_is_refused_once_99_wait,_so_a_remake's_extra_row_stays_in_sight",
     () async {
       final (fake: _, ana: _, bo: _, :a, :b, :conversation, :seen, aClient: _) = await _dm();
-      for (var i = 0; i < 100; i++) {
+      for (var i = 0; i < 99; i++) {
         await a.host.handle<Object?>({
           'cmd': 'encrypt',
           'conversation_id': conversation,
@@ -513,7 +514,7 @@ void main() {
       final before = _posts(seen, conversation).length;
       await _refused(a.engine.sendMessage(Outgoing(conversationId: conversation, nonce: uuidv4(), text: 'too many')));
       expect(_posts(seen, conversation), hasLength(before));
-      expect(await a.engine.pendingMessages(conversation), hasLength(100));
+      expect(await a.engine.pendingMessages(conversation), hasLength(99));
       // Nothing is kept of the one refused (M6 of task 17's review).
       expect(a.store.read(pendingSends), isNull);
       await a.engine.stop();
@@ -812,6 +813,184 @@ void main() {
       await again.engine.start();
       await until(() => again.store.read(pendingChanges) == null);
       await again.engine.stop();
+      await b.engine.stop();
+    },
+    skip: noCore,
+    timeout: _slow,
+  );
+
+  // N3 of task 17's re-review: a message made again went, its answer lost and its copy missed, and the record let go
+  // of its link once more than 100 newer rows were bound (the bound rows read past it). Its Retry, by the nonce the
+  // person sent it with, finds the nonce it went under among this run's remakes, and posts nothing.
+  test(
+    'a_message_made_again_whose_sent_row_is_past_the_newest_hundred_is_not_posted_again',
+    () async {
+      final fake = FakeApi();
+      final (ana, bo) = (fake.addUser(), fake.addUser());
+      final conversation = fake.addConversation(group: false, members: [ana, bo]);
+      final seen = <http.Request>[];
+      // Ana's device misses its own messages' copies: only the queue brings them.
+      final a = await firstDevice(
+        fake,
+        ana,
+        client: watchedClient(fake, seen: seen.add),
+        hears: (event) => !(event.type == 'DM_MESSAGE_CREATE' && (event.data! as Map)['author_id'] == ana),
+      );
+      final b = await firstDevice(fake, bo);
+      await a.engine.openConversation(conversation);
+      await sameGroup([a, b], conversation);
+      final path = (method: 'POST', path: _messagesPath(conversation));
+      final first = uuidv4();
+      fake.cutRequest(path);
+      await _refused(a.engine.sendMessage(Outgoing(conversationId: conversation, nonce: first, text: 'once')));
+      await _sixEpochs(a, b, conversation);
+      // Made again and taken, its answer lost.
+      fake.loseAnswer(path);
+      await _refused(a.engine.sendMessage(Outgoing(conversationId: conversation, nonce: first, text: 'once')));
+      // Bo's 100 messages come after it: the queue binds it, and they are the newest rows.
+      final bob = await restarted(fake, b);
+      var last = '';
+      for (var i = 0; i < 100; i++) {
+        last = (await bob.engine.sendMessage(Outgoing(conversationId: conversation, nonce: uuidv4(), text: 'b$i')))!.id;
+      }
+      await until(() async => await _textOn(a, conversation, last) == 'b99');
+      await until(() async => (await _nonces(a, conversation)).isEmpty);
+      // A new gateway session: its resend reads what waits there, past the bound rows it can see.
+      a.connect(a.registered.last);
+      await turnEnded(a);
+      final before = _posts(seen, conversation).length;
+      expect(await a.engine.sendMessage(Outgoing(conversationId: conversation, nonce: first, text: 'once')), isNull);
+      expect(_posts(seen, conversation), hasLength(before));
+      await a.engine.stop();
+      await bob.engine.stop();
+    },
+    skip: noCore,
+    timeout: _slow,
+  );
+
+  // Choice 2 of task 17's re-review: a message made again whose new bytes are stale too, in the same flush, stops the
+  // flush there: the messages after it wait with it, so none goes before it.
+  test(
+    'a_message_stale_again_once_made_again_stops_the_flush,_so_none_after_it_goes_first',
+    () async {
+      final (:fake, :a, :b, :conversation, seen: _, :sent) = await _threeStale(TestHost().gate);
+      // The first one's new bytes: the API says no member can open them either.
+      fake.refuse(
+        (method: 'POST', path: _messagesPath(conversation)),
+        409,
+        body: {'error': 'stale message', 'generation': 0, 'epoch': 7},
+      );
+      await _refused(a.engine.sendMessage(Outgoing(conversationId: conversation, nonce: sent[2], text: 'three')));
+      expect(await _queued(a, conversation), isEmpty);
+      expect(await _nonces(a, conversation), sent);
+      // Retried, they all go, once, in the person's order.
+      await a.engine.sendMessage(Outgoing(conversationId: conversation, nonce: sent[0], text: 'one'));
+      await until(() async => (await _nonces(a, conversation)).isEmpty);
+      expect(await _texts(a, conversation), ['one', 'two', 'three']);
+      await a.engine.stop();
+      await b.host.close();
+    },
+    skip: noCore,
+    timeout: _slow,
+  );
+
+  // The pause at a READY (M4 of task 17's review, its messages' half): a message the pause holds goes once its
+  // Retry-After passed, not with a READY's resend.
+  test(
+    'a_paused_message_waits_out_its_pause_through_a_READY',
+    () async {
+      final (:fake, ana: _, bo: _, :a, :b, :conversation, :seen, aClient: _) = await _dm();
+      fake.refuse((method: 'POST', path: _messagesPath(conversation)), 503);
+      await _refused(a.engine.sendMessage(Outgoing(conversationId: conversation, nonce: uuidv4(), text: 'later')));
+      final paused = _posts(seen, conversation).length;
+      a.connect(a.registered.last);
+      await turnEnded(a);
+      expect(_posts(seen, conversation), hasLength(paused));
+      a.clock.advance(const Duration(seconds: 60));
+      await until(() async => (await _queued(b, conversation)).isNotEmpty);
+      final [id] = await _queued(b, conversation);
+      await until(() async => await _textOn(b, conversation, id) == 'later');
+      await a.engine.stop();
+      await b.engine.stop();
+    },
+    skip: noCore,
+    timeout: _slow,
+  );
+
+  // I1 of task 17's review, its `exists` half: a message made again whose copy only the queue brought (its answer lost,
+  // its event missed, no flush since) is the message sent. Its Retries, through the person's nonce, post nothing.
+  test(
+    'a_message_made_again_bound_by_the_queue_alone_is_posted_once_whatever_its_Retries',
+    () async {
+      final fake = FakeApi();
+      final (ana, bo) = (fake.addUser(), fake.addUser());
+      final conversation = fake.addConversation(group: false, members: [ana, bo]);
+      final seen = <http.Request>[];
+      final a = await firstDevice(
+        fake,
+        ana,
+        client: watchedClient(fake, seen: seen.add),
+        hears: (event) => event.type != 'DM_MESSAGE_CREATE',
+      );
+      final b = await firstDevice(fake, bo);
+      await a.engine.openConversation(conversation);
+      await sameGroup([a, b], conversation);
+      final path = (method: 'POST', path: _messagesPath(conversation));
+      final first = uuidv4();
+      fake.cutRequest(path);
+      await _refused(a.engine.sendMessage(Outgoing(conversationId: conversation, nonce: first, text: 'once')));
+      await _sixEpochs(a, b, conversation);
+      fake.loseAnswer(path);
+      await _refused(a.engine.sendMessage(Outgoing(conversationId: conversation, nonce: first, text: 'once')));
+      // Bo's commit comes after it: the queue Ana's device reads for it binds the message.
+      await commitByHand(b, conversation);
+      await until(() async => (await _nonces(a, conversation)).isEmpty);
+      final before = _posts(seen, conversation).length;
+      for (var i = 0; i < 2; i++) {
+        expect(await a.engine.sendMessage(Outgoing(conversationId: conversation, nonce: first, text: 'once')), isNull);
+      }
+      expect(_posts(seen, conversation), hasLength(before));
+      final [id] = await _queued(a, conversation);
+      // Its Dismiss gives the API's ID of it, which the chat shows the copy of: the link `exists` kept.
+      expect(await a.engine.discardMessage(conversation, first), id);
+      await a.engine.stop();
+      await b.host.close();
+    },
+    skip: noCore,
+    timeout: _slow,
+  );
+
+  // M4 of task 17's review, its `take` half: an edit the API took whose entry the core can't take at once (here its
+  // apply fails) is done: it isn't told as refused, the record lets it go, and the others get it.
+  test(
+    'an_edit_the_API_took_is_done_even_when_its_entry_waits_for_the_queue',
+    () async {
+      var failing = false;
+      final host = WatchedHost(
+        TestHost().gate,
+        [],
+        fail: (command) => failing && command['cmd'] == 'apply'
+            ? CoreError('internal', message: "the core couldn't apply it now")
+            : null,
+      );
+      final fake = FakeApi();
+      final (ana, bo) = (fake.addUser(), fake.addUser());
+      final conversation = fake.addConversation(group: false, members: [ana, bo]);
+      // From the edit's request on, the core can't apply.
+      final client = watchedClient(fake, seen: (request) => failing = failing || request.method == 'PATCH');
+      final a = await firstDevice(fake, ana, host: host, client: client);
+      final b = await firstDevice(fake, bo);
+      await a.engine.openConversation(conversation);
+      await sameGroup([a, b], conversation);
+      final sent = (await a.engine.sendMessage(Outgoing(conversationId: conversation, nonce: uuidv4(), text: 'one')))!;
+      final refused = <Object>[];
+      a.engine.changesRefused.listen(refused.add);
+      await a.engine.editMessage(conversation, sent.id, 'two');
+      failing = false;
+      expect(refused, isEmpty);
+      expect(a.store.read(pendingChanges), isNull);
+      await until(() async => await _textOn(b, conversation, sent.id) == 'two');
+      await a.engine.stop();
       await b.engine.stop();
     },
     skip: noCore,

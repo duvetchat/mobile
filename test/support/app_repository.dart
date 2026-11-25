@@ -49,8 +49,15 @@ class TestApp {
       seen.skip(from).where((r) => r.method == method && r.url.path == path).length;
 }
 
-/// [user]'s app on [fake], signed in and connected, its engine starting: [TestApp.ready] sets its device up.
-Future<TestApp> appOn(FakeApi fake, String user, {RecentChatsStore? recents, ChatCacheStore? cache}) async {
+/// [user]'s app on [fake], signed in and connected, its engine starting: [TestApp.ready] sets its device up. Its
+/// connection hands on only what [hears] lets through.
+Future<TestApp> appOn(
+  FakeApi fake,
+  String user, {
+  RecentChatsStore? recents,
+  ChatCacheStore? cache,
+  bool Function(GatewayEvent event)? hears,
+}) async {
   final support = Directory.systemTemp.createTempSync('duvet-app-');
   const paths = MethodChannel('plugins.flutter.io/path_provider');
   final messenger = TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
@@ -91,6 +98,7 @@ Future<TestApp> appOn(FakeApi fake, String user, {RecentChatsStore? recents, Cha
   );
   await repository.logIn('user@duvet.chat', 'secret');
   final end = fake.connect(session.token, null, (event) {
+    if (hears != null && !hears(event)) return;
     if (payloadOf(event, user) case final payload?) repository.handleEvent(payload);
   });
   addTearDown(() {

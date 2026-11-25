@@ -1653,8 +1653,12 @@ class FakeRepository implements ChatRepository {
 
   @override
   Future<List<ChatMessage>> withContent(ChatTarget target, List<ChatMessage> messages) async => [
-    for (final m in messages) contents[m.id] ?? m,
+    for (final m in messages)
+      if (!dropped.contains(m.id)) contents[m.id] ?? m,
   ];
+
+  /// Messages a read of the device leaves out, as Ruling 15 drops rows from before the user joined.
+  final dropped = <String>{};
 
   /// The nonces of the messages waiting on the device that the user sent again, and those they dismissed.
   final resent = <String>[];

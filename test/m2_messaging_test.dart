@@ -1067,6 +1067,70 @@ void main() {
       semantics.dispose();
     });
 
+    // N1 of task 17's re-review: a Retry of a message the page lists already (its copy beside its waiting row) takes
+    // the place of the row it retried, and no other row of the message stays.
+    testWidgets('a Retry takes the place of the row it retried, and no other row of its message stays', (tester) async {
+      final repository = await openMaya(
+        tester,
+        setUp: (r) => r.history['c-maya']!.addAll([
+          ChatMessage(
+            id: 'sent-n1',
+            authorId: _me,
+            authorName: 'Gaby',
+            content: 'went',
+            createdAt: DateTime(2026, 10, 23, 9, 10),
+            nonce: 'n1',
+            seq: 9,
+          ),
+          held('pending:n1', text: 'went', pending: true),
+        ]),
+      );
+      expect(find.text('went'), findsNWidgets(2));
+      await tester.tap(find.bySemanticsLabel('Retry'));
+      await tester.pumpAndSettle();
+      expect(repository.resent, ['n1']);
+      expect(find.text('went'), findsOneWidget);
+      expect(find.bySemanticsLabel('Retry'), findsNothing);
+      semantics.dispose();
+    });
+
+    // I5 of task 17's review, its chat half: a read again that drops a row (one from before the user joined that the
+    // device doesn't hold) takes it out of the chat.
+    testWidgets('a read again that drops a row takes it out of the chat', (tester) async {
+      final repository = await openMaya(
+        tester,
+        setUp: (r) => r.history['c-maya']!.addAll([
+          held('e1').copyWith(seq: 1, loading: true),
+          held('e2', text: 'since joining').copyWith(seq: 2),
+        ]),
+      );
+      expect(find.bySemanticsLabel(RegExp('Loading message')), findsOneWidget);
+      repository.dropped.add('e1');
+      repository.push('c-maya', const ContentChanged());
+      await tester.pumpAndSettle();
+      expect(find.bySemanticsLabel(RegExp('Loading message')), findsNothing);
+      expect(find.text('since joining'), findsOneWidget);
+      semantics.dispose();
+    });
+
+    // N5 of task 17's re-review: a read again that drops every row of a page read before the device could be read
+    // loads the page again, which reads on to what the device holds.
+    testWidgets('a read again that drops every row of a page loads the page again', (tester) async {
+      final repository = await openMaya(
+        tester,
+        setUp: (r) => r.history['c-maya'] = [
+          held('e1').copyWith(seq: 5, loading: true),
+          held('e2').copyWith(seq: 6, loading: true),
+        ],
+      );
+      repository.dropped.addAll(['e1', 'e2']);
+      repository.history['c-maya'] = [held('e0', text: 'from my first membership').copyWith(seq: 1)];
+      repository.push('c-maya', const ContentChanged());
+      await tester.pumpAndSettle();
+      expect(find.text('from my first membership'), findsOneWidget);
+      semantics.dispose();
+    });
+
     testWidgets("a message the device hasn't applied yet loads, neither empty nor waiting", (tester) async {
       final repository = await openMaya(
         tester,

@@ -38,11 +38,11 @@ typedef _Chat = ({
 
 /// Ana's app, ready, and Bo's first device in a conversation of theirs whose group is made: a DM Ana's app opened,
 /// or a [group] of Bo's he opened.
-Future<_Chat> _chat({bool group = false}) async {
+Future<_Chat> _chat({bool group = false, bool Function(GatewayEvent event)? hears}) async {
   final fake = FakeApi();
   final (ana, bo) = (fake.addUser(), fake.addUser());
   final conversation = fake.addConversation(group: group, members: [bo, ana], owner: bo);
-  final app = await appOn(fake, ana);
+  final app = await appOn(fake, ana, hears: hears);
   await app.ready();
   final b = await firstDevice(fake, bo);
   final target = ConversationTarget(conversation);
@@ -53,6 +53,30 @@ Future<_Chat> _chat({bool group = false}) async {
   }
   await until(() async => await _epoch(app, conversation) != null && await groupOf(b, conversation) != null);
   return (fake: fake, ana: ana, bo: bo, app: app, b: b, conversation: conversation, target: target);
+}
+
+/// Ana's message to Bo, made again once six epochs passed and taken by the API, its answer lost: the nonce she sent it
+/// with. Bo's device is stopped by hand.
+Future<String> _madeAgainAndTaken(
+  FakeApi fake,
+  TestApp app,
+  TestDevice b,
+  String conversation,
+  ConversationTarget target, {
+  String? replyTo,
+}) async {
+  final path = (method: 'POST', path: _messagesPath(conversation));
+  final first = uuidv4();
+  fake.cutRequest(path);
+  await expectLater(app.repository.send(target, 'once', nonce: first, replyTo: replyTo), throwsA(anything));
+  await stoppedByHand(b);
+  for (var i = 0; i < 6; i++) {
+    await commitByHand(b, conversation);
+  }
+  await until(() async => await _epoch(app, conversation) == 7);
+  fake.loseAnswer(path);
+  await expectLater(app.repository.resend(target, first), throwsA(anything));
+  return first;
 }
 
 /// A group of Bo's and Cy's, where Bo said two things before Ana joined it on the server (she has no leaf yet).
@@ -109,6 +133,55 @@ void main() {
       final posts = app.count('POST', _messagesPath(conversation));
       expect((await app.repository.resend(target, first)).id, copies.first.id);
       expect(app.count('POST', _messagesPath(conversation)), posts);
+      await b.host.close();
+    },
+    skip: noCore,
+    timeout: _slow,
+  );
+
+  // N1 of task 17's re-review: a page loaded once a message made again went (its answer lost, its copy missed, the
+  // queue not read since) lists it once: the API's row, under the nonce the person sent it with, and no row of it
+  // waiting beside it.
+  test(
+    "a_page_lists_a_message_made_again_once,_under_the_person's_nonce",
+    () async {
+      final (:fake, ana: _, bo: _, :app, :b, :conversation, :target) = await _chat(
+        hears: (event) => event.type != 'DM_MESSAGE_CREATE',
+      );
+      final first = await _madeAgainAndTaken(fake, app, b, conversation, target);
+      final [id] = [
+        for (final entry in (await b.api.queue(conversation, 0)).entries)
+          if (entry.kind == 'message') entry.messageId!,
+      ];
+      final page = await app.repository.messages(target);
+      expect(
+        [
+          for (final m in page)
+            if (m.nonce == first) m.id,
+        ],
+        [id],
+      );
+      await b.host.close();
+    },
+    skip: noCore,
+    timeout: _slow,
+  );
+
+  // N4 of task 17's re-review (the desktop's too): a Retry of a message that went answers with the API's copy of it,
+  // by the ID it went under: its number, so the device's reads keep it, and the message it answers.
+  test(
+    "a_Retry_of_a_message_that_went_shows_the_API's_copy",
+    () async {
+      final (:fake, ana: _, bo: _, :app, :b, :conversation, :target) = await _chat();
+      final hello = (await b.engine.sendMessage(
+        Outgoing(conversationId: conversation, nonce: uuidv4(), text: 'hello'),
+      ))!;
+      await until(() async => (await app.repository.messages(target)).any((m) => m.content == 'hello'));
+      final first = await _madeAgainAndTaken(fake, app, b, conversation, target, replyTo: hello.id);
+      // Its copy came: the message went.
+      await until(() async => (await app.repository.messages(target)).every((m) => !m.pending));
+      final again = await app.repository.resend(target, first);
+      expect((again.encrypted, again.reply?.messageId, again.content), (true, hello.id, 'once'));
       await b.host.close();
     },
     skip: noCore,
@@ -247,8 +320,11 @@ void main() {
       expect(app.count('GET', _messagesPath(conversation), from: from), lessThanOrEqualTo(3));
       // Short, with more behind it: the chat pages on.
       expect(app.repository.olderBeyond(target, page.first.id), isTrue);
+      // The next page goes on from where this one stopped: one request, past the pages it read already.
+      final next = app.seen.length;
       final older = await app.repository.messages(target, before: page.first.id);
       expect([for (final m in older) m.id], [mine.id]);
+      expect(app.count('GET', _messagesPath(conversation), from: next), 1);
       expect(app.repository.olderBeyond(target, older.first.id), isFalse);
       await b.host.close();
     },

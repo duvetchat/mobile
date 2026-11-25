@@ -163,12 +163,13 @@ class _Change {
   };
 }
 
-/// A new message refused, as [_pendingMost] of its conversation's wait to be sent already: nothing of it is kept.
+/// A new message refused, as one fewer than [_pendingMost] of its conversation's wait to be sent already: nothing of
+/// it is kept.
 class TooManyWaiting implements Exception {
   const TooManyWaiting();
 
   @override
-  String toString() => '$_pendingMost messages wait to be sent here already';
+  String toString() => '${_pendingMost - 1} messages wait to be sent here already';
 }
 
 /// The most users a message names: the API takes 20.
@@ -262,8 +263,10 @@ class Sends {
     await _groups.current(id);
     final rows = await pendingRows(_host, id);
     final waiting = rows.any((row) => row.nonce == nonce);
-    // Past them, the oldest would be out of the engine's sight (M5 of the desktop's review).
-    if (!waiting && nonce == out.nonce && rows.length >= _pendingMost) throw const TooManyWaiting();
+    // Past them, the oldest would be out of the engine's sight (M5 of the desktop's review). One under the page: a
+    // message made again has two rows for a moment, its new bytes made before its old ones go, and the older must stay
+    // in sight to be dropped (N2 of task 17's re-review).
+    if (!waiting && nonce == out.nonce && rows.length >= _pendingMost - 1) throw const TooManyWaiting();
     // What goes with it in the clear, kept once it's to be sent (M6 of task 17's review: after the refusals).
     if (nonce == out.nonce && !_record().containsKey(nonce)) await _keep(nonce, _Clear.of(out));
     if (!waiting) {
@@ -296,7 +299,12 @@ class Sends {
   String current(String nonce) => _current(nonce);
 
   String _current(String nonce) =>
-      _went[nonce]?.nonce ?? _record().entries.where((kept) => kept.value.first == nonce).lastOrNull?.key ?? nonce;
+      _went[nonce]?.nonce ??
+      _record().entries.where((kept) => kept.value.first == nonce).lastOrNull?.key ??
+      // This run's newest remake of it, once the record let it go (its bound row past the rows `_bound` reads: N3 of
+      // task 17's re-review): a Retry goes under it, which the core answers `exists`.
+      _firstOf.entries.where((made) => made.value == nonce).lastOrNull?.key ??
+      nonce;
 
   /// The nonce the person sent the message under whose nonce is [nonce] now.
   String firstOf(String nonce) => _record()[nonce]?.first ?? _firstOf[nonce] ?? nonce;
@@ -477,11 +485,12 @@ class Sends {
         final sent = await _deliver(id, nonce, row.text, clear ?? _Clear(id));
         if (first == wantedFirst) message = sent;
       } on _Stale {
-        // Made again in this flush and stale again: it waits, as refused.
+        // Made again in this flush and stale again: it waits, and so does every message after it, so none goes before
+        // it (choice 2 of task 17's re-review). The person's, unless it went already, says it didn't.
         if (remade.contains(first)) {
-          if (first == wantedFirst) rethrow;
-          debugPrint('e2e: a message made again is stale again: it stays, to send again or dismiss.');
-          continue;
+          if (message == null && wantedFirst != null) rethrow;
+          debugPrint('e2e: a message made again is stale again: it and those after it wait, to send again.');
+          return message;
         }
         final tail = [
           for (final next in rows.sublist(at))

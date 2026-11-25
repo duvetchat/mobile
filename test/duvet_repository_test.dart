@@ -1037,6 +1037,20 @@ void main() {
     expect(repository.unread.value, isNot(contains('c-1')));
   });
 
+  // I4 of task 17's review, its repository half: an encrypted message's update from the API brings none of its text:
+  // the chat reads what the device holds again, and no copy of the API's reaches it.
+  test("an encrypted message's update reads the device again, never the API's copy", () async {
+    await repository.logIn('gaby@duvet.chat', 'secret');
+    repository.handleEvent(_event('READY', {'user': _user(_me, 'gaby'), 'sessionToken': 'ws'}));
+    final events = <MessageEvent>[];
+    final sub = repository.messageEvents(const ConversationTarget('c-1')).listen(events.add);
+    addTearDown(sub.cancel);
+    repository.handleEvent(_event('DM_MESSAGE_UPDATE', {..._dm('9', _maya, ''), 'seq': 3}));
+    await pumpEventQueue();
+    expect(events.whereType<MessageUpdated>(), isEmpty);
+    expect(events.whereType<ContentChanged>(), hasLength(1));
+  });
+
   // M1 of task 17's review: a live encrypted message this device can't read yet (no engine here) draws as loading,
   // neither an empty bubble nor waiting.
   test('a live encrypted message the device cannot read yet loads', () async {

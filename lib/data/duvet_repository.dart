@@ -1243,7 +1243,7 @@ class DuvetRepository implements ChatRepository {
     List<duvet.DirectMessage> raw, {
     bool drop = false,
   }) async {
-    final listed = [for (final m in raw) _directMessage(m)];
+    final listed = [for (final m in raw) _asSent(_directMessage(m))];
     final applied = _engine?.appliedThrough(conversationId);
     final held = await _held(conversationId, [
       for (final m in listed)
@@ -1269,6 +1269,14 @@ class DuvetRepository implements ChatRepository {
 
   String _sharerName(String userId) => nameOf(userId) ?? 'Someone';
 
+  /// [message], a conversation's as the API has it, under the nonce the person sent it with when it's theirs and was
+  /// made again under another: the chat knows it by that one, live, on a page, a catch-up or a fetch (I1 of task 17's
+  /// review, N1 of its re-review).
+  ChatMessage _asSent(ChatMessage message) => switch (message.nonce) {
+    final nonce? => message.copyWith(nonce: _engine?.firstNonceOf(nonce) ?? nonce),
+    null => message,
+  };
+
   /// The user's messages this device still sends in the conversation, for its chat's end as failed sends with Retry
   /// and Dismiss: their text as the device keeps it, their reply's quote from [page] when it has that message.
   Future<List<ChatMessage>> _pendingIn(String conversationId, List<ChatMessage> page) async {
@@ -1282,9 +1290,11 @@ class DuvetRepository implements ChatRepository {
       return const [];
     }
     final me = profile.value;
+    // One the page lists already went, its copy there under the person's nonce (N1 of task 17's re-review).
+    final listed = {for (final m in page) ?m.nonce};
     return [
       for (final (:nonce, :row, :replyTo, :mentionReplied, :stickerAttachmentId) in waiting)
-        if (nonce != null)
+        if (nonce != null && !listed.contains(nonce))
           ChatMessage(
             id: 'pending:$nonce',
             authorId: me?.id,
@@ -1385,6 +1395,13 @@ class DuvetRepository implements ChatRepository {
     final mine = await _engine?.sentUnder(conversationId, nonce);
     final id = mine?.messageId;
     if (mine == null || id == null) throw StateError('the message went, and this device holds none under its nonce');
+    // The API's copy of it, by the ID it went under, as a Dismiss shows it: its number, so the device's reads keep it,
+    // and the message it answers (N4 of task 17's re-review). Offline, the device's row, with both.
+    try {
+      return (await fetchMessage(ConversationTarget(conversationId), id)).copyWith(nonce: nonce);
+    } catch (error) {
+      debugPrint("e2e: the API's copy of a message that went wasn't read: $error");
+    }
     final me = profile.value;
     return ChatMessage(
       id: id,
@@ -1395,6 +1412,11 @@ class DuvetRepository implements ChatRepository {
       createdAt: DateTime.fromMillisecondsSinceEpoch(mine.sentAt),
       edited: mine.editedAt != null,
       nonce: nonce,
+      seq: mine.seq,
+      reply: switch (mine.replyTo) {
+        final quoted? => MessageReply(messageId: quoted, authorName: '', content: ''),
+        null => null,
+      },
     );
   }
 
@@ -1922,10 +1944,7 @@ class DuvetRepository implements ChatRepository {
         final listed = _directMessage(data);
         // The person's message made again carries its new nonce: the chat knows it by the one they sent it with, so it
         // takes that row's place (I1 of task 17's review).
-        final mine = switch (listed.nonce) {
-          final nonce? => listed.copyWith(nonce: _engine?.firstNonceOf(nonce) ?? nonce),
-          null => listed,
-        };
+        final mine = _asSent(listed);
         // Its text is what this device holds of it: it loads until its conversation's turn applies it, which reads it
         // again; one the device may hold already is read again now (M1 and I4 of task 17's review).
         final message = mine.encrypted

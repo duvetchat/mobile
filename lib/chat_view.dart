@@ -829,9 +829,12 @@ class _ChatViewState extends State<ChatView> with SingleTickerProviderStateMixin
     if (!mounted) return;
     final byId = {for (final m in held) m.id: m};
     final read = {for (final e in shown) e.message.id};
+    var dropped = false;
     setState(() {
       // A row the reading dropped goes: one from before the user joined that the device doesn't hold (Ruling 15).
+      final count = _entries.length;
       _entries.removeWhere((e) => read.contains(e.message.id) && !byId.containsKey(e.message.id));
+      dropped = _entries.length < count;
       for (var i = 0; i < _entries.length; i++) {
         final (:message, :delivery) = _entries[i];
         if (byId[message.id] case final now? when !identical(now, message)) {
@@ -839,6 +842,9 @@ class _ChatViewState extends State<ChatView> with SingleTickerProviderStateMixin
         }
       }
     });
+    // Every row of a page read before the device could be read gave way: the page is read again, which reads on past
+    // them to what the device holds (N5 of task 17's re-review).
+    if (dropped && _history.isEmpty) unawaited(_load());
   }
 
   /// An edit, or a link preview that came late, merged into the message (see
@@ -1177,18 +1183,24 @@ class _ChatViewState extends State<ChatView> with SingleTickerProviderStateMixin
       final i = _entries.indexOf(entry);
       if (i >= 0) _entries[i] = (message: entry.message, delivery: _Delivery.sending);
     });
+    // The row retried, by its own ID: a copy of the message a page or the gateway brought has its nonce too.
+    final retried = entry.message.id;
     try {
       final sent = await _repository.resend(widget.target, nonce);
       if (!mounted) return;
       setState(() {
-        _entries.removeWhere((e) => e.message.id == sent.id && e.message.nonce != nonce);
-        final i = _entries.indexWhere((e) => e.message.nonce == nonce);
-        if (i >= 0) _entries[i] = (message: sent, delivery: _Delivery.sent);
+        // It takes the message, and any other row of it goes (N1 of task 17's re-review). One a copy replaced
+        // meanwhile is that copy already.
+        final i = _entries.indexWhere((e) => e.message.id == retried);
+        if (i < 0) return;
+        final kept = (message: sent, delivery: _Delivery.sent);
+        _entries[i] = kept;
+        _entries.removeWhere((e) => e.message.id == sent.id && !identical(e, kept));
       });
     } catch (e) {
       if (!mounted) return;
       setState(() {
-        final i = _entries.indexWhere((e) => e.message.nonce == nonce);
+        final i = _entries.indexWhere((e) => e.message.id == retried);
         if (i >= 0) _entries[i] = (message: _entries[i].message, delivery: _Delivery.failed);
       });
       _announce('Message not sent');
