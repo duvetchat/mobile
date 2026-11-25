@@ -70,7 +70,7 @@ Future<Device> device(FakeApi fake, String user) async {
   addTearDown(() => folder.deleteSync(recursive: true));
   final core = CoreGate(serves: true, folder: () async => folder);
   addTearDown(core.close);
-  expect(await core.open(user), (state: HostState.ready, keyStorage: 'provided'));
+  expect(await core.open(user), (state: HostState.ready, keyStorage: 'provided', reason: null));
   final (:token, :deviceChallenge) = fake.signIn(user);
   final id = uuidv7();
   final keys = await core.handle<Json>({'cmd': 'create_device', 'user_id': user, 'device_id': id});

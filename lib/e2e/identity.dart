@@ -1,0 +1,101 @@
+/// The user's identity (PLAN-E2E-CLIENTES.md, «El motor»: «Arranque» step 5, and «Qué se manda», its identity's row):
+/// a first device publishes the one it made, once the person saved its recovery key (decision 23), and confirms it
+/// only after the API took it; every device holds itself to the one the API serves.
+library;
+
+import 'package:duvet_client/duvet.dart' as duvet;
+
+import 'bootstrap.dart';
+import 'engine.dart';
+import 'host.dart';
+
+/// What create_identity answers: what goes up, and the recovery key the person saves first.
+class IdentityMade {
+  IdentityMade.of(Map<String, Object?> made)
+    : identityKey = made['identity_key']! as String,
+      certificate = made['certificate']! as String,
+      deviceList = made['device_list']! as String,
+      recoveryKey = made['recovery_key']! as String,
+      wrappedBackupKey = made['wrapped_backup_key']! as String,
+      encryptedIdentity = made['encrypted_identity']! as String;
+
+  final String identityKey;
+  final String certificate;
+  final String deviceList;
+  final String recoveryKey;
+  final String wrappedBackupKey;
+  final String encryptedIdentity;
+}
+
+/// The user's identity as the API serves it today, or null without one (404).
+Future<duvet.Identity?> servedIdentity(E2EEngine engine) async {
+  try {
+    return await engine.api.identity(engine.user);
+  } on duvet.DuvetApiException catch (error) {
+    if (error.statusCode == 404) return null;
+    rethrow;
+  }
+}
+
+/// observe_user of the user's own identity, as served: what the core made of it (`not_own_identity`, an identity this
+/// device doesn't hold).
+Future<String?> _observeOwn(E2EEngine engine, duvet.Identity served) async {
+  final seen = await engine.host.handle<Map<String, Object?>>({
+    'cmd': 'observe_user',
+    'user_id': engine.user,
+    'identity_key': served.identityKey,
+    'device_list': served.deviceList,
+    'certificates': served.certificates,
+  });
+  return seen['reason'] as String?;
+}
+
+/// What the user's identity, as served, makes of this device (step 5): none yet, a first device; one this device
+/// doesn't hold, a new device; its own, ready. Served one this device doesn't hold while it holds another, a
+/// rotation's transfer for it may wait in the inbox ([takeInbox]): without one, the user's devices went on without
+/// this one, which is off the list (removed; a rotation off it removes it, and starting over leaves it unlisted).
+Future<EngineState> identityState(E2EEngine engine, Future<Object?> Function() takeInbox) async {
+  var served = await servedIdentity(engine);
+  if (served == null) return const EngineState.firstDevice();
+  final status = await coreStatus(engine.host);
+  if (!status.hasIdentity) return EngineState.newDevice;
+  // A rotation of this device's own, cut before its upload, holds the new identity the API doesn't serve yet: it goes
+  // up again as the same rotation (Task 25), never read as this device being off the list.
+  if (status.waitingUpload == 'rotate_keys') return EngineState.ready;
+  if (await _observeOwn(engine, served) != 'not_own_identity') return EngineState.ready;
+  await takeInbox();
+  served = await servedIdentity(engine) ?? served;
+  return await _observeOwn(engine, served) == 'not_own_identity' ? EngineState.removed : EngineState.ready;
+}
+
+/// The first device's identity goes up (PUT …/identity) with the list naming this device alone. Only after the API's
+/// 200 is it confirmed: identity_uploaded, device_list_uploaded with the version the API answered, then the own user
+/// observed (the core's rules after an upload, N2 and N3). False on a 409: another first device published first.
+Future<bool> publishIdentity(E2EEngine engine, IdentityMade made) async {
+  final int version;
+  try {
+    final published = await engine.api.putIdentity(
+      duvet.IdentityUpload(
+        identityKey: made.identityKey,
+        deviceList: made.deviceList,
+        certificate: made.certificate,
+        encryptedIdentity: made.encryptedIdentity,
+        wrappedBackupKey: made.wrappedBackupKey,
+      ),
+    );
+    version = published.deviceListVersion;
+  } on duvet.DuvetApiException catch (error) {
+    if (error.statusCode == 409) return false;
+    rethrow;
+  }
+  try {
+    await engine.host.handle<Object?>({'cmd': 'identity_uploaded'});
+  } on CoreError catch (error) {
+    // Nothing kept for an upload: a confirmation cut after it took this one, before the list's (M5 of the desktop's
+    // review).
+    if (error.code != 'not_found' || error.what != 'upload') rethrow;
+  }
+  await engine.host.handle<Object?>({'cmd': 'device_list_uploaded', 'version': version});
+  if (await servedIdentity(engine) case final served?) await _observeOwn(engine, served);
+  return true;
+}

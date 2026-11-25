@@ -4,6 +4,7 @@ import 'package:duvet/data/models.dart';
 import 'package:duvet/data/recent_chats.dart';
 import 'package:duvet/data/recent_chats.dart' as recent show previewOf;
 import 'package:duvet/data/repository.dart';
+import 'package:duvet/e2e/engine.dart' show EngineState;
 import 'package:duvet_client/duvet.dart' show Activity;
 import 'package:flutter/foundation.dart';
 
@@ -1573,6 +1574,25 @@ class FakeRepository implements ChatRepository {
 
   @override
   void wentToBack() => wentToBackTimes++;
+
+  /// What the encryption engine shows; a test sets it. Starting, as an app with no engine shows nothing of it.
+  @override
+  final ValueNotifier<EngineState> encryption = ValueNotifier(EngineState.starting);
+
+  /// The person's taps on it, by name, in order.
+  final encryptionTaps = <String>[];
+
+  @override
+  Future<void> makeIdentity() async => encryptionTaps.add('makeIdentity');
+
+  @override
+  Future<void> keySaved() async => encryptionTaps.add('keySaved');
+
+  @override
+  Future<void> uploadLater() async => encryptionTaps.add('uploadLater');
+
+  @override
+  Future<void> startOver() async => encryptionTaps.add('startOver');
 
   @override
   Future<void> logIn(String email, String password) async {

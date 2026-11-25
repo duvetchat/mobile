@@ -41,7 +41,7 @@ void main() {
     answerWait: answerWait ?? const Duration(seconds: 5),
   );
   String database(String user) => '${support.path}/e2e/$user/core.db';
-  const ready = (state: HostState.ready, keyStorage: 'provided');
+  const ready = (state: HostState.ready, keyStorage: 'provided', reason: null);
 
   /// The app's engine, its database made and a device in it, open and answering on the port: its device's ID.
   Future<(CoreGate, String)> appWithDevice() async {
@@ -88,10 +88,14 @@ void main() {
     expect(await storage.readAll(), kept);
     await app.close();
 
-    // A database whose key is gone is never given another: no key opens it.
+    // A database whose key is gone is never given another: no key opens it, which the open says (bad_key), so the
+    // engine doesn't try it again.
     FlutterSecureStorage.setMockInitialValues({});
-    expect((await gate(app: true).open(ana)).state, HostState.failed);
+    expect(await gate(app: true).open(ana), (state: HostState.failed, keyStorage: null, reason: 'bad_key'));
     expect(await storage.readAll(), isEmpty);
+    // One the kept key doesn't open, the same.
+    FlutterSecureStorage.setMockInitialValues({DbKeys.nameOf(ana): base64Encode(Uint8List(32))});
+    expect(await gate(app: true).open(ana), (state: HostState.failed, keyStorage: null, reason: 'bad_key'));
   }, skip: noCore);
 
   test('second_engine_asks_the_first', () async {

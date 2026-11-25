@@ -29,6 +29,8 @@ import 'data/voice.dart';
 import 'data/webrtc_engine.dart';
 import 'calls.dart';
 import 'deep_links.dart';
+// The core's gate needs dart:io and isolates, which the web build lacks.
+import 'e2e/app_host_web.dart' if (dart.library.io) 'e2e/app_host.dart';
 import 'mention_notices.dart';
 import 'push/background.dart';
 import 'push/notifications.dart';
@@ -76,7 +78,14 @@ Future<void> main() async {
       cacheManager: pictureStore,
     ).then((_) {}, onError: (Object e) => debugPrint('AudioService.init failed: $e')),
   );
-  final repository = DuvetRepository(forgetNotifications: forgetChat);
+  final repository = DuvetRepository(
+    forgetNotifications: forgetChat,
+    // The encryption engine runs here, the app's engine, on its gate (lib/e2e), once the app is on a screen: main()
+    // runs on audio_service's engine too, which may start with none (shownAtStart).
+    encryptionHost: appCoreHost,
+    onScreen: () =>
+        shownAtStart(binding.lifecycleState, binding.platformDispatcher.implicitView?.physicalSize ?? Size.zero),
+  );
   // The background renewal asks this isolate first: the session keeps one owner while the app runs
   // (lib/push/renewal.dart).
   answerRenewals(() => repository.renewForBackground(renewalEvery));

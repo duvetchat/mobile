@@ -1,6 +1,7 @@
 import 'package:duvet_client/duvet.dart' show Activity;
 import 'package:flutter/foundation.dart';
 
+import '../e2e/engine.dart' show EngineState;
 import 'models.dart';
 import 'recent_chats.dart';
 import 'voice_signaling.dart';
@@ -67,6 +68,17 @@ abstract interface class ChatRepository {
   /// The app went to the background: its own notices and their sound keep quiet there, as the phone's notifications
   /// tell of what comes (lib/push).
   void wentToBack();
+
+  /// End-to-end encryption on this device, as its engine has it (lib/e2e/engine.dart): what the app shows of it.
+  ValueListenable<EngineState> get encryption;
+
+  /// The person's taps on it: make a first device's identity (Set up, or Finish an upload that was cut), say its
+  /// recovery key is saved (its upload), put that upload off after it failed (Later), and set this installation up
+  /// again as a new device (a removed device, or one whose database's key is lost). Each does nothing in another state.
+  Future<void> makeIdentity();
+  Future<void> keySaved();
+  Future<void> uploadLater();
+  Future<void> startOver();
 
   Future<void> logIn(String email, String password);
 
