@@ -1,0 +1,1907 @@
+// The API as the encryption engine sees it, in memory, for the engine's tests (PLAN-E2E-CLIENTES.md, Task 9): the
+// desktop's testing/fake-api.ts in Dart, with the same routes (PLAN-E2E-API.md, its routes A to K), answers, events and
+// switches. It answers through an http.Client, as the API does, so duvet_client's own RestClient runs against it; a
+// connection to the gateway hears its events. Switches lose an answer, answer 426, 503, 409 or any refusal, hold events
+// to let them go backwards or twice, and take an entry's data out of its event. A request's events go out after its
+// answer, at the next turn of the event loop, once the code that awaited the answer ran on to its next timer or I/O (on
+// the desktop, two microtasks after it); each is its data as it was when the request sent it; holdEvents gives any
+// other order. It reads what the core signs (CBOR, Ed25519) and an MLS message's framing as the API does, but runs no
+// validator: a commit is taken by its generation and epoch alone, and of what it changes the fake knows only the
+// devices its welcome brings and the one an external commit adds.
+import 'dart:async';
+import 'dart:convert';
+import 'dart:math';
+import 'dart:typed_data';
+
+import 'package:duvet/e2e/uuid.dart';
+import 'package:http/http.dart' as http;
+import 'package:http/testing.dart';
+
+import 'ed25519.dart';
+
+/// Where the fake answers: any origin does, only the path counts.
+const fakeApiUrl = 'https://fake-api.test';
+
+/// What a connection to the gateway hears: a dispatch's type and data.
+typedef GatewayEvent = ({String type, Object? data});
+
+/// Which requests a switch takes: its method (any without one) and its path, as written (a String) or by a RegExp.
+typedef RouteMatch = ({String? method, Pattern path});
+
+class _Answer {
+  const _Answer(this.status, {this.body, this.headers = const {}});
+  final int status;
+  final Object? body;
+  final Map<String, String> headers;
+}
+
+/// A refusal a route answers with, thrown from anywhere in it.
+class _Refusal implements Exception {
+  const _Refusal(this.answer);
+  final _Answer answer;
+}
+
+_Refusal _fail(int status, String error, [Map<String, Object?> extra = const {}]) =>
+    _Refusal(_Answer(status, body: {'error': error, ...extra}));
+
+final _uuid = RegExp(r'^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$');
+const _uuidPath = '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}';
+final _base64 = RegExp(r'^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$');
+final _random = Random.secure();
+Uint8List _randomBytes(int length) => Uint8List.fromList(List.generate(length, (_) => _random.nextInt(256)));
+
+// The API's limits (its GET /api/e2e gives them out), in bytes but for the counts.
+const _limits = {
+  'ciphertext_bytes': 32 << 10,
+  'key_packages': 100,
+  'last_resort_key_packages': 1,
+  'key_package_bytes': 4 << 10,
+  'inbox_message_bytes': 64 << 10,
+  'history_share_parts': 64,
+  'history_share_part_bytes': (1 << 20) + 16,
+  'group_members': 20,
+  'listed_devices': 20,
+  'commit_bytes': 256 << 10,
+  'welcome_bytes': 1 << 20,
+  'group_info_bytes': 1 << 20,
+  'encrypted_identity_bytes': 1 << 10,
+  'wrapped_backup_key_bytes': 1 << 10,
+  'wrapped_previous_backup_keys_bytes': 64 << 10,
+  'certificate_bytes': 1 << 10,
+  'device_list_bytes': 4 << 10,
+  'epochs_behind': 5,
+};
+int _limit(String name) => _limits[name]!;
+
+/// An event carries an entry's data up to this much; past it the client reads the entry from the queue.
+const _maxEventData = 16 << 10;
+
+/// A key package is handed out only with this much of its life left.
+const _keyPackageMargin = 24 * 3600 * 1000;
+
+/// Under this many single-use key packages left to hand out, a device hears KEY_PACKAGES_LOW.
+const _keyPackagesLow = 20;
+const _inboxMax = 1000;
+const _noMax = 1 << 62;
+
+// The labels the core signs its objects under: a signature covers label || 0x00 || body.
+const _certificateLabel = 'duvet device certificate v1';
+const _listLabel = 'duvet device list v1';
+const _leaveLabel = 'duvet leave v1';
+const _bindLabel = 'duvet device bind v1';
+
+// -----------------------------------------------------------------------------------------------------------------
+// What the fake reads of what the core makes.
+
+/// One CBOR value, as the core writes them: definite lengths, text keys, no tags; null for anything else.
+Object? _cbor(Uint8List bytes) {
+  final r = _Reader(bytes);
+  int uint(int info) {
+    if (info < 24) return info;
+    if (info > 27) throw const FormatException('no definite length');
+    return r.uint(1 << (info - 24));
+  }
+
+  Object? item(int depth) {
+    if (depth > 32) throw const FormatException('nested too deep');
+    final head = r.uint(1);
+    final info = head & 31;
+    switch (head >> 5) {
+      case 0:
+        return uint(info);
+      case 1:
+        return -1 - uint(info);
+      case 2:
+        return Uint8List.fromList(r.take(uint(info)));
+      case 3:
+        return utf8.decode(r.take(uint(info)));
+      case 4:
+        return [for (var n = uint(info); n > 0; n--) item(depth + 1)];
+      case 5:
+        final map = <String, Object?>{};
+        for (var n = uint(info); n > 0; n--) {
+          final key = item(depth + 1);
+          if (key is! String || map.containsKey(key)) throw const FormatException('not a text key, or one twice');
+          map[key] = item(depth + 1);
+        }
+        return map;
+      case 7:
+        if (info == 20 || info == 21) return info == 21;
+        if (info == 22) return null;
+    }
+    throw const FormatException('not a value the core writes');
+  }
+
+  try {
+    final value = item(0);
+    return r.left == 0 ? value : null;
+  } on FormatException {
+    return null;
+  }
+}
+
+class _Reader {
+  _Reader(this.bytes);
+  final Uint8List bytes;
+  var at = 0;
+
+  Uint8List take(int n) {
+    if (n < 0 || at + n > bytes.length) throw const FormatException('cut short');
+    return Uint8List.sublistView(bytes, at, at += n);
+  }
+
+  int uint(int n) => take(n).fold(0, (value, byte) => value * 256 + byte);
+
+  // An MLS vector's length takes 1, 2 or 4 bytes, as its first two bits say.
+  Uint8List vector() {
+    final first = uint(1);
+    final more = switch (first >> 6) {
+      0 => 0,
+      1 => 1,
+      2 => 3,
+      _ => throw const FormatException('a length MLS never takes'),
+    };
+    return take(more == 0 ? first : (first & 0x3f) * (1 << (8 * more)) + uint(more));
+  }
+
+  int get left => bytes.length - at;
+}
+
+Map<String, Object?>? _asMap(Object? value) => value is Map<String, Object?> ? value : null;
+Uint8List? _asBytes(Object? value, [int? length]) =>
+    value is Uint8List && (length == null || value.length == length) ? value : null;
+String? _asUuid(Object? value) {
+  final bytes = _asBytes(value, 16);
+  if (bytes == null) return null;
+  final hex = [for (final byte in bytes) byte.toRadixString(16).padLeft(2, '0')].join();
+  return '${hex.substring(0, 8)}-${hex.substring(8, 12)}-${hex.substring(12, 16)}-${hex.substring(16, 20)}-'
+      '${hex.substring(20)}';
+}
+
+bool _equal(List<int> a, List<int> b) {
+  if (a.length != b.length) return false;
+  for (var i = 0; i < a.length; i++) {
+    if (a[i] != b[i]) return false;
+  }
+  return true;
+}
+
+/// A signed object's body, once its Ed25519 signature over label || 0x00 || body verifies with [key]; else null.
+Map<String, Object?>? _signedBody(String label, Uint8List signed, Uint8List key) {
+  final object = _asMap(_cbor(signed));
+  final body = _asBytes(object?['body']);
+  final sig = _asBytes(object?['sig'], 64);
+  if (body == null || sig == null || key.length != 32) return null;
+  if (!verifyEd25519(key, [...utf8.encode(label), 0, ...body], sig)) return null;
+  final fields = _asMap(_cbor(body));
+  return fields?['v'] == 1 ? fields : null;
+}
+
+typedef _Certificate = ({String user, String device, Uint8List signatureKey, Uint8List hpkeKey});
+
+_Certificate? _readCertificate(Uint8List signed, Uint8List identityKey) {
+  final body = _signedBody(_certificateLabel, signed, identityKey);
+  final (user, device) = (_asUuid(body?['user']), _asUuid(body?['device']));
+  final (signatureKey, hpkeKey) = (_asBytes(body?['signature_key'], 32), _asBytes(body?['hpke_key'], 32));
+  if (user == null || device == null || signatureKey == null || hpkeKey == null) return null;
+  return (user: user, device: device, signatureKey: signatureKey, hpkeKey: hpkeKey);
+}
+
+typedef _DeviceList = ({String user, int version, List<String> devices});
+
+_DeviceList? _readDeviceList(Uint8List signed, Uint8List identityKey) {
+  final body = _signedBody(_listLabel, signed, identityKey);
+  final user = _asUuid(body?['user']);
+  final key = _asBytes(body?['identity_key'], 32);
+  final version = body?['version'];
+  final listed = body?['devices'];
+  if (user == null || key == null || !_equal(key, identityKey) || version is! int || listed is! List) return null;
+  // The devices are in order, each once.
+  final devices = <String>[];
+  for (final raw in listed) {
+    final device = _asUuid(raw);
+    if (device == null || device.compareTo(devices.lastOrNull ?? '') <= 0) return null;
+    devices.add(device);
+  }
+  return (user: user, version: version, devices: devices);
+}
+
+const _public = 1;
+const _private = 2;
+const _welcome = 3;
+const _groupInfo = 4;
+
+/// What the API reads of an MLS message (RFC 9420): its wire format, and its group, epoch and sender or content. A
+/// public message's sender type: 1 a member, 2 an external sender, 4 a new member's own commit; a private message's
+/// content type: 1 an application message; a welcome's new members by their key packages' refs in base64.
+typedef _Framing = ({
+  int wire,
+  String? conversation,
+  int? generation,
+  int? epoch,
+  int? sender,
+  int? content,
+  List<String>? welcomed,
+});
+
+_Framing? _framing(Uint8List data) {
+  try {
+    final r = _Reader(data);
+    if (r.uint(2) != 1) return null;
+    final wire = r.uint(2);
+    _Framing framed({
+      String? conversation,
+      int? generation,
+      int? epoch,
+      int? sender,
+      int? content,
+      List<String>? welcomed,
+    }) => (
+      wire: wire,
+      conversation: conversation,
+      generation: generation,
+      epoch: epoch,
+      sender: sender,
+      content: content,
+      welcomed: welcomed,
+    );
+    if (wire == _groupInfo) return framed();
+    if (wire == _welcome) {
+      r.uint(2); // its cipher suite
+      final secrets = _Reader(r.vector());
+      final welcomed = <String>[];
+      while (secrets.left > 0) {
+        welcomed.add(base64Encode(secrets.vector()));
+        secrets.vector(); // the KEM output
+        secrets.vector(); // the sealed group secrets
+      }
+      return framed(welcomed: welcomed);
+    }
+    if (wire != _public && wire != _private) return null;
+    final group = r.vector();
+    if (group.length != 20) return null;
+    final epoch = r.uint(8);
+    final conversation = _asUuid(Uint8List.fromList(group.sublist(0, 16)));
+    final generation = group.sublist(16).fold(0, (value, byte) => value * 256 + byte);
+    return wire == _public
+        ? framed(conversation: conversation, generation: generation, epoch: epoch, sender: r.uint(1))
+        : framed(conversation: conversation, generation: generation, epoch: epoch, content: r.uint(1));
+  } on FormatException {
+    return null;
+  }
+}
+
+// -----------------------------------------------------------------------------------------------------------------
+// What a request sends, read as the API reads it: a refusal for anything else.
+
+/// A request's binary field, standard base64, as its text: from [min] bytes to [max] once decoded.
+String _base64In(Object? value, String field, {int max = _noMax, int min = 0}) {
+  if (value is! String || !_base64.hasMatch(value)) throw _fail(400, "$field isn't base64");
+  final length = base64Decode(value).length;
+  if (length > max) throw _fail(400, '$field is $max bytes at most');
+  if (length < min) throw _fail(400, '$field is $min bytes at least');
+  return value;
+}
+
+Uint8List _bytesIn(Object? value, String field, {int max = _noMax, int min = 0}) =>
+    base64Decode(_base64In(value, field, max: max, min: min));
+
+String _uuidIn(Object? value, String field) {
+  if (value is! String || !_uuid.hasMatch(value)) throw _fail(400, "$field isn't a UUID");
+  return value;
+}
+
+int _numberIn(Object? value, String field) {
+  if (value is! int || value < 0) throw _fail(400, "$field isn't a number");
+  return value;
+}
+
+/// A rotation's transfers, as the API binds them: an array of objects, each a device, its certificate and its message.
+List<({String deviceId, String certificate, String message})> _transfersIn(Object? value) {
+  if (value == null) return const [];
+  if (value is! List) throw _fail(400, 'transfers is an array');
+  return [
+    for (final transfer in value)
+      if (transfer is! Map)
+        throw _fail(400, 'a transfer is an object')
+      else
+        (
+          deviceId: _uuidIn(transfer['device_id'], 'transfers.device_id'),
+          certificate: _base64In(
+            transfer['certificate'],
+            'transfers.certificate',
+            max: _limit('certificate_bytes'),
+            min: 1,
+          ),
+          message: _base64In(transfer['message'], 'transfers.message', max: _limit('inbox_message_bytes'), min: 1),
+        ),
+  ];
+}
+
+// The platforms X-Duvet-Client names, as the API has them.
+const _platforms = ['desktop-windows', 'desktop-macos', 'desktop-linux', 'web', 'android', 'ios'];
+
+/// A version as the API reads one: major.minor.patch, each part 1 to 4 decimal digits; null for anything else.
+List<int>? _versionIn(String text) {
+  final parts = text.split('.');
+  final digits = RegExp(r'^\d{1,4}$');
+  return parts.length == 3 && parts.every(digits.hasMatch) ? [for (final part in parts) int.parse(part)] : null;
+}
+
+/// What X-Duvet-Client says the client is, `<platform>/<version>`, as the API reads it; null for anything else.
+({String platform, List<int> version})? _clientIn(String? header) {
+  final match = RegExp(r'^([^/]*)/(.*)$', dotAll: true).firstMatch(header ?? '');
+  final version = match == null ? null : _versionIn(match[2]!);
+  return version != null && _platforms.contains(match![1]) ? (platform: match[1]!, version: version) : null;
+}
+
+/// Whether a version is the least one or a later one.
+bool _atLeast(List<int> version, List<int> least) {
+  for (var i = 0; i < version.length; i++) {
+    if (version[i] != least[i]) return version[i] > least[i];
+  }
+  return true;
+}
+
+// -----------------------------------------------------------------------------------------------------------------
+// The fake's state.
+
+class _Session {
+  _Session(this.user, this.token, this.challenge);
+  final String user;
+  final String token;
+  Uint8List challenge;
+  String? device;
+}
+
+class _Device {
+  _Device(this.id, this.user, this.name, this.client, this.signatureKey, this.hpkeKey, this.createdAt);
+  final String id;
+  final String user;
+  final String name;
+  final String? client;
+  final Uint8List signatureKey;
+  final Uint8List hpkeKey;
+  final String createdAt;
+  Uint8List? certificate;
+
+  /// The identity that certified it.
+  String? certifiedBy;
+  var listed = false;
+  var removed = false;
+}
+
+class _Identity {
+  _Identity(this.id, this.identityKey, this.deviceList, this.version, this.changedAt, this.backup);
+  final String id;
+  final Uint8List identityKey;
+  Uint8List deviceList;
+  int version;
+  final String changedAt;
+
+  /// encrypted_identity, wrapped_backup_key and wrapped_previous_backup_keys, as they came.
+  final Map<String, Object?> backup;
+}
+
+class _KeyPackage {
+  _KeyPackage(this.data, this.expiresAt, this.lastResort);
+  final String data;
+  final int expiresAt;
+  final bool lastResort;
+  var handedOut = false;
+}
+
+class _Conversation {
+  _Conversation(this.id, this.type, this.ownerId, this.createdAt, this.legacy, this.members);
+  final String id;
+  final int type;
+  String ownerId;
+  final String createdAt;
+  final bool legacy;
+  List<Map<String, Object?>> members;
+  ({int generation, int epoch, String groupInfo})? group;
+
+  /// The last number its queue gave: commits, welcomes, proposals, edits, deletions and messages share it.
+  var seq = 0;
+  final entries = <Map<String, Object?>>[];
+  final messages = <Map<String, Object?>>[];
+  final deleted = <String>{};
+
+  /// The devices with a leaf in its group, by the number of the entry they have had it from.
+  var leaves = <String, int>{};
+
+  /// What each commit taken answered, by its bytes: the same commit again gets it.
+  final commits = <String, Map<String, Object?>>{};
+}
+
+class _Segment {
+  _Segment(this.id, this.identity, this.conversationId, this.day, this.complete, this.keyId, this.size, this.file);
+  final String id;
+  final String identity;
+  final String conversationId;
+  final String day;
+  final bool complete;
+  final String keyId;
+  final int size;
+  final String createdAt = DateTime.now().toUtc().toIso8601String();
+  final String file;
+}
+
+class _Share {
+  _Share(
+    this.id,
+    this.conversationId,
+    this.fromUser,
+    this.fromDevice,
+    this.toUser,
+    this.kind,
+    this.range,
+    this.startsAt,
+    this.size,
+    this.parts,
+  );
+  final String id;
+  final String conversationId;
+  final String fromUser;
+  final String fromDevice;
+  final String toUser;
+  final String kind;
+  final String range;
+  final int startsAt;
+  final int size;
+  final int parts;
+  final uploaded = <int, String>{};
+  var completed = false;
+  final acked = <String>{};
+}
+
+class _Connection {
+  _Connection(this.user, this.device, this.listener);
+  final String user;
+  final String? device;
+  final void Function(GatewayEvent event) listener;
+}
+
+class _Context {
+  _Context(this.session, this.device, this.params, this.query, this.body, this.bytes, this.headers);
+  final _Session? session;
+  final _Device? device;
+  final Map<String, String> params;
+  final Map<String, String> query;
+  final Map<String, Object?>? body;
+  final Uint8List bytes;
+  final Map<String, String> headers;
+
+  _Session get me => session!;
+  Object? operator [](String field) => body?[field];
+}
+
+enum _Needs { nothing, session, device, listed }
+
+/// A route: its method, its path, what its session needs, its handler, and whether any client may call it.
+typedef _Route = ({String method, RegExp path, _Needs needs, _Answer Function(_Context ctx) handler, bool anyClient});
+
+/// An event a request sends: to its user's connections, or to one device's.
+typedef _Outgoing = ({String user, String? device, GatewayEvent event});
+
+String _now() => DateTime.now().toUtc().toIso8601String();
+_Answer _ok(Object? body, [int status = 200]) => _Answer(status, body: body);
+const _noContent = _Answer(204);
+
+/// A copy of JSON's values, so what's sent is what was there then.
+T _clone<T>(T value) => jsonDecode(jsonEncode(value)) as T;
+
+class FakeApi {
+  FakeApi() {
+    _routes = _table();
+  }
+
+  /// The API's Ed25519 public key, its groups' one external sender, in base64 (GET /api/e2e's).
+  final String externalSender = base64Encode(ed25519PublicKey(_randomBytes(32)));
+
+  /// The cutover's instant, as GET /api/e2e gives it.
+  String? cutoverAt;
+
+  /// Take every entry's data out of its event, as one past 16 KiB travels: the client reads it from the queue.
+  var stripData = false;
+
+  /// What POST /api/e2e/decrypt-failures was told.
+  final decryptFailures = <({String kind, Object? count})>[];
+
+  /// The lowest version of each platform with end-to-end encryption (E2E_MIN_CLIENTS), which GET /api/e2e gives out:
+  /// a request from a client below it, or of a platform it doesn't name, gets a 426. Day one's platforms, any version.
+  Map<String, String> minClients = {'desktop-windows': '0.0.0', 'web': '0.0.0', 'android': '0.0.0'};
+
+  final _users = <String>{};
+  final _sessions = <String, _Session>{};
+  final _devices = <String, _Device>{};
+  final _identities = <String, _Identity>{};
+  final _keyPackages = <String, Map<String, _KeyPackage>>{};
+  final _conversations = <String, _Conversation>{};
+  final _inboxes = <String, List<Map<String, Object?>>>{};
+  final _segments = <String, _Segment>{};
+  final _shares = <String, _Share>{};
+  final _files = <String, Uint8List>{};
+
+  /// The inbox messages that are a rotation's transfers, by ID.
+  final _transfers = <String>{};
+
+  /// What each message answers: the ID of the message it replies to, by its own.
+  final _repliesTo = <String, String>{};
+  final _connections = <_Connection>{};
+
+  /// What the request being answered sends, which goes out once its answer is made.
+  final _outbox = <_Outgoing>[];
+
+  /// Events held for [releaseEvents], while holding.
+  List<({_Connection connection, GatewayEvent event})>? _held;
+  final _switches = <({RouteMatch match, _Answer? answer})>[];
+  late final List<_Route> _routes;
+  var _lastId = '';
+
+  /// An ID the fake mints, always above the one before as the API's are: two in one millisecond still sort in turn.
+  String _id() {
+    var id = uuidv7();
+    if (id.compareTo(_lastId) <= 0) {
+      id = uuidv7(int.parse(_lastId.substring(0, 13).replaceFirst('-', ''), radix: 16) + 1);
+    }
+    return _lastId = id;
+  }
+
+  // ---------------------------------------------------------------------------------------------------------------
+  // What a test does around the routes.
+
+  /// A user of the API, by their new ID.
+  String addUser() {
+    final id = _id();
+    _users.add(id);
+    return id;
+  }
+
+  /// A session of the user's, as a login gives it: its token and its challenge to bind a device with.
+  ({String token, String deviceChallenge}) signIn(String user) {
+    if (!_users.contains(user)) throw StateError('no user $user');
+    final token = uuidv7();
+    final challenge = _randomBytes(32);
+    _sessions[token] = _Session(user, token, challenge);
+    return (token: token, deviceChallenge: base64Encode(challenge));
+  }
+
+  /// A conversation of these users (its members by their membership's ID, in this order), and its ID.
+  String addConversation({required bool group, required List<String> members, String? owner, bool legacy = false}) {
+    final id = _id();
+    final at = _now();
+    _conversations[id] = _Conversation(id, group ? 2 : 1, owner ?? members.first, at, legacy, [
+      for (final user in members)
+        {'id': _id(), 'conversation_id': id, 'user_id': user, 'created_at': at, 'updated_at': at},
+    ]);
+    return id;
+  }
+
+  /// A connection to the gateway of the session's, identified with its device (null for none): it hears READY at
+  /// once, with each conversation's group as READY gives it, then the events for its user, and for its device. Its end.
+  void Function() connect(String token, String? device, void Function(GatewayEvent event) listener) {
+    final session = _sessions[token];
+    if (session == null) throw StateError('no such session');
+    final connection = _Connection(session.user, device, listener);
+    _connections.add(connection);
+    final conversations = [
+      for (final conv in _conversationsOf(session.user))
+        // Only REST answers have joined_seq.
+        _view(conv, null)..update('mls', (mls) => mls == null ? null : ((mls as Map)..remove('joined_seq'))),
+    ];
+    listener((
+      type: 'READY',
+      data: _clone({
+        'user': {'id': session.user},
+        'conversations': conversations,
+      }),
+    ));
+    return () => _connections.remove(connection);
+  }
+
+  /// The next request [match] takes does its work, and its answer is lost: the client fails, as with a cut connection.
+  void loseAnswer(RouteMatch match) => _switches.add((match: match, answer: null));
+
+  /// The next request [match] takes is refused, and does nothing: 426 and 503 in the API's words (503 with its
+  /// Retry-After), any other with the [body] given.
+  void refuse(RouteMatch match, int status, {Object? body, Map<String, String> headers = const {}}) {
+    final own = switch (status) {
+      426 => const _Answer(426, body: {'error': 'update Duvet', 'client': null, 'minimum': null}),
+      503 => const _Answer(503, body: {'error': 'encrypted conversations are paused'}, headers: {'Retry-After': '60'}),
+      _ => _Answer(status, body: body),
+    };
+    _switches.add((
+      match: match,
+      answer: _Answer(status, body: body ?? own.body, headers: {...own.headers, ...headers}),
+    ));
+  }
+
+  /// Events wait from now on, until [releaseEvents].
+  void holdEvents() => _held ??= [];
+
+  /// The events held, sent: in their order or backwards, and each once or twice. Then events go at once again.
+  void releaseEvents({bool reverse = false, bool repeat = false}) {
+    final held = _held ?? const [];
+    _held = null;
+    for (final (:connection, :event) in reverse ? held.reversed : held) {
+      for (var times = repeat ? 2 : 1; times > 0; times--) {
+        connection.listener((type: event.type, data: _clone(event.data)));
+      }
+    }
+  }
+
+  // ---------------------------------------------------------------------------------------------------------------
+  // Requests.
+
+  /// The API, as an http.Client: a request to any of its routes gets the API's answer.
+  late final http.Client client = MockClient(_handle);
+
+  Future<http.Response> _handle(http.Request request) async {
+    final path = request.url.path;
+    final switched = _switches.indexWhere((s) => _matches(s.match, request.method, path));
+    final effect = switched < 0 ? null : _switches.removeAt(switched);
+    if (effect?.answer case final answer?) return _respond(answer);
+    final (answer, events) = _answer(request);
+    // Its events go once its answer is made, lost or not: after the code that awaited it ran on.
+    Timer.run(() => _send(events));
+    if (effect != null) throw http.ClientException('the answer was lost', request.url);
+    return _respond(answer);
+  }
+
+  /// A request's answer, and the events it sends: none for a refusal, as the API's rolled-back work sends none.
+  (_Answer, List<_Outgoing>) _answer(http.Request request) {
+    final path = request.url.path;
+    final route = _routes.where((r) => r.method == request.method && r.path.hasMatch(path)).firstOrNull;
+    if (route == null) return (const _Answer(404, body: {'error': 'no such route'}), const []);
+    try {
+      // In the API's order: the session (401), the client (426), the device (403), then the body (400).
+      final session = _session(request.headers, route.needs);
+      if (route.needs != _Needs.nothing && !route.anyClient) _checkClient(request.headers);
+      final device = session?.device == null ? null : _devices[session!.device];
+      if ((route.needs == _Needs.device || route.needs == _Needs.listed) && (device == null || device.removed)) {
+        throw _fail(403, 'this session has no device');
+      }
+      if (route.needs == _Needs.listed && !device!.listed) throw _fail(403, "this device isn't on your device list");
+      Map<String, Object?>? body;
+      if ((request.headers['content-type'] ?? '').contains('json') && request.bodyBytes.isNotEmpty) {
+        try {
+          body = _asMap(jsonDecode(utf8.decode(request.bodyBytes)));
+        } on FormatException {
+          throw _fail(400, "the body isn't JSON");
+        }
+      }
+      final match = route.path.firstMatch(path)!;
+      final params = {for (final name in match.groupNames) name: match.namedGroup(name)!};
+      final ctx = _Context(
+        session,
+        device,
+        params,
+        request.url.queryParameters,
+        body,
+        request.bodyBytes,
+        request.headers,
+      );
+      final answer = route.handler(ctx);
+      final events = [..._outbox];
+      _outbox.clear();
+      return (answer, events);
+    } on _Refusal catch (refusal) {
+      _outbox.clear();
+      return (refusal.answer, const []);
+    }
+  }
+
+  _Session? _session(Map<String, String> headers, _Needs needs) {
+    if (needs == _Needs.nothing) return null;
+    final token = RegExp(r'^Bearer (.+)$').firstMatch(headers['authorization'] ?? '')?[1];
+    final session = token == null ? null : _sessions[token];
+    if (session == null) throw _fail(401, 'unauthorized');
+    return session;
+  }
+
+  /// The client gate: a client without end-to-end encryption is told to update Duvet (426), in the API's words.
+  void _checkClient(Map<String, String> headers) {
+    final client = _clientIn(headers['x-duvet-client']);
+    final least = client == null ? null : minClients[client.platform];
+    final lowest = least == null ? null : _versionIn(least);
+    if (client != null && lowest != null && _atLeast(client.version, lowest)) return;
+    throw _fail(426, 'update Duvet', {
+      'client': client == null ? null : '${client.platform}/${client.version.join('.')}',
+      'minimum': least,
+    });
+  }
+
+  /// An event the request sends, as its data is now: what this request or a later one changes after doesn't reach it.
+  void _emit(String user, String type, Object? data, [String? device]) =>
+      _outbox.add((user: user, device: device, event: (type: type, data: _clone(data))));
+
+  /// Events to each connection of their user (of their device, when they name one), each its own copy; or held.
+  void _send(List<_Outgoing> events) {
+    for (final (:user, :device, :event) in events) {
+      for (final connection in [..._connections]) {
+        if (connection.user != user || (device != null && connection.device != device)) continue;
+        if (_held case final held?) {
+          held.add((connection: connection, event: event));
+        } else {
+          connection.listener((type: event.type, data: _clone(event.data)));
+        }
+      }
+    }
+  }
+
+  // ---------------------------------------------------------------------------------------------------------------
+  // The routes (PLAN-E2E-API.md, its routes A to K): under /api, the conversations' at /api/users/@me/conversations.
+  // Every route that takes a session takes only a client with end-to-end encryption, but GET /api/e2e and the
+  // conversations' list (anyClient), so a client without it still starts and sees its conversations.
+
+  List<_Route> _table() {
+    const me = '/api/users/@me';
+    const conv = '$me/conversations/(?<conversation>$_uuidPath)';
+    _Route route(
+      String method,
+      String path,
+      _Needs needs,
+      _Answer Function(_Context ctx) handler, {
+      bool any = false,
+    }) => (method: method, path: RegExp('^$path\$'), needs: needs, handler: handler, anyClient: any);
+    return [
+      route('GET', '/api/e2e', _Needs.session, any: true, (_) {
+        return _ok({
+          'external_sender': externalSender,
+          'cutover_at': cutoverAt,
+          'paused': false,
+          'min_clients': minClients,
+          'limits': _limits,
+        });
+      }),
+      route('POST', '/api/e2e/decrypt-failures', _Needs.session, (ctx) {
+        decryptFailures.add((kind: '${ctx['kind']}', count: ctx['count'] ?? 1));
+        return _noContent;
+      }),
+      route('POST', '$me/devices/challenge', _Needs.session, (ctx) {
+        ctx.me.challenge = _randomBytes(32);
+        return _ok({'device_challenge': base64Encode(ctx.me.challenge)});
+      }),
+      route('POST', '$me/devices', _Needs.session, _registerDevice),
+      route('POST', '$me/devices/(?<device>$_uuidPath)/bind', _Needs.session, _bindDevice),
+      route('GET', '$me/devices', _Needs.session, (ctx) {
+        return _ok([for (final device in _devicesOf(ctx.me.user)) _deviceView(device, ctx.me)]);
+      }),
+      route('DELETE', '$me/devices/(?<device>$_uuidPath)', _Needs.session, (ctx) {
+        final device = _devices[ctx.params['device']];
+        if (device == null || device.user != ctx.me.user || device.removed) throw _fail(404, 'device not found');
+        if (device.listed) throw _fail(409, 'sign a device list without it');
+        _removeDevices(ctx.me.user, [device]);
+        return _noContent;
+      }),
+      route('PUT', '$me/identity', _Needs.device, _putIdentity),
+      route('PUT', '$me/device-list', _Needs.device, _putDeviceList),
+      route('GET', '$me/identity/backup', _Needs.device, (ctx) {
+        final identity = _identities[ctx.me.user];
+        if (identity == null) throw _fail(404, 'no identity');
+        return _ok({
+          'identity_key': base64Encode(identity.identityKey),
+          'device_list': base64Encode(identity.deviceList),
+          ...identity.backup,
+        });
+      }),
+      route('GET', '/api/users/identities', _Needs.session, (ctx) {
+        final ids = [
+          for (final id in (ctx.query['ids'] ?? '').split(','))
+            if (id.isNotEmpty) id,
+        ];
+        if (ids.length > 50 || ids.any((id) => !_uuid.hasMatch(id))) throw _fail(400, 'ids are 50 user IDs at most');
+        return _ok([
+          for (final id in ids)
+            if (_identities.containsKey(id) && _mayRead(ctx.me.user, id)) _identityView(id),
+        ]);
+      }),
+      route('GET', '/api/users/(?<user>$_uuidPath)/identity', _Needs.session, (ctx) {
+        final user = ctx.params['user']!;
+        if (!_users.contains(user) || !_mayRead(ctx.me.user, user)) {
+          throw _fail(403, "you can't read this user's identity");
+        }
+        if (!_identities.containsKey(user)) throw _fail(404, 'no identity');
+        return _ok(_identityView(user));
+      }),
+      route('PUT', '$me/devices/@me/key-packages', _Needs.listed, _uploadKeyPackages),
+      route('POST', '/api/users/(?<user>$_uuidPath)/key-packages/claim', _Needs.listed, _claimKeyPackages),
+      route('POST', '/api/devices/(?<device>$_uuidPath)/inbox', _Needs.device, _sendToInbox),
+      route('GET', '$me/devices/@me/inbox', _Needs.device, (ctx) {
+        final after = ctx.query['after'] ?? '';
+        final limit = min(_positive(ctx.query['limit']) ?? 100, 100);
+        return _ok(
+          [
+            for (final m in _inboxes[ctx.device!.id] ?? const <Map<String, Object?>>[])
+              if ((m['id']! as String).compareTo(after) > 0) m,
+          ].take(limit).toList(),
+        );
+      }),
+      route('DELETE', '$me/devices/@me/inbox', _Needs.device, (ctx) {
+        final through = _uuidIn(ctx.query['through'], 'through');
+        _inboxes[ctx.device!.id] = [
+          for (final m in _inboxes[ctx.device!.id] ?? const <Map<String, Object?>>[])
+            if ((m['id']! as String).compareTo(through) > 0) m,
+        ];
+        return _noContent;
+      }),
+      route('GET', '$me/conversations', _Needs.session, any: true, (ctx) {
+        return _ok([for (final c in _conversationsOf(ctx.me.user)) _view(c, ctx.device)]);
+      }),
+      route('GET', '$conv/mls/group-info', _Needs.listed, (ctx) {
+        final group = _memberOf(ctx).group;
+        if (group == null) throw _fail(404, 'no group yet');
+        return _ok({'generation': group.generation, 'epoch': group.epoch, 'group_info': group.groupInfo});
+      }),
+      route('POST', '$conv/mls/commits', _Needs.listed, (ctx) => _ok(_commit(_memberOf(ctx), ctx, 'commits'), 201)),
+      route('GET', '$conv/mls/queue', _Needs.device, (ctx) => _queue(_memberOf(ctx), ctx.query)),
+      route('POST', '$conv/members', _Needs.listed, _addMember),
+      route('DELETE', '$conv/members/@me', _Needs.listed, _leave),
+      route('DELETE', '$conv/members/(?<user>$_uuidPath)', _Needs.listed, _removeMember),
+      route('POST', '$conv/messages', _Needs.listed, _sendMessage),
+      route('GET', '$conv/messages/deleted', _Needs.session, (ctx) {
+        final after = ctx.query['after'] ?? '';
+        final limit = min(_positive(ctx.query['limit']) ?? 1000, 1000);
+        return _ok({
+          'ids': ([
+            for (final id in _memberOf(ctx).deleted)
+              if (id.compareTo(after) > 0) id,
+          ]..sort()).take(limit).toList(),
+        });
+      }),
+      route('PATCH', '$conv/messages/(?<message>$_uuidPath)', _Needs.session, (ctx) => _changeMessage(ctx, 'edit')),
+      route('DELETE', '$conv/messages/(?<message>$_uuidPath)', _Needs.session, (ctx) => _changeMessage(ctx, 'delete')),
+      route('PUT', '$conv/history-shares/(?<share>$_uuidPath)', _Needs.listed, _putShare),
+      route('PUT', '$conv/history-shares/(?<share>$_uuidPath)/parts/(?<n>\\d+)', _Needs.listed, (ctx) {
+        final share = _ownShare(ctx);
+        final n = int.parse(ctx.params['n']!);
+        if (n >= share.parts) throw _fail(400, 'the share has ${share.parts} parts');
+        if (ctx.bytes.length > _limit('history_share_part_bytes')) {
+          throw _fail(413, 'a part is 1 MiB and its tag at most');
+        }
+        share.uploaded[n] = _keepFile(ctx.bytes);
+        return _noContent;
+      }),
+      route('POST', '$conv/history-shares/(?<share>$_uuidPath)/complete', _Needs.listed, _completeShare),
+      route('GET', '$me/history-shares', _Needs.device, (ctx) {
+        return _ok([
+          for (final share in _shares.values)
+            if (share.completed && share.toUser == ctx.me.user && !share.acked.contains(ctx.device!.id))
+              _shareView(share),
+        ]);
+      }),
+      route('GET', '/api/history-shares/(?<share>$_uuidPath)/parts/(?<n>\\d+)', _Needs.session, (ctx) {
+        final share = _shares[ctx.params['share']];
+        final file = share?.uploaded[int.parse(ctx.params['n']!)];
+        if (share == null || file == null || ![share.toUser, share.fromUser].contains(ctx.me.user)) {
+          throw _fail(404, 'no such part');
+        }
+        return _ok({'url': '$fakeApiUrl/files/$file'});
+      }),
+      route('POST', '/api/history-shares/(?<share>$_uuidPath)/ack', _Needs.device, (ctx) {
+        final share = _shares[ctx.params['share']];
+        if (share == null || !share.completed || share.toUser != ctx.me.user) throw _fail(404, 'no such share');
+        share.acked.add(ctx.device!.id);
+        return _noContent;
+      }),
+      route('GET', '$me/backup/segments', _Needs.device, (ctx) {
+        final identity = _identities[ctx.me.user];
+        final after = ctx.query['after'] ?? '';
+        final conversation = ctx.query['conversation_id'];
+        return _ok(
+          [
+            for (final s in _segments.values)
+              if (s.identity == identity?.id &&
+                  s.id.compareTo(after) > 0 &&
+                  (conversation == null || conversation.isEmpty || s.conversationId == conversation))
+                {
+                  'id': s.id,
+                  'conversation_id': s.conversationId,
+                  'day': s.day,
+                  'complete': s.complete,
+                  'key_id': s.keyId,
+                  'size': s.size,
+                  'created_at': s.createdAt,
+                },
+          ].take(1000).toList(),
+        );
+      }),
+      route(
+        'PUT',
+        '$me/backup/segments/(?<conversation>$_uuidPath)/(?<day>\\d{4}-\\d{2}-\\d{2})',
+        _Needs.listed,
+        _putSegment,
+      ),
+      route('GET', '$me/backup/segments/(?<segment>$_uuidPath)', _Needs.device, (ctx) {
+        final segment = _segments[ctx.params['segment']];
+        if (segment == null || segment.identity != _identities[ctx.me.user]?.id) throw _fail(404, 'no such segment');
+        return _ok({'url': '$fakeApiUrl/files/${segment.file}'});
+      }),
+      // A file at its signed URL, which the part's and the segment's routes answer: it takes no session.
+      route('GET', '/files/(?<file>$_uuidPath)', _Needs.nothing, (ctx) {
+        final file = _files[ctx.params['file']];
+        if (file == null) throw _fail(404, 'no such file');
+        return _Answer(200, body: file);
+      }),
+    ];
+  }
+
+  // ---------------------------------------------------------------------------------------------------------------
+  // Devices and sessions.
+
+  /// A bind proof's word that the session is this device's: its fields, once its device's key signed them.
+  void _checkProof(_Session session, String deviceId, Uint8List signatureKey, Uint8List hpkeKey, Uint8List proof) {
+    final body = _signedBody(_bindLabel, proof, signatureKey);
+    final challenge = _asBytes(body?['challenge'], 32);
+    final key = _asBytes(body?['hpke_key'], 32);
+    final fits = _asUuid(body?['user']) == session.user && _asUuid(body?['device']) == deviceId;
+    if (!fits || challenge == null || !_equal(challenge, session.challenge) || key == null || !_equal(key, hpkeKey)) {
+      throw _fail(403, "the proof doesn't verify");
+    }
+    // The challenge is spent.
+    session.challenge = _randomBytes(32);
+  }
+
+  _Answer _registerDevice(_Context ctx) {
+    final session = ctx.me;
+    final id = _uuidIn(ctx['device_id'], 'device_id');
+    final name = ctx['name'];
+    if (name is! String || name.isEmpty || name.length > 64) {
+      throw _fail(400, 'a device has a name of 64 characters at most');
+    }
+    final signatureKey = _bytesIn(ctx['signature_key'], 'signature_key', max: 32);
+    final hpkeKey = _bytesIn(ctx['hpke_key'], 'hpke_key', max: 32);
+    if (signatureKey.length != 32 || hpkeKey.length != 32) throw _fail(400, "a device's keys are 32 bytes");
+    final known = _devices[id];
+    final same = known != null && known.user == session.user && !known.removed;
+    if (known != null && !(same && _equal(known.signatureKey, signatureKey) && _equal(known.hpkeKey, hpkeKey))) {
+      throw _fail(409, 'device id in use');
+    }
+    _checkProof(session, id, signatureKey, hpkeKey, _bytesIn(ctx['proof'], 'proof', max: 1024));
+    session.device = id;
+    if (known != null) return _ok(_deviceView(known, session));
+    final device = _Device(id, session.user, name, ctx.headers['x-duvet-client'], signatureKey, hpkeKey, _now());
+    _devices[id] = device;
+    _emit(session.user, 'DEVICE_ADD', _deviceView(device, null));
+    return _ok(_deviceView(device, session), 201);
+  }
+
+  _Answer _bindDevice(_Context ctx) {
+    final device = _devices[ctx.params['device']];
+    if (device == null || device.user != ctx.me.user || device.removed) throw _fail(404, 'device not found');
+    _checkProof(ctx.me, device.id, device.signatureKey, device.hpkeKey, _bytesIn(ctx['proof'], 'proof', max: 1024));
+    ctx.me.device = device.id;
+    return _noContent;
+  }
+
+  List<_Device> _devicesOf(String user) => [
+    for (final device in _devices.values)
+      if (device.user == user && !device.removed) device,
+  ];
+
+  Map<String, Object?> _deviceView(_Device device, _Session? session, {bool? listed}) => {
+    'id': device.id,
+    'name': device.name,
+    'client': device.client,
+    'created_at': device.createdAt,
+    'last_seen_at': device.createdAt,
+    'listed': listed ?? device.listed,
+    'current': session?.device == device.id,
+  };
+
+  /// Devices taken out: their sessions end, and their key packages and inbox go, as the API does.
+  void _removeDevices(String user, List<_Device> devices) {
+    for (final device in devices) {
+      device.removed = true;
+      device.listed = false;
+      _keyPackages.remove(device.id);
+      _inboxes.remove(device.id);
+      _sessions.removeWhere((_, session) => session.device == device.id);
+      // shortcut: no removal of its leaves is proposed (that takes the validator); a test that needs one posts it.
+      _emit(user, 'DEVICE_REMOVE', {'device_id': device.id});
+    }
+  }
+
+  // ---------------------------------------------------------------------------------------------------------------
+  // Identities and device lists.
+
+  /// Who may read a user's identity: themselves and whoever shares a conversation with them.
+  bool _mayRead(String viewer, String user) => viewer == user || _shareConversation(viewer, user);
+
+  Map<String, Object?> _identityView(String user) {
+    final identity = _identities[user]!;
+    final list = _readDeviceList(identity.deviceList, identity.identityKey)!;
+    return {
+      'user_id': user,
+      'identity_key': base64Encode(identity.identityKey),
+      'device_list': base64Encode(identity.deviceList),
+      'device_list_version': identity.version,
+      'certificates': [
+        for (final id in list.devices)
+          if (_devices[id]?.certificate case final certificate?) base64Encode(certificate),
+      ],
+      // shortcut: every user is active, as if a listed device connected lately; a test of deviceless members sets it.
+      'active': true,
+      'changed_at': identity.changedAt,
+    };
+  }
+
+  /// A device list of the user's own, signed by [identityKey], naming this device, 20 devices at most.
+  _DeviceList _readList(_Session session, _Device device, Uint8List identityKey, Uint8List signed) {
+    final list = _readDeviceList(signed, identityKey);
+    if (list == null) throw _fail(400, "the device list isn't signed by the identity key");
+    if (list.user != session.user) throw _fail(400, "the device list is another user's");
+    if (list.devices.length > _limit('listed_devices')) throw _fail(400, 'a device list names 20 devices at most');
+    if (!list.devices.contains(device.id)) throw _fail(400, "the device list doesn't name this session's device");
+    return list;
+  }
+
+  /// A certificate from [identityKey] for one of the user's devices, carrying the keys that device registered.
+  void _checkCertificate(String user, String deviceId, Uint8List identityKey, Uint8List signed) {
+    final device = _devices[deviceId];
+    final said = _readCertificate(signed, identityKey);
+    if (device == null || device.user != user || device.removed) {
+      throw _fail(400, "device $deviceId isn't a registered device of yours");
+    }
+    if (said == null || said.user != user || said.device != deviceId) {
+      throw _fail(400, "the certificate for device $deviceId doesn't verify as the identity's for it");
+    }
+    if (!_equal(said.signatureKey, device.signatureKey) || !_equal(said.hpkeKey, device.hpkeKey)) {
+      throw _fail(400, "the certificate for device $deviceId doesn't carry the keys it registered");
+    }
+  }
+
+  _Answer _putIdentity(_Context ctx) {
+    final (session, device) = (ctx.me, ctx.device!);
+    final identityKey = _bytesIn(ctx['identity_key'], 'identity_key', max: 32);
+    final deviceList = _bytesIn(ctx['device_list'], 'device_list', max: _limit('device_list_bytes'));
+    final certificate = _bytesIn(ctx['certificate'], 'certificate', max: _limit('certificate_bytes'));
+    for (final field in ['encrypted_identity', 'wrapped_backup_key']) {
+      _bytesIn(ctx[field], field, max: 1024);
+    }
+    final replaces = ctx['replaces'] == null ? null : _bytesIn(ctx['replaces'], 'replaces', max: 32);
+    final transfers = _transfersIn(ctx['transfers']);
+    final list = _readList(session, device, identityKey, deviceList);
+    final current = _identities[session.user];
+    final sameKey = current != null && _equal(identityKey, current.identityKey);
+    final replacesCurrent = current != null && replaces != null && _equal(replaces, current.identityKey);
+    // PUT …/identity's four cases: the first, the same one again, a rotation, or starting over (reset).
+    final change = sameKey
+        ? 'same'
+        : current == null && replaces == null
+        ? 'first'
+        : replacesCurrent
+        ? (ctx['reset'] == true ? 'reset' : 'rotation')
+        : null;
+    if (change == null) {
+      throw _fail(409, 'identity changed', {
+        'identity_key': current == null ? null : base64Encode(current.identityKey),
+      });
+    }
+    if (change == 'rotation' && !device.listed) throw _fail(403, "this device isn't on your device list");
+    if (change != 'same' && list.version != 1) throw _fail(400, "a new identity's device list is version 1");
+    if ((change == 'first' || change == 'reset') && transfers.isNotEmpty) {
+      throw _fail(
+        400,
+        "only a rotation brings transfers: a first identity and starting over certify this session's device alone",
+      );
+    }
+    // Each device of the list gets its certificate: the session's own, and every other one through its transfer.
+    final certificates = {device.id: certificate};
+    _checkCertificate(session.user, device.id, identityKey, certificate);
+    for (final transfer in transfers) {
+      final id = transfer.deviceId;
+      if (certificates.containsKey(id) || !list.devices.contains(id)) {
+        throw _fail(400, "a transfer for device $id the list doesn't take");
+      }
+      final signed = base64Decode(transfer.certificate);
+      _checkCertificate(session.user, id, identityKey, signed);
+      certificates[id] = signed;
+    }
+    if (list.devices.any((id) => !certificates.containsKey(id))) {
+      throw _fail(400, 'the list names a device with no transfer for it');
+    }
+
+    var identity = current;
+    if (change != 'same') {
+      identity = _Identity(_id(), identityKey, deviceList, list.version, _now(), {
+        'encrypted_identity': ctx['encrypted_identity'],
+        'wrapped_backup_key': ctx['wrapped_backup_key'],
+        'wrapped_previous_backup_keys': ctx['wrapped_previous_backup_keys'],
+      });
+      _identities[session.user] = identity;
+      final off = <_Device>[];
+      for (final own in _devicesOf(session.user)) {
+        if (certificates[own.id] case final signed?) {
+          own
+            ..certificate = signed
+            ..certifiedBy = identity.id
+            ..listed = true;
+        } else if (own.listed && change == 'rotation') {
+          off.add(own);
+        } else {
+          own.listed = false;
+        }
+      }
+      _removeDevices(session.user, off);
+    }
+    for (final transfer in transfers) {
+      _deliver(session.user, device.id, transfer.deviceId, transfer.message, transfer: true);
+    }
+    if (change != 'same') _announceIdentity(session.user);
+    return _ok({'identity_id': identity!.id, 'device_list_version': identity.version});
+  }
+
+  _Answer _putDeviceList(_Context ctx) {
+    final (session, device) = (ctx.me, ctx.device!);
+    final current = _identities[session.user];
+    if (current == null) throw _fail(404, 'no identity');
+    final signed = _bytesIn(ctx['device_list'], 'device_list', max: _limit('device_list_bytes'));
+    if (_equal(signed, current.deviceList)) return _ok({'version': current.version});
+    final list = _readList(session, device, current.identityKey, signed);
+    if (ctx['base_version'] != current.version || list.version <= current.version) {
+      throw _fail(409, 'device list changed', {
+        'device_list': base64Encode(current.deviceList),
+        'version': current.version,
+      });
+    }
+    final certificate = ctx['certificate'] == null
+        ? null
+        : _bytesIn(ctx['certificate'], 'certificate', max: _limit('certificate_bytes'));
+    if (certificate != null) _checkCertificate(session.user, device.id, current.identityKey, certificate);
+    for (final id in list.devices) {
+      final listed = _devices[id];
+      final ofThisIdentity = listed != null && !listed.removed && listed.certifiedBy == current.id;
+      if (!ofThisIdentity && !(certificate != null && id == device.id)) {
+        throw _fail(400, 'the list names device $id, which has no certificate of this identity');
+      }
+    }
+    if (certificate != null) {
+      device
+        ..certificate = certificate
+        ..certifiedBy = current.id;
+    }
+    current
+      ..deviceList = signed
+      ..version = list.version;
+    final off = <_Device>[];
+    for (final own in _devicesOf(session.user)) {
+      final listed = list.devices.contains(own.id);
+      if (listed && !own.listed) _emit(session.user, 'DEVICE_ADD', _deviceView(own, null, listed: true));
+      if (!listed && own.listed) off.add(own);
+      own.listed = listed;
+    }
+    _removeDevices(session.user, off);
+    _announceIdentity(session.user);
+    return _ok({'version': list.version});
+  }
+
+  /// IDENTITY_UPDATE, to the user and whoever shares a conversation with them.
+  void _announceIdentity(String user) {
+    final identity = _identities[user]!;
+    final update = {
+      'user_id': user,
+      'identity_key': base64Encode(identity.identityKey),
+      'device_list_version': identity.version,
+    };
+    for (final to in _peopleOf(user)) {
+      _emit(to, 'IDENTITY_UPDATE', update);
+    }
+  }
+
+  // ---------------------------------------------------------------------------------------------------------------
+  // Key packages and the inbox.
+
+  _Answer _uploadKeyPackages(_Context ctx) {
+    final device = ctx.device!;
+    // The whole set, as the API binds it: an empty one takes them all away, and none at all is refused.
+    final uploaded = ctx['key_packages'];
+    if (uploaded is! List) throw _fail(400, "key_packages is the device's whole set");
+    Object? field(Object? kp, String name) => kp is Map ? kp[name] : null;
+    final set = [
+      for (final kp in uploaded)
+        (
+          id: _base64In(field(kp, 'id'), 'key_packages.id', max: 64, min: 1),
+          data: _base64In(field(kp, 'data'), 'key_packages.data', max: _limit('key_package_bytes'), min: 1),
+          expiresAt: _numberIn(field(kp, 'expires_at'), 'expires_at'),
+          lastResort: field(kp, 'last_resort') == true,
+        ),
+    ];
+    final lastResorts = set.where((kp) => kp.lastResort).length;
+    if (set.length - lastResorts > _limit('key_packages') || lastResorts > _limit('last_resort_key_packages')) {
+      throw _fail(400, 'a device keeps 100 single-use key packages and 1 of last resort at most');
+    }
+    if ({for (final kp in set) kp.id}.length != set.length) throw _fail(400, 'a key package is there twice');
+    final kept = _keyPackages[device.id] ?? <String, _KeyPackage>{};
+    // What the new set leaves out goes, but the single-use ones handed out: those are never handed out again.
+    final ids = {for (final kp in set) kp.id};
+    kept.removeWhere((id, kp) => !ids.contains(id) && (!kp.handedOut || kp.lastResort));
+    for (final kp in set) {
+      kept.putIfAbsent(kp.id, () => _KeyPackage(kp.data, kp.expiresAt, kp.lastResort));
+    }
+    _keyPackages[device.id] = kept;
+    return _ok({
+      'handed_out': [
+        for (final kp in set)
+          if (!kp.lastResort && kept[kp.id]!.handedOut) kp.id,
+      ],
+    });
+  }
+
+  _Answer _claimKeyPackages(_Context ctx) {
+    final (session, device, user) = (ctx.me, ctx.device!, ctx.params['user']!);
+    if (!_users.contains(user)) throw _fail(404, 'user not found');
+    if (user != session.user && !_shareConversation(session.user, user)) {
+      throw _fail(
+        403,
+        "only your own key packages, a friend's, or those of someone you share a conversation with can be claimed",
+      );
+    }
+    final notBefore = DateTime.now().millisecondsSinceEpoch + _keyPackageMargin;
+    final handed = <Map<String, Object?>>[];
+    final devices = [
+      for (final d in _devicesOf(user))
+        if (d.listed && d.id != device.id) d,
+    ]..sort((a, b) => a.id.compareTo(b.id));
+    for (final listed in devices) {
+      final live = [
+        for (final entry in (_keyPackages[listed.id] ?? const <String, _KeyPackage>{}).entries)
+          if (entry.value.expiresAt > notBefore) entry,
+      ];
+      final single =
+          [
+            for (final entry in live)
+              if (!entry.value.lastResort && !entry.value.handedOut) entry,
+          ]..sort(
+            (a, b) => a.value.expiresAt != b.value.expiresAt
+                ? a.value.expiresAt.compareTo(b.value.expiresAt)
+                : a.key.compareTo(b.key),
+          );
+      final pick =
+          single.firstOrNull ??
+          ([
+            for (final entry in live)
+              if (entry.value.lastResort) entry,
+          ]..sort((a, b) => b.value.expiresAt.compareTo(a.value.expiresAt))).firstOrNull;
+      // What it has left to hand out after this claim: 0 when it had none, which it hears too.
+      final remaining = max(0, single.length - 1);
+      if (remaining < _keyPackagesLow) {
+        _emit(user, 'KEY_PACKAGES_LOW', {'device_id': listed.id, 'remaining': remaining}, listed.id);
+      }
+      if (pick == null) continue;
+      pick.value.handedOut = true;
+      handed.add({'device_id': listed.id, 'data': pick.value.data});
+    }
+    return _ok({'key_packages': handed});
+  }
+
+  _Answer _sendToInbox(_Context ctx) {
+    final (session, device) = (ctx.me, ctx.device!);
+    final message = _bytesIn(ctx['message'], 'message');
+    if (message.isEmpty || message.length > _limit('inbox_message_bytes')) {
+      throw _fail(400, 'a message to a device is 64 KiB at most');
+    }
+    final to = _devices[ctx.params['device']];
+    if (to == null || to.removed) throw _fail(404, 'device not found');
+    if (to.user != session.user && !_shareConversation(session.user, to.user)) {
+      throw _fail(403, 'only your own devices, and those of someone you share a conversation with, take your messages');
+    }
+    // A rotation's transfer counts toward no cap.
+    final waiting = (_inboxes[to.id] ?? const []).where((m) => !_transfers.contains(m['id']));
+    if (waiting.length >= _inboxMax) throw _fail(409, 'inbox full');
+    return _ok({'id': _deliver(session.user, device.id, to.id, ctx['message']! as String)}, 201);
+  }
+
+  /// A message into a device's inbox, and DEVICE_MESSAGE to it: the message's ID. A rotation's transfer takes the place
+  /// of the device's earlier ones: only the newest is of use, as the API keeps it.
+  String _deliver(String from, String fromDevice, String to, String message, {bool transfer = false}) {
+    final device = _devices[to];
+    if (device == null) return '';
+    final id = _id();
+    _inboxes[to] = [
+      for (final m in _inboxes[to] ?? const <Map<String, Object?>>[])
+        if (!transfer || !_transfers.contains(m['id'])) m,
+      {'id': id, 'from_user_id': from, 'from_device_id': fromDevice, 'message': message, 'created_at': _now()},
+    ];
+    if (transfer) _transfers.add(id);
+    _emit(device.user, 'DEVICE_MESSAGE', {'device_id': to, 'id': id}, to);
+    return id;
+  }
+
+  // ---------------------------------------------------------------------------------------------------------------
+  // Conversations, their groups and their queue.
+
+  List<_Conversation> _conversationsOf(String user) => [
+    for (final conv in _conversations.values)
+      if (conv.members.any((m) => m['user_id'] == user)) conv,
+  ];
+
+  bool _shareConversation(String a, String b) =>
+      _conversationsOf(a).any((conv) => conv.members.any((m) => m['user_id'] == b));
+
+  /// The user and everyone they share a conversation with.
+  Set<String> _peopleOf(String user) => {
+    user,
+    for (final conv in _conversationsOf(user))
+      for (final m in conv.members) m['user_id']! as String,
+  };
+
+  _Conversation _memberOf(_Context ctx) {
+    final conv = _conversations[ctx.params['conversation']];
+    if (conv == null) throw _fail(404, 'conversation not found');
+    if (!conv.members.any((m) => m['user_id'] == ctx.me.user)) {
+      throw _fail(403, "you aren't a member of this conversation");
+    }
+    return conv;
+  }
+
+  /// A conversation as its object shows it: legacy, and its group (mls), with where this device joined it.
+  Map<String, Object?> _view(_Conversation conv, _Device? device) {
+    final group = conv.group;
+    return {
+      'id': conv.id,
+      'type': conv.type,
+      'name': null,
+      'owner_id': conv.ownerId,
+      'created_at': conv.createdAt,
+      'updated_at': conv.createdAt,
+      'deleted_at': null,
+      'members': _clone(conv.members),
+      'legacy': conv.legacy,
+      'mls': group == null
+          ? null
+          : {
+              'generation': group.generation,
+              'epoch': group.epoch,
+              'last_seq': conv.seq,
+              'floor_seq': 1,
+              'joined_seq': device == null ? null : conv.leaves[device.id],
+            },
+    };
+  }
+
+  /// An entry of the conversation's queue, under its next number.
+  Map<String, Object?> _addEntry(_Conversation conv, Map<String, Object?> entry) {
+    final added = {'seq': ++conv.seq, 'sent_at': DateTime.now().millisecondsSinceEpoch, ...entry};
+    conv.entries.add(added);
+    return added;
+  }
+
+  /// An entry as an event carries it: without its data past 16 KiB, or when the switch says so.
+  Map<String, Object?> _forEvent(Map<String, Object?> entry) =>
+      stripData || base64Decode(entry['data']! as String).length > _maxEventData ? ({...entry}..remove('data')) : entry;
+
+  /// A message as the queue's entry it is: its data its ciphertext, emptied once it's deleted; whom it mentions, by
+  /// their IDs in order, which its deletion takes away; and what it answers.
+  Map<String, Object?> _messageEntry(Map<String, Object?> m) {
+    final deleted = _conversations[m['conversation_id']]?.deleted.contains(m['id']) ?? false;
+    final mentions = deleted ? <String>[] : ([...(m['mentions'] as List? ?? const []).cast<String>()]..sort());
+    return {
+      'seq': m['seq'],
+      'kind': 'message',
+      'data': m['ciphertext'] ?? '',
+      'sent_at': m['sent_at'],
+      'generation': m['generation'],
+      'epoch': m['epoch'],
+      'message_id': m['id'],
+      'sender_user': m['author_id'],
+      'sender_device': m['sender_device_id'],
+      if (deleted) 'deleted': true,
+      if (mentions.isNotEmpty) 'mentions': mentions,
+      'reply_to': ?_repliesTo[m['id']],
+    };
+  }
+
+  _Answer _queue(_Conversation conv, Map<String, String> query) {
+    final group = conv.group;
+    if (group == null) throw _fail(404, 'no group yet');
+    final after = int.tryParse(query['after'] ?? '') ?? 0;
+    final limit = min(_positive(query['limit']) ?? 200, 500);
+    final all = [
+      ...conv.entries,
+      for (final m in conv.messages)
+        if (m['seq'] != null) _messageEntry(m),
+    ]..sort((a, b) => (a['seq']! as int).compareTo(b['seq']! as int));
+    final entries = <Map<String, Object?>>[];
+    var size = 0;
+    for (final entry in all.where((e) => (e['seq']! as int) > after)) {
+      size += (entry['data']! as String).length;
+      if (entries.length == limit || (entries.isNotEmpty && size > 4 << 20)) break;
+      entries.add(entry);
+    }
+    return _ok({
+      'entries': entries,
+      'last_seq': conv.seq,
+      'floor_seq': 1,
+      'generation': group.generation,
+      'epoch': group.epoch,
+    });
+  }
+
+  /// A commit into the conversation's group (POST …/mls/commits, and the members routes'): its framing is what the
+  /// request says, the same bytes again get the answer they got, and it's taken only on the group's generation and
+  /// epoch (a creation's on the generation after, or the first). Its welcome's devices join from the welcome's entry,
+  /// an external commit's device from the commit's; its entries go out as MLS_COMMIT and MLS_WELCOME.
+  Map<String, Object?> _commit(_Conversation conv, _Context ctx, String route) {
+    final (session, device) = (ctx.me, ctx.device!);
+    final generation = _numberIn(ctx['generation'], 'generation');
+    final epoch = _numberIn(ctx['epoch'], 'epoch');
+    final commit = _bytesIn(ctx['commit'], 'commit', max: _limit('commit_bytes'));
+    final create = ctx['initial_group_info'] != null;
+    final welcome = ctx['welcome'] == null ? null : _bytesIn(ctx['welcome'], 'welcome', max: _limit('welcome_bytes'));
+    final framed = _framing(commit);
+    if (framed == null || framed.wire != _public || framed.conversation != conv.id) {
+      throw _fail(400, "the commit isn't a public message of this conversation's group");
+    }
+    if (framed.generation != generation || framed.epoch != epoch) {
+      throw _fail(400, "the commit's generation and epoch aren't the ones the request says");
+    }
+    if (create && epoch != 0) throw _fail(400, "a group's creation commits on its epoch 0");
+    // Every commit brings the group info of the epoch it makes; a creation, epoch 0's too.
+    for (final groupInfo in [ctx['group_info'], if (create) ctx['initial_group_info']]) {
+      if (_framing(_bytesIn(groupInfo, 'group_info', max: _limit('group_info_bytes')))?.wire != _groupInfo) {
+        throw _fail(400, "a group info isn't an MLS group info");
+      }
+    }
+    final welcomed = welcome == null ? null : _framing(welcome);
+    if (welcome != null && welcomed?.wire != _welcome) throw _fail(400, "the welcome isn't an MLS welcome");
+    if (route == 'commits' && welcome != null && !create) {
+      throw _fail(400, "a welcome only comes with a group's creation");
+    }
+    if (route == 'add' && (welcome == null || create)) throw _fail(400, 'an addition brings its welcome');
+    if (route == 'remove' && (welcome != null || create)) throw _fail(400, 'a removal brings no welcome');
+
+    if (conv.commits[ctx['commit']] case final sent?) return sent;
+    final group = conv.group;
+    if (group == null && (!create || generation != 0)) {
+      throw _fail(409, route == 'commits' ? 'no group yet' : 'create the group first');
+    }
+    final taken =
+        group != null &&
+        (create ? generation != group.generation + 1 : generation != group.generation || epoch != group.epoch);
+    if (taken) {
+      throw _fail(409, 'another commit took this epoch', {'generation': group.generation, 'epoch': group.epoch});
+    }
+
+    final after = epoch + 1;
+    conv.group = (generation: generation, epoch: after, groupInfo: ctx['group_info']! as String);
+    final by = {'sender_user': session.user, 'sender_device': device.id};
+    final entry = _addEntry(conv, {
+      'kind': 'commit',
+      'data': ctx['commit'],
+      'generation': generation,
+      'epoch': epoch,
+      ...by,
+    });
+    final welcomeEntry = welcome == null
+        ? null
+        : _addEntry(conv, {'kind': 'welcome', 'data': ctx['welcome'], 'generation': generation, 'epoch': after, ...by});
+    // The devices it brings in: the committer's with a creation, or with its own external commit, which takes it out
+    // and in again; and those whose key packages its welcome names. A new generation's leaves are those its creation
+    // brings, and a device brought in again keeps the number it has had the queue from, as the API's SetMlsLeaf does.
+    final before = conv.leaves;
+    if (create) {
+      conv.leaves = {device.id: before[device.id] ?? entry['seq']! as int};
+    } else if (framed.sender == 4) {
+      conv.leaves[device.id] = entry['seq']! as int;
+    }
+    final brought = [
+      for (final ref in welcomed?.welcomed ?? const <String>[])
+        for (final MapEntry(key: id, value: kps) in _keyPackages.entries)
+          if (kps.containsKey(ref)) id,
+    ];
+    for (final id in brought) {
+      if (id != device.id) conv.leaves[id] = before[id] ?? welcomeEntry!['seq']! as int;
+    }
+
+    final answer = {
+      'seq': entry['seq'],
+      'generation': generation,
+      'epoch': after,
+      if (welcomeEntry != null) 'welcome_seq': welcomeEntry['seq'],
+    };
+    conv.commits[ctx['commit']! as String] = answer;
+    for (final member in conv.members) {
+      _emit(member['user_id']! as String, 'MLS_COMMIT', {
+        'conversation_id': conv.id,
+        'generation': generation,
+        'epoch': after,
+        'entry': _forEvent(entry),
+      });
+    }
+    final welcomedUsers = <String, List<String>>{};
+    for (final id in brought) {
+      final user = _devices[id]?.user;
+      if (user != null && id != device.id) (welcomedUsers[user] ??= []).add(id);
+    }
+    for (final MapEntry(key: user, value: devices) in welcomedUsers.entries) {
+      _emit(user, 'MLS_WELCOME', {
+        'conversation_id': conv.id,
+        'generation': generation,
+        'epoch': after,
+        'devices': devices,
+        'entry': _forEvent(welcomeEntry!),
+      });
+    }
+    return answer;
+  }
+
+  _Answer _addMember(_Context ctx) {
+    final conv = _memberOf(ctx);
+    final user = _uuidIn(ctx['user_id'], 'user_id');
+    // The same addition again gets the answer it got.
+    final added = conv.members.where((m) => m['user_id'] == user).firstOrNull;
+    if (added != null && conv.commits.containsKey(ctx['commit'])) return _ok(added, 201);
+    if (conv.type != 2) throw _fail(400, "a DM's members don't change");
+    if (conv.ownerId != ctx.me.user) throw _fail(403, "only the group's owner adds members");
+    if (!_users.contains(user)) throw _fail(404, 'user not found');
+    if (added != null) throw _fail(409, 'already a member');
+    if (conv.members.length >= _limit('group_members')) throw _fail(400, 'a group can have 20 members at most');
+    _commit(conv, ctx, 'add');
+    final at = _now();
+    final member = {'id': _id(), 'conversation_id': conv.id, 'user_id': user, 'created_at': at, 'updated_at': at};
+    conv.members.add(member);
+    return _ok(member, 201);
+  }
+
+  _Answer _removeMember(_Context ctx) {
+    final conv = _memberOf(ctx);
+    if (conv.ownerId != ctx.me.user) throw _fail(403, "only the group's owner removes members");
+    // The same removal again.
+    if (conv.commits.containsKey(ctx['commit'])) return _noContent;
+    if (!conv.members.any((m) => m['user_id'] == ctx.params['user'])) throw _fail(404, 'not a member');
+    _commit(conv, ctx, 'remove');
+    conv.members = [
+      for (final m in conv.members)
+        if (m['user_id'] != ctx.params['user']) m,
+    ];
+    return _noContent;
+  }
+
+  /// Leaving: the user's statement, signed by the session's device, of this conversation's generation and an epoch it
+  /// has reached; without a group, none. The owner passes to the member who came first.
+  _Answer _leave(_Context ctx) {
+    final conv = _memberOf(ctx);
+    final (session, device) = (ctx.me, ctx.device!);
+    if (conv.group case final group?) {
+      final said = _signedBody(_leaveLabel, _bytesIn(ctx['statement'], 'statement', max: 1024), device.signatureKey);
+      final epoch = said?['epoch'];
+      final fits =
+          _asUuid(said?['user']) == session.user &&
+          _asUuid(said?['conversation']) == conv.id &&
+          _asUuid(said?['device']) == device.id &&
+          said?['generation'] == group.generation &&
+          epoch is int &&
+          epoch <= group.epoch;
+      if (!fits) throw _fail(400, "the statement doesn't verify");
+    }
+    // shortcut: the API's proposals to remove the leaves of who left take its validator; none goes in the queue here.
+    conv.members = [
+      for (final m in conv.members)
+        if (m['user_id'] != session.user) m,
+    ];
+    if (conv.ownerId == session.user && conv.members.isNotEmpty) {
+      conv.ownerId = conv.members.first['user_id']! as String;
+    }
+    return _noContent;
+  }
+
+  // ---------------------------------------------------------------------------------------------------------------
+  // Messages.
+
+  /// A message's MLS message, checked as the API checks it: an application message of the group, not stale.
+  _Framing _checkMessage(_Conversation conv, _Device device, Uint8List ciphertext) {
+    final group = conv.group;
+    if (group == null) throw _fail(409, 'no group yet');
+    final framed = _framing(ciphertext);
+    if (framed == null || framed.wire != _private || framed.conversation != conv.id || framed.content != 1) {
+      throw _fail(400, "the message isn't an application message of this conversation's group");
+    }
+    if (framed.generation != group.generation || framed.epoch! < group.epoch - _limit('epochs_behind')) {
+      throw _fail(409, 'stale message', {'generation': group.generation, 'epoch': group.epoch});
+    }
+    if (framed.epoch! > group.epoch) throw _fail(400, "the message is of an epoch the group hasn't reached");
+    if (!conv.leaves.containsKey(device.id)) throw _fail(403, "this device isn't in the group");
+    return framed;
+  }
+
+  _Answer _sendMessage(_Context ctx) {
+    final conv = _memberOf(ctx);
+    final (session, device) = (ctx.me, ctx.device!);
+    if (ctx['content'] != null || ctx['embeds'] != null || ctx['components'] != null) {
+      throw _fail(400, 'conversations are end-to-end encrypted');
+    }
+    final nonce = ctx['nonce'];
+    if (nonce is! String || nonce.isEmpty || nonce.length > 64) {
+      throw _fail(400, 'a message has its nonce, 64 characters at most');
+    }
+    final ciphertext = _bytesIn(ctx['ciphertext'], 'ciphertext', max: _limit('ciphertext_bytes'), min: 1);
+    final listed = ctx['mentions'] ?? const [];
+    if (listed is! List || listed.length > 20 || listed.any((id) => id is! String || !_uuid.hasMatch(id))) {
+      throw _fail(400, 'invalid mentions');
+    }
+    final framed = _checkMessage(conv, device, ciphertext);
+    // shortcut: no files go up with a message here (attachment_ids and files): the attachments' task brings them.
+    final sent = conv.messages.where((m) => m['sender_device_id'] == device.id && m['nonce'] == nonce).firstOrNull;
+    if (sent != null) {
+      if (conv.deleted.contains(sent['id'])) throw _fail(409, 'this message was deleted');
+      if (sent['ciphertext'] != ctx['ciphertext']) throw _fail(409, 'this nonce went with another message');
+      return _ok(sent, 201);
+    }
+    final replied = _repliedIn(conv, ctx['message_reference']);
+    // Whom it mentions, as the API has it: whom it names, then the author of what it answers (unless its
+    // allowed_mentions say not to, or that's a notice), each once, of the members, never its own author.
+    final members = [for (final m in conv.members) m['user_id']];
+    final allowed = ctx['allowed_mentions'];
+    final mentionReplied = allowed == null || (allowed is Map && allowed['replied_user'] == true);
+    final notice = replied?['type'] == 2 || replied?['type'] == 3;
+    final named = [
+      ...listed.cast<String>(),
+      if (replied != null && mentionReplied && !notice) replied['author_id']! as String,
+    ];
+    final at = _now();
+    final message = <String, Object?>{
+      'id': _id(),
+      'conversation_id': conv.id,
+      'author_id': session.user,
+      'content': null,
+      'type': 0,
+      'created_at': at,
+      'updated_at': at,
+      'nonce': nonce,
+      'ciphertext': ctx['ciphertext'],
+      'seq': ++conv.seq,
+      'sent_at': DateTime.now().millisecondsSinceEpoch,
+      'generation': framed.generation,
+      'epoch': framed.epoch,
+      'sender_device_id': device.id,
+      'edited_at': null,
+      'mentions': [
+        for (final user in {...named})
+          if (user != session.user && members.contains(user)) user,
+      ],
+      'message_reference': ctx['message_reference'],
+      'attachment_ids': <String>[],
+      'sticker_attachment_id': ctx['sticker_attachment_id'],
+    };
+    conv.messages.add(message);
+    if (replied != null) _repliesTo[message['id']! as String] = replied['id']! as String;
+    for (final member in conv.members) {
+      _emit(member['user_id']! as String, 'DM_MESSAGE_CREATE', message);
+    }
+    return _ok(message, 201);
+  }
+
+  /// The message a message's reference answers, as the API checks it: a reply (type 0) to a message of the
+  /// conversation that isn't deleted; null for no reference.
+  Map<String, Object?>? _repliedIn(_Conversation conv, Object? reference) {
+    final id = reference is Map ? reference['message_id'] : null;
+    if (id == null || id == '') return null;
+    final type = (reference! as Map)['type'];
+    if (type != null && type != 0) throw _fail(400, 'invalid message reference: type must be 0 (reply)');
+    if (id is! String || !_uuid.hasMatch(id)) throw _fail(400, 'invalid message reference: message_id');
+    final replied = conv.messages.where((m) => m['id'] == id && !conv.deleted.contains(id)).firstOrNull;
+    if (replied == null) throw _fail(404, 'referenced message not found');
+    return replied;
+  }
+
+  /// An edit (PATCH) or a deletion (DELETE) of the author's message: its MLS message as the queue's entry.
+  _Answer _changeMessage(_Context ctx, String kind) {
+    final conv = _memberOf(ctx);
+    final message = conv.messages.where((m) => m['id'] == ctx.params['message']).firstOrNull;
+    if (message == null || message['seq'] == null) throw _fail(404, 'direct message not found');
+    if (message['author_id'] != ctx.me.user) throw _fail(403, 'only its author changes a message');
+    final device = ctx.device != null && !ctx.device!.removed ? ctx.device : null;
+    if (device == null) throw _fail(403, 'this session has no device');
+    final ciphertext = _bytesIn(ctx['ciphertext'], 'ciphertext', max: _limit('ciphertext_bytes'), min: 1);
+    _Answer done(Map<String, Object?> entry) =>
+        _ok({'id': message['id'], if (kind == 'edit') 'edited_at': message['edited_at'], 'entry': entry});
+    final again = conv.entries
+        .where((e) => e['kind'] == kind && e['message_id'] == message['id'] && e['data'] == ctx['ciphertext'])
+        .firstOrNull;
+    if (again != null) return done(again);
+    if (conv.deleted.contains(message['id'])) throw _fail(404, 'direct message not found');
+    final framed = _checkMessage(conv, device, ciphertext);
+    final entry = _addEntry(conv, {
+      'kind': kind,
+      'data': ctx['ciphertext'],
+      'generation': framed.generation,
+      'epoch': framed.epoch,
+      'sender_user': ctx.me.user,
+      'sender_device': device.id,
+      'message_id': message['id'],
+    });
+    if (kind == 'edit') {
+      message['edited_at'] = _now();
+      final update = {
+        'id': message['id'],
+        'conversation_id': conv.id,
+        'edited_at': message['edited_at'],
+        'entry': _forEvent(entry),
+      };
+      for (final member in conv.members) {
+        _emit(member['user_id']! as String, 'DM_MESSAGE_UPDATE', update);
+      }
+    } else {
+      // The deletion empties the message and its edits, whose entries say so.
+      conv.deleted.add(message['id']! as String);
+      message['ciphertext'] = null;
+      for (final edit in conv.entries.where((e) => e['kind'] == 'edit' && e['message_id'] == message['id'])) {
+        edit
+          ..['data'] = ''
+          ..['deleted'] = true;
+      }
+      final deletion = {'id': message['id'], 'conversation_id': conv.id, 'entry': _forEvent(entry)};
+      for (final member in conv.members) {
+        _emit(member['user_id']! as String, 'DM_MESSAGE_DELETE', deletion);
+      }
+    }
+    return done(entry);
+  }
+
+  // ---------------------------------------------------------------------------------------------------------------
+  // Shared history and backups.
+
+  String _keepFile(Uint8List bytes) {
+    final id = _id();
+    _files[id] = Uint8List.fromList(bytes);
+    return id;
+  }
+
+  Map<String, Object?> _shareView(_Share share) => {
+    'id': share.id,
+    'conversation_id': share.conversationId,
+    'from_user_id': share.fromUser,
+    'kind': share.kind,
+    'range': share.range,
+    'starts_at': share.startsAt,
+    'size': share.size,
+    'parts': share.parts,
+  };
+
+  _Answer _putShare(_Context ctx) {
+    final conv = _memberOf(ctx);
+    final to = _uuidIn(ctx['to_user_id'], 'to_user_id');
+    if (!conv.members.any((m) => m['user_id'] == to)) throw _fail(403, "the share's recipient isn't a member");
+    final kind = ctx['kind'];
+    if (kind != 'share' && kind != 'catch_up') throw _fail(400, "a share's kind is share or catch_up");
+    final parts = _numberIn(ctx['parts'], 'parts');
+    if (parts < 1 || parts > _limit('history_share_parts')) throw _fail(400, 'a share has 1 to 64 parts');
+    if (_shares.containsKey(ctx.params['share'])) throw _fail(409, 'share id in use');
+    final share = _Share(
+      ctx.params['share']!,
+      conv.id,
+      ctx.me.user,
+      ctx.device!.id,
+      to,
+      kind! as String,
+      '${ctx['range']}',
+      _numberIn(ctx['starts_at'], 'starts_at'),
+      _numberIn(ctx['size'], 'size'),
+      parts,
+    );
+    _shares[share.id] = share;
+    return _ok(_shareView(share), 201);
+  }
+
+  _Share _ownShare(_Context ctx) {
+    final conv = _memberOf(ctx);
+    final share = _shares[ctx.params['share']];
+    if (share == null || share.conversationId != conv.id || share.fromDevice != ctx.device!.id) {
+      throw _fail(404, 'no such share');
+    }
+    return share;
+  }
+
+  /// A share whose parts are all up reaches its recipient (HISTORY_SHARE_CREATE); a share, not a catch-up, posts its
+  /// notice.
+  _Answer _completeShare(_Context ctx) {
+    final share = _ownShare(ctx);
+    if (share.uploaded.length < share.parts) throw _fail(409, 'the share is missing parts');
+    if (share.completed) return _noContent;
+    share.completed = true;
+    _emit(share.toUser, 'HISTORY_SHARE_CREATE', _shareView(share));
+    if (share.kind == 'share') {
+      final conv = _conversations[share.conversationId]!;
+      final at = _now();
+      final notice = <String, Object?>{
+        'id': _id(),
+        'conversation_id': conv.id,
+        'author_id': share.fromUser,
+        'content': null,
+        'type': 4,
+        'created_at': at,
+        'updated_at': at,
+        'history_share': {'to_user_id': share.toUser, 'range': share.range},
+      };
+      conv.messages.add(notice);
+      for (final member in conv.members) {
+        _emit(member['user_id']! as String, 'DM_MESSAGE_CREATE', notice);
+      }
+    }
+    return _noContent;
+  }
+
+  /// A day's segment, in place of the one it names (`replaces`: its ID, or none): its header must be this route's.
+  _Answer _putSegment(_Context ctx) {
+    final identity = _identities[ctx.me.user];
+    if (identity == null) throw _fail(404, 'no identity');
+    final header = _asMap(_cbor(ctx.bytes));
+    final keyId = _asBytes(header?['key_id'], 8);
+    final fits =
+        header?['v'] == 1 &&
+        _asUuid(header!['user']) == ctx.me.user &&
+        _asUuid(header['conversation']) == ctx.params['conversation'] &&
+        header['day'] == ctx.params['day'] &&
+        header['complete'] is bool;
+    if (!fits || keyId == null) throw _fail(400, "the segment's header isn't this route's");
+    final current = _segments.values
+        .where(
+          (s) =>
+              s.identity == identity.id && s.conversationId == ctx.params['conversation'] && s.day == ctx.params['day'],
+        )
+        .firstOrNull;
+    if ((ctx.query['replaces'] ?? 'none') != (current?.id ?? 'none')) {
+      throw _fail(409, 'another copy of this day came first', {'current': current?.id});
+    }
+    if (current != null) _segments.remove(current.id);
+    final segment = _Segment(
+      _id(),
+      identity.id,
+      ctx.params['conversation']!,
+      ctx.params['day']!,
+      header['complete'] == true,
+      base64Encode(keyId),
+      ctx.bytes.length,
+      _keepFile(ctx.bytes),
+    );
+    _segments[segment.id] = segment;
+    return _ok({'id': segment.id}, 201);
+  }
+}
+
+/// A query's positive count, or null for none, as the API reads one (anything else is its default).
+int? _positive(String? text) {
+  final n = int.tryParse(text ?? '');
+  return n == null || n <= 0 ? null : n;
+}
+
+bool _matches(RouteMatch match, String method, String path) =>
+    (match.method == null || match.method == method) &&
+    (match.path is String ? match.path == path : (match.path as RegExp).hasMatch(path));
+
+http.Response _respond(_Answer answer) {
+  final body = answer.body;
+  // Named in lowercase, as a real client hands them over.
+  final headers = {for (final MapEntry(:key, :value) in answer.headers.entries) key.toLowerCase(): value};
+  if (body is Uint8List) {
+    return http.Response.bytes(body, answer.status, headers: {'content-type': 'application/octet-stream', ...headers});
+  }
+  if (body == null) return http.Response.bytes(const [], answer.status, headers: headers);
+  return http.Response.bytes(
+    utf8.encode(jsonEncode(body)),
+    answer.status,
+    headers: {'content-type': 'application/json; charset=utf-8', ...headers},
+  );
+}
