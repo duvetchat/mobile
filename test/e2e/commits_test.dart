@@ -158,8 +158,8 @@ void main() {
       expect((await groupOf(again, conversation))!.epoch, 3);
       expect(_invalids(aResults), isEmpty);
 
-      // Without them, and it never reached the API: the queue doesn't have it, and a minute after the start it's said to
-      // be refused. Then the device commits again.
+      // Without them, and it never reached the API: the queue doesn't have it, and a minute after the start it's said
+      // to be refused. Then the device commits again.
       due.add(conversation);
       fake.cutRequest(path);
       again.clock.advance(_day);
@@ -225,6 +225,49 @@ void main() {
     timeout: _slow,
   );
 
+  // M4 of the review: a group the core holds with no commit waiting, which the API doesn't list, is no creation of this
+  // device's to drop: an open claims no key package for a group the core would refuse to make (`exists`).
+  test(
+    "a_group_the_core_holds_and_the_API_doesn't_list_claims_no_key_packages",
+    () async {
+      final fake = FakeApi();
+      final (ana, bo) = (fake.addUser(), fake.addUser());
+      final conversation = fake.addConversation(group: false, members: [ana, bo]);
+      final claims = <String>[];
+      http.Client watch() => watchedClient(
+        fake,
+        seen: (request) {
+          if (request.url.path.endsWith('/key-packages/claim')) claims.add(request.url.path);
+        },
+      );
+      final a = await firstDevice(fake, ana, client: watch());
+      await firstDevice(fake, bo);
+      // Ana's core makes the group and is told it was taken, with nothing sent: the API lists none.
+      await stoppedByHand(a);
+      await byHand(a, {
+        'cmd': 'create_group',
+        'conversation_id': conversation,
+        'kind': 'dm',
+        'members': [ana, bo],
+        'key_packages': <String, Object?>{},
+        'external_sender': fake.externalSender,
+        'legacy': false,
+      });
+      await a.host.handle<Object?>({
+        'cmd': 'commit_result',
+        'conversation_id': conversation,
+        'accepted': true,
+        'seq': 1,
+      });
+      final again = await restarted(fake, a, client: watch());
+      await expectLater(again.engine.openConversation(conversation), throwsA(isA<CoreError>()));
+      expect(claims, isEmpty);
+      await again.engine.stop();
+    },
+    skip: noCore,
+    timeout: _slow,
+  );
+
   test(
     'invalid_is_said_only_for_a_refused_or_unsent_commit',
     () async {
@@ -241,8 +284,8 @@ void main() {
         {'cmd': 'commit_result', 'conversation_id': conversation, 'accepted': false, 'invalid': true},
       ]);
 
-      // Any other refusal says only that it wasn't taken (M1 of the desktop's review), which the queue settles: with the
-      // queue read whole, a minute past the start, the API doesn't have it (Ruling 25).
+      // Any other refusal says only that it wasn't taken (M1 of the desktop's review), which the queue settles: with
+      // the queue read whole, a minute past the start, the API doesn't have it (Ruling 25).
       final told = aResults.length;
       fake.refuse(path, 403, body: {'error': "you aren't a member of this conversation"});
       a.clock.advance(_day);

@@ -2,6 +2,7 @@ import 'package:duvet/e2e/legacy.dart';
 import 'package:duvet/e2e/store.dart';
 import 'package:duvet/e2e/sync.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:http/http.dart' as http;
 
 import '../support/core_lib.dart';
 import '../support/engines.dart';
@@ -86,8 +87,8 @@ void main() {
       final fake = FakeApi();
       final (ana, bo, cy) = (fake.addUser(), fake.addUser(), fake.addUser());
       final conversation = fake.addConversation(group: true, members: [ana, bo], owner: ana, legacy: true);
-      // Bo's device keeps the conversation's two members; then Cy joins it, as the server alone changes it, before Ana's
-      // and Cy's devices first see it.
+      // Bo's device keeps the conversation's two members; then Cy joins it, as the server alone changes it, before
+      // Ana's and Cy's devices first see it.
       final b = await firstDevice(fake, bo);
       fake.addMembers(conversation, [cy]);
       final a = await firstDevice(fake, ana);
@@ -104,6 +105,42 @@ void main() {
       for (final d in [a, b, c]) {
         await d.engine.stop();
       }
+    },
+    skip: noCore,
+    timeout: _slow,
+  );
+
+  // M2 of the review: the person's yes, refused the group's info as the conversation is gone, lists the conversations
+  // again and lets it go, as any turn does (I2 of the desktop's review), instead of failing into the tap.
+  test(
+    "the_person's_yes_lets_go_a_conversation_whose_group_info_is_refused",
+    () async {
+      final fake = FakeApi();
+      final (ana, bo, cy, dee) = (fake.addUser(), fake.addUser(), fake.addUser(), fake.addUser());
+      final conversation = fake.addConversation(group: true, members: [ana, bo, cy], owner: ana, legacy: true);
+      final seen = <http.Request>[];
+      final c = await firstDevice(fake, cy, client: watchedClient(fake, seen: seen.add));
+      fake.addMembers(conversation, [dee]);
+      final a = await firstDevice(fake, ana);
+      await a.engine.openConversation(conversation);
+      await until(() => c.engine.conversationState(conversation) == ConversationState.membersChanged);
+      // Then the conversation is deleted, and its group's info refused.
+      fake
+        ..deleteConversation(conversation)
+        ..refuse(
+          (method: 'GET', path: '/api/users/@me/conversations/$conversation/mls/group-info'),
+          403,
+          body: {'error': "you aren't a member of this conversation"},
+        );
+      final before = seen.length;
+      await c.engine.acceptMembers(conversation);
+      expect(requestsOf(seen.sublist(before)), [
+        'GET /api/users/@me/conversations/$conversation/mls/group-info',
+        'GET /api/users/@me/conversations',
+      ]);
+      expect(c.engine.conversationState(conversation), isNull);
+      await a.engine.stop();
+      await c.engine.stop();
     },
     skip: noCore,
     timeout: _slow,

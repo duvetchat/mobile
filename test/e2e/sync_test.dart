@@ -245,8 +245,8 @@ void main() {
       final seen = <http.Request>[];
       final (:fake, ana: _, bo: _, :a, :b, :conversation) = await _dmWithGroup(seen);
       await stoppedByHand(a);
-      // Ana's device commits, and the commit's event comes without its data: Bo's device reads the queue for it, which by
-      // then is gone.
+      // Ana's device commits, and the commit's event comes without its data: Bo's device reads the queue for it, which
+      // by then is gone.
       fake
         ..stripData = true
         ..holdEvents();

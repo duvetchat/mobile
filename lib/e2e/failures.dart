@@ -59,6 +59,9 @@ class Failures {
   final _counts = <String, int>{};
   void Function()? _timer;
 
+  /// Stopped with its engine: a report in flight then leaves no timer (M5 of the review).
+  var _stopped = false;
+
   /// One more of a kind, reported with the others of its minute.
   void note(String kind) {
     _counts[kind] = (_counts[kind] ?? 0) + 1;
@@ -67,19 +70,25 @@ class Failures {
 
   /// Stops waiting: what wasn't reported goes uncounted.
   void stop() {
+    _stopped = true;
     _timer?.call();
     _timer = null;
   }
 
-  void _wait(Duration wait) => _timer ??= _clock.later(wait, () {
+  void _wait(Duration wait) {
+    if (!_stopped) _timer ??= _clock.later(wait, _round);
+  }
+
+  void _round() {
     _timer = null;
     unawaited(_report());
-  });
+  }
 
   /// Each kind's count in one request; what the API didn't take waits for the next minute. A refusal for the route's
   /// rate stops the round there, the other kinds waiting with it, an hour.
   Future<void> _report() async {
     for (final kind in [..._counts.keys]) {
+      if (_stopped) return;
       final count = _counts.remove(kind)!;
       final sent = min(count, _most);
       if (count > sent) _counts[kind] = count - sent;

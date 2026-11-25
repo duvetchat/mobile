@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 
 import 'package:duvet/e2e/engine.dart';
@@ -80,8 +81,8 @@ void main() {
       await a.api.deleteMessage(conversation, gone.id, tombstone['ciphertext']! as String);
       await _send(a, conversation, 'spoiled', spoil: true);
 
-      // Bo's device reads the queue: the deleted message's emptied entry isn't a failure; the spoiled one is, a message,
-      // reported within the minute with the others.
+      // Bo's device reads the queue: the deleted message's emptied entry isn't a failure; the spoiled one is, a
+      // message, reported within the minute with the others.
       final back = await restarted(fake, b);
       expect(fake.decryptFailures, isEmpty);
       back.clock.advance(const Duration(minutes: 1));
@@ -164,8 +165,8 @@ void main() {
     timeout: _slow,
   );
 
-  // M4 of the desktop's review: a pin the record can't keep holds for the session, so a later start in it, on another key
-  // the API serves, keeps the first.
+  // M4 of the desktop's review: a pin the record can't keep holds for the session, so a later start in it, on another
+  // key the API serves, keeps the first.
   test(
     "the_pinned_key_holds_for_the_session_where_the_record_can't_keep_it",
     () async {
@@ -241,6 +242,29 @@ void main() {
     await pumpEventQueue();
     expect(reported, unorderedEquals([(kind: 'message', count: 2), (kind: 'commit', count: 2)]));
     failures.stop();
+  });
+
+  // M5 of the review: a report whose request is still out when the engine stops leaves no timer behind, whatever it
+  // answers.
+  test('a_report_in_flight_when_the_engine_stops_leaves_no_timer', () async {
+    final asked = <http.Request>[];
+    final answer = Completer<http.Response>();
+    final client = MockClient((request) {
+      asked.add(request);
+      return answer.future;
+    });
+    final api = duvet.E2eApi(duvet.RestClient(client, router: fakeRouter, token: 't', duvetClient: engineClient));
+    final clock = TestClock();
+    final failures = Failures(api, clock)..note('message');
+    clock.advance(const Duration(minutes: 1));
+    await pumpEventQueue();
+    expect(asked, hasLength(1));
+    failures.stop();
+    answer.complete(http.Response(jsonEncode({'error': 'internal server error'}), 500));
+    await pumpEventQueue();
+    clock.advance(const Duration(minutes: 1));
+    await pumpEventQueue();
+    expect(asked, hasLength(1));
   });
 
   test('what_fails_to_open_is_counted_by_its_kind', () {

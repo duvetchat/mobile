@@ -480,17 +480,12 @@ class Conversations {
   }
 
   /// Whether the core held a creation of this device's for a conversation the API lists without a group, which it
-  /// drops now: no answer came, and none will. No key package is claimed for it.
+  /// drops now: no answer came, and none will. No key package is claimed for it. A group it holds with no commit
+  /// waiting, which create_group won't make again, throws the core's `not_found`, before anything is claimed (M4 of
+  /// the review, as the desktop does).
   Future<bool> _dropStale(String id) async {
     if (await _group(id) == null) return false;
-    try {
-      await _host.handle<Object?>({'cmd': 'commit_result', 'conversation_id': id, 'accepted': false});
-    } on CoreError catch (error) {
-      // No commit waits there: a group the API doesn't list, which create_group won't make again.
-      if (error.code != 'not_found') rethrow;
-      debugPrint("e2e: this device holds a group the API doesn't list.");
-      return false;
-    }
+    await _host.handle<Object?>({'cmd': 'commit_result', 'conversation_id': id, 'accepted': false});
     return true;
   }
 
@@ -737,9 +732,11 @@ class Conversations {
         commit = await join();
       }
     } on duvet.DuvetApiException catch (error) {
-      // No group to join yet (the group info's 404); anything else is the turn's to answer.
-      if (error.statusCode == 404) return;
-      rethrow;
+      // No group to join yet, or the conversation or its user gone (I2 of the desktop's review), on every way here, the
+      // person's yes included: listed again, a conversation gone is let go.
+      if (!const [403, 404].contains(error.statusCode)) rethrow;
+      if (await _left(id)) _gone(id);
+      return;
     } on CoreError catch (error) {
       // A commit of its own still waits for its word.
       if (error.code == 'pending_commit') return;

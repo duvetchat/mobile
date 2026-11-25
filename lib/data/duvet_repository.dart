@@ -1828,7 +1828,9 @@ class DuvetRepository implements ChatRepository {
 
   @override
   void chatHidden(ChatTarget target, {String? threadOf}) {
-    if (_onScreen == (chatId: target.id, threadOf: threadOf)) _onScreen = null;
+    // Another view on screen by now (a thread over its chat, whose own hide comes after) keeps what it showed.
+    if (_onScreen != (chatId: target.id, threadOf: threadOf)) return;
+    _onScreen = null;
     if (target case ConversationTarget(:final conversationId) when _conversationOnScreen == conversationId) {
       _conversationOnScreen = null;
       _engine?.closeConversation(conversationId);

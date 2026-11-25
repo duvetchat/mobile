@@ -261,8 +261,8 @@ void main() {
     timeout: _slow,
   );
 
-  // I1 of the desktop's review, for an addition: a user removed and added back has a count in the queue, and the welcome
-  // that brings them back follows the addition's commit there.
+  // I1 of the desktop's review, for an addition: a user removed and added back has a count in the queue, and the
+  // welcome that brings them back follows the addition's commit there.
   test(
     'a_user_removed_and_added_back_comes_in_by_the_new_welcome',
     () async {

@@ -479,8 +479,8 @@ class FakeApi {
     _routes = _table();
   }
 
-  /// The API's Ed25519 public key, its groups' one external sender, in base64 (GET /api/e2e's). A test that sets another
-  /// plays a server that changed it: the fake checks no commit against it.
+  /// The API's Ed25519 public key, its groups' one external sender, in base64 (GET /api/e2e's). A test that sets
+  /// another plays a server that changed it: the fake checks no commit against it.
   String externalSender = base64Encode(ed25519PublicKey(_randomBytes(32)));
 
   /// The cutover's instant, as GET /api/e2e gives it.
