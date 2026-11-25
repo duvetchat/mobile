@@ -200,6 +200,106 @@
 			"drawn": "message"
 		},
 		{
+			"case": "a duration of null isn't a voice note's",
+			"message": {
+				"text": null,
+				"attachments": [
+					{
+						"id": "0193a4b2-6b1c-7d3e-8f00-000000000a01",
+						"key": "AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA=",
+						"sha256": "oKGio6SlpqeoqaqrrK2ur7CxsrO0tba3uLm6u7y9vr8=",
+						"name": "voice-note.webm",
+						"type": "audio/webm",
+						"size": 18235,
+						"duration_ms": null,
+						"waveform": "AAQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyAhIiMkJSYnKCkqKywtLi8wMTIzNDU2Nzg5Ojs8PT4/A=="
+					}
+				]
+			},
+			"sticker": false,
+			"drawn": "message"
+		},
+		{
+			"case": "a duration written as text isn't a voice note's",
+			"message": {
+				"text": null,
+				"attachments": [
+					{
+						"id": "0193a4b2-6b1c-7d3e-8f00-000000000a01",
+						"key": "AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA=",
+						"sha256": "oKGio6SlpqeoqaqrrK2ur7CxsrO0tba3uLm6u7y9vr8=",
+						"name": "voice-note.webm",
+						"type": "audio/webm",
+						"size": 18235,
+						"duration_ms": "4200",
+						"waveform": "AAQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyAhIiMkJSYnKCkqKywtLi8wMTIzNDU2Nzg5Ojs8PT4/A=="
+					}
+				]
+			},
+			"sticker": false,
+			"drawn": "message"
+		},
+		{
+			"case": "a waveform without its padding isn't a voice note's",
+			"message": {
+				"text": null,
+				"attachments": [
+					{
+						"id": "0193a4b2-6b1c-7d3e-8f00-000000000a01",
+						"key": "AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA=",
+						"sha256": "oKGio6SlpqeoqaqrrK2ur7CxsrO0tba3uLm6u7y9vr8=",
+						"name": "voice-note.webm",
+						"type": "audio/webm",
+						"size": 18235,
+						"duration_ms": 4200,
+						"waveform": "AAQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyAhIiMkJSYnKCkqKywtLi8wMTIzNDU2Nzg5Ojs8PT4/A"
+					}
+				]
+			},
+			"sticker": false,
+			"drawn": "message"
+		},
+		{
+			"case": "a waveform that isn't base64 isn't a voice note's, and reading it throws nothing",
+			"message": {
+				"text": null,
+				"attachments": [
+					{
+						"id": "0193a4b2-6b1c-7d3e-8f00-000000000a01",
+						"key": "AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA=",
+						"sha256": "oKGio6SlpqeoqaqrrK2ur7CxsrO0tba3uLm6u7y9vr8=",
+						"name": "voice-note.webm",
+						"type": "audio/webm",
+						"size": 18235,
+						"duration_ms": 4200,
+						"waveform": "not base64!"
+					}
+				]
+			},
+			"sticker": false,
+			"drawn": "message"
+		},
+		{
+			"case": "a waveform with a space in it isn't a voice note's",
+			"message": {
+				"text": null,
+				"attachments": [
+					{
+						"id": "0193a4b2-6b1c-7d3e-8f00-000000000a01",
+						"key": "AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA=",
+						"sha256": "oKGio6SlpqeoqaqrrK2ur7CxsrO0tba3uLm6u7y9vr8=",
+						"name": "voice-note.webm",
+						"type": "audio/webm",
+						"size": 18235,
+						"duration_ms": 4200,
+						"waveform": "AAQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA hIiMkJSYnKCkqKywtLi8wMTIzNDU2Nzg5Ojs8PT4/A=="
+					}
+				]
+			},
+			"sticker": false,
+			"drawn": "message"
+		},
+		{
 			"case": "a voice note that says it's a picture is a file",
 			"message": {
 				"text": null,

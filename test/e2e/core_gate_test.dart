@@ -221,6 +221,80 @@ void main() {
     await app.close();
   }, skip: noCore);
 
+  test('two opens at once make one key, the one the database opens with again', () async {
+    final app = gate(app: true);
+    final both = await Future.wait([app.open(ana), app.open(ana)]);
+    expect([for (final opened in both) opened.state], [HostState.ready, HostState.ready]);
+    final device = uuidv7();
+    await app.handle<Object?>({'cmd': 'create_device', 'user_id': ana, 'device_id': device});
+    await app.close();
+    expect(await storage.readAll(), hasLength(1));
+    final next = gate(app: true);
+    expect(await next.open(ana), ready);
+    expect(await deviceOf(next), device);
+    await next.close();
+  }, skip: noCore);
+
+  test("a call whose core closed under it is internal, not the core's not_found", () async {
+    final (app, _) = await appWithDevice();
+    final making = expectLater(
+      app.handle<Object?>({'cmd': 'key_packages'}),
+      throwsA(isA<CoreError>().having((error) => error.code, 'code', 'internal')),
+    );
+    await app.close();
+    await making;
+  }, skip: noCore);
+
+  test('bytes cross between engines as TransferableTypedData, which the SDK promises between isolate groups', () async {
+    final (app, _) = await appWithDevice();
+    final key = (await app.handle<Map<String, Object?>>({'cmd': 'attachment_key'}))['key']! as String;
+    final answers = ReceivePort();
+    IsolateNameServer.lookupPortByName(corePortName)!.send([
+      answers.sendPort,
+      'sealFile',
+      ana,
+      [
+        key,
+        uuidv7(),
+        TransferableTypedData.fromList([
+          Uint8List.fromList([1, 2, 3]),
+        ]),
+      ],
+    ]);
+    final answer = await answers.firstWhere((reply) => (reply as List).first != 'taken' && reply.first != 'progress');
+    answers.close();
+    expect(answer, ['ok', isA<TransferableTypedData>()]);
+    await app.close();
+  }, skip: noCore);
+
+  test('a call whose engine ends after it took the call is internal at once, not after its wait', () async {
+    final started = ReceivePort();
+    await Isolate.spawn(_endingEngine, started.sendPort);
+    await started.first;
+    final other = gate(app: false, answerWait: const Duration(seconds: 20));
+    expect(await other.open(ana), ready);
+    final asked = Stopwatch()..start();
+    await expectLater(
+      other.handle<Object?>({'cmd': 'status'}),
+      throwsA(isA<CoreError>().having((error) => error.code, 'code', 'internal')),
+    );
+    expect(asked.elapsed, lessThan(const Duration(seconds: 10)));
+  });
+
+  test('destroy through the port: the app\'s engine deletes the database it has open, and its key', () async {
+    final (app, _) = await appWithDevice();
+    final other = gate(app: false);
+    expect(await other.open(ana), ready);
+    await other.destroy(ana);
+    expect(File(database(ana)).existsSync(), isFalse);
+    expect(await storage.readAll(), isEmpty);
+    expect(IsolateNameServer.lookupPortByName(corePortName), isNull);
+    await expectLater(
+      app.handle<Object?>({'cmd': 'status'}),
+      throwsA(isA<CoreError>().having((error) => error.code, 'code', 'internal')),
+    );
+  }, skip: noCore);
+
   test("a user's ID is a UUID, as it names a folder", () async {
     await expectLater(gate(app: true).open('../$ana'), throwsA(isA<CoreError>()));
     expect(support.listSync(), isEmpty);
@@ -305,4 +379,20 @@ Future<void> _secondEngine((SendPort, String) start) async {
     'progress': progress,
     'refused': refused,
   });
+}
+
+/// An app's engine that answers an open, then takes the next request and ends without answering it.
+Future<void> _endingEngine(SendPort started) async {
+  final port = ReceivePort();
+  IsolateNameServer.registerPortWithName(port.sendPort, corePortName);
+  started.send(null);
+  await for (final request in port) {
+    final [SendPort reply, String op, ...] = request as List;
+    reply.send(['taken', Isolate.current.controlPort]);
+    if (op != 'open') Isolate.exit();
+    reply.send([
+      'ok',
+      jsonEncode({'state': 'ready'}),
+    ]);
+  }
 }

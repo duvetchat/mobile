@@ -654,8 +654,7 @@ class FakeApi {
   // ---------------------------------------------------------------------------------------------------------------
   // Requests.
 
-  /// The API, as an http.Client: a request to any of its routes gets the API's answer. Its 307s are followed, as a
-  /// client that follows redirects does.
+  /// The API, as an http.Client: a request to any of its routes gets the API's answer.
   late final http.Client client = MockClient(_handle);
 
   Future<http.Response> _handle(http.Request request) async {
@@ -667,10 +666,6 @@ class FakeApi {
     // Its events go once its answer is made, lost or not: after the code that awaited it ran on.
     Timer.run(() => _send(events));
     if (effect != null) throw http.ClientException('the answer was lost', request.url);
-    final location = answer.headers['Location'];
-    if (answer.status == 307 && location != null && request.followRedirects) {
-      return _handle(http.Request('GET', Uri.parse(location)));
-    }
     return _respond(answer);
   }
 
@@ -902,7 +897,7 @@ class FakeApi {
         if (share == null || file == null || ![share.toUser, share.fromUser].contains(ctx.me.user)) {
           throw _fail(404, 'no such part');
         }
-        return _Answer(307, headers: {'Location': '$fakeApiUrl/files/$file'});
+        return _ok({'url': '$fakeApiUrl/files/$file'});
       }),
       route('POST', '/api/history-shares/(?<share>$_uuidPath)/ack', _Needs.device, (ctx) {
         final share = _shares[ctx.params['share']];
@@ -941,9 +936,9 @@ class FakeApi {
       route('GET', '$me/backup/segments/(?<segment>$_uuidPath)', _Needs.device, (ctx) {
         final segment = _segments[ctx.params['segment']];
         if (segment == null || segment.identity != _identities[ctx.me.user]?.id) throw _fail(404, 'no such segment');
-        return _Answer(307, headers: {'Location': '$fakeApiUrl/files/${segment.file}'});
+        return _ok({'url': '$fakeApiUrl/files/${segment.file}'});
       }),
-      // Where a 307 sends a client: a file's signed URL, which takes no session.
+      // A file at its signed URL, which the part's and the segment's routes answer: it takes no session.
       route('GET', '/files/(?<file>$_uuidPath)', _Needs.nothing, (ctx) {
         final file = _files[ctx.params['file']];
         if (file == null) throw _fail(404, 'no such file');

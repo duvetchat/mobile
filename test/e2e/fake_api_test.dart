@@ -125,6 +125,9 @@ Future<({List<dynamic> keyPackages, List<dynamic> handedOut})> uploadKeyPackages
   return (keyPackages: made['key_packages'] as List<dynamic>, handedOut: put.body['handed_out'] as List<dynamic>);
 }
 
+/// A file at the signed URL a download's route answers, fetched as the client fetches one: with no app header.
+Future<Uint8List> download(FakeApi fake, String url) async => (await fake.client.get(Uri.parse(url))).bodyBytes;
+
 /// A conversation as the API's list gives it to the device: its group as that device has it.
 Future<Json> conversationOf(FakeApi fake, Device d, String id) async =>
     ((await call(fake, d.token, 'GET', conversations)).body as List).cast<Json>().firstWhere((c) => c['id'] == id);
@@ -634,8 +637,9 @@ void main() {
           'created_at': isA<String>(),
         }),
       ]);
-      final downloaded = await call(fake, a.token, 'GET', '/api/users/@me/backup/segments/${second.body['id']}');
-      expect(base64Encode(downloaded.body as Uint8List), segment['data']);
+      final signed = await call(fake, a.token, 'GET', '/api/users/@me/backup/segments/${second.body['id']}');
+      expect(signed.body, has({'url': isA<String>()}));
+      expect(base64Encode(await download(fake, signed.body['url'] as String)), segment['data']);
       // The header names its conversation and its day: another route's isn't taken.
       expect(
         (await call(
@@ -722,7 +726,11 @@ void main() {
       }
       final parts = <Uint8List>[
         for (var n = 0; n < (made['parts']! as int); n++)
-          (await call(fake, b.token, 'GET', '/api/history-shares/${made['share_id']}/parts/$n')).body as Uint8List,
+          await download(
+            fake,
+            (await call(fake, b.token, 'GET', '/api/history-shares/${made['share_id']}/parts/$n')).body['url']
+                as String,
+          ),
       ];
       expect(await b.core.importShare(made['share_id']! as String, parts), has({'imported': isA<int>()}));
       expect((await call(fake, b.token, 'POST', '/api/history-shares/${made['share_id']}/ack')).status, 204);

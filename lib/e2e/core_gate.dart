@@ -141,6 +141,11 @@ const maxShareParts = 64;
 
 final _uuid = RegExp(r'^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$');
 
+// Bytes between engines: TransferableTypedData, the one kind of typed data the SDK promises between isolate groups,
+// which another engine's isolate is in.
+TransferableTypedData _transfer(Uint8List bytes) => TransferableTypedData.fromList([bytes]);
+Uint8List _received(Object? bytes) => (bytes! as TransferableTypedData).materialize().asUint8List();
+
 /// The app's engine didn't take a request in time, or ended before it answered.
 class _Gone implements Exception {
   const _Gone();
@@ -179,8 +184,12 @@ final class CoreGate {
   /// The core, while the database is open here.
   DuvetE2eCore? _core;
 
-  /// The app's engine, while this one uses the database through it.
+  /// The app's engine, while this one uses the database through it, and its isolate, whose end ends a request's wait.
   SendPort? _app;
+  Isolate? _engine;
+
+  /// The control port of the last engine that took a request of this one's.
+  SendPort? _taker;
 
   /// What this engine answers the others on, while it does.
   ReceivePort? _port;
@@ -190,10 +199,24 @@ final class CoreGate {
 
   static const _again = Duration(milliseconds: 100);
 
+  // open, close and destroy run one at a time: two first opens at once would each make a key, and the one that lost
+  // the key's write would hold the database.
+  Future<void> _turn = Future.value();
+
+  Future<T> _inTurn<T>(Future<T> Function() work) {
+    final done = _turn.then((_) => work());
+    _turn = done.then((_) {}, onError: (_) {});
+    return done;
+  }
+
   /// Opens [userId]'s database on this phone, or makes it (the app's engine only), closing what this engine had open.
   Future<Opened> open(String userId) async {
     if (!_uuid.hasMatch(userId)) throw CoreError('bad_command', message: "a user's ID is a UUID", field: 'user_id');
-    await close();
+    return _inTurn(() => _open(userId));
+  }
+
+  Future<Opened> _open(String userId) async {
+    await _close();
     final until = DateTime.now().add(lockedWait);
     SendPort? gone;
     while (true) {
@@ -204,6 +227,7 @@ final class CoreGate {
           final opened = (state: HostState.values.byName(answer['state']! as String), keyStorage: 'provided');
           if (opened.state != HostState.ready) return _failed;
           _app = app;
+          _engine = Isolate(_taker!);
           _user = userId;
           return opened;
         } on _Gone {
@@ -310,18 +334,22 @@ final class CoreGate {
       case 'handle':
         return jsonEncode(await handle<Object?>(jsonDecode(args[0]! as String) as Map<String, Object?>));
       case 'sealFile':
-        return sealFile(args[0]! as String, args[1]! as String, args[2]! as Uint8List, progress: progress);
+        return _transfer(
+          await sealFile(args[0]! as String, args[1]! as String, _received(args[2]), progress: progress),
+        );
       case 'openFile':
-        return openFile(args[0]! as String, args[1]! as String, args[2]! as Uint8List, progress: progress);
+        return _transfer(
+          await openFile(args[0]! as String, args[1]! as String, _received(args[2]), progress: progress),
+        );
       case 'share':
         return jsonEncode(await share(jsonDecode(args[0]! as String) as Map<String, Object?>));
       case 'sharePart':
-        return sharePart(args[0]! as String, args[1]! as int);
+        return _transfer(await sharePart(args[0]! as String, args[1]! as int));
       case 'dropShare':
         await dropShare(args[0]! as String);
         return null;
       case 'importShare':
-        final parts = [for (final part in args[1]! as List) part as Uint8List];
+        final parts = [for (final part in args[1]! as List) _received(part)];
         return jsonEncode(await importShare(args[0]! as String, parts));
       case 'destroy':
         await destroy(user);
@@ -340,13 +368,18 @@ final class CoreGate {
   ]) async {
     final answers = ReceivePort();
     final replies = StreamIterator<Object?>(answers);
+    // Its engine's end ends the wait. Listened for before the request goes, as an isolate that has ended sends no exit
+    // message: an end right after it took the request isn't missed. The open that first finds the engine, which
+    // answers at once, waits for each reply as for the taking.
+    final engine = _engine;
+    engine?.addOnExitListener(answers.sendPort, response: const ['gone']);
+    Future<bool> next() =>
+        engine == null ? replies.moveNext().timeout(answerWait, onTimeout: () => false) : replies.moveNext();
     try {
       app.send([answers.sendPort, op, user, args]);
       if (!await replies.moveNext().timeout(answerWait, onTimeout: () => false)) throw const _Gone();
-      if (replies.current case ['taken', final SendPort control]) {
-        Isolate(control).addOnExitListener(answers.sendPort, response: const ['gone']);
-      }
-      while (await replies.moveNext()) {
+      if (replies.current case ['taken', final SendPort control]) _taker = control;
+      while (await next()) {
         switch (replies.current) {
           case ['progress', final int done]:
             progress?.call(done);
@@ -360,6 +393,7 @@ final class CoreGate {
       }
       throw const _Gone();
     } finally {
+      engine?.removeOnExitListener(answers.sendPort);
       await replies.cancel();
       answers.close();
     }
@@ -386,6 +420,7 @@ final class CoreGate {
       return await there(_app!, user);
     } on _Gone {
       _app = null;
+      _engine = null;
       throw CoreError('internal', message: "the app's engine went away");
     }
   }
@@ -416,7 +451,16 @@ final class CoreGate {
       // A panic of the core, whose command rolled back.
       throw CoreError('internal', message: '$error');
     }
-    return replyOk(jsonDecode(reply));
+    // Closed while it answered (this engine closed, switched account or destroyed): the core's not_found would read as
+    // a missing group or nothing pending.
+    if (!identical(_core, core)) throw CoreError('internal', message: 'the core closed while it answered');
+    final Object? answer;
+    try {
+      answer = jsonDecode(reply);
+    } on FormatException {
+      throw CoreError('internal', message: "the core's reply isn't JSON");
+    }
+    return replyOk(answer);
   }
 
   /// Seals a whole file, part by part, so its bytes never go in one JSON; [progress] hears how many are done.
@@ -428,7 +472,8 @@ final class CoreGate {
   }) async =>
       await _either(
             () => _parts('attachment_encrypt', key, attachmentId, plain, attachmentPart, progress),
-            (app, user) => _ask(app, 'sealFile', user, [key, attachmentId, plain], progress),
+            (app, user) async =>
+                _received(await _ask(app, 'sealFile', user, [key, attachmentId, _transfer(plain)], progress)),
           )
           as Uint8List;
 
@@ -441,7 +486,8 @@ final class CoreGate {
   }) async =>
       await _either(
             () => _parts('attachment_decrypt', key, attachmentId, sealed, attachmentPart + partTag, progress),
-            (app, user) => _ask(app, 'openFile', user, [key, attachmentId, sealed], progress),
+            (app, user) async =>
+                _received(await _ask(app, 'openFile', user, [key, attachmentId, _transfer(sealed)], progress)),
           )
           as Uint8List;
 
@@ -495,7 +541,7 @@ final class CoreGate {
               throw CoreError('not_found', message: 'this engine keeps no such part', what: 'share');
             }
             return parts[n];
-          }, (app, user) => _ask(app, 'sharePart', user, [shareId, n]))
+          }, (app, user) async => _received(await _ask(app, 'sharePart', user, [shareId, n])))
           as Uint8List;
 
   /// Lets a package's parts go.
@@ -514,15 +560,24 @@ final class CoreGate {
         'share_id': shareId,
         'parts': [for (final part in parts) base64Encode(part)],
       }),
-      (app, user) async => jsonDecode((await _ask(app, 'importShare', user, [shareId, parts]))! as String),
+      (app, user) async => jsonDecode(
+        (await _ask(app, 'importShare', user, [
+              shareId,
+              [for (final part in parts) _transfer(part)],
+            ]))!
+            as String,
+      ),
     );
     return (imported! as Map).cast<String, Object?>();
   }
 
   /// Closes what this engine has open: the database, or its use of the app's engine's, which stays open there.
-  Future<void> close() async {
+  Future<void> close() => _inTurn(_close);
+
+  Future<void> _close() async {
     _user = null;
     _app = null;
+    _engine = null;
     _shares.clear();
     _stopServing();
     final core = _core;
@@ -536,8 +591,12 @@ final class CoreGate {
   /// as the core's own destroy leaves it: an open racing this one takes the same lock.
   Future<void> destroy(String userId) async {
     if (!_uuid.hasMatch(userId)) throw CoreError('bad_command', message: "a user's ID is a UUID", field: 'user_id');
+    return _inTurn(() => _destroy(userId));
+  }
+
+  Future<void> _destroy(String userId) async {
     if (_user != userId || (_core == null && _app == null)) {
-      if ((await open(userId)).state == HostState.locked) {
+      if ((await _open(userId)).state == HostState.locked) {
         throw CoreError('locked', message: 'another engine has the database open');
       }
     }
@@ -547,7 +606,7 @@ final class CoreGate {
       } on _Gone {
         throw CoreError('internal', message: "the app's engine went away");
       } finally {
-        await close();
+        await _close();
       }
       return;
     }
@@ -561,6 +620,6 @@ final class CoreGate {
       if (await file.exists()) await file.delete();
     }
     await _keys.delete(userId);
-    await close();
+    await _close();
   }
 }

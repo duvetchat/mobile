@@ -13,15 +13,14 @@ void main() {
   final source = jsonDecode(File('$package/SOURCE.json').readAsStringSync()) as Map<String, dynamic>;
   final files = (source['files'] as Map).cast<String, String>();
 
-  test("each file is the one SOURCE.json records, and there's no other", () {
+  test("each file is the one SOURCE.json records, and the checkout has no other", () {
     expect(source['repository'], 'duvetchat/e2e');
     expect(source['commit'], matches(RegExp(r'^[0-9a-f]{40}$')));
-    final there = [
-      for (final entry in Directory(package).listSync(recursive: true))
-        if (entry is File)
-          if (entry.path.replaceAll(r'\', '/') case final path when path != '$package/SOURCE.json') path,
-    ]..sort();
-    expect(there, [...files.keys]..sort());
+    // What the checkout carries: a pub get or an IDE's files in the folder aren't the vendored package's.
+    final tracked = (Process.runSync('git', ['ls-files', package]).stdout as String).split('\n')
+      ..removeWhere((path) => path.isEmpty || path == '$package/SOURCE.json')
+      ..sort();
+    expect(tracked, [...files.keys]..sort());
     for (final MapEntry(key: path, value: hash) in files.entries) {
       expect(sha256.convert(File(path).readAsBytesSync()).toString(), hash, reason: path);
     }

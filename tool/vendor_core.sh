@@ -40,7 +40,8 @@ for name in android-arm64-v8a-libduvet_e2e.so libduvet_e2e.so; do
   fi
 done
 
-# The new folder is made whole apart, then takes the old one's place: a failure leaves the repository as it was.
+# The new folder is made whole apart, then takes the old one's place (below): a failure until then leaves the
+# repository as it was.
 next=$(mktemp -d)
 chmod 755 "$next"
 trap 'rm -rf "$next"' EXIT
@@ -98,7 +99,18 @@ EOF
 ) >"$cache/SOURCE.json"
 mv "$cache/SOURCE.json" "$next/SOURCE.json"
 
-rm -rf "${root:?}/$package"
+# Copied beside the package, then renamed into its place: a copy that fails midway (a full disk) leaves the package as
+# it was. Only an end between the two renames would leave it aside, in packages/.duvet_e2e.old.
+staged=$root/packages/.duvet_e2e.next
+old=$root/packages/.duvet_e2e.old
+trap 'rm -rf "$next" "$staged"' EXIT
 mkdir -p "$root/packages"
-cp -R "$next" "$root/$package"
+rm -rf "$staged" "$old"
+cp -R "$next" "$staged"
+if [[ -e $root/$package ]]; then mv "$root/$package" "$old"; fi
+if ! mv "$staged" "$root/$package"; then
+  if [[ -e $old ]]; then mv "$old" "$root/$package"; fi
+  exit 1
+fi
+rm -rf "$old"
 echo "The core's plugin of $built is in $package."

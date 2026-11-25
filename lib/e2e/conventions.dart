@@ -28,29 +28,24 @@ enum Drawn { voiceNote, sticker, nothing, message }
 
 /// What a message the core shows is drawn as: a voice note (no text, and one audio file with its waveform and duration,
 /// by what its sender says of it: its player still reads the file's type from its bytes), the sticker of an empty
-/// envelope, nothing for an empty envelope without a sticker, or else a message, with its text and files.
+/// envelope, nothing for an empty envelope without a sticker, or else a message, with its text and files. Its sender
+/// wrote the fields, so they're read as the convention has them, never throwing: a duration is a number, and a
+/// waveform its 64 bytes in padded standard base64; anything else is a file's.
 Drawn drawnAs({required String? text, required List<Map<String, Object?>> attachments, required bool sticker}) {
   final file = attachments.firstOrNull;
   final hasText = text != null && text.isNotEmpty;
   if (!hasText && file == null) return sticker ? Drawn.sticker : Drawn.nothing;
-  final type = file?['type'];
+  final (type, waveform) = (file?['type'], file?['waveform']);
   final voice =
       !hasText &&
       attachments.length == 1 &&
       type is String &&
       type.startsWith('audio/') &&
-      file!['duration_ms'] != null &&
-      _samples(file['waveform']) == waveformSamples;
+      file!['duration_ms'] is num &&
+      waveform is String &&
+      _base64.hasMatch(waveform) &&
+      base64Decode(waveform).length == waveformSamples;
   return voice ? Drawn.voiceNote : Drawn.message;
-}
-
-int? _samples(Object? waveform) {
-  if (waveform is! String) return null;
-  try {
-    return base64Decode(waveform).length;
-  } on FormatException {
-    return null;
-  }
 }
 
 /// The most characters a file's name keeps, counted by code point.
