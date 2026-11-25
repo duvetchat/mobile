@@ -68,72 +68,6 @@ Future<List<TestDevice>> _blocked(FakeApi fake, String conversation, List<TestDe
   return [a, b, c];
 }
 
-/// The owner's removal of a user, by hand (Task 23 does it in the app): its commit, posted, and taken.
-Future<duvet.CommitTaken> _removeByHand(TestDevice owner, String conversation, String user) async {
-  final held = (await groupOf(owner, conversation))!;
-  final made = await byHand(owner, {
-    'cmd': 'remove_members',
-    'conversation_id': conversation,
-    'users': [user],
-  });
-  final taken = await owner.api.removeMember(
-    conversation,
-    user,
-    duvet.Commit(
-      generation: held.generation,
-      epoch: held.epoch,
-      commit: made['commit']! as String,
-      groupInfo: made['group_info']! as String,
-    ),
-  );
-  await owner.host.handle<Object?>({
-    'cmd': 'commit_result',
-    'conversation_id': conversation,
-    'accepted': true,
-    'seq': taken.seq,
-  });
-  return taken;
-}
-
-/// The owner's addition of a user, with key packages of theirs claimed earlier, by hand (Task 23 does it in the app):
-/// its commit and welcome, posted, and taken.
-Future<duvet.MemberAdded> _addByHand(
-  TestDevice owner,
-  String conversation,
-  String user,
-  List<duvet.ClaimedKeyPackage> keyPackages,
-) async {
-  final held = (await groupOf(owner, conversation))!;
-  final made = await byHand(owner, {
-    'cmd': 'add_members',
-    'conversation_id': conversation,
-    'users': [
-      {
-        'user_id': user,
-        'key_packages': [for (final kp in keyPackages) kp.data],
-      },
-    ],
-  });
-  final added = await owner.api.addMember(
-    conversation,
-    user,
-    duvet.Commit(
-      generation: held.generation,
-      epoch: held.epoch,
-      commit: made['commit']! as String,
-      groupInfo: made['group_info']! as String,
-      welcome: made['welcome'] as String?,
-    ),
-  );
-  await owner.host.handle<Object?>({
-    'cmd': 'commit_result',
-    'conversation_id': conversation,
-    'accepted': true,
-    'seq': added.commit.seq,
-  });
-  return added;
-}
-
 void main() {
   setUpAll(() async {
     if (coreLibrary != null) await loadCore();
@@ -279,7 +213,7 @@ void main() {
       // Ana, its owner, takes Bo out, by hand (Task 23 does it in the app).
       await stoppedByHand(a);
       final before = seen.length;
-      await _removeByHand(a, conversation, bo);
+      await removeByHand(a, conversation, bo);
       // Bo's device applies its removal; Cy's goes on with Ana's.
       await until(() async => await groupOf(b, conversation) == null);
       await sameGroup([a, c], conversation);
@@ -312,10 +246,10 @@ void main() {
       final mine = (await c.engine.sendMessage(Outgoing(conversationId: conversation, nonce: uuidv4(), text: 'mine')))!;
       final keyPackages = await a.api.claimKeyPackages(cy);
       await stoppedByHand(a);
-      await _removeByHand(a, conversation, cy);
+      await removeByHand(a, conversation, cy);
       await until(() async => await groupOf(c, conversation) == null);
       final away = (await b.engine.sendMessage(Outgoing(conversationId: conversation, nonce: uuidv4(), text: 'away')))!;
-      await _addByHand(a, conversation, cy, keyPackages);
+      await addByHand(a, conversation, cy, keyPackages);
       await until(() async => await groupOf(c, conversation) != null);
       expect(away.id.compareTo(fake.membershipOf(conversation, cy)), lessThan(0));
       // The row of Cy's absence isn't on Cy's device, and Cy's own message from before is: the pages go on to it.
@@ -341,14 +275,14 @@ void main() {
       // Key packages of Cy's, claimed while they share the group: Ana can't claim them once Cy is out of hers.
       final keyPackages = await a.api.claimKeyPackages(cy);
       await stoppedByHand(a);
-      final removal = await _removeByHand(a, conversation, cy);
+      final removal = await removeByHand(a, conversation, cy);
       await until(() async => await groupOf(c, conversation) == null);
       await turnEnded(c);
 
       // Ana adds Cy back. Cy's device hears nothing of it while minutes pass, then the addition's commit, and its turn
       // ends; then the welcome.
       fake.holdEvents();
-      await _addByHand(a, conversation, cy, keyPackages);
+      await addByHand(a, conversation, cy, keyPackages);
       for (var minute = 0; minute < 3; minute++) {
         c.clock.advance(const Duration(minutes: 1));
         await turnEnded(c);

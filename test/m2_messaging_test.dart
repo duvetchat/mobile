@@ -1038,6 +1038,35 @@ void main() {
       semantics.dispose();
     });
 
+    // I4 of task 17's review: an encrypted message's copy from the API (an edit's echo, a create's) brings none of its
+    // text: the chat keeps what the device gave it, and the quotes of it too.
+    testWidgets("an encrypted message's copy from the API leaves the text the device gave", (tester) async {
+      final repository = await openMaya(
+        tester,
+        setUp: (r) => r.history['c-maya']!.addAll([
+          held('e1', text: 'from the device').copyWith(seq: 4),
+          held('e2', text: 'an answer').copyWith(
+            seq: 5,
+            reply: const MessageReply(messageId: 'e1', authorId: _maya, authorName: 'Maya', content: 'from the device'),
+          ),
+        ]),
+      );
+      void shown() {
+        expect(find.text('from the device'), findsWidgets);
+        expect(find.bySemanticsLabel(RegExp('Replying to Maya: from the device')), findsOneWidget);
+      }
+
+      shown();
+      final copy = held('e1').copyWith(seq: 4);
+      repository.push('c-maya', MessageUpdated(copy));
+      await tester.pumpAndSettle();
+      shown();
+      repository.push('c-maya', MessageCreated(copy));
+      await tester.pumpAndSettle();
+      shown();
+      semantics.dispose();
+    });
+
     testWidgets("a message the device hasn't applied yet loads, neither empty nor waiting", (tester) async {
       final repository = await openMaya(
         tester,
@@ -1052,19 +1081,6 @@ void main() {
       await tester.pumpAndSettle();
       expect(find.text('applied now'), findsOneWidget);
       expect(find.bySemanticsLabel(RegExp('Loading message')), findsNothing);
-      semantics.dispose();
-    });
-
-    testWidgets('an edit or a deletion refused with nobody waiting for it is told', (tester) async {
-      final repository = await openMaya(tester);
-      repository.push('c-maya', const ChangeRefused('m1', deletion: false));
-      await tester.pumpAndSettle();
-      expect(find.text('Couldn’t save your edit'), findsOneWidget);
-      repository.push('c-maya', const ChangeRefused('m1', deletion: true));
-      await tester.pumpAndSettle();
-      expect(find.text('Couldn’t delete the message'), findsOneWidget);
-      await tester.pump(const Duration(seconds: 4));
-      await tester.pumpAndSettle();
       semantics.dispose();
     });
 

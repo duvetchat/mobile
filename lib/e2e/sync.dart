@@ -260,12 +260,15 @@ class Conversations {
   /// they're said to be refused (Ruling 25).
   final _settling = <String>{};
 
-  /// How far the core applied each conversation's queue, as its last apply this run said (none out of its group): a
-  /// row past it isn't applied yet, and draws as loading (M2 of the desktop's task 16 review).
-  final _through = <String, int>{};
+  /// How far the core applied each conversation's queue, as its last apply this run said: null out of its group, and
+  /// no entry before its first apply. A row past it isn't applied yet, and draws as loading (M2 of the desktop's task
+  /// 16 review; M1 of task 17's).
+  final _through = <String, int?>{};
 
-  /// How far this device applied the conversation's queue this run: null before its first apply, or out of its group.
-  int? through(String conversationId) => _through[conversationId];
+  /// How far this device applied the conversation's queue this run: none before its first apply, `through` null while
+  /// this device is out of its group.
+  ({int? through})? applied(String conversationId) =>
+      _through.containsKey(conversationId) ? (through: _through[conversationId]) : null;
 
   /// Due commits' waits, and failed turns' retries, by conversation.
   final _due = <String, void Function()>{};
@@ -649,12 +652,8 @@ class Conversations {
     };
     failedKinds(results, deleted).forEach(_failures.note);
     final through = applied['applied_through'] as int?;
-    final moved = _through[conv.id] != through;
-    if (through == null) {
-      _through.remove(conv.id);
-    } else {
-      _through[conv.id] = through;
-    }
+    final moved = !_through.containsKey(conv.id) || _through[conv.id] != through;
+    _through[conv.id] = through;
     // What a chat shows of the conversation is read again: a message changed, or its rows past the queue applied.
     if (moved || results.any((r) => _messageKinds.contains(r.kind) && _shownChanges.contains(r.result))) {
       _messages(conv.id);

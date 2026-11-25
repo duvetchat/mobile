@@ -493,6 +493,15 @@ abstract interface class ChatRepository {
   /// What the chat's start says: [quietStart] for a room.
   ChatStart chatStart(ChatTarget target);
 
+  /// Whether [target] has messages older than [oldestId], its oldest shown, though its last page came back short: a
+  /// conversation's, whose rows from before the user joined gave way while this device holds older ones, and which
+  /// reads a few of the API's pages at a time (M7 of task 17's review).
+  bool olderBeyond(ChatTarget target, String oldestId);
+
+  /// Each edit or deletion of the user's in an encrypted conversation that the server refused for good: shown done on
+  /// this device, it never reached the others, which the app says wherever the person is.
+  Stream<ChangeRefused> get changesRefused;
+
   /// Replaces the text of the user's own message.
   Future<ChatMessage> edit(ChatTarget target, String messageId, String content);
 

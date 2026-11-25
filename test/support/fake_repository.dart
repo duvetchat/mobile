@@ -1678,6 +1678,15 @@ class FakeRepository implements ChatRepository {
   @override
   Future<void> discard(ChatTarget target, String nonce) async => discarded.add(nonce);
 
+  /// What [changesRefused] tells, as a test hands it.
+  final changeRefusals = StreamController<ChangeRefused>.broadcast();
+
+  @override
+  Stream<ChangeRefused> get changesRefused => changeRefusals.stream;
+
+  @override
+  bool olderBeyond(ChatTarget target, String oldestId) => false;
+
   /// What each chat's start says, by chat ID.
   final chatStarts = <String, ChatStart>{};
 

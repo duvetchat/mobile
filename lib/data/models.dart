@@ -299,40 +299,45 @@ class ChatMessage {
   /// has none of the files, reactions, reply or pin, which stay, and it can't
   /// change who wrote it, whom the event names without their Space nickname,
   /// if at all.
-  ChatMessage updatedBy(ChatMessage update) => ChatMessage(
-    id: id,
-    authorId: authorId,
-    authorName: authorName,
-    authorAvatarUrl: authorAvatarUrl,
-    content: update.content,
-    createdAt: createdAt,
-    edited: update.edited,
-    nonce: nonce,
-    isNotice: isNotice,
-    call: call,
-    attachments: attachments,
-    deletedAttachments: deletedAttachments,
-    stickerUrl: update.stickerUrl,
-    embeds: update.embeds,
-    reply: reply,
-    reactions: reactions,
-    isVoice: isVoice,
-    pinned: pinned,
-    components: update.components,
-    rawComponents: update.rawComponents,
-    fromBot: fromBot,
-    fromWebhook: fromWebhook,
-    webhookId: webhookId,
-    isEphemeral: isEphemeral,
-    isLoading: update.isLoading,
-    isComponentsV2: update.isComponentsV2,
-    interaction: update.interaction ?? interaction,
-    waiting: update.waiting,
-    pending: pending,
-    sharedBy: sharedBy,
-    seq: seq,
-    loading: update.loading,
-  );
+  ///
+  /// An encrypted conversation's message takes none of it: its text, edit and quote are what this device's own
+  /// database holds, which the chat reads again (I4 of task 17's review).
+  ChatMessage updatedBy(ChatMessage update) => encrypted
+      ? this
+      : ChatMessage(
+          id: id,
+          authorId: authorId,
+          authorName: authorName,
+          authorAvatarUrl: authorAvatarUrl,
+          content: update.content,
+          createdAt: createdAt,
+          edited: update.edited,
+          nonce: nonce,
+          isNotice: isNotice,
+          call: call,
+          attachments: attachments,
+          deletedAttachments: deletedAttachments,
+          stickerUrl: update.stickerUrl,
+          embeds: update.embeds,
+          reply: reply,
+          reactions: reactions,
+          isVoice: isVoice,
+          pinned: pinned,
+          components: update.components,
+          rawComponents: update.rawComponents,
+          fromBot: fromBot,
+          fromWebhook: fromWebhook,
+          webhookId: webhookId,
+          isEphemeral: isEphemeral,
+          isLoading: update.isLoading,
+          isComponentsV2: update.isComponentsV2,
+          interaction: update.interaction ?? interaction,
+          waiting: update.waiting,
+          pending: pending,
+          sharedBy: sharedBy,
+          seq: seq,
+          loading: update.loading,
+        );
 
   /// This message once [change] took place: the name and avatar of its
   /// author, if they're the one who changed (a webhook's message keeps the
@@ -1081,11 +1086,11 @@ final class ContentChanged extends MessageEvent {
   const ContentChanged();
 }
 
-/// An edit or a deletion of the user's the server refused for good with nobody waiting for its answer (one made again
-/// as the app started, or one that waited behind another of its message): shown done on this device, it never reached
-/// the others, which the chat says (I3 of the desktop's task 16 review).
-final class ChangeRefused extends MessageEvent {
-  const ChangeRefused(this.messageId, {required this.deletion});
+/// An edit or a deletion of the user's in an encrypted conversation the server refused for good: shown done on this
+/// device, it never reached the others, which the app says wherever the person is (M3 of task 17's review).
+final class ChangeRefused {
+  const ChangeRefused(this.conversationId, this.messageId, {required this.deletion});
+  final String conversationId;
   final String messageId;
   final bool deletion;
 }

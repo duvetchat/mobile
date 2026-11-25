@@ -48,7 +48,14 @@ class Outgoing {
 
 /// What goes with a message in the clear, kept by its nonce until it's sent.
 class _Clear {
-  const _Clear(this.conversationId, {this.replyTo, this.mentionReplied, this.stickerAttachmentId, this.first});
+  const _Clear(
+    this.conversationId, {
+    this.replyTo,
+    this.mentionReplied,
+    this.stickerAttachmentId,
+    this.first,
+    this.place,
+  });
 
   _Clear.of(Outgoing out)
     : this(
@@ -67,6 +74,10 @@ class _Clear {
   /// Retry, Dismiss and the chat know it by that one.
   final String? first;
 
+  /// Its place among the messages that wait (I3 of task 17's review): given as it's first kept, after every message
+  /// that waits, and carried by its remakes, so what waits goes in the order the person made it, whatever the core's.
+  final int? place;
+
   /// What goes with it once it's made again under another nonce than [nonce].
   _Clear again(String nonce) => _Clear(
     conversationId,
@@ -74,6 +85,17 @@ class _Clear {
     mentionReplied: mentionReplied,
     stickerAttachmentId: stickerAttachmentId,
     first: first ?? nonce,
+    place: place,
+  );
+
+  /// The same, in [at].
+  _Clear placed(int at) => _Clear(
+    conversationId,
+    replyTo: replyTo,
+    mentionReplied: mentionReplied,
+    stickerAttachmentId: stickerAttachmentId,
+    first: first,
+    place: at,
   );
 
   /// What the record kept, as it's checked when read, as any record's: null for what isn't one.
@@ -84,6 +106,7 @@ class _Clear {
       mentionReplied: kept['mention_replied'] as bool?,
       stickerAttachmentId: kept['sticker_attachment_id'] as String?,
       first: kept['first'] as String?,
+      place: kept['place'] as int?,
     ),
     _ => null,
   };
@@ -94,6 +117,7 @@ class _Clear {
     'mention_replied': ?mentionReplied,
     'sticker_attachment_id': ?stickerAttachmentId,
     'first': ?first,
+    'place': ?place,
   };
 }
 
@@ -126,6 +150,9 @@ class _Change {
   var sending = false;
   var answered = false;
 
+  /// The pause holds it until its Retry-After, which a READY doesn't cut short (M4 of task 17's review).
+  var paused = false;
+
   /// Its message's place: the changes of one message go one at a time, in order.
   String get key => '$conversationId:$messageId';
 
@@ -149,6 +176,9 @@ const _mentionsMost = 20;
 
 /// The most messages that wait in a conversation: what the core's first page of it shows, which the engine reads.
 const _pendingMost = 100;
+
+/// Where a row the record doesn't know goes among what waits: after every message it knows.
+const _unplaced = 1 << 40;
 
 /// A change without an answer goes again after 2 s, then twice as long each time, up to a minute apart.
 const _retryFirst = Duration(seconds: 2);
@@ -174,6 +204,11 @@ bool _unanswered(Object error) => switch (error) {
   Exception() => true,
   _ => false,
 };
+
+/// A message's bytes no member can open any more, the core's word or the API's: it's made again, with each after it.
+class _Stale implements Exception {
+  const _Stale();
+}
 
 /// The core's word that no member could open the message's bytes any more.
 bool _staleBytes(Object error) => error is CoreError && error.code == 'rule_violation' && error.rule == 'stale_message';
@@ -204,6 +239,15 @@ class Sends {
   /// Conversations whose messages wait for the pause to end, and its end's call.
   final _paused = <String, void Function()>{};
 
+  /// The person's messages made again that went (its answer, its copy, or the queue said so), by the nonce they sent
+  /// each with: the nonce it went under and the API's ID. A Retry of one answers as of a message sent, a Dismiss gives
+  /// its ID, and the gateway's copy reaches the views under the person's nonce, while the app runs (I1 of task 17's
+  /// review, the desktop's N1).
+  final _went = <String, ({String nonce, String message})>{};
+
+  /// A message's nonces made again, to the one the person sent it with: kept while the app runs, past the record.
+  final _firstOf = <String, String>{};
+
   CoreHost get _host => _engine.host;
   duvet.E2eApi get _api => _engine.api;
 
@@ -211,19 +255,27 @@ class Sends {
   /// already. What fails leaves it waiting, with its bytes, for the person's Retry or Dismiss.
   Future<duvet.DirectMessage?> send(Outgoing out) async {
     final id = out.conversationId;
+    // Made again, it went under its new nonce, as its answer or its copy said: it was sent.
+    if (_went.containsKey(out.nonce)) return null;
     // A message made again waits under another nonce, which its record knows by the person's.
     final nonce = _current(out.nonce);
-    if (nonce == out.nonce) await _keep(nonce, _Clear.of(out));
     await _groups.current(id);
     final rows = await pendingRows(_host, id);
-    if (!rows.any((row) => row.nonce == nonce)) {
-      // Past them, the oldest would be out of the engine's sight (M5 of the desktop's review).
-      if (rows.length >= _pendingMost) throw const TooManyWaiting();
+    final waiting = rows.any((row) => row.nonce == nonce);
+    // Past them, the oldest would be out of the engine's sight (M5 of the desktop's review).
+    if (!waiting && nonce == out.nonce && rows.length >= _pendingMost) throw const TooManyWaiting();
+    // What goes with it in the clear, kept once it's to be sent (M6 of task 17's review: after the refusals).
+    if (nonce == out.nonce && !_record().containsKey(nonce)) await _keep(nonce, _Clear.of(out));
+    if (!waiting) {
       try {
         await _encrypt(id, nonce, out.text);
       } on CoreError catch (error) {
         // Its copy came back from the queue: it went.
         if (error.code != 'exists') rethrow;
+        final first = firstOf(nonce);
+        if (first != nonce) {
+          if ((await _bound(id))[nonce] case final message?) _went[first] = (nonce: nonce, message: message);
+        }
         await _forget(nonce);
         return null;
       }
@@ -234,21 +286,31 @@ class Sends {
   /// The person's Retry of a message that waits on this device, as the record keeps what goes with it: the API's
   /// message, or null when none waits under [nonce] (sent, or dismissed).
   Future<duvet.DirectMessage?> resend(String conversationId, String nonce) async {
+    if (_went.containsKey(nonce)) return null;
     await _groups.current(conversationId);
     return _flush(conversationId, wanted: _current(nonce));
   }
 
-  /// The nonce the message the person sent under [nonce] waits under now: another once it was made again.
-  String _current(String nonce) =>
-      _record().entries.where((kept) => kept.value.first == nonce).firstOrNull?.key ?? nonce;
+  /// The nonce the message the person sent under [nonce] waits under now, or went under: another once it was made
+  /// again.
+  String current(String nonce) => _current(nonce);
 
-  /// What waits in the conversation, in its order, with what goes with each in the clear.
+  String _current(String nonce) =>
+      _went[nonce]?.nonce ?? _record().entries.where((kept) => kept.value.first == nonce).lastOrNull?.key ?? nonce;
+
+  /// The nonce the person sent the message under whose nonce is [nonce] now.
+  String firstOf(String nonce) => _record()[nonce]?.first ?? _firstOf[nonce] ?? nonce;
+
+  /// What waits in the conversation, in the person's order, one row a message, with what goes with each in the clear.
   Future<List<Pending>> pending(String conversationId) async {
     final record = _record();
     return [
-      for (final row in await pendingRows(_host, conversationId))
+      for (final row in (await _waiting(conversationId)).rows)
         (
-          nonce: record[row.nonce]?.first ?? row.nonce,
+          nonce: switch (row.nonce) {
+            final nonce? => firstOf(nonce),
+            null => null,
+          },
           row: row,
           replyTo: record[row.nonce]?.replyTo,
           mentionReplied: record[row.nonce]?.mentionReplied,
@@ -257,18 +319,40 @@ class Sends {
     ];
   }
 
-  /// The person's Dismiss: the message the API never took goes, with what was kept of it. The queue is read first: a
-  /// message whose request reached the API, its answer and its event lost, went, and its copy settles it there (M3 of
-  /// the desktop's review).
-  Future<void> discard(String conversationId, String nonce) async {
-    final current = _current(nonce);
+  /// The person's Dismiss: the message the API never took goes, every row of it, with what was kept of it. The queue is
+  /// read first: a message whose request reached the API, its answer and its event lost, went, and its copy settles it
+  /// there (M3 of the desktop's review); this gives the API's ID of one that went, whose copy the views show in its
+  /// place (M5 of task 17's), and null for one dropped.
+  Future<String?> discard(String conversationId, String nonce) async {
     try {
       await _groups.sync(conversationId, read: true);
     } catch (error) {
       debugPrint("e2e: the queue wasn't read before a Dismiss: $error");
     }
-    if ((await pendingRows(_host, conversationId)).any((row) => row.nonce == current)) return _drop(current);
-    await _forget(current);
+    final (:rows, :older) = await _waiting(conversationId);
+    final its = [
+      for (final row in [...rows, ...older])
+        if (row.nonce case final rowNonce? when firstOf(rowNonce) == nonce) rowNonce,
+    ];
+    for (final rowNonce in its) {
+      await _drop(rowNonce);
+    }
+    await _prune(conversationId, [...rows, ...older]);
+    final went = _went.remove(nonce);
+    return its.isEmpty ? went?.message : null;
+  }
+
+  /// The gateway's copy of a message of the person's: one made again carries its new nonce, which no view knows. It's
+  /// the message they sent under the first, which the views are told once its conversation's turn took it, as its
+  /// answer would tell them; and a Retry of it is of the message sent (I1 of task 17's review).
+  void heard(duvet.DirectMessage message) {
+    final (nonce, conversation) = (message.nonce, message.conversationId);
+    if (nonce == null || conversation == null) return;
+    final first = firstOf(nonce);
+    final kept = _record()[nonce]?.conversationId;
+    if (first == nonce || (kept != null && kept != conversation)) return;
+    _went[first] = (nonce: nonce, message: message.id);
+    _soon(() async => _sent(conversation, first, message));
   }
 
   /// A message that waits, dropped with what was kept of it.
@@ -285,6 +369,8 @@ class Sends {
   /// At the start and at each READY, the queues applied: what waits, in each conversation, and the changes.
   Future<void> resendAll() async {
     for (final id in {for (final clear in _record().values) clear.conversationId}) {
+      // The pause holds its conversation's messages until its Retry-After, which a READY doesn't cut short.
+      if (_paused.containsKey(id)) continue;
       try {
         await _flush(id);
       } catch (error) {
@@ -311,11 +397,17 @@ class Sends {
           change.ciphertext = await _make(change);
           await _queueChange(change, noted: true, send: false);
         } catch (error) {
-          debugPrint("e2e: a change wasn't made again: $error");
+          if (error is CoreError && error.code == 'not_found') {
+            // Its message isn't on this device any more: nothing to change (M4 of task 17's review).
+            await _unnote(conversation, message, kind);
+          } else {
+            debugPrint("e2e: a change wasn't made again: $error");
+          }
         }
       }
     }
     for (final queue in [..._changes.values]) {
+      if (queue.first.paused) continue;
       try {
         await _sendChange(queue.first);
       } catch (error) {
@@ -335,14 +427,13 @@ class Sends {
   }
 
   /// A change kept (in the record too, unless it's [noted] there already) and sent once those of its message before it
-  /// are answered: at once when it's first, unless it waits to be [send] with others; the person who asked hears its
-  /// refusal from it then.
+  /// are answered: at once when it's first, unless it waits to be [send] with others.
   Future<void> _queueChange(_Change change, {bool noted = false, bool send = true}) async {
     final kind = change.kept['kind']! as String;
     if (!noted) await _writeChanges([..._keptChanges(), (change.conversationId, change.messageId, kind)]);
     final queue = _changes[change.key] ??= [];
     queue.add(change);
-    if (send && queue.length == 1) await _sendChange(change, asked: true);
+    if (send && queue.length == 1) await _sendChange(change);
   }
 
   /// Stops waiting: what waits stays, in the core and in the record, for the next start.
@@ -357,109 +448,191 @@ class Sends {
     _paused.clear();
   }
 
-  /// What waits in the conversation, in its order ([wanted]: the person's, whose message this gives). An older one
-  /// the API or the core refused stays, for the person's Retry or Dismiss, and the rest go on; one without an answer
-  /// stops them all, as does an update.
+  /// What waits in the conversation, in the person's order ([wanted]: the person's, whose message this gives). An
+  /// older one the API or the core refused stays, for the person's Retry or Dismiss, and the rest go on; one without an
+  /// answer stops them all, as does an update. Once a message's bytes no member could open any more, it and each after
+  /// it are made again together, before any of them goes (I3 of task 17's review), and the flush goes on from it.
   Future<duvet.DirectMessage?> _flush(String id, {String? wanted}) async {
-    final rows = await pendingRows(_host, id);
-    // What the record keeps of a message that no longer waits (sent, or dropped) goes.
-    final waiting = {for (final row in rows) row.nonce};
-    for (final MapEntry(key: nonce, value: clear) in _record().entries) {
-      if (clear.conversationId == id && !waiting.contains(nonce)) await _forget(nonce);
+    final wantedFirst = wanted == null ? null : firstOf(wanted);
+    final waiting = await _waiting(id);
+    // A message's old bytes beside new ones a remake made, which carry it, go unsent (I2 of task 17's review).
+    for (final row in waiting.older) {
+      await _drop(row.nonce!);
     }
+    await _prune(id, waiting.rows);
+    final done = <String>{};
+    final remade = <String>{};
     duvet.DirectMessage? message;
-    // Once one is made again, so is each after it, in order: the order they go in stays the order they were made in,
-    // and the generations (I2 of the desktop's review).
-    var remake = false;
-    for (final row in rows) {
+    var rows = waiting.rows;
+    for (var at = 0; at < rows.length; at++) {
+      final row = rows[at];
       final nonce = row.nonce;
       if (nonce == null) continue;
+      final first = firstOf(nonce);
+      if (!done.add(first)) continue;
       final clear = _record()[nonce];
       // A message with nothing in it, and nothing kept of what went with it, waits for the person's Dismiss.
-      if (nonce != wanted && clear == null && row.text == null) continue;
+      if (first != wantedFirst && clear == null && row.text == null) continue;
       try {
-        final (message: sent, :remade) = await _deliver(id, nonce, row.text, clear ?? _Clear(id), remake: remake);
-        remake = remake || remade;
-        if (nonce == wanted) message = sent;
+        final sent = await _deliver(id, nonce, row.text, clear ?? _Clear(id));
+        if (first == wantedFirst) message = sent;
+      } on _Stale {
+        // Made again in this flush and stale again: it waits, as refused.
+        if (remade.contains(first)) {
+          if (first == wantedFirst) rethrow;
+          debugPrint('e2e: a message made again is stale again: it stays, to send again or dismiss.');
+          continue;
+        }
+        final tail = [
+          for (final next in rows.sublist(at))
+            if (next.nonce != null) next,
+        ];
+        final firsts = [for (final next in tail) firstOf(next.nonce!)];
+        remade.addAll(firsts);
+        done.removeAll(firsts);
+        await _remake(id, tail);
+        rows = [
+          ...rows.sublist(0, at),
+          for (final next in (await _waiting(id)).rows)
+            if (next.nonce case final later? when !done.contains(firstOf(later))) next,
+        ];
+        at--;
       } catch (error) {
-        if (nonce == wanted || error is duvet.DuvetUpdateRequiredException || _unanswered(error)) rethrow;
+        if (first == wantedFirst || error is duvet.DuvetUpdateRequiredException || _unanswered(error)) rethrow;
         debugPrint('e2e: a message that waits was refused: it stays, to send again or dismiss. $error');
       }
     }
     return message;
   }
 
-  /// One message that waits: its bytes (the same as before, or made again under a new nonce once no member could open
-  /// them), its request, and `sent` once the API took it.
-  Future<({duvet.DirectMessage message, bool remade})> _deliver(
-    String id,
-    String first,
-    String? text,
-    _Clear given, {
-    bool remake = false,
-  }) async {
-    var (nonce, clear) = (first, given);
-    if (remake) (nonce, clear) = await _again(id, nonce, text, clear);
-    for (var remade = remake; ; remade = true) {
-      final String ciphertext;
+  /// One message that waits: its bytes as the core made them, its request, and `sent` once the API took it. Bytes no
+  /// member could open any more throw [_Stale].
+  Future<duvet.DirectMessage> _deliver(String id, String nonce, String? text, _Clear clear) async {
+    final String ciphertext;
+    try {
+      ciphertext = await _encrypt(id, nonce, text);
+    } catch (error) {
+      if (_staleBytes(error)) throw const _Stale();
+      rethrow;
+    }
+    final duvet.DirectMessage message;
+    try {
+      message = await _api.sendMessage(
+        id,
+        duvet.EncryptedMessage(
+          ciphertext: ciphertext,
+          nonce: nonce,
+          mentions: text == null ? const [] : mentionsIn(text),
+          messageReference: switch (clear.replyTo) {
+            final reply? => duvet.MessageReference(type: duvet.MessageReferenceType.reply, messageId: reply),
+            null => null,
+          },
+          allowedMentions: switch (clear.mentionReplied) {
+            final mention? => duvet.AllowedMentions(repliedUser: mention),
+            null => null,
+          },
+          stickerAttachmentId: clear.stickerAttachmentId,
+        ),
+      );
+    } on duvet.DuvetStaleMessageException {
+      // The core learns the epochs the API is at first, so the new bytes are of them.
+      await _groups.sync(id, read: true);
+      throw const _Stale();
+    } on duvet.DuvetPausedException catch (error) {
+      _afterPause(id, error.retryAfter);
+      rethrow;
+    }
+    await _host.handle<Object?>({
+      'cmd': 'sent',
+      'conversation_id': id,
+      'nonce': nonce,
+      'message_id': message.id,
+      'seq': message.seq,
+      'reply_to': ?clear.replyTo,
+    });
+    await _forget(nonce);
+    final first = clear.first ?? nonce;
+    if (first != nonce) _went[first] = (nonce: nonce, message: message.id);
+    _changed(id);
+    _sent(id, first, message);
+    return message;
+  }
+
+  /// Messages made again, in the person's order (no member could open the first one's bytes any more, and those after
+  /// it go after it): each one's new bytes made under a new nonce before its old ones go, so a failure or a close in
+  /// between leaves it waiting as it was, for the next flush, which drops old bytes a remake made new ones of (I2 of
+  /// task 17's review). Each keeps the nonce the person sent it with, and its place.
+  Future<void> _remake(String id, List<ShownMessage> rows) async {
+    for (final row in rows) {
+      final old = row.nonce!;
+      final clear = _record()[old];
+      // One with nothing in it, and nothing kept of what went with it, stays for the person's Dismiss.
+      if (clear == null && row.text == null) continue;
+      final kept = (clear ?? _Clear(id)).again(old);
+      final fresh = uuidv4();
+      await _keep(fresh, kept);
       try {
-        ciphertext = await _encrypt(id, nonce, text);
+        await _encrypt(id, fresh, row.text);
       } catch (error) {
-        if (remade || !_staleBytes(error)) rethrow;
-        (nonce, clear) = await _again(id, nonce, text, clear);
-        continue;
+        await _forget(fresh);
+        rethrow;
       }
-      final duvet.DirectMessage message;
-      try {
-        message = await _api.sendMessage(
-          id,
-          duvet.EncryptedMessage(
-            ciphertext: ciphertext,
-            nonce: nonce,
-            mentions: text == null ? const [] : mentionsIn(text),
-            messageReference: switch (clear.replyTo) {
-              final reply? => duvet.MessageReference(type: duvet.MessageReferenceType.reply, messageId: reply),
-              null => null,
-            },
-            allowedMentions: switch (clear.mentionReplied) {
-              final mention? => duvet.AllowedMentions(repliedUser: mention),
-              null => null,
-            },
-            stickerAttachmentId: clear.stickerAttachmentId,
-          ),
-        );
-      } catch (error) {
-        if (error is duvet.DuvetPausedException) _afterPause(id, error.retryAfter);
-        if (remade || error is! duvet.DuvetStaleMessageException) rethrow;
-        // The core learns the epochs the API is at first, so the new bytes are of them.
-        await _groups.sync(id, read: true);
-        (nonce, clear) = await _again(id, nonce, text, clear);
-        continue;
-      }
-      await _host.handle<Object?>({
-        'cmd': 'sent',
-        'conversation_id': id,
-        'nonce': nonce,
-        'message_id': message.id,
-        'seq': message.seq,
-        'reply_to': ?clear.replyTo,
-      });
-      await _forget(nonce);
-      _changed(id);
-      _sent(id, clear.first ?? nonce, message);
-      return (message: message, remade: remade);
+      _firstOf[fresh] = kept.first!;
+      await _drop(old);
     }
   }
 
-  /// A message made again (no member could open its bytes any more, or one before it was made again), dropped and
-  /// encrypted again under a new nonce: the new nonce, and what goes with it, which keeps the person's.
-  Future<(String, _Clear)> _again(String id, String nonce, String? text, _Clear clear) async {
-    await _drop(nonce);
-    final fresh = uuidv4();
-    final kept = clear.again(nonce);
-    await _keep(fresh, kept);
-    await _encrypt(id, fresh, text);
-    return (fresh, kept);
+  /// What waits in the conversation: one row a message, the newest of its rows (the core lists them in the order they
+  /// were made), in the person's order (each message's place, a row the record doesn't know after them, in the core's
+  /// order); and the older rows of messages a newer row carries, which go unsent.
+  Future<({List<ShownMessage> rows, List<ShownMessage> older})> _waiting(String id) async {
+    final record = _record();
+    final all = await pendingRows(_host, id);
+    final newest = <String, int>{};
+    for (var at = 0; at < all.length; at++) {
+      newest[switch (all[at].nonce) {
+            final nonce? => firstOf(nonce),
+            null => '#$at',
+          }] =
+          at;
+    }
+    final kept = {...newest.values};
+    int placeOf(int at) => record[all[at].nonce]?.place ?? _unplaced + at;
+    final order = [...kept]..sort((a, b) => placeOf(a).compareTo(placeOf(b)));
+    return (
+      rows: [for (final at in order) all[at]],
+      older: [
+        for (var at = 0; at < all.length; at++)
+          if (!kept.contains(at)) all[at],
+      ],
+    );
+  }
+
+  /// What the record keeps of the conversation's messages that no longer wait goes. One whose copy the queue brought
+  /// back, which the core bound under its nonce, went: a Retry or a Dismiss of it, by the person's nonce, says so.
+  Future<void> _prune(String id, List<ShownMessage> rows) async {
+    final waiting = {for (final row in rows) row.nonce};
+    final gone = [
+      for (final MapEntry(key: nonce, value: clear) in _record().entries)
+        if (clear.conversationId == id && !waiting.contains(nonce)) (nonce, clear),
+    ];
+    if (gone.isEmpty) return;
+    final bound = await _bound(id);
+    for (final (nonce, clear) in gone) {
+      if (bound[nonce] case final message?) _went[clear.first ?? nonce] = (nonce: nonce, message: message);
+      await _forget(nonce);
+    }
+  }
+
+  /// The person's messages the core bound to the API's IDs, by nonce, as its newest page shows them.
+  Future<Map<String, String>> _bound(String id) async {
+    // shortcut: the newest page alone (100 rows): one bound further back reads as not gone, rare, as it waited.
+    final page = await _host.handle<Map<String, Object?>>({'cmd': 'messages', 'conversation_id': id, 'limit': 100});
+    return {
+      for (final row in page['messages']! as List)
+        if (ShownMessage.of((row as Map).cast<String, Object?>()) case ShownMessage(:final nonce?, :final messageId?))
+          nonce: messageId,
+    };
   }
 
   /// The core's encrypt: the message kept as pending, or, for a nonce it has, its bytes again. What keeps this device
@@ -519,18 +692,20 @@ class Sends {
           as String;
 
   /// An edit's or a deletion's request, its bytes as they are: its answer's entry to the core. Without an answer it
-  /// goes again later and at each READY; bytes the API says no member could open now are made again, once.
-  Future<void> _sendChange(_Change change, {bool asked = false}) async {
+  /// goes again later and at each READY; bytes the API says no member could open now are made again, once. A refusal
+  /// for good resolves (the device shows the change), and the person is told wherever they are (M3 of task 17's
+  /// review).
+  Future<void> _sendChange(_Change change) async {
     if (change.sending || change.answered) return;
     change.sending = true;
     try {
-      await _trySend(change, asked: asked);
+      await _trySend(change);
     } finally {
       change.sending = false;
     }
   }
 
-  Future<void> _trySend(_Change change, {required bool asked}) async {
+  Future<void> _trySend(_Change change) async {
     final id = change.conversationId;
     final duvet.MlsEntry entry;
     try {
@@ -538,26 +713,45 @@ class Sends {
           ? (await _api.deleteMessage(id, change.messageId, change.ciphertext)).entry
           : (await _api.editMessage(id, change.messageId, change.ciphertext)).entry;
     } catch (error) {
-      // No answer, or an update: kept, for later or for after the update.
+      // An update keeps it, for after the update.
       if (error is duvet.DuvetUpdateRequiredException) rethrow;
-      if (_unanswered(error)) return _retryLater(change, error is duvet.DuvetPausedException ? error.retryAfter : null);
       if (error is duvet.DuvetStaleMessageException && !change.remade) {
-        await _groups.sync(id, read: true);
-        change.ciphertext = await _make(change);
+        try {
+          await _groups.sync(id, read: true);
+          change.ciphertext = await _make(change);
+        } catch (failed) {
+          // What throws past its request waits as no answer does (M4 of task 17's review, the desktop's N6).
+          debugPrint('e2e: a change goes again later: $failed');
+          return _retryLater(change);
+        }
         change.remade = true;
-        return _trySend(change, asked: asked);
+        return _trySend(change);
       }
-      // Refused for good: it goes, the device's view is read again, and the person is told: by the one who asked, or
-      // here when nobody waits for it.
+      // A deletion of a message that isn't there any more (its own answer a restart cut off, or another device's
+      // first): it's gone for everyone, as it was to be (M4 of task 17's review, the desktop's N5).
+      if (change.text == null && error is duvet.DuvetApiException && error.statusCode == 404) {
+        await _answered(change);
+        _changed(id);
+        return;
+      }
+      // Anything but the API's word waits as no answer does.
+      if (error is! duvet.DuvetApiException || _unanswered(error)) {
+        return _retryLater(change, error is duvet.DuvetPausedException ? error.retryAfter : null);
+      }
+      // Refused for good: it goes, the device's view is read again, and the person is told.
       await _answered(change);
       _changed(id);
-      if (asked) rethrow;
       _refused(id, change.messageId, change.kept['kind']! as String);
       debugPrint('e2e: a change was refused: $error');
       return;
     }
     await _answered(change);
-    await _groups.take(id, [entryOf(entry)]);
+    try {
+      await _groups.take(id, [entryOf(entry)]);
+    } catch (error) {
+      // An entry the core can't take now (a gap before it) comes with the conversation's queue, at its next turn.
+      debugPrint("e2e: a change's entry waits for its conversation's queue: $error");
+    }
     _changed(id);
   }
 
@@ -596,12 +790,15 @@ class Sends {
       )
       .catchError((Object error) => debugPrint("e2e: a change not answered yet wasn't kept: $error"));
 
+  /// A change without an answer goes again later: after the backoff, or after the pause's [after].
   void _retryLater(_Change change, [Duration? after]) {
     change.cancel?.call();
     final backoff = _retryFirst * (1 << min(change.tries++, 5));
     final wait = after ?? (backoff < _retryMost ? backoff : _retryMost);
+    change.paused = after != null;
     change.cancel = _engine.clock.later(wait, () {
       change.cancel = null;
+      change.paused = false;
       _soon(() => _sendChange(change));
     });
   }
@@ -615,7 +812,12 @@ class Sends {
     _ => {},
   };
 
-  Future<void> _keep(String nonce, _Clear clear) => _write({..._record(), nonce: clear});
+  /// A message kept by its nonce, in its place: a new one after every message that waits.
+  Future<void> _keep(String nonce, _Clear clear) {
+    final record = _record();
+    final last = record.values.fold(0, (most, kept) => max(most, kept.place ?? 0));
+    return _write({...record, nonce: clear.place == null ? clear.placed(last + 1) : clear});
+  }
 
   Future<void> _forget(String nonce) async {
     final record = _record();

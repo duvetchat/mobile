@@ -1538,20 +1538,21 @@ class _TypingLine extends StatelessWidget {
   }
 }
 
-/// An encrypted conversation's message this device doesn't hold opened yet (PLAN-E2E-CLIENTES.md, «La vista de una
-/// conversación», its notices): what it is, and that it shows once the sender's device delivers it.
-/// An encrypted conversation's message this device hasn't applied yet: a line of the skeleton, as text loads.
+/// An encrypted conversation's message this device hasn't read or applied yet: a line of the skeleton, as text loads,
+/// which a screen reader reads as loading.
 class _LoadingRow extends StatelessWidget {
   const _LoadingRow({required this.maxWidth});
   final double maxWidth;
 
   @override
   Widget build(BuildContext context) => Semantics(
-    label: 'Loading message',
+    label: Notice.loadingMessage.text,
     child: SkeletonBox(width: min(maxWidth, 160), height: 14, borderRadius: BorderRadius.circular(4)),
   );
 }
 
+/// An encrypted conversation's message this device doesn't hold opened yet (PLAN-E2E-CLIENTES.md, «La vista de una
+/// conversación», its notices): what it is, and that it shows once the sender's device delivers it.
 class _WaitingRow extends StatelessWidget {
   const _WaitingRow({required this.maxWidth});
   final double maxWidth;

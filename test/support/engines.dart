@@ -55,6 +55,9 @@ class TestClock implements EngineClock {
 class MemoryStore implements EngineStore {
   final _values = <String, String>{};
 
+  /// Everything kept, by key, as JSON.
+  Map<String, String> get kept => Map.unmodifiable(_values);
+
   @override
   Object? read(String key) => switch (_values[key]) {
     final kept? => jsonDecode(kept),
@@ -463,6 +466,72 @@ Future<duvet.CommitTaken> commitByHand(TestDevice device, String conversation) a
 Future<void> stoppedByHand(TestDevice device) async {
   await device.engine.stop();
   await device.host.open(device.user);
+}
+
+/// The owner's removal of a user, by hand (Task 23 does it in the app): its commit, posted, and taken.
+Future<duvet.CommitTaken> removeByHand(TestDevice owner, String conversation, String user) async {
+  final held = (await groupOf(owner, conversation))!;
+  final made = await byHand(owner, {
+    'cmd': 'remove_members',
+    'conversation_id': conversation,
+    'users': [user],
+  });
+  final taken = await owner.api.removeMember(
+    conversation,
+    user,
+    duvet.Commit(
+      generation: held.generation,
+      epoch: held.epoch,
+      commit: made['commit']! as String,
+      groupInfo: made['group_info']! as String,
+    ),
+  );
+  await owner.host.handle<Object?>({
+    'cmd': 'commit_result',
+    'conversation_id': conversation,
+    'accepted': true,
+    'seq': taken.seq,
+  });
+  return taken;
+}
+
+/// The owner's addition of a user, with key packages of theirs claimed earlier, by hand (Task 23 does it in the app):
+/// its commit and welcome, posted, and taken.
+Future<duvet.MemberAdded> addByHand(
+  TestDevice owner,
+  String conversation,
+  String user,
+  List<duvet.ClaimedKeyPackage> keyPackages,
+) async {
+  final held = (await groupOf(owner, conversation))!;
+  final made = await byHand(owner, {
+    'cmd': 'add_members',
+    'conversation_id': conversation,
+    'users': [
+      {
+        'user_id': user,
+        'key_packages': [for (final kp in keyPackages) kp.data],
+      },
+    ],
+  });
+  final added = await owner.api.addMember(
+    conversation,
+    user,
+    duvet.Commit(
+      generation: held.generation,
+      epoch: held.epoch,
+      commit: made['commit']! as String,
+      groupInfo: made['group_info']! as String,
+      welcome: made['welcome'] as String?,
+    ),
+  );
+  await owner.host.handle<Object?>({
+    'cmd': 'commit_result',
+    'conversation_id': conversation,
+    'accepted': true,
+    'seq': added.commit.seq,
+  });
+  return added;
 }
 
 /// The device again after its app restarted: a new engine on the same core, record and session, started.

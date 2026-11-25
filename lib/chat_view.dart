@@ -504,7 +504,7 @@ class _ChatViewState extends State<ChatView> with SingleTickerProviderStateMixin
             (message: m, delivery: m.pending ? _Delivery.failed : _Delivery.sent),
           ...pushed,
         ];
-        _hasOlder = thread == null && page.length >= _pageSize;
+        _hasOlder = thread == null && (page.length >= _pageSize || _olderBeyond(page));
         _loading = false;
         _kept = null;
         // shortcut: this page's only, an unread mention further back doesn't
@@ -615,6 +615,10 @@ class _ChatViewState extends State<ChatView> with SingleTickerProviderStateMixin
 
   Future<void> _loadOlder() => _olderPage ??= _fetchOlder().whenComplete(() => _olderPage = null);
 
+  /// A short page with more behind it: a conversation's, whose rows from before the user joined gave way, read a few of
+  /// the API's pages at a time (M7 of task 17's review).
+  bool _olderBeyond(List<ChatMessage> page) => page.isNotEmpty && _repository.olderBeyond(widget.target, page.first.id);
+
   Future<void> _fetchOlder() async {
     final oldest = _history.firstOrNull;
     if (_loadingOlder || !_hasOlder || oldest == null) return;
@@ -629,7 +633,7 @@ class _ChatViewState extends State<ChatView> with SingleTickerProviderStateMixin
             if (!known.contains(m.id)) (message: m, delivery: _Delivery.sent),
           ..._entries,
         ];
-        _hasOlder = page.length >= _pageSize;
+        _hasOlder = page.length >= _pageSize || _olderBeyond(page);
       });
     } catch (_) {
       // Scrolling up again retries.
@@ -721,10 +725,6 @@ class _ChatViewState extends State<ChatView> with SingleTickerProviderStateMixin
       if (widget.target is ConversationTarget) unawaited(_readAgain());
       return;
     }
-    if (event is ChangeRefused) {
-      _toast(event.deletion ? 'Couldn’t delete the message' : 'Couldn’t save your edit');
-      return;
-    }
     if (event case ReactionChanged(:final messageId) when !_entries.any((e) => e.message.id == messageId)) return;
     // A profile change that shows nothing new on the messages here.
     if (event is AuthorChanged && _entries.every((e) => identical(e.message.changedBy(event), e.message))) return;
@@ -787,7 +787,7 @@ class _ChatViewState extends State<ChatView> with SingleTickerProviderStateMixin
             final changed = m.changedBy(event);
             if (!identical(changed, m)) _entries[i] = (message: changed, delivery: _entries[i].delivery);
           }
-        case ContentChanged() || ChangeRefused():
+        case ContentChanged():
           break;
         // A file's new link, once its old one expired.
         case AttachmentRenewed(:final attachmentId, :final url):
@@ -818,16 +818,20 @@ class _ChatViewState extends State<ChatView> with SingleTickerProviderStateMixin
   /// What this device's own database holds of the messages shown changed (an encrypted conversation's): each takes
   /// what it holds of it now, as it is when the answer comes ([ChatMessage.heldAs]).
   Future<void> _readAgain() async {
+    final shown = [..._entries];
     final List<ChatMessage> held;
     try {
-      held = await _repository.withContent(widget.target, [for (final e in _entries) e.message]);
+      held = await _repository.withContent(widget.target, [for (final e in shown) e.message]);
     } catch (e) {
       debugPrint('read again: $e');
       return;
     }
     if (!mounted) return;
     final byId = {for (final m in held) m.id: m};
+    final read = {for (final e in shown) e.message.id};
     setState(() {
+      // A row the reading dropped goes: one from before the user joined that the device doesn't hold (Ruling 15).
+      _entries.removeWhere((e) => read.contains(e.message.id) && !byId.containsKey(e.message.id));
       for (var i = 0; i < _entries.length; i++) {
         final (:message, :delivery) = _entries[i];
         if (byId[message.id] case final now? when !identical(now, message)) {
@@ -845,7 +849,7 @@ class _ChatViewState extends State<ChatView> with SingleTickerProviderStateMixin
       final m = _entries[i].message;
       if (m.id == update.id) {
         _entries[i] = (message: m.updatedBy(update), delivery: _Delivery.sent);
-      } else if (m.reply case final reply? when reply.messageId == update.id) {
+      } else if (m.reply case final reply? when reply.messageId == update.id && !update.encrypted) {
         _entries[i] = (message: m.copyWith(reply: reply.withContent(update.content)), delivery: _entries[i].delivery);
       }
     }
@@ -857,7 +861,10 @@ class _ChatViewState extends State<ChatView> with SingleTickerProviderStateMixin
     final i = _entries.indexWhere(
       (e) => e.message.id == message.id || (message.nonce != null && e.message.nonce == message.nonce),
     );
-    final entry = (message: message, delivery: _Delivery.sent);
+    // An encrypted message's copy that brings no text (the API's) keeps what the chat shows of it: the device's text,
+    // or the person's own as typed, until a read gives the device's (I4 of task 17's review).
+    final keeps = i >= 0 && message.encrypted && message.content.isEmpty && _entries[i].message.content.isNotEmpty;
+    final entry = (message: keeps ? message.heldAs(_entries[i].message) : message, delivery: _Delivery.sent);
     if (i >= 0) {
       _entries[i] = entry;
       if (message.nonce != null) _outgoing.remove(message.nonce);

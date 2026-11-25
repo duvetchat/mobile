@@ -1037,6 +1037,20 @@ void main() {
     expect(repository.unread.value, isNot(contains('c-1')));
   });
 
+  // M1 of task 17's review: a live encrypted message this device can't read yet (no engine here) draws as loading,
+  // neither an empty bubble nor waiting.
+  test('a live encrypted message the device cannot read yet loads', () async {
+    await repository.logIn('gaby@duvet.chat', 'secret');
+    repository.handleEvent(_event('READY', {'user': _user(_me, 'gaby'), 'sessionToken': 'ws'}));
+    final events = <MessageEvent>[];
+    final sub = repository.messageEvents(const ConversationTarget('c-1')).listen(events.add);
+    addTearDown(sub.cancel);
+    repository.handleEvent(_event('DM_MESSAGE_CREATE', {..._dm('9', _maya, ''), 'seq': 3}));
+    await pumpEventQueue();
+    final live = (events.single as MessageCreated).message;
+    expect((live.loading, live.waiting), (true, false));
+  });
+
   test('a call notice leaves the conversation read for whoever saw the call, unread for the rest (#158)', () async {
     await repository.logIn('gaby@duvet.chat', 'secret');
     repository.handleEvent(_event('READY', {'user': _user(_me, 'gaby'), 'sessionToken': 'ws'}));

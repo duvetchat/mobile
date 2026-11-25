@@ -75,6 +75,36 @@ Future<List<String>> _queued(TestDevice device, String conversation) async => [
 /// The group's epoch as the device's core holds it.
 Future<int> _epochOf(TestDevice device, String conversation) async => (await groupOf(device, conversation))!.epoch;
 
+/// Bo's device moves the group on six epochs by hand (its engine stopped), and Ana's follows: her bytes are stale.
+Future<void> _sixEpochs(TestDevice a, TestDevice b, String conversation) async {
+  await stoppedByHand(b);
+  for (var i = 0; i < 6; i++) {
+    await commitByHand(b, conversation);
+  }
+  await until(() async => await _epochOf(a, conversation) == 7);
+}
+
+/// Three messages of Ana's that wait (each request cut), whose bytes six epochs made stale, her core on [host]: the
+/// nonces she sent them with, in order.
+Future<({FakeApi fake, TestDevice a, TestDevice b, String conversation, List<http.Request> seen, List<String> sent})>
+_threeStale(CoreHost host) async {
+  final (:fake, ana: _, bo: _, :a, :b, :conversation, :seen, aClient: _) = await _dm(aHost: host);
+  final sent = <String>[];
+  for (final text in ['one', 'two', 'three']) {
+    final nonce = uuidv4();
+    sent.add(nonce);
+    fake.cutRequest((method: 'POST', path: _messagesPath(conversation)));
+    await _refused(a.engine.sendMessage(Outgoing(conversationId: conversation, nonce: nonce, text: text)));
+  }
+  await _sixEpochs(a, b, conversation);
+  return (fake: fake, a: a, b: b, conversation: conversation, seen: seen, sent: sent);
+}
+
+/// The texts of the conversation's messages, in their queue's order, as Ana's device holds them.
+Future<List<String?>> _texts(TestDevice device, String conversation) async => [
+  for (final id in await _queued(device, conversation)) await _textOn(device, conversation, id),
+];
+
 /// Fails unless [future] fails.
 Future<void> _refused(Future<Object?> future) async {
   try {
@@ -419,8 +449,8 @@ void main() {
         await commitByHand(b, conversation);
       }
       await until(() async => await _epochOf(a, conversation) == 7);
-      // Dismiss drops the second; the first's Retry makes it again under another nonce, and its request is cut: it waits
-      // under the nonce the person sent it with.
+      // Dismiss drops the second; the first's Retry makes it again under another nonce, and its request is cut: it
+      // waits under the nonce the person sent it with.
       await a.engine.discardMessage(conversation, second);
       fake.cutRequest(path);
       await _refused(a.engine.sendMessage(Outgoing(conversationId: conversation, nonce: first, text: 'one')));
@@ -439,7 +469,8 @@ void main() {
     timeout: _slow,
   );
 
-  // M3 of the desktop's task 16 review: a message whose answer and event were lost went, and its Dismiss mustn't drop it.
+  // M3 of the desktop's task 16 review: a message whose answer and event were lost went, and its Dismiss mustn't
+  // drop it.
   test(
     "Dismiss_reads_the_queue_first:_a_message_that_went_isn't_dropped",
     () async {
@@ -451,9 +482,11 @@ void main() {
       await _refused(a.engine.sendMessage(Outgoing(conversationId: conversation, nonce: nonce, text: 'it went')));
       expect(await _nonces(a, conversation), [nonce]);
       // Dismissed: the queue's copy says it went, and the device keeps it as sent, its text its own.
-      await a.engine.discardMessage(conversation, nonce);
+      // It says it went, by the API's ID, which the chat shows the API's copy of (M5 of task 17's review).
+      final went = await a.engine.discardMessage(conversation, nonce);
       expect(await _nonces(a, conversation), isEmpty);
       final [id] = await _queued(b, conversation);
+      expect(went, id);
       expect(await _textOn(a, conversation, id), 'it went');
       expect(fake.decryptFailures, isEmpty);
       await a.engine.stop();
@@ -481,6 +514,8 @@ void main() {
       await _refused(a.engine.sendMessage(Outgoing(conversationId: conversation, nonce: uuidv4(), text: 'too many')));
       expect(_posts(seen, conversation), hasLength(before));
       expect(await a.engine.pendingMessages(conversation), hasLength(100));
+      // Nothing is kept of the one refused (M6 of task 17's review).
+      expect(a.store.read(pendingSends), isNull);
       await a.engine.stop();
       await b.engine.stop();
     },
@@ -526,6 +561,14 @@ void main() {
       await until(() async => await _textOn(b, conversation, sent.id) == 'three');
       await until(() async => device.store.read(pendingChanges) == null);
 
+      // Refused for good, the person's own try: it resolves (the device shows the change), and the person is told,
+      // wherever they are (M3 of task 17's review).
+      fake.refuse((method: 'PATCH', path: path), 403, body: {'error': 'only its author changes a message'});
+      await device.engine.editMessage(conversation, sent.id, 'refused');
+      await until(() => refused.isNotEmpty);
+      expect(refused, [(conversationId: conversation, messageId: sent.id, kind: 'edit')]);
+      refused.clear();
+
       // Refused for good when nobody waits for it (made again as the app started): the person is told.
       fake.cutRequest((method: 'PATCH', path: path));
       await device.engine.editMessage(conversation, sent.id, 'four');
@@ -560,6 +603,221 @@ void main() {
     timeout: _slow,
   );
 
+  // I1 of task 17's review (the desktop's N1): a message made again goes under a new nonce, which the gateway's copy
+  // carries. With its answer lost, that copy is what the device hears: it tells the views the message the person sent
+  // went, by the nonce they sent it with, as an answer does; and a Retry of it, by that nonce, posts nothing.
+  test(
+    'a_message_made_again_whose_answer_is_lost_is_told_sent_by_its_copy,_and_its_Retry_posts_nothing',
+    () async {
+      final (:fake, ana: _, bo: _, :a, :b, :conversation, :seen, aClient: _) = await _dm();
+      final path = (method: 'POST', path: _messagesPath(conversation));
+      final first = uuidv4();
+      final told = <(String, String, String)>[];
+      final heard = a.engine.sent.listen((s) => told.add((s.conversationId, s.nonce, s.message.id)));
+      addTearDown(heard.cancel);
+      fake.cutRequest(path);
+      await _refused(a.engine.sendMessage(Outgoing(conversationId: conversation, nonce: first, text: 'once')));
+      await _sixEpochs(a, b, conversation);
+      // Retried, it's made again under a new nonce, which the API takes; its answer is lost.
+      fake.loseAnswer(path);
+      await _refused(a.engine.sendMessage(Outgoing(conversationId: conversation, nonce: first, text: 'once')));
+      await until(() => told.isNotEmpty);
+      final [id] = await _queued(a, conversation);
+      expect(told, [(conversation, first, id)]);
+      // The copy bound it here. Retried again, it's the message sent already: nothing more goes.
+      await until(() async => (await _nonces(a, conversation)).isEmpty);
+      final before = _posts(seen, conversation).length;
+      expect(await a.engine.sendMessage(Outgoing(conversationId: conversation, nonce: first, text: 'once')), isNull);
+      expect(_posts(seen, conversation), hasLength(before));
+      expect(await _queued(a, conversation), [id]);
+      await a.engine.stop();
+      await b.host.close();
+    },
+    skip: noCore,
+    timeout: _slow,
+  );
+
+  // I2 of task 17's review (the desktop's N3): a message made again keeps its old bytes until its new ones exist, and
+  // each keeps its place. A remake cut midway, its second message's encrypt failing, loses nothing, and the next flush
+  // sends them all, once, in order.
+  test(
+    'a_remake_cut_midway_loses_nothing,_and_the_next_flush_sends_every_message_once,_in_order',
+    () async {
+      final known = <String>{};
+      final fresh = <String>[];
+      var failing = false;
+      // The second message made again: its new bytes can't be made.
+      final host = WatchedHost(
+        TestHost().gate,
+        [],
+        fail: (command) {
+          final nonce = '${command['nonce']}';
+          if (command['cmd'] != 'encrypt' || !failing || known.contains(nonce)) return null;
+          if (!fresh.contains(nonce)) fresh.add(nonce);
+          return fresh.indexOf(nonce) == 1 ? CoreError('internal', message: "the core couldn't encrypt it") : null;
+        },
+      );
+      final (fake: _, :a, :b, :conversation, seen: _, :sent) = await _threeStale(host);
+      known.addAll(sent);
+      failing = true;
+      await _refused(a.engine.sendMessage(Outgoing(conversationId: conversation, nonce: sent[0], text: 'one')));
+      failing = false;
+      expect(await _nonces(a, conversation), sent);
+      await a.engine.sendMessage(Outgoing(conversationId: conversation, nonce: sent[0], text: 'one'));
+      await until(() async => (await _nonces(a, conversation)).isEmpty);
+      expect(await _texts(a, conversation), ['one', 'two', 'three']);
+      await a.engine.stop();
+      await b.host.close();
+    },
+    skip: noCore,
+    timeout: _slow,
+  );
+
+  // I2 of task 17's review: the old bytes of a message made again that couldn't be dropped stay beside its new ones:
+  // the newer row goes, the older is dropped unsent, and the message goes once, in its place.
+  test(
+    'a_message_whose_new_bytes_wait_beside_its_old_ones_goes_once,_in_its_place',
+    () async {
+      var failing = false;
+      var drops = 0;
+      final host = WatchedHost(
+        TestHost().gate,
+        [],
+        fail: (command) => command['cmd'] == 'discard' && failing && ++drops == 2
+            ? CoreError('internal', message: "the core couldn't drop it")
+            : null,
+      );
+      final (fake: _, :a, :b, :conversation, seen: _, :sent) = await _threeStale(host);
+      failing = true;
+      await _refused(a.engine.sendMessage(Outgoing(conversationId: conversation, nonce: sent[0], text: 'one')));
+      failing = false;
+      expect(await _nonces(a, conversation), sent);
+      await a.engine.sendMessage(Outgoing(conversationId: conversation, nonce: sent[0], text: 'one'));
+      await until(() async => (await _nonces(a, conversation)).isEmpty);
+      expect(await _texts(a, conversation), ['one', 'two', 'three']);
+      await a.engine.stop();
+      await b.host.close();
+    },
+    skip: noCore,
+    timeout: _slow,
+  );
+
+  // I3 of task 17's review: a flush cut once a message was made again (its new request unanswered) leaves every
+  // message in the person's order, and the next flush sends each once, in that order.
+  test(
+    'three_stale_messages_whose_first_remade_request_is_unanswered_go_once_each,_in_order',
+    () async {
+      final (:fake, :a, :b, :conversation, seen: _, :sent) = await _threeStale(TestHost().gate);
+      fake.cutRequest((method: 'POST', path: _messagesPath(conversation)));
+      await _refused(a.engine.sendMessage(Outgoing(conversationId: conversation, nonce: sent[0], text: 'one')));
+      expect(await _nonces(a, conversation), sent);
+      await a.engine.sendMessage(Outgoing(conversationId: conversation, nonce: sent[0], text: 'one'));
+      await until(() async => (await _nonces(a, conversation)).isEmpty);
+      expect(await _texts(a, conversation), ['one', 'two', 'three']);
+      await a.engine.stop();
+      await b.host.close();
+    },
+    skip: noCore,
+    timeout: _slow,
+  );
+
+  // M4 of task 17's review (the desktop's N5): a deletion the API took, whose answer a restart cut off, goes again
+  // with new bytes, and the API answers 404 as the message is gone for everyone: it's done, and nothing says it was
+  // refused.
+  test(
+    'a_deletion_the_API_took_before_a_restart_is_done,_not_refused',
+    () async {
+      final (:fake, ana: _, bo: _, :a, :b, :conversation, :seen, :aClient) = await _dm();
+      final sent = (await a.engine.sendMessage(Outgoing(conversationId: conversation, nonce: uuidv4(), text: 'gone')))!;
+      final path = '${_messagesPath(conversation)}/${sent.id}';
+      int deletions() => seen.where((r) => r.method == 'DELETE' && r.url.path == path).length;
+      fake.loseAnswer((method: 'DELETE', path: path));
+      await a.engine.deleteMessage(conversation, sent.id);
+      await until(() async => (await b.engine.messages(conversation, [sent.id])).isEmpty);
+      await a.engine.stop();
+      final again = testDevice(fake, a.user, host: a.host, store: a.store, token: a.token, client: aClient);
+      final refused = <Object>[];
+      again.engine.changesRefused.listen(refused.add);
+      await again.engine.start();
+      await until(() => deletions() == 2);
+      await turnEnded(again);
+      expect(refused, isEmpty);
+      expect(again.store.read(pendingChanges), isNull);
+      await again.engine.stop();
+      await b.engine.stop();
+    },
+    skip: noCore,
+    timeout: _slow,
+  );
+
+  // M4 of task 17's review (the desktop's N6): a change whose send throws past its request (the queue a 409 asks for,
+  // read here with its request cut) waits as one without an answer does, and goes again.
+  test(
+    'a_change_whose_send_throws_waits,_and_goes_again',
+    () async {
+      final (:fake, ana: _, bo: _, :a, :b, :conversation, seen: _, aClient: _) = await _dm();
+      final sent = (await a.engine.sendMessage(Outgoing(conversationId: conversation, nonce: uuidv4(), text: 'one')))!;
+      fake.refuse(
+        (method: 'PATCH', path: '${_messagesPath(conversation)}/${sent.id}'),
+        409,
+        body: {'error': 'stale message', 'generation': 0, 'epoch': 1},
+      );
+      fake.cutRequest((method: 'GET', path: '/api/users/@me/conversations/$conversation/mls/queue'));
+      await a.engine.editMessage(conversation, sent.id, 'two');
+      a.clock.advance(const Duration(seconds: 2));
+      await until(() async => await _textOn(b, conversation, sent.id) == 'two');
+      await a.engine.stop();
+      await b.engine.stop();
+    },
+    skip: noCore,
+    timeout: _slow,
+  );
+
+  // M4 of task 17's review: a READY's resend doesn't cut a pause short: a change the pause holds goes once its
+  // Retry-After passed, not with the READY.
+  test(
+    "a_paused_change_waits_out_its_pause_through_a_READY",
+    () async {
+      final (:fake, ana: _, bo: _, :a, :b, :conversation, :seen, aClient: _) = await _dm();
+      final sent = (await a.engine.sendMessage(Outgoing(conversationId: conversation, nonce: uuidv4(), text: 'one')))!;
+      final path = '${_messagesPath(conversation)}/${sent.id}';
+      int patches() => seen.where((r) => r.method == 'PATCH' && r.url.path == path).length;
+      fake.refuse((method: 'PATCH', path: path), 503);
+      await a.engine.editMessage(conversation, sent.id, 'two');
+      final paused = patches();
+      // A new gateway session: its READY's resend leaves the change to its pause.
+      a.connect(a.registered.last);
+      await turnEnded(a);
+      expect(patches(), paused);
+      a.clock.advance(const Duration(seconds: 60));
+      await until(() async => await _textOn(b, conversation, sent.id) == 'two');
+      await a.engine.stop();
+      await b.engine.stop();
+    },
+    skip: noCore,
+    timeout: _slow,
+  );
+
+  // M4 of task 17's review: a kept change whose message this device's core no longer has is let go at the start, not
+  // kept for good.
+  test(
+    'a_kept_change_whose_message_is_gone_is_let_go',
+    () async {
+      final (:fake, ana: _, bo: _, :a, :b, :conversation, seen: _, :aClient) = await _dm();
+      await a.engine.stop();
+      await a.store.write(pendingChanges, [
+        {'conversation_id': conversation, 'message_id': uuidv7(), 'kind': 'delete'},
+      ]);
+      final again = testDevice(fake, a.user, host: a.host, store: a.store, token: a.token, client: aClient);
+      await again.engine.start();
+      await until(() => again.store.read(pendingChanges) == null);
+      await again.engine.stop();
+      await b.engine.stop();
+    },
+    skip: noCore,
+    timeout: _slow,
+  );
+
   test(
     'a_send_while_the_device_is_not_ready_is_refused_and_keeps_nothing',
     () async {
@@ -573,6 +831,7 @@ void main() {
       await fresh.engine.start();
       expect(fresh.state, EngineState.newDevice);
       await _refused(fresh.engine.sendMessage(Outgoing(conversationId: conversation, nonce: uuidv4(), text: 'no')));
+      expect(fresh.store.read(pendingSends), isNull);
       await first.engine.stop();
       await fresh.engine.stop();
     },

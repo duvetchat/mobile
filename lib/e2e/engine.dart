@@ -265,9 +265,15 @@ class E2EEngine {
   Future<void> deleteMessage(String conversationId, String messageId) =>
       _act(() => _sends.change(conversationId, messageId, null));
 
-  /// The person's Dismiss of a message the API never took: whatever the device's state, as it only drops it here.
-  Future<void> discardMessage(String conversationId, String nonce) =>
-      _queue(() => _sends.discard(conversationId, nonce)).then((_) => _messageChanged(conversationId));
+  /// The person's Dismiss of a message the API never took: whatever the device's state, as it only drops it here. The
+  /// API's ID of a message that went after all (its answer and its event lost), whose copy the views show in its place;
+  /// else null.
+  Future<String?> discardMessage(String conversationId, String nonce) async {
+    String? went;
+    await _queue(() async => went = await _sends.discard(conversationId, nonce));
+    _messageChanged(conversationId);
+    return went;
+  }
 
   /// What this device's database shows of these messages of the conversation: a row for each it holds.
   Future<List<ShownMessage>> messages(String conversationId, List<String> ids) =>
@@ -279,13 +285,17 @@ class E2EEngine {
   /// Whether this device's database holds any message of the conversation numbered before [seq].
   Future<bool> heldBefore(String conversationId, int seq) => content.heldBefore(host, conversationId, seq);
 
-  /// How far this device applied the conversation's queue this run (null before its first apply, or out of its group):
-  /// a message numbered past it isn't applied yet, and loads.
-  int? appliedThrough(String conversationId) => _groups.through(conversationId);
+  /// How far this device applied the conversation's queue this run: none before its first apply, `through` null while
+  /// it's out of the conversation's group. A message numbered past it isn't applied yet, and loads.
+  ({int? through})? appliedThrough(String conversationId) => _groups.applied(conversationId);
 
-  /// The person's message this device sent under [nonce], as its database holds it once the API has it.
+  /// The person's message this device sent under [nonce] (the nonce they sent it with: made again, it went under
+  /// another), as its database holds it once the API has it.
   Future<ShownMessage?> sentUnder(String conversationId, String nonce) =>
-      content.sentUnder(host, conversationId, nonce);
+      content.sentUnder(host, conversationId, _sends.current(nonce));
+
+  /// The nonce the person sent their message under, whose nonce is [nonce] now: another once it was made again.
+  String firstNonceOf(String nonce) => _sends.firstOf(nonce);
 
   /// The person's act on a conversation's messages, in the engine's turn: refused while this device isn't ready, or
   /// once the engine stopped; a client too old for it waits for its update.
@@ -478,6 +488,10 @@ class E2EEngine {
         _soon(_keyPackages);
       case duvet.DeviceRemovedEvent(:final data) when data.deviceId == _device:
         _soon(() async => _set(EngineState.removed));
+      // The person's message made again goes under a new nonce, which only the engine knows it by (I1 of task 17's
+      // review).
+      case duvet.DMMessageCreatedEvent(:final data) when data.authorId == user:
+        _sends.heard(data);
       case duvet.IdentityUpdatedEvent(:final data) when data.userId == user:
         // The user's own: another device changed the list or the keys, which may leave this one off it, or published
         // the identity this first device was to make, if it hasn't shown a key yet.

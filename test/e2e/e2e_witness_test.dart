@@ -8,7 +8,6 @@ import 'package:duvet/data/recent_chats.dart';
 import 'package:duvet/data/session_store.dart';
 import 'package:duvet/e2e/core_gate.dart';
 import 'package:duvet/e2e/engine.dart';
-import 'package:duvet/e2e/store.dart';
 import 'package:duvet/e2e/uuid.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
@@ -167,7 +166,16 @@ void main() {
       repository.dispose();
       await pumpEventQueue();
 
-      bool holds(String text) => text.contains(witness) || text.contains(base64Encode(utf8.encode(witness)));
+      // The witness, or its bytes in base64 at any of the three offsets a field's bytes can start it at: each
+      // encoding's characters that its bytes alone decide (M9 of task 17's review).
+      final encoded = utf8.encode(witness);
+      final inBase64 = [
+        for (var shift = 0; shift < 3; shift++)
+          switch (base64Encode([...List.filled(shift, 0), ...encoded])) {
+            final whole => whole.substring(shift == 0 ? 0 : 4, whole.length - 4),
+          },
+      ];
+      bool holds(String text) => text.contains(witness) || inBase64.any(text.contains);
       // The app's files: what the engine keeps, the core's database (sealed), the notifications' history.
       final files = support.listSync(recursive: true).whereType<File>().toList();
       expect([for (final file in files) file.path], contains(endsWith('client.json')));
@@ -175,15 +183,8 @@ void main() {
         for (final file in files)
           if (holds(latin1.decode(file.readAsBytesSync()))) file.path,
       ], isEmpty);
-      // Bo's engine's record, the chat cache, the recent chats kept, the API's bodies, the log.
-      expect(
-        holds(
-          jsonEncode([
-            for (final key in [keptDevice, pendingSends, keptLater]) boStore.read(key),
-          ]),
-        ),
-        isFalse,
-      );
+      // Bo's engine's record whole, the chat cache, the recent chats kept, the API's bodies, the log.
+      expect(boStore.kept.values.where(holds), isEmpty);
       expect(cache.data.values.where(holds), isEmpty);
       expect(recents.written, isNotEmpty);
       expect(recents.written.where(holds), isEmpty);

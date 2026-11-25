@@ -35,7 +35,13 @@
 		"backup_paused": "Your encrypted backup is paused: your storage is full.",
 		"device_added": "A new device was added to your account: {name}.",
 		"delete_device": "Remove this device and delete its data",
-		"too_long": "Message too long"
+		"too_long": "Message too long",
+		"edit_refused": "Your edit couldn't be saved for everyone.",
+		"delete_refused": "Your message couldn't be deleted for everyone.",
+		"loading_message": "Loading message",
+		"files_wait": "Files and voice messages can't be sent in encrypted conversations yet",
+		"not_ready": "Encrypted conversations aren't ready on this device",
+		"too_many_waiting": "100 messages wait to be sent here: send or dismiss them first"
 	},
 	"filled_notices": [
 		{

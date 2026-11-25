@@ -1,7 +1,7 @@
 import 'dart:convert';
 import 'dart:typed_data';
 
-import 'package:duvet/data/duvet_repository.dart' show readFrom, withRow;
+import 'package:duvet/data/duvet_repository.dart' show notYetRead, readFrom, withRow;
 import 'package:duvet/data/models.dart';
 import 'package:duvet/e2e/content.dart';
 import 'package:duvet/e2e/core_gate.dart';
@@ -95,7 +95,8 @@ void main() {
       final listed = _listed(sent.id, author: ana);
       expect(withRow(listed, waiting, nameOf: name), isA<ChatMessage>().having((m) => m.waiting, 'waiting', isTrue));
       expect(await b.engine.messages(conversation, [uuidv4()]), isEmpty);
-      expect(withRow(listed, null, nameOf: name).waiting, isTrue);
+      // Applied on this device and not held: it waits.
+      expect(withRow(listed, null, nameOf: name, applied: (through: 1)).waiting, isTrue);
       // Not yet asked: neither waiting nor any text.
       expect((listed.waiting, listed.content), (false, ''));
 
@@ -141,14 +142,20 @@ void main() {
       createdAt: DateTime(2026),
       pending: true,
     );
-    final read = readFrom([shown, unheld, notice, sending], {'a': _shown('a', text: 'here')}, nameOf: (_) => 'Bo');
+    final read = readFrom(
+      [shown, unheld, notice, sending],
+      {'a': _shown('a', text: 'here')},
+      nameOf: (_) => 'Bo',
+      applied: (through: 2),
+    );
     expect(
       [for (final m in read) (m.content, m.waiting)],
       [('here', false), ('', true), ('', false), ('on its way', false)],
     );
   });
 
-  // M4 of the desktop's task 16 review: a row of another author's, under an ID the API names for this one, isn't theirs.
+  // M4 of the desktop's task 16 review: a row of another author's, under an ID the API names for this one, isn't
+  // theirs.
   // The review of task 16: what a conversation draws comes from the device alone (I1, M4: the API's words never reach
   // this, as the repository lists a conversation's message with no text, embeds or files), and a row not applied yet
   // loads (M2).
@@ -163,25 +170,67 @@ void main() {
     final drawn = withRow(replying, row, nameOf: (_) => '', quoted: quoted);
     expect((drawn.content, drawn.reply?.content, drawn.waiting), ('said by a', 'quoted', false));
     // Nothing held: waiting, with no text, its quote's neither.
-    final none = withRow(replying, null, nameOf: (_) => '');
+    final none = withRow(replying, null, nameOf: (_) => '', applied: (through: 2));
     expect((none.content, none.reply?.content, none.waiting), ('', '', true));
     // A held row whose sender isn't the author the API names: waiting, never its text under another's name.
     final other = withRow(_listed('m', author: 'b').copyWith(seq: 2), row, nameOf: (_) => '');
     expect((other.content, other.waiting), ('', true));
   });
 
+  // M2 of task 17's review: a quote's text is drawn only under the author the API names for the quoted message, as
+  // the row itself is.
+  test("a_quote's_text_is_drawn_only_under_its_author", () {
+    final quoted = _shown('q', text: 'said by a');
+    final row = _shown('m', text: 'an answer');
+    MessageReply quoting(String author) =>
+        MessageReply(messageId: 'q', authorId: author, authorName: author, content: '');
+    final byA = withRow(
+      _listed('m').copyWith(seq: 2, reply: quoting('a')),
+      row,
+      nameOf: (_) => '',
+      quoted: quoted,
+    );
+    expect(byA.reply?.content, 'said by a');
+    final byB = withRow(
+      _listed('m').copyWith(seq: 2, reply: quoting('b')),
+      row,
+      nameOf: (_) => '',
+      quoted: quoted,
+    );
+    expect(byB.reply?.content, '');
+  });
+
   test("a_row_the_engine_hasn't_applied_yet_is_loading,_neither_empty_nor_waiting", () {
     final late = _listed('x').copyWith(seq: 7);
-    final loading = withRow(late, null, nameOf: (_) => '', through: 5);
+    final loading = withRow(late, null, nameOf: (_) => '', applied: (through: 5));
     expect((loading.loading, loading.waiting, loading.content), (true, false, ''));
-    final applied = withRow(late, null, nameOf: (_) => '', through: 7);
+    final applied = withRow(late, null, nameOf: (_) => '', applied: (through: 7));
     expect((applied.loading, applied.waiting), (false, true));
-    // Before the conversation's first apply this run (or out of its group): waiting, as nothing says it's coming.
-    final unknown = withRow(late, null, nameOf: (_) => '');
-    expect((unknown.loading, unknown.waiting), (false, true));
     // Held as waiting (its copy came, not opened): waiting, whatever the number.
-    final copy = withRow(late, _shown('x', status: 'waiting'), nameOf: (_) => '', through: 5);
+    final copy = withRow(
+      late,
+      _shown('x', status: 'waiting'),
+      nameOf: (_) => '',
+      applied: (through: 5),
+    );
     expect((copy.loading, copy.waiting), (false, true));
+  });
+
+  // M1 of task 17's review (the desktop's N4): out of its group, a row the device doesn't hold isn't coming, and
+  // waits; before the conversation's first apply this run, it's loading.
+  test("out_of_its_group_a_row_the_device_doesn't_hold_waits,_and_before_any_apply_it's_loading", () {
+    final late = _listed('x').copyWith(seq: 7);
+    final out = withRow(late, null, nameOf: (_) => '', applied: (through: null));
+    expect((out.loading, out.waiting), (false, true));
+    final before = withRow(late, null, nameOf: (_) => '');
+    expect((before.loading, before.waiting), (true, false));
+    // Unread (the device can't be read), every encrypted row loads.
+    expect(
+      [
+        for (final m in notYetRead([late, _listed('notice')])) (m.loading, m.waiting),
+      ],
+      [(true, false), (false, false)],
+    );
   });
 
   testWidgets("the_line_about_the_cutover_shows_on_a_legacy_conversation,_with_the_server's_date", (tester) async {

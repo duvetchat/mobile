@@ -600,6 +600,51 @@ class FakeApi {
     }
   }
 
+  /// [user]'s membership made anew, as the API makes it when someone who left is added back: a new ID, after what came
+  /// before it, with no commit (their device stays in the group).
+  void rejoin(String conversationId, String user) {
+    final conv = _conversation(conversationId);
+    final at = _now();
+    conv.members = [
+      for (final member in conv.members)
+        if (member['user_id'] == user)
+          {'id': _id(), 'conversation_id': conv.id, 'user_id': user, 'created_at': at, 'updated_at': at}
+        else
+          member,
+    ];
+  }
+
+  /// [count] encrypted messages of [author]'s, as the API lists them, whose bytes no device opens: rows only a page
+  /// reads (a long absence's), in no event and no queue entry.
+  void addOpaqueMessages(String conversationId, String author, int count) {
+    final conv = _conversation(conversationId);
+    for (var i = 0; i < count; i++) {
+      final at = _now();
+      conv.messages.add({
+        'id': _id(),
+        'conversation_id': conv.id,
+        'author_id': author,
+        'content': null,
+        'type': 0,
+        'created_at': at,
+        'updated_at': at,
+        'nonce': null,
+        'ciphertext': base64Encode([i & 0xff]),
+        'seq': ++conv.seq,
+        'sent_at': DateTime.now().millisecondsSinceEpoch,
+        'generation': conv.group?.generation ?? 0,
+        'epoch': conv.group?.epoch ?? 0,
+        'sender_device_id': null,
+        'edited_at': null,
+        'mentions': <String>[],
+        'message_reference': null,
+        'referenced_message': null,
+        'attachment_ids': <String>[],
+        'sticker_attachment_id': null,
+      });
+    }
+  }
+
   /// The conversation is deleted, as the API deletes one: no list has it, and its routes answer 404.
   void deleteConversation(String conversationId) => _conversations.remove(_conversation(conversationId).id);
 
