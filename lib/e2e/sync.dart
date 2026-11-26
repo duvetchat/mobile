@@ -735,7 +735,7 @@ class Conversations {
     try {
       await _sync(conv, read);
     } catch (error) {
-      if (const [403, 404].contains(_statusOf(error)) && await _left(conversationId)) return _gone(conversationId);
+      if (const [403, 404].contains(_statusOf(error)) && await left(conversationId)) return _gone(conversationId);
       _retryLater(conversationId);
       rethrow;
     }
@@ -743,7 +743,7 @@ class Conversations {
   }
 
   /// Whether the user is no longer in the conversation, as the API lists it now: false when that can't be read.
-  Future<bool> _left(String id) async {
+  Future<bool> left(String id) async {
     try {
       final conv = await _fresh(id);
       return conv == null || !conv.hasMember(_user);
@@ -1154,7 +1154,7 @@ class Conversations {
       // No group to join yet, or the conversation or its user gone (I2 of the desktop's review), on every way here, the
       // person's yes included: listed again, a conversation gone is let go.
       if (!const [403, 404].contains(error.statusCode)) rethrow;
-      if (await _left(id)) _gone(id);
+      if (await left(id)) _gone(id);
       return;
     } on CoreError catch (error) {
       // A commit of its own still waits for its word.

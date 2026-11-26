@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:forui/forui.dart';
 
@@ -6,20 +8,21 @@ import '../data/repository.dart';
 import '../e2e/engine.dart' show HistoryOffer, SharedHistory, shareRanges;
 import '../e2e/notices.dart';
 import '../theme.dart';
+import '../widgets/chrome.dart';
 import '../widgets/depth.dart';
 import '../widgets/glass.dart';
 import '../widgets/rows.dart';
 
 /// The person shares an encrypted conversation's history with [member], another of its members (PLAN-E2E-CLIENTES.md,
-/// Task 31; decision 26): how far back, then Share, on their tap alone. While it goes the sheet stays; once it went it
-/// closes, answering the range and what came of it (null when closed before), and a refusal stays in it, in the app's
-/// words, for another try. The desktop's ShareHistoryDialog.svelte.
-Future<SharedHistory?> showShareHistorySheet(
+/// Task 31; decision 26): how far back, then Share, on their tap alone. While the server takes it the sheet stays; once
+/// it did, the sheet closes, answering what to tell the person ([sharedSaid]; null when closed before), and the rest
+/// goes by itself. A refusal stays in it, in the app's words, for another try. The desktop's ShareHistoryDialog.svelte.
+Future<String?> showShareHistorySheet(
   BuildContext context, {
   required ChatRepository repository,
   required String conversationId,
   required Member member,
-}) => showGlassDialogSheet<SharedHistory>(
+}) => showGlassDialogSheet<String>(
   context,
   label: Notice.shareHistory.text,
   builder: (context) => _ShareHistorySheet(repository: repository, conversationId: conversationId, member: member),
@@ -54,7 +57,7 @@ class _ShareHistorySheetState extends State<_ShareHistorySheet> {
     });
     try {
       final shared = await widget.repository.shareHistory(widget.conversationId, widget.member.userId, _range);
-      if (mounted) Navigator.of(context).pop(shared);
+      if (mounted) Navigator.of(context).pop(sharedSaid(shared, widget.member.displayName, _range));
     } catch (e) {
       if (mounted) setState(() => _refused = e is ActionFailed ? e.message : Notice.shareHistoryFailed.text);
     } finally {
@@ -66,7 +69,7 @@ class _ShareHistorySheetState extends State<_ShareHistorySheet> {
   Widget build(BuildContext context) {
     final colors = context.theme.colors;
     final name = widget.member.displayName;
-    // While the share is on its way the sheet doesn't close: its answer says how it went.
+    // While the server takes the share the sheet doesn't close: its answer says how it went.
     return PopScope(
       canPop: !_sharing,
       child: Padding(
@@ -125,25 +128,34 @@ class _ShareHistorySheetState extends State<_ShareHistorySheet> {
   }
 }
 
-/// What the person is told once their share went to [name]: nothing when it went whole, as its notice shows in the
-/// chat; that it was cut to its newest messages, from when they get every one.
-String? sharedSaid(SharedHistory shared, String name) => shared.truncated
+/// What the person is told once the server took their share of [range] for [name]: that they shared it, as its notice
+/// says it in the chat once its keys went; or that it was cut to its newest messages, from when they get every one.
+String sharedSaid(SharedHistory shared, String name, String range) => shared.truncated
     ? Notice.shareHistoryTruncated.fill({'name': name, 'date': fullDate(shared.start.toLocal())})
-    : null;
+    : Notice.shared.fill({'a': 'You', 'range': rangeText(range), 'b': name});
 
 /// A share of the conversation's history that another member made for this device, over its message box until the
-/// person adds it (PLAN-E2E-CLIENTES.md, Task 31; R2 of the core's review): who shared how far back, and Add to this
-/// device. A yes that fails says so here, and the offer stays for another. The desktop's SharedHistoryOffer.svelte, in
-/// the encryption banner's look.
+/// person adds it or dismisses it (PLAN-E2E-CLIENTES.md, Task 31; R2 of the core's review): who shared how far back,
+/// Add to this device, and Dismiss. A yes that fails says so here, and the offer stays for another. The desktop's
+/// SharedHistoryOffer.svelte, in the encryption banner's look.
 class SharedHistoryOfferBar extends StatefulWidget {
-  const SharedHistoryOfferBar({super.key, required this.offer, required this.nameOf, required this.onAdd});
+  const SharedHistoryOfferBar({
+    super.key,
+    required this.offer,
+    required this.nameOf,
+    required this.onAdd,
+    required this.onDismiss,
+  });
 
-  /// The oldest offer of the conversation, or null for none.
+  /// An offer of the conversation, or null for none.
   final HistoryOffer? offer;
 
   /// A member of the conversation, by the name the app shows them.
   final String Function(String userId) nameOf;
   final Future<void> Function(HistoryOffer offer) onAdd;
+
+  /// The person's no: the server is told this device is done with it.
+  final Future<void> Function(HistoryOffer offer) onDismiss;
 
   @override
   State<SharedHistoryOfferBar> createState() => _SharedHistoryOfferBarState();
@@ -205,6 +217,11 @@ class _SharedHistoryOfferBarState extends State<SharedHistoryOfferBar> {
                   ),
                 ),
                 TextAction(label: Notice.sharedAdd.text, onPressed: _adding ? null : () => _add(offer)),
+                IconAction(
+                  icon: FLucideIcons.x,
+                  label: 'Dismiss',
+                  onPressed: _adding ? null : () => unawaited(widget.onDismiss(offer)),
+                ),
               ],
             ),
           ),

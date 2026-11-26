@@ -1137,16 +1137,24 @@ final class MessageDeleted extends MessageEvent {
 /// What this device's own database holds of the chat's messages changed (an encrypted conversation's, after an apply,
 /// a send, an edit, a deletion or an import): what shows of them is read again ([ChatRepository.withContent]).
 final class ContentChanged extends MessageEvent {
-  const ContentChanged();
+  const ContentChanged({this.imported = false});
+
+  /// A shared history or a catch-up came in: rows from before the user joined that a page left out may show now, so
+  /// its pages are read again (Ruling 15; I3 of task 31's review).
+  final bool imported;
 }
 
 /// An edit or a deletion of the user's in an encrypted conversation the server refused for good: shown done on this
-/// device, it never reached the others, which the app says wherever the person is (M3 of task 17's review).
+/// device, it never reached the others, which the app says wherever the person is (M3 of task 17's review). A share
+/// of the conversation's history that ended for good after the person was told it went ([share]) is said the same way.
 final class ChangeRefused {
-  const ChangeRefused(this.conversationId, this.messageId, {required this.deletion});
+  const ChangeRefused(this.conversationId, this.messageId, {required this.deletion, this.share = false});
   final String conversationId;
   final String messageId;
   final bool deletion;
+
+  /// A share of the conversation's history the person was told went, which ended for good ([messageId]: its package).
+  final bool share;
 }
 
 /// What the start of a chat says (PLAN-E2E-CLIENTES.md, «La vista de una conversación»): a conversation from before

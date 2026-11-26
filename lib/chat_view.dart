@@ -778,7 +778,15 @@ class _ChatViewState extends State<ChatView> with SingleTickerProviderStateMixin
 
   void _onEvent(MessageEvent event) {
     if (event is ContentChanged) {
-      if (widget.target is ConversationTarget) unawaited(_readAgain());
+      if (widget.target is ConversationTarget) {
+        // A share came in where rows from before the user joined gave way: its pages are read again, which draws what
+        // it brought (Ruling 15; I3 of task 31's review). Otherwise the rows shown are read again.
+        if (event.imported && widget.threadOf == null && _repository.chatStart(widget.target).beforeJoining) {
+          unawaited(_load());
+        } else {
+          unawaited(_readAgain());
+        }
+      }
       return;
     }
     if (event case ReactionChanged(:final messageId) when !_entries.any((e) => e.message.id == messageId)) return;
@@ -2145,15 +2153,13 @@ class _ChatViewState extends State<ChatView> with SingleTickerProviderStateMixin
         }
       case MemberAction.shareHistory:
         if (widget.target case ConversationTarget(:final conversationId)) {
-          final shared = await showShareHistorySheet(
+          final said = await showShareHistorySheet(
             context,
             repository: _repository,
             conversationId: conversationId,
             member: member,
           );
-          if (shared != null) {
-            if (sharedSaid(shared, member.displayName) case final said?) _toast(said);
-          }
+          if (said != null) _toast(said);
         }
     }
   }
@@ -2888,16 +2894,26 @@ class _ChatViewState extends State<ChatView> with SingleTickerProviderStateMixin
                             },
                           ),
                         ),
-                      // What another member shared of the conversation's history, until the person adds it.
+                      // What other members shared of the conversation's history, the newest three, until the person
+                      // adds or dismisses each.
                       if (widget.target case ConversationTarget(:final conversationId))
                         Padding(
                           padding: const EdgeInsets.symmetric(horizontal: 16),
                           child: ValueListenableBuilder(
                             valueListenable: _repository.historyOffers,
-                            builder: (context, offers, _) => SharedHistoryOfferBar(
-                              offer: offers[conversationId]?.firstOrNull,
-                              nameOf: _memberName,
-                              onAdd: (offer) => _repository.takeHistoryOffer(conversationId, offer.shareId),
+                            builder: (context, offers, _) => Column(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                for (final offer in offers[conversationId] ?? const [])
+                                  SharedHistoryOfferBar(
+                                    key: ValueKey(offer.shareId),
+                                    offer: offer,
+                                    nameOf: _memberName,
+                                    onAdd: (offer) => _repository.takeHistoryOffer(conversationId, offer.shareId),
+                                    onDismiss: (offer) =>
+                                        _repository.dismissHistoryOffer(conversationId, offer.shareId),
+                                  ),
+                              ],
                             ),
                           ),
                         ),

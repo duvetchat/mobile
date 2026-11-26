@@ -37,7 +37,7 @@ import 'sync.dart';
 export 'content.dart' show Authored, MessageStatus, ShownMessage;
 export 'devices.dart' show DeviceNotice, DeviceNoticeKind, inactiveDevice, onlyDevice;
 export 'files.dart' show FilesGone;
-export 'history.dart' show HistoryOffer, NoDeviceToShareWith, SharedHistory, quietBeforeImport, shareRanges;
+export 'history.dart' show HistoryOffer, NoDeviceToShareWith, ShareLimit, SharedHistory, quietBeforeImport, shareRanges;
 export 'members.dart' show maxGroupMembers;
 export 'send.dart' show Outgoing, Pending, TooManyWaiting;
 export 'sync.dart' show ConversationNotice, ConversationState, Restart;
@@ -261,7 +261,9 @@ class E2EEngine {
     _act,
     (work) => _soon(() => _whenReady(work)),
     (conversationId) => _groups.sync(conversationId),
-    _messageChanged,
+    (conversationId) => _groups.left(conversationId),
+    _historyImported,
+    (conversationId, shareId) => _changeRefused(conversationId, shareId, 'share'),
   );
 
   /// The messages this device sends, edits and deletes.
@@ -292,6 +294,17 @@ class E2EEngine {
     if (!_deleted.isClosed && ids.isNotEmpty) _deleted.add((conversationId: conversationId, ids: ids));
   }
 
+  final _imports = StreamController<String>.broadcast();
+
+  /// Each conversation a shared history or a catch-up was imported into (history.dart): rows its chat's pages left out
+  /// may show now, as well as the ones [messagesChanged] has read again.
+  Stream<String> get historiesImported => _imports.stream;
+
+  void _historyImported(String conversationId) {
+    _messageChanged(conversationId);
+    if (!_imports.isClosed) _imports.add(conversationId);
+  }
+
   final _sent = StreamController<({String conversationId, String nonce, duvet.DirectMessage message})>.broadcast();
   final _refused = StreamController<({String conversationId, String messageId, String kind})>.broadcast();
 
@@ -304,7 +317,8 @@ class E2EEngine {
   Stream<({String conversationId, String nonce, duvet.DirectMessage message})> get sent => _sent.stream;
 
   /// Each edit (`edit`) or deletion (`delete`) of the person's the API refused for good with nobody waiting for its
-  /// answer: shown done here, it never reached the others, which the person is told.
+  /// answer: shown done here, it never reached the others, which the person is told. A share of a conversation's
+  /// history (`share`, by the package's ID) the person was told went and that ended for good is one too.
   Stream<({String conversationId, String messageId, String kind})> get changesRefused => _refused.stream;
 
   /// What the engine tells of the user's other devices (Task 25): one added, and once each, one not seen in 45 days.
@@ -477,13 +491,18 @@ class E2EEngine {
   ValueListenable<Map<String, List<HistoryOffer>>> get historyOffers => _histories.offers;
 
   /// The person's share of a conversation's history from [range]'s start (day, week, month or all) with one of its
-  /// other members (PLAN-E2E-CLIENTES.md, Task 31): what came of it. A refusal throws, the API's (a 429 for its ten an
-  /// hour) or [NoDeviceToShareWith]; a client too old for it waits for its update.
+  /// other members (PLAN-E2E-CLIENTES.md, Task 31): what came of it, once the API took it; the rest goes by itself, and
+  /// a share that then ends for good is told on [changesRefused]. A refusal throws: [ShareLimit] for the API's ten an
+  /// hour, [NoDeviceToShareWith], or the API's; a client too old for it waits for its update.
   Future<SharedHistory> shareHistory(String conversationId, String userId, String range) =>
       _updating(() => _histories.share(conversationId, userId, range));
 
   /// The person's yes to a share of a conversation's history ([historyOffers]): its messages imported here.
   Future<void> takeHistoryOffer(String shareId) => _updating(() => _histories.take(shareId));
+
+  /// The person's Dismiss of a share of a conversation's history ([historyOffers]): it shows no more, and the API is
+  /// told this device is done with it.
+  Future<void> dismissHistoryOffer(String shareId) => _histories.dismiss(shareId);
 
   /// Whether this device's database holds any message of the conversation numbered before [seq].
   Future<bool> heldBefore(String conversationId, int seq) => content.heldBefore(host, conversationId, seq);
@@ -616,6 +635,7 @@ class E2EEngine {
     await _turn;
     await host.close();
     await _messagesChanged.close();
+    await _imports.close();
     await _deleted.close();
     await _sent.close();
     await _refused.close();

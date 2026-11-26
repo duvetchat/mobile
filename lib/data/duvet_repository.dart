@@ -1170,9 +1170,12 @@ class DuvetRepository implements ChatRepository {
       return await engine.shareHistory(conversationId, userId, range);
     } on NoDeviceToShareWith {
       throw ActionFailed(Notice.shareHistoryNoDevice.fill({'name': nameOf(userId) ?? 'Someone'}));
+    } on ShareLimit catch (e) {
+      // The API's ten an hour, and when one frees: its Retry-After, a minute at least, in whole minutes, as the
+      // desktop says it.
+      final minutes = (e.wait.inSeconds + 59) ~/ 60;
+      throw ActionFailed(Notice.shareHistoryLimit.fill({'when': minutes == 1 ? 'in 1 minute' : 'in $minutes minutes'}));
     } on duvet.DuvetApiException catch (e) {
-      // duvet_client keeps no Retry-After: the hour's ten are said, and when it frees isn't.
-      if (e.statusCode == 429) throw ActionFailed(Notice.shareHistoryLimit.fill({'when': 'later'}));
       debugPrint("e2e: a conversation's history wasn't shared: ${e.statusCode}");
       throw ActionFailed(Notice.shareHistoryFailed.text);
     } catch (e) {
@@ -1193,6 +1196,10 @@ class DuvetRepository implements ChatRepository {
       throw ActionFailed(Notice.sharedAddFailed.text);
     }
   }
+
+  @override
+  Future<void> dismissHistoryOffer(String conversationId, String shareId) async =>
+      _engine?.dismissHistoryOffer(shareId);
 
   /// The conversation on screen, whose group the engine opens: at once, or once it's made and ready.
   String? _conversationOnScreen;
@@ -1269,9 +1276,15 @@ class DuvetRepository implements ChatRepository {
         engine.sent.listen(_sentElsewhere),
         engine.changesRefused.listen(
           (refused) => _changesRefused.add(
-            ChangeRefused(refused.conversationId, refused.messageId, deletion: refused.kind == 'delete'),
+            ChangeRefused(
+              refused.conversationId,
+              refused.messageId,
+              deletion: refused.kind == 'delete',
+              share: refused.kind == 'share',
+            ),
           ),
         ),
+        engine.historiesImported.listen((id) => _emitMessage((id, const ContentChanged(imported: true)))),
       ]);
       unawaited(engine.start());
       if (_conversationOnScreen case final id?) unawaited(engine.openConversation(id).catchError(_groupFailed));
@@ -1399,6 +1412,7 @@ class DuvetRepository implements ChatRepository {
     String conversationId,
     List<duvet.DirectMessage> raw, {
     bool drop = false,
+    void Function()? dropped,
   }) async {
     final listed = [for (final m in raw) _asSent(_directMessage(m))];
     final applied = _engine?.appliedThrough(conversationId);
@@ -1418,7 +1432,10 @@ class DuvetRepository implements ChatRepository {
         encrypted: (m) => m.encrypted,
         held: held.containsKey,
       );
-      if (drawn.beforeJoining) _beforeJoining.add(conversationId);
+      if (drawn.beforeJoining) {
+        _beforeJoining.add(conversationId);
+        dropped?.call();
+      }
       rows = drawn.rows;
     }
     return readFrom(rows, held, nameOf: _sharerName, applied: applied);
@@ -3391,6 +3408,20 @@ class DuvetRepository implements ChatRepository {
   /// anything older, so a short page means the history, or what the device holds of it, ended (I4 of the desktop's
   /// task 16 review: a member who left and came back keeps their first membership's messages).
   Future<List<ChatMessage>> _conversationPage(String conversationId, String? before, int count) async {
+    var dropped = false;
+    final page = await _conversationRows(conversationId, before, count, () => dropped = true);
+    // A newest page read whole that left out no row from before the user joined: none is missing any more, as an
+    // import brought them in (I3 of task 31's review).
+    if (before == null && count > 1 && !dropped) _beforeJoining.remove(conversationId);
+    return page;
+  }
+
+  Future<List<ChatMessage>> _conversationRows(
+    String conversationId,
+    String? before,
+    int count,
+    void Function() dropped,
+  ) async {
     final drawn = <ChatMessage>[];
     // The chat's next page past where the last stopped goes on from there, not over the rows it read already.
     var cursor = switch (_pagesOn.remove(conversationId)) {
@@ -3399,7 +3430,7 @@ class DuvetRepository implements ChatRepository {
     };
     for (var reads = 1; ; reads++) {
       final raw = await _call((api) => api.getDirectMessages(conversationId, before: cursor, count: count));
-      drawn.addAll(await _contentOf(conversationId, raw, drop: true));
+      drawn.addAll(await _contentOf(conversationId, raw, drop: true, dropped: dropped));
       if (raw.length < count || drawn.length >= count || count == 1) return drawn;
       final oldest = raw.map((m) => m.seq).nonNulls.fold<int?>(null, (a, b) => a == null || b < a ? b : a);
       final engine = _engine;

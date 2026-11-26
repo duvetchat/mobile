@@ -1679,14 +1679,22 @@ class FakeRepository implements ChatRepository {
   Future<void> takeHistoryOffer(String conversationId, String shareId) async {
     encryptionTaps.add('takeHistoryOffer $conversationId $shareId');
     if (offerRefusal case final refusal?) throw refusal;
-    historyOffers.value = {
-      for (final MapEntry(:key, :value) in historyOffers.value.entries)
-        key: [
-          for (final offer in value)
-            if (offer.shareId != shareId) offer,
-        ],
-    };
+    _dropOffer(shareId);
   }
+
+  @override
+  Future<void> dismissHistoryOffer(String conversationId, String shareId) async {
+    encryptionTaps.add('dismissHistoryOffer $conversationId $shareId');
+    _dropOffer(shareId);
+  }
+
+  void _dropOffer(String shareId) => historyOffers.value = {
+    for (final MapEntry(:key, :value) in historyOffers.value.entries)
+      key: [
+        for (final offer in value)
+          if (offer.shareId != shareId) offer,
+      ],
+  };
 
   @override
   Future<void> logIn(String email, String password) async {

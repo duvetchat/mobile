@@ -8,7 +8,8 @@ import '../e2e/notices.dart';
 
 /// Tells the person, wherever they are in the app, of each edit or deletion of theirs in an encrypted conversation
 /// that the server refused for good: their device shows it done, and the others never got it (M3 of task 17's review,
-/// in the desktop's words). Under the app's [FToaster], over every screen.
+/// in the desktop's words); and of a share of a conversation's history they were told went, which ended for good.
+/// Under the app's [FToaster], over every screen.
 class ChangeRefusals extends StatefulWidget {
   const ChangeRefusals({required this.refusals, required this.child, super.key});
 
@@ -38,7 +39,11 @@ class _ChangeRefusalsState extends State<ChangeRefusals> {
 
   void _tell(ChangeRefused refused) {
     if (!mounted) return;
-    final words = refused.deletion ? Notice.deleteRefused : Notice.editRefused;
+    final words = refused.share
+        ? Notice.shareHistoryFailed
+        : refused.deletion
+        ? Notice.deleteRefused
+        : Notice.editRefused;
     showFToast(context: context, title: Text(words.text), duration: const Duration(seconds: 3));
   }
 

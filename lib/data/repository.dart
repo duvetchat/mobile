@@ -115,13 +115,18 @@ abstract interface class ChatRepository {
   ValueListenable<Map<String, List<HistoryOffer>>> get historyOffers;
 
   /// The person's share of [conversationId]'s history from [range]'s start (day, week, month or all) with [userId], one
-  /// of its other members: whether it was cut to its newest messages, and from when it holds them. Refused in the app's
+  /// of its other members: whether it was cut to its newest messages, and from when it holds them, once the server took
+  /// it; the rest goes by itself, and a share that then ends for good is said on [changesRefused]. Refused in the app's
   /// words ([ActionFailed]): the API's ten an hour, a member with no device to receive it.
   Future<SharedHistory> shareHistory(String conversationId, String userId, String range);
 
   /// The person's yes to a share of [conversationId]'s history ([historyOffers]): its messages imported into this
   /// device. Refused in the app's words.
   Future<void> takeHistoryOffer(String conversationId, String shareId);
+
+  /// The person's Dismiss of a share of [conversationId]'s history ([historyOffers]): it shows no more, and the server
+  /// is told this device is done with it.
+  Future<void> dismissHistoryOffer(String conversationId, String shareId);
 
   Future<void> logIn(String email, String password);
 

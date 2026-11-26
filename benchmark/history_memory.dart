@@ -155,7 +155,8 @@ void main() {
       // ignore: avoid_print
       print(
         'history_share: ${_mb(made['size']! as int)} in $parts parts, truncated ${made['truncated']}; '
-        'the step added ${_mb(shared.added)} at its peak (${_mb(shared.resident)} resident), in ${shared.took.inSeconds} s',
+        'the step added ${_mb(shared.added)} at its peak (${_mb(shared.resident)} resident), '
+        'in ${shared.took.inSeconds} s',
       );
 
       // Bo's device takes the key, then imports parts of its own, as a download gives them.
@@ -169,7 +170,8 @@ void main() {
       // ignore: avoid_print
       print(
         'history_import: ${imported.value['imported']} records; the step added ${_mb(imported.added)} at its peak '
-        '(${_mb(imported.resident)} resident, the ${_mb(downloaded.fold(0, (sum, part) => sum + part.length))} of parts '
+        '(${_mb(imported.resident)} resident, '
+        'the ${_mb(downloaded.fold(0, (sum, part) => sum + part.length))} of parts '
         'downloaded before it not counted), in ${imported.took.inSeconds} s',
       );
       // ignore: avoid_print

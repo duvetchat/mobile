@@ -205,9 +205,10 @@ void main() {
       await until(() => puts('/parts/0').isNotEmpty);
       expect(asked.where((c) => c['cmd'] == 'catch_up_delivered'), isEmpty);
 
-      // Its wait over (2 s), the same package goes up again, and is delivered.
+      // Its wait over (a minute), the same package goes on from where it stopped, and is delivered: the API took it
+      // once.
       await until(() {
-        a.clock.advance(const Duration(seconds: 2));
+        a.clock.advance(const Duration(seconds: 20));
         return asked.any((c) => c['cmd'] == 'catch_up_delivered' && c['user_id'] == bo);
       });
       expect(asked.where((c) => c['cmd'] == 'catch_up'), hasLength(1));
@@ -215,7 +216,7 @@ void main() {
       expect((parts.length, parts.toSet().length), (2, 1));
       expect(
         seen.where((r) => r.method == 'PUT' && RegExp(r'/history-shares/[0-9a-f-]+$').hasMatch(r.url.path)),
-        hasLength(2),
+        hasLength(1),
       );
       expect(await _imported(b, dm, [sent.id]), ['hi again']);
       await a.engine.stop();
