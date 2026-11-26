@@ -42,10 +42,10 @@ class TestApp {
 
   /// Its device set up, as a first device: its identity made and its key saved, the engine ready.
   Future<void> ready() async {
-    await until(() => repository.encryption.value.stage == EngineStage.firstDevice);
+    await until(() => repository.encryption.value.stage == EngineStage.firstDevice, what: "the app's first device");
     await repository.makeIdentity();
     await repository.keySaved();
-    await until(() => repository.encryption.value == EngineState.ready);
+    await until(() => repository.encryption.value == EngineState.ready, what: "the app's engine ready");
   }
 
   /// The requests made since [from] (an index into [seen]) of this method and path.
@@ -111,7 +111,7 @@ Future<TestApp> appOn(
       ..bodyBytes = request.bodyBytes;
     return http.Response.fromStream(await fake.client.send(copy));
   });
-  late CoreGate core;
+  CoreGate? core;
   final keys = MemoryKeys();
   final folder = Directory('${support.path}/core')..createSync();
   final repository = DuvetRepository(
@@ -122,11 +122,16 @@ Future<TestApp> appOn(
     cacheStore: cache ?? MemoryChatCacheStore(),
     notifyAway: notifyAway,
     encryptionHost: () {
-      core = TestHost(folder: folder, keys: keys).gate;
-      return host?.call(core) ?? core;
+      final made = core = TestHost(folder: folder, keys: keys).gate;
+      return host?.call(made) ?? made;
     },
     onScreen: () => true,
   );
+  shownWhenStuck(() async {
+    final made = core;
+    if (made == null) return 'the app of $user: ${repository.encryption.value}, before its engine';
+    return heldBy(fake, 'the app of $user', repository.encryption.value, repository.conversationStates.value, made);
+  });
   await repository.logIn('user@duvet.chat', 'secret');
   final end = fake.connect(session.token, null, (event) {
     if (hears != null && !hears(event)) return;
@@ -136,5 +141,5 @@ Future<TestApp> appOn(
     end();
     repository.dispose();
   });
-  return TestApp._(repository, seen, support, keys, () => core, end);
+  return TestApp._(repository, seen, support, keys, () => core!, end);
 }

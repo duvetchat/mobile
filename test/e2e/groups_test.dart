@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:duvet/e2e/engine.dart';
 import 'package:duvet/e2e/host.dart';
 import 'package:duvet/e2e/uuid.dart';
@@ -23,13 +25,14 @@ List<String> _commitsPosted(List<http.Request> seen, String conversation) => [
 /// A group of Ana's, Bo's and Cy's first devices, Ana its owner, whose group Ana made as she opened it.
 Future<({FakeApi fake, String ana, String bo, String cy, String conversation, List<TestDevice> devices})> _group({
   List<http.Request>? boSeen,
+  CoreHost? cyHost,
 }) async {
   final fake = FakeApi();
   final (ana, bo, cy) = (fake.addUser(), fake.addUser(), fake.addUser());
   final conversation = fake.addConversation(group: true, members: [ana, bo, cy], owner: ana);
   final a = await firstDevice(fake, ana);
   final b = await firstDevice(fake, bo, client: boSeen == null ? null : watchedClient(fake, seen: boSeen.add));
-  final c = await firstDevice(fake, cy);
+  final c = await firstDevice(fake, cy, host: cyHost);
   await a.engine.openConversation(conversation);
   await sameGroup([a, b, c], conversation);
   return (fake: fake, ana: ana, bo: bo, cy: cy, conversation: conversation, devices: [a, b, c]);
@@ -214,10 +217,10 @@ void main() {
       final keyPackages = await a.api.claimKeyPackages(cy);
       await stoppedByHand(a);
       await removeByHand(a, conversation, cy);
-      await until(() async => await groupOf(c, conversation) == null);
+      await until(() async => await groupOf(c, conversation) == null, what: "Cy's device out of the group");
       final away = (await b.engine.sendMessage(Outgoing(conversationId: conversation, nonce: uuidv4(), text: 'away')))!;
       await addByHand(a, conversation, cy, keyPackages);
-      await until(() async => await groupOf(c, conversation) != null);
+      await until(() async => await groupOf(c, conversation) != null, what: "Cy's device back in the group");
       expect(away.id.compareTo(fake.membershipOf(conversation, cy)), lessThan(0));
       // The row of Cy's absence isn't on Cy's device, and Cy's own message from before is: the pages go on to it.
       expect(await c.engine.messages(conversation, [away.id]), isEmpty);
@@ -243,7 +246,7 @@ void main() {
       final keyPackages = await a.api.claimKeyPackages(cy);
       await stoppedByHand(a);
       final removal = await removeByHand(a, conversation, cy);
-      await until(() async => await groupOf(c, conversation) == null);
+      await until(() async => await groupOf(c, conversation) == null, what: "Cy's device out of the group");
       await turnEnded(c);
 
       // Ana adds Cy back. Cy's device hears nothing of it while minutes pass, then the addition's commit, and its turn
@@ -257,7 +260,7 @@ void main() {
       fake.releaseEvents(only: (event) => event.type == 'MLS_COMMIT');
       await turnEnded(c);
       fake.releaseEvents();
-      await until(() async => await groupOf(c, conversation) != null);
+      await until(() async => await groupOf(c, conversation) != null, what: "Cy's device back in the group");
       final since = [
         for (final e in (await b.api.queue(conversation, removal.seq)).entries)
           if (e.kind == 'commit') e.senderUser,
@@ -266,6 +269,60 @@ void main() {
       await sameGroup([a, b, c], conversation);
       await a.host.close();
       await b.engine.stop();
+      await c.engine.stop();
+    },
+    skip: noCore,
+    timeout: _slow,
+  );
+
+  // mobile#333: the commit that takes a user out reaches their device during a turn of its own (here, the one for its
+  // own message's event), which then reads the queue for it. Someone a removal took out reads the queue up to its
+  // commit, as the API serves it, so the device applies its own removal; added back, it comes in by the new welcome.
+  test(
+    'a_removal_heard_during_a_turn_of_its_own_takes_the_device_out,_and_it_comes_back',
+    () async {
+      final release = Completer<void>();
+      var holding = false;
+      // Cy's turn for the event of its own message waits at its apply, once [holding] is on, until [release].
+      final cyHost = WatchedHost(
+        TestHost().gate,
+        [],
+        hold: (command) {
+          final entries = command['entries'] as List? ?? const [];
+          if (!holding || command['cmd'] != 'apply' || !entries.any((e) => (e! as Map)['kind'] == 'message')) {
+            return null;
+          }
+          holding = false;
+          return release.future;
+        },
+      );
+      final (:fake, ana: _, bo: _, :cy, :conversation, :devices) = await _group(cyHost: cyHost);
+      final [a, _, c] = devices;
+      final keyPackages = await a.api.claimKeyPackages(cy);
+      holding = true;
+      final mine = c.engine.sendMessage(Outgoing(conversationId: conversation, nonce: uuidv4(), text: 'mine'));
+      await until(() => !holding, what: "Cy's turn for its own message");
+      await stoppedByHand(a);
+      final removal = await removeByHand(a, conversation, cy);
+      await until(
+        () => c.heard.any(
+          (event) => switch (event) {
+            (type: 'MLS_COMMIT', data: {'entry': {'seq': final int seq}}) => seq == removal.seq,
+            _ => false,
+          },
+        ),
+        what: "the removal's event on Cy's connection",
+      );
+      await pumpEventQueue();
+      release.complete();
+      await mine;
+      await until(() async => await groupOf(c, conversation) == null, what: "Cy's device out of the group");
+      // Out of the conversation, Cy reads its queue up to the commit that took them out.
+      final page = await c.api.queue(conversation, 0);
+      expect((page.lastSeq, page.entries.last.seq), (removal.seq, removal.seq));
+      await addByHand(a, conversation, cy, keyPackages);
+      await until(() async => await groupOf(c, conversation) != null, what: "Cy's device back in the group");
+      await a.host.close();
       await c.engine.stop();
     },
     skip: noCore,
