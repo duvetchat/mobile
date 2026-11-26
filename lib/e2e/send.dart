@@ -201,12 +201,15 @@ List<String> mentionsIn(String text) {
   return {for (final match in _mention.allMatches(outside)) match[1]!}.take(_mentionsMost).toList();
 }
 
+/// A cut call to the core, its database or another engine (inbox.dart's rule): no word on the message it was for.
+const _again = {'internal', 'storage', 'locked'};
+
 /// No word on the message itself: a lost connection, a session's renewal, a timeout, a rate limit, the server, the
-/// pause. The core's refusals and the API's others are words on it.
+/// pause, a cut call to the core. The core's refusals and the API's others are words on it.
 bool _unanswered(Object error) => switch (error) {
   duvet.DuvetApiException(:final statusCode) =>
     statusCode == 401 || statusCode == 408 || statusCode == 429 || statusCode >= 500,
-  CoreError() => false,
+  CoreError(:final code) => _again.contains(code),
   Exception() => true,
   _ => false,
 };
@@ -619,11 +622,11 @@ class Sends {
 
   /// What waits in the conversation, in the person's order ([wantedFirst]: the nonce the person sent theirs with, whose
   /// message this gives, its upload followed by [upload]). An older one the API or the core refused stays, for the
-  /// person's Retry or Dismiss, and the rest go on; one without an answer stops them all, as does an update. Once a
-  /// message's bytes no member could open any more, it and each after it are made again together, before any of them
-  /// goes (I3 of task 17's review), and the flush goes on from it. One with files whose sealed bytes this run no longer
-  /// has waits for its Dismiss, and one with files the API refused for the person's Retry. It runs in its
-  /// conversation's lane, each of the core's calls in the turn.
+  /// person's Retry or Dismiss, and the rest go on; one without an answer (a cut call to the core too) stops them all,
+  /// as does an update. Once a message's bytes no member could open any more, it and each after it are made again
+  /// together, before any of them goes (I3 of task 17's review), and the flush goes on from it. One with files whose
+  /// sealed bytes this run no longer has waits for its Dismiss, and one with files the API refused for the person's
+  /// Retry. It runs in its conversation's lane, each of the core's calls in the turn.
   Future<duvet.DirectMessage?> _flush(String id, {String? wantedFirst, _Upload? upload}) async {
     var rows = await _turn(() async {
       final waiting = await _waiting(id);
