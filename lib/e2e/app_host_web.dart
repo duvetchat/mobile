@@ -2,6 +2,8 @@
 /// and the rest of the app goes on.
 library;
 
+import 'dart:typed_data';
+
 import 'host.dart';
 
 CoreHost appCoreHost() => const _NoCore();
@@ -17,6 +19,14 @@ class _NoCore implements CoreHost {
 
   @override
   Future<T> handle<T>(Map<String, Object?> command) async => throw CoreError('internal', message: 'no core here');
+
+  @override
+  Future<Uint8List> sealFile(String key, String attachmentId, Uint8List plain, {void Function(int)? progress}) async =>
+      throw CoreError('internal', message: 'no core here');
+
+  @override
+  Future<Uint8List> openFile(String key, String attachmentId, Uint8List sealed, {void Function(int)? progress}) async =>
+      throw CoreError('internal', message: 'no core here');
 
   @override
   Future<void> close() async {}

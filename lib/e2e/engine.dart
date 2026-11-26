@@ -23,6 +23,7 @@ import 'host.dart';
 import 'identity.dart';
 import 'inbox.dart';
 import 'failures.dart';
+import 'files.dart' as files show fileNames;
 import 'key_packages.dart';
 import 'search.dart';
 import 'send.dart';
@@ -30,6 +31,7 @@ import 'store.dart';
 import 'sync.dart';
 
 export 'content.dart' show Authored, MessageStatus, ShownMessage;
+export 'files.dart' show FilesGone;
 export 'send.dart' show Outgoing, Pending, TooManyWaiting;
 export 'sync.dart' show ConversationNotice, ConversationState, Restart;
 
@@ -206,6 +208,7 @@ class E2EEngine {
     _failures,
     _conversationChanged,
     _messageChanged,
+    _messagesGone,
   );
 
   /// The messages this device sends, edits and deletes.
@@ -213,15 +216,27 @@ class E2EEngine {
     this,
     _groups,
     (work) => _soon(() => _whenReady(work)),
+    _act,
     _messageChanged,
     _messageSent,
     _changeRefused,
+    _messagesGone,
   );
 
   /// The cutover's instant, as GET /api/e2e gave it: a conversation from before it says when its messages went.
   DateTime? cutoverAt;
 
   final _messagesChanged = StreamController<String>.broadcast();
+  final _deleted = StreamController<({String conversationId, List<String> ids})>.broadcast();
+
+  /// The messages this device learned were deleted (a tombstone it applied, a message the queue serves as deleted, the
+  /// person's own deletion): their files go from the app's folder of decrypted files (task 18's review, M4).
+  Stream<({String conversationId, List<String> ids})> get messagesDeleted => _deleted.stream;
+
+  void _messagesGone(String conversationId, List<String> ids) {
+    if (!_deleted.isClosed && ids.isNotEmpty) _deleted.add((conversationId: conversationId, ids: ids));
+  }
+
   final _sent = StreamController<({String conversationId, String nonce, duvet.DirectMessage message})>.broadcast();
   final _refused = StreamController<({String conversationId, String messageId, String kind})>.broadcast();
 
@@ -252,11 +267,40 @@ class E2EEngine {
   /// The person's message, sent after what waits in its conversation (PLAN-E2E-CLIENTES.md, «Enviar»): the API's
   /// message, or null when it was sent already. A refusal or a lost answer throws, the message kept for Retry and
   /// Dismiss; while this device isn't ready nothing is sent or kept.
-  Future<duvet.DirectMessage?> sendMessage(Outgoing message) => _act(() => _sends.send(message));
+  /// Its files go sealed («Adjuntos»), [onProgress] following their upload and [cancel] stopping it: a Cancel is then
+  /// its Dismiss. Only the core's calls take the engine's turn: its request waits in its conversation's lane.
+  Future<duvet.DirectMessage?> sendMessage(
+    Outgoing message, {
+    void Function(int sent, int total)? onProgress,
+    Future<void>? cancel,
+  }) => _updating(() => _sends.send(message, onProgress: onProgress, cancel: cancel));
 
   /// The person's Retry of their message [nonce] that waits on this device: what the record keeps of it goes with it.
   Future<duvet.DirectMessage?> resendMessage(String conversationId, String nonce) =>
-      _act(() => _sends.resend(conversationId, nonce));
+      _updating(() => _sends.resend(conversationId, nonce));
+
+  /// A request of the person's that came outside the turn: its 426 has this device wait for its update.
+  Future<T> _updating<T>(Future<T> Function() work) async {
+    try {
+      return await work();
+    } on duvet.DuvetUpdateRequiredException catch (error) {
+      if (_state.value.stage != EngineStage.update) _set(EngineState.update(error.minimum));
+      rethrow;
+    }
+  }
+
+  /// A file of a message opened by this device's core, part by part: the app's engine's alone (Review Focus 2).
+  Future<Uint8List> openFile(String key, String id, Uint8List sealed, {void Function(int done)? progress}) =>
+      host.openFile(key, id, sealed, progress: progress);
+
+  /// A file of a message that didn't open, or opened to other bytes than its message says: counted (decision 40).
+  void fileFailed() => _failures.note('attachment');
+
+  /// The names of the files whose messages this device holds, by their IDs (Ruling 31): the person's attachments'.
+  Future<Map<String, String>> fileNames() => files.fileNames(host);
+
+  /// Whether this run holds the sealed bytes of the files of the person's message [nonce], which a Retry sends.
+  bool holdsFiles(String nonce) => _sends.holdsFiles(nonce);
 
   /// An edit of the user's message: shown here at once, sent, and its answer's entry applied.
   Future<void> editMessage(String conversationId, String messageId, String text) =>
@@ -270,6 +314,8 @@ class E2EEngine {
   /// API's ID of a message that went after all (its answer and its event lost), whose copy the views show in its place;
   /// else null.
   Future<String?> discardMessage(String conversationId, String nonce) async {
+    // Its request, when one is out, stopped and settled first, outside the turn (task 19's review, M4).
+    await _sends.settle(nonce);
     String? went;
     await _queue(() async => went = await _sends.discard(conversationId, nonce));
     _messageChanged(conversationId);
@@ -459,6 +505,7 @@ class E2EEngine {
     await _turn;
     await host.close();
     await _messagesChanged.close();
+    await _deleted.close();
     await _sent.close();
     await _refused.close();
   }

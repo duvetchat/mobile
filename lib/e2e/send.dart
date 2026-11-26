@@ -18,6 +18,7 @@ import 'package:flutter/foundation.dart';
 import 'content.dart';
 import 'conventions.dart';
 import 'engine.dart';
+import 'files.dart';
 import 'host.dart';
 import 'identity.dart';
 import 'store.dart';
@@ -36,6 +37,7 @@ class Outgoing {
     this.replyTo,
     this.mentionReplied,
     this.stickerAttachmentId,
+    this.files = const [],
   });
 
   final String conversationId;
@@ -44,6 +46,9 @@ class Outgoing {
   final String? replyTo;
   final bool? mentionReplied;
   final String? stickerAttachmentId;
+
+  /// Its files, sealed as it's first made (files.dart): their sealed bytes stay in this run's memory alone.
+  final List<FileToSeal> files;
 }
 
 /// What goes with a message in the clear, kept by its nonce until it's sent.
@@ -214,14 +219,74 @@ class _Stale implements Exception {
 /// The core's word that no member could open the message's bytes any more.
 bool _staleBytes(Object error) => error is CoreError && error.code == 'rule_violation' && error.rule == 'stale_message';
 
+/// The person's Cancel of a message's upload, which stopped it before its request went or while it waited.
+class UploadCancelled implements Exception {
+  const UploadCancelled();
+
+  @override
+  String toString() => 'UploadCancelled: the person cancelled the upload';
+}
+
+/// A message's upload as it goes: the person's send's, with its request's progress and its Cancel, or a flush's own for
+/// a message it sends again. Whichever flush delivers the message uses it, and a Dismiss stops its request and waits
+/// for it to settle (task 19's review, M4, the desktop's N1).
+class _Upload {
+  _Upload(this.onProgress, this.cancel) {
+    cancel?.then((_) => abort());
+  }
+
+  final void Function(int sent, int total)? onProgress;
+
+  /// The person's Cancel of their send.
+  final Future<void>? cancel;
+  final _aborted = Completer<void>();
+
+  /// Its delivery's end, the API's answer bound here: what a Dismiss waits for.
+  Future<void> settled = Future<void>.value();
+
+  /// Its Cancel or a Dismiss stopped it.
+  bool get cancelled => _aborted.isCompleted;
+  Future<void> get aborted => _aborted.future;
+
+  void abort() {
+    if (!_aborted.isCompleted) _aborted.complete();
+  }
+}
+
+/// The person's send, as its lane settles it, or its Cancel's refusal at once: a newer message's Cancel never waits for
+/// an older one's upload (task 18's review, I2). The lane goes on, and lets the cancelled message be as its turn comes.
+Future<T> _untilCancelled<T>(Future<T> work, Future<void>? cancel) {
+  if (cancel == null) return work;
+  final done = Completer<T>();
+  work.then(
+    (value) {
+      if (!done.isCompleted) done.complete(value);
+    },
+    onError: (Object error, StackTrace stack) {
+      if (!done.isCompleted) done.completeError(error, stack);
+    },
+  );
+  cancel.then((_) {
+    if (!done.isCompleted) done.completeError(const UploadCancelled());
+  });
+  return done.future;
+}
+
 class Sends {
-  Sends(this._engine, this._groups, this._soon, this._changed, this._sent, this._refused);
+  Sends(this._engine, this._groups, this._soon, this._turn, this._changed, this._sent, this._refused, this._deleted);
 
   final E2EEngine _engine;
   final Conversations _groups;
 
   /// Runs work in the engine's turn, while the device is ready.
   final void Function(Future<void> Function() work) _soon;
+
+  /// Runs work in the engine's turn as the person's act, and gives what it gives: refused while this device isn't
+  /// ready. Only the core's calls take it: a message's request waits in its conversation's lane (task 18's review, I2).
+  final Future<T> Function<T>(Future<T> Function() work) _turn;
+
+  /// The person's messages this device deleted: their files go (task 18's review, M4).
+  final void Function(String conversationId, List<String> messageIds) _deleted;
 
   /// A conversation's messages changed on this device.
   final void Function(String conversationId) _changed;
@@ -249,29 +314,57 @@ class Sends {
   /// A message's nonces made again, to the one the person sent it with: kept while the app runs, past the record.
   final _firstOf = <String, String>{};
 
+  /// Each waiting message's files, sealed, by the nonce the person sent it with: in this run's memory alone, as the
+  /// record keeps no file (the core's row keeps what its envelope says of them).
+  final _files = <String, SealedFiles>{};
+
+  /// Messages with files the API refused, by the nonce the person sent each with: they go again only on the person's
+  /// Retry, as a refusal of their files wouldn't change, where every flush would send them whole (task 18's review,
+  /// I3).
+  final _refusedFiles = <String>{};
+
+  /// Each conversation's flushes, one after the other («Los pendientes van primero y en orden»), outside the turn.
+  final _lanes = <String, Future<void>>{};
+
+  /// Each message's upload, by the nonce the person sent it with, while a send or a flush delivers it; a cancelled one
+  /// until its Dismiss, so no later flush sends it meanwhile (task 19's review, M4).
+  final _uploads = <String, _Upload>{};
+
   CoreHost get _host => _engine.host;
   duvet.E2eApi get _api => _engine.api;
 
+  /// Whether this run holds the sealed bytes of the files of the person's message [nonce]: one that waits from before
+  /// the app started again holds none, and can only be dismissed.
+  bool holdsFiles(String nonce) => _files.containsKey(firstOf(nonce));
+
   /// The person's message, sent after what waits in its conversation: the API's message, or null when it was sent
-  /// already. What fails leaves it waiting, with its bytes, for the person's Retry or Dismiss.
-  Future<duvet.DirectMessage?> send(Outgoing out) async {
+  /// already. What fails leaves it waiting, with its bytes, for the person's Retry or Dismiss. Its files are sealed
+  /// once, as it's first made; [onProgress] follows its request's upload, and [cancel] stops it: the send then fails at
+  /// once, also while an older message's upload goes on in its lane.
+  Future<duvet.DirectMessage?> send(
+    Outgoing out, {
+    void Function(int sent, int total)? onProgress,
+    Future<void>? cancel,
+  }) async {
     final id = out.conversationId;
     // Made again, it went under its new nonce, as its answer or its copy said: it was sent.
     if (_went.containsKey(out.nonce)) return null;
-    // A message made again waits under another nonce, which its record knows by the person's.
-    final nonce = _current(out.nonce);
-    await _groups.current(id);
-    final rows = await pendingRows(_host, id);
-    final waiting = rows.any((row) => row.nonce == nonce);
-    // Past them, the oldest would be out of the engine's sight (M5 of the desktop's review). One under the page: a
-    // message made again has two rows for a moment, its new bytes made before its old ones go, and the older must stay
-    // in sight to be dropped (N2 of task 17's re-review).
-    if (!waiting && nonce == out.nonce && rows.length >= _pendingMost - 1) throw const TooManyWaiting();
-    // What goes with it in the clear, kept once it's to be sent (M6 of task 17's review: after the refusals).
-    if (nonce == out.nonce && !_record().containsKey(nonce)) await _keep(nonce, _Clear.of(out));
-    if (!waiting) {
+    final waits = await _turn(() async {
+      // A message made again waits under another nonce, which its record knows by the person's.
+      final nonce = _current(out.nonce);
+      await _groups.current(id);
+      final rows = await pendingRows(_host, id);
+      final waiting = rows.any((row) => row.nonce == nonce);
+      // Past them, the oldest would be out of the engine's sight (M5 of the desktop's review). One under the page: a
+      // message made again has two rows for a moment, its new bytes made before its old ones go, and the older must
+      // stay in sight to be dropped (N2 of task 17's re-review).
+      if (!waiting && nonce == out.nonce && rows.length >= _pendingMost - 1) throw const TooManyWaiting();
+      // What goes with it in the clear, kept once it's to be sent (M6 of task 17's review: after the refusals).
+      if (nonce == out.nonce && !_record().containsKey(nonce)) await _keep(nonce, _Clear.of(out));
+      if (waiting) return true;
+      final sealed = out.files.isEmpty ? null : await SealedFiles.of(_host, out.files);
       try {
-        await _encrypt(id, nonce, out.text);
+        await _encryptMade(id, nonce, out.text, sealed);
       } on CoreError catch (error) {
         // Its copy came back from the queue: it went.
         if (error.code != 'exists') rethrow;
@@ -280,18 +373,58 @@ class Sends {
           if ((await _bound(id))[nonce] case final message?) _went[first] = (nonce: nonce, message: message);
         }
         await _forget(nonce);
-        return null;
+        return false;
       }
-    }
-    return _flush(id, wanted: nonce);
+      if (sealed != null) _files[nonce] = sealed;
+      return true;
+    });
+    if (!waits) return null;
+    return _personal(id, firstOf(out.nonce), _Upload(onProgress, cancel));
   }
 
   /// The person's Retry of a message that waits on this device, as the record keeps what goes with it: the API's
   /// message, or null when none waits under [nonce] (sent, or dismissed).
   Future<duvet.DirectMessage?> resend(String conversationId, String nonce) async {
     if (_went.containsKey(nonce)) return null;
-    await _groups.current(conversationId);
-    return _flush(conversationId, wanted: _current(nonce));
+    await _turn(() => _groups.current(conversationId));
+    return _personal(conversationId, firstOf(nonce), _Upload(null, null));
+  }
+
+  /// The person's own send or Retry of their message [first], in its conversation's lane: a refusal of its files kept
+  /// it from going with the others, not from this.
+  Future<duvet.DirectMessage?> _personal(String id, String first, _Upload upload) {
+    _refusedFiles.remove(first);
+    _uploads[first] = upload;
+    final run = _inLane(id, () => _flush(id, wantedFirst: first, upload: upload));
+    unawaited(run.then<void>((_) => _letGo(first, upload), onError: (Object _) => _letGo(first, upload)));
+    return _untilCancelled(run, upload.cancel);
+  }
+
+  /// A message's upload once its delivery or its send ended: a cancelled one stays for its Dismiss.
+  void _letGo(String first, _Upload upload) {
+    if (identical(_uploads[first], upload) && !upload.cancelled) _uploads.remove(first);
+  }
+
+  /// The person's Dismiss of their message [nonce] stops its request, if one is out, and waits for it to settle,
+  /// outside the turn: a message the API took first is bound here, and the Dismiss gives its ID (task 19's review, M4).
+  Future<void> settle(String nonce) async {
+    final upload = _uploads[firstOf(nonce)];
+    if (upload == null) return;
+    upload.abort();
+    await upload.settled;
+  }
+
+  /// Work in the conversation's lane, after what's already there: a failure there never stops what comes after.
+  Future<T> _inLane<T>(String id, Future<T> Function() work) {
+    final run = (_lanes[id] ?? Future<void>.value()).then((_) => work());
+    final tail = run.then<void>((_) {}, onError: (Object _) {});
+    _lanes[id] = tail;
+    unawaited(
+      tail.then((_) {
+        if (identical(_lanes[id], tail)) _lanes.remove(id);
+      }),
+    );
+    return run;
   }
 
   /// The nonce the message the person sent under [nonce] waits under now, or went under: another once it was made
@@ -346,6 +479,9 @@ class Sends {
       await _drop(rowNonce);
     }
     await _prune(conversationId, [...rows, ...older]);
+    _files.remove(nonce);
+    _refusedFiles.remove(nonce);
+    _uploads.remove(nonce);
     final went = _went.remove(nonce);
     return its.isEmpty ? went?.message : null;
   }
@@ -374,16 +510,18 @@ class Sends {
     await _forget(nonce);
   }
 
-  /// At the start and at each READY, the queues applied: what waits, in each conversation, and the changes.
+  /// At the start and at each READY, the queues applied: what waits, in each conversation, and the changes. The
+  /// messages go in their conversations' lanes, which this, in the engine's turn, doesn't wait for.
   Future<void> resendAll() async {
     for (final id in {for (final clear in _record().values) clear.conversationId}) {
       // The pause holds its conversation's messages until its Retry-After, which a READY doesn't cut short.
       if (_paused.containsKey(id)) continue;
-      try {
-        await _flush(id);
-      } catch (error) {
-        debugPrint('e2e: what waits to be sent waits again: $error');
-      }
+      unawaited(
+        _inLane(
+          id,
+          () => _flush(id),
+        ).then<void>((_) {}, onError: (Object error) => debugPrint('e2e: what waits to be sent waits again: $error')),
+      );
     }
     // The changes a restart left, a message's all at once and in their order (those this run made are queued already):
     // made again, a deletion on its erased row, an edit from the row's text, which is its. Its first goes below.
@@ -431,6 +569,7 @@ class Sends {
     final change = _Change(conversationId, messageId, text);
     change.ciphertext = await _make(change);
     _changed(conversationId);
+    if (text == null) _deleted(conversationId, [messageId]);
     await _queueChange(change);
   }
 
@@ -454,24 +593,32 @@ class Sends {
     }
     _changes.clear();
     _paused.clear();
+    _files.clear();
+    _refusedFiles.clear();
+    _lanes.clear();
+    _uploads.clear();
   }
 
-  /// What waits in the conversation, in the person's order ([wanted]: the person's, whose message this gives). An
-  /// older one the API or the core refused stays, for the person's Retry or Dismiss, and the rest go on; one without an
-  /// answer stops them all, as does an update. Once a message's bytes no member could open any more, it and each after
-  /// it are made again together, before any of them goes (I3 of task 17's review), and the flush goes on from it.
-  Future<duvet.DirectMessage?> _flush(String id, {String? wanted}) async {
-    final wantedFirst = wanted == null ? null : firstOf(wanted);
-    final waiting = await _waiting(id);
-    // A message's old bytes beside new ones a remake made, which carry it, go unsent (I2 of task 17's review).
-    for (final row in waiting.older) {
-      await _drop(row.nonce!);
-    }
-    await _prune(id, waiting.rows);
+  /// What waits in the conversation, in the person's order ([wantedFirst]: the nonce the person sent theirs with, whose
+  /// message this gives, its upload followed by [upload]). An older one the API or the core refused stays, for the
+  /// person's Retry or Dismiss, and the rest go on; one without an answer stops them all, as does an update. Once a
+  /// message's bytes no member could open any more, it and each after it are made again together, before any of them
+  /// goes (I3 of task 17's review), and the flush goes on from it. One with files whose sealed bytes this run no longer
+  /// has waits for its Dismiss, and one with files the API refused for the person's Retry. It runs in its
+  /// conversation's lane, each of the core's calls in the turn.
+  Future<duvet.DirectMessage?> _flush(String id, {String? wantedFirst, _Upload? upload}) async {
+    var rows = await _turn(() async {
+      final waiting = await _waiting(id);
+      // A message's old bytes beside new ones a remake made, which carry it, go unsent (I2 of task 17's review).
+      for (final row in waiting.older) {
+        await _drop(row.nonce!);
+      }
+      await _prune(id, waiting.rows);
+      return waiting.rows;
+    });
     final done = <String>{};
     final remade = <String>{};
     duvet.DirectMessage? message;
-    var rows = waiting.rows;
     for (var at = 0; at < rows.length; at++) {
       final row = rows[at];
       final nonce = row.nonce;
@@ -479,11 +626,24 @@ class Sends {
       final first = firstOf(nonce);
       if (!done.add(first)) continue;
       final clear = _record()[nonce];
+      final wanted = first == wantedFirst;
       // A message with nothing in it, and nothing kept of what went with it, waits for the person's Dismiss.
-      if (first != wantedFirst && clear == null && row.text == null) continue;
+      if (!wanted && clear == null && row.text == null && row.attachments.isEmpty) continue;
+      // One the API refused with its files goes again only on the person's Retry (task 18's review, I3).
+      if (!wanted && _refusedFiles.contains(first)) continue;
+      // Its own upload, whichever flush sends it; one whose Cancel came waits for its Dismiss (task 19's review, M4).
+      final own = wanted ? upload : _uploads[first];
+      if (!wanted && (own?.cancelled ?? false)) continue;
+      final files = row.attachments.isEmpty ? null : _files[first];
+      if (row.attachments.isNotEmpty && files == null) {
+        if (wanted) throw const FilesGone();
+        continue;
+      }
+      // Sent again by this flush: an upload of its own, which a Dismiss stops.
+      final delivery = own ?? (_uploads[first] = _Upload(null, null));
       try {
-        final sent = await _deliver(id, nonce, row.text, clear ?? _Clear(id));
-        if (first == wantedFirst) message = sent;
+        final sent = await _deliver(id, row, clear ?? _Clear(id), files, delivery);
+        if (wanted) message = sent;
       } on _Stale {
         // Made again in this flush and stale again: it waits, and so does every message after it, so none goes before
         // it (choice 2 of task 17's re-review). The person's, unless it went already, says it didn't.
@@ -499,31 +659,76 @@ class Sends {
         final firsts = [for (final next in tail) firstOf(next.nonce!)];
         remade.addAll(firsts);
         done.removeAll(firsts);
-        await _remake(id, tail);
+        final now = await _turn(() async {
+          // What a Dismiss let go meanwhile isn't made again.
+          final waiting = {for (final other in (await _waiting(id)).rows) other.nonce};
+          await _remake(id, [
+            for (final next in tail)
+              if (waiting.contains(next.nonce)) next,
+          ]);
+          return (await _waiting(id)).rows;
+        });
         rows = [
           ...rows.sublist(0, at),
-          for (final next in (await _waiting(id)).rows)
+          for (final next in now)
             if (next.nonce case final later? when !done.contains(firstOf(later))) next,
         ];
         at--;
       } catch (error) {
-        if (first == wantedFirst || error is duvet.DuvetUpdateRequiredException || _unanswered(error)) rethrow;
+        // Stopped by its Cancel or a Dismiss: it went nowhere, and the rest go on.
+        if (!wanted && delivery.cancelled) continue;
+        final passing = error is duvet.DuvetUpdateRequiredException || _unanswered(error);
+        // Its files' refusal won't change: it waits for the person's Retry.
+        if (files != null && !passing && error is duvet.DuvetApiException) _refusedFiles.add(first);
+        if (wanted || passing) rethrow;
         debugPrint('e2e: a message that waits was refused: it stays, to send again or dismiss. $error');
+      } finally {
+        if (own == null) _letGo(first, delivery);
       }
     }
     return message;
   }
 
-  /// One message that waits: its bytes as the core made them, its request, and `sent` once the API took it. Bytes no
-  /// member could open any more throw [_Stale].
-  Future<duvet.DirectMessage> _deliver(String id, String nonce, String? text, _Clear clear) async {
-    final String ciphertext;
+  /// One message that waits: its bytes as the core made them and `sent` once the API took it, in the turn, and its
+  /// request with its sealed files between them, outside it. Bytes no member could open any more throw [_Stale]. Null
+  /// when it no longer waits as its turn comes: a Dismiss let it go, or the queue brought its copy back.
+  Future<duvet.DirectMessage?> _deliver(
+    String id,
+    ShownMessage row,
+    _Clear clear,
+    SealedFiles? files,
+    _Upload upload,
+  ) async {
+    final settled = Completer<void>();
+    upload.settled = settled.future;
     try {
-      ciphertext = await _encrypt(id, nonce, text);
-    } catch (error) {
-      if (_staleBytes(error)) throw const _Stale();
-      rethrow;
+      return await _delivered(id, row, clear, files, upload);
+    } finally {
+      settled.complete();
     }
+  }
+
+  Future<duvet.DirectMessage?> _delivered(
+    String id,
+    ShownMessage row,
+    _Clear clear,
+    SealedFiles? files,
+    _Upload upload,
+  ) async {
+    final nonce = row.nonce!;
+    final ciphertext = await _turn(() async {
+      if (!(await pendingRows(_host, id)).any((other) => other.nonce == nonce)) return null;
+      try {
+        return await _encrypt(id, nonce, row.text, row.attachments);
+      } catch (error) {
+        if (_staleBytes(error)) throw const _Stale();
+        rethrow;
+      }
+    });
+    if (ciphertext == null) return null;
+    // Its Cancel, or a Dismiss, came while older messages went: it isn't sent.
+    if (upload.cancelled) throw const UploadCancelled();
+    final text = row.text;
     final duvet.DirectMessage message;
     try {
       message = await _api.sendMessage(
@@ -541,29 +746,43 @@ class Sends {
             null => null,
           },
           stickerAttachmentId: clear.stickerAttachmentId,
+          attachmentIds: files?.ids ?? const [],
         ),
+        files: files?.parts ?? const [],
+        onProgress: upload.onProgress,
+        abortTrigger: upload.aborted,
       );
     } on duvet.DuvetStaleMessageException {
       // The core learns the epochs the API is at first, so the new bytes are of them.
-      await _groups.sync(id, read: true);
+      await _turn(() => _groups.sync(id, read: true));
       throw const _Stale();
     } on duvet.DuvetPausedException catch (error) {
       _afterPause(id, error.retryAfter);
       rethrow;
     }
-    await _host.handle<Object?>({
-      'cmd': 'sent',
-      'conversation_id': id,
-      'nonce': nonce,
-      'message_id': message.id,
-      'seq': message.seq,
-      'reply_to': ?clear.replyTo,
+    await _turn(() async {
+      try {
+        await _host.handle<Object?>({
+          'cmd': 'sent',
+          'conversation_id': id,
+          'nonce': nonce,
+          'message_id': message.id,
+          'seq': message.seq,
+          'reply_to': ?clear.replyTo,
+        });
+      } on CoreError catch (error) {
+        // Dismissed while its request was out, and the API took it all the same: it went.
+        if (error.code != 'not_found') rethrow;
+      }
+      await _forget(nonce);
+      final first = clear.first ?? nonce;
+      _files.remove(first);
+      _refusedFiles.remove(first);
+      _uploads.remove(first);
+      if (first != nonce) _went[first] = (nonce: nonce, message: message.id);
+      _changed(id);
+      _sent(id, first, message);
     });
-    await _forget(nonce);
-    final first = clear.first ?? nonce;
-    if (first != nonce) _went[first] = (nonce: nonce, message: message.id);
-    _changed(id);
-    _sent(id, first, message);
     return message;
   }
 
@@ -576,12 +795,13 @@ class Sends {
       final old = row.nonce!;
       final clear = _record()[old];
       // One with nothing in it, and nothing kept of what went with it, stays for the person's Dismiss.
-      if (clear == null && row.text == null) continue;
+      if (clear == null && row.text == null && row.attachments.isEmpty) continue;
       final kept = (clear ?? _Clear(id)).again(old);
       final fresh = uuidv4();
       await _keep(fresh, kept);
       try {
-        await _encrypt(id, fresh, row.text);
+        // The same files, under the same IDs: the API takes them again (task 18's review, choice 7).
+        await _encrypt(id, fresh, row.text, row.attachments);
       } catch (error) {
         await _forget(fresh);
         rethrow;
@@ -644,9 +864,23 @@ class Sends {
     };
   }
 
-  /// The core's encrypt: the message kept as pending, or, for a nonce it has, its bytes again. What keeps this device
-  /// from sending there is dealt with once: users to observe, leaves and removals to commit, a group to join or make.
-  Future<String> _encrypt(String id, String nonce, String? text) async {
+  /// A new message's encrypt, its files' envelope as [sealed] made it: while the core finds the message too large, the
+  /// largest thumbnail inside it goes apart, a file of its own, and it's encrypted again under the same nonce (the core
+  /// keeps nothing of a too-large encrypt).
+  Future<String> _encryptMade(String id, String nonce, String? text, SealedFiles? sealed) async {
+    while (true) {
+      try {
+        return await _encrypt(id, nonce, text, sealed?.attachments ?? const []);
+      } on CoreError catch (error) {
+        if (error.code != 'too_large' || sealed == null || !await sealed.apart()) rethrow;
+      }
+    }
+  }
+
+  /// The core's encrypt: the message kept as pending, or, for a nonce it has, its bytes again, which takes the same
+  /// envelope back, its files' row as the core keeps it ([attachments]). What keeps this device from sending there is
+  /// dealt with once: users to observe, leaves and removals to commit, a group to join or make.
+  Future<String> _encrypt(String id, String nonce, String? text, List<Map<String, Object?>> attachments) async {
     Future<String> run() async =>
         (await withIdentities(
               _engine,
@@ -654,7 +888,7 @@ class Sends {
                 'cmd': 'encrypt',
                 'conversation_id': id,
                 'nonce': nonce,
-                'envelope': messageEnvelope(text ?? '', const []),
+                'envelope': messageEnvelope(text ?? '', attachments),
               }),
             ))['ciphertext']!
             as String;
@@ -681,9 +915,12 @@ class Sends {
     if (_paused.containsKey(id)) return;
     _paused[id] = _engine.clock.later(wait, () {
       _paused.remove(id);
-      _soon(() async {
-        await _flush(id);
-      });
+      unawaited(
+        _inLane(id, () => _flush(id)).then<void>(
+          (_) {},
+          onError: (Object error) => debugPrint("e2e: what waited for the pause's end waits again: $error"),
+        ),
+      );
     });
   }
 

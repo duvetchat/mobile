@@ -1,6 +1,7 @@
 /// What the UI shows, independent of the Duvet client's wire models.
 library;
 
+import '../e2e/files.dart' show ShownFile;
 import 'admin.dart' show RoleColors;
 import 'bots.dart';
 
@@ -185,6 +186,14 @@ class ChatMessage {
   /// and Dismiss.
   final bool pending;
 
+  /// A [pending] message with files whose sealed bytes went with the app (it started again): it can only be dismissed,
+  /// which its row says at once.
+  final bool filesGone;
+
+  /// An encrypted conversation's message's files as the API lists them, by ID: the signed URL of each one's sealed
+  /// bytes, which [attachments] draws from once this device's database says what they are (lib/e2e/files.dart).
+  final Map<String, String> sealedLinks;
+
   /// Who shared it with this device, by name, when a shared history brought it.
   final String? sharedBy;
 
@@ -229,6 +238,8 @@ class ChatMessage {
     this.interaction,
     this.waiting = false,
     this.pending = false,
+    this.filesGone = false,
+    this.sealedLinks = const {},
     this.sharedBy,
     this.seq,
     this.loading = false,
@@ -258,6 +269,8 @@ class ChatMessage {
     String? sharedBy,
     int? seq,
     bool? loading,
+    List<MessageAttachment>? attachments,
+    bool? isVoice,
   }) => ChatMessage(
     id: id ?? this.id,
     authorId: authorId,
@@ -269,13 +282,13 @@ class ChatMessage {
     nonce: nonce ?? this.nonce,
     isNotice: isNotice,
     call: call,
-    attachments: attachments,
+    attachments: attachments ?? this.attachments,
     deletedAttachments: deletedAttachments,
     stickerUrl: stickerUrl,
     embeds: embeds,
     reply: reply ?? this.reply,
     reactions: reactions ?? this.reactions,
-    isVoice: isVoice,
+    isVoice: isVoice ?? this.isVoice,
     pinned: pinned ?? this.pinned,
     components: components,
     rawComponents: rawComponents,
@@ -288,6 +301,8 @@ class ChatMessage {
     interaction: interaction,
     waiting: waiting ?? this.waiting,
     pending: pending,
+    filesGone: filesGone,
+    sealedLinks: sealedLinks,
     sharedBy: sharedBy ?? this.sharedBy,
     seq: seq ?? this.seq,
     loading: loading ?? this.loading,
@@ -334,6 +349,8 @@ class ChatMessage {
           interaction: update.interaction ?? interaction,
           waiting: update.waiting,
           pending: pending,
+          filesGone: filesGone,
+          sealedLinks: sealedLinks,
           sharedBy: sharedBy,
           seq: seq,
           loading: update.loading,
@@ -381,6 +398,8 @@ class ChatMessage {
       interaction: interaction,
       waiting: waiting,
       pending: pending,
+      filesGone: filesGone,
+      sealedLinks: sealedLinks,
       sharedBy: sharedBy,
       seq: seq,
       loading: loading,
@@ -421,6 +440,8 @@ class ChatMessage {
       interaction: interaction,
       waiting: waiting,
       pending: pending,
+      filesGone: filesGone,
+      sealedLinks: sealedLinks,
       sharedBy: sharedBy,
       seq: seq,
       loading: loading,
@@ -586,6 +607,15 @@ class MessageAttachment {
   /// Still on this device: the message carrying it is being sent.
   final bool local;
 
+  /// An encrypted conversation's file, as its message's envelope says it on this device (lib/e2e/files.dart's
+  /// shownFile): drawn only from its decrypted copy, its [url] the API's signed one of its sealed bytes, or empty when
+  /// the message's API row doesn't list it. Its [filename] is its cleaned name and its [contentType] only its sender's
+  /// word, for the layout.
+  final ShownFile? sealed;
+
+  /// A [sealed] file's thumbnail of its own: the API's signed URL of its sealed bytes.
+  final String? thumbnailUrl;
+
   const MessageAttachment({
     required this.id,
     required this.filename,
@@ -595,6 +625,8 @@ class MessageAttachment {
     this.height,
     this.sizeBytes = 0,
     this.local = false,
+    this.sealed,
+    this.thumbnailUrl,
   });
 
   /// When its link stops working: the `exp` of a link the API signed (for 24
@@ -629,6 +661,8 @@ class MessageAttachment {
     height: height,
     sizeBytes: sizeBytes,
     local: local,
+    sealed: sealed,
+    thumbnailUrl: thumbnailUrl,
   );
 
   bool get isImage => contentType.startsWith('image/');

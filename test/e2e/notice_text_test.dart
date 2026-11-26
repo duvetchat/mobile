@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:typed_data';
 
 import 'package:duvet/data/models.dart';
 import 'package:duvet/e2e/content.dart';
@@ -67,6 +68,14 @@ class _SlowApplies implements CoreHost {
     if (command['cmd'] == 'apply') await _held?.future;
     return _core.handle<T>(command);
   }
+
+  @override
+  Future<Uint8List> sealFile(String key, String attachmentId, Uint8List plain, {void Function(int done)? progress}) =>
+      _core.sealFile(key, attachmentId, plain, progress: progress);
+
+  @override
+  Future<Uint8List> openFile(String key, String attachmentId, Uint8List sealed, {void Function(int done)? progress}) =>
+      _core.openFile(key, attachmentId, sealed, progress: progress);
 
   @override
   Future<Opened> open(String userId) => _core.open(userId);

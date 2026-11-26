@@ -11,11 +11,16 @@ import 'package:http/http.dart' as http;
 import '../e2e/bootstrap.dart' show phoneName;
 import '../e2e/client.dart';
 import '../e2e/content.dart' show drawnRows;
+import '../e2e/conventions.dart' show Drawn, drawnAs, sniffType;
+import '../e2e/decrypted_files.dart';
 import '../e2e/engine.dart';
+import '../e2e/files.dart';
 import '../e2e/host.dart';
 import '../e2e/notices.dart';
 import '../e2e/search.dart';
+import '../e2e/send.dart' show UploadCancelled;
 import '../e2e/store.dart';
+import '../e2e/thumbnails.dart';
 import 'links.dart' show duvetDomain;
 import 'cache.dart';
 import 'call_notices.dart';
@@ -93,7 +98,14 @@ ChatMessage withRow(
   // A row whose author isn't the one the API names is another's message: it waits (M4 of the desktop's review).
   if (row == null || row.status != MessageStatus.ok || row.userId != message.authorId) {
     final loading = row == null && notApplied(message.seq, applied);
-    return message.copyWith(content: '', waiting: !loading, loading: loading, reply: reply);
+    return message.copyWith(
+      content: '',
+      waiting: !loading,
+      loading: loading,
+      reply: reply,
+      attachments: const [],
+      isVoice: false,
+    );
   }
   return message.copyWith(
     content: row.text ?? '',
@@ -105,8 +117,34 @@ ChatMessage withRow(
       null => null,
     },
     reply: reply,
+    attachments: sealedAttachments(row, message.sealedLinks),
+    // A voice note by its convention (Ruling 11): no text, one audio file with its waveform and duration.
+    isVoice: drawnAs(text: row.text, attachments: row.attachments, sticker: false) == Drawn.voiceNote,
   );
 }
+
+/// The files of an encrypted conversation's message as this device's own database holds them ([row]): each as its
+/// envelope says it, checked (shownFile), at the API's signed URL of its sealed bytes by its ID ([links], its message's
+/// API row's), or at none when that row doesn't list it, which leaves it unavailable for this message alone (task 18's
+/// review, I1).
+List<MessageAttachment> sealedAttachments(ShownMessage row, Map<String, String> links) => [
+  for (final raw in row.attachments)
+    if (shownFile(raw) case final file?)
+      MessageAttachment(
+        id: file.id,
+        filename: file.name,
+        contentType: file.said,
+        url: links[file.id] ?? '',
+        width: file.width,
+        height: file.height,
+        sizeBytes: file.size,
+        sealed: file,
+        thumbnailUrl: switch (file.thumbnailRef) {
+          final ref? => links[ref.id],
+          null => null,
+        },
+      ),
+];
 
 /// An avatar's or icon's URL on [router]'s API: the API names an attachment by its ID, served outside `/api`, as the
 /// desktop app's `getAvatarURL` does, and a webhook's avatar may be a URL. Null for none, or for anything else.
@@ -1107,6 +1145,11 @@ class DuvetRepository implements ChatRepository {
       await _engineStopped.timeout(const Duration(seconds: 3), onTimeout: () {});
       // Signed out, or another account, meanwhile.
       if (!identical(session, _encryptionFor)) return;
+      // What a run before this one decrypted goes, as this engine with a screen starts (Ruling 19).
+      await DecryptedFiles.instance.emptyAtStart().catchError(
+        (Object error) => debugPrint("e2e: the decrypted files of before weren't emptied: $error"),
+      );
+      if (!identical(session, _encryptionFor)) return;
       final challenge = _loginChallenge;
       _loginChallenge = null;
       final engine = _engine = E2EEngine(
@@ -1122,8 +1165,11 @@ class DuvetRepository implements ChatRepository {
       );
       engine.state.addListener(_showEncryption);
       engine.conversations.addListener(_showConversations);
+      // Only this engine, the app's with a screen, opens a conversation's files (Review Focus 2).
+      DecryptedFiles.instance.useOpener(_FileOpener(this, engine));
       _engineHeard.addAll([
         engine.messagesChanged.listen(_contentChanged),
+        engine.messagesDeleted.listen((deleted) => deleted.ids.forEach(DecryptedFiles.instance.forgetMessage)),
         engine.sent.listen(_sentElsewhere),
         engine.changesRefused.listen(
           (refused) => _changesRefused.add(
@@ -1166,6 +1212,8 @@ class DuvetRepository implements ChatRepository {
     }
     _engineHeard.clear();
     _beforeJoining.clear();
+    // Every decrypted file goes with the session's engine.
+    DecryptedFiles.instance.useOpener(null);
     if (engine == null) return;
     engine.state.removeListener(_showEncryption);
     engine.conversations.removeListener(_showConversations);
@@ -1310,6 +1358,21 @@ class DuvetRepository implements ChatRepository {
             content: row.text ?? '',
             createdAt: DateTime.fromMillisecondsSinceEpoch(row.sentAt),
             nonce: nonce,
+            // Its files by their names only: they're on their way, or (the app started again) gone for good, which
+            // its row says at once, with Dismiss alone (task 18's review, M5).
+            attachments: [
+              for (final (i, raw) in row.attachments.indexed)
+                if (shownFile(raw) case final file?)
+                  MessageAttachment(
+                    id: 'pending:$nonce:$i',
+                    filename: file.name,
+                    contentType: 'application/octet-stream',
+                    url: '',
+                    sizeBytes: file.size,
+                    local: true,
+                  ),
+            ],
+            filesGone: row.attachments.isNotEmpty && !engine.holdsFiles(nonce),
             stickerUrl: stickerAttachmentId == null ? null : attachmentUrl(stickerAttachmentId),
             reply: switch (replyTo) {
               final id? => switch (page.where((m) => m.id == id).firstOrNull) {
@@ -1329,8 +1392,10 @@ class DuvetRepository implements ChatRepository {
     ];
   }
 
-  /// The user's message to an encrypted conversation, through the engine: encrypted, sent after what waits there, and
-  /// drawn from this device's database.
+  /// The user's message to an encrypted conversation, through the engine: encrypted, its [files] sealed, sent after
+  /// what waits there, and drawn from this device's database. A file past its cap once sealed, or files past the
+  /// request's 32 MiB together, aren't sent ([UploadTooLarge]); [onProgress] follows the upload, and completing
+  /// [cancel] stops it and lets the message go («Cancelar una subida es discard»).
   Future<ChatMessage> _sendEncrypted(
     String conversationId,
     String content,
@@ -1338,12 +1403,22 @@ class DuvetRepository implements ChatRepository {
     required Sticker? sticker,
     required String? replyTo,
     required bool? mentionReplied,
-    required bool withFiles,
+    List<FileToSeal> files = const [],
+    void Function(int sent, int total)? onProgress,
+    Future<void>? cancel,
   }) async {
-    // shortcut: a conversation's files go with encrypted attachments (Task 19); until then a message with some isn't
-    // sent, and waits for its Dismiss.
-    if (withFiles) throw ActionFailed(Notice.filesWait.text);
     final engine = _engine ?? (throw ActionFailed(Notice.notReady.text));
+    if (files.isNotEmpty) {
+      final sizes = [for (final f in files) f.bytes.length];
+      if (tooLargeToSend(sizes, fileLimit: await _sealedLimit())) throw const UploadTooLarge();
+    }
+    cancel?.then((_) async {
+      try {
+        await engine.discardMessage(conversationId, nonce);
+      } catch (error) {
+        debugPrint("e2e: a cancelled upload's message wasn't let go: $error");
+      }
+    });
     return _sentMessage(
       conversationId,
       nonce,
@@ -1355,7 +1430,10 @@ class DuvetRepository implements ChatRepository {
           replyTo: replyTo,
           mentionReplied: mentionReplied,
           stickerAttachmentId: sticker?.attachmentId,
+          files: files,
         ),
+        onProgress: onProgress,
+        cancel: cancel,
       ),
     );
   }
@@ -1392,6 +1470,10 @@ class DuvetRepository implements ChatRepository {
       rethrow;
     } on TooManyWaiting {
       throw ActionFailed(Notice.tooManyWaiting.text);
+    } on FilesGone {
+      throw ActionFailed(Notice.filesGone.text);
+    } on UploadCancelled {
+      rethrow;
     } on StateError {
       // The engine isn't ready here, or the conversation's group can't take a message now: nothing was kept, and the
       // words are the state bar's (M8 of task 17's review).
@@ -1974,6 +2056,8 @@ class DuvetRepository implements ChatRepository {
         if (data.conversationId case final id?) _updated(id, _directMessage(data));
       case duvet.DMMessageDeletedEvent(:final data):
         _dropMentionNotice(data.id);
+        // Its files' decrypted copies go with it (task 18's review, M4).
+        DecryptedFiles.instance.forgetMessage(data.id);
         _recents.deleted(data.conversationId, data.id);
         _latestDeleted(data.conversationId, data.id);
         _messageEvents.add((data.conversationId, MessageDeleted(data.id)));
@@ -3296,6 +3380,24 @@ class DuvetRepository implements ChatRepository {
   /// storage's own refusal) mustn't spend the API's 64 a minute.
   static const resignCooldown = Duration(minutes: 1);
 
+  /// The client a conversation's sealed files come down with: none of the session's headers ([downloadSigned]).
+  http.Client? _downloads;
+
+  /// A sealed file's bytes, [most] of them at most, from its signed URL: renewed first when it's about to expire, and
+  /// once more when the API refuses it as expired (403), as a picture's is.
+  Future<Uint8List> _downloadSealed(String id, String url, int most, void Function(int received)? progress) async {
+    final file = MessageAttachment(id: id, filename: '', contentType: '', url: url);
+    var link = await attachmentLink(file);
+    for (var renewed = false; ; renewed = true) {
+      try {
+        return await downloadSigned(_downloads ??= _httpClient(), Uri.parse(link), most, progress: progress);
+      } on duvet.DuvetApiException catch (error) {
+        if (error.statusCode != 403 || renewed) rethrow;
+        link = await attachmentLink(file.withUrl(link), refused: true);
+      }
+    }
+  }
+
   @override
   Future<String> attachmentLink(MessageAttachment attachment, {bool refused = false}) async {
     final own = attachment.linkExpires;
@@ -3394,6 +3496,20 @@ class DuvetRepository implements ChatRepository {
     final links = <Directory>[];
     void progress(int sent, int total) => onProgress?.call(total == 0 ? 0 : sent / total);
     try {
+      // An encrypted conversation's files go sealed, through the engine («Adjuntos»).
+      if (target case ConversationTarget(:final conversationId)) {
+        return await _sendEncrypted(
+          conversationId,
+          content,
+          nonce,
+          sticker: sticker,
+          replyTo: replyTo,
+          mentionReplied: mentionRepliedUser,
+          files: [for (final f in files) await _toSeal(f)],
+          onProgress: files.isEmpty ? null : progress,
+          cancel: files.isEmpty ? null : cancel,
+        );
+      }
       final upload = files.isEmpty ? null : [for (final f in files) await _named(f, links)];
       return await _sendTo(target, content, nonce, upload, sticker, replyTo, mentionRepliedUser, progress, cancel);
     } on duvet.DuvetApiException catch (e) {
@@ -3466,9 +3582,38 @@ class DuvetRepository implements ChatRepository {
         sticker: sticker,
         replyTo: replyTo,
         mentionReplied: mentionRepliedUser,
-        withFiles: upload != null,
       ),
     };
+  }
+
+  /// A file picked to send in an encrypted conversation, as the engine seals it: its bytes, its name as picked (a
+  /// spoiler's prefix with it), and what the app can tell of a picture (its size and thumbnail, thumbnails.dart).
+  static Future<FileToSeal> _toSeal(OutgoingFile f) async {
+    final bytes = await File(f.path).readAsBytes();
+    final type = sniffType(bytes);
+    final picture = type.startsWith('image/') ? await pictureFacts(bytes) : null;
+    // A video's size and length go too, as the desktop's do (task 19's review, M11).
+    final video = type.startsWith('video/') ? await videoFactsOf(f.path) : null;
+    return FileToSeal(
+      bytes: bytes,
+      name: f.name,
+      width: picture?.width ?? video?.width ?? f.width,
+      height: picture?.height ?? video?.height ?? f.height,
+      durationMs: video?.durationMs,
+      thumbnail: picture?.thumbnail,
+    );
+  }
+
+  /// The per-file cap of where an encrypted conversation's files go: the active bucket's, else the storage status'
+  /// (task 18's review, Missing 1); null when neither is known, and the API's 413 decides.
+  Future<int?> _sealedLimit() async {
+    try {
+      final buckets = await _call((api) => api.getMyBuckets());
+      if (buckets.where((b) => b.isActive).firstOrNull?.uploadLimitBytes case final limit? when limit > 0) return limit;
+    } catch (error) {
+      debugPrint("e2e: the active bucket's limit wasn't read: $error");
+    }
+    return uploadLimit();
   }
 
   @override
@@ -3477,16 +3622,35 @@ class DuvetRepository implements ChatRepository {
     List<int> audio, {
     required String nonce,
     String format = 'ogg',
+    List<int>? waveform,
+    Duration? length,
   }) async {
     try {
       return await switch (target) {
         RoomTarget(:final roomId) => _call(
           (api) => api.sendVoiceNote(roomId, audio, nonce: nonce, format: format),
         ).then(_roomMessage),
-        // shortcut: a conversation's voice notes go with encrypted attachments (Task 19); until then none is sent.
-        ConversationTarget() => throw ActionFailed(Notice.filesWait.text),
+        // An encrypted conversation's voice note, by its convention (Ruling 11): no text, one audio file sealed with
+        // its waveform and its duration.
+        ConversationTarget(:final conversationId) => _sendEncrypted(
+          conversationId,
+          '',
+          nonce,
+          sticker: null,
+          replyTo: null,
+          mentionReplied: null,
+          files: [
+            FileToSeal(
+              bytes: Uint8List.fromList(audio),
+              name: 'voice-note.$format',
+              durationMs: length?.inMilliseconds,
+              waveform: waveform == null ? null : Uint8List.fromList(waveform),
+            ),
+          ],
+        ),
       };
     } on duvet.DuvetApiException catch (e) {
+      if (e.statusCode == 413) throw const UploadTooLarge();
       if (_refusal(e) case final reason?) throw ActionFailed(reason);
       rethrow;
     }
@@ -3610,8 +3774,9 @@ class DuvetRepository implements ChatRepository {
     return (hits: page.found, total: page.total, next: next == null ? null : q.from(offset: next));
   }
 
-  /// A row of this device's as a result draws it: the message, its text the row's, nothing asked of the API (M8 of
-  /// the desktop's review). None for one it can't open (the person's own still being sent has no ID yet), one of a
+  /// A row of this device's as a result draws it: the message, its text and its files the row's (each as its envelope
+  /// says it, at no URL, as the result says only what they are and its chat loads them), nothing asked of the API (M8
+  /// of the desktop's review). None for one it can't open (the person's own still being sent has no ID yet), one of a
   /// conversation the app doesn't list (a group the person left), or a sticker's empty envelope whose sticker only the
   /// API's row says: drawn as that sticker when the app holds the row (it came live), left out otherwise (M5).
   SearchHit? _deviceHit(ShownMessage row) {
@@ -3636,6 +3801,9 @@ class DuvetRepository implements ChatRepository {
         createdAt: DateTime.fromMillisecondsSinceEpoch(row.sentAt).toLocal(),
         edited: row.editedAt != null,
         stickerUrl: sticker,
+        attachments: sealedAttachments(row, const {}),
+        // A voice note by its convention (Ruling 11), as the chat draws it.
+        isVoice: drawnAs(text: row.text, attachments: row.attachments, sticker: false) == Drawn.voiceNote,
         seq: row.seq,
         sharedBy: switch (row.sharedBy) {
           final user? => _sharerName(user),
@@ -4263,18 +4431,45 @@ class DuvetRepository implements ChatRepository {
   }
 
   @override
-  Future<List<MyFile>> myFiles() async => [
-    for (final a in await _call((api) => api.getMyAttachments()))
-      if (a.deletedAt == null && a.deleted != true)
-        MyFile(
-          id: a.id,
-          name: a.filename,
-          contentType: a.contentType,
-          sizeBytes: a.sizeBytes,
-          createdAt: a.createdAt.toLocal(),
-          url: attachmentUrl(a.id),
-        ),
-  ];
+  Future<List<MyFile>> myFiles() async {
+    final listed = [
+      for (final a in await _call((api) => api.getMyAttachments()))
+        if (a.deletedAt == null && a.deleted != true) a,
+    ];
+    // An encrypted file's name is only in its message, which this device may hold (Ruling 31): one pass of its
+    // database's search, else «Encrypted file». Nothing previews or downloads its sealed bytes.
+    var names = const <String, String>{};
+    final engine = _engine;
+    if (engine != null &&
+        engine.state.value.stage == EngineStage.ready &&
+        listed.any((a) => a.kind != duvet.AttachmentKind.file)) {
+      try {
+        names = await engine.fileNames();
+      } catch (error) {
+        debugPrint("e2e: the encrypted files' names weren't read from this device: $error");
+      }
+    }
+    return [
+      for (final a in listed)
+        a.kind == duvet.AttachmentKind.file
+            ? MyFile(
+                id: a.id,
+                name: a.filename,
+                contentType: a.contentType,
+                sizeBytes: a.sizeBytes,
+                createdAt: a.createdAt.toLocal(),
+                url: attachmentUrl(a.id),
+              )
+            : MyFile(
+                id: a.id,
+                name: names[a.id] ?? Notice.fileEncrypted.text,
+                contentType: 'application/octet-stream',
+                sizeBytes: a.sizeBytes,
+                createdAt: a.createdAt.toLocal(),
+                url: '',
+              ),
+    ];
+  }
 
   @override
   Future<void> deleteMyFile(String id) => _call((api) => api.deleteMyAttachment(id));
@@ -5734,6 +5929,13 @@ class DuvetRepository implements ChatRepository {
     fromBot: m.user?.isBot ?? false,
     attachments: m.seq == null ? _attachments(m.attachments) : const [],
     deletedAttachments: m.seq == null ? _attachments(m.attachments, deleted: true) : const [],
+    // An encrypted message's files are sealed: only this device's database says what they are ([withRow]).
+    sealedLinks: m.seq == null
+        ? const {}
+        : {
+            for (final a in m.attachments ?? const <duvet.Attachment>[])
+              if (a.deletedAt == null && a.deleted != true) a.id: _absolute(a.url, a.id),
+          },
     stickerUrl: m.stickerAttachmentId == null ? null : attachmentUrl(m.stickerAttachmentId!),
     reply: _reply(m.referencedMessage, null)?.withContent(''),
     reactions: _reactions(m.reactions),
@@ -5846,6 +6048,7 @@ class DuvetRepository implements ChatRepository {
   @override
   void dispose() {
     _renewalRetry?.cancel();
+    _downloads?.close();
     unawaited(_changesRefused.close());
     _closeSession();
     unawaited(_gatewayEvents.close());
@@ -5873,6 +6076,26 @@ class DuvetRepository implements ChatRepository {
     collapsedCategories.dispose();
     pinnedChats.dispose();
   }
+}
+
+/// How the app's engine opens a conversation's files for the folder of decrypted files (lib/e2e/decrypted_files.dart):
+/// each downloaded from its signed URL by the repository, opened by the engine's core, a file that didn't open counted
+/// (decision 40).
+class _FileOpener implements FileOpener {
+  _FileOpener(this._repository, this._engine);
+  final DuvetRepository _repository;
+  final E2EEngine _engine;
+
+  @override
+  Future<Uint8List> download(String id, String url, int most, void Function(int received)? progress) =>
+      _repository._downloadSealed(id, url, most, progress);
+
+  @override
+  Future<Uint8List> open(String key, String id, Uint8List sealed, void Function(int done)? progress) =>
+      _engine.openFile(key, id, sealed, progress: progress);
+
+  @override
+  void failed() => _engine.fileFailed();
 }
 
 /// [onProgress] as duvet_client's uploads report it: the bytes sent so far, and

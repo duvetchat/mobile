@@ -51,8 +51,10 @@ class TestApp {
 }
 
 /// [user]'s app on [fake], signed in and connected, its engine starting: [TestApp.ready] sets its device up. Its
-/// connection hands on only what [hears] lets through. [answer] takes a request before the fake does (null passes it
-/// on), as a Space's search, which the fake has none of; [host] stands between the engine and its core.
+/// connection hands on only what [hears] lets through, and [answers] answer routes the fake lacks, by `METHOD path`.
+/// [answer] takes a request before the fake does (null passes it on), as a Space's search, which the fake has none of;
+/// [host] stands between the engine and its core; [prepare] leaves in the app's folders what a run before this one
+/// left; [notifyAway] hears what the app hands the phone's notifications.
 Future<TestApp> appOn(
   FakeApi fake,
   String user, {
@@ -62,8 +64,12 @@ Future<TestApp> appOn(
   Future<http.Response?> Function(http.Request request)? answer,
   CoreHost Function(CoreGate core)? host,
   void Function(AwayNotice notice)? notifyAway,
+  void Function(Directory support)? prepare,
+  Map<String, Object?> answers = const {},
 }) async {
   final support = Directory.systemTemp.createTempSync('duvet-app-');
+  // What a run before this one left in the app's folders.
+  prepare?.call(support);
   const paths = MethodChannel('plugins.flutter.io/path_provider');
   final messenger = TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
   messenger.setMockMethodCallHandler(paths, (_) async => support.path);
@@ -83,7 +89,7 @@ Future<TestApp> appOn(
         'device_challenge': session.deviceChallenge,
       },
       ('GET', '/api/users/@me') => {'id': user, 'username': 'user', 'created_at': at, 'updated_at': at},
-      _ => null,
+      _ => answers['${request.method} ${request.url.path}'],
     };
     if (own != null) return http.Response(jsonEncode(own), 200, headers: {'content-type': 'application/json'});
     if (await answer?.call(request) case final answered?) return answered;

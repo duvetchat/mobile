@@ -63,6 +63,15 @@ void main() {
     }
   });
 
+  // Task 19's review, I3: a thumbnail's header can claim any size, read before anything decodes it.
+  group('a thumbnail drawn, by its header', () {
+    final thumbnails = conventions['thumbnails'] as Map<String, dynamic>;
+    test('both apps draw a thumbnail up to the same side', () => expect(thumbnailSide, thumbnails['most_side']));
+    for (final c in (thumbnails['cases'] as List).cast<Map<String, dynamic>>()) {
+      test(c['case'] as String, () => expect(thumbnailDrawn(base64Decode(c['bytes'] as String)), c['drawn']));
+    }
+  });
+
   group('an approval frame in the inbox', () {
     for (final c in cases('approval_frames')) {
       test(c['case'] as String, () {

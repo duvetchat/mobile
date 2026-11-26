@@ -3,6 +3,12 @@
 /// dart:io and isolates, which a web build doesn't have, so the engine and the app's code import this file alone.
 library;
 
+import 'dart:typed_data';
+
+/// A file's parts as the core seals them: 64 KiB of the file each, and its 16-byte tag.
+const attachmentPart = 65536;
+const partTag = 16;
+
 /// What opening a user's database came to: open; another engine has it ([HostState.locked]); no core for this
 /// platform ([HostState.unsupported]); or it can't be opened, its key gone, say ([HostState.failed]).
 enum HostState { ready, locked, unsupported, failed }
@@ -19,6 +25,12 @@ abstract interface class CoreHost {
 
   /// Runs one command, and gives the reply's `ok`; throws a [CoreError] (its code and extra fields).
   Future<T> handle<T>(Map<String, Object?> command);
+
+  /// Seals a whole file, part by part, so its bytes never go in one JSON; [progress] hears how many are done.
+  Future<Uint8List> sealFile(String key, String attachmentId, Uint8List plain, {void Function(int done)? progress});
+
+  /// Opens a sealed file, part by part; [progress] hears how many of its bytes are done.
+  Future<Uint8List> openFile(String key, String attachmentId, Uint8List sealed, {void Function(int done)? progress});
 
   /// Closes what's open: the database stays.
   Future<void> close();

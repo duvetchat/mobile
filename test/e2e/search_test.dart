@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:math';
+import 'dart:typed_data';
 
 import 'package:duvet/data/duvet_repository.dart';
 import 'package:duvet/data/models.dart';
@@ -8,6 +9,7 @@ import 'package:duvet/data/scope.dart';
 import 'package:duvet/e2e/content.dart';
 import 'package:duvet/e2e/conventions.dart';
 import 'package:duvet/e2e/engine.dart';
+import 'package:duvet/e2e/files.dart' show FileToSeal;
 import 'package:duvet/e2e/notices.dart';
 import 'package:duvet/e2e/search.dart';
 import 'package:duvet/e2e/uuid.dart';
@@ -487,6 +489,40 @@ void main() {
         search('', authors: [for (var n = 0; n < 11; n++) uuidv7()]),
         refused('a search takes 10 authors at most'),
       );
+    },
+    skip: noCore,
+    timeout: _slow,
+  );
+
+  // The merge with task 19: a result of the device's that has files says what they are, as its envelope says them,
+  // and nothing is asked of the API for it; the chat it opens in loads them.
+  test(
+    'a_device_result_with_files_says_what_they_are_from_its_envelope',
+    () async {
+      final (fake: _, :app, ana: _, bo: _, :b, :conversation, target: _) = await _talking();
+      final picture = Uint8List.fromList([
+        ...const [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a],
+        for (var i = 0; i < 64; i++) i,
+      ]);
+      final sent = (await b.engine.sendMessage(
+        Outgoing(
+          conversationId: conversation,
+          nonce: uuidv4(),
+          files: [FileToSeal(bytes: picture, name: 'pear.png', width: 4, height: 4)],
+        ),
+      ))!;
+      await _heldByAna(app, conversation, [sent.id]);
+      final searching = app.seen.length;
+      final hits = (await app.repository.search(
+        SearchQuery('', conversationId: conversation, has: const ['image']),
+      )).hits;
+      expect(
+        [for (final hit in hits) (hit.message.id, app.repository.previewOf(hit.message))],
+        [(sent.id, 'Sent a photo')],
+      );
+      final file = hits.single.message.attachments.single;
+      expect((file.filename, file.url, file.sealed?.name), ('pear.png', '', 'pear.png'));
+      expect([for (final r in app.seen.skip(searching)) r.url.path], isNot(contains(contains('/messages'))));
     },
     skip: noCore,
     timeout: _slow,
