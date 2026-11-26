@@ -252,24 +252,30 @@ const membersRefusedRules = {'member_list_mismatch', 'members_changed_by_non_own
 
 /// The generations of conversations whose members a welcome or a join was refused for, as [store] keeps them (M4 of the
 /// review): by conversation, kept across restarts, as a push's engine can see the refusal first.
-Map<String, int> refusedGenerationsIn(EngineStore store) => {
-  for (final MapEntry(:key, :value) in switch (store.read(refusedGenerations)) {
+Map<String, int> refusedGenerationsIn(EngineStore store) => _refusedOf(store.read(refusedGenerations));
+
+Map<String, int> _refusedOf(Object? record) => {
+  for (final MapEntry(:key, :value) in switch (record) {
     final Map<String, Object?> kept => kept.entries,
     _ => const <MapEntry<String, Object?>>[],
   })
     if (value is int) key: value,
 };
 
-/// Keeps [generation] of the conversation as refused in [store] (null: none any more).
+/// Keeps [generation] of the conversation as refused in [store] (null: none any more), over the refusals the record
+/// holds as it's kept: the other engine's stay (mobile#345).
 Future<void> recordRefusedGeneration(EngineStore store, String conversationId, int? generation) {
-  final kept = refusedGenerationsIn(store);
-  if (generation == null) {
-    if (kept.remove(conversationId) == null) return Future.value();
-  } else {
-    kept[conversationId] = generation;
-  }
+  if (generation == null && !refusedGenerationsIn(store).containsKey(conversationId)) return Future.value();
   return store
-      .write(refusedGenerations, kept)
+      .update(refusedGenerations, (record) {
+        final kept = _refusedOf(record);
+        if (generation == null) {
+          kept.remove(conversationId);
+        } else {
+          kept[conversationId] = generation;
+        }
+        return kept;
+      })
       .catchError((Object error) => debugPrint("e2e: a refused generation wasn't kept: $error"));
 }
 

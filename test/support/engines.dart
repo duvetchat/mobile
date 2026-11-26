@@ -80,6 +80,9 @@ class MemoryStore implements EngineStore {
   }
 
   @override
+  Future<void> update(String key, Object? Function(Object? kept) change) => write(key, change(read(key)));
+
+  @override
   Future<void> refresh(List<String> keys) async {}
 }
 
@@ -90,6 +93,9 @@ class RefusingStore implements EngineStore {
 
   @override
   Future<void> write(String key, Object? value) async => throw const FileSystemException('the disk is full');
+
+  @override
+  Future<void> update(String key, Object? Function(Object? kept) change) => write(key, change(read(key)));
 
   @override
   Future<void> refresh(List<String> keys) async {}
