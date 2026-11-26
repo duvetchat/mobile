@@ -159,6 +159,14 @@ class LockedOnce implements CoreHost {
   Future<T> handle<T>(Map<String, Object?> command) => _host.handle<T>(command);
 
   @override
+  Future<Uint8List> sealFile(String key, String attachmentId, Uint8List plain, {void Function(int)? progress}) =>
+      _host.sealFile(key, attachmentId, plain, progress: progress);
+
+  @override
+  Future<Uint8List> openFile(String key, String attachmentId, Uint8List sealed, {void Function(int)? progress}) =>
+      _host.openFile(key, attachmentId, sealed, progress: progress);
+
+  @override
   Future<void> close() => _host.close();
 
   @override
@@ -184,6 +192,14 @@ class WatchedHost implements CoreHost {
     if (answer?.call(command) case final answered?) return answered as T;
     return _host.handle<T>(command);
   }
+
+  @override
+  Future<Uint8List> sealFile(String key, String attachmentId, Uint8List plain, {void Function(int)? progress}) =>
+      _host.sealFile(key, attachmentId, plain, progress: progress);
+
+  @override
+  Future<Uint8List> openFile(String key, String attachmentId, Uint8List sealed, {void Function(int)? progress}) =>
+      _host.openFile(key, attachmentId, sealed, progress: progress);
 
   @override
   Future<Opened> open(String userId) => _host.open(userId);

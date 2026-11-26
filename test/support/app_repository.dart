@@ -57,8 +57,11 @@ Future<TestApp> appOn(
   RecentChatsStore? recents,
   ChatCacheStore? cache,
   bool Function(GatewayEvent event)? hears,
+  void Function(Directory support)? prepare,
 }) async {
   final support = Directory.systemTemp.createTempSync('duvet-app-');
+  // What a run before this one left in the app's folders.
+  prepare?.call(support);
   const paths = MethodChannel('plugins.flutter.io/path_provider');
   final messenger = TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
   messenger.setMockMethodCallHandler(paths, (_) async => support.path);

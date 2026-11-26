@@ -1,8 +1,13 @@
+import 'dart:async';
+import 'dart:io';
+
 import 'package:clock/clock.dart';
 import 'package:duvet/data/appearance.dart';
 import 'package:duvet/data/emoji_catalog.dart';
 import 'package:duvet/data/models.dart';
 import 'package:duvet/deep_links.dart';
+import 'package:duvet/e2e/decrypted_files.dart';
+import 'package:duvet/e2e/files.dart';
 import 'package:duvet/encryption/recovery_key.dart';
 import 'package:duvet/main.dart';
 import 'package:duvet/people.dart' show RoleChip;
@@ -224,6 +229,45 @@ void main() {
       ),
     );
 
+    // An encrypted conversation's files on their way down, each with how far it is (Task 19): a video, downloaded
+    // whole before it plays, and a file to save.
+    testWidgets(
+      'an attachment downloading, ${b.name}',
+      (tester) => withClock(
+        Clock.fixed(DateTime(2026, 10, 23, 12)),
+        () => withShadows(() async {
+          phone(tester);
+          DecryptedFiles.instance = DecryptedFiles(folder: () async => Directory.systemTemp)..useOpener(_HeldFiles());
+          addTearDown(() => DecryptedFiles.instance.useOpener(null));
+          final repository = FakeRepository();
+          final appearance = Appearance(MemoryAppearanceStore())
+            ..value = b == Brightness.dark ? ThemeMode.dark : ThemeMode.light;
+          await tester.pumpWidget(DuvetApp(repository: repository, appearance: appearance));
+          await tester.pumpAndSettle();
+          final (video, report) = (
+            _sealed('v1', 'tour.mp4', 'video/mp4', 400000),
+            _sealed('f1', 'report.pdf', 'application/pdf', 1200000),
+          );
+          repository.history['c-maya']!.add(
+            ChatMessage(
+              id: 'm6',
+              authorId: FakeRepository.maya,
+              authorName: 'Maya',
+              content: '',
+              createdAt: DateTime(2026, 10, 23, 9, 6),
+              attachments: [video, report],
+            ),
+          );
+          for (final file in [video, report]) {
+            unawaited(DecryptedFiles.instance.open(file.sealed!, file.url, 'm6'));
+          }
+          await tester.tap(find.text('Maya'));
+          await tester.pumpAndSettle();
+          await expectLater(find.byType(DuvetApp), matchesGoldenFile('goldens/attachment_downloading_${b.name}.png'));
+        }),
+      ),
+    );
+
     // #292: the desktop's flat rows: the user's own on the left too, a
     // group's second message under its first, a reply's quote over its head
     // line, and a mention of the user washed.
@@ -405,3 +449,31 @@ class _NoLinks implements DeepLinkSource {
   @override
   Stream<Uri> get links => const Stream.empty();
 }
+
+/// Files whose downloads stop where [share] of them came, for good: they stay on their way.
+class _HeldFiles implements FileOpener {
+  static const share = 0.42;
+
+  @override
+  Future<Uint8List> download(String id, String url, int most, void Function(int received)? progress) {
+    progress?.call((most * share).floor());
+    return Completer<Uint8List>().future;
+  }
+
+  @override
+  Future<Uint8List> open(String key, String id, Uint8List sealed, void Function(int done)? progress) =>
+      Completer<Uint8List>().future;
+
+  @override
+  void failed() {}
+}
+
+/// A file of an encrypted conversation's message, sealed, of [size] bytes.
+MessageAttachment _sealed(String id, String name, String said, int size) => MessageAttachment(
+  id: id,
+  filename: name,
+  contentType: said,
+  url: 'https://api.duvet.test/attachments/$id?sig=golden&exp=4102444800',
+  sizeBytes: size,
+  sealed: ShownFile(id: id, key: 'a2V5', sha256: 'c2hh', size: size, name: name, said: said),
+);

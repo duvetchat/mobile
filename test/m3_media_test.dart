@@ -1,7 +1,14 @@
 import 'dart:async';
+import 'dart:convert';
+import 'dart:io';
 
+import 'package:crypto/crypto.dart';
 import 'package:duvet/chat_view.dart';
 import 'package:duvet/data/emoji_catalog.dart';
+import 'package:duvet/deep_links.dart';
+import 'package:duvet/e2e/decrypted_files.dart';
+import 'package:duvet/e2e/files.dart';
+import 'package:duvet/e2e/notices.dart';
 import 'package:duvet/data/gifs.dart';
 import 'package:duvet/data/links.dart';
 import 'package:duvet/data/models.dart';
@@ -133,6 +140,39 @@ class _Actions extends MediaActions {
 
   @override
   Future<void> share(String url, String name, String contentType) async => calls.add('share $name');
+
+  @override
+  Future<bool> saveFile(String path, String name, String type) async {
+    calls.add('saveFile $name $type');
+    return true;
+  }
+
+  @override
+  Future<void> shareFile(String path, String name, String type) async => calls.add('shareFile $name $type');
+}
+
+/// An opener of a conversation's files with no core and no API: each file opens to its own bytes ([plain], by ID), its
+/// download held, after [progress] of it, while [hold] is set.
+class _SealedOpener implements FileOpener {
+  final plain = <String, Uint8List>{};
+  Completer<void>? hold;
+  double progress = 0;
+
+  @override
+  Future<Uint8List> download(String id, String url, int most, void Function(int received)? progress) async {
+    if (hold case final held?) {
+      progress?.call((most * this.progress).floor());
+      await held.future;
+    }
+    return Uint8List(most);
+  }
+
+  @override
+  Future<Uint8List> open(String key, String id, Uint8List sealed, void Function(int done)? progress) async =>
+      plain[id]!;
+
+  @override
+  void failed() {}
 }
 
 /// A player that never finishes loading: its slot stays taken.
@@ -159,6 +199,11 @@ class _PlayingVideo extends VideoPlayerController {
   Future<void> pause() async => value = value.copyWith(isPlaying: false);
 }
 
+class _NoLinks implements DeepLinkSource {
+  @override
+  Stream<Uri> get links => const Stream.empty();
+}
+
 class _Gifs implements GifSource {
   final searched = <String>[];
   static const party = Gif(
@@ -172,6 +217,15 @@ class _Gifs implements GifSource {
 
   @override
   String get attribution => 'GIFs from KLIPY';
+
+  /// The GIFs whose bytes were asked for: an encrypted conversation sends them sealed.
+  final fetched = <String>[];
+
+  @override
+  Future<Uint8List?> bytes(String url) async {
+    fetched.add(url);
+    return Uint8List.fromList([...ascii.encode('GIF89a'), ...List.filled(64, 1)]);
+  }
 
   List<Gif> trend = const [party];
 
@@ -233,6 +287,15 @@ void main() {
     await tester.tap(find.text('Maya'));
     await tester.pumpAndSettle();
     return repository;
+  }
+
+  /// What the chat sends once the file its GIF went to is written, on the real clock.
+  Future<void> sentOnRealClock(WidgetTester tester, FakeRepository repository) async {
+    for (var i = 0; i < 50 && repository.sent.isEmpty; i++) {
+      await tester.runAsync(() => Future<void>.delayed(const Duration(milliseconds: 20)));
+      await tester.pump();
+    }
+    await tester.pumpAndSettle();
   }
 
   Future<void> tapLabel(WidgetTester tester, Pattern label) async {
@@ -724,7 +787,8 @@ void main() {
     semantics.dispose();
   });
 
-  testWidgets('GIFs: a tab in the picker; a pick sends its link', (tester) async {
+  testWidgets('GIFs: a tab in the picker; a pick in a conversation sends it sealed', (tester) async {
+    DeepLinkSource.instance = _NoLinks();
     final gifs = _Gifs();
     GifSource.instance = gifs;
     final repository = await openMaya(tester);
@@ -735,12 +799,17 @@ void main() {
     await tester.tap(find.text('Celebrate'));
     await tester.pumpAndSettle();
     expect(gifs.searched, ['Celebrate']);
+    // A conversation's goes as a sealed file of its bytes, never its link (Ruling 12).
     await tapLabel(tester, 'GIF, party');
-    expect(repository.sent.last.content, _Gifs.party.url);
+    await sentOnRealClock(tester, repository);
+    expect(gifs.fetched, [_Gifs.party.url]);
+    expect(repository.sent.last.content, isEmpty);
+    expect([for (final f in repository.sent.last.files) (f.name, f.contentType)], [('party.gif', 'image/gif')]);
     semantics.dispose();
   });
 
   testWidgets('GIFs: one the provider sizes 0 wide shows square, not a crash', (tester) async {
+    DeepLinkSource.instance = _NoLinks();
     final gifs = _Gifs()
       ..trend = const [Gif(id: 'g2', url: 'https://static.klipy.com/flat.gif', preview: 'p', width: 0, height: 150)];
     GifSource.instance = gifs;
@@ -752,7 +821,8 @@ void main() {
     final tile = tester.getSize(find.bySemanticsLabel('GIF'));
     expect(tile.width, tile.height);
     await tapLabel(tester, 'GIF');
-    expect(repository.sent.last.content, 'https://static.klipy.com/flat.gif');
+    await sentOnRealClock(tester, repository);
+    expect(repository.sent.last.files.single.name, 'flat.gif');
     semantics.dispose();
   });
 
@@ -1482,5 +1552,168 @@ void main() {
     await tapLabel(tester, 'Add photos, a sticker or a mention');
     await tapLabel(tester, 'Photos & GIFs');
     semantics.dispose();
+  });
+
+  // An encrypted conversation's files (PLAN-E2E-CLIENTES.md, Task 19): drawn from their decrypted copies, by their
+  // bytes; anything the app doesn't draw saved as bytes or shared, never opened; a video only after its tap.
+  group("an encrypted conversation's files", () {
+    late Directory media;
+    late _SealedOpener opener;
+    setUp(() {
+      // Nothing of the platform's answers while a test lets the real clock run (its files' copies are written there).
+      DeepLinkSource.instance = _NoLinks();
+      media = Directory.systemTemp.createTempSync('duvet-media-test-');
+      opener = _SealedOpener();
+      DecryptedFiles.instance = DecryptedFiles(folder: () async => media)..useOpener(opener);
+    });
+    tearDown(() {
+      DecryptedFiles.instance.useOpener(null);
+      VideoPage.controllerFor = VideoPage.defaultController;
+      if (media.existsSync()) media.deleteSync(recursive: true);
+    });
+
+    /// A file of a message of Maya's, sealed: [plain] its bytes, [name] and [said] what its envelope says of it.
+    MessageAttachment sealedFile(
+      String id,
+      List<int> plain,
+      String name,
+      String said, {
+      int? durationMs,
+      String? waveform,
+    }) {
+      final bytes = Uint8List.fromList(plain);
+      opener.plain[id] = bytes;
+      return MessageAttachment(
+        id: id,
+        filename: name,
+        contentType: said,
+        url: 'https://api.duvet.test/attachments/$id?sig=test&exp=4102444800',
+        sizeBytes: bytes.length,
+        sealed: ShownFile(
+          id: id,
+          key: 'a2V5',
+          sha256: base64Encode(sha256.convert(bytes).bytes),
+          size: bytes.length,
+          name: name,
+          said: said,
+          durationMs: durationMs,
+          waveform: waveform,
+        ),
+      );
+    }
+
+    /// The file opened beforehand, as the chat would as it shows it: on the real clock, as its copy is written.
+    Future<FileState> opened(WidgetTester tester, MessageAttachment a, String message) async =>
+        (await tester.runAsync(() => DecryptedFiles.instance.open(a.sealed!, a.url, message)))!;
+
+    Finder copyDrawn(String path) => find.byWidgetPredicate((w) {
+      final image = w is Image ? w.image : null;
+      final file = image is ResizeImage ? image.imageProvider : image;
+      return file is FileImage && file.file.path == path;
+    });
+
+    testWidgets('an encrypted picture is drawn from its decrypted copy', (tester) async {
+      final a = sealedFile('p1', img.encodePng(img.Image(width: 4, height: 4)), 'cat.png', 'image/png');
+      final ready = await opened(tester, a, 'e1') as FileReady;
+      final repository = await openMaya(tester);
+      repository.push('c-maya', MessageCreated(withFiles('e1', [a])));
+      await tester.pumpAndSettle();
+      expect(copyDrawn(ready.path), findsOneWidget);
+      semantics.dispose();
+    });
+
+    testWidgets("a decrypted file the app doesn't draw is saved as bytes or shared, never opened", (tester) async {
+      final a = sealedFile('h1', utf8.encode('<!doctype html><script>alert(1)</script>'), 'cat.png', 'image/png');
+      final ready = await opened(tester, a, 'e2') as FileReady;
+      expect(ready.type, 'application/octet-stream');
+      final repository = await openMaya(tester);
+      repository.push('c-maya', MessageCreated(withFiles('e2', [a])));
+      await tester.pumpAndSettle();
+      // Not a picture, whatever it says: nothing draws its copy, and nothing opens it.
+      expect(copyDrawn(ready.path), findsNothing);
+      await tapLabel(tester, Notice.fileSaveNamed.fill({'name': 'cat.png'}));
+      await tapLabel(tester, 'Share cat.png');
+      expect(actions.calls, [
+        'saveFile cat.png application/octet-stream',
+        'shareFile cat.png application/octet-stream',
+      ]);
+      semantics.dispose();
+    });
+
+    testWidgets('an encrypted video plays only after its tap, downloaded whole with its progress', (tester) async {
+      final played = <Uri>[];
+      VideoPage.controllerFor = (url) {
+        played.add(url);
+        return _PlayingVideo(url);
+      };
+      final a = sealedFile(
+        'v1',
+        [0, 0, 0, 0x20, ...ascii.encode('ftypisom'), ...List.filled(500, 0)],
+        'tour.mp4',
+        'video/mp4',
+      );
+      final repository = await openMaya(tester);
+      repository.push('c-maya', MessageCreated(withFiles('e3', [a])));
+      await tester.pumpAndSettle();
+      // Nothing comes down until it's tapped.
+      expect(DecryptedFiles.instance.state(a.sealed!, a.url), isNull);
+      opener
+        ..hold = Completer<void>()
+        ..progress = 0.5;
+      await tapLabel(tester, RegExp('^Video, tour.mp4'));
+      expect(find.textContaining('Downloading · '), findsOneWidget);
+      expect(played, isEmpty);
+      opener.hold!.complete();
+      for (var i = 0; i < 50 && DecryptedFiles.instance.state(a.sealed!, a.url) is! FileReady; i++) {
+        await tester.pump();
+        await tester.runAsync(() => Future<void>.delayed(const Duration(milliseconds: 20)));
+      }
+      await tester.pumpAndSettle();
+      final ready = DecryptedFiles.instance.state(a.sealed!, a.url)! as FileReady;
+      expect(played, [Uri.file(ready.path)]);
+      expect(find.byType(VideoPage), findsOneWidget);
+      semantics.dispose();
+    });
+
+    testWidgets('an encrypted voice note plays from its decrypted copy', (tester) async {
+      final waveform = base64Encode(List.generate(64, (i) => i * 4));
+      final a = sealedFile(
+        'n1',
+        [...ascii.encode('OggS'), ...List.filled(300, 1)],
+        'voice-note.ogg',
+        'audio/ogg',
+        durationMs: 2300,
+        waveform: waveform,
+      );
+      final ready = await opened(tester, a, 'e4') as FileReady;
+      final repository = await openMaya(tester);
+      repository.push('c-maya', MessageCreated(withFiles('e4', [a], voice: true)));
+      await tester.pumpAndSettle();
+      await tapLabel(tester, 'Play voice note');
+      expect(playback.played.single, ('n1', Uri.file(ready.path).toString()));
+      semantics.dispose();
+    });
+
+    testWidgets('a waiting row whose files went with the app says so at once, with Dismiss', (tester) async {
+      await openMaya(
+        tester,
+        setUp: (r) => r.history['c-maya']!.add(
+          ChatMessage(
+            id: 'pending:n1',
+            authorId: FakeRepository.me.id,
+            authorName: FakeRepository.me.displayName,
+            content: 'with a file',
+            createdAt: DateTime(2026, 10, 23, 10),
+            nonce: 'n1',
+            pending: true,
+            filesGone: true,
+          ),
+        ),
+      );
+      expect(find.text(Notice.filesGone.text), findsOneWidget);
+      expect(find.bySemanticsLabel('Retry'), findsNothing);
+      expect(find.bySemanticsLabel('Delete'), findsOneWidget);
+      semantics.dispose();
+    });
   });
 }

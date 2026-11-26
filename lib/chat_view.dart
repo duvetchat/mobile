@@ -26,6 +26,9 @@ import 'data/models.dart';
 import 'data/repository.dart';
 import 'data/scope.dart';
 import 'data/voice.dart' show VoiceController;
+import 'data/gifs.dart' show GifSource;
+import 'e2e/conventions.dart' show waveformSamples;
+import 'e2e/files.dart' show gifFile, sealedSize, tooLargeToSend;
 import 'e2e/notices.dart';
 import 'e2e/uuid.dart';
 import 'encryption/conversation_start.dart';
@@ -50,6 +53,7 @@ import 'widgets/emoji_picker.dart';
 import 'widgets/glass.dart';
 import 'widgets/link_embeds.dart';
 import 'widgets/media.dart';
+import 'widgets/sealed_file.dart';
 import 'widgets/message_content.dart';
 import 'widgets/prism.dart';
 import 'widgets/role_name.dart';
@@ -946,13 +950,20 @@ class _ChatViewState extends State<ChatView> with SingleTickerProviderStateMixin
       final command = _commands.where((c) => '/${c.path}' == content).firstOrNull;
       if (command != null) return _runCommand(command);
     }
-    // Files over the upload limit stay in the tray, with the reason.
+    // Files over the upload limit stay in the tray, with the reason: an encrypted conversation's by their sealed size,
+    // and the request's 32 MiB with them all (task 18's review, Missing 1).
     if (_files.isNotEmpty) {
       final limit = await _repository.uploadLimit();
       if (!mounted) return;
+      final sealed = widget.target is ConversationTarget;
+      final together = sealed ? tooLargeToSend([for (final f in _files) f.sizeBytes ?? 0]) : null;
+      if (together != null) {
+        _toast(together);
+        return;
+      }
       final over = [
         for (final f in _files)
-          if (limit != null && (f.sizeBytes ?? 0) > limit) f,
+          if (limit != null && (sealed ? sealedSize(f.sizeBytes ?? 0) : (f.sizeBytes ?? 0)) > limit) f,
       ];
       if (over.isNotEmpty) {
         _toast(
@@ -1008,7 +1019,30 @@ class _ChatViewState extends State<ChatView> with SingleTickerProviderStateMixin
 
   void _sendSticker(Sticker sticker) => _sendPicked(sticker: sticker);
 
-  void _sendGif(String url) => _sendPicked(content: url);
+  void _sendGif(String url) =>
+      widget.target is ConversationTarget ? unawaited(_sendSealedGif(url)) : _sendPicked(content: url);
+
+  /// A GIF picked in an encrypted conversation goes as a sealed file of its bytes, never its link (Ruling 12).
+  Future<void> _sendSealedGif(String url) async {
+    final picked = await gifFile(url, GifSource.instance.bytes);
+    if (!mounted) return;
+    if (picked == null) return _toast(Notice.gifFailed.text);
+    final folder = await Directory.systemTemp.createTemp('gif');
+    final copy = await File('${folder.path}/${picked.name}').writeAsBytes(picked.bytes);
+    if (!mounted) return;
+    final reply = _replyTo;
+    if (reply != null) setState(() => _replyTo = null);
+    _queue((
+      content: '',
+      files: [
+        OutgoingFile(path: copy.path, name: picked.name, contentType: 'image/gif', sizeBytes: picked.bytes.length),
+      ],
+      sticker: null,
+      replyTo: reply?.messageId ?? widget.threadOf,
+      mentionReplied: reply?.mentionAuthor,
+      voice: null,
+    ), reply: reply);
+  }
 
   // A sticker or a GIF answers the message being replied to, as a text does
   // (on the desktop they all go out the same way), and the strip closes.
@@ -1026,10 +1060,24 @@ class _ChatViewState extends State<ChatView> with SingleTickerProviderStateMixin
     ), reply: reply);
   }
 
-  void _sendVoice(Recording recording) =>
-      _queue((content: '', files: const [], sticker: null, replyTo: null, mentionReplied: null, voice: recording));
+  void _sendVoice(Recording recording) {
+    final nonce = _queue((
+      content: '',
+      files: const [],
+      sticker: null,
+      replyTo: null,
+      mentionReplied: null,
+      voice: recording,
+    ));
+    // Its 64 peaks, an encrypted conversation's voice note's convention: the loudest of each stretch of the take.
+    if (nonce != null && _take.isNotEmpty) _waveforms[nonce] = peaksOf(_take);
+  }
 
-  void _queue(_Outgoing outgoing, {MessageReply? reply}) {
+  /// A take's every level, a tenth of a second each, for its waveform; and each queued voice note's, by its nonce.
+  final _take = <double>[];
+  final _waveforms = <String, List<int>>{};
+
+  String? _queue(_Outgoing outgoing, {MessageReply? reply}) {
     final nonce = _nonce();
     final profile = _repository.profile.value;
     final pending = ChatMessage(
@@ -1068,6 +1116,7 @@ class _ChatViewState extends State<ChatView> with SingleTickerProviderStateMixin
     _outgoing[nonce] = outgoing;
     setState(() => _entries.add((message: pending, delivery: _Delivery.sending)));
     _deliver(nonce);
+    return nonce;
   }
 
   Future<void> _deliver(String nonce) async {
@@ -1078,7 +1127,14 @@ class _ChatViewState extends State<ChatView> with SingleTickerProviderStateMixin
     try {
       final ChatMessage sent;
       if (outgoing.voice case final voice?) {
-        sent = await _repository.sendVoiceNote(widget.target, voice.bytes, nonce: nonce, format: voice.format);
+        sent = await _repository.sendVoiceNote(
+          widget.target,
+          voice.bytes,
+          nonce: nonce,
+          format: voice.format,
+          waveform: _waveforms.remove(nonce),
+          length: voice.length,
+        );
       } else {
         sent = await _repository.send(
           widget.target,
@@ -1271,8 +1327,10 @@ class _ChatViewState extends State<ChatView> with SingleTickerProviderStateMixin
     }
     HapticFeedback.mediumImpact();
     _recordedFor = Duration.zero;
+    _take.clear();
     _levelsSub = recorder.levels.listen((l) {
       if (!mounted) return;
+      _take.add(l);
       setState(() {
         _levels.add(l);
         if (_levels.length > 48) _levels.removeAt(0);
@@ -3208,4 +3266,19 @@ class _RenderMeasureHeight extends RenderProxyBox {
     _last = height;
     WidgetsBinding.instance.addPostFrameCallback((_) => onChange(height));
   }
+}
+
+/// A take's waveform from its levels (0 to 1, a tenth of a second each): [waveformSamples] peaks, each the loudest of
+/// its stretch of the take, a byte each.
+List<int> peaksOf(List<double> levels) {
+  final n = levels.length;
+  return [
+    for (var i = 0; i < waveformSamples; i++)
+      (levels
+                  .sublist(i * n ~/ waveformSamples, max(i * n ~/ waveformSamples + 1, (i + 1) * n ~/ waveformSamples))
+                  .fold(0.0, max) *
+              255)
+          .round()
+          .clamp(0, 255),
+  ];
 }

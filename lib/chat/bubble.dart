@@ -243,7 +243,16 @@ class _Bubble extends StatelessWidget {
                 );
               },
             ),
-        if (m.isVoice && m.attachments.isNotEmpty)
+        if (m.isVoice && m.attachments.isNotEmpty && m.attachments.first.sealed != null)
+          SealedFileView(
+            attachment: m.attachments.first,
+            messageId: m.id,
+            voice: true,
+            mine: own,
+            authorName: m.authorName,
+            authorAvatarUrl: m.authorAvatarUrl,
+          )
+        else if (m.isVoice && m.attachments.isNotEmpty)
           VoiceNotePlayer(
             attachment: m.attachments.first,
             mine: own,
@@ -251,7 +260,12 @@ class _Bubble extends StatelessWidget {
             authorAvatarUrl: m.authorAvatarUrl,
           )
         else if (m.attachments.isNotEmpty)
-          MessageAttachments(attachments: m.attachments, uploadProgress: progress, onDoubleTap: onDoubleTap),
+          MessageAttachments(
+            attachments: m.attachments,
+            uploadProgress: progress,
+            onDoubleTap: onDoubleTap,
+            messageId: m.id,
+          ),
         for (final a in m.deletedAttachments) DeletedAttachment(attachment: a, voice: m.isVoice, maxWidth: maxWidth),
         // Duvet's own links, as cards: a quoted message, an invite.
         if (!lifted)
@@ -312,7 +326,12 @@ class _Bubble extends StatelessWidget {
     final meta = [if (lastOfRun && !flat) _time(m.createdAt), if (m.edited) 'edited'].join(' · ');
     final status = switch (entry.delivery) {
       _ when editing => _Caption(icon: FLucideIcons.pencil, text: 'Editing', style: secondary),
-      _Delivery.failed => _FailedActions(onRetry: tooLarge ? null : onRetry, onDiscard: onDiscard, tooLarge: tooLarge),
+      _Delivery.failed => _FailedActions(
+        onRetry: tooLarge || m.filesGone ? null : onRetry,
+        onDiscard: onDiscard,
+        tooLarge: tooLarge,
+        filesGone: m.filesGone,
+      ),
       _Delivery.sending when waiting => _Caption(
         icon: FLucideIcons.clock,
         text: 'Waiting for connection',
@@ -937,7 +956,10 @@ class _FailedActions extends StatelessWidget {
 
   /// Refused as too large: retrying wouldn't help.
   final bool tooLarge;
-  const _FailedActions({this.onRetry, this.onDiscard, this.tooLarge = false});
+
+  /// Its files' sealed bytes went with the app: it can only be dismissed.
+  final bool filesGone;
+  const _FailedActions({this.onRetry, this.onDiscard, this.tooLarge = false, this.filesGone = false});
 
   @override
   Widget build(BuildContext context) {
@@ -969,7 +991,11 @@ class _FailedActions extends StatelessWidget {
     );
     return Semantics(
       container: true,
-      label: tooLarge ? 'Message not sent: too large' : 'Message not sent',
+      label: filesGone
+          ? 'Message not sent: ${Notice.filesGone.text}'
+          : tooLarge
+          ? 'Message not sent: too large'
+          : 'Message not sent',
       child: Padding(
         padding: const EdgeInsets.symmetric(horizontal: 4),
         child: Row(
@@ -977,10 +1003,16 @@ class _FailedActions extends StatelessWidget {
           children: [
             ExcludeSemantics(child: Icon(FLucideIcons.circleAlert, size: 14, color: colors.destructive)),
             const SizedBox(width: 4),
-            ExcludeSemantics(
-              child: Text(
-                tooLarge ? 'Too large to send' : 'Not sent',
-                style: DuvetType.caption.copyWith(color: colors.destructive),
+            Flexible(
+              child: ExcludeSemantics(
+                child: Text(
+                  filesGone
+                      ? Notice.filesGone.text
+                      : tooLarge
+                      ? 'Too large to send'
+                      : 'Not sent',
+                  style: DuvetType.caption.copyWith(color: colors.destructive),
+                ),
               ),
             ),
             if (onRetry != null) ...[

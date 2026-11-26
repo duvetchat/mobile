@@ -17,6 +17,7 @@ import '../data/images.dart';
 import '../data/models.dart';
 import '../data/ogg.dart';
 import '../data/appearance.dart' show ownBubble;
+import '../e2e/notices.dart';
 import '../theme.dart';
 import 'attachment_link.dart';
 import 'depth.dart';
@@ -381,8 +382,12 @@ class VoiceNotePlayer extends StatelessWidget {
     required this.mine,
     required this.authorName,
     this.authorAvatarUrl,
+    this.bars,
     super.key,
   });
+
+  /// Its bars, when its message carries its waveform (an encrypted voice note's): else ones seeded by the file.
+  final List<double>? bars;
 
   @override
   Widget build(BuildContext context) {
@@ -391,7 +396,7 @@ class VoiceNotePlayer extends StatelessWidget {
     final playback = AudioPlayback.instance;
     final bubble = ownBubble;
     final ink = mine ? bubble.ink : colors.foreground;
-    final bars = fallbackBars(attachment.id, 30);
+    final bars = this.bars ?? fallbackBars(attachment.id, 30);
     return ValueListenableBuilder(
       valueListenable: playback.state,
       builder: (context, state, _) {
@@ -920,24 +925,25 @@ class _VideoTileState extends State<VideoTile> {
   }
 }
 
-/// Plays [attachment] full screen ([VideoPage]).
-void openVideo(BuildContext context, MessageAttachment attachment) => Navigator.of(context, rootNavigator: true).push(
-  PageRouteBuilder<void>(
-    opaque: false,
-    barrierColor: Colors.black,
-    transitionDuration: DuvetTokens.panelIn,
-    reverseTransitionDuration: DuvetTokens.panelOut,
-    // On near-black, as the image viewer: light icons in the system bars.
-    pageBuilder: (_, _, _) => AnnotatedRegion<SystemUiOverlayStyle>(
-      value: Duvet.systemBarsOver(Brightness.dark),
-      child: VideoPage(attachment: attachment),
-    ),
-    transitionsBuilder: (_, animation, _, child) => FadeTransition(
-      opacity: CurvedAnimation(parent: animation, curve: DuvetTokens.decelerate),
-      child: child,
-    ),
-  ),
-);
+/// Plays [attachment] full screen ([VideoPage]); one that won't play offers [onSave], when given.
+void openVideo(BuildContext context, MessageAttachment attachment, {VoidCallback? onSave}) =>
+    Navigator.of(context, rootNavigator: true).push(
+      PageRouteBuilder<void>(
+        opaque: false,
+        barrierColor: Colors.black,
+        transitionDuration: DuvetTokens.panelIn,
+        reverseTransitionDuration: DuvetTokens.panelOut,
+        // On near-black, as the image viewer: light icons in the system bars.
+        pageBuilder: (_, _, _) => AnnotatedRegion<SystemUiOverlayStyle>(
+          value: Duvet.systemBarsOver(Brightness.dark),
+          child: VideoPage(attachment: attachment, onSave: onSave),
+        ),
+        transitionsBuilder: (_, animation, _, child) => FadeTransition(
+          opacity: CurvedAnimation(parent: animation, curve: DuvetTokens.decelerate),
+          child: child,
+        ),
+      ),
+    );
 
 /// The controls over a full-screen picture or video: a tap hides them, and the
 /// system bars with them, to leave it the whole screen; another brings them
@@ -1018,11 +1024,18 @@ class FadingControls extends StatelessWidget {
 /// which a tap hides and brings back; swipe down or Close to leave.
 class VideoPage extends StatefulWidget {
   final MessageAttachment attachment;
-  const VideoPage({required this.attachment, super.key});
+
+  /// A decrypted video's Save, offered when it won't play here (an HEVC this phone doesn't decode, say).
+  final VoidCallback? onSave;
+  const VideoPage({required this.attachment, this.onSave, super.key});
 
   /// Builds the controller; tests swap in their own.
   @visibleForTesting
-  static VideoPlayerController Function(Uri url) controllerFor = VideoPlayerController.networkUrl;
+  static VideoPlayerController Function(Uri url) controllerFor = defaultController;
+
+  /// A video at [url]: a file of this device's (a decrypted video's copy) from where it is, any other from its host.
+  static VideoPlayerController defaultController(Uri url) =>
+      url.isScheme('file') ? VideoPlayerController.file(File.fromUri(url)) : VideoPlayerController.networkUrl(url);
 
   static final _playing = <Object>{};
 
@@ -1126,7 +1139,17 @@ class _VideoPageState extends State<VideoPage> with HidingControls {
                   offset: Offset(0, _drag),
                   child: Center(
                     child: _error != null
-                        ? Text('Couldn’t play this video', style: DuvetType.body.copyWith(color: ink))
+                        ? Column(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Text('Couldn’t play this video', style: DuvetType.body.copyWith(color: ink)),
+                              if (widget.onSave case final save?)
+                                TextButton(
+                                  onPressed: save,
+                                  child: Text(Notice.fileSave.text, style: DuvetType.body.copyWith(color: ink)),
+                                ),
+                            ],
+                          )
                         : value.isInitialized && controller != null
                         ? AspectRatio(aspectRatio: value.aspectRatio, child: VideoPlayer(controller))
                         : const CircularProgressIndicator(color: ink),

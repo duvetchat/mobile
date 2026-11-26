@@ -7,7 +7,9 @@ import 'package:duvet/data/models.dart';
 import 'package:duvet/data/recent_chats.dart';
 import 'package:duvet/data/session_store.dart';
 import 'package:duvet/e2e/core_gate.dart';
+import 'package:duvet/e2e/decrypted_files.dart';
 import 'package:duvet/e2e/engine.dart';
+import 'package:duvet/e2e/files.dart';
 import 'package:duvet/e2e/uuid.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
@@ -21,7 +23,8 @@ import '../support/fake_api.dart';
 
 // Plain text stays in the core's database (PLAN-E2E-CLIENTES.md, Review Focus 1): Ana's app, its repository with its
 // engine, and Bo's device converse with a witness string, sent, read, quoted, edited, deleted and left waiting after a
-// cut request, the chat's page drawn and its preview shown. Then no file of the app's (the engine's record, the core's
+// cut request, the chat's page drawn and its preview shown; and a file whose name and bytes hold it goes each way, its
+// copy decrypted in the app's temporary folder alone (Task 19). Then no file of the app's (the engine's record, the core's
 // database, the notifications' history), no record of Bo's engine, no page of the chat cache, no recent chat kept, no
 // body the API saw and no log line holds it. The desktop's e2e-witness.test.ts, over what the phone keeps too.
 const _slow = Timeout(Duration(minutes: 3));
@@ -72,7 +75,7 @@ void main() {
       final bodies = <String>[];
       final session = fake.signIn(ana);
       final client = MockClient((request) async {
-        bodies.add(request.body);
+        bodies.add(latin1.decode(request.bodyBytes));
         final at = DateTime.now().toUtc().toIso8601String();
         final Object? own = switch ((request.method, request.url.path)) {
           ('POST', '/api/auth/login') => {
@@ -115,7 +118,7 @@ void main() {
         fake,
         bo,
         store: boStore,
-        client: watchedClient(fake, seen: (request) => bodies.add(request.body)),
+        client: watchedClient(fake, seen: (request) => bodies.add(latin1.decode(request.bodyBytes))),
       );
       // Ana opens the DM: her device makes its group, and Bo's joins it.
       repository.chatShown(target);
@@ -161,6 +164,58 @@ void main() {
         ],
         ['$witness, waiting'],
       );
+
+      // A file whose name and bytes hold the witness, picked from outside the app's folders: sent from Ana's app and
+      // opened on Bo's device; and Bo's, opened in Ana's app, whose copy is in its temporary folder (e2e-media), the one
+      // place a file's bytes may be.
+      final picked = Directory.systemTemp.createTempSync('duvet-picked-');
+      addTearDown(() => picked.deleteSync(recursive: true));
+      final source = File('${picked.path}/picked.bin')..writeAsBytesSync(utf8.encode('the file of $witness'));
+      final withFile = await repository.send(
+        target,
+        '',
+        nonce: uuidv4(),
+        files: [
+          OutgoingFile(
+            path: source.path,
+            name: '$witness.txt',
+            contentType: 'text/plain',
+            sizeBytes: source.lengthSync(),
+          ),
+        ],
+      );
+      late ShownFile anaFile;
+      await until(() async {
+        final row = (await b.engine.messages(conversation, [withFile.id])).firstOrNull;
+        if (row?.status != MessageStatus.ok || row!.attachments.isEmpty) return false;
+        anaFile = shownFile(row.attachments.single)!;
+        return true;
+      });
+      expect(anaFile.name, '$witness.txt');
+      final listed = await b.api.signedFile(fake.signedUrlOf(anaFile.id));
+      final opened = await openSealed(
+        anaFile,
+        download: (most, progress) async => listed,
+        open: (key, id, sealed, progress) => b.engine.openFile(key, id, sealed, progress: progress),
+      );
+      expect(utf8.decode(opened.bytes), 'the file of $witness');
+      final his = (await b.engine.sendMessage(
+        Outgoing(
+          conversationId: conversation,
+          nonce: uuidv4(),
+          files: [FileToSeal(bytes: utf8.encode('his file of $witness'), name: 'his $witness.txt')],
+        ),
+      ))!;
+      late MessageAttachment hisFile;
+      await until(() async {
+        final shown = (await repository.messages(target)).where((m) => m.id == his.id).firstOrNull;
+        if (shown == null || shown.attachments.isEmpty) return false;
+        hisFile = shown.attachments.single;
+        return true;
+      });
+      expect(hisFile.filename, 'his $witness.txt');
+      final state = await DecryptedFiles.instance.open(hisFile.sealed!, hisFile.url, his.id);
+      expect(File((state as FileReady).path).readAsStringSync(), 'his file of $witness');
       await b.engine.stop();
       end();
       repository.dispose();
@@ -176,8 +231,19 @@ void main() {
           },
       ];
       bool holds(String text) => text.contains(witness) || inBase64.any(text.contains);
-      // The app's files: what the engine keeps, the core's database (sealed), the notifications' history.
-      final files = support.listSync(recursive: true).whereType<File>().toList();
+      // The app's files: what the engine keeps, the core's database (sealed), the notifications' history; all but the
+      // temporary folder's copies of decrypted files, the one place a file's bytes may be, which went with the
+      // session's engine.
+      final media = '${support.path}/e2e-media/';
+      final copies = [
+        for (final file in support.listSync(recursive: true).whereType<File>())
+          if (file.path.startsWith(media)) file,
+      ];
+      expect(copies, isEmpty);
+      final files = [
+        for (final file in support.listSync(recursive: true).whereType<File>())
+          if (!file.path.startsWith(media)) file,
+      ];
       expect([for (final file in files) file.path], contains(endsWith('client.json')));
       expect([
         for (final file in files)

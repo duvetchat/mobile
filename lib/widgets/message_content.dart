@@ -29,6 +29,7 @@ import 'depth.dart';
 import 'glass.dart';
 import 'media.dart';
 import 'media_actions.dart';
+import 'sealed_file.dart';
 import 'prism.dart';
 import 'role_name.dart';
 import 'skeleton.dart';
@@ -542,16 +543,36 @@ class MessageAttachments extends StatelessWidget {
   /// A double tap on a picture: its message's (a reply). A single tap then
   /// waits for the second before it opens the picture.
   final VoidCallback? onDoubleTap;
+
+  /// Its message, whose deletion takes an encrypted file's decrypted copy along.
+  final String messageId;
   const MessageAttachments({
     required this.attachments,
     this.maxWidth = 260,
     this.uploadProgress,
     this.onDoubleTap,
+    this.messageId = '',
     super.key,
   });
 
   @override
   Widget build(BuildContext context) {
+    // An encrypted conversation's files: each from its decrypted copy, as its bytes say (lib/widgets/sealed_file.dart).
+    if (attachments.any((a) => a.sealed != null)) {
+      return Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          for (final (i, a) in attachments.indexed)
+            Padding(
+              padding: EdgeInsets.only(top: i == 0 ? 0 : 4),
+              child: a.sealed == null
+                  ? _FileTile(attachment: a, width: maxWidth)
+                  : SealedFileView(attachment: a, messageId: messageId, width: maxWidth),
+            ),
+        ],
+      );
+    }
     final images = attachments.where((a) => a.isImage).toList();
     final files = attachments.where((a) => !a.isImage).toList();
     Widget tile(MessageAttachment f) => f.isVideo
