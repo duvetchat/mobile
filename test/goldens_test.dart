@@ -9,6 +9,8 @@ import 'package:duvet/data/models.dart';
 import 'package:duvet/deep_links.dart';
 import 'package:duvet/e2e/decrypted_files.dart';
 import 'package:duvet/e2e/files.dart';
+import 'package:duvet/e2e/notices.dart';
+import 'package:duvet/e2e/sync.dart' show ConversationState, Restart;
 import 'package:duvet/encryption/recovery_key.dart';
 import 'package:duvet/main.dart';
 import 'package:duvet/people.dart' show RoleChip;
@@ -230,6 +232,37 @@ void main() {
         }),
       ),
     );
+
+    // A member without a device, named over the message box before anything is sent; a restart that leaves someone
+    // out, which asks first; and members that changed, with whom they are now (Task 23).
+    for (final (name, state, restartLeavesOut) in [
+      ('no_device', ConversationState.noDevice(const [FakeRepository.maya]), const <String>[]),
+      ('restart_confirm', ConversationState.blocked(restart: Restart.mine), const [FakeRepository.leo]),
+      ('members_changed', ConversationState.membersChanged, const <String>[]),
+    ]) {
+      testWidgets(
+        '$name, ${b.name}',
+        (tester) => withClock(
+          Clock.fixed(DateTime(2026, 10, 23, 12)),
+          () => withShadows(() async {
+            phone(tester);
+            final repository = FakeRepository()..restartLeavesOut = restartLeavesOut;
+            final appearance = Appearance(MemoryAppearanceStore())
+              ..value = b == Brightness.dark ? ThemeMode.dark : ThemeMode.light;
+            await tester.pumpWidget(DuvetApp(repository: repository, appearance: appearance));
+            await tester.pumpAndSettle();
+            repository.conversationStates.value = {'c-maya': state};
+            await tester.tap(find.text('Maya'));
+            await tester.pumpAndSettle();
+            if (restartLeavesOut.isNotEmpty) {
+              await tester.tap(find.text(Notice.blockedOwner.text));
+              await tester.pumpAndSettle();
+            }
+            await expectLater(find.byType(DuvetApp), matchesGoldenFile('goldens/${name}_${b.name}.png'));
+          }),
+        ),
+      );
+    }
 
     // An encrypted conversation's files on their way down, each with how far it is (Task 19): a picture in its box with
     // its thumbnail, a video, downloaded whole before it plays, and a file to save.

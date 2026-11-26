@@ -434,6 +434,7 @@ final class CoreGate implements CoreHost {
 
   /// `history_share` or `catch_up`: its reply with its parts counted, as `parts`, which stay in the engine that made
   /// them until dropped.
+  @override
   Future<Map<String, Object?>> share(Map<String, Object?> command) async {
     if (command['cmd'] != 'history_share' && command['cmd'] != 'catch_up') {
       throw CoreError('bad_command', message: 'share makes a history_share or a catch_up', field: 'cmd');
@@ -448,6 +449,7 @@ final class CoreGate implements CoreHost {
   }
 
   /// A package's part [n], as [share] made it.
+  @override
   Future<Uint8List> sharePart(String shareId, int n) async =>
       await _either(() async {
             final parts = _shares[shareId];
@@ -459,6 +461,7 @@ final class CoreGate implements CoreHost {
           as Uint8List;
 
   /// Lets a package's parts go.
+  @override
   Future<void> dropShare(String shareId) async {
     await _either(() async => _shares.remove(shareId), (app, user) => _ask(app, 'dropShare', user, [shareId]));
   }

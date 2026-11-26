@@ -132,6 +132,9 @@ final _keptLive = <Future<void> Function()>[];
 /// Carol's and Dave's devices and their DM, which the groups' case leaves to the messages' case after it.
 ({_Live c, _Live d, String dm})? _carolAndDave;
 
+/// Alice's and Bob's devices, set up and friends, which the first engine case leaves to the members' case.
+({_Live a, _Live b})? _aliceAndBob;
+
 void main() {
   final skip = _env['E2E_LIVE_API'] == null ? "only against a stack, in the API's clients-mobile suite" : null;
 
@@ -160,7 +163,7 @@ void main() {
       await loadCore();
       final router = _router();
       final (alice, bob) = (_account(0), _account(1));
-      final a = await _Live.start(router, alice);
+      final a = await _Live.start(router, alice, kept: true);
       await a.engine.start();
       expect(a.engine.state.value, const EngineState.firstDevice());
       final device = a.device!;
@@ -184,7 +187,7 @@ void main() {
       await eventually(() => expect(a.readies, contains(device)), timeout: const Duration(seconds: 15));
 
       // Its key packages went up (M2 of the desktop's review): Bob, set up too and now her friend, claims one for it.
-      final b = await _Live.start(router, bob);
+      final b = await _Live.start(router, bob, kept: true);
       await b.engine.start();
       await b.engine.makeIdentity();
       await b.engine.keySaved();
@@ -193,6 +196,7 @@ void main() {
       await a.rest.acceptFriendRequest(asked.id);
       final claimed = await b.api.claimKeyPackages(alice.id);
       expect([for (final kp in claimed) kp.deviceId], [device]);
+      _aliceAndBob = (a: a, b: b);
     },
     skip: skip ?? noCore,
     timeout: const Timeout(Duration(minutes: 3)),
@@ -329,6 +333,59 @@ void main() {
     },
     skip: skip ?? noCore,
     timeout: const Timeout(Duration(minutes: 3)),
+  );
+
+  // Members and groups over MLS (PLAN-E2E-CLIENTES.md, Task 23): Carol makes a group with Dave, its group made as it's
+  // made; she adds Alice and Bob, one commit each, and removes Bob; Dave leaves with his statement, and the next
+  // member's commit takes him out. Every device the group keeps ends at one epoch.
+  test(
+    'members_are_added,_removed_and_leave',
+    () async {
+      final (pairs, others) = (_carolAndDave, _aliceAndBob);
+      if (pairs == null || others == null) fail('the cases before left no devices');
+      final (:c, :d, dm: _) = pairs;
+      final (:a, :b) = others;
+      final (alice, bob, carol, dave) = (_account(0), _account(1), _account(2), _account(3));
+      const wait = Duration(seconds: 45);
+      Future<Map<String, Object?>?> held(_Live live, String conversation) => live.host.gate
+          .handle<Map<String, Object?>>({'cmd': 'group', 'conversation_id': conversation})
+          .then<Map<String, Object?>?>((group) => group, onError: (Object _) => null);
+      Set<String> users(Map<String, Object?> group) => {
+        for (final device in (group['devices']! as List).cast<Map<String, Object?>>()) device['user_id']! as String,
+      };
+      Future<void> together(List<_Live> devices, Set<String> members, String conversation) => eventually(() async {
+        final groups = [for (final live in devices) await held(live, conversation)];
+        expect(groups.first, isNotNull);
+        for (final group in groups) {
+          expect(group, allOf(isNotNull, containsPair('epoch', groups.first!['epoch'])));
+          expect(group!['authenticator'], groups.first!['authenticator']);
+          expect(users(group), members);
+        }
+      }, timeout: wait);
+
+      // Carol and Alice, Carol and Bob, become friends: an owner adds only her friends.
+      for (final other in [a, b]) {
+        final asked = await c.rest.sendFriendRequest(other == a ? alice.id : bob.id);
+        await other.rest.acceptFriendRequest(asked.id);
+      }
+      final group = (await c.engine.createGroup('Crew', [dave.id])).id;
+      await together([c, d], {carol.id, dave.id}, group);
+
+      await c.engine.addMember(group, alice.id);
+      await c.engine.addMember(group, bob.id);
+      await together([c, d, a, b], {carol.id, dave.id, alice.id, bob.id}, group);
+
+      await c.engine.removeMember(group, bob.id);
+      await eventually(() async => expect(await held(b, group), isNull), timeout: wait);
+      await together([c, d, a], {carol.id, dave.id, alice.id}, group);
+
+      await d.engine.leaveConversation(group);
+      await together([c, a], {carol.id, alice.id}, group);
+      final listed = (await c.rest.getConversations()).singleWhere((conv) => conv.id == group);
+      expect([for (final m in listed.members) m.userId], [carol.id, alice.id]);
+    },
+    skip: skip ?? noCore,
+    timeout: const Timeout(Duration(minutes: 4)),
   );
 
   // Pushes opened on the phone (PLAN-E2E-CLIENTES.md, Task 21; decision 29): Dave's app closed, a push's engine opens

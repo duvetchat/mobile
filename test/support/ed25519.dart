@@ -1,6 +1,6 @@
 // Ed25519 (RFC 8032), for the fake API alone (test/support/fake_api.dart), which checks what the core signs as the
-// API does: the reference algorithm of the RFC's section 6, in BigInt, slow and plain. It verifies, and makes the
-// public key of a seed, which is all the fake needs.
+// API does: the reference algorithm of the RFC's section 6, in BigInt, slow and plain. It verifies, makes the public
+// key of a seed, and signs with one, as the API signs its proposals as the groups' external sender.
 import 'dart:typed_data';
 
 import 'package:crypto/crypto.dart';
@@ -81,9 +81,20 @@ bool verifyEd25519(List<int> publicKey, List<int> message, List<int> signature) 
   return _equal(_multiply(s, _base), _add(r, _multiply(h, a)));
 }
 
+/// A seed's secret scalar, as the RFC clamps the first half of its hash.
+BigInt _scalar(List<int> hash) =>
+    (_little(hash.sublist(0, 32)) & ((BigInt.one << 254) - BigInt.from(8))) | (BigInt.one << 254);
+
 /// The public key of a 32-byte seed.
-Uint8List ed25519PublicKey(List<int> seed) {
+Uint8List ed25519PublicKey(List<int> seed) => _compress(_multiply(_scalar(sha512.convert(seed).bytes), _base));
+
+/// The signature of a 32-byte seed's over [message] (the RFC's section 5.1.6).
+Uint8List ed25519Sign(List<int> seed, List<int> message) {
   final hash = sha512.convert(seed).bytes;
-  final scalar = (_little(hash.sublist(0, 32)) & ((BigInt.one << 254) - BigInt.from(8))) | (BigInt.one << 254);
-  return _compress(_multiply(scalar, _base));
+  final a = _scalar(hash);
+  final publicKey = _compress(_multiply(a, _base));
+  final r = _little(sha512.convert([...hash.sublist(32), ...message]).bytes) % _q;
+  final rEncoded = _compress(_multiply(r, _base));
+  final k = _little(sha512.convert([...rEncoded, ...publicKey, ...message]).bytes) % _q;
+  return Uint8List.fromList([...rEncoded, ..._bytes((r + k * a) % _q)]);
 }

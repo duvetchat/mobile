@@ -62,7 +62,9 @@ Future<duvet.Commit> makeGroup(
   );
 }
 
-/// The blocked group's next generation (reset_group), with the members it has and every device's key packages.
+/// The blocked group's next generation (reset_group), with the members and the owner the API has, in its order, as a
+/// creation takes them, and every device's key packages: the core takes them only as a restart may found its group
+/// (its #46), else a rule_violation.
 Future<duvet.Commit> restartGroup(E2EEngine engine, duvet.Conversation conv) async {
   final keyPackages = await _keyPackagesOf(engine, conv);
   return _founding(
@@ -71,6 +73,8 @@ Future<duvet.Commit> restartGroup(E2EEngine engine, duvet.Conversation conv) asy
       () => engine.host.handle<Map<String, Object?>>({
         'cmd': 'reset_group',
         'conversation_id': conv.id,
+        if (conv.type == duvet.ConversationType.group) 'owner': conv.ownerId,
+        'members': [for (final member in conv.members) member.userId],
         'key_packages': keyPackages,
       }),
     ),
@@ -80,21 +84,29 @@ Future<duvet.Commit> restartGroup(E2EEngine engine, duvet.Conversation conv) asy
 /// The external commit that brings this device into the group as the API serves it (join_external), on the group info
 /// of its latest epoch: held to the record of a conversation from before the cutover, and to the pinned external
 /// sender.
-Future<duvet.Commit> joinGroup(
+Future<duvet.Commit?> joinGroup(
   E2EEngine engine,
   duvet.Conversation conv,
   String externalSender,
-  LegacyRecord? expected,
-) async {
+  LegacyRecord? expected, {
+  Future<bool> Function(int generation)? mayJoin,
+}) async {
   final info = await engine.api.groupInfo(conv.id);
-  final made = await engine.host.handle<Map<String, Object?>>({
-    'cmd': 'join_external',
-    'conversation_id': conv.id,
-    'generation': info.generation,
-    'group_info': info.groupInfo,
-    'external_sender': externalSender,
-    if (expected != null) 'expected': expectedOf(expected),
-  });
+  // Decided on the generation it would join ([mayJoin]): null when this device may not on its own.
+  if (mayJoin != null && !await mayJoin(info.generation)) return null;
+  // A device that never saw the group's members (a new device, joining a group its user was in) is asked for their
+  // identities first.
+  final made = await withIdentities(
+    engine,
+    () => engine.host.handle<Map<String, Object?>>({
+      'cmd': 'join_external',
+      'conversation_id': conv.id,
+      'generation': info.generation,
+      'group_info': info.groupInfo,
+      'external_sender': externalSender,
+      if (expected != null) 'expected': expectedOf(expected),
+    }),
+  );
   return duvet.Commit(
     generation: info.generation,
     epoch: info.epoch,

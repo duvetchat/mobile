@@ -237,6 +237,79 @@ _Framing? _framing(Uint8List data) {
   }
 }
 
+/// A number in [bytes] bytes, big-endian, as TLS writes one.
+List<int> _tlsUint(int n, int bytes) => [for (var i = bytes - 1; i >= 0; i--) (n >> (8 * i)) & 0xff];
+
+/// A vector as TLS writes it in MLS: its length in 1, 2 or 4 bytes, as its first two bits say, then its bytes.
+List<int> _tlsVector(List<int> bytes) {
+  final n = bytes.length;
+  final length = n < 0x40
+      ? [n]
+      : n < 0x4000
+      ? [0x40 | (n >> 8), n & 0xff]
+      : [0x80 | (n >> 24), ..._tlsUint(n, 3)];
+  return [...length, ...bytes];
+}
+
+/// The devices with a leaf in the group a group info is of (RFC 9420's GroupInfo, its ratchet_tree extension), by
+/// their leaf index, each read from its credential, the device's certificate; with the group's ID and epoch. Null for
+/// anything that isn't a group info with its tree.
+({Uint8List groupId, int epoch, Map<int, String> leaves})? _groupInfoLeaves(Uint8List data) {
+  try {
+    final r = _Reader(data);
+    if (r.uint(2) != 1 || r.uint(2) != _groupInfo) return null;
+    r.uint(4); // the context's version and cipher suite
+    final groupId = r.vector();
+    final epoch = r.uint(8);
+    for (var skipped = 0; skipped < 3; skipped++) {
+      r.vector(); // the tree hash, the transcript hash, the context's extensions
+    }
+    final extensions = _Reader(r.vector());
+    Uint8List? tree;
+    while (extensions.left > 0) {
+      final type = extensions.uint(2);
+      final value = extensions.vector();
+      if (type == 2) tree = value;
+    }
+    if (tree == null) return null;
+    // The extension's data is the tree, a vector of optional nodes.
+    final nodes = _Reader(_Reader(tree).vector());
+    final leaves = <int, String>{};
+    for (var index = 0; nodes.left > 0; index++) {
+      if (nodes.uint(1) == 0) continue; // a blank node
+      final kind = nodes.uint(1);
+      if (kind == 2) {
+        for (var field = 0; field < 3; field++) {
+          nodes.vector(); // a parent: its key, parent hash and unmerged leaves
+        }
+        continue;
+      }
+      if (kind != 1) return null;
+      nodes.vector(); // its encryption key
+      nodes.vector(); // its signature key
+      final basic = nodes.uint(2) == 1;
+      final identity = nodes.vector();
+      for (var field = 0; field < 5; field++) {
+        nodes.vector(); // its capabilities
+      }
+      switch (nodes.uint(1)) {
+        case 1:
+          nodes.take(16); // a key package's lifetime
+        case 3:
+          nodes.vector(); // a commit's parent hash
+      }
+      nodes.vector(); // its extensions
+      nodes.vector(); // its signature
+      final certificate = asMap(cbor(identity));
+      final device = basic ? asUuid(asMap(cbor(asBytes(certificate?['body']) ?? identity))?['device']) : null;
+      if (device != null) leaves[index ~/ 2] = device;
+    }
+    return (groupId: groupId, epoch: epoch, leaves: leaves);
+  } on FormatException {
+    return null;
+  }
+}
+
 // -----------------------------------------------------------------------------------------------------------------
 // What a request sends, read as the API reads it: a refusal for anything else.
 
@@ -391,6 +464,12 @@ class _Conversation {
 
   /// What each commit taken answered, by its bytes: the same commit again gets it.
   final commits = <String, Map<String, Object?>>{};
+
+  /// Who left its group, by their leave statement, while a leaf of theirs is in it: their removals are proposed.
+  final leavers = <String, String>{};
+
+  /// The removals proposed, by generation, epoch and leaf: one an epoch.
+  final proposed = <String>{};
 }
 
 class _Segment {
@@ -513,9 +592,27 @@ class FakeApi {
     _routes = _table();
   }
 
+  /// The seed of the API's own external sender's key, which signs the removals it proposes.
+  final _senderSeed = _randomBytes(32);
+
   /// The API's Ed25519 public key, its groups' one external sender, in base64 (GET /api/e2e's). A test that sets
   /// another plays a server that changed it: the fake checks no commit against it.
-  String externalSender = base64Encode(ed25519PublicKey(_randomBytes(32)));
+  late String externalSender = base64Encode(ed25519PublicKey(_senderSeed));
+
+  /// Pairs of friends, each as its two IDs in order, and users none of whose listed devices connected lately.
+  final _friends = <String>{};
+  final _inactive = <String>{};
+
+  /// Users from whom the API keeps leave statements ([hideStatements]).
+  final _hidden = <String>{};
+
+  /// The API keeps leave statements from the user from now on: the proposals they hear and read come without them, as
+  /// a server that would have their devices miss someone's leaving.
+  void hideStatements(String user) => _hidden.add(user);
+
+  /// An entry as [user] gets it: without its statement when the API keeps those from them.
+  Map<String, Object?> _shownTo(String user, Map<String, Object?> entry) =>
+      _hidden.contains(user) && entry.containsKey('statement') ? ({...entry}..remove('statement')) : entry;
 
   /// The cutover's instant, as GET /api/e2e gives it.
   String? cutoverAt;
@@ -668,6 +765,33 @@ class FakeApi {
     for (final user in users) {
       final at = _now();
       conv.members.add({'id': _id(), 'conversation_id': conv.id, 'user_id': user, 'created_at': at, 'updated_at': at});
+    }
+  }
+
+  /// The conversation's members change as the server alone changes them: these users are taken out of it, with no
+  /// commit and no statement, as a server that skips its rules would. The owner passes to the member who came first.
+  void dropMembers(String conversationId, List<String> users) {
+    final conv = _conversation(conversationId);
+    conv.members = [
+      for (final m in conv.members)
+        if (!users.contains(m['user_id'])) m,
+    ];
+    if (users.contains(conv.ownerId) && conv.members.isNotEmpty) {
+      conv.ownerId = conv.members.first['user_id']! as String;
+    }
+  }
+
+  /// Two users become friends: each may claim the other's key packages and read their identity, as the API lets them.
+  void befriend(String a, String b) => _friends.add(([a, b]..sort()).join(':'));
+
+  bool _friendsWith(String a, String b) => _friends.contains(([a, b]..sort()).join(':'));
+
+  /// Whether any listed device of the user's connected lately, as their identity's `active` says (decision 14).
+  void setActive(String user, bool active) {
+    if (active) {
+      _inactive.remove(user);
+    } else {
+      _inactive.add(user);
     }
   }
 
@@ -1009,13 +1133,14 @@ class FakeApi {
       route('GET', '$me/conversations', _Needs.session, any: true, (ctx) {
         return _ok([for (final c in _conversationsOf(ctx.me.user)) _view(c, ctx.device)]);
       }),
+      route('POST', '$me/conversations', _Needs.session, _createConversation),
       route('GET', '$conv/mls/group-info', _Needs.listed, (ctx) {
         final group = _memberOf(ctx).group;
         if (group == null) throw _fail(404, 'no group yet');
         return _ok({'generation': group.generation, 'epoch': group.epoch, 'group_info': group.groupInfo});
       }),
       route('POST', '$conv/mls/commits', _Needs.listed, (ctx) => _ok(_commit(_memberOf(ctx), ctx, 'commits'), 201)),
-      route('GET', '$conv/mls/queue', _Needs.device, (ctx) => _queue(_memberOf(ctx), ctx.query)),
+      route('GET', '$conv/mls/queue', _Needs.device, (ctx) => _queue(_memberOf(ctx), ctx.query, ctx.me.user)),
       route('POST', '$conv/members', _Needs.listed, _addMember),
       route('DELETE', '$conv/members/@me', _Needs.listed, _leave),
       route('DELETE', '$conv/members/(?<user>$_uuidPath)', _Needs.listed, _removeMember),
@@ -1078,6 +1203,13 @@ class FakeApi {
         if (n >= share.parts) throw _fail(400, 'the share has ${share.parts} parts');
         if (ctx.bytes.length > _limit('history_share_part_bytes')) {
           throw _fail(413, 'a part is 1 MiB and its tag at most');
+        }
+        // The same bytes again change nothing, as the API's (a part sent again); other bytes are a 409.
+        if (share.uploaded[n] case final up?) {
+          if (sha256.convert(_files[up]!) != sha256.convert(ctx.bytes)) {
+            throw _fail(409, 'the part is up with other bytes');
+          }
+          return _noContent;
         }
         share.uploaded[n] = _keepFile(ctx.bytes);
         return _noContent;
@@ -1232,8 +1364,13 @@ class FakeApi {
   // ---------------------------------------------------------------------------------------------------------------
   // Identities and device lists.
 
-  /// Who may read a user's identity: themselves and whoever shares a conversation with them.
-  bool _mayRead(String viewer, String user) => viewer == user || _shareConversation(viewer, user);
+  /// Who may read a user's identity, as the API's GetIdentities: themselves, a friend, whoever shares a conversation
+  /// with them, and the members of a conversation where a device of theirs has had a leaf, who may have left it.
+  bool _mayRead(String viewer, String user) =>
+      viewer == user ||
+      _friendsWith(viewer, user) ||
+      _shareConversation(viewer, user) ||
+      _conversationsOf(viewer).any((conv) => conv.leaves.keys.any((id) => _devices[id]?.user == user));
 
   Map<String, Object?> _identityView(String user) {
     final identity = _identities[user]!;
@@ -1247,8 +1384,8 @@ class FakeApi {
         for (final id in list.devices)
           if (_devices[id]?.certificate case final certificate?) base64Encode(certificate),
       ],
-      // shortcut: every user is active, as if a listed device connected lately; a test of deviceless members sets it.
-      'active': true,
+      // Active, as if a listed device connected lately, unless a test of deviceless members says not (setActive).
+      'active': !_inactive.contains(user),
       'changed_at': identity.changedAt,
     };
   }
@@ -1458,7 +1595,7 @@ class FakeApi {
   _Answer _claimKeyPackages(_Context ctx) {
     final (session, device, user) = (ctx.me, ctx.device!, ctx.params['user']!);
     if (!_users.contains(user)) throw _fail(404, 'user not found');
-    if (user != session.user && !_shareConversation(session.user, user)) {
+    if (user != session.user && !_friendsWith(session.user, user) && !_shareConversation(session.user, user)) {
       throw _fail(
         403,
         "only your own key packages, a friend's, or those of someone you share a conversation with can be claimed",
@@ -1619,7 +1756,7 @@ class FakeApi {
     };
   }
 
-  _Answer _queue(_Conversation conv, Map<String, String> query) {
+  _Answer _queue(_Conversation conv, Map<String, String> query, String viewer) {
     // As the API binds them (its MlsQueueQuery): a number from 0, and 1 to 500 of them.
     final after = query.containsKey('after') ? int.tryParse(query['after']!) : 0;
     final limit = query.containsKey('limit') ? int.tryParse(query['limit']!) : 200;
@@ -1638,7 +1775,7 @@ class FakeApi {
     for (final entry in all.where((e) => (e['seq']! as int) > after)) {
       size += (entry['data']! as String).length;
       if (entries.length == limit || (entries.isNotEmpty && size > 4 << 20)) break;
-      entries.add(entry);
+      entries.add(_shownTo(viewer, entry));
     }
     return _ok({
       'entries': entries,
@@ -1721,8 +1858,9 @@ class FakeApi {
     if (route == 'commits' && welcome != null && !create) {
       throw _fail(400, "a welcome only comes with a group's creation");
     }
-    if (route == 'add' && (welcome == null || create)) throw _fail(400, 'an addition brings its welcome');
-    if (route == 'remove' && (welcome != null || create)) throw _fail(400, 'a removal brings no welcome');
+    // An addition's welcome brings the user's devices: one with none has none (they join later).
+    if (route != 'commits' && create) throw _fail(400, 'the members routes change a group that exists');
+    if (route == 'remove' && welcome != null) throw _fail(400, 'a removal brings no welcome');
 
     if (conv.commits[ctx['commit']] case final sent?) return sent;
     final group = conv.group;
@@ -1796,7 +1934,64 @@ class FakeApi {
         'entry': _forEvent(welcomeEntry!),
       });
     }
+    // The removals still pending go again in the epoch it makes, as an epoch's proposals end with it.
+    _proposeRemovals(conv);
     return answer;
+  }
+
+  /// The API's proposals, as the groups' external sender, of the removal of each leaf that who left still has in the
+  /// group, with their statement (PLAN-E2E-API.md, «Rutas», F): in its epoch now, once each, to its members. A leaver
+  /// whose leaves are all out is forgotten.
+  void _proposeRemovals(_Conversation conv) {
+    final group = conv.group;
+    final held = group == null ? null : _groupInfoLeaves(base64Decode(group.groupInfo));
+    if (group == null || held == null) return;
+    for (final MapEntry(key: user, value: statement) in [...conv.leavers.entries]) {
+      final leaves = [
+        for (final MapEntry(key: leaf, value: device) in held.leaves.entries)
+          if (_devices[device]?.user == user) leaf,
+      ];
+      if (leaves.isEmpty) conv.leavers.remove(user);
+      for (final leaf in leaves) {
+        if (!conv.proposed.add('${group.generation}:${group.epoch}:$leaf')) continue;
+        final entry = _addEntry(conv, {
+          'kind': 'proposal',
+          'data': _removalProposal(held.groupId, held.epoch, leaf),
+          'generation': group.generation,
+          'epoch': group.epoch,
+          'statement': statement,
+        });
+        for (final member in conv.members) {
+          final user = member['user_id']! as String;
+          _emit(user, 'MLS_PROPOSAL', {
+            'conversation_id': conv.id,
+            'generation': group.generation,
+            'epoch': group.epoch,
+            'entry': _forEvent(_shownTo(user, entry)),
+          });
+        }
+      }
+    }
+  }
+
+  /// An external sender's proposal to remove a leaf (RFC 9420, its PublicMessage), as the API's validator makes one
+  /// (OpenMLS's ExternalProposal::new_remove): from the group's first external sender, signed with its key over the
+  /// content alone, as an external sender's signature covers no group context.
+  String _removalProposal(Uint8List groupId, int epoch, int leaf) {
+    final framed = [
+      ..._tlsUint(1, 2), // the protocol's version
+      ..._tlsUint(_public, 2),
+      ..._tlsVector(groupId),
+      ..._tlsUint(epoch, 8),
+      ...[2, ..._tlsUint(0, 4)], // the sender: external, the group's first
+      ..._tlsVector(const []), // no authenticated data
+      ...[2, ..._tlsUint(3, 2), ..._tlsUint(leaf, 4)], // a proposal: a Remove of the leaf
+    ];
+    final signature = ed25519Sign(_senderSeed, [
+      ..._tlsVector(utf8.encode('MLS 1.0 FramedContentTBS')),
+      ..._tlsVector(framed),
+    ]);
+    return base64Encode([...framed, ..._tlsVector(signature)]);
   }
 
   /// An addition: the owner's commit of exactly that user, which goes to the members after it, the one it adds among
@@ -1841,13 +2036,18 @@ class FakeApi {
     return _ok(commit);
   }
 
-  /// Leaving: the user's statement, signed by the session's device, of this conversation's generation and an epoch it
-  /// has reached; without a group, none. The owner passes to the member who came first.
+  /// Leaving: the user's statement, signed by the session's device, which has a leaf in the group, of this
+  /// conversation's generation and an epoch it has reached; without a group, none. A DM has no leaving. The owner
+  /// passes to the member who came first, and each leaf of the user's has its removal proposed, with the statement.
+  /// Sent again once it went, it's refused as the user's who isn't a member (403), as the API's is.
   _Answer _leave(_Context ctx) {
     final conv = _memberOf(ctx);
     final (session, device) = (ctx.me, ctx.device!);
+    if (conv.type == 1) throw _fail(400, 'cannot remove members from a DM');
+    String? statement;
     if (conv.group case final group?) {
-      final said = _signedBody(_leaveLabel, _bytesIn(ctx['statement'], 'statement', max: 1024), device.signatureKey);
+      statement = _base64In(ctx['statement'], 'statement', max: 1024);
+      final said = _signedBody(_leaveLabel, base64Decode(statement), device.signatureKey);
       final epoch = said?['epoch'];
       final fits =
           asUuid(said?['user']) == session.user &&
@@ -1857,16 +2057,65 @@ class FakeApi {
           epoch is int &&
           epoch <= group.epoch;
       if (!fits) throw _fail(400, "the statement doesn't verify");
+      if (!conv.leaves.containsKey(device.id)) throw _fail(403, "this device isn't in the group");
     }
-    // shortcut: the API's proposals to remove the leaves of who left take its validator; none goes in the queue here.
+    final before = [for (final m in conv.members) m['user_id']! as String];
     conv.members = [
       for (final m in conv.members)
         if (m['user_id'] != session.user) m,
     ];
-    if (conv.ownerId == session.user && conv.members.isNotEmpty) {
-      conv.ownerId = conv.members.first['user_id']! as String;
+    final handed = conv.ownerId == session.user && conv.members.isNotEmpty;
+    if (handed) conv.ownerId = conv.members.first['user_id']! as String;
+    for (final user in before) {
+      _emit(user, 'CONVERSATION_MEMBER_REMOVE', {'conversation_id': conv.id, 'user_id': session.user});
+      if (handed) _emit(user, 'CONVERSATION_UPDATE', {'id': conv.id, 'name': null, 'owner_id': conv.ownerId});
+    }
+    if (statement != null) {
+      conv.leavers[session.user] = statement;
+      _proposeRemovals(conv);
     }
     return _noContent;
+  }
+
+  /// A new conversation, as the API's CreateConversation makes it: a DM with another user (the one they have, if they
+  /// have one: 201 with its group), or a group of the session's user, its owner, and those it names, 20 at most with
+  /// the owner; its members hear CONVERSATION_CREATE of a new one. It has no group yet.
+  _Answer _createConversation(_Context ctx) {
+    // shortcut: no friendship is asked: tests befriend users only for what claims and identities need.
+    List<String> users(List<String> ids) {
+      for (final id in ids) {
+        if (!_users.contains(id)) throw _fail(404, 'user not found');
+      }
+      return ids;
+    }
+
+    final String id;
+    switch (ctx['type']) {
+      case 1:
+        final other = users([_uuidIn(ctx['user_id'], 'user_id')]).single;
+        if (other == ctx.me.user) throw _fail(400, 'cannot create a DM with yourself');
+        final had = _conversationsOf(
+          ctx.me.user,
+        ).where((c) => c.type == 1 && c.members.any((m) => m['user_id'] == other));
+        if (had.firstOrNull case final dm?) return _ok(_view(dm, ctx.device), 201);
+        id = addConversation(group: false, members: [ctx.me.user, other]);
+      case 2:
+        final named = ctx['user_ids'];
+        if (named is! List || named.isEmpty) throw _fail(400, 'user_ids is required for groups');
+        final members = {
+          ctx.me.user,
+          ...users([for (final user in named) _uuidIn(user, 'user_ids')]),
+        }.toList();
+        if (members.length > _limit('group_members')) throw _fail(400, 'a group can have 20 members at most');
+        id = addConversation(group: true, members: members, owner: ctx.me.user);
+      default:
+        throw _fail(400, 'invalid conversation type (1=DM, 2=group)');
+    }
+    final made = _conversations[id]!;
+    for (final member in made.members) {
+      _emit(member['user_id']! as String, 'CONVERSATION_CREATE', _view(made, null));
+    }
+    return _ok(_view(made, ctx.device), 201);
   }
 
   // ---------------------------------------------------------------------------------------------------------------
@@ -2120,7 +2369,6 @@ class FakeApi {
     if (kind != 'share' && kind != 'catch_up') throw _fail(400, "a share's kind is share or catch_up");
     final parts = _numberIn(ctx['parts'], 'parts');
     if (parts < 1 || parts > _limit('history_share_parts')) throw _fail(400, 'a share has 1 to 64 parts');
-    if (_shares.containsKey(ctx.params['share'])) throw _fail(409, 'share id in use');
     final share = _Share(
       ctx.params['share']!,
       conv.id,
@@ -2133,6 +2381,20 @@ class FakeApi {
       _numberIn(ctx['size'], 'size'),
       parts,
     );
+    // The same package sent again is that package, as the API's (its sameAs); another under its ID is a 409.
+    if (_shares[share.id] case final there?) {
+      final same =
+          there.conversationId == share.conversationId &&
+          there.fromUser == share.fromUser &&
+          there.toUser == share.toUser &&
+          there.kind == share.kind &&
+          there.range == share.range &&
+          there.startsAt.isAtSameMomentAs(share.startsAt) &&
+          there.size == share.size &&
+          there.parts == share.parts;
+      if (!same) throw _fail(409, 'share id in use');
+      return _ok(_shareView(there), 201);
+    }
     _shares[share.id] = share;
     return _ok(_shareView(share), 201);
   }

@@ -52,6 +52,16 @@ class _Host implements CoreHost {
       throw CoreError('internal', message: 'no core');
 
   @override
+  Future<Map<String, Object?>> share(Map<String, Object?> command) async =>
+      throw CoreError('internal', message: 'no core');
+
+  @override
+  Future<Uint8List> sharePart(String shareId, int n) async => throw CoreError('internal', message: 'no core');
+
+  @override
+  Future<void> dropShare(String shareId) async {}
+
+  @override
   Future<void> close() async => closed++;
 
   @override
