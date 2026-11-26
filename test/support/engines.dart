@@ -360,6 +360,9 @@ TestDevice testDevice(
     loginChallenge: signedIn == null ? null : (challenge: signedIn.deviceChallenge, at: challengedAt ?? DateTime.now()),
     random: random ?? () => 0.5,
   );
+  // Stopped, its core closed, before its core's folder is deleted (teardowns run last first): a turn still writing
+  // there failed that deletion now and then (ENOTEMPTY on macOS). A stop that hangs fails the test, naming the turn.
+  addTearDown(() => engine.stop().timeout(const Duration(seconds: 10)));
   final states = <EngineState>[];
   engine.state.addListener(() => states.add(engine.state.value));
   connect(null);

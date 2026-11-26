@@ -383,6 +383,12 @@ class DuvetRepository implements ChatRepository {
   String? lastReadOf(ChatTarget target) => _lastRead[target.id];
 
   final _messageEvents = StreamController<(String, MessageEvent)>.broadcast();
+
+  /// A chat's event, unless the repository was disposed: work begun before [dispose] (a message's content read, a
+  /// send's answer) can end after it, and a closed controller throws on add.
+  void _emitMessage((String, MessageEvent) event) {
+    if (!_messageEvents.isClosed) _messageEvents.add(event);
+  }
   final _typing = StreamController<(String, TypingUser)>.broadcast();
 
   // A session's client: logging out (destroying the gateway) closes its HTTP
@@ -1628,7 +1634,7 @@ class DuvetRepository implements ChatRepository {
     // It went after all, its answer and its event lost: the API's copy shows in its place, under the nonce the person
     // sent it with (M5 of task 17's review).
     final copy = await fetchMessage(target, went);
-    _messageEvents.add((target.conversationId, MessageCreated(copy.copyWith(nonce: nonce))));
+    _emitMessage((target.conversationId, MessageCreated(copy.copyWith(nonce: nonce))));
   }
 
   @override
@@ -1644,13 +1650,13 @@ class DuvetRepository implements ChatRepository {
   /// This device's database changed what it holds of the conversation's messages: its chat reads what it shows again,
   /// and its preview follows.
   void _contentChanged(String conversationId) {
-    _messageEvents.add((conversationId, const ContentChanged()));
+    _emitMessage((conversationId, const ContentChanged()));
     unawaited(_previewFromDevice(conversationId));
   }
 
   /// The device is ready: what the conversations' chats and previews show is read from its database now.
   void _deviceReady() {
-    _messageEvents.add((_anyChat, const ContentChanged()));
+    _emitMessage((_anyChat, const ContentChanged()));
     for (final chat in _recents.chats.value) {
       if (chat.target case ConversationTarget(:final conversationId)) unawaited(_previewFromDevice(conversationId));
     }
@@ -1691,7 +1697,7 @@ class DuvetRepository implements ChatRepository {
     if (sent.message.nonce == sent.nonce) return;
     unawaited(
       _contentOf(sent.conversationId, [sent.message]).then(
-        (shown) => _messageEvents.add((sent.conversationId, MessageCreated(shown.single.copyWith(nonce: sent.nonce)))),
+        (shown) => _emitMessage((sent.conversationId, MessageCreated(shown.single.copyWith(nonce: sent.nonce)))),
         onError: (Object error) => debugPrint('e2e: a message sent again: $error'),
       ),
     );
@@ -1887,7 +1893,7 @@ class DuvetRepository implements ChatRepository {
         _mentionNotice(ConversationTarget(data.conversationId), data.messageId);
 
       case duvet.ReactionAddedEvent(:final data) || duvet.DMReactionAddedEvent(:final data):
-        _messageEvents.add((
+        _emitMessage((
           _anyChat,
           ReactionChanged(
             messageId: data.messageId,
@@ -1898,7 +1904,7 @@ class DuvetRepository implements ChatRepository {
           ),
         ));
       case duvet.ReactionRemovedEvent(:final data) || duvet.DMReactionRemovedEvent(:final data):
-        _messageEvents.add((
+        _emitMessage((
           _anyChat,
           ReactionChanged(
             messageId: data.messageId,
@@ -2052,14 +2058,14 @@ class DuvetRepository implements ChatRepository {
             _noticeEveryMessage(RoomTarget(spaceId: spaceId, roomId: data.roomId), message);
           }
         }
-        _messageEvents.add((data.roomId, MessageCreated(message)));
+        _emitMessage((data.roomId, MessageCreated(message)));
       case duvet.MessageUpdateEvent(:final data):
         if (data.deletedAt != null) {
           _dropEphemeral(data.roomId, data.id);
           _dropMentionNotice(data.id);
           _recents.deleted(data.roomId, data.id);
           _latestDeleted(data.roomId, data.id);
-          _messageEvents.add((data.roomId, MessageDeleted(data.id)));
+          _emitMessage((data.roomId, MessageDeleted(data.id)));
         } else {
           final update = _roomMessage(data);
           final kept = _ephemeral[data.roomId];
@@ -2068,7 +2074,7 @@ class DuvetRepository implements ChatRepository {
           } else if (kept?.indexWhere((m) => m.id == data.id) case final i? when i >= 0) {
             // Only while it's shown: one dismissed stays gone, as on the desktop.
             kept![i] = kept[i].updatedBy(update);
-            _messageEvents.add((data.roomId, MessageUpdated(update)));
+            _emitMessage((data.roomId, MessageUpdated(update)));
           }
         }
       case duvet.MessageDeletedEvent(:final data):
@@ -2076,7 +2082,7 @@ class DuvetRepository implements ChatRepository {
         _dropMentionNotice(data.id);
         _recents.deleted(data.roomId, data.id);
         _latestDeleted(data.roomId, data.id);
-        _messageEvents.add((data.roomId, MessageDeleted(data.id)));
+        _emitMessage((data.roomId, MessageDeleted(data.id)));
 
       case duvet.DMMessageCreatedEvent(:final data):
         final id = data.conversationId;
@@ -2101,8 +2107,8 @@ class DuvetRepository implements ChatRepository {
         _setLatest(id, message);
         _arrivedForNotice(message);
         _noticeEveryMessage(ConversationTarget(id), message);
-        _messageEvents.add((id, MessageCreated(message)));
-        if (message.waiting) _messageEvents.add((id, const ContentChanged()));
+        _emitMessage((id, MessageCreated(message)));
+        if (message.waiting) _emitMessage((id, const ContentChanged()));
       case duvet.DMMessageUpdatedEvent(:final data):
         if (data.conversationId case final id?) _updated(id, _directMessage(data));
       case duvet.DMMessageDeletedEvent(:final data):
@@ -2111,7 +2117,7 @@ class DuvetRepository implements ChatRepository {
         DecryptedFiles.instance.forgetMessage(data.id);
         _recents.deleted(data.conversationId, data.id);
         _latestDeleted(data.conversationId, data.id);
-        _messageEvents.add((data.conversationId, MessageDeleted(data.id)));
+        _emitMessage((data.conversationId, MessageDeleted(data.id)));
 
       // The calls the user answered from one of their devices, whose notices
       // leave the conversation read for them, as the API does. A new call
@@ -2122,9 +2128,9 @@ class DuvetRepository implements ChatRepository {
         _callAnswers.remove(data.conversationId);
 
       case duvet.MessagePinUpdatedEvent(:final data):
-        _messageEvents.add((data.roomId, MessagePinned(data.id, pinned: data.pinnedAt != null)));
+        _emitMessage((data.roomId, MessagePinned(data.id, pinned: data.pinnedAt != null)));
       case duvet.DMMessagePinUpdatedEvent(:final data):
-        _messageEvents.add((data.conversationId, MessagePinned(data.id, pinned: data.pinnedAt != null)));
+        _emitMessage((data.conversationId, MessagePinned(data.id, pinned: data.pinnedAt != null)));
 
       case duvet.TypingStartedEvent(:final data) when data.userId != me:
         _typing.add((data.roomId, TypingUser(userId: data.userId, name: data.alias ?? data.username)));
@@ -2753,7 +2759,7 @@ class DuvetRepository implements ChatRepository {
     // An encrypted message's copy brings none of its text: the chat and the preview read what the device holds, once
     // its conversation's turn applied the change (I4 of task 17's review).
     if (update.encrypted) {
-      _messageEvents.add((chatId, const ContentChanged()));
+      _emitMessage((chatId, const ContentChanged()));
       unawaited(_previewFromDevice(chatId));
       return;
     }
@@ -2761,7 +2767,7 @@ class DuvetRepository implements ChatRepository {
     final merged = known != null && known.id == update.id ? known.updatedBy(update) : null;
     if (merged != null) latest.value = {...latest.value, chatId: merged};
     _recents.edited(chatId, merged ?? update);
-    _messageEvents.add((chatId, MessageUpdated(update)));
+    _emitMessage((chatId, MessageUpdated(update)));
   }
 
   // The one before it isn't known here: fetched again when next shown.
@@ -3268,7 +3274,7 @@ class DuvetRepository implements ChatRepository {
     AuthorChanged changeIn(String chatId) =>
         AuthorChanged(userId, name: _nameIn(chatId, userId, name), avatarUrl: avatar);
     // [messageEvents] names them as each chat does.
-    _messageEvents.add((_anyChat, AuthorChanged(userId, name: name, avatarUrl: avatar)));
+    _emitMessage((_anyChat, AuthorChanged(userId, name: name, avatarUrl: avatar)));
     final renamed = {for (final MapEntry(key: id, value: m) in latest.value.entries) id: m.changedBy(changeIn(id))};
     if (renamed.entries.any((e) => !identical(e.value, latest.value[e.key]))) latest.value = renamed;
     for (final MapEntry(key: roomId, value: kept) in _ephemeral.entries) {
@@ -3493,7 +3499,7 @@ class DuvetRepository implements ChatRepository {
     if (session != _linksSession) return url;
     _links[attachmentId] = url;
     _signedAt[attachmentId] = clock.now();
-    _messageEvents.add((_anyChat, AttachmentRenewed(attachmentId, url)));
+    _emitMessage((_anyChat, AttachmentRenewed(attachmentId, url)));
     unawaited(_cache.changeMessages(attachmentId, (_, m) => m.withAttachmentLink(attachmentId, url)));
     return url;
   }
