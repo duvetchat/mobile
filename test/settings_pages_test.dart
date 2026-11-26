@@ -393,13 +393,16 @@ void main() {
         EngineState.ready,
         [self, browser],
         ['This is your only device', 'recovery key'],
-        ['keep it on'],
+        ['stays on your device list'],
       ),
       (
         'one beside others',
         EngineState.ready,
         [self, computer, browser],
-        ['recovery key', 'keep it on your device list until you remove it on one of them'],
+        [
+          'Without your recovery key, their history is lost unless another of your devices still holds it.',
+          'This device stays on your device list until you remove it on another device.',
+        ],
         ['This is your only device'],
       ),
       (
@@ -407,9 +410,15 @@ void main() {
         EngineState.newDevice,
         [unset, computer],
         ["Delete this device's"],
-        ['recovery key', 'keep it on'],
+        ['recovery key', 'stays on your device list'],
       ),
-      ('an unread list', EngineState.ready, null, ['This is your only device', 'recovery key'], ['keep it on']),
+      (
+        'an unread list',
+        EngineState.ready,
+        null,
+        ['This is your only device', 'recovery key'],
+        ['stays on your device list'],
+      ),
     ]) {
       testWidgets("deleting this device's data asks as its devices make it: $name", (tester) async {
         final repository = await pumpDevices(tester, state: state, devices: devices, failed: devices == null);
@@ -426,19 +435,21 @@ void main() {
       });
     }
 
-    // Review 24's M1 and I1: while a key change waits, the page finishes it, the banner's × notwithstanding; one that
-    // can't finish says why, and what's left: a change of keys on another device, or this device's data deleted.
-    testWidgets("while a key change waits, Finish it here; one that can't finish says why, with the ways out", (
-      tester,
-    ) async {
+    // Review 24's M1 and I1, and review 25's I1: while a key change waits, the page finishes it, the banner's ×
+    // notwithstanding; one that can't finish says why, and the one way out this core leaves: this device's data
+    // deleted and set up again, as another device's change of keys can't reach it (duvetchat/e2e#49).
+    testWidgets("while a key change waits, Finish it here; one that can't finish says why, and that deleting this "
+        "device's data gets out", (tester) async {
       final repository = await pumpDevices(tester, state: const EngineState.rotation());
       await tapLabel(tester, 'Finish changing your security keys');
       expect(repository.encryptionTaps, ['changeKeys']);
       repository.encryption.value = const EngineState.rotation(stuck: true);
       await tester.pumpAndSettle();
       expect(button('Finish changing your security keys'), findsNothing);
-      expect(find.textContaining("can't finish changing your security keys"), findsOneWidget);
-      expect(find.textContaining('Change your security keys on another device'), findsOneWidget);
+      expect(find.textContaining("This change of your security keys can't finish"), findsOneWidget);
+      expect(find.textContaining("the recovery key it showed won't work"), findsOneWidget);
+      expect(find.textContaining("delete this device's data and set it up again"), findsOneWidget);
+      expect(find.textContaining('on another device'), findsNothing);
       expect(button(Notice.deleteDevice.text), findsOneWidget);
       semantics.dispose();
     });
@@ -448,17 +459,41 @@ void main() {
     testWidgets('a removal and a change of keys name the devices an earlier removal takes along', (tester) async {
       final repository = await pumpDevices(tester);
       await tapLabel(tester, 'Remove ${computer.name}');
-      expect(find.textContaining('also takes off'), findsNothing);
+      expect(find.textContaining('This also removes'), findsNothing);
       await tapLabel(tester, 'Cancel');
 
       repository.unsentRemovalsList = [browser.id];
+      final along = "This also removes ${browser.name}, whose earlier removal didn't finish.";
       await tapLabel(tester, 'Remove ${computer.name}');
-      expect(find.textContaining('also takes off ${browser.name}'), findsOneWidget);
+      expect(find.textContaining(along), findsOneWidget);
       await tapLabel(tester, 'Cancel');
       await tapLabel(tester, 'Change security keys');
-      expect(find.textContaining('also takes off ${browser.name}'), findsOneWidget);
+      expect(find.textContaining(along), findsOneWidget);
+      await tapLabel(tester, 'Cancel');
+      // Two, the second one the API's list no longer has: named by the start of its ID.
+      repository.unsentRemovalsList = [browser.id, '0193a4b2-0000-7000-8000-00000000ffff'];
+      await tapLabel(tester, 'Change security keys');
+      expect(
+        find.textContaining("This also removes ${browser.name} and 0193a4b2, whose earlier removal didn't finish."),
+        findsOneWidget,
+      );
       await tapLabel(tester, 'Cancel');
       expect(repository.encryptionTaps, isEmpty);
+      semantics.dispose();
+    });
+
+    // Review 25's M2: the page reads the list again as the encryption's state changes, as the desktop's does: a lost
+    // device goes once the change of keys that removes it is up.
+    testWidgets("read again as the encryption's state changes: a lost device goes once its key change is up", (
+      tester,
+    ) async {
+      final repository = await pumpDevices(tester, state: const EngineState.rotation());
+      expect(find.textContaining(computer.name), findsOneWidget);
+      // Its change of keys went up: the API took the lost device off.
+      repository.deviceList = [self, browser];
+      repository.encryption.value = EngineState.ready;
+      await tester.pumpAndSettle();
+      expect(find.textContaining(computer.name), findsNothing);
       semantics.dispose();
     });
 

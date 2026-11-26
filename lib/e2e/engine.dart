@@ -225,6 +225,10 @@ class E2EEngine {
   /// The device this session is bound to, once it is.
   String? _device;
 
+  /// This installation's device, as its database names it, whether or not the session is bound to it yet (the
+  /// desktop's #self): its DEVICE_ADD is never told (review 25's M3).
+  String? _self;
+
   /// What create_identity answered, until it's uploaded: kept nowhere else, as the core gives it again.
   IdentityMade? _made;
 
@@ -658,8 +662,10 @@ class E2EEngine {
       _rotation = null;
       return _set(EngineState.update(error.minimum));
     } on duvet.DuvetIdentityChangedException {
-      // Another device changed the keys first. Its transfer, in the inbox, replaces this change once the core takes one
-      // over a change it keeps (duvetchat/e2e#49); a change still kept can never go up over another identity.
+      // Another device changed the keys first. The inbox is read, but while this change waits the core checks that
+      // device's transfer against the identity this change made and refuses it (invalid_signature), which the inbox
+      // lets go: the change can never go up, and only this device's data deleted gets out, until duvetchat/e2e#49 has
+      // the core take such a transfer (review 25's I1).
       _rotation = null;
       await takeInbox(this, _tries, _failures);
       final next = await _identity();
@@ -777,10 +783,10 @@ class E2EEngine {
       case duvet.DeviceRemovedEvent(:final data) when data.deviceId == _device:
         _soon(() async => _set(EngineState.removed));
       // Another device of the user's: its registration, then its listing, told once (Task 25), and never this one,
-      // which the start bound before this turn.
+      // which its database names from the start's first steps, bound or not (review 25's M3).
       case duvet.DeviceAddedEvent(:final data):
         _soon(() async {
-          if (_device != null && data.id != _device && await addedToTell(store, data)) {
+          if (data.id != _self && await addedToTell(store, data)) {
             _tell(DeviceNoticeKind.added, data);
           }
         });
@@ -849,6 +855,7 @@ class E2EEngine {
       if (opened.state != HostState.ready) return _closed(opened);
       final (:status, :keys) = await ownDevice(this);
       final device = status.deviceId;
+      _self = device;
       if (device == null) return _set(EngineState.removed);
       final bool bound;
       try {

@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:clock/clock.dart';
 import 'package:duvet_client/duvet.dart' as duvet;
+import 'package:flutter/foundation.dart' show ValueListenable;
 import 'package:flutter/material.dart';
 import 'package:forui/forui.dart';
 
@@ -25,15 +26,18 @@ const deleteDeviceQuestion = "Delete this device's encrypted conversations and t
 // Every listed device's names the recovery key, beside others too: one whose data went stays listed, and the client
 // can't tell such a phantom from a device that holds the history (review 24's I2).
 const deleteListedDeviceQuestion =
-    'If no other device of yours holds your encrypted conversations, their history is lost without your recovery key. '
-    "Delete this device's encrypted conversations and their keys, and sign out? Your other devices keep it on your "
-    'device list until you remove it on one of them.';
+    "Delete this device's encrypted conversations and their keys, and sign out? Without your recovery key, their "
+    'history is lost unless another of your devices still holds it. This device stays on your device list until you '
+    'remove it on another device.';
 
-/// A change of keys that can never finish (review 24's I1), and the two ways left: another device's change of keys,
-/// whose transfer ends this one, or this device's data deleted.
+/// A change of keys that can never finish (review 24's I1), and the one way out this core leaves: this device's data
+/// deleted and set up again. Another device's change of keys is none: while this one waits, the core checks that
+/// change's transfer against the identity this one made and refuses it (`invalid_signature`), which the inbox lets go,
+/// until duvetchat/e2e#49 (review 25's I1).
 const rotationStuck =
-    "This device can't finish changing your security keys: another of your devices removed a device or changed the "
-    "keys meanwhile. Change your security keys on another device, or delete this device's data.";
+    "This change of your security keys can't finish: another of your devices changed your devices or keys meanwhile, "
+    "and the recovery key it showed won't work. To use encrypted conversations here again, delete this device's data "
+    'and set it up again.';
 const deleteOnlyDeviceQuestion =
     'This is your only device with your encrypted conversations: without your recovery key, their history is lost. '
     'Delete them and their keys, and sign out?';
@@ -150,23 +154,38 @@ class _DevicesPageState extends State<DevicesPage> {
   var _failed = false;
   var _busy = false;
   var _loaded = false;
+  ValueListenable<EngineState>? _encryption;
+  // The newest read's number: an older read whose answer comes after it is dropped.
+  var _reads = 0;
 
   @override
   void didChangeDependencies() {
     super.didChangeDependencies();
     if (_loaded) return;
     _loaded = true;
+    // Read again at each change of the encryption's state, as the desktop's page is: a change of keys that went up
+    // takes its lost device off the list (review 25's M2).
+    _encryption = context.repository.encryption..addListener(_reload);
     unawaited(_load());
   }
 
+  @override
+  void dispose() {
+    _encryption?.removeListener(_reload);
+    super.dispose();
+  }
+
+  void _reload() => unawaited(_load());
+
   Future<void> _load() async {
+    final read = ++_reads;
     setState(() => _failed = false);
     try {
       final devices = await context.repository.devices();
-      if (mounted) setState(() => _devices = devices);
+      if (mounted && read == _reads) setState(() => _devices = devices);
     } catch (error) {
       debugPrint("e2e: the user's devices: ${error.runtimeType}");
-      if (mounted) setState(() => _failed = true);
+      if (mounted && read == _reads) setState(() => _failed = true);
     }
   }
 
@@ -182,21 +201,24 @@ class _DevicesPageState extends State<DevicesPage> {
     }
   }
 
-  // Removing another device, in the desktop's words; for one on the list, what changing the keys too does, for one
-  // that was lost or stolen.
-  /// What a removal or a change of keys takes along, said by name: the devices an earlier removal of this device's took
-  /// off that the API didn't take, which the next list or key change takes off too (review 24's M3). Empty for none.
+  /// What a removal or a change of keys takes along, in the desktop's words: the devices an earlier removal of this
+  /// device's took off that the API didn't take, which the next list or key change takes off too (review 24's M3), by
+  /// name, or by the start of its ID for one the API's list no longer has. Empty for none.
   Future<String> _alongWith(String? asked) async {
     final ids = await context.repository.unsentRemovals().catchError((Object _) => const <String>[]);
+    String nameOf(String id) =>
+        _devices?.where((d) => d.id == id).firstOrNull?.name ?? (id.length > 8 ? id.substring(0, 8) : id);
     final names = [
-      for (final device in _devices ?? const <duvet.Device>[])
-        if (ids.contains(device.id) && device.id != asked) device.name,
+      for (final id in ids)
+        if (id != asked) nameOf(id),
     ];
-    return names.isEmpty
-        ? ''
-        : " This also takes off ${names.join(', ')}: an earlier removal of yours didn't go through.";
+    if (names.isEmpty) return '';
+    final listed = names.length == 1 ? names.single : '${names.take(names.length - 1).join(', ')} and ${names.last}';
+    return " This also removes $listed, whose earlier removal didn't finish.";
   }
 
+  // Removing another device, in the desktop's words; for one on the list, what changing the keys too does, for one
+  // that was lost or stolen.
   Future<void> _remove(duvet.Device device) async {
     final repository = context.repository;
     final along = await _alongWith(device.id);

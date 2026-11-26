@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:duvet/e2e/cbor.dart';
@@ -6,6 +7,7 @@ import 'package:duvet/e2e/host.dart';
 import 'package:duvet/e2e/legacy.dart' show legacyRecords;
 import 'package:duvet/e2e/notices.dart';
 import 'package:duvet/e2e/store.dart';
+import 'package:duvet/encryption/devices.dart' show rotationStuck;
 import 'package:duvet_client/duvet.dart' as duvet;
 import 'package:flutter/foundation.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -195,13 +197,16 @@ void main() {
       final fake = FakeApi();
       final ana = fake.addUser();
       var puts = 0;
+      final log = <String>[];
       final client = watchedClient(
         fake,
         seen: (request) {
-          if (_said(request) == 'PUT /api/users/@me/device-list') puts++;
+          if (_said(request) != 'PUT /api/users/@me/device-list') return;
+          puts++;
+          log.add('PUT list');
         },
       );
-      final a = await firstDevice(fake, ana, client: client);
+      final a = await firstDevice(fake, ana, host: WatchedHost(TestHost().gate, log), client: client);
       final b = await approvedDevice(fake, a, client: client);
       final c = await approvedDevice(fake, a);
       final d = await approvedDevice(fake, a);
@@ -219,6 +224,20 @@ void main() {
         expect(device.state, EngineState.ready);
         await until(() async => (await _status(device))['device_list'] == served.deviceList);
       }
+
+      // A third lost race is thrown, the own user observed first (the core's N3; review 25's M4).
+      log.clear();
+      for (var race = 0; race < 3; race++) {
+        fake.refuse(
+          _list,
+          409,
+          body: {'error': 'device list changed', 'device_list': served.deviceList, 'version': served.deviceListVersion},
+        );
+      }
+      await expectLater(a.engine.removeDevice(_deviceOf(b)), throwsA(isA<duvet.DuvetDeviceListChangedException>()));
+      expect(log.where((step) => step == 'PUT list'), hasLength(3));
+      expect(log.last, 'observe_user');
+      expect(await _deviceIds(a), unorderedEquals([_deviceOf(a), _deviceOf(b)]));
       await Future.wait([
         for (final device in [a, b, c, d]) device.engine.stop(),
       ]);
@@ -427,8 +446,8 @@ void main() {
       expect(await _deviceIds(again), unorderedEquals([_deviceOf(a), _deviceOf(kept)]));
       await until(() async => (await _status(kept))['identity_key'] == made);
 
-      // Cut after the API took it, its answer lost: the person saved its key before it went, and the next start confirms
-      // it, with nothing shown and nothing sent again.
+      // Cut after the API took it, its answer lost: the person saved its key before it went, and the next start
+      // confirms it, with nothing shown and nothing sent again.
       await again.engine.changeKeys();
       final second = (await _status(again))['identity_key'];
       fake.loseAnswer(_identity);
@@ -526,9 +545,10 @@ void main() {
     timeout: _slow,
   );
 
-  // Review 24's rule 4: a key change another device's beat (409 identity changed) reads the inbox, where the winner's
-  // transfer replaces it once the core takes one over a change it keeps (duvetchat/e2e#49). Until then the change
-  // kept can never go up over another identity, and says so.
+  // Review 24's rule 4 and review 25's I1: a key change another device's beat (409 identity changed) reads the inbox,
+  // but while this change waits the core checks the winner's transfer against the identity this change made and
+  // refuses it (invalid_signature), until duvetchat/e2e#49. The change can never finish, and its words name the one
+  // way out: this device's data deleted and set up again.
   test(
     "a_key_change_another_device's_beat_reads_the_inbox",
     () async {
@@ -554,6 +574,9 @@ void main() {
         greaterThan(requests.indexOf('PUT /api/users/@me/identity')),
       );
       expect(b.state, const EngineState.rotation(stuck: true));
+      // Another device's change of keys is no way out: the words name only this device's data deleted.
+      expect(rotationStuck, contains("delete this device's data and set it up again"));
+      expect(rotationStuck, isNot(contains('on another device')));
       await Future.wait([a.engine.stop(), b.engine.stop()]);
     },
     skip: noCore,
@@ -609,6 +632,35 @@ void main() {
       expect(notices.map(_told), [(DeviceNoticeKind.added, _deviceOf(b), 'Pixel 8 Pro')]);
       expect(onlyDevice(await a.api.devices()), isFalse);
       await Future.wait([a.engine.stop(), b.engine.stop()]);
+    },
+    skip: noCore,
+    timeout: _slow,
+  );
+
+  // Review 25's M3: this installation's device is known from its database before the session binds (the desktop's
+  // #self), so a start the API refused before it bound still tells of another device of the user's that registers.
+  test(
+    "a_device_that_registers_while_this_one's_start_is_refused_is_told",
+    () async {
+      final fake = FakeApi();
+      final ana = fake.addUser();
+      final a = await firstDevice(fake, ana);
+      await a.engine.stop();
+      // The app opens again on a new session, whose binding (the device's keys registered again) the API refuses for
+      // good: the start fails before it binds.
+      fake.refuse((method: 'POST', path: '/api/users/@me/devices'), 403, body: {'error': 'forbidden'});
+      final again = testDevice(fake, ana, host: a.host, store: a.store);
+      final notices = <DeviceNotice>[];
+      again.engine.deviceNotices.listen(notices.add);
+      await again.engine.start();
+      expect(again.state, const EngineState.failed());
+
+      final b = testDevice(fake, ana);
+      await b.engine.start();
+      await until(() => again.heard.any((event) => event.type == 'DEVICE_ADD'));
+      await turnEnded(again);
+      expect(notices.map(_told), [(DeviceNoticeKind.added, _deviceOf(b), 'Pixel 8 Pro')]);
+      await Future.wait([again.engine.stop(), b.engine.stop()]);
     },
     skip: noCore,
     timeout: _slow,
@@ -723,6 +775,43 @@ void main() {
         await app.repository.logIn('user@duvet.chat', 'secret');
         await until(() => told.contains(Notice.inactiveWarning.fill({'device': 'Pixel 8 Pro'})));
         expect(told, hasLength(2));
+      },
+      skip: noCore,
+      timeout: _slow,
+    );
+
+    // Review 25's M1: no push tells of a device, so a notice the engine tells while the app is out of sight waits for
+    // the app to come to the front.
+    test(
+      'a_device_notice_heard_out_of_sight_shows_once_the_app_is_in_front',
+      () async {
+        final fake = FakeApi();
+        final ana = fake.addUser();
+        final app = await appOn(fake, ana);
+        final told = <String>[];
+        final heard = app.repository.deviceNotices.listen(told.add);
+        addTearDown(heard.cancel);
+        await app.ready();
+
+        app.repository.wentToBack();
+        final other = testDevice(fake, ana);
+        await other.engine.start();
+        await other.engine.stop();
+        // The engine told of it, out of sight: nothing shows.
+        final record = File('${app.support.path}/e2e/$ana/client.json');
+        await until(() async {
+          if (!await record.exists()) return false;
+          final added = (jsonDecode(await record.readAsString()) as Map)[toldAdded];
+          return added is List && added.contains(other.registered.first);
+        });
+        await pumpEventQueue();
+        expect(told, isEmpty);
+
+        app.repository.cameToFront();
+        await until(() => told.isNotEmpty);
+        expect(told, [
+          Notice.deviceAdded.fill({'name': 'Pixel 8 Pro'}),
+        ]);
       },
       skip: noCore,
       timeout: _slow,

@@ -95,12 +95,11 @@ Future<void> _unlist(E2EEngine engine, String deviceId) async {
       version = await engine.api.putDeviceList(
         duvet.DeviceListUpload(deviceList: list, baseVersion: served.deviceListVersion),
       );
-    } on duvet.DuvetDeviceListChangedException {
-      if (round >= 3) rethrow;
-      continue;
-    } catch (_) {
-      // Taken or not, the own user is observed before another list is signed: what it can't reach, the next one does.
-      await _observedOwn(engine).then<void>((_) {}, onError: (Object error) => debugPrint('e2e: the own user: $error'));
+    } catch (error) {
+      if (error is duvet.DuvetDeviceListChangedException && round < 3) continue;
+      // Taken or not, the own user is observed before another list is signed, a third lost race's too (review 25's
+      // M4): what it can't reach, the next one does.
+      await _observedOwn(engine).then<void>((_) {}, onError: (Object own) => debugPrint('e2e: the own user: $own'));
       rethrow;
     }
     await listUploaded(engine, version);

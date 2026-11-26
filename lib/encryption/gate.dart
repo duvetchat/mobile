@@ -106,8 +106,8 @@ class _EncryptionBannerState extends State<EncryptionBanner> {
       action: 'Download',
       run: (_) => launchUrl(downloadPage, mode: LaunchMode.externalApplication),
     ),
-    // A change of the security keys that can never finish (review 24's I1): why, and deleting this device's data; the
-    // other way out, a change of keys on another device, is said.
+    // A change of the security keys that can never finish (review 24's I1): why, and deleting this device's data, the
+    // one way out this core leaves, as another device's change of keys can't reach it (review 25's I1).
     EngineStage.ready when state.stuck => (
       text: rotationStuck,
       action: Notice.deleteDevice.text,

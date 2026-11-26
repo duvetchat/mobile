@@ -1016,6 +1016,10 @@ class DuvetRepository implements ChatRepository {
   @override
   void cameToFront() {
     _inFront = true;
+    // What was told of the user's devices out of sight shows now: no push tells of it (review 25's M1).
+    final away = [..._devicesToldAway];
+    _devicesToldAway.clear();
+    away.forEach(_showDeviceNotice);
     unawaited(_startEncryption());
     final renewing = _renewQuietly(renewInFrontAfter);
     if (status.value == LiveStatus.online) return;
@@ -1121,12 +1125,20 @@ class DuvetRepository implements ChatRepository {
   @override
   Stream<String> get deviceNotices => _deviceNotices.stream;
 
+  // The device notices told while the app was out of sight, each once, for its return to the front.
+  final _devicesToldAway = <String>{};
+
   void _toldOfDevice(DeviceNotice notice) {
-    if (_deviceNotices.isClosed) return;
-    _deviceNotices.add(switch (notice.kind) {
+    final text = switch (notice.kind) {
       DeviceNoticeKind.added => Notice.deviceAdded.fill({'name': notice.device.name}),
       DeviceNoticeKind.inactive => Notice.inactiveWarning.fill({'device': notice.device.name}),
-    });
+    };
+    if (_inFront) return _showDeviceNotice(text);
+    _devicesToldAway.add(text);
+  }
+
+  void _showDeviceNotice(String text) {
+    if (!_deviceNotices.isClosed) _deviceNotices.add(text);
   }
 
   @override
