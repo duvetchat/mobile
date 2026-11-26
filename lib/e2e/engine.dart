@@ -454,10 +454,11 @@ class E2EEngine {
   /// people, read in the turn (send.dart's hold).
   Future<List<String>> _held(String conversationId) async => _contacts.holding(await _groups.people(conversationId));
 
-  /// What waited for the person's yes goes: messages and edits, as at a READY, and the catch-ups held for it.
+  /// What waited for the person's yes goes: messages and edits, as at a READY, and the catch-ups and shares held for it.
   void _released() {
     _soon(() => _whenReady(_sends.resendAll));
     _groups.catchUpsAgain();
+    _histories.again();
   }
 
   /// Other users observed as the API serves them now, a failure logged: what the core held of them stays.

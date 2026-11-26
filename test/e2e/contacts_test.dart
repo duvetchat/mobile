@@ -678,6 +678,37 @@ void main() {
       timeout: _slow,
     );
 
+    // Rule 3 with task 31's shares: a share of the conversation's history to a member whose verified key changed sends
+    // no part, key or completion before the person's yes, which sends the rest.
+    test(
+      'a_share_to_a_verified_contact_whose_key_changed_waits_for_the_yes',
+      () async {
+        final seen = <http.Request>[];
+        final (fake: _, ana: _, :bo, :dm, :a, :b) = await _anaAndBo(seen: seen);
+        final pastPut = RegExp(r'/history-shares/[0-9a-f-]+/(parts/\d+|complete)$|/api/devices/[0-9a-f-]+/inbox$');
+        int sent() => seen.where((r) => r.method != 'GET' && pastPut.hasMatch(r.url.path)).length;
+        await _inGroup(a, b, dm);
+        await a.engine.sendMessage(_message(dm, 'before'));
+        final number = await a.engine.safetyNumber(bo);
+        await a.engine.verifyContact(bo, number.digits);
+        await _newKeys(b);
+        await _changeNoted(a, bo);
+        final before = sent();
+        await a.engine.shareHistory(dm, bo, 'all');
+        await turnEnded(a);
+        a.clock.advance(const Duration(hours: 1));
+        await turnEnded(a);
+        expect(sent(), before);
+        await a.engine.confirmKeyChanges([(user: bo, change: _changeOf(a, bo))]);
+        await until(
+          () => seen.any((r) => r.method != 'GET' && r.url.path.endsWith('/complete')),
+          what: 'the share completed after the yes',
+        );
+      },
+      skip: noCore,
+      timeout: _slow,
+    );
+
     // Review 28's Minor 5: a change and its hold outlast a restart; one the record never took is found again at each
     // start, as the person had verified the contact.
     test(
