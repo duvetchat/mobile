@@ -192,6 +192,9 @@ class _ResultsSkeleton extends StatelessWidget {
 // ---------------------------------------------------------------------------
 
 const searchHas = ['link', 'embed', 'file', 'image', 'video', 'sound', 'sticker'];
+
+/// What has: takes in a conversation: its messages have no previews, and the device doesn't search their links.
+const conversationHas = ['file', 'image', 'video', 'sound', 'sticker'];
 final _filterWord = RegExp(r'^(from|mentions|in|has|pinned|before|after|during):(.*)$', caseSensitive: false);
 
 /// A room's name as `in:`'s value: lower case, without spaces.
@@ -246,7 +249,8 @@ SearchQuery parseSearch(
         if (room == null) throw FormatException('No room is called $named');
         roomIds.add(room.id);
       case 'has':
-        if (!searchHas.contains(value)) throw FormatException('has: takes ${searchHas.join(', ')}');
+        final takes = conversationId == null ? searchHas : conversationHas;
+        if (!takes.contains(value)) throw FormatException('has: takes ${takes.join(', ')}');
         has.add(value);
       case 'pinned':
         if (value != 'true' && value != 'false') throw const FormatException('pinned: takes true or false');
@@ -284,8 +288,8 @@ SearchQuery parseSearch(
 typedef SearchSuggestion = ({String label, String? detail, String insert, Member? member, Room? room});
 
 /// The desktop's suggestions for [token]: the filters, then the members, the
-/// rooms or the values a filter takes. `pinned:` is left to a toggle, though
-/// [parseSearch] still reads it.
+/// rooms or the values a filter takes, a conversation's (not [inSpace]) has:
+/// its own. `pinned:` is left to a toggle, though [parseSearch] still reads it.
 List<SearchSuggestion> searchSuggestions(
   String token, {
   required List<Member> members,
@@ -294,6 +298,7 @@ List<SearchSuggestion> searchSuggestions(
   DateTime? now,
 }) {
   final today = _isoDay(now ?? DateTime.now());
+  final has = inSpace ? searchHas : conversationHas;
   final m = RegExp(r'^(\w+):(\S*)$').firstMatch(token);
   if (m == null) {
     final typed = token.toLowerCase();
@@ -302,7 +307,7 @@ List<SearchSuggestion> searchSuggestions(
         ('from', 'Messages by a member'),
         ('mentions', 'Messages that mention a member'),
         if (inSpace) ('in', 'Messages in a room'),
-        ('has', 'link, embed, file, image, video, sound or sticker'),
+        ('has', '${has.take(has.length - 1).join(', ')} or ${has.last}'),
         ('before', 'Messages before a date, like $today'),
         ('after', 'Messages after a date'),
         ('during', 'Messages on a date'),
@@ -331,7 +336,7 @@ List<SearchSuggestion> searchSuggestions(
         (label: '#${r.name}', detail: null, insert: 'in:${roomSlug(r.name)} ', member: null, room: r),
     ],
     'has' => [
-      for (final v in searchHas)
+      for (final v in has)
         if (v.startsWith(value)) (label: v, detail: null, insert: 'has:$v ', member: null, room: null),
     ],
     'before' || 'after' || 'during' when today.startsWith(value) => [
@@ -360,6 +365,7 @@ class _InChatSearchState extends State<InChatSearch> {
   bool _pinnedOnly = false;
   List<Member> _members = const [];
   SearchQuery? _shown;
+  SearchQuery? _next;
   List<SearchHit>? _hits;
   int _total = 0;
   String? _failure;
@@ -424,9 +430,9 @@ class _InChatSearchState extends State<InChatSearch> {
   Future<void> _run({bool more = false}) async {
     final SearchQuery query;
     if (more) {
-      final last = _hits?.lastOrNull;
-      if (_shown == null || last == null) return;
-      query = _shown!.from(last.message.id);
+      final next = _next;
+      if (next == null) return;
+      query = next;
     } else {
       final target = widget.target;
       try {
@@ -472,12 +478,14 @@ class _InChatSearchState extends State<InChatSearch> {
       setState(() {
         _hits = more ? [...?_hits, ...page.hits] : page.hits;
         _total = page.total;
+        _next = page.next;
       });
-    } catch (_) {
+    } catch (e) {
       if (!mounted || request != _request) return;
       setState(() {
         if (!more) _hits = const [];
-        _failure = 'The search failed';
+        // What a conversation's search can't do says why: search_split, not_ready, the core's own limits.
+        _failure = e is ActionFailed ? e.message : 'The search failed';
       });
     } finally {
       if (mounted && request == _request) setState(() => _loading = false);
@@ -590,7 +598,7 @@ class _InChatSearchState extends State<InChatSearch> {
                       ),
                   ],
                   if (hits != null && _failure != null) ListNote(_failure!),
-                  if (hits != null && hits.length < _total)
+                  if (hits != null && hits.length < _total && _next != null)
                     if (_loading)
                       const _ResultsSkeleton(rows: 2)
                     else
@@ -740,6 +748,20 @@ class _Chip extends StatelessWidget {
   }
 }
 
+/// The search everywhere, as the desktop's: each of [spaces]' (the user's by default), which the API searches, and one
+/// search of this device's over every conversation (decision 42), at once, then the 20 newest messages found, newest
+/// first. One that fails leaves its messages out.
+Future<List<SearchHit>> searchEverywhere(ChatRepository repository, String text, {Iterable<String>? spaces}) async {
+  final found = <SearchHit>[];
+  await Future.wait([
+    for (final space in spaces ?? [for (final s in repository.spaces.value) s.id])
+      repository.search(SearchQuery(text, spaceId: space)).then((p) => found.addAll(p.hits), onError: (_) {}),
+    repository.search(SearchQuery(text)).then((p) => found.addAll(p.hits), onError: (_) {}),
+  ]);
+  found.sort((a, b) => b.message.createdAt.compareTo(a.message.createdAt));
+  return found.take(20).toList();
+}
+
 enum _Filter { all, messages, people, spaces }
 
 /// The Chats search field and its Global Search dropdown: a glass panel 8pt
@@ -797,21 +819,11 @@ class _GlobalSearchState extends State<GlobalSearch> {
       setState(() => _messages = const []);
       return;
     }
-    final repository = context.repository;
     setState(() => _searching = true);
-    final queries = [
-      for (final s in repository.spaces.value) SearchQuery(text, spaceId: s.id),
-      // The recent conversations: each is a request of its own.
-      for (final c in repository.conversations.value.take(5)) SearchQuery(text, conversationId: c.id),
-    ];
-    final found = <SearchHit>[];
-    await Future.wait([
-      for (final q in queries) repository.search(q).then((p) => found.addAll(p.hits), onError: (_) {}),
-    ]);
-    found.sort((a, b) => b.message.createdAt.compareTo(a.message.createdAt));
+    final found = await searchEverywhere(context.repository, text);
     if (mounted && request == _request) {
       setState(() {
-        _messages = found.take(20).toList();
+        _messages = found;
         _searching = false;
       });
     }

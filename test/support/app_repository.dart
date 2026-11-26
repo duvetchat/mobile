@@ -50,13 +50,16 @@ class TestApp {
 }
 
 /// [user]'s app on [fake], signed in and connected, its engine starting: [TestApp.ready] sets its device up. Its
-/// connection hands on only what [hears] lets through.
+/// connection hands on only what [hears] lets through. [answer] takes a request before the fake does (null passes it
+/// on), as a Space's search, which the fake has none of; [host] stands between the engine and its core.
 Future<TestApp> appOn(
   FakeApi fake,
   String user, {
   RecentChatsStore? recents,
   ChatCacheStore? cache,
   bool Function(GatewayEvent event)? hears,
+  Future<http.Response?> Function(http.Request request)? answer,
+  CoreHost Function(CoreGate core)? host,
 }) async {
   final support = Directory.systemTemp.createTempSync('duvet-app-');
   const paths = MethodChannel('plugins.flutter.io/path_provider');
@@ -81,6 +84,7 @@ Future<TestApp> appOn(
       _ => null,
     };
     if (own != null) return http.Response(jsonEncode(own), 200, headers: {'content-type': 'application/json'});
+    if (await answer?.call(request) case final answered?) return answered;
     final copy = http.Request(request.method, request.url)
       ..headers.addAll(request.headers)
       ..bodyBytes = request.bodyBytes;
@@ -93,7 +97,10 @@ Future<TestApp> appOn(
     httpClient: () => client,
     connectGateway: false,
     cacheStore: cache ?? MemoryChatCacheStore(),
-    encryptionHost: () => core = TestHost(folder: Directory('${support.path}/core')..createSync()).gate,
+    encryptionHost: () {
+      core = TestHost(folder: Directory('${support.path}/core')..createSync()).gate;
+      return host?.call(core) ?? core;
+    },
     onScreen: () => true,
   );
   await repository.logIn('user@duvet.chat', 'secret');

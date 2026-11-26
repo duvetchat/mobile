@@ -980,6 +980,10 @@ class SearchQuery {
 
   /// The last message of the page before: the next page starts after it.
   final String? cursor;
+
+  /// A search of this device's database (a conversation's, or every conversation's): the rows of the pages before,
+  /// which the next page starts past.
+  final int offset;
   const SearchQuery(
     this.text, {
     this.spaceId,
@@ -992,6 +996,7 @@ class SearchQuery {
     this.before,
     this.after,
     this.cursor,
+    this.offset = 0,
   });
 
   /// Nothing to look for: the API refuses it.
@@ -1005,8 +1010,8 @@ class SearchQuery {
       before == null &&
       after == null;
 
-  /// The same search, from the page after [cursor].
-  SearchQuery from(String cursor) => SearchQuery(
+  /// The same search, from the page after [cursor], or past [offset] rows of this device's.
+  SearchQuery from({String? cursor, int offset = 0}) => SearchQuery(
     text,
     spaceId: spaceId,
     conversationId: conversationId,
@@ -1018,11 +1023,12 @@ class SearchQuery {
     before: before,
     after: after,
     cursor: cursor,
+    offset: offset,
   );
 }
 
-/// A page of a message search, and how many it found in all (up to 1000).
-typedef SearchPage = ({List<SearchHit> hits, int total});
+/// A page of a message search, how many it found in all (up to 1000), and where the next page starts: null at the end.
+typedef SearchPage = ({List<SearchHit> hits, int total, SearchQuery? next});
 
 /// A file the server refused as too large (HTTP 413).
 class UploadTooLarge implements Exception {

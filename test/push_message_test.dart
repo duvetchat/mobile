@@ -1,3 +1,5 @@
+import 'dart:convert';
+
 import 'package:duvet/data/models.dart';
 import 'package:duvet/push/push_message.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -34,10 +36,84 @@ void main() {
     expect(push.link.toString(), 'https://duvet.chat/channels/$_space/$_room/$_message');
   });
 
-  test('fromData reads a conversation\'s message', () {
-    final push = Push.fromData(_data(space: null, room: null, conversation: _conversation)) as MessagePush;
-    expect((push.chatId, push.target, push.place), (_conversation, const ConversationTarget(_conversation), ''));
-    expect(push.link.toString(), 'https://duvet.chat/conversations/$_conversation/$_message');
+  // An end-to-end encrypted API never pushes a conversation's message with its text: one that did would show words
+  // the server wrote, under a member's name.
+  test("fromData reads no conversation's message of the old type, which carries the server's text", () {
+    expect(Push.fromData(_data(space: null, room: null, conversation: _conversation)), isNull);
+  });
+
+  // PLAN-E2E-API.md, «Push»; decision 29: who wrote it, where and when, its number, and its queue entry when it fit.
+  test("fromData reads a conversation's encrypted message: its number and its entry, and no text", () {
+    final entry = {
+      'seq': 7,
+      'kind': 'message',
+      'data': 'AAEC',
+      'sent_at': 1794702917695,
+      'generation': 0,
+      'epoch': 2,
+      'message_id': _message,
+      'sender_user': _maya,
+      'sender_device': _space,
+    };
+    final data = {
+      'type': 'encrypted_message',
+      'message_id': _message,
+      'author_id': _maya,
+      'author_name': 'Maya',
+      'author_avatar': '',
+      'place': 'Friday raid',
+      'sent_at': '1794702917695',
+      'conversation_id': _conversation,
+      'seq': '7',
+      'entry': jsonEncode(entry),
+    };
+    final push = Push.fromData(data)! as EncryptedMessagePush;
+    expect(
+      (push.messageId, push.conversationId, push.authorId, push.authorName, push.place, push.seq),
+      (_message, _conversation, _maya, 'Maya', 'Friday raid', 7),
+    );
+    expect(push.entry, entry);
+    expect(push.sentAt, DateTime.fromMillisecondsSinceEpoch(1794702917695, isUtc: true));
+    // Without its entry (a message too long for it), or with one that isn't JSON: read from the queue.
+    expect((Push.fromData({...data}..remove('entry'))! as EncryptedMessagePush).entry, isNull);
+    expect((Push.fromData({...data, 'entry': '{not json'})! as EncryptedMessagePush).entry, isNull);
+    // Without what says which message it is, or where: nothing.
+    expect(Push.fromData({...data, 'conversation_id': '../x'}), isNull);
+    expect(Push.fromData({...data}..remove('seq')), isNull);
+
+    // What it shows: the device's text, the chat's earlier lines as the device holds them, or «New message».
+    final shown = push.shown({_message: 'lunch?', _room: 'before'});
+    expect(
+      (shown.text, shown.authorName, shown.place, shown.target),
+      ('lunch?', 'Maya', 'Friday raid', const ConversationTarget(_conversation)),
+    );
+    expect(shown.earlier, {_room: 'before'});
+    expect(push.shown(const {}).text, 'New message');
+  });
+
+  // As the API's push worded a room's (push.Text): the device's text has the message's tokens, and its spoilers.
+  test("a conversation's push words its text as the API words a room's, with no room's name and no spoiler", () {
+    const ada = '0193a4b2-0000-7000-8000-0000000000ad';
+    final text = 'hi <@$ada> and <@$_maya>, see <#$_room> :) <:$_space:>\n\n  ||the ending\nof it|| ok';
+    expect(pushText(text, names: {ada: 'Ada'}), 'hi @Ada and @unknown, see #unknown :) :emoji: ▮▮▮ ok');
+    expect(pushText('  ||all of it||  '), '▮▮▮');
+    expect(pushText(' \n '), isNull);
+    expect(pushText('x' * 2500)!.runes.length, 2000);
+    final push =
+        Push.fromData({
+              'type': 'encrypted_message',
+              'message_id': _message,
+              'author_id': _maya,
+              'author_name': 'Maya',
+              'sent_at': '1794702917695',
+              'conversation_id': _conversation,
+              'seq': '7',
+            })!
+            as EncryptedMessagePush;
+    final shown = push.shown({_message: 'for <@$ada>', _room: ' '}, names: {ada: 'Ada'});
+    expect(shown.text, 'for @Ada');
+    expect(shown.earlier, isEmpty);
+    expect(push.shown({_message: '||   ||'}).text, '▮▮▮');
   });
 
   test('fromData reads a session\'s last push, and nothing of a type or a message it can\'t read', () {

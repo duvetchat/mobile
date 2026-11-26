@@ -24,11 +24,12 @@ import 'identity.dart';
 import 'inbox.dart';
 import 'failures.dart';
 import 'key_packages.dart';
+import 'search.dart';
 import 'send.dart';
 import 'store.dart';
 import 'sync.dart';
 
-export 'content.dart' show MessageStatus, ShownMessage;
+export 'content.dart' show Authored, MessageStatus, ShownMessage;
 export 'send.dart' show Outgoing, Pending, TooManyWaiting;
 export 'sync.dart' show ConversationNotice, ConversationState, Restart;
 
@@ -278,6 +279,60 @@ class E2EEngine {
   /// What this device's database shows of these messages of the conversation: a row for each it holds.
   Future<List<ShownMessage>> messages(String conversationId, List<String> ids) =>
       shownMessages(host, conversationId, ids);
+
+  /// The core's search of this device's conversations (lib/e2e/search.dart): a read, as [messages] is.
+  Future<DeviceFound> search(DeviceSearch request) => searchDevice(host, request);
+
+  /// The text this device's database holds of [messageId] of the conversation, from [authorId], the author the API
+  /// names: read now, and again each time the conversation's messages change here (its entry applied), [wait] at most.
+  /// Null without it by then, or for one without text: its notice then says who wrote it and that a message came, as
+  /// the desktop's deviceText does. It's kept nowhere.
+  Future<String?> textOf(String conversationId, String messageId, String authorId, Duration wait) async {
+    final timeUp = Completer<void>();
+    var changed = Completer<void>();
+    final heard = messagesChanged.listen((id) {
+      if (id == conversationId && !changed.isCompleted) changed.complete();
+    });
+    final cancel = clock.later(wait, timeUp.complete);
+    try {
+      while (!timeUp.isCompleted) {
+        // A change that comes while it reads has it read again.
+        final next = changed = Completer<void>();
+        final Map<String, String> texts;
+        try {
+          texts = await textsOf(host, conversationId, [(id: messageId, author: authorId)]);
+        } on CoreError {
+          return null;
+        }
+        if (texts[messageId] case final text?) return text;
+        await Future.any([next.future, timeUp.future]);
+      }
+      return null;
+    } finally {
+      cancel();
+      await heard.cancel();
+    }
+  }
+
+  /// A push's message, as the push's engine asks this one for it while this one holds the core (lib/e2e/
+  /// push_decrypt.dart; decision 29): its [entry] taken in its conversation's turn, or, without one, the conversation's
+  /// queue read; then the texts this device's database holds of [lines] (the push's message first, then its chat's
+  /// earlier ones), the first waited for [wait] at most.
+  Future<Map<String, String>> pushTexts(
+    String conversationId,
+    Map<String, Object?>? entry,
+    List<Authored> lines,
+    Duration wait,
+  ) async {
+    _soon(
+      () => _whenReady(
+        () => entry == null ? _groups.sync(conversationId, read: true) : _groups.take(conversationId, [entry]),
+      ),
+    );
+    final first = lines.firstOrNull;
+    if (first != null) await textOf(conversationId, first.id, first.author, wait);
+    return textsOf(host, conversationId, lines);
+  }
 
   /// The person's messages of the conversation still being sent, in their order, with what goes with them.
   Future<List<Pending>> pendingMessages(String conversationId) => _sends.pending(conversationId);

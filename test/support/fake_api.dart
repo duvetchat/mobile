@@ -441,11 +441,14 @@ class _Connection {
 }
 
 class _Context {
-  _Context(this.session, this.device, this.params, this.query, this.body, this.bytes, this.headers);
+  _Context(this.session, this.device, this.params, this.query, this.body, this.bytes, this.headers, this.queryAll);
   final _Session? session;
   final _Device? device;
   final Map<String, String> params;
   final Map<String, String> query;
+
+  /// The query's values, every one of a key that repeats (a search's `has`).
+  final Map<String, List<String>> queryAll;
   final Map<String, Object?>? body;
   final Uint8List bytes;
   final Map<String, String> headers;
@@ -555,6 +558,30 @@ class FakeApi {
     final challenge = _randomBytes(32);
     _sessions[token] = _Session(user, token, challenge);
     return (token: token, deviceChallenge: base64Encode(challenge));
+  }
+
+  /// The session ends, as one past its time does: each of its requests is refused (401) from now on.
+  void endSession(String token) => _sessions.remove(token);
+
+  /// The push of a conversation's message as the API sends it (push.EncryptedData; PLAN-E2E-API.md, «Push»): who wrote
+  /// it ([authorName] as the API names them), where ([place]: a group's name, or nothing in a DM) and when, its number,
+  /// and its queue entry as the queue gives it while the whole data fits FCM's 4096 bytes. Never its text.
+  Map<String, String> pushOf(String conversationId, String messageId, {String authorName = 'Bo', String place = ''}) {
+    final conv = _conversation(conversationId);
+    final m = conv.messages.firstWhere((m) => m['id'] == messageId);
+    final data = {
+      'type': 'encrypted_message',
+      'message_id': messageId,
+      'author_id': m['author_id']! as String,
+      'author_name': authorName,
+      'author_avatar': '',
+      'place': place,
+      'sent_at': '${m['sent_at']}',
+      'conversation_id': conversationId,
+      'seq': '${m['seq']}',
+    };
+    final entry = jsonEncode(_messageEntry(m));
+    return jsonEncode({...data, 'entry': entry}).length <= 4096 ? {...data, 'entry': entry} : data;
   }
 
   /// A conversation of these users (its members by their membership's ID, in this order), and its ID.
@@ -764,6 +791,7 @@ class FakeApi {
         body,
         request.bodyBytes,
         request.headers,
+        request.url.queryParametersAll,
       );
       final answer = route.handler(ctx);
       final events = [..._outbox];
@@ -935,6 +963,16 @@ class FakeApi {
               if (!conv.deleted.contains(m['id']) && (before == null || (m['id']! as String).compareTo(before) < 0)) m,
           ].take(count).toList(),
         );
+      }),
+      route('GET', '$conv/messages/search', _Needs.session, (ctx) => _search(_memberOf(ctx), ctx)),
+      route('PUT', '$conv/pins/(?<message>$_uuidPath)', _Needs.session, (ctx) {
+        // shortcut: no pin notice (type 2) is posted, as the API's pin posts one: the searches' tests read none.
+        final conv = _memberOf(ctx);
+        final id = ctx.params['message'];
+        final message = conv.messages.where((m) => m['id'] == id && !conv.deleted.contains(id)).firstOrNull;
+        if (message == null) throw _fail(404, 'direct message not found');
+        message['pinned_at'] ??= _now();
+        return _noContent;
       }),
       // A thread: its message, then those that answer it, oldest first.
       route('GET', '$conv/messages/(?<message>$_uuidPath)/thread', _Needs.session, (ctx) {
@@ -1539,6 +1577,48 @@ class FakeApi {
       'floor_seq': conv.floor,
       'generation': group.generation,
       'epoch': group.epoch,
+    });
+  }
+
+  /// A conversation's search, as the API's answers it (ConversationController.SearchMessages): never by words, which it
+  /// can't read; by what it keeps in the clear, its author, whom its sender says it mentions, when, whether it's pinned,
+  /// and whether it has a file or a sticker. Its encrypted messages, newest first, a page after `cursor`.
+  _Answer _search(_Conversation conv, _Context ctx) {
+    List<String> all(String key) => ctx.queryAll[key] ?? const [];
+    if ((ctx.query['query'] ?? '').trim().isNotEmpty) throw _fail(400, 'search conversations on the device');
+    if (all('room_id').isNotEmpty) throw _fail(400, "room_id doesn't apply to a conversation");
+    final has = all('has');
+    if (has.any((value) => value != 'file' && value != 'sticker')) {
+      throw _fail(400, 'in a conversation, has takes file and sticker');
+    }
+    final (authors, mentions) = (all('author_id'), all('mentions'));
+    final (pinned, after, before) = (ctx.query['pinned'], ctx.query['after'], ctx.query['before']);
+    if (authors.isEmpty && mentions.isEmpty && has.isEmpty && pinned == null && after == null && before == null) {
+      throw _fail(400, 'a search needs some text or a filter');
+    }
+    DateTime at(Object? time) => DateTime.parse(time! as String);
+    final found = [
+      for (final m in conv.messages)
+        if (m['seq'] != null &&
+            !conv.deleted.contains(m['id']) &&
+            (authors.isEmpty || authors.contains(m['author_id'])) &&
+            (mentions.isEmpty || (m['mentions'] as List? ?? const []).any(mentions.contains)) &&
+            (has.isEmpty ||
+                (has.contains('sticker') && m['sticker_attachment_id'] != null) ||
+                (has.contains('file') && (m['attachment_ids'] as List? ?? const []).isNotEmpty)) &&
+            (pinned == null || (m['pinned_at'] != null) == (pinned == 'true')) &&
+            (after == null || !at(m['created_at']).isBefore(at(after))) &&
+            (before == null || at(m['created_at']).isBefore(at(before))))
+          m,
+    ]..sort((a, b) => (b['id']! as String).compareTo(a['id']! as String));
+    final cursor = ctx.query['cursor'];
+    final limit = min(max(int.tryParse(ctx.query['limit'] ?? '') ?? 25, 1), 50);
+    return _ok({
+      'total_results': min(found.length, 1000),
+      'messages': [
+        for (final m in found)
+          if (cursor == null || (m['id']! as String).compareTo(cursor) < 0) m,
+      ].take(limit).toList(),
     });
   }
 

@@ -14,6 +14,7 @@ import 'package:path_provider/path_provider.dart';
 
 import '../data/duvet_repository.dart' show avatarUrlOn, duvetRouter;
 import '../data/links.dart' show isDuvetId;
+import '../data/models.dart' show ConversationTarget;
 import 'call_decline.dart';
 import 'push_history.dart';
 import 'push_message.dart';
@@ -76,6 +77,9 @@ final _plugin = FlutterLocalNotificationsPlugin();
 /// tests replace.
 @visibleForTesting
 Future<Directory> Function() pushDirectory = getApplicationSupportDirectory;
+
+/// The notifications' history, where this isolate keeps it ([pushDirectory]).
+Future<PushHistory> pushHistory() async => PushHistory(await pushDirectory());
 
 /// How far apart the notifications' posts keep: Android drops the updates of an app that posts faster than about five
 /// a second.
@@ -177,6 +181,9 @@ Future<void> showPush(Push push) {
       return _showCall(push).then((_) {}, onError: (Object e) => debugPrint('push: a call: $e'));
     case CallEndPush():
       return endCallNotification(push).catchError((Object e) => debugPrint('push: a call\'s end: $e'));
+    case EncryptedMessagePush():
+      // Not opened (the background handler opens one first: background.dart): who wrote, and that a message came.
+      return showPush(push.shown(const {}));
     case MessagePush() || SignedOutPush():
   }
   final shown = Completer<void>();
@@ -203,8 +210,8 @@ Future<void> _showWaiting() async {
           await _showMessages([for (final (push, _) in batch) push as MessagePush], alert: alert);
         case SignedOutPush():
           await _showSignedOut(alert: alert);
-        case CallPush() || CallEndPush():
-        // Never waiting: showPush shows them at once.
+        case CallPush() || CallEndPush() || EncryptedMessagePush():
+        // Never waiting: showPush shows them at once, or opened.
       }
     } catch (e) {
       debugPrint('push: showing: $e');
@@ -323,16 +330,25 @@ Future<void> forgetChat(String chatId) async {
 }
 
 // Shows a chat's [pushes] in its notification, with the chat's last messages, once each author's photo is here
-// ([avatarWait] at most), so it shows once.
+// ([avatarWait] at most), so it shows once. A conversation's lines are what this device's database holds of them, as
+// the pushes that bring them read them: the history keeps none of their text, and a line no push read is left out (a
+// message deleted since, or one this device doesn't hold).
 Future<void> _showMessages(List<MessagePush> pushes, {required bool alert}) async {
   final dir = await pushDirectory();
   final history = PushHistory(dir);
   final kept = await history.addAll(pushes);
   await Future.wait({for (final push in kept) push.authorAvatar}.map((avatar) => _keepPhoto(dir, avatar)));
   // The chat came on screen meanwhile, which took its messages away (forgetChat): they stay away.
-  final now = await history.read(pushes.first.chatId);
+  var now = await history.read(pushes.first.chatId);
   final ids = {for (final push in pushes) push.messageId};
   if (!now.any((push) => ids.contains(push.messageId))) return;
+  if (pushes.first.target is ConversationTarget) {
+    final texts = {for (final push in pushes) ...push.earlier, for (final push in pushes) push.messageId: push.text};
+    now = [
+      for (final line in now)
+        if (texts[line.messageId] case final text?) line.withText(text),
+    ];
+  }
   await _show(dir, now.last, now, alert: alert);
 }
 

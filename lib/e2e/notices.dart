@@ -41,7 +41,13 @@ enum Notice {
   loadingMessage('Loading message'),
   filesWait("Files and voice messages can't be sent in encrypted conversations yet"),
   notReady("Encrypted conversations aren't ready on this device"),
-  tooManyWaiting('Too many messages wait to be sent here: send or dismiss them first');
+  tooManyWaiting('Too many messages wait to be sent here: send or dismiss them first'),
+  searchSplit(
+    "In an encrypted conversation, pinned: and has:sticker can't be combined with words or with has:image, video or sound.",
+  ),
+
+  /// A push's notification of a message this device couldn't open in its time (Ruling 18): Android's alone.
+  newMessage('New message');
 
   const Notice(this.text);
 

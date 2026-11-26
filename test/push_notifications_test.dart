@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:io';
 
+import 'package:duvet/data/models.dart';
 import 'package:duvet/data/session_store.dart';
 import 'package:duvet/push/background.dart';
 import 'package:duvet/push/call_decline.dart';
@@ -233,6 +234,43 @@ void main() {
     await showing;
     expect(posts(), isEmpty);
   });
+
+  // PLAN-E2E-CLIENTES.md, Task 21: a conversation's lines are what this device's database holds of them, as the push
+  // that brings a new one read them: the history keeps none of their text, and a line the device no longer holds (a
+  // message deleted since) isn't shown.
+  test(
+    "a conversation's notification shows its lines as the device holds them, and keeps none of their text",
+    () async {
+      MessagePush said(int n, String text, {Map<String, String> earlier = const {}}) => MessagePush(
+        messageId: _id(n),
+        authorId: _id(901),
+        authorName: 'Bo',
+        authorAvatar: '',
+        place: '',
+        text: text,
+        target: ConversationTarget(_id(300)),
+        sentAt: DateTime.fromMillisecondsSinceEpoch(1794702917695 + n, isUtc: true),
+        earlier: earlier,
+      );
+      await showPush(said(1, 'umbrella'));
+      await showPush(said(2, 'violin', earlier: {_id(1): 'umbrella'}));
+      // The first is gone from the device by the third's push, which read the second's line.
+      await showPush(said(3, 'walrus', earlier: {_id(2): 'violin, as the device holds it'}));
+      expect(
+        [for (final (_, post) in posts()) texts(post)],
+        [
+          ['umbrella'],
+          ['umbrella', 'violin'],
+          ['violin, as the device holds it', 'walrus'],
+        ],
+      );
+      final kept = [for (final f in Directory('${dir.path}/push').listSync().whereType<File>()) f.readAsStringSync()];
+      expect(
+        kept.join(),
+        allOf(contains(_id(3)), isNot(contains('umbrella')), isNot(contains('violin')), isNot(contains('walrus'))),
+      );
+    },
+  );
 
   test('the end of the session takes the notifications away with what they kept, and asks to sign in', () async {
     await showPush(_push(1));

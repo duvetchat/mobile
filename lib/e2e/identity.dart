@@ -40,10 +40,13 @@ Future<duvet.Identity?> servedIdentity(E2EEngine engine) async {
 }
 
 /// observe_user of each user, as the API serves their identities, 50 at a time: one it doesn't serve stays as it was.
-Future<void> observeUsers(E2EEngine engine, List<String> users) async {
+Future<void> observeUsers(E2EEngine engine, List<String> users) => observeOn(engine.host, engine.api, users);
+
+/// [observeUsers] on a core and a session of their own: a push's engine's, which runs no engine.
+Future<void> observeOn(CoreHost host, duvet.E2eApi api, List<String> users) async {
   for (var at = 0; at < users.length; at += 50) {
-    for (final identity in await engine.api.identities(users.sublist(at, min(at + 50, users.length)))) {
-      await engine.host.handle<Object?>({
+    for (final identity in await api.identities(users.sublist(at, min(at + 50, users.length)))) {
+      await host.handle<Object?>({
         'cmd': 'observe_user',
         'user_id': identity.userId,
         'identity_key': identity.identityKey,
@@ -56,14 +59,18 @@ Future<void> observeUsers(E2EEngine engine, List<String> users) async {
 
 /// A command that may first ask for users' identities (`needs_identities`): they're observed, and it runs again.
 /// Three rounds at most: the core asks once for what it knows of each user, and goes on with that the next time.
-Future<T> withIdentities<T>(E2EEngine engine, Future<T> Function() run) async {
+Future<T> withIdentities<T>(E2EEngine engine, Future<T> Function() run) =>
+    withIdentitiesOn(engine.host, engine.api, run);
+
+/// [withIdentities] on a core and a session of their own: a push's engine's.
+Future<T> withIdentitiesOn<T>(CoreHost host, duvet.E2eApi api, Future<T> Function() run) async {
   for (var round = 1; ; round++) {
     try {
       return await run();
     } on CoreError catch (error) {
       final asked = error.code == 'needs_identities' ? error.users : null;
       if (asked == null || asked.isEmpty || round >= 3) rethrow;
-      await observeUsers(engine, asked);
+      await observeOn(host, api, asked);
     }
   }
 }
