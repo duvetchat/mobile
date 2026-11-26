@@ -335,7 +335,7 @@ void main() {
 
     testWidgets('offers_their_security_number,_and_looks_at_them_as_it_opens', (tester) async {
       final repository = await profile(tester);
-      expect(repository.encryptionTaps, ['contactVerified $_maya']);
+      expect(repository.contactLooks, [_maya]);
       expect(find.byType(VerifiedMark), findsNothing);
       await _tapLabel(tester, Notice.verifyNumber.text);
       expect(find.byType(SafetyNumberPage), findsOneWidget);

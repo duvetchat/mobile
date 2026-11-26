@@ -1678,9 +1678,12 @@ class FakeRepository implements ChatRepository {
   @override
   bool canVerify(String userId) => userId != me.id && encryption.value.stage == EngineStage.ready;
 
+  /// Whom the app looked at as their profile opened ([contactVerified]), in order: none of the person's taps.
+  final contactLooks = <String>[];
+
   @override
   Future<bool> contactVerified(String userId) async {
-    encryptionTaps.add('contactVerified $userId');
+    contactLooks.add(userId);
     return contacts.value.verified[userId] ?? false;
   }
 
