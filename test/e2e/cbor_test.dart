@@ -70,4 +70,18 @@ void main() {
       }
     });
   });
+
+  // Step 5's fuzzing, with the desktop's last finding: Dart's utf8.decode drops a text's leading byte order mark, which
+  // the core keeps (Rust's from_utf8), so a key the core reads as another key was the one without it here.
+  test("a text's byte order mark is the text's, as the core reads it", () {
+    const mark = [0xef, 0xbb, 0xbf];
+    expect(cbor(Uint8List.fromList([0x63, ...mark])), '\u{feff}');
+    expect(cbor(Uint8List.fromList([0x66, ...mark, ...mark])), '\u{feff}\u{feff}');
+    // {"<mark>a": 1, "a": 2}: two keys, as the core reads them.
+    expect(cbor(Uint8List.fromList([0xa2, 0x64, ...mark, 0x61, 0x01, 0x61, 0x61, 0x02])), {'\u{feff}a': 1, 'a': 2});
+    // A certificate whose device is under "<mark>device" names none.
+    final marked = [0xa1, 0x69, ...mark, ...utf8.encode('device'), 0x50, ..._deviceBytes];
+    expect(certificateDevice(base64Encode(_signed(marked))), isNull);
+    expect(commitmentDevice(base64Encode(marked)), isNull);
+  });
 }

@@ -35,7 +35,10 @@ Object? cbor(Uint8List bytes) {
       case 2:
         return Uint8List.fromList(take(uint(info)));
       case 3:
-        return utf8.decode(take(uint(info)));
+        // A leading byte order mark is the text's, as the core reads it: utf8.decode drops one.
+        final text = take(uint(info));
+        final marked = text.length >= 3 && text[0] == 0xef && text[1] == 0xbb && text[2] == 0xbf;
+        return '${marked ? '\u{feff}' : ''}${utf8.decode(text)}';
       case 4:
         return [for (var n = uint(info); n > 0; n--) item(depth + 1)];
       case 5:
