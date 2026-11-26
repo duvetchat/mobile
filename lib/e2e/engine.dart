@@ -20,7 +20,7 @@ import 'bootstrap.dart';
 import 'content.dart';
 import 'content.dart' as content show heldBefore, sentUnder;
 import 'devices.dart';
-import 'devices.dart' as devices show removeDevice;
+import 'devices.dart' as devices show removeDevice, unsentRemovals;
 import 'host.dart';
 import 'identity.dart';
 import 'inbox.dart';
@@ -56,9 +56,10 @@ enum EngineStage { starting, firstDevice, newDevice, ready, removed, locked, uns
 /// The engine's [stage], and what goes with it. A first device waits for the person's tap to make its identity, then
 /// shows its [recoveryKey] until it's saved; [finishing] when an identity it made before the app closed still waits
 /// for its upload. A ready device [rotating] its keys (Task 25) shows the new [recoveryKey] until it's saved, and none
-/// once the rotation waits for the person to finish it (Later, or the app closed before its upload). A [lostKey] is a
-/// database no key opens any more. [minimum] is the lowest version with encryption of a client the API told to update,
-/// null where its platform has none.
+/// once the rotation waits for the person to finish it (Later, or the app closed before its upload), or [stuck] once it
+/// can never go up, another device having changed the user's devices or keys meanwhile (review 24's I1). A [lostKey] is
+/// a database no key opens any more. [minimum] is the lowest version with encryption of a client the API told to
+/// update, null where its platform has none.
 @immutable
 class EngineState {
   const EngineState(
@@ -68,9 +69,10 @@ class EngineState {
     this.lostKey = false,
     this.minimum,
     this.rotating = false,
+    this.stuck = false,
   });
 
-  const EngineState.rotation({this.recoveryKey})
+  const EngineState.rotation({this.recoveryKey, this.stuck = false})
     : stage = EngineStage.ready,
       finishing = false,
       lostKey = false,
@@ -81,21 +83,24 @@ class EngineState {
     : stage = EngineStage.firstDevice,
       lostKey = false,
       minimum = null,
-      rotating = false;
+      rotating = false,
+      stuck = false;
 
   const EngineState.failed({this.lostKey = false})
     : stage = EngineStage.failed,
       recoveryKey = null,
       finishing = false,
       minimum = null,
-      rotating = false;
+      rotating = false,
+      stuck = false;
 
   const EngineState.update(this.minimum)
     : stage = EngineStage.update,
       recoveryKey = null,
       finishing = false,
       lostKey = false,
-      rotating = false;
+      rotating = false,
+      stuck = false;
 
   static const starting = EngineState(EngineStage.starting);
   static const newDevice = EngineState(EngineStage.newDevice);
@@ -110,6 +115,7 @@ class EngineState {
   final bool lostKey;
   final String? minimum;
   final bool rotating;
+  final bool stuck;
 
   @override
   bool operator ==(Object other) =>
@@ -119,15 +125,17 @@ class EngineState {
       other.finishing == finishing &&
       other.lostKey == lostKey &&
       other.minimum == minimum &&
-      other.rotating == rotating;
+      other.rotating == rotating &&
+      other.stuck == stuck;
 
   @override
-  int get hashCode => Object.hash(stage, recoveryKey, finishing, lostKey, minimum, rotating);
+  int get hashCode => Object.hash(stage, recoveryKey, finishing, lostKey, minimum, rotating, stuck);
 
   // Never the recovery key itself: a state may end up in a log.
   @override
   String toString() =>
-      'EngineState(${stage.name}${rotating ? ', rotating' : ''}${recoveryKey == null ? '' : ', a key shown'}'
+      'EngineState(${stage.name}${rotating ? ', rotating' : ''}${stuck ? ', stuck' : ''}'
+      '${recoveryKey == null ? '' : ', a key shown'}'
       '${finishing ? ', finishing' : ''}'
       '${lostKey ? ', its key lost' : ''}${stage == EngineStage.update ? ', minimum $minimum' : ''})';
 }
@@ -536,8 +544,23 @@ class E2EEngine {
   /// the same rotation again, its key shown once more.
   Future<void> changeKeys() => _deviceAct(() => _rotate(const []));
 
+  /// The devices a list of this device's took off that the API didn't take, which the next list or key change takes
+  /// along (review 24's M3): its confirmation names them.
+  Future<List<String>> unsentRemovals() => devices.unsentRemovals(this);
+
   Future<void> _rotate(List<String> remove) async {
-    final rotation = _rotation = await rotateKeys(this, remove);
+    final Rotation rotation;
+    try {
+      rotation = _rotation = await rotateKeys(this, remove);
+    } on CoreError catch (error) {
+      // Finish of a change that waits, which the core runs again only with a certificate the API serves, of an identity
+      // it knows, for every device it keeps: another device took one off, or changed the keys (review 24's I1).
+      final gone =
+          (error.code == 'bad_command' && error.field == 'certificates') ||
+          (error.code == 'invalid_signature' && error.what == 'certificate');
+      if (!_state.value.rotating || !gone) rethrow;
+      return _set(const EngineState.rotation(stuck: true));
+    }
     _set(EngineState.rotation(recoveryKey: rotation.recoveryKey));
   }
 
@@ -552,24 +575,38 @@ class E2EEngine {
       // The core keeps the rotation for its upload, which an update finishes.
       _rotation = null;
       return _set(EngineState.update(error.minimum));
+    } on duvet.DuvetIdentityChangedException {
+      // Another device changed the keys first. Its transfer, in the inbox, replaces this change once the core takes one
+      // over a change it keeps (duvetchat/e2e#49); a change still kept can never go up over another identity.
+      _rotation = null;
+      await takeInbox(this, _tries, _failures);
+      final next = await _identity();
+      return _set(next.rotating ? const EngineState.rotation(stuck: true) : next);
+    } on duvet.DuvetApiException catch (error) {
+      // A device it keeps was taken off on another device meanwhile: its transfer can't go (review 24's I1).
+      if (error.statusCode != 400 || !(error.body ?? '').contains("isn't a registered device of yours")) rethrow;
+      _rotation = null;
+      return _set(const EngineState.rotation(stuck: true));
     }
     _rotation = null;
     _set(EngineState.ready);
   }
 
-  /// «Remove this device and delete its data» (decision 13; Task 25): its registration given up where the API lets it
-  /// go, the engine stopped for good, then its database destroyed with its key, and the record's device forgotten. The
-  /// app signs out after. Not where this device has no database of its own open ([EngineStage.starting], locked,
-  /// unsupported).
+  /// «Remove this device and delete its data» (decision 13; Task 25): its database destroyed with its key, then the
+  /// record's device and what it told of the user's devices forgotten, the engine stopped for good, and last its
+  /// registration given up where the API lets it go, as that ends the session (review 24's M5 and M4). The app signs
+  /// out after. The pinned external sender (Ruling 32) and the records of conversations from before the cutover (Ruling
+  /// 14's anchor) stay: they're the account's on this phone, which a next device here takes up. Not where this device
+  /// has no database of its own open ([EngineStage.starting], locked, unsupported).
   Future<void> removeThisDevice() => _queue(() async {
     const none = {EngineStage.starting, EngineStage.locked, EngineStage.unsupported};
     if (none.contains(_state.value.stage)) throw StateError("this device's encrypted data isn't open here");
-    if (_device case final device?) await giveUpRegistration(this, device);
-    await _halt();
     await host.destroy(user);
-    for (final key in deviceRecord) {
+    for (final key in [...deviceRecord, toldAdded, toldInactive]) {
       await store.write(key, null).catchError((Object error) => debugPrint("e2e: the record's $key: $error"));
     }
+    await _halt();
+    if (_device case final device?) await giveUpRegistration(this, device);
     _made = null;
     _rotation = null;
     _device = null;
@@ -710,7 +747,9 @@ class E2EEngine {
     final state = await identityState(this, () => takeInbox(this, _tries, _failures));
     if (!state.rotating) _rotation = null;
     final shown = _rotation?.recoveryKey;
-    return shown == null ? state : EngineState.rotation(recoveryKey: shown);
+    if (shown != null) return EngineState.rotation(recoveryKey: shown);
+    // A change found stuck this run stays said while the core keeps it: only another device's keys end it.
+    return state.rotating && _state.value.stuck ? _state.value : state;
   }
 
   /// The inbox; once it brought a rotation's transfer, the own user observed, which may change what this device is.

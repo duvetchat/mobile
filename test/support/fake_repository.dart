@@ -1623,6 +1623,12 @@ class FakeRepository implements ChatRepository {
     await endSession();
   }
 
+  /// The devices an earlier removal of this device's takes along with the next list or key change; a test sets them.
+  List<String> unsentRemovalsList = const [];
+
+  @override
+  Future<List<String>> unsentRemovals() async => unsentRemovalsList;
+
   /// What the engine tells of the user's devices, in the notices' words; a test adds to it.
   final deviceNoticesTold = StreamController<String>.broadcast();
 

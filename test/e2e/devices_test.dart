@@ -2,7 +2,10 @@ import 'dart:io';
 
 import 'package:duvet/e2e/cbor.dart';
 import 'package:duvet/e2e/engine.dart';
+import 'package:duvet/e2e/host.dart';
+import 'package:duvet/e2e/legacy.dart' show legacyRecords;
 import 'package:duvet/e2e/notices.dart';
+import 'package:duvet/e2e/store.dart';
 import 'package:duvet_client/duvet.dart' as duvet;
 import 'package:flutter/foundation.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -36,6 +39,14 @@ Future<List<String>> _deviceIds(TestDevice device) async => [for (final d in awa
 
 /// What a device notice says, as a test reads it.
 (DeviceNoticeKind, String, String) _told(DeviceNotice notice) => (notice.kind, notice.device.id, notice.device.name);
+
+/// A core whose database can't be deleted, as a file the system holds: everything else as the core it wraps.
+class _DestroyFails extends WatchedHost {
+  _DestroyFails(CoreHost host) : super(host, []);
+
+  @override
+  Future<void> destroy(String userId) async => throw CoreError('storage', message: 'a file of the database stays');
+}
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
@@ -114,10 +125,16 @@ void main() {
       );
       expect(log, contains('sign_device_list'));
       expect(confirmed(), isEmpty);
+      // Taken or not, the own user is observed before it fails (the core's N3; review 24's rule 2).
+      expect(log.last, 'observe_user');
       expect(await _deviceIds(a), contains(_deviceOf(b)));
+      // The list the API didn't take stays the core's own, which the next list or key change takes along: named
+      // (review 24's M3).
+      expect(await a.engine.unsentRemovals(), [_deviceOf(b)]);
 
       // Again: the list without it goes up, and only its 200 confirms it.
       await a.engine.removeDevice(_deviceOf(b));
+      expect(await a.engine.unsentRemovals(), isEmpty);
       expect(confirmed(), hasLength(1));
       expect(log.indexOf('device_list_uploaded'), greaterThan(log.lastIndexOf('PUT list')));
       expect(await _deviceIds(a), unorderedEquals([_deviceOf(a), _deviceOf(c)]));
@@ -135,6 +152,37 @@ void main() {
       expect(await _deviceIds(a), [_deviceOf(a)]);
       expect(a.state, EngineState.ready);
       await Future.wait([a.engine.stop(), b.engine.stop(), c.engine.stop()]);
+    },
+    skip: noCore,
+    timeout: _slow,
+  );
+
+  // Review 24's rule 4: a confirmation the core answers with nothing kept for an upload (a newer list or identity took
+  // its place) counts as done, for a list and for a key change.
+  test(
+    'a_confirmation_that_finds_nothing_kept_counts_as_done',
+    () async {
+      final fake = FakeApi();
+      final ana = fake.addUser();
+      var nothingKept = false;
+      final host = WatchedHost(
+        TestHost().gate,
+        [],
+        fail: (command) => nothingKept && command['cmd'] == 'device_list_uploaded'
+            ? CoreError('not_found', message: 'no upload waits', what: 'upload')
+            : null,
+      );
+      final a = await firstDevice(fake, ana, host: host);
+      final b = await approvedDevice(fake, a);
+      nothingKept = true;
+      await a.engine.removeDevice(_deviceOf(b));
+      expect(await _deviceIds(a), [_deviceOf(a)]);
+      expect(a.state, EngineState.ready);
+      await a.engine.changeKeys();
+      await a.engine.keySaved();
+      expect(a.state, EngineState.ready);
+      expect((await a.api.identity(ana)).identityKey, (await _status(a))['identity_key']);
+      await Future.wait([a.engine.stop(), b.engine.stop()]);
     },
     skip: noCore,
     timeout: _slow,
@@ -227,6 +275,55 @@ void main() {
       await b.host.open(ana);
       expect((await _status(b))['device_id'], isNull);
       await Future.wait([a.engine.stop(), fresh.engine.stop(), b.engine.stop()]);
+    },
+    skip: noCore,
+    timeout: _slow,
+  );
+
+  // Review 24's M5: the database goes before the registration, whose deletion ends the session: when the data can't go,
+  // the device stays registered and signed in, for the person to try again.
+  test(
+    "removing_this_device_keeps_its_registration_when_its_data_can't_go",
+    () async {
+      final fake = FakeApi();
+      final ana = fake.addUser();
+      final a = await firstDevice(fake, ana);
+      final fresh = testDevice(fake, ana, host: _DestroyFails(TestHost().gate));
+      await fresh.engine.start();
+      expect(fresh.state, EngineState.newDevice);
+      await expectLater(fresh.engine.removeThisDevice(), throwsA(isA<CoreError>()));
+      expect(await _deviceIds(fresh), contains(_deviceOf(fresh)));
+      await Future.wait([a.engine.stop(), fresh.engine.stop()]);
+    },
+    skip: noCore,
+    timeout: _slow,
+  );
+
+  // Review 24's M4 and M6: deleting this device's data clears its record and what it told of the user's devices; the
+  // API's external sender it pinned (Ruling 32) and the records of conversations from before the cutover (Ruling 14's
+  // anchor) stay, as they're the account's on this phone, which a next device here takes up.
+  test(
+    'removing_this_device_clears_its_record_and_what_it_told,_and_keeps_the_pin_and_the_legacy_records',
+    () async {
+      final fake = FakeApi();
+      final ana = fake.addUser();
+      final store = MemoryStore();
+      final a = await firstDevice(fake, ana, store: store);
+      final b = await approvedDevice(fake, a);
+      await until(() => store.read(toldAdded) != null);
+      await b.engine.stop();
+      fake.lastSeen(_deviceOf(b), _ago(46));
+      final again = await restarted(fake, a);
+      expect(store.read(toldInactive), [_deviceOf(b)]);
+      await store.write(legacyRecords, {'a-conversation': false});
+
+      await again.engine.removeThisDevice();
+      for (final key in [...deviceRecord, toldAdded, toldInactive]) {
+        expect(store.read(key), isNull, reason: key);
+      }
+      expect(store.read(externalSender), isNotNull);
+      expect(store.read(legacyRecords), {'a-conversation': false});
+      await again.engine.stop();
     },
     skip: noCore,
     timeout: _slow,
@@ -377,6 +474,86 @@ void main() {
         expect(line, isNot(contains(key)));
       }
       expect(store.kept.values.join(), isNot(contains(key)));
+      await Future.wait([a.engine.stop(), b.engine.stop()]);
+    },
+    skip: noCore,
+    timeout: _slow,
+  );
+
+  // Review 24's I1: a key change that waits can't finish once another device took off a device it keeps (the core's
+  // rotate_again needs a served certificate for each device it keeps). Its Finish says so, with no throw, and so does
+  // its upload with the key shown (the API's 400 for a transfer to a removed device).
+  test(
+    'a_key_change_another_device_made_impossible_says_so',
+    () async {
+      final fake = FakeApi();
+      final ana = fake.addUser();
+      final a = await firstDevice(fake, ana);
+      final b = await approvedDevice(fake, a);
+      final c = await approvedDevice(fake, a);
+      final d = await approvedDevice(fake, a);
+
+      // Put off, then b takes c off: Finish can't run the same change again.
+      await a.engine.changeKeys();
+      await a.engine.uploadLater();
+      expect(a.state, const EngineState.rotation());
+      await b.engine.removeDevice(_deviceOf(c));
+      await turnEnded(a);
+      await a.engine.changeKeys();
+      expect(a.state, const EngineState.rotation(stuck: true));
+      await Future.wait([
+        for (final device in [a, b, c, d]) device.engine.stop(),
+      ]);
+
+      // Its key shown, then b takes d off: the upload can't go.
+      final fake2 = FakeApi();
+      final bo = fake2.addUser();
+      final e = await firstDevice(fake2, bo);
+      final f = await approvedDevice(fake2, e);
+      final g = await approvedDevice(fake2, e);
+      await e.engine.changeKeys();
+      expect(_rotationKey(e.state), recoveryKeyShape);
+      await f.engine.removeDevice(_deviceOf(g));
+      // Not turnEnded: its tap is Later, which would put this change off.
+      await pumpEventQueue();
+      await e.engine.keySaved();
+      expect(e.state, const EngineState.rotation(stuck: true));
+      await Future.wait([
+        for (final device in [e, f, g]) device.engine.stop(),
+      ]);
+    },
+    skip: noCore,
+    timeout: _slow,
+  );
+
+  // Review 24's rule 4: a key change another device's beat (409 identity changed) reads the inbox, where the winner's
+  // transfer replaces it once the core takes one over a change it keeps (duvetchat/e2e#49). Until then the change
+  // kept can never go up over another identity, and says so.
+  test(
+    "a_key_change_another_device's_beat_reads_the_inbox",
+    () async {
+      final fake = FakeApi();
+      final ana = fake.addUser();
+      final requests = <String>[];
+      // b hears no DEVICE_MESSAGE: only the 409's own read of the inbox reads it.
+      final b = await firstDevice(
+        fake,
+        ana,
+        client: watchedClient(fake, seen: (request) => requests.add(_said(request))),
+        hears: (event) => event.type != 'DEVICE_MESSAGE',
+      );
+      final a = await approvedDevice(fake, b);
+      await a.engine.changeKeys();
+      await b.engine.changeKeys();
+      await a.engine.keySaved();
+      requests.clear();
+
+      await b.engine.keySaved();
+      expect(
+        requests.indexOf('GET /api/users/@me/devices/@me/inbox'),
+        greaterThan(requests.indexOf('PUT /api/users/@me/identity')),
+      );
+      expect(b.state, const EngineState.rotation(stuck: true));
       await Future.wait([a.engine.stop(), b.engine.stop()]);
     },
     skip: noCore,

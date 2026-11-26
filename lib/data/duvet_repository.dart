@@ -1106,6 +1106,9 @@ class DuvetRepository implements ChatRepository {
     );
   }
 
+  @override
+  Future<List<String>> unsentRemovals() async => await _engine?.unsentRemovals() ?? const [];
+
   final _deviceNotices = StreamController<String>.broadcast();
 
   @override

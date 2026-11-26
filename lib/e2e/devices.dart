@@ -69,9 +69,10 @@ Future<void> removeDevice(E2EEngine engine, String deviceId) async {
 /// A list without [deviceId], and without the devices the API took away: signed on the list this device holds once
 /// the API's is observed, and uploaded on the version the API serves. Only the API's 200 confirms it (Review Focus 11),
 /// and the own user is observed after; a list that lost its race (409) is observed and signed again, three rounds at
-/// most. Done once the API's list doesn't name it. A list of this device's that the API never took (its upload refused)
-/// stays the core's own, newer than the API's (`older_list`), and goes up again as it is when it leaves the device out:
-/// the core signs no list without a device its own doesn't name.
+/// most, and any other failure is observed, then thrown (the core's N3). Done once the API's list doesn't name it. A
+/// list of this device's that the API never took (its upload refused) stays the core's own, newer than the API's
+/// (`older_list`), and goes up again as it is when it leaves the device out: the core signs no list without a device
+/// its own doesn't name.
 Future<void> _unlist(E2EEngine engine, String deviceId) async {
   for (var round = 1; ; round++) {
     final served = await _observedOwn(engine);
@@ -97,11 +98,31 @@ Future<void> _unlist(E2EEngine engine, String deviceId) async {
     } on duvet.DuvetDeviceListChangedException {
       if (round >= 3) rethrow;
       continue;
+    } catch (_) {
+      // Taken or not, the own user is observed before another list is signed: what it can't reach, the next one does.
+      await _observedOwn(engine).then<void>((_) {}, onError: (Object error) => debugPrint('e2e: the own user: $error'));
+      rethrow;
     }
-    await engine.host.handle<Object?>({'cmd': 'device_list_uploaded', 'version': version});
+    await listUploaded(engine, version);
     await _observedOwn(engine);
     return;
   }
+}
+
+/// The devices a list of this device's took off that the API didn't take (its upload refused, or lost unanswered and
+/// not taken): the core keeps that list (`older_list`), and the next list or key change, signed on top of it, takes
+/// them off too (review 24's M3). The served list minus the held one, while the held is this device's newer one.
+Future<List<String>> unsentRemovals(E2EEngine engine) async {
+  final served = await servedIdentity(engine);
+  final status = await coreStatus(engine.host);
+  final held = status.deviceList == null ? null : deviceListOf(status.deviceList!);
+  final theirs = served == null ? null : deviceListOf(served.deviceList);
+  if (held == null || theirs == null || status.identityKey != served?.identityKey) return const [];
+  if (held.version <= theirs.version) return const [];
+  return [
+    for (final id in theirs.devices)
+      if (!held.devices.contains(id)) id,
+  ];
 }
 
 /// What rotate_keys made: what goes up, with a transfer for each device that stays, over the identity it replaces;

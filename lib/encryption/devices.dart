@@ -22,9 +22,18 @@ bool hasDeviceData(EngineState state) =>
 /// there until another of the user's devices removes it, as the API takes no list without the session's own device
 /// (decision 13); and the only one, whose history goes without the recovery key.
 const deleteDeviceQuestion = "Delete this device's encrypted conversations and their keys, and sign out?";
+// Every listed device's names the recovery key, beside others too: one whose data went stays listed, and the client
+// can't tell such a phantom from a device that holds the history (review 24's I2).
 const deleteListedDeviceQuestion =
+    'If no other device of yours holds your encrypted conversations, their history is lost without your recovery key. '
     "Delete this device's encrypted conversations and their keys, and sign out? Your other devices keep it on your "
     'device list until you remove it on one of them.';
+
+/// A change of keys that can never finish (review 24's I1), and the two ways left: another device's change of keys,
+/// whose transfer ends this one, or this device's data deleted.
+const rotationStuck =
+    "This device can't finish changing your security keys: another of your devices removed a device or changed the "
+    "keys meanwhile. Change your security keys on another device, or delete this device's data.";
 const deleteOnlyDeviceQuestion =
     'This is your only device with your encrypted conversations: without your recovery key, their history is lost. '
     'Delete them and their keys, and sign out?';
@@ -175,17 +184,34 @@ class _DevicesPageState extends State<DevicesPage> {
 
   // Removing another device, in the desktop's words; for one on the list, what changing the keys too does, for one
   // that was lost or stolen.
+  /// What a removal or a change of keys takes along, said by name: the devices an earlier removal of this device's took
+  /// off that the API didn't take, which the next list or key change takes off too (review 24's M3). Empty for none.
+  Future<String> _alongWith(String? asked) async {
+    final ids = await context.repository.unsentRemovals().catchError((Object _) => const <String>[]);
+    final names = [
+      for (final device in _devices ?? const <duvet.Device>[])
+        if (ids.contains(device.id) && device.id != asked) device.name,
+    ];
+    return names.isEmpty
+        ? ''
+        : " This also takes off ${names.join(', ')}: an earlier removal of yours didn't go through.";
+  }
+
   Future<void> _remove(duvet.Device device) async {
     final repository = context.repository;
+    final along = await _alongWith(device.id);
+    if (!mounted) return;
     final choice = await _choose(
       context,
       title: 'Remove ${device.name}?',
-      body: device.listed
-          ? "It's signed out, and reads none of your encrypted conversations from now on. If it was lost or stolen, "
-                "change your security keys too: with new keys, whoever has it can't add devices to your account or "
-                "read what's sent from now on. You'll save a new recovery key, and your contacts see that your keys "
-                'changed.'
-          : "It's signed out, and reads none of your encrypted conversations from now on.",
+      body:
+          (device.listed
+              ? "It's signed out, and reads none of your encrypted conversations from now on. If it was lost or "
+                    "stolen, change your security keys too: with new keys, whoever has it can't add devices to your "
+                    "account or read what's sent from now on. You'll save a new recovery key, and your contacts see "
+                    'that your keys changed.'
+              : "It's signed out, and reads none of your encrypted conversations from now on.") +
+          along,
       choices: [
         ('Remove', _Removal.remove, ButtonVariant.destructive),
         if (device.listed) ('Remove and change keys', _Removal.changeKeys, ButtonVariant.destructive),
@@ -200,12 +226,14 @@ class _DevicesPageState extends State<DevicesPage> {
 
   Future<void> _changeKeys() async {
     final repository = context.repository;
+    final along = await _alongWith(null);
+    if (!mounted) return;
     final sure = await confirmDestructive(
       context,
       title: 'Change security keys?',
       body:
           'Make new security keys and a new recovery key for your account? Your contacts will see that your keys '
-          'changed.',
+          'changed.$along',
       action: 'Change keys',
       destructive: false,
     );
@@ -220,6 +248,8 @@ class _DevicesPageState extends State<DevicesPage> {
       final devices = _devices;
       // Removing and changing keys only while this device is set up and no change of keys waits.
       final ready = state.stage == EngineStage.ready && !state.rotating && !_busy;
+      // A change of keys that waits, its key put off or cut by the app's close: the banner's strip may be hidden.
+      final finish = state.rotating && state.recoveryKey == null && !state.stuck && !_busy;
       final data = hasDeviceData(state);
       return AdminPage(
         title: 'Devices',
@@ -247,11 +277,25 @@ class _DevicesPageState extends State<DevicesPage> {
                   _DeviceRow(device: device, onRemove: ready && !device.current ? () => _remove(device) : null),
               ],
             ),
-          if (ready || data) ...[
+          if (state.stuck)
+            Padding(
+              padding: const EdgeInsets.fromLTRB(4, 16, 4, 0),
+              child: Semantics(
+                liveRegion: true,
+                child: Text(rotationStuck, style: DuvetType.caption.copyWith(color: context.theme.colors.error)),
+              ),
+            ),
+          if (ready || finish || data) ...[
             const SizedBox(height: 16),
             AdminPanel(
               children: [
                 if (ready) GlassRow(icon: FLucideIcons.keyRound, label: 'Change security keys', onPressed: _changeKeys),
+                if (finish)
+                  GlassRow(
+                    icon: FLucideIcons.keyRound,
+                    label: 'Finish changing your security keys',
+                    onPressed: () => _act(context.repository.changeKeys),
+                  ),
                 if (data)
                   GlassRow(
                     label: Notice.deleteDevice.text,

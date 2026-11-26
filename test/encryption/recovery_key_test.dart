@@ -270,6 +270,16 @@ void main() {
       expect(repository.encryptionTaps, ['changeKeys']);
     });
 
+    // Review 24's I1: a key change that can't finish says why, with what's left: no Finish, and deleting this device's
+    // data beside a change of keys on another device.
+    testWidgets("a_key_change_that_can't_finish_says_why,_with_deleting_this_device's_data", (tester) async {
+      await gate(tester, const EngineState.rotation(stuck: true));
+      await tester.pumpAndSettle();
+      expect(find.textContaining("can't finish changing your security keys"), findsOneWidget);
+      expect(find.text('Finish'), findsNothing);
+      expect(find.text(Notice.deleteDevice.text), findsOneWidget);
+    });
+
     // M6 of the desktop's review: what deletes the device's data asks first.
     testWidgets('setting_up_again_asks_before_it_deletes_anything', (tester) async {
       final repository = await gate(tester, EngineState.removed);

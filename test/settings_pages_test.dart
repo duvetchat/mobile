@@ -378,14 +378,85 @@ void main() {
       semantics.dispose();
     });
 
-    testWidgets("deleting this device's data beside another device says it stays listed until one removes it", (
+    // Review 24's I2 and M6: the question follows the devices. Every listed device's names the recovery key, as one
+    // whose data went stays listed: the client can't tell a phantom from a device that holds the history.
+    final unset = device(
+      '0193a4b2-0000-7000-8000-0000000000a4',
+      'Pixel 8 Pro',
+      'android/1.1.0',
+      current: true,
+      listed: false,
+    );
+    for (final (name, state, devices, says, saysNot) in [
+      (
+        'the only device',
+        EngineState.ready,
+        [self, browser],
+        ['This is your only device', 'recovery key'],
+        ['keep it on'],
+      ),
+      (
+        'one beside others',
+        EngineState.ready,
+        [self, computer, browser],
+        ['recovery key', 'keep it on your device list until you remove it on one of them'],
+        ['This is your only device'],
+      ),
+      (
+        'one not set up',
+        EngineState.newDevice,
+        [unset, computer],
+        ["Delete this device's"],
+        ['recovery key', 'keep it on'],
+      ),
+      ('an unread list', EngineState.ready, null, ['This is your only device', 'recovery key'], ['keep it on']),
+    ]) {
+      testWidgets("deleting this device's data asks as its devices make it: $name", (tester) async {
+        final repository = await pumpDevices(tester, state: state, devices: devices, failed: devices == null);
+        await tapLabel(tester, Notice.deleteDevice.text);
+        for (final words in says) {
+          expect(find.textContaining(words), findsOneWidget, reason: words);
+        }
+        for (final words in saysNot) {
+          expect(find.textContaining(words), findsNothing, reason: words);
+        }
+        await tapLabel(tester, 'Cancel');
+        expect(repository.encryptionTaps, isEmpty);
+        semantics.dispose();
+      });
+    }
+
+    // Review 24's M1 and I1: while a key change waits, the page finishes it, the banner's × notwithstanding; one that
+    // can't finish says why, and what's left: a change of keys on another device, or this device's data deleted.
+    testWidgets("while a key change waits, Finish it here; one that can't finish says why, with the ways out", (
       tester,
     ) async {
+      final repository = await pumpDevices(tester, state: const EngineState.rotation());
+      await tapLabel(tester, 'Finish changing your security keys');
+      expect(repository.encryptionTaps, ['changeKeys']);
+      repository.encryption.value = const EngineState.rotation(stuck: true);
+      await tester.pumpAndSettle();
+      expect(button('Finish changing your security keys'), findsNothing);
+      expect(find.textContaining("can't finish changing your security keys"), findsOneWidget);
+      expect(find.textContaining('Change your security keys on another device'), findsOneWidget);
+      expect(button(Notice.deleteDevice.text), findsOneWidget);
+      semantics.dispose();
+    });
+
+    // Review 24's M3: a removal of this device's that the API didn't take rides along with the next list or key change,
+    // which names it.
+    testWidgets('a removal and a change of keys name the devices an earlier removal takes along', (tester) async {
       final repository = await pumpDevices(tester);
-      await tapLabel(tester, Notice.deleteDevice.text);
-      expect(find.textContaining('only device'), findsNothing);
-      // It stays on the list until another device removes it: the API takes no list without the session's device.
-      expect(find.textContaining('until you remove it on one of them'), findsOneWidget);
+      await tapLabel(tester, 'Remove ${computer.name}');
+      expect(find.textContaining('also takes off'), findsNothing);
+      await tapLabel(tester, 'Cancel');
+
+      repository.unsentRemovalsList = [browser.id];
+      await tapLabel(tester, 'Remove ${computer.name}');
+      expect(find.textContaining('also takes off ${browser.name}'), findsOneWidget);
+      await tapLabel(tester, 'Cancel');
+      await tapLabel(tester, 'Change security keys');
+      expect(find.textContaining('also takes off ${browser.name}'), findsOneWidget);
       await tapLabel(tester, 'Cancel');
       expect(repository.encryptionTaps, isEmpty);
       semantics.dispose();

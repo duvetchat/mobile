@@ -91,6 +91,10 @@ abstract interface class ChatRepository {
   Future<void> changeKeys();
   Future<void> removeThisDevice();
 
+  /// The devices an earlier removal of this device's took off that the API didn't take: the next removal or change of
+  /// keys takes them along, which its confirmation names (review 24's M3). None without an engine.
+  Future<List<String>> unsentRemovals();
+
   /// What the engine tells of the user's other devices, in the notices' words: one added, one not seen in 45 days.
   Stream<String> get deviceNotices;
 

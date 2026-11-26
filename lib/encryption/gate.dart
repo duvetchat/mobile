@@ -14,6 +14,7 @@ import '../theme.dart';
 import '../widgets/chrome.dart';
 import '../widgets/depth.dart';
 import '../widgets/rows.dart';
+import 'devices.dart' show deleteThisDevice, rotationStuck;
 import 'recovery_key.dart';
 
 /// Where a client too old gets the new one.
@@ -104,6 +105,13 @@ class _EncryptionBannerState extends State<EncryptionBanner> {
       text: Notice.update.text,
       action: 'Download',
       run: (_) => launchUrl(downloadPage, mode: LaunchMode.externalApplication),
+    ),
+    // A change of the security keys that can never finish (review 24's I1): why, and deleting this device's data; the
+    // other way out, a change of keys on another device, is said.
+    EngineStage.ready when state.stuck => (
+      text: rotationStuck,
+      action: Notice.deleteDevice.text,
+      run: (context) => deleteThisDevice(context),
     ),
     // A change of the security keys put off, or cut by the app's close before its upload (Task 25): Finish runs the
     // same change again, whose recovery key's page the state then brings up.

@@ -85,9 +85,9 @@ String? certificateDevice(String certificate) {
   return body == null ? null : asUuid(asMap(cbor(body))?['device']);
 }
 
-/// The devices a signed device list names (its signed object in base64, `{body, sig}`, its body's `devices`), in its
-/// order, or null: read, never checked, as the core checks it.
-List<String>? listDevices(String list) {
+/// A signed device list's version and the devices it names, in its order (its signed object in base64, `{body, sig}`,
+/// its body's `version` and `devices`), or null: read, never checked, as the core checks it.
+({int version, List<String> devices})? deviceListOf(String list) {
   final Uint8List signed;
   try {
     signed = base64Decode(list);
@@ -95,8 +95,12 @@ List<String>? listDevices(String list) {
     return null;
   }
   final body = asBytes(asMap(cbor(signed))?['body']);
-  final devices = body == null ? null : asMap(cbor(body))?['devices'];
-  if (devices is! List) return null;
+  final fields = body == null ? null : asMap(cbor(body));
+  final (version, devices) = (fields?['version'], fields?['devices']);
+  if (version is! int || devices is! List) return null;
   final ids = [for (final device in devices) asUuid(device)];
-  return ids.contains(null) ? null : ids.cast<String>();
+  return ids.contains(null) ? null : (version: version, devices: ids.cast<String>());
 }
+
+/// The devices a signed device list names, in its order, or null ([deviceListOf]).
+List<String>? listDevices(String list) => deviceListOf(list)?.devices;
