@@ -847,6 +847,51 @@
 			"frame": null
 		},
 		{
+			"case": "a name holding a fingerprint's look, two groups of four hex digits, is no frame",
+			"message": "eyJkdXZldCI6ImFwcHJvdmFsIiwic3RlcCI6ImNvbW1pdG1lbnQiLCJkYXRhIjoiWTI5dGJXbDBiV1Z1ZEE9PSIsIm5hbWUiOiJQaXhlbCA4IMK3IGExYjIgYzNkNCBlNWY2IDA3MTgifQ==",
+			"frame": null
+		},
+		{
+			"case": "a name holding two groups of four hex digits in capitals, apart by a dash, is no frame",
+			"message": "eyJkdXZldCI6ImFwcHJvdmFsIiwic3RlcCI6ImNvbW1pdG1lbnQiLCJkYXRhIjoiWTI5dGJXbDBiV1Z1ZEE9PSIsIm5hbWUiOiJQaXhlbCA4IEExQjItQzNENCJ9",
+			"frame": null
+		},
+		{
+			"case": "a name holding a code's look, six digits standing alone, is no frame",
+			"message": "eyJkdXZldCI6ImFwcHJvdmFsIiwic3RlcCI6ImNvbW1pdG1lbnQiLCJkYXRhIjoiWTI5dGJXbDBiV1Z1ZEE9PSIsIm5hbWUiOiJQaXhlbCA4ICg0ODI5MTMpIn0=",
+			"frame": null
+		},
+		{
+			"case": "a name holding six full-width digits standing alone is no frame",
+			"message": "eyJkdXZldCI6ImFwcHJvdmFsIiwic3RlcCI6ImNvbW1pdG1lbnQiLCJkYXRhIjoiWTI5dGJXbDBiV1Z1ZEE9PSIsIm5hbWUiOiJQaXhlbCA4IO+8lO+8mO+8ku+8me+8ke+8kyJ9",
+			"frame": null
+		},
+		{
+			"case": "a name whose six digits a hidden character splits is no frame, as the name shows without it",
+			"message": "eyJkdXZldCI6ImFwcHJvdmFsIiwic3RlcCI6ImNvbW1pdG1lbnQiLCJkYXRhIjoiWTI5dGJXbDBiV1Z1ZEE9PSIsIm5hbWUiOiJQaXhlbCA4IDQ44oCLMjkxMyJ9",
+			"frame": null
+		},
+		{
+			"case": "a phone model's run of digits, which letters touch and no space splits, is a name",
+			"frame": {
+				"duvet": "approval",
+				"step": "commitment",
+				"data": "Y29tbWl0bWVudA==",
+				"name": "22041219NY"
+			},
+			"message": "eyJkdXZldCI6ImFwcHJvdmFsIiwic3RlcCI6ImNvbW1pdG1lbnQiLCJkYXRhIjoiWTI5dGJXbDBiV1Z1ZEE9PSIsIm5hbWUiOiIyMjA0MTIxOU5ZIn0="
+		},
+		{
+			"case": "six digits that a letter touches are a name, as a phone model's",
+			"frame": {
+				"duvet": "approval",
+				"step": "commitment",
+				"data": "Y29tbWl0bWVudA==",
+				"name": "220333QAG"
+			},
+			"message": "eyJkdXZldCI6ImFwcHJvdmFsIiwic3RlcCI6ImNvbW1pdG1lbnQiLCJkYXRhIjoiWTI5dGJXbDBiV1Z1ZEE9PSIsIm5hbWUiOiIyMjAzMzNRQUcifQ=="
+		},
+		{
 			"case": "a name past 64 characters is no frame",
 			"message": "eyJkdXZldCI6ImFwcHJvdmFsIiwic3RlcCI6Im9mZmVyIiwiZGF0YSI6ImIyWm1aWEk9IiwibmFtZSI6Inh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4In0=",
 			"frame": null

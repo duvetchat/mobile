@@ -14,17 +14,20 @@ import '../widgets/rows.dart';
 import 'device_setup.dart' show fingerprintOf;
 import 'qr.dart';
 
-// The approving device's words, as the desktop's say them (its en.json), and the scan's, which only Android has.
-String approvalAsks(String name) => '$name asks to read your encrypted conversations.';
-String approvalUnfinished(String name) =>
-    "$name was approved here before, but didn't finish setting up: it's taken off your device list first, then "
-    'approved again.';
+// The approving device's words, as the desktop's say them (its en.json), and the scan's, which only Android has. A new
+// device's name is whatever wrote its request says, which the fingerprint doesn't bind: it's quoted as the device's
+// own word on a line of its own, never in a title or in what to compare or type (mobile#353).
+const approvalAsks = 'A new device asks to read your encrypted conversations.';
+const approvalUnfinished =
+    "It was approved here before, but didn't finish setting up: it's taken off your device list first, then approved "
+    'again.';
+String approvalName(String name) => 'The device calls itself “$name”.';
 const approvalFingerprintLine = "Approve it only if the new device's screen shows the same 16 characters.";
 const approvalNo = 'No';
 const approvalYes = "It's mine";
-String approvalTitle(String name) => 'Approve $name';
-String approvalWaiting(String name) => 'Waiting for $name…';
-String approvalCodeFor(String name) => 'Type this code into $name:';
+const approvalTitle = 'Approve your new device';
+const approvalWaiting = 'Waiting for your new device…';
+const approvalCodeFor = 'Type this code into your new device:';
 const approvalConfirm = 'Confirm';
 const approvalFailed = "Couldn't approve the device. Check your connection, then try again.";
 const approvalListed = 'This device is set up for your account already.';
@@ -61,9 +64,10 @@ DeviceApproval? shownApproval(EngineState state) => switch (state.approval) {
 };
 
 /// What a device of the person's says of a new one that asks to be approved (PLAN-E2E-CLIENTES.md, Task 27; decision
-/// 24), over the app: its name and the fingerprint its screen shows (Ruling 35), with a yes and a no before anything is
-/// offered; then the code to type into it, and when to confirm. Android has no box of the system's: this page's
-/// Confirm, beside the fingerprint, is the person's act. It goes once the approval does, or its transfer went.
+/// 24), over the app: the fingerprint its screen shows (Ruling 35) and, after it, its name as its own word, with a yes
+/// and a no before anything is offered; then the code to type into it, and when to confirm. Android has no box of the
+/// system's: this page's Confirm, beside the fingerprint, is the person's act. It goes once the approval does, or its
+/// transfer went.
 class ApprovalPage extends StatefulWidget {
   const ApprovalPage(this.repository, {super.key});
 
@@ -156,14 +160,13 @@ class ApprovalView extends StatelessWidget {
     final colors = context.theme.colors;
     final body = DuvetType.body.copyWith(color: colors.foreground);
     final line = DuvetType.caption.copyWith(color: colors.mutedForeground);
-    final name = approval.name.isEmpty ? 'A new device' : approval.name;
     final phase = approval.phase;
     return _Page(
-      title: phase == ApprovalPhase.asked ? Notice.approvalAsk.text : approvalTitle(name),
+      title: phase == ApprovalPhase.asked ? Notice.approvalAsk.text : approvalTitle,
       children: [
         if (phase == ApprovalPhase.asked) ...[
-          Text(approvalAsks(name), style: body),
-          if (approval.unfinished) ...[const SizedBox(height: 8), Text(approvalUnfinished(name), style: line)],
+          Text(approvalAsks, style: body),
+          if (approval.unfinished) ...[const SizedBox(height: 8), Text(approvalUnfinished, style: line)],
           const SizedBox(height: 16),
         ],
         if (phase == ApprovalPhase.ended)
@@ -178,13 +181,14 @@ class ApprovalView extends StatelessWidget {
           ),
           const SizedBox(height: 4),
           Text(approvalFingerprintLine, style: line),
+          if (approval.name.isNotEmpty) ...[const SizedBox(height: 4), Text(approvalName(approval.name), style: line)],
         ],
         if (phase == ApprovalPhase.offered) ...[
           const SizedBox(height: 16),
-          Semantics(liveRegion: true, child: Text(approvalWaiting(name), style: line)),
+          Semantics(liveRegion: true, child: Text(approvalWaiting, style: line)),
         ] else if (phase == ApprovalPhase.code && approval.code != null) ...[
           const SizedBox(height: 16),
-          Text(approvalCodeFor(name), style: line),
+          Text(approvalCodeFor, style: line),
           const SizedBox(height: 8),
           Text(
             approval.code!,
@@ -429,10 +433,14 @@ class _ScanDevicePageState extends State<ScanDevicePage> {
                 child: Text(Notice.approvalAsk.text, style: DuvetType.largeTitle.copyWith(color: colors.foreground)),
               ),
               const SizedBox(height: 16),
-              Text(approvalAsks(name), style: DuvetType.body.copyWith(color: colors.foreground)),
+              Text(approvalAsks, style: DuvetType.body.copyWith(color: colors.foreground)),
               if (scanned.unfinished) ...[
                 const SizedBox(height: 8),
-                Text(approvalUnfinished(name), style: DuvetType.caption.copyWith(color: colors.mutedForeground)),
+                Text(approvalUnfinished, style: DuvetType.caption.copyWith(color: colors.mutedForeground)),
+              ],
+              if (name.isNotEmpty) ...[
+                const SizedBox(height: 8),
+                Text(approvalName(name), style: DuvetType.caption.copyWith(color: colors.mutedForeground)),
               ],
               const SizedBox(height: 24),
               DuvetButton(

@@ -240,6 +240,13 @@ final _base64 = RegExp(r'^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+
 /// The most characters a device's name has, counted by code point.
 const maxDeviceName = 64;
 
+/// What a device's name may not look like, as the approving device shows it beside the fingerprint and the code it
+/// says to compare and to type (mobile#353): a fingerprint's two groups of four hex digits, apart by anything but a
+/// letter or a digit, and a code's six digits, of any script, that no letter or digit touches. A phone's model keeps
+/// its digits that letters touch (22041219NY, 220333QAG). The desktop's LIKE_FINGERPRINT and LIKE_CODE.
+final _likeFingerprint = RegExp(r'[0-9a-f]{4}[^\p{L}\p{N}]+[0-9a-f]{4}', caseSensitive: false, unicode: true);
+final _likeCode = RegExp(r'(?<![\p{L}\p{N}])\p{Nd}{6}(?![\p{L}\p{N}])', unicode: true);
+
 /// An approval frame as the inbox's message carries it: its JSON in UTF-8, its fields in this order, in base64.
 String approvalFrameMessage(ApprovalFrame frame) => base64Encode(
   utf8.encode(jsonEncode({'duvet': 'approval', 'step': frame.step.name, 'data': frame.data, 'name': ?frame.name})),
@@ -247,7 +254,7 @@ String approvalFrameMessage(ApprovalFrame frame) => base64Encode(
 
 /// The approval frame an inbox message is, or null, when it's a message of the core between devices
 /// (receive_direct's). A frame is JSON with duvet "approval", one of the four steps, its data in base64, a name of 64
-/// characters at most if any, and nothing else.
+/// characters at most if any, which looks like neither a fingerprint nor a code, and nothing else.
 ApprovalFrame? readApprovalFrame(String message) {
   final Object? value;
   try {
@@ -268,7 +275,9 @@ ApprovalFrame? readApprovalFrame(String message) {
   final name = value['name'];
   if (name is! String) return null;
   final shown = name.replaceAll(_unseen, '').trim();
-  return shown.isEmpty || shown.runes.length > maxDeviceName ? null : (step: step, data: data, name: shown);
+  if (shown.isEmpty || shown.runes.length > maxDeviceName) return null;
+  if (_likeFingerprint.hasMatch(shown) || _likeCode.hasMatch(shown)) return null;
+  return (step: step, data: data, name: shown);
 }
 
 final _fingerprintLabel = utf8.encode('duvet approval fingerprint v1');
