@@ -18,16 +18,11 @@ import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
 
 import '../support/eventually.dart';
+import '../support/pubspec.dart';
 
 // The engine in the app (PLAN-E2E-CLIENTES.md, Task 13): what the app says it is, the one gateway reopen of Ruling 30,
 // and the engine running in the engine with a screen alone, from the session's start to its end.
 const _me = '00000000-0000-4000-8000-000000000001';
-
-/// The pubspec's version without its build number, its CRLF made LF first, as a Windows checkout has it.
-String _version() {
-  final pubspec = File('pubspec.yaml').readAsStringSync().replaceAll('\r\n', '\n');
-  return RegExp(r'^version: ([0-9]+\.[0-9]+\.[0-9]+)\+', multiLine: true).firstMatch(pubspec)![1]!;
-}
 
 /// A core no build has: its open says so, and the engine asks nothing more of it.
 class _Host implements CoreHost {
@@ -152,7 +147,7 @@ void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
   test("the_app_is_android_with_its_pubspec's_version,_ios_on_ios,_and_nothing_elsewhere", () {
-    expect(duvetClient(), 'android/${_version()}');
+    expect(duvetClient(), 'android/${pubspecVersion()}');
     expect(duvetClient(platform: TargetPlatform.iOS, version: '1.1.0'), 'ios/1.1.0');
     expect(duvetClient(web: true), isNull);
     expect(duvetClient(platform: TargetPlatform.linux), isNull);
@@ -266,7 +261,7 @@ void main() {
       await pumpEventQueue();
       expect(requests, isNotEmpty);
       for (final request in requests) {
-        expect(request.headers['X-Duvet-Client'], 'android/${_version()}', reason: request.url.path);
+        expect(request.headers['X-Duvet-Client'], 'android/${pubspecVersion()}', reason: request.url.path);
       }
     });
 
@@ -296,7 +291,7 @@ void main() {
         ['/api/auth/refresh', '/api/users/@me/conversations/$conversation/call/decline'],
       );
       for (final request in sent) {
-        expect(request.headers['X-Duvet-Client'], 'android/${_version()}', reason: request.url.path);
+        expect(request.headers['X-Duvet-Client'], 'android/${pubspecVersion()}', reason: request.url.path);
       }
     });
 
