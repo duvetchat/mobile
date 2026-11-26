@@ -8,9 +8,9 @@ import 'package:duvet/data/emoji_catalog.dart';
 import 'package:duvet/data/models.dart';
 import 'package:duvet/deep_links.dart';
 import 'package:duvet/e2e/decrypted_files.dart';
+import 'package:duvet/e2e/engine.dart';
 import 'package:duvet/e2e/files.dart';
 import 'package:duvet/e2e/notices.dart';
-import 'package:duvet/e2e/sync.dart' show ConversationState, Restart;
 import 'package:duvet/encryption/recovery_key.dart';
 import 'package:duvet/main.dart';
 import 'package:duvet/people.dart' show RoleChip;
@@ -18,6 +18,7 @@ import 'package:duvet/theme.dart';
 import 'package:duvet/widgets/chrome.dart';
 import 'package:duvet/widgets/glass.dart';
 import 'package:duvet/widgets/rows.dart';
+import 'package:duvet_client/duvet.dart' as duvet;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -440,6 +441,40 @@ void main() {
         await tester.pumpAndSettle();
         await expectLater(find.byType(DuvetApp), matchesGoldenFile('goldens/empty_dm_${b.name}.png'));
       }),
+    );
+
+    // Settings → Devices (PLAN-E2E-CLIENTES.md, Task 25): this phone, a computer not seen in 45 days, and a browser
+    // never set up, on a fixed day so their last-seen dates don't move.
+    testWidgets(
+      'devices, ${b.name}',
+      (tester) => withClock(
+        Clock.fixed(DateTime(2026, 11, 25, 12)),
+        () => withShadows(() async {
+          final repository = await app(tester);
+          final now = clock.now();
+          duvet.Device device(String id, String name, String client, int days, {bool listed = true}) => duvet.Device(
+            id: id,
+            name: name,
+            client: client,
+            listed: listed,
+            current: id.endsWith('a1'),
+            createdAt: now.subtract(const Duration(days: 60)),
+            lastSeenAt: now.subtract(Duration(days: days)),
+          );
+          repository
+            ..encryption.value = EngineState.ready
+            ..deviceList = [
+              device('0193a4b2-0000-7000-8000-0000000000a1', 'Pixel 8 Pro', 'android/1.1.0', 0),
+              device('0193a4b2-0000-7000-8000-0000000000a2', 'Duvet for Windows', 'desktop-windows/1.2.0', 50),
+              device('0193a4b2-0000-7000-8000-0000000000a3', 'Firefox on Linux', 'web/1.2.0', 1, listed: false),
+            ];
+          await tester.tap(find.descendant(of: find.byType(DuvetTabBar), matching: find.text('You')));
+          await tester.pumpAndSettle();
+          await tester.tap(find.text('Devices'));
+          await tester.pumpAndSettle();
+          await expectLater(find.byType(DuvetApp), matchesGoldenFile('goldens/devices_${b.name}.png'));
+        }),
+      ),
     );
 
     // #215: a profile's roles, held ones in their color or gradient.

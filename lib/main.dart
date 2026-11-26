@@ -33,6 +33,7 @@ import 'deep_links.dart';
 import 'e2e/app_host_web.dart' if (dart.library.io) 'e2e/app_host.dart';
 import 'e2e/push_decrypt.dart';
 import 'encryption/change_refusals.dart';
+import 'encryption/devices.dart' show DeviceNotices;
 import 'mention_notices.dart';
 import 'push/background.dart';
 import 'push/notifications.dart';
@@ -457,15 +458,19 @@ class _DuvetAppState extends State<DuvetApp> {
                   child: ShellScope(
                     shell: _shell,
                     child: FToaster(
-                      // An encrypted conversation's change the server refused, told over every screen.
+                      // An encrypted conversation's change the server refused, and what the engine tells of the
+                      // user's other devices, told over every screen.
                       child: ChangeRefusals(
                         refusals: widget.repository.changesRefused,
-                        child: Stack(
-                          children: [
-                            child!,
-                            // Over every screen, the chats opened from Chats and Spaces too.
-                            MentionNotices(navigator: _navigator),
-                          ],
+                        child: DeviceNotices(
+                          notices: widget.repository.deviceNotices,
+                          child: Stack(
+                            children: [
+                              child!,
+                              // Over every screen, the chats opened from Chats and Spaces too.
+                              MentionNotices(navigator: _navigator),
+                            ],
+                          ),
                         ),
                       ),
                     ),

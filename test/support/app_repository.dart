@@ -20,7 +20,7 @@ import 'engines.dart';
 import 'fake_api.dart';
 
 class TestApp {
-  TestApp._(this.repository, this.seen, this.support, this._core, this.end);
+  TestApp._(this.repository, this.seen, this.support, this.keys, this._core, this.end);
 
   final DuvetRepository repository;
 
@@ -29,6 +29,9 @@ class TestApp {
 
   /// The app's support folder: the engine's record, the core's database and the notifications' history.
   final Directory support;
+
+  /// The keys of the app's databases, which outlive its sessions as the phone's Keystore keeps them.
+  final MemoryKeys keys;
   final CoreGate Function() _core;
 
   /// Its connection to the gateway closed.
@@ -79,14 +82,24 @@ Future<TestApp> appOn(
   });
   final seen = <http.Request>[];
   final session = fake.signIn(user);
+  // The first sign-in takes the session the gateway connection is of; each later one a session of its own.
+  ({String token, String deviceChallenge})? first = session;
+  ({String token, String deviceChallenge}) login() {
+    final taken = first ?? fake.signIn(user);
+    first = null;
+    return taken;
+  }
+
   final client = MockClient((request) async {
     seen.add(request);
     final at = DateTime.now().toUtc().toIso8601String();
     final Object? own = switch ((request.method, request.url.path)) {
-      ('POST', '/api/auth/login') => {
-        'token': session.token,
-        'session_token': 'refresh',
-        'device_challenge': session.deviceChallenge,
+      ('POST', '/api/auth/login') => switch (login()) {
+        final signedIn => {
+          'token': signedIn.token,
+          'session_token': 'refresh',
+          'device_challenge': signedIn.deviceChallenge,
+        },
       },
       ('GET', '/api/users/@me') => {'id': user, 'username': 'user', 'created_at': at, 'updated_at': at},
       _ => answers['${request.method} ${request.url.path}'],
@@ -99,6 +112,8 @@ Future<TestApp> appOn(
     return http.Response.fromStream(await fake.client.send(copy));
   });
   late CoreGate core;
+  final keys = MemoryKeys();
+  final folder = Directory('${support.path}/core')..createSync();
   final repository = DuvetRepository(
     store: MemorySessionStore(),
     recentsStore: recents ?? MemoryRecentChatsStore(),
@@ -107,7 +122,7 @@ Future<TestApp> appOn(
     cacheStore: cache ?? MemoryChatCacheStore(),
     notifyAway: notifyAway,
     encryptionHost: () {
-      core = TestHost(folder: Directory('${support.path}/core')..createSync()).gate;
+      core = TestHost(folder: folder, keys: keys).gate;
       return host?.call(core) ?? core;
     },
     onScreen: () => true,
@@ -121,5 +136,5 @@ Future<TestApp> appOn(
     end();
     repository.dispose();
   });
-  return TestApp._(repository, seen, support, () => core, end);
+  return TestApp._(repository, seen, support, keys, () => core, end);
 }

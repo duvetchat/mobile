@@ -55,7 +55,10 @@ class _Live {
 
   /// The device each READY's identify named.
   final List<String?> readies;
-  late final E2EEngine engine;
+
+  /// Its engine: another on the same core, record and connection is the app's next start ([_engineOn]).
+  late E2EEngine engine;
+  late final E2EEngine Function() _engineOn;
   String? device;
   duvet.GatewayManager? _gateway;
   StreamSubscription<duvet.GatewayEventPayload>? _heard;
@@ -95,23 +98,31 @@ class _Live {
     }
 
     await connect();
-    live.engine = E2EEngine(
-      host: live.host.gate,
-      api: live.api,
-      events: events.stream,
-      store: MemoryStore(),
-      clock: const SystemClock(),
-      user: account.id,
-      deviceName: 'Pixel 8 Pro',
-      registered: (device) {
-        live.device = device;
-        if (named != device) unawaited(connect());
-      },
-      loginChallenge: switch (signedIn.deviceChallenge) {
-        final challenge? => (challenge: challenge, at: DateTime.now()),
-        null => null,
-      },
-    );
+    final store = MemoryStore();
+    var challenge = switch (signedIn.deviceChallenge) {
+      final challenge? => (challenge: challenge, at: DateTime.now()),
+      null => null,
+    };
+    live._engineOn = () {
+      // The login's challenge, for the first engine alone.
+      final login = challenge;
+      challenge = null;
+      return E2EEngine(
+        host: live.host.gate,
+        api: live.api,
+        events: events.stream,
+        store: store,
+        clock: const SystemClock(),
+        user: account.id,
+        deviceName: 'Pixel 8 Pro',
+        registered: (device) {
+          live.device = device;
+          if (named != device) unawaited(connect());
+        },
+        loginChallenge: login,
+      );
+    };
+    live.engine = live._engineOn();
     Future<void> end() async {
       await live.engine.stop();
       await live._heard?.cancel();
@@ -124,6 +135,33 @@ class _Live {
     kept ? _keptLive.add(end) : addTearDown(end);
     return live;
   }
+}
+
+/// Another device of [account]'s, set up by [first]'s approval by QR (Task 27 does it in the app) and on the list: its
+/// engine started again, as the app's next start, and ready.
+Future<_Live> _approvedOn(ApiRouter router, _Live first, ({String id, String email}) account) async {
+  final fresh = await _Live.start(router, account);
+  await fresh.engine.start();
+  expect(fresh.engine.state.value, EngineState.newDevice);
+  await fresh.engine.stop();
+  final gate = fresh.host.gate;
+  await gate.open(account.id);
+  final begun = await gate.handle<Map<String, Object?>>({'cmd': 'approval_begin'});
+  final approved = await first.host.gate.handle<Map<String, Object?>>({'cmd': 'approval_from_qr', 'qr': begun['qr']});
+  await gate.handle<Object?>({'cmd': 'approval_receive', 'transfer': approved['transfer']});
+  final served = await fresh.api.identity(account.id);
+  final version = await fresh.api.putDeviceList(
+    duvet.DeviceListUpload(
+      deviceList: approved['device_list']! as String,
+      certificate: approved['certificate']! as String,
+      baseVersion: served.deviceListVersion,
+    ),
+  );
+  await gate.handle<Object?>({'cmd': 'device_list_uploaded', 'version': version});
+  fresh.engine = fresh._engineOn();
+  await fresh.engine.start();
+  expect(fresh.engine.state.value, EngineState.ready);
+  return fresh;
 }
 
 /// The ends of the devices kept for later cases ([_Live.start]'s kept), run once the file's tests end.
@@ -386,6 +424,48 @@ void main() {
     },
     skip: skip ?? noCore,
     timeout: const Timeout(Duration(minutes: 4)),
+  );
+
+  // Devices in Settings (PLAN-E2E-CLIENTES.md, Task 25): Carol's device, which the cases above left set up, takes a
+  // device of hers she lost off her account with new keys, which the device that stays takes from its transfer, then
+  // takes that one off with a list: each through the API's own checks.
+  test(
+    'a_lost_device_goes_with_new_keys,_and_another_one_with_a_list',
+    () async {
+      final pair = _carolAndDave;
+      if (pair == null) fail('the case before left no device');
+      final c = pair.c;
+      final carol = _account(2);
+      final router = _router();
+      final lost = await _approvedOn(router, c, carol);
+      final kept = await _approvedOn(router, c, carol);
+      final (own, gone, stays) = (c.device!, lost.device!, kept.device!);
+      Future<List<String>> devices() async => [for (final d in await c.api.devices()) d.id]..sort();
+      Future<Object?> identityKey(_Live live) async =>
+          (await live.host.gate.handle<Map<String, Object?>>({'cmd': 'status'}))['identity_key'];
+      const wait = Duration(seconds: 30);
+      expect(await devices(), [own, gone, stays]..sort());
+      final before = await c.api.identity(carol.id);
+
+      await c.engine.removeDevice(gone, changeKeys: true);
+      final shown = c.engine.state.value;
+      expect(shown.rotating ? shown.recoveryKey : null, recoveryKeyShape);
+      await c.engine.keySaved();
+      expect(c.engine.state.value, EngineState.ready);
+      final after = await c.api.identity(carol.id);
+      expect(after.identityKey, isNot(before.identityKey));
+      expect(after.identityKey, await identityKey(c));
+      expect(await devices(), [own, stays]..sort());
+      await eventually(() => expect(lost.engine.state.value.stage, EngineStage.removed), timeout: wait);
+      await eventually(() async => expect(await identityKey(kept), after.identityKey), timeout: wait);
+
+      await c.engine.removeDevice(stays);
+      expect(await devices(), [own]);
+      await eventually(() => expect(kept.engine.state.value.stage, EngineStage.removed), timeout: wait);
+      expect(c.engine.state.value, EngineState.ready);
+    },
+    skip: skip ?? noCore,
+    timeout: const Timeout(Duration(minutes: 3)),
   );
 
   // Pushes opened on the phone (PLAN-E2E-CLIENTES.md, Task 21; decision 29): Dave's app closed, a push's engine opens

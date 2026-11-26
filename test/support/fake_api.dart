@@ -404,7 +404,8 @@ class _Session {
 }
 
 class _Device {
-  _Device(this.id, this.user, this.name, this.client, this.signatureKey, this.hpkeKey, this.createdAt);
+  _Device(this.id, this.user, this.name, this.client, this.signatureKey, this.hpkeKey, this.createdAt)
+    : lastSeenAt = createdAt;
   final String id;
   final String user;
   final String name;
@@ -412,6 +413,9 @@ class _Device {
   final Uint8List signatureKey;
   final Uint8List hpkeKey;
   final String createdAt;
+
+  /// shortcut: set as it registers and by [FakeApi.lastSeen] alone; the API notes each device's requests, once an hour.
+  String lastSeenAt;
   Uint8List? certificate;
 
   /// The identity that certified it.
@@ -847,6 +851,20 @@ class FakeApi {
   /// expired.
   void expireQueue(String conversationId, int floor) => _conversation(conversationId).floor = floor;
 
+  /// The device was last seen at [at] (an RFC 3339 time), as the API notes a device's requests.
+  void lastSeen(String deviceId, String at) =>
+      (_devices[deviceId] ?? (throw StateError('no device $deviceId'))).lastSeenAt = at;
+
+  /// The device's registration goes, as a new password's remove_devices takes each one: the user's signed list still
+  /// names it (step 3's ruling 23), with no certificate the API serves.
+  void dropDevice(String deviceId) {
+    final device = _devices[deviceId] ?? (throw StateError('no device $deviceId'));
+    _removeDevices(device.user, [device]);
+    final events = [..._outbox];
+    _outbox.clear();
+    Timer.run(() => _send(events));
+  }
+
   /// The next request [match] takes never reaches the API: the client fails, and nothing is done.
   void cutRequest(RouteMatch match) => _switches.add((match: match, effect: _cut));
 
@@ -1061,6 +1079,11 @@ class FakeApi {
       }),
       route('POST', '/api/e2e/decrypt-failures', _Needs.session, (ctx) {
         decryptFailures.add((kind: '${ctx['kind']}', count: ctx['count'] ?? 1));
+        return _noContent;
+      }),
+      // A sign-out ends its session, nothing else (decision 13): the device stays as it was.
+      route('POST', '/api/auth/logout', _Needs.session, any: true, (ctx) {
+        _sessions.remove(ctx.me.token);
         return _noContent;
       }),
       route('POST', '$me/devices/challenge', _Needs.session, (ctx) {
@@ -1343,7 +1366,7 @@ class FakeApi {
     'name': device.name,
     'client': device.client,
     'created_at': device.createdAt,
-    'last_seen_at': device.createdAt,
+    'last_seen_at': device.lastSeenAt,
     'listed': listed ?? device.listed,
     'current': session?.device == device.id,
   };
@@ -1380,9 +1403,13 @@ class FakeApi {
       'identity_key': base64Encode(identity.identityKey),
       'device_list': base64Encode(identity.deviceList),
       'device_list_version': identity.version,
+      // The listed devices' certificates of this identity, as the API serves them: never a removed device's, which a
+      // new password's remove_devices leaves on the signed list (step 3's ruling 23).
       'certificates': [
         for (final id in list.devices)
-          if (_devices[id]?.certificate case final certificate?) base64Encode(certificate),
+          if (_devices[id] case final device?
+              when device.listed && !device.removed && device.certifiedBy == identity.id)
+            base64Encode(device.certificate!),
       ],
       // Active, as if a listed device connected lately, unless a test of deviceless members says not (setActive).
       'active': !_inactive.contains(user),
