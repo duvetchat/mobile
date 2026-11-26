@@ -8,9 +8,12 @@ library;
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'dart:typed_data';
 
 import 'package:duvet/e2e/client.dart';
+import 'package:duvet/e2e/decrypted_files.dart';
 import 'package:duvet/e2e/engine.dart';
+import 'package:duvet/e2e/files.dart';
 import 'package:duvet/e2e/uuid.dart';
 import 'package:duvet_client/duvet.dart' as duvet;
 import 'package:duvet_client/http/router.dart' show ApiRouter;
@@ -265,6 +268,58 @@ void main() {
       await d.engine.deleteMessage(dm, reply.id);
       await eventually(() async => expect(await c.engine.messages(dm, [reply.id]), isEmpty), timeout: wait);
       expect([for (final m in await c.rest.getDirectMessages(dm)) m.id], isNot(contains(reply.id)));
+    },
+    skip: skip ?? noCore,
+    timeout: const Timeout(Duration(minutes: 3)),
+  );
+
+  // Encrypted attachments (PLAN-E2E-CLIENTES.md, Task 19): Carol's device seals a file and sends it with its ID; the
+  // API keeps its sealed bytes, and Dave's device downloads them from its signed URL, with none of the app's headers
+  // and through the storage's redirect, opens them and checks them against what the message says.
+  test(
+    'a_file_crosses_between_two_users',
+    () async {
+      final pair = _carolAndDave;
+      if (pair == null) fail('the case before left no conversation');
+      final (:c, :d, :dm) = pair;
+      const wait = Duration(seconds: 30);
+      final picture = Uint8List.fromList([
+        ...const [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a],
+        for (var i = 0; i < 100000; i++) (i * 7) % 256,
+      ]);
+      final sent = (await c.engine.sendMessage(
+        Outgoing(
+          conversationId: dm,
+          nonce: uuidv4(),
+          text: 'a file',
+          files: [FileToSeal(bytes: picture, name: 'live.png', width: 10, height: 10)],
+        ),
+      ))!;
+      ShownFile? file;
+      await eventually(() async {
+        final row = (await d.engine.messages(dm, [sent.id])).firstOrNull;
+        expect(row?.status, MessageStatus.ok);
+        file = shownFile(row!.attachments.single);
+        expect((file?.name, file?.said, file?.size), ('live.png', 'image/png', picture.length));
+      }, timeout: wait);
+      // The API holds the sealed bytes under the file's ID, named as nothing.
+      final listed = (await d.rest.getDirectMessages(dm)).firstWhere((m) => m.id == sent.id);
+      final [kept] = listed.attachments!;
+      expect(
+        (kept.id, kept.filename, kept.contentType, kept.sizeBytes),
+        (file!.id, 'file', 'application/octet-stream', sealedSize(picture.length)),
+      );
+      final router = _router();
+      final base = Uri.parse('${router.secure ? 'https' : 'http'}://${router.api}/');
+      final client = http.Client();
+      addTearDown(client.close);
+      final opened = await openSealed(
+        file!,
+        download: (most, progress) => downloadSigned(client, base.resolve(kept.url!), most, progress: progress),
+        open: (key, id, sealed, progress) => d.engine.openFile(key, id, sealed, progress: progress),
+      );
+      expect(opened.bytes, picture);
+      expect(opened.type, 'image/png');
     },
     skip: skip ?? noCore,
     timeout: const Timeout(Duration(minutes: 3)),

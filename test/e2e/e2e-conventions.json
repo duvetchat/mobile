@@ -39,9 +39,20 @@
 		"edit_refused": "Your edit couldn't be saved for everyone.",
 		"delete_refused": "Your message couldn't be deleted for everyone.",
 		"loading_message": "Loading message",
-		"files_wait": "Files and voice messages can't be sent in encrypted conversations yet",
 		"not_ready": "Encrypted conversations aren't ready on this device",
-		"too_many_waiting": "Too many messages wait to be sent here: send or dismiss them first"
+		"too_many_waiting": "Too many messages wait to be sent here: send or dismiss them first",
+		"file_encrypted": "Encrypted file",
+		"file_progress": "Downloading · {percent}%",
+		"file_altered": "This file isn't the one its sender sent, so it isn't shown.",
+		"file_unavailable": "This file can't be shown.",
+		"file_download_failed": "Couldn't download this file. Try again.",
+		"files_gone": "This message's files aren't on this device any more. Dismiss it, then send them again.",
+		"gif_failed": "The GIF couldn't be sent.",
+		"file_save": "Save",
+		"file_save_named": "Save {name}",
+		"file_play": "Play video",
+		"file_show": "Show picture",
+		"file_named": "{name}: {status}"
 	},
 	"filled_notices": [
 		{
@@ -689,6 +700,36 @@
 			"type": "application/octet-stream"
 		}
 	],
+	"thumbnails": {
+		"most_side": 320,
+		"cases": [
+			{
+				"case": "a JPEG of 320 × 240 is drawn",
+				"bytes": "/9j/wAARCADwAUADASIAAhEBAxEB",
+				"drawn": true
+			},
+			{
+				"case": "a PNG of 180 × 320 is drawn",
+				"bytes": "iVBORw0KGgoAAAANSUhEUgAAALQAAAFACAYAAAAAAAAA",
+				"drawn": true
+			},
+			{
+				"case": "a JPEG whose header says 12000 × 12000 isn't drawn",
+				"bytes": "/9j/wAARCC7gLuADASIAAhEBAxEB",
+				"drawn": false
+			},
+			{
+				"case": "a PNG a pixel past the side isn't drawn",
+				"bytes": "iVBORw0KGgoAAAANSUhEUgAAAUEAAAAKCAYAAAAAAAAA",
+				"drawn": false
+			},
+			{
+				"case": "a GIF isn't drawn, whatever its size",
+				"bytes": "R0lGODlhAQABAA==",
+				"drawn": false
+			}
+		]
+	},
 	"approval_frames": [
 		{
 			"case": "a commitment with the new device's name",

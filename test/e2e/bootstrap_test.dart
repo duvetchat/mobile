@@ -35,6 +35,14 @@ class _ClosedHost implements CoreHost {
   }
 
   @override
+  Future<Uint8List> sealFile(String key, String attachmentId, Uint8List plain, {void Function(int)? progress}) =>
+      throw CoreError('internal', message: 'no core');
+
+  @override
+  Future<Uint8List> openFile(String key, String attachmentId, Uint8List sealed, {void Function(int)? progress}) =>
+      throw CoreError('internal', message: 'no core');
+
+  @override
   Future<void> close() async {}
 
   @override
@@ -54,6 +62,14 @@ class _KeysUnread implements CoreHost {
     final answer = await _core.handle<T>(command);
     return command['cmd'] == 'create_device' ? <String, Object?>{} as T : answer;
   }
+
+  @override
+  Future<Uint8List> sealFile(String key, String attachmentId, Uint8List plain, {void Function(int)? progress}) =>
+      _core.sealFile(key, attachmentId, plain, progress: progress);
+
+  @override
+  Future<Uint8List> openFile(String key, String attachmentId, Uint8List sealed, {void Function(int)? progress}) =>
+      _core.openFile(key, attachmentId, sealed, progress: progress);
 
   @override
   Future<void> close() => _core.close();
