@@ -42,6 +42,10 @@ const toldInactive = 'told_inactive';
 /// later generation (sync.dart; the core's #46, kept across restarts).
 const refusedGenerations = 'refused_generations';
 
+/// The shared histories and catch-ups whose keys this device's core took, by package (history.dart): no key, only
+/// what's needed to know a package opens here, kept until it's imported and acknowledged.
+const historyKeys = 'history_keys';
+
 /// What a new device of this installation starts without.
 const deviceRecord = [
   keptDevice,
@@ -53,6 +57,7 @@ const deviceRecord = [
   pendingChanges,
   rotationRemove,
   refusedGenerations,
+  historyKeys,
 ];
 
 /// The API's external sender as this installation first saw it (Ruling 32), which a new device of it keeps.

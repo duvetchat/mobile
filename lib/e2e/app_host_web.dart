@@ -39,6 +39,10 @@ class _NoCore implements CoreHost {
   Future<void> dropShare(String shareId) async {}
 
   @override
+  Future<Map<String, Object?>> importShare(String shareId, List<Uint8List> parts) async =>
+      throw CoreError('internal', message: 'no core here');
+
+  @override
   Future<void> close() async {}
 
   @override

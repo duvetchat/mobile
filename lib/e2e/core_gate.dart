@@ -252,16 +252,6 @@ final class CoreGate implements CoreHost {
         return _transfer(
           await openFile(args[0]! as String, args[1]! as String, _received(args[2]), progress: progress),
         );
-      case 'share':
-        return jsonEncode(await share(jsonDecode(args[0]! as String) as Map<String, Object?>));
-      case 'sharePart':
-        return _transfer(await sharePart(args[0]! as String, args[1]! as int));
-      case 'dropShare':
-        await dropShare(args[0]! as String);
-        return null;
-      case 'importShare':
-        final parts = [for (final part in args[1]! as List) _received(part)];
-        return jsonEncode(await importShare(args[0]! as String, parts));
       case 'destroy':
         await destroy(user);
         return null;
@@ -432,61 +422,65 @@ final class CoreGate implements CoreHost {
     return done.takeBytes();
   }
 
-  /// `history_share` or `catch_up`: its reply with its parts counted, as `parts`, which stay in the engine that made
-  /// them until dropped.
+  /// `history_share` or `catch_up`: its reply with its parts counted, as `parts`, which stay in this engine until
+  /// dropped. The app's engine's alone ([serves]; Review Focus 2): another engine's gate refuses it, as the port
+  /// carries no share or import.
   @override
   Future<Map<String, Object?>> share(Map<String, Object?> command) async {
     if (command['cmd'] != 'history_share' && command['cmd'] != 'catch_up') {
       throw CoreError('bad_command', message: 'share makes a history_share or a catch_up', field: 'cmd');
     }
-    final made = await _either(() async {
+    _onlyServing('shares');
+    final made = await _here(() async {
       final made = (await _run(command))! as Map<String, Object?>;
       final parts = [for (final part in made['parts']! as List) base64Decode(part as String)];
       _shares[made['share_id']! as String] = parts;
       return {...made, 'parts': parts.length};
-    }, (app, user) async => jsonDecode((await _ask(app, 'share', user, [jsonEncode(command)]))! as String));
+    });
     return (made! as Map).cast<String, Object?>();
   }
 
   /// A package's part [n], as [share] made it.
   @override
-  Future<Uint8List> sharePart(String shareId, int n) async =>
-      await _either(() async {
-            final parts = _shares[shareId];
-            if (parts == null || n < 0 || n >= parts.length) {
-              throw CoreError('not_found', message: 'this engine keeps no such part', what: 'share');
-            }
-            return parts[n];
-          }, (app, user) async => _received(await _ask(app, 'sharePart', user, [shareId, n])))
-          as Uint8List;
+  Future<Uint8List> sharePart(String shareId, int n) async {
+    final parts = _shares[shareId];
+    if (parts == null || n < 0 || n >= parts.length) {
+      throw CoreError('not_found', message: 'this engine keeps no such part', what: 'share');
+    }
+    return parts[n];
+  }
 
   /// Lets a package's parts go.
   @override
-  Future<void> dropShare(String shareId) async {
-    await _either(() async => _shares.remove(shareId), (app, user) => _ask(app, 'dropShare', user, [shareId]));
-  }
+  Future<void> dropShare(String shareId) async => _shares.remove(shareId);
 
-  /// `history_import`, with the parts handed in: [maxShareParts] at most.
+  /// `history_import`, with the parts handed in: [maxShareParts] at most. The app's engine's alone, as [share] is.
+  @override
   Future<Map<String, Object?>> importShare(String shareId, List<Uint8List> parts) async {
     if (parts.length > maxShareParts) {
       throw CoreError('too_large', message: 'a package has $maxShareParts parts at most', limit: maxShareParts);
     }
-    final imported = await _either(
+    _onlyServing('imports');
+    final imported = await _here(
       () => _run({
         'cmd': 'history_import',
         'share_id': shareId,
         'parts': [for (final part in parts) base64Encode(part)],
       }),
-      (app, user) async => jsonDecode(
-        (await _ask(app, 'importShare', user, [
-              shareId,
-              [for (final part in parts) _transfer(part)],
-            ]))!
-            as String,
-      ),
     );
     return (imported! as Map).cast<String, Object?>();
   }
+
+  /// Shares and imports are the app's engine's, the one with a screen: a push's, WorkManager's or audio_service's never
+  /// writes a history into the database (Review Focus 2).
+  void _onlyServing(String what) {
+    if (!serves) throw CoreError('bad_command', message: "only the app's engine $what histories", field: 'cmd');
+  }
+
+  /// [work] on this engine's own core, the database opened again first after a cut call, as [_either] does: the app's
+  /// engine never asks another.
+  Future<Object?> _here(Future<Object?> Function() work) =>
+      _either(work, (_, _) async => throw CoreError('internal', message: "only the app's engine shares or imports"));
 
   /// Closes what this engine has open: the database, or its use of the app's engine's, which stays open there.
   @override

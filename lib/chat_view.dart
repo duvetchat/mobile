@@ -35,6 +35,7 @@ import 'e2e/notices.dart';
 import 'e2e/uuid.dart';
 import 'encryption/conversation_start.dart';
 import 'encryption/conversation_state.dart';
+import 'encryption/share_history.dart';
 import 'members_sheet.dart';
 import 'people.dart';
 import 'search.dart';
@@ -654,6 +655,15 @@ class _ChatViewState extends State<ChatView> with SingleTickerProviderStateMixin
   String _memberName(String userId) =>
       _members.where((m) => m.userId == userId).firstOrNull?.displayName ?? _repository.nameOf(userId) ?? 'Someone';
 
+  /// A history share's notice in parts, its names apart: who shared how far back with whom, «You» and «you» for the
+  /// reader.
+  List<({String text, String? name})> _sharedParts(ChatMessage m, SharedHistoryNotice shared) {
+    final a = m.authorId != null && m.authorId == _me ? 'You' : m.authorName;
+    final range = rangeText(shared.range);
+    if (shared.toUserId == _me) return Notice.sharedWithYou.parts({'a': a, 'range': range});
+    return Notice.shared.parts({'a': a, 'range': range, 'b': _memberName(shared.toUserId)});
+  }
+
   /// Whom a restart leaves out, by name: those the API no longer lists, so not among the chat's members. A name the
   /// app doesn't know comes from their profile, else it's their ID, never «Someone» (I2 of the review).
   Future<String> _leftOutName(String userId) async {
@@ -768,7 +778,15 @@ class _ChatViewState extends State<ChatView> with SingleTickerProviderStateMixin
 
   void _onEvent(MessageEvent event) {
     if (event is ContentChanged) {
-      if (widget.target is ConversationTarget) unawaited(_readAgain());
+      if (widget.target is ConversationTarget) {
+        // A share came in where rows from before the user joined gave way: its pages are read again, which draws what
+        // it brought (Ruling 15; I3 of task 31's review). Otherwise the rows shown are read again.
+        if (event.imported && widget.threadOf == null && _repository.chatStart(widget.target).beforeJoining) {
+          unawaited(_load());
+        } else {
+          unawaited(_readAgain());
+        }
+      }
       return;
     }
     if (event case ReactionChanged(:final messageId) when !_entries.any((e) => e.message.id == messageId)) return;
@@ -2133,6 +2151,16 @@ class _ChatViewState extends State<ChatView> with SingleTickerProviderStateMixin
         } catch (e) {
           _toast(e is ActionFailed ? e.message : 'Couldn’t open a conversation with ${member.displayName}');
         }
+      case MemberAction.shareHistory:
+        if (widget.target case ConversationTarget(:final conversationId)) {
+          final said = await showShareHistorySheet(
+            context,
+            repository: _repository,
+            conversationId: conversationId,
+            member: member,
+          );
+          if (said != null) _toast(said);
+        }
     }
   }
 
@@ -2367,7 +2395,9 @@ class _ChatViewState extends State<ChatView> with SingleTickerProviderStateMixin
     final sure = await confirmDestructive(
       context,
       title: 'Delete this notice?',
-      body: m.call != null ? 'It goes for everyone in the conversation.' : 'The message stays pinned.',
+      body: m.call != null || m.sharedHistory != null
+          ? 'It goes for everyone in the conversation.'
+          : 'The message stays pinned.',
       action: 'Delete',
     );
     if (!sure || !mounted) return;
@@ -2864,6 +2894,29 @@ class _ChatViewState extends State<ChatView> with SingleTickerProviderStateMixin
                             },
                           ),
                         ),
+                      // What other members shared of the conversation's history, the newest three, until the person
+                      // adds or dismisses each.
+                      if (widget.target case ConversationTarget(:final conversationId))
+                        Padding(
+                          padding: const EdgeInsets.symmetric(horizontal: 16),
+                          child: ValueListenableBuilder(
+                            valueListenable: _repository.historyOffers,
+                            builder: (context, offers, _) => Column(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                for (final offer in offers[conversationId] ?? const [])
+                                  SharedHistoryOfferBar(
+                                    key: ValueKey(offer.shareId),
+                                    offer: offer,
+                                    nameOf: _memberName,
+                                    onAdd: (offer) => _repository.takeHistoryOffer(conversationId, offer.shareId),
+                                    onDismiss: (offer) =>
+                                        _repository.dismissHistoryOffer(conversationId, offer.shareId),
+                                  ),
+                              ],
+                            ),
+                          ),
+                        ),
                       Padding(
                         padding: const EdgeInsets.symmetric(horizontal: 16),
                         child: _TypingLine(
@@ -3127,12 +3180,16 @@ class _ChatViewState extends State<ChatView> with SingleTickerProviderStateMixin
               ),
               _Message(:final entry, :final first, :final last) =>
                 entry.message.isNotice
-                    ? switch (callNoticeLine(entry.message, _me)) {
-                        final line? => _CallNoticeRow(
+                    ? switch ((callNoticeLine(entry.message, _me), entry.message.sharedHistory)) {
+                        (final line?, _) => _CallNoticeRow(
                           line: line,
                           onHold: _canDeleteNotices ? (anchor) => _noticeActions(anchor, entry.message) : null,
                         ),
-                        null => _Notice(
+                        (_, final shared?) => _SharedNoticeRow(
+                          parts: _sharedParts(entry.message, shared),
+                          onHold: _canDeleteNotices ? (anchor) => _noticeActions(anchor, entry.message) : null,
+                        ),
+                        _ => _Notice(
                           who: entry.message.authorName,
                           where: widget.target is RoomTarget ? 'room' : 'conversation',
                           onJump: switch (entry.message.reply?.messageId) {
