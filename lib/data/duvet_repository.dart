@@ -6404,7 +6404,7 @@ class _NoSetup implements DeviceSetupActions {
   @override
   Future<ScannedDevice?> scannedDevice(String qr) async => null;
   @override
-  Future<void> approveScanned(String qr, ScannedDevice device) async => _none();
+  Future<bool> approveScanned(String qr, ScannedDevice device) async => _none();
   @override
-  Future<void> sendScanned() async => _none();
+  Future<void> sendScanned(String deviceId) async => _none();
 }

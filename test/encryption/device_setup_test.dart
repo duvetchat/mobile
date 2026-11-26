@@ -9,6 +9,8 @@ import 'package:duvet/e2e/host.dart' show CoreError;
 import 'package:duvet/e2e/notices.dart';
 import 'package:duvet/encryption/approval.dart';
 import 'package:duvet/encryption/device_setup.dart';
+import 'package:duvet/encryption/gate.dart' show EncryptionBanner;
+import 'package:duvet/encryption/recovery_key.dart' show RecoveryKeyPage;
 import 'package:duvet/encryption/qr.dart';
 import 'package:duvet/theme.dart';
 import 'package:flutter/material.dart';
@@ -141,7 +143,8 @@ void main() {
         expect(drawn.isDark(row, col), expected.isDark(row, col));
       }
     }
-    // A text that isn't a QR the core wrote names no device (the fixture's is the convention's text, not one).
+    // A QR the core wrote names its device; a text that isn't one names none.
+    expect(qrDevice(qr), '01a21762-9ca7-7cf7-848a-a2b913163614');
     expect(qrDevice('not a code'), isNull);
   });
 
@@ -215,5 +218,143 @@ void main() {
     expect(find.text(notYours), findsOneWidget);
     expect(find.text(approvalYes), findsNothing);
     expect(repository.encryptionTaps, ['scannedDevice the code']);
+  });
+
+  // Review 27's M7: each setup's act that fails says so where it was asked.
+  testWidgets("a setup's act that fails says so where it was asked", (tester) async {
+    final repository = FakeRepository()..encryption.value = EngineState.newDevice;
+    await tester.pumpWidget(_app(DeviceSetupPage(repository), repository));
+    await tester.pump();
+    repository.setupFails = StateError('the core');
+    await tester.ensureVisible(find.text(approveBegin));
+    await tester.tap(find.text(approveBegin));
+    await tester.pumpAndSettle();
+    expect(find.text(setupFailed), findsOneWidget);
+
+    await tester.ensureVisible(find.text(startOverAction).last);
+    await tester.tap(find.text(startOverAction).last);
+    await tester.pumpAndSettle();
+    repository.setupFails = StateError('the record');
+    await tester.tap(find.text(startOverAction).last);
+    await tester.pumpAndSettle();
+    expect(repository.encryptionTaps.last, 'resetIdentity');
+    expect(find.text(setupFailed), findsNWidgets(2));
+  });
+
+  testWidgets("the banner's Finish of a setup that waits says when it fails", (tester) async {
+    final repository = FakeRepository()
+      ..encryption.value = const EngineState.settingUp(DeviceSetup.finishing(['0193a4b2']));
+    await tester.pumpWidget(_app(const Scaffold(body: EncryptionBanner()), repository));
+    await tester.pump();
+    repository.setupFails = StateError('the API');
+    await tester.tap(find.text('Finish'));
+    await tester.pumpAndSettle();
+    expect(repository.encryptionTaps, ['finishSetup']);
+    expect(find.text(setupFailed), findsOneWidget);
+  });
+
+  testWidgets("a scanned code whose device can't be checked says to try again", (tester) async {
+    final repository = FakeRepository()..encryption.value = EngineState.ready;
+    late ValueChanged<String> read;
+    await tester.pumpWidget(_scanning(repository, (onRead) => read = onRead));
+    repository.setupFails = StateError('the devices');
+    read('the code');
+    await tester.pumpAndSettle();
+    expect(find.text("Couldn't check this code. Try again."), findsOneWidget);
+    expect(find.text(notACode), findsNothing);
+    expect(find.text(scanAgain), findsOneWidget);
+  });
+
+  // Review 27's M2: Try again says the new device finishes only once its transfer went.
+  testWidgets("the scan's Try again says the device finishes only once its transfer went", (tester) async {
+    final repository = FakeRepository()
+      ..encryption.value = EngineState.ready
+      ..scanned = (id: _device, name: 'Pixel 9', listed: false, unfinished: false);
+    late ValueChanged<String> read;
+    await tester.pumpWidget(_scanning(repository, (onRead) => read = onRead));
+    read('the code');
+    await tester.pumpAndSettle();
+    // Approved, its transfer's send failed: the engine says it waits, for Try again.
+    repository.scanSends = false;
+    await tester.tap(find.text(approvalYes));
+    await tester.pumpAndSettle();
+    expect(find.text(scanUnsent), findsOneWidget);
+    // Its hold over meanwhile: Try again has nothing to send, and says to scan again.
+    repository.setupFails = CoreError('not_found', what: 'transfer');
+    await tester.tap(find.text(tryAgain));
+    await tester.pumpAndSettle();
+    expect(repository.encryptionTaps.last, 'sendScanned $_device');
+    expect(find.text(scanSent), findsNothing);
+    expect(find.text(scanOver), findsOneWidget);
+    expect(find.text(scanAgain), findsOneWidget);
+    // Scanned again and sent: said once it went.
+    await tester.tap(find.text(scanAgain));
+    await tester.pumpAndSettle();
+    repository.scanSends = true;
+    read('the code');
+    await tester.pumpAndSettle();
+    await tester.tap(find.text(approvalYes));
+    await tester.pumpAndSettle();
+    expect(find.text(scanSent), findsOneWidget);
+  });
+
+  // Review 27's M3: a new device started again, the user's devices changed while it was being set up, says so on the
+  // banner and on its setup's page, whichever way it lost: its first list from the page, or a start over's upload from
+  // its key's page.
+  testWidgets('a first list another one beat is said on the banner and on the setup page', (tester) async {
+    final repository = FakeRepository()..encryption.value = EngineState.newDevice;
+    await tester.pumpWidget(_app(const Scaffold(body: EncryptionBanner()), repository));
+    await tester.tap(find.text('Set up'));
+    await tester.pumpAndSettle();
+    await tester.enterText(find.byWidget(_fieldIn(tester, find.byType(RecoveryKeyField))), 'the key');
+    await tester.pump();
+    await tester.tap(find.text(useRecoveryKey));
+    // The engine starts the installation again, the page going with the old device.
+    repository.encryption.value = EngineState.starting;
+    await tester.pumpAndSettle();
+    repository.encryption.value = const EngineState(EngineStage.newDevice, listChanged: true);
+    await tester.pumpAndSettle();
+    expect(find.byType(DeviceSetupPage), findsNothing);
+    expect(find.text(setupAgain), findsOneWidget);
+    await tester.tap(find.text('Set up'));
+    await tester.pumpAndSettle();
+    expect(find.byType(DeviceSetupPage), findsOneWidget);
+    expect(find.text(setupAgain), findsOneWidget);
+  });
+
+  testWidgets("a start over another identity beat is said once its key's page goes", (tester) async {
+    const key = 'abcdEFGHjkmnPQRS23456789ABCDEFGHJKLMNPQRSTUVWXYZ';
+    final repository = FakeRepository()
+      ..encryption.value = const EngineState.settingUp(DeviceSetup.reset, recoveryKey: key);
+    await tester.pumpWidget(_app(const Scaffold(body: EncryptionBanner()), repository));
+    await tester.pumpAndSettle();
+    expect(find.byType(RecoveryKeyPage), findsOneWidget);
+    repository.encryption.value = EngineState.starting;
+    await tester.pumpAndSettle();
+    repository.encryption.value = const EngineState(EngineStage.newDevice, listChanged: true);
+    await tester.pumpAndSettle();
+    expect(find.byType(RecoveryKeyPage), findsNothing);
+    expect(find.text(setupAgain), findsOneWidget);
+  });
+
+  // Review 27's M5: a yes refused while another device this one approved sets up says why.
+  testWidgets("the approving device's yes says why it waits for another device it approved", (tester) async {
+    final repository = FakeRepository()
+      ..encryption.value = const EngineState(
+        EngineStage.ready,
+        approval: DeviceApproval(
+          device: _device,
+          name: 'Pixel 9',
+          fingerprint: _fingerprint,
+          phase: ApprovalPhase.asked,
+        ),
+      )
+      ..setupFails = CoreError('approval_waits');
+    await tester.pumpWidget(_app(ApprovalPage(repository), repository));
+    await tester.pump();
+    await tester.tap(find.text(approvalYes));
+    await tester.pumpAndSettle();
+    expect(repository.encryptionTaps, ['approveDevice $_device']);
+    expect(find.text(anotherWaits), findsOneWidget);
   });
 }

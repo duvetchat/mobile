@@ -1628,6 +1628,9 @@ class FakeRepository implements ChatRepository {
   late final DeviceSetupActions deviceSetup = _SetupTaps(this);
 
   ScannedDevice? scanned;
+
+  /// Whether a scanned device's approval sends its transfer (false: its send failed, and the transfer waits).
+  var scanSends = true;
   Object? setupFails;
 
   @override
@@ -2060,7 +2063,11 @@ class _SetupTaps implements DeviceSetupActions {
   }
 
   @override
-  Future<void> approveScanned(String qr, ScannedDevice device) => _tap('approveScanned $qr ${device.id}');
+  Future<bool> approveScanned(String qr, ScannedDevice device) async {
+    await _tap('approveScanned $qr ${device.id}');
+    return _repository.scanSends;
+  }
+
   @override
-  Future<void> sendScanned() => _tap('sendScanned');
+  Future<void> sendScanned(String deviceId) => _tap('sendScanned $deviceId');
 }

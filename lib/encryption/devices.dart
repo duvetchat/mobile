@@ -72,12 +72,14 @@ const deleteOnlyDeviceQuestion =
     'Delete them and their keys, and sign out?';
 
 /// What a removal or a change of keys that failed says: while a device this one approved sets up, why it waits (Task
-/// 27); the API's refusal of a list naming a device this one approved that never finished (task 26's I1), in words;
+/// 27); the API's refusal of a list naming a device this one approved that never finished (task 26's I1), and the
+/// core's of a change of keys keeping such a device, with no certificate the API serves (review 27's M4), in words;
 /// anything else, to try again.
 String devicesRefusal(Object error) => switch (error) {
   CoreError(code: 'approval_waits') => approvalWaits,
   duvet.DuvetApiException(statusCode: 400, :final body?) when body.contains('has no certificate of this identity') =>
     deviceUnfinished,
+  CoreError(code: 'bad_command', field: 'certificates') => deviceUnfinished,
   _ => "Couldn't change your devices. Check your connection, then try again.",
 };
 

@@ -4,7 +4,10 @@ import 'package:duvet/e2e/devices.dart' show takenAway;
 import 'package:duvet/e2e/engine.dart';
 import 'package:duvet/e2e/host.dart';
 import 'package:duvet/e2e/store.dart';
+import 'package:duvet/encryption/approval.dart' show deviceUnfinished;
+import 'package:duvet/encryption/devices.dart' show devicesRefusal;
 import 'package:flutter_test/flutter_test.dart';
+import 'package:http/http.dart' as http;
 
 import '../support/core_lib.dart';
 import '../support/engines.dart';
@@ -79,6 +82,35 @@ Future<String> _toTheCode(TestDevice approver, TestDevice fresh) async {
 
 /// Another six digits than these.
 String _otherThan(String code) => ((int.parse(code) + 1) % 1000000).toString().padLeft(6, '0');
+
+final _waits = isA<CoreError>().having((e) => e.code, 'code', 'approval_waits');
+
+/// The bodies of what a device's client sent to the inbox of the device [to] names (none until it names one), in
+/// order, those cut on their way included.
+http.Client _inboxOf(FakeApi fake, String? Function() to, List<String> bodies) => watchedClient(
+  fake,
+  seen: (request) {
+    if (to() case final device? when request.method == 'POST' && request.url.path == '/api/devices/$device/inbox') {
+      bodies.add(request.body);
+    }
+  },
+);
+
+/// A core whose approval_confirm names another device than the one it approved ([other], once set): the device the
+/// transfer goes to is the core's word, not the inbox's.
+class _ConfirmsAnother extends WatchedHost {
+  _ConfirmsAnother(CoreHost host) : super(host, []);
+
+  String? other;
+
+  @override
+  Future<T> handle<T>(Map<String, Object?> command) async {
+    final answer = await super.handle<T>(command);
+    final named = other;
+    if (command['cmd'] != 'approval_confirm' || named == null) return answer;
+    return {...(answer! as Map<String, Object?>), 'device_id': named} as T;
+  }
+}
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
@@ -322,7 +354,7 @@ void main() {
       expect(await a.engine.scannedDevice('not a code'), isNull);
 
       // The person's yes: approved from the text as it was scanned, the transfer to that device, which needs no code.
-      await a.engine.approveScanned(qr, scanned!);
+      expect(await a.engine.approveScanned(qr, scanned!), isTrue);
       expect(_asked(host, 'approval_from_qr').map((command) => command['qr']), [qr]);
       expect(_asked(host, 'approval_offer'), isEmpty);
       await until(() => n.state == EngineState.ready);
@@ -547,6 +579,310 @@ void main() {
       await a.engine.approveDevice(_deviceOf(n));
       expect(log, contains('approval_offer'));
       await Future.wait([a.engine.stop(), n.engine.stop()]);
+    },
+    skip: noCore,
+    timeout: _slow,
+  );
+
+  // Review 27's M2: what the scan's Try again does goes by the transfer it has to send, not by what the state shows:
+  // once its hold ended, none waits, and the person is told to scan again, nothing sent.
+  test(
+    "a_scanned_device's_try_again_sends_only_a_transfer_that_still_waits",
+    () async {
+      final fake = FakeApi();
+      final ana = fake.addUser();
+      final bodies = <String>[];
+      String? to;
+      final a = await firstDevice(fake, ana, client: _inboxOf(fake, () => to, bodies));
+      final n = await _newDevice(fake, ana);
+      to = _deviceOf(n);
+      // Another new device's question up meanwhile, which the state shows before the approval that waits.
+      final other = await _newDevice(fake, ana);
+      await other.engine.beginApproval();
+      await other.engine.useCode();
+      await until(() => _approvalOf(a.state)?.device == _deviceOf(other));
+      await n.engine.beginApproval();
+      final qr = _qrOf(n)!;
+      final scanned = (await a.engine.scannedDevice(qr))!;
+      fake.cutRequest((method: 'POST', path: '/api/devices/${_deviceOf(n)}/inbox'));
+      // Approved, its send failed: the engine says the transfer waits, whatever the state shows first.
+      expect(await a.engine.approveScanned(qr, scanned), isFalse);
+      // Its hold's ten minutes pass: no transfer waits any more, and a Try again sends nothing and says so.
+      a.clock.advance(attemptLife);
+      await turnEnded(a);
+      await expectLater(
+        a.engine.sendScanned(_deviceOf(n)),
+        throwsA(isA<CoreError>().having((e) => (e.code, e.what), 'refusal', ('not_found', 'transfer'))),
+      );
+      expect(bodies, hasLength(1));
+      await Future.wait([a.engine.stop(), n.engine.stop(), other.engine.stop()]);
+    },
+    skip: noCore,
+    timeout: _slow,
+  );
+
+  // Review 27's M5: this device approves one new device at a time. While one it approved hasn't put up its list,
+  // another's scan is refused and its question waits: that one's transfer would carry the list naming the first
+  // without its certificate, and the hold would then wait for it alone.
+  test(
+    "while_a_device_this_one_approved_sets_up,_another_one's_scan_is_refused_and_its_question_waits",
+    () async {
+      final fake = FakeApi();
+      final ana = fake.addUser();
+      final log = <String>[];
+      final a = await firstDevice(fake, ana, host: WatchedHost(TestHost().gate, log));
+      var reading = true;
+      final n = await _newDevice(fake, ana, hears: (event) => reading || event.type != 'DEVICE_MESSAGE');
+      await n.engine.acceptCode(await _toTheCode(a, n));
+      reading = false;
+      await a.engine.confirmApproval(_deviceOf(n));
+      final other = await _newDevice(fake, ana);
+      await other.engine.beginApproval();
+      final qr = _qrOf(other)!;
+      final scanned = (await a.engine.scannedDevice(qr))!;
+      await expectLater(a.engine.approveScanned(qr, scanned), throwsA(_waits));
+      expect(log, isNot(contains('approval_from_qr')));
+      await other.engine.useCode();
+      await until(() => _keptSteps(a).contains(ApprovalStep.commitment));
+      await turnEnded(a);
+      expect((_approvalOf(a.state)?.device, _approvalOf(a.state)?.phase), (_deviceOf(n), ApprovalPhase.confirmed));
+
+      // The first one's list up, the other one is asked.
+      reading = true;
+      n.connect(_deviceOf(n));
+      await until(() => n.state == EngineState.ready);
+      await until(() => _approvalOf(a.state)?.device == _deviceOf(other));
+      expect(_approvalOf(a.state)?.phase, ApprovalPhase.asked);
+      await Future.wait([a.engine.stop(), n.engine.stop(), other.engine.stop()]);
+    },
+    skip: noCore,
+    timeout: _slow,
+  );
+
+  // M5 too: a question asked before a scan's approval began goes no further while that one sets up: neither its yes's
+  // offer nor its Confirm.
+  test(
+    "a_question_asked_before_a_scan's_approval_goes_no_further_until_that_device_is_set_up",
+    () async {
+      final fake = FakeApi();
+      final ana = fake.addUser();
+      final log = <String>[];
+      final a = await firstDevice(fake, ana, host: WatchedHost(TestHost().gate, log));
+      final asking = await _newDevice(fake, ana);
+      await asking.engine.beginApproval();
+      await asking.engine.useCode();
+      await until(() => _approvalOf(a.state)?.phase == ApprovalPhase.asked);
+      // A new device a scans and approves, which reads its inbox only as it connects again: its list waits till then.
+      Future<TestDevice> scannedAndWaiting() async {
+        final scanned = await _newDevice(fake, ana, hears: (event) => event.type != 'DEVICE_MESSAGE');
+        await scanned.engine.beginApproval();
+        final qr = _qrOf(scanned)!;
+        await a.engine.approveScanned(qr, (await a.engine.scannedDevice(qr))!);
+        return scanned;
+      }
+
+      final first = await scannedAndWaiting();
+      await expectLater(a.engine.approveDevice(_deviceOf(asking)), throwsA(_waits));
+      expect(log, isNot(contains('approval_offer')));
+
+      // That one set up, the yes offers; another scan's approval waiting, the Confirm goes no further.
+      first.connect(_deviceOf(first));
+      await until(() => first.state == EngineState.ready);
+      await turnEnded(a);
+      await a.engine.approveDevice(_deviceOf(asking));
+      await until(() => _approvalOf(a.state)?.phase == ApprovalPhase.code);
+      await until(() => _offered(asking));
+      await asking.engine.acceptCode(_approvalOf(a.state)!.code!);
+      final second = await scannedAndWaiting();
+      await expectLater(a.engine.confirmApproval(_deviceOf(asking)), throwsA(_waits));
+      expect(log, isNot(contains('approval_confirm')));
+      await Future.wait([a.engine.stop(), asking.engine.stop(), first.engine.stop(), second.engine.stop()]);
+    },
+    skip: noCore,
+    timeout: _slow,
+  );
+
+  // Review 27's M6: the API names an inbox message's sender. A commitment that names another device than its sender
+  // asks nothing: the person would be asked about one device, and the yes would offer to, and unlist, another.
+  test(
+    'a_commitment_that_names_another_device_than_its_sender_asks_nothing',
+    () async {
+      final fake = FakeApi();
+      final ana = fake.addUser();
+      final log = <String>[];
+      final a = await firstDevice(fake, ana, host: WatchedHost(TestHost().gate, log));
+      final n = await _newDevice(fake, ana);
+      final relay = await _newDevice(fake, ana);
+      final begun = await n.host.handle<Map<String, Object?>>({'cmd': 'approval_begin'});
+      await relay.api.sendToDevice(
+        _deviceOf(a),
+        approvalFrameMessage((
+          step: ApprovalStep.commitment,
+          data: begun['commitment']! as String,
+          name: 'Pixel 8 Pro',
+        )),
+      );
+      await until(() async => (await a.api.inbox()).isEmpty);
+      await turnEnded(a);
+      expect(_approvalOf(a.state), isNull);
+      expect(_keptSteps(a), isEmpty);
+      await Future.wait([a.engine.stop(), n.engine.stop(), relay.engine.stop()]);
+    },
+    skip: noCore,
+    timeout: _slow,
+  );
+
+  // M6 too: the transfer goes to, and the hold waits for, the device the core approved (approval_confirm's device_id,
+  // as the scan's), not the inbox's sender.
+  test(
+    'a_confirmed_transfer_goes_to_the_device_the_core_approved',
+    () async {
+      final fake = FakeApi();
+      final ana = fake.addUser();
+      final host = _ConfirmsAnother(TestHost().gate);
+      final bodies = <String>[];
+      String? to;
+      final a = await firstDevice(fake, ana, host: host, client: _inboxOf(fake, () => to, bodies));
+      final b = await approvedDevice(fake, a);
+      var reading = true;
+      final n = await _newDevice(fake, ana, hears: (event) => reading || event.type != 'DEVICE_MESSAGE');
+      await n.engine.acceptCode(await _toTheCode(a, n));
+      reading = false;
+      host.other = _deviceOf(b);
+      to = _deviceOf(b);
+      await a.engine.confirmApproval(_deviceOf(n));
+      expect(bodies, hasLength(1));
+      expect((_approvalOf(a.state)?.device, _approvalOf(a.state)?.phase), (_deviceOf(b), ApprovalPhase.confirmed));
+      await Future.wait([a.engine.stop(), b.engine.stop(), n.engine.stop()]);
+    },
+    skip: noCore,
+    timeout: _slow,
+  );
+
+  // Review 27's M4 and M8: a Cancel after a transfer's send failed leaves the device on this device's list with no
+  // certificate the API serves (review 26's I1). A change of keys can't keep it, and says why; the new device asking
+  // again comes off the list first, and the fresh approval completes.
+  test(
+    "a_cancel_after_a_failed_send_leaves_the_device_to_approve_again,_and_a_key_change_says_why_it_can't_go",
+    () async {
+      final fake = FakeApi();
+      final ana = fake.addUser();
+      final host = WatchedHost(TestHost().gate, []);
+      final a = await firstDevice(fake, ana, host: host);
+      final n = await _newDevice(fake, ana);
+      await n.engine.acceptCode(await _toTheCode(a, n));
+      fake.cutRequest((method: 'POST', path: '/api/devices/${_deviceOf(n)}/inbox'));
+      await expectLater(a.engine.confirmApproval(_deviceOf(n)), throwsA(anything));
+      await a.engine.declineDevice(_deviceOf(n));
+      expect(_approvalOf(a.state), isNull);
+      expect(await _heldList(a), contains(_deviceOf(n)));
+      final refused = await a.engine.changeKeys().then<Object?>((_) => null, onError: (Object error) => error);
+      expect(refused, isA<CoreError>().having((e) => (e.code, e.field), 'refusal', ('bad_command', 'certificates')));
+      expect(devicesRefusal(refused!), deviceUnfinished);
+
+      await n.engine.useCode();
+      final fingerprint = _setupOf(n.state)!.fingerprint;
+      await until(() => _approvalOf(a.state)?.fingerprint == fingerprint);
+      expect(_approvalOf(a.state)?.unfinished, isTrue);
+      await a.engine.approveDevice(_deviceOf(n));
+      await until(() => _approvalOf(a.state)?.phase == ApprovalPhase.code);
+      await until(() => _offered(n));
+      await n.engine.acceptCode(_approvalOf(a.state)!.code!);
+      await a.engine.confirmApproval(_deviceOf(n));
+      await until(() => n.state == EngineState.ready);
+      expect(listDevices((await n.api.identity(ana)).deviceList), unorderedEquals([_deviceOf(a), _deviceOf(n)]));
+      await Future.wait([a.engine.stop(), n.engine.stop()]);
+    },
+    skip: noCore,
+    timeout: _slow,
+  );
+
+  // Review 27's M8: a transfer whose send failed goes again as it was, by the code and by the scan. The core approves
+  // once: a second approval_confirm or approval_from_qr would be its `exists`, so the kept bytes are the only resend.
+  test(
+    'a_transfer_whose_send_failed_goes_again_as_it_was,_by_the_code_and_by_the_scan',
+    () async {
+      final fake = FakeApi();
+      final ana = fake.addUser();
+      final log = <String>[];
+      final bodies = <String>[];
+      String? to;
+      final a = await firstDevice(
+        fake,
+        ana,
+        host: WatchedHost(TestHost().gate, log),
+        client: _inboxOf(fake, () => to, bodies),
+      );
+      final n = await _newDevice(fake, ana);
+      to = _deviceOf(n);
+      await n.engine.acceptCode(await _toTheCode(a, n));
+      bodies.clear();
+      fake.cutRequest((method: 'POST', path: '/api/devices/${_deviceOf(n)}/inbox'));
+      await expectLater(a.engine.confirmApproval(_deviceOf(n)), throwsA(anything));
+      await a.engine.confirmApproval(_deviceOf(n));
+      expect(log.where((cmd) => cmd == 'approval_confirm'), hasLength(1));
+      expect(bodies, hasLength(2));
+      expect(bodies.last, bodies.first);
+      await until(() => n.state == EngineState.ready);
+      await until(() => _approvalOf(a.state) == null);
+
+      final m = await _newDevice(fake, ana);
+      to = _deviceOf(m);
+      await m.engine.beginApproval();
+      final qr = _qrOf(m)!;
+      final scanned = (await a.engine.scannedDevice(qr))!;
+      bodies.clear();
+      fake.cutRequest((method: 'POST', path: '/api/devices/${_deviceOf(m)}/inbox'));
+      expect(await a.engine.approveScanned(qr, scanned), isFalse);
+      await a.engine.sendScanned(_deviceOf(m));
+      expect(log.where((cmd) => cmd == 'approval_from_qr'), hasLength(1));
+      expect(bodies, hasLength(2));
+      expect(bodies.last, bodies.first);
+      await until(() => m.state == EngineState.ready);
+      await Future.wait([a.engine.stop(), n.engine.stop(), m.engine.stop()]);
+    },
+    skip: noCore,
+    timeout: _slow,
+  );
+
+  // M8 too: the core reads the QR itself. Its reply naming another device than the one the person was asked about
+  // sends nothing and holds nothing.
+  test(
+    "a_scan_the_core_reads_as_another_device's_sends_nothing_and_holds_nothing",
+    () async {
+      final fake = FakeApi();
+      final ana = fake.addUser();
+      String? other;
+      final sent = <String>[];
+      final a = await firstDevice(
+        fake,
+        ana,
+        host: WatchedHost(
+          TestHost().gate,
+          [],
+          answer: (command) => command['cmd'] == 'approval_from_qr' && other != null
+              ? {'device_id': other, 'certificate': '', 'device_list': '', 'transfer': 'AAAA'}
+              : null,
+        ),
+        client: watchedClient(
+          fake,
+          seen: (request) {
+            if (request.method == 'POST' && request.url.path.endsWith('/inbox')) sent.add(request.url.path);
+          },
+        ),
+      );
+      final b = await approvedDevice(fake, a);
+      final n = await _newDevice(fake, ana);
+      await n.engine.beginApproval();
+      final qr = _qrOf(n)!;
+      final scanned = (await a.engine.scannedDevice(qr))!;
+      other = _deviceOf(b);
+      await expectLater(a.engine.approveScanned(qr, scanned), throwsA(isA<StateError>()));
+      expect(sent, isEmpty);
+      expect(_approvalOf(a.state), isNull);
+      // Nothing held: this device's changes go on.
+      await a.engine.removeDevice(_deviceOf(b));
+      await Future.wait([a.engine.stop(), b.engine.stop(), n.engine.stop()]);
     },
     skip: noCore,
     timeout: _slow,

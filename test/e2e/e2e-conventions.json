@@ -73,7 +73,7 @@
 		"search_split": "In an encrypted conversation, pinned: and has:sticker can't be combined with words or with has:image, video or sound.",
 		"new_message": "New message",
 		"use_code": "Use a code instead",
-		"approval_code_hint": "A computer approving this device will show this code",
+		"approval_code_hint": "Type the code your other device shows",
 		"code_accepted": "Code accepted: confirm it on your other device.",
 		"code_mismatch": "That isn't the code your other device shows.",
 		"approval_ask": "Is this device yours?",
@@ -863,8 +863,8 @@
 	],
 	"approval_qr": {
 		"about": "A new device's QR (Task 26): its text is the core's qr exactly as approval_begin gives it (standard base64, padded), in byte mode at error correction M. The device that scans it hands that text, unchanged, to approval_from_qr {qr}, and sends the transfer to the inbox of the new device the QR names.",
-		"qr": "omF2AWR1c2VyUAGiFiYK23MctxoqozmlQFxmZGV2aWNlUAGiFiYNuHANqIoZsowuqo1tc2lnbmF0dXJlX2tleVgg7hih7kQ1q53knNDDjG6rfA72tc+KVApcLr4g+YE7ZylocGtlX2tleVggw3zF5D8dVC8ZNzSHIZH/nPrGi9qD/oTw6e7ALVRezhRja2V5WCDmTkIcj0k5Y5G3hUcCtPRSfpyYxFN3VeQRZ73DKBAZag==",
+		"qr": "pmF2AWR1c2VyUAGiF2KTUnBmolwi93sbPQNmZGV2aWNlUAGiF2Kcp3z3hIqiuRMWNhRtc2lnbmF0dXJlX2tleVggpuGLH4CXR+Pw9H5ctygdL0fPc95MCobd6TjNjnZ2mWRoaHBrZV9rZXlYIDUNNKgG6/2FKzh7KxoH239M8PCQARC1fW9FuwqwCNJoY2tleVggYW4XD+cisLmAmdjR1hHNrA916mUzTLSEUaEGMBzm428=",
 		"error_correction": "M",
-		"text": "omF2AWR1c2VyUAGiFiYK23MctxoqozmlQFxmZGV2aWNlUAGiFiYNuHANqIoZsowuqo1tc2lnbmF0dXJlX2tleVgg7hih7kQ1q53knNDDjG6rfA72tc+KVApcLr4g+YE7ZylocGtlX2tleVggw3zF5D8dVC8ZNzSHIZH/nPrGi9qD/oTw6e7ALVRezhRja2V5WCDmTkIcj0k5Y5G3hUcCtPRSfpyYxFN3VeQRZ73DKBAZag=="
+		"text": "pmF2AWR1c2VyUAGiF2KTUnBmolwi93sbPQNmZGV2aWNlUAGiF2Kcp3z3hIqiuRMWNhRtc2lnbmF0dXJlX2tleVggpuGLH4CXR+Pw9H5ctygdL0fPc95MCobd6TjNjnZ2mWRoaHBrZV9rZXlYIDUNNKgG6/2FKzh7KxoH239M8PCQARC1fW9FuwqwCNJoY2tleVggYW4XD+cisLmAmdjR1hHNrA916mUzTLSEUaEGMBzm428="
 	}
 }

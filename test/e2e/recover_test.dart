@@ -279,4 +279,62 @@ void main() {
     skip: noCore,
     timeout: _slow,
   );
+
+  // Review 27's M3: another list there first (409) leaves this device off for good, and the installation starts again
+  // as a new device (Ruling 26). Its state says why, as the setup's page goes with the old device: the recovery's
+  // caller isn't there any more to say it.
+  test(
+    'a_first_list_another_one_beat_starts_the_device_again,_its_state_saying_why',
+    () async {
+      final fake = FakeApi();
+      final ana = fake.addUser();
+      final (a, key) = await _withKey(fake, ana);
+      final b = await _newDevice(fake, ana);
+      final before = _deviceOf(b);
+      final served = await b.api.identity(ana);
+      fake.refuse(
+        _list,
+        409,
+        body: {'error': 'device list changed', 'device_list': served.deviceList, 'version': served.deviceListVersion},
+      );
+      await b.engine.recover(_typed(key));
+      expect(b.state, const EngineState(EngineStage.newDevice, listChanged: true));
+      expect(_deviceOf(b), isNot(before));
+      await Future.wait([a.engine.stop(), b.engine.stop()]);
+    },
+    skip: noCore,
+    timeout: _slow,
+  );
+
+  // Found with review 27's M3: once a recovered device's first list is up, its start's last steps that fail (a cut
+  // read) go again later, as a first device's do, rather than leave it starting until the app starts again.
+  test(
+    "a_recovered_device's_last_steps_that_fail_go_again_later",
+    () async {
+      final fake = FakeApi();
+      final ana = fake.addUser();
+      // The reads of the identity once the list went up: putFirstList's own, then the start's, which is cut.
+      var reads = -1;
+      final client = watchedClient(
+        fake,
+        answer: (request) async {
+          if (request.method == _list.method && request.url.path == _list.path) reads = 0;
+          if (reads < 0 || request.method != 'GET' || request.url.path != '/api/users/$ana/identity') return null;
+          if (++reads == 2) throw http.ClientException('cut', request.url);
+          return null;
+        },
+      );
+      final (a, key) = await _withKey(fake, ana);
+      final b = await _newDevice(fake, ana, client: client);
+      await b.engine.recover(_typed(key));
+      expect(reads, 2);
+      expect(listDevices((await b.api.identity(ana)).deviceList), contains(_deviceOf(b)));
+      // The start goes again after 2 s.
+      b.clock.advance(const Duration(seconds: 2));
+      await until(() => b.state == EngineState.ready);
+      await Future.wait([a.engine.stop(), b.engine.stop()]);
+    },
+    skip: noCore,
+    timeout: _slow,
+  );
 }

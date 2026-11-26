@@ -566,6 +566,56 @@ void main() {
     timeout: _slow,
   );
 
+  // Review 27's M1: the offer of new keys after a change that left devices out stays until a new change is made. One
+  // that fails before it's made (its read of the identity cut) leaves the offer, in the state and the record.
+  test(
+    'the_offer_of_new_keys_stays_until_a_new_change_is_made',
+    () async {
+      final fake = FakeApi();
+      final ana = fake.addUser();
+      // This device's next read of the identity cut, as its connection would be (the others' reads go on).
+      var cut = false;
+      final client = watchedClient(
+        fake,
+        answer: (request) async {
+          if (!cut || request.method != 'GET' || request.url.path != '/api/users/$ana/identity') return null;
+          cut = false;
+          throw http.ClientException('cut', request.url);
+        },
+      );
+      final a = await firstDevice(fake, ana, client: client);
+      final b = await approvedDevice(fake, a);
+      final c = await approvedDevice(fake, a);
+      await a.engine.changeKeys();
+      await a.engine.uploadLater();
+      await b.engine.removeDevice(_deviceOf(c));
+      await turnEnded(a);
+      await a.engine.changeKeys();
+      await a.engine.finishKeysWithout();
+      await a.engine.keySaved();
+      expect(a.state, const EngineState(EngineStage.ready, keysAgain: true));
+
+      await turnEnded(a);
+      cut = true;
+      await expectLater(a.engine.changeKeys(), throwsA(isA<http.ClientException>()));
+      expect(cut, isFalse);
+      expect(a.state.rotating, isFalse);
+      expect(a.store.read(keysAgain), isTrue);
+      final again = await restarted(fake, a);
+      expect(again.state, const EngineState(EngineStage.ready, keysAgain: true));
+      // Made, the new change carries it: the offer goes.
+      await again.engine.changeKeys();
+      expect(again.store.read(keysAgain), isNull);
+      await again.engine.keySaved();
+      expect(again.state, EngineState.ready);
+      await Future.wait([
+        for (final device in [again, b, c]) device.engine.stop(),
+      ]);
+    },
+    skip: noCore,
+    timeout: _slow,
+  );
+
   // Review 24's rule 4, and duvetchat/e2e#49: a key change another device's beat (409 identity changed) reads the
   // inbox, whose transfer the core takes over the change that waits, which ends: this device goes on with the
   // winner's keys. Such a change of keys is a stuck change's way out again, which its words name (review 25's I1).
@@ -622,8 +672,12 @@ void main() {
       await b.engine.keySaved();
       expect(b.state, const EngineState.rotation(stuck: true, relisted: true));
       expect(stuckText(b.state), rotationRelisted);
+      // Kept in the record: after a restart the words still name the one way out (review 27's choice), and the winner's
+      // transfer, refused, isn't in the inbox any more to say it again.
+      final again = await restarted(fake, b, hears: (event) => event.type != 'DEVICE_MESSAGE');
+      expect(again.state, const EngineState.rotation(stuck: true, relisted: true));
       await Future.wait([
-        for (final device in [a, b, c]) device.engine.stop(),
+        for (final device in [a, again, c]) device.engine.stop(),
       ]);
     },
     skip: noCore,

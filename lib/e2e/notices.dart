@@ -81,7 +81,7 @@ enum Notice {
 
   // A new device's setup (Tasks 26 and 27): its approval by another device, and starting over.
   useCode('Use a code instead'),
-  approvalCodeHint('A computer approving this device will show this code'),
+  approvalCodeHint('Type the code your other device shows'),
   approvalAsk('Is this device yours?'),
   approvalConfirmAfter('Confirm only after your new device accepts it'),
   codeAccepted('Code accepted: confirm it on your other device.'),

@@ -105,10 +105,16 @@ String? certificateDevice(String certificate) {
 
 /// The device an approval's QR names (the core's `qr` in base64, its `device`), or null: read only to ask the person
 /// about that device before the core approves it, never checked, as the core reads the QR itself as it approves.
-String? qrDevice(String qr) {
+String? qrDevice(String qr) => _approvalDevice(qr);
+
+/// The device an approval's commitment names (the core's `commitment` in base64, its `device`), or null: read only to
+/// drop one the inbox says another device sent (review 27's M6), never checked, as the core checks it as it offers.
+String? commitmentDevice(String commitment) => _approvalDevice(commitment);
+
+String? _approvalDevice(String text) {
   final Uint8List bytes;
   try {
-    bytes = base64Decode(qr);
+    bytes = base64Decode(text);
   } on FormatException {
     return null;
   }

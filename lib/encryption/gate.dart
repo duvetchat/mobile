@@ -15,7 +15,7 @@ import '../widgets/chrome.dart';
 import '../widgets/depth.dart';
 import '../widgets/rows.dart';
 import 'approval.dart' show ApprovalPage, shownApproval;
-import 'device_setup.dart' show finishSetupText, leavesOut, openDeviceSetup, resetFinishText;
+import 'device_setup.dart' show finishSetupText, leavesOut, openDeviceSetup, resetFinishText, setupAgain, setupFailed;
 import 'devices.dart' show deleteThisDevice, finishWithout, keysAgainText, stuckText;
 import 'recovery_key.dart';
 
@@ -98,6 +98,8 @@ class _EncryptionBannerState extends State<EncryptionBanner> {
       action: 'Finish',
       run: (context) => context.repository.deviceSetup.finishSetup(),
     ),
+    // Started again as a new device: the user's devices changed while it was being set up (review 27's M3).
+    EngineStage.newDevice when state.listChanged => (text: setupAgain, action: 'Set up', run: openDeviceSetup),
     // Its setup's page: the recovery key, another device's approval, or starting over.
     EngineStage.newDevice => (
       text: 'Set up this device to read your encrypted conversations.',
@@ -161,12 +163,20 @@ class _EncryptionBannerState extends State<EncryptionBanner> {
     await repository.startOver();
   }
 
-  Future<void> _act(BuildContext context, Future<void> Function(BuildContext context) run) async {
-    setState(() => _busy = true);
+  /// A new device's setup act of the strip's that failed (its Finish), said in its place until the state changes
+  /// (review 27's M7).
+  EngineState? _failedIn;
+
+  Future<void> _act(BuildContext context, EngineState state, Future<void> Function(BuildContext context) run) async {
+    setState(() {
+      _busy = true;
+      _failedIn = null;
+    });
     try {
       await run(context);
     } catch (error) {
       debugPrint('e2e: what the person asked for failed: ${error.runtimeType}');
+      if (mounted && state.stage == EngineStage.newDevice) setState(() => _failedIn = state);
     } finally {
       if (mounted) setState(() => _busy = false);
     }
@@ -182,9 +192,9 @@ class _EncryptionBannerState extends State<EncryptionBanner> {
       return Padding(
         padding: const EdgeInsets.fromLTRB(16, 12, 16, 0),
         child: _Strip(
-          text: bar.text,
+          text: _failedIn == state ? setupFailed : bar.text,
           action: bar.action,
-          onAction: run == null || _busy ? null : () => _act(context, run),
+          onAction: run == null || _busy ? null : () => _act(context, state, run),
           onHide: () => setState(() => _hiddenFor = state.stage),
         ),
       );

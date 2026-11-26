@@ -81,8 +81,9 @@ enum EngineStage { starting, firstDevice, newDevice, ready, removed, locked, uns
 /// the keys. A [lostKey] is a database no key opens any more. [minimum] is the lowest version with encryption of a
 /// client the API told to update, null where its platform has none. A new device shows its [setup] (Tasks 26 and
 /// 27): its approval's attempt, or, its core holding the identity, starting over's (its [recoveryKey] until it's
-/// saved, [finishing] once its upload waits for Finish) or its first list still to go up. A ready device shows a new
-/// device's [approval] it takes part in.
+/// saved, [finishing] once its upload waits for Finish) or its first list still to go up; [listChanged] once it
+/// started again as a new one, the user's devices or keys changed while it was being set up (another list, or another
+/// identity, went up first), until it's set up. A ready device shows a new device's [approval] it takes part in.
 @immutable
 class EngineState {
   const EngineState(
@@ -97,6 +98,7 @@ class EngineState {
     this.relisted = false,
     this.keysAgain = false,
     this.setup,
+    this.listChanged = false,
     this.approval,
   });
 
@@ -108,6 +110,7 @@ class EngineState {
       rotating = true,
       keysAgain = false,
       setup = null,
+      listChanged = false,
       approval = null;
 
   const EngineState.firstDevice({this.recoveryKey, this.finishing = false})
@@ -120,6 +123,7 @@ class EngineState {
       relisted = false,
       keysAgain = false,
       setup = null,
+      listChanged = false,
       approval = null;
 
   const EngineState.failed({this.lostKey = false})
@@ -133,6 +137,7 @@ class EngineState {
       relisted = false,
       keysAgain = false,
       setup = null,
+      listChanged = false,
       approval = null;
 
   const EngineState.update(this.minimum)
@@ -146,6 +151,7 @@ class EngineState {
       relisted = false,
       keysAgain = false,
       setup = null,
+      listChanged = false,
       approval = null;
 
   /// A new device as it's being set up, with what it shows ([setup]), or starting over's recovery key ([recoveryKey],
@@ -159,6 +165,7 @@ class EngineState {
       gone = const [],
       relisted = false,
       keysAgain = false,
+      listChanged = false,
       approval = null;
 
   static const starting = EngineState(EngineStage.starting);
@@ -179,6 +186,7 @@ class EngineState {
   final bool relisted;
   final bool keysAgain;
   final DeviceSetup? setup;
+  final bool listChanged;
   final DeviceApproval? approval;
 
   @override
@@ -195,6 +203,7 @@ class EngineState {
       other.relisted == relisted &&
       other.keysAgain == keysAgain &&
       other.setup == setup &&
+      other.listChanged == listChanged &&
       other.approval == approval;
 
   @override
@@ -210,6 +219,7 @@ class EngineState {
     relisted,
     keysAgain,
     setup,
+    listChanged,
     approval,
   );
 
@@ -221,7 +231,8 @@ class EngineState {
       '${keysAgain ? ', keys again' : ''}${recoveryKey == null ? '' : ', a key shown'}'
       '${finishing ? ', finishing' : ''}'
       '${lostKey ? ', its key lost' : ''}${stage == EngineStage.update ? ', minimum $minimum' : ''}'
-      '${setup == null ? '' : ', $setup'}${approval == null ? '' : ', $approval'})';
+      '${setup == null ? '' : ', $setup'}${listChanged ? ', its devices changed' : ''}'
+      '${approval == null ? '' : ', $approval'})';
 }
 
 /// What the person does to set up a new device, and to approve one from this device (PLAN-E2E-CLIENTES.md, Tasks 26
@@ -255,11 +266,12 @@ abstract interface class DeviceSetupActions {
   Future<void> declineDevice(String deviceId);
   Future<void> confirmApproval(String deviceId);
 
-  /// The device a QR the person scanned names, which they're asked about first; then their yes, and a send again of
-  /// its transfer after one that failed.
+  /// The device a QR the person scanned names, which they're asked about first; then their yes, true once its transfer
+  /// went (false: its send failed, and the transfer waits), and a send again of that transfer, which throws `not_found`
+  /// `transfer` once none waits for that device any more.
   Future<ScannedDevice?> scannedDevice(String qr);
-  Future<void> approveScanned(String qr, ScannedDevice device);
-  Future<void> sendScanned();
+  Future<bool> approveScanned(String qr, ScannedDevice device);
+  Future<void> sendScanned(String deviceId);
 }
 
 const _day = Duration(days: 1);
@@ -357,9 +369,13 @@ class E2EEngine implements DeviceSetupActions {
   Rotation? _rotation;
 
   /// Another device's change of keys kept a device this one's waiting change takes off, and the core refused its
-  /// transfer (`removed_device_listed`, duvetchat/e2e#49): this change can never finish. Said while it waits this run.
-  // shortcut: in memory, so a restart says the change is stuck without why, until the record keeps it if it matters.
+  /// transfer (`removed_device_listed`, duvetchat/e2e#49): this change can never finish. Said while it waits, from the
+  /// record after a restart too, as that transfer isn't read again.
   var _relisted = false;
+
+  /// This new device started again as a new one: the user's devices or keys changed while it was being set up (Task
+  /// 27's review, M3). Its setup says so until it's set up.
+  var _listChanged = false;
 
   /// The last change of keys of this device's left devices out with gone, one of which may still hold its keys if the
   /// API worked with its holder: another change is offered (e2e#49), from the record, until a new one starts.
@@ -405,7 +421,7 @@ class E2EEngine implements DeviceSetupActions {
   );
 
   /// A new device's approval, and the approvals this device takes part in for the user's new ones (Task 27).
-  late final _approvals = Approvals(this, _soon, () => _set(_state.value));
+  late final _approvals = Approvals(this, _soon, () => _set(_state.value), _takeApprovals);
 
   /// A new device whose core holds an identity already: starting over's, until its upload, or one whose first list
   /// hasn't gone up (Task 27).
@@ -867,9 +883,11 @@ class E2EEngine implements DeviceSetupActions {
   /// the same rotation again, its key shown once more.
   Future<void> changeKeys() => _deviceAct(() async {
     _holdForApproval();
-    // A new change, not the Finish of one that waits: the offer of one after a gone is taken up.
-    if (!_state.value.rotating && _keysAgain) await _offerKeysAgain(false);
+    // A new change, not the Finish of one that waits, takes up the offer of one after a gone, once it's made: then its
+    // waiting change carries it (review 27's M1). One that fails before stays offered.
+    final takesUp = !_state.value.rotating && _keysAgain;
     await _rotate(const []);
+    if (takesUp) await _offerKeysAgain(false);
   });
 
   /// The person's yes to finish a change of keys that waits without the devices another device took off meanwhile
@@ -955,7 +973,14 @@ class E2EEngine implements DeviceSetupActions {
     await _takeApprovals();
   }
 
-  void _relistedSeen() => _relisted = true;
+  void _relistedSeen() {
+    _relisted = true;
+    unawaited(_keepRelisted());
+  }
+
+  Future<void> _keepRelisted() => store
+      .write(keptRelisted, _relisted ? true : null)
+      .catchError((Object error) => debugPrint("e2e: the record's refused change: ${error.runtimeType}"));
 
   /// «Remove this device and delete its data» (decision 13; Task 25): its database destroyed with its key, then the
   /// record's device and what it told of the user's devices forgotten, the engine stopped for good, and last its
@@ -1116,24 +1141,38 @@ class E2EEngine implements DeviceSetupActions {
 
   /// The person's yes to the device a QR they scanned names ([scannedDevice]): approved from the QR's text, as it was
   /// scanned, after this device observed its own user (its inbox first while the identity it holds was replaced), its
-  /// transfer to that device's inbox. A send that failed goes again with [sendScanned]. Refused for a device the
-  /// account doesn't have, one set up already, or while this device may approve none.
+  /// transfer to that device's inbox. True once it went; false when its send failed, the transfer kept for
+  /// [sendScanned] (review 27's M2). Refused for a device the account doesn't have, one set up already, while this
+  /// device may approve none, or while another device it approved sets up (`approval_waits`, M5).
   @override
-  Future<void> approveScanned(String qr, ScannedDevice device) => _queue(() async {
-    final name = device.name;
-    if (_role() != ApprovalRole.approver || name == null || device.listed) {
-      throw StateError("this device can't approve that one now");
-    }
-    if (!await _approvals.approveScanned(qr, device.id, name)) {
-      await _inbox();
-      if (_role() != ApprovalRole.approver || !await _approvals.approveScanned(qr, device.id, name)) {
-        throw StateError("this device's security keys changed: scan the new device's code again");
+  Future<bool> approveScanned(String qr, ScannedDevice device) async {
+    bool? sent;
+    await _queue(() async {
+      final name = device.name;
+      if (_role() != ApprovalRole.approver || name == null || device.listed) {
+        throw StateError("this device can't approve that one now");
       }
-    }
-  });
+      sent = await _approvals.approveScanned(qr, device.id, name);
+      if (sent != null) return;
+      await _inbox();
+      if (_role() == ApprovalRole.approver) sent = await _approvals.approveScanned(qr, device.id, name);
+      if (sent == null) throw StateError("this device's security keys changed: scan the new device's code again");
+    });
+    return sent ?? (throw StateError('the encryption engine stopped'));
+  }
 
+  /// The person's Try again of a scanned device's transfer whose send failed: the same bytes. None waits for that
+  /// device any more (its hold ended, or the engine started again) is `not_found` `transfer`: its QR is scanned again.
   @override
-  Future<void> sendScanned() => _queue(_approvals.sendScanned);
+  Future<void> sendScanned(String deviceId) async {
+    var sent = false;
+    await _queue(() async {
+      await _approvals.sendScanned(deviceId);
+      sent = true;
+    });
+    // A stopped engine runs nothing, and keeps no transfer.
+    if (!sent) throw CoreError('not_found', message: 'no transfer waits for that device', what: 'transfer');
+  }
 
   void _set(EngineState state) {
     final was = _state.value.stage;
@@ -1152,8 +1191,7 @@ class E2EEngine implements DeviceSetupActions {
   /// they are now: none while a change of keys waits, which approves nothing.
   EngineState _withSetup(EngineState state) {
     if (state.stage == EngineStage.newDevice) {
-      final attempt = _approvals.setup();
-      return _setup ?? (attempt == null ? EngineState.newDevice : EngineState.settingUp(attempt));
+      return _setup ?? EngineState(EngineStage.newDevice, setup: _approvals.setup(), listChanged: _listChanged);
     }
     if (state.stage != EngineStage.ready || state.rotating) return state;
     // And the offer of a new change of keys after one that left devices out (e2e#49).
@@ -1181,7 +1219,8 @@ class E2EEngine implements DeviceSetupActions {
   /// once it's listed starts its last steps. One that must leave devices out names them, by the start of their IDs as
   /// Settings does, and waits for the person's Finish ([signOff]), at a start too; one that fails leaves Finish too.
   /// One that lost to another list (409) can't be listed any more, as the core adds no device to a list: the
-  /// installation starts again as a new device (Ruling 26), which `list_changed` says.
+  /// installation starts again as a new device (Ruling 26), which its state says ([EngineState.listChanged]), as the
+  /// page it was set up on goes with the old device (review 27's M3).
   Future<void> _listThisDevice({required bool signOff}) async {
     final FirstList listed;
     try {
@@ -1191,13 +1230,23 @@ class E2EEngine implements DeviceSetupActions {
       rethrow;
     }
     if (listed.leavingOut.isNotEmpty) return _waitToFinish([for (final id in listed.leavingOut) id.substring(0, 8)]);
-    if (listed.lost) {
-      await _startOver();
-      throw CoreError('list_changed', message: "another device's list went up first: this device starts again as new");
-    }
+    if (listed.lost) return _startOverChanged();
     _setup = null;
+    _listChanged = false;
     _set(EngineState.starting);
-    await _settle();
+    // Listed: what fails now goes again later, as a first device's start does, never left starting.
+    try {
+      await _settle();
+    } catch (error) {
+      _failed(error);
+    }
+  }
+
+  /// The user's devices or keys changed while this new device was being set up, which it can't be any more: it starts
+  /// again as a new one, saying why until it's set up.
+  Future<void> _startOverChanged() async {
+    _listChanged = true;
+    await _startOver();
   }
 
   /// Finish is left for the person, naming the devices the list leaves out.
@@ -1209,7 +1258,8 @@ class E2EEngine implements DeviceSetupActions {
   /// The person saved starting over's recovery key: the new identity goes up in the place of the one it replaces, and
   /// only once the API took it is it confirmed; the record lets go of it then. A refusal or a lost answer throws, the
   /// key still shown, and the same bytes go next time. Another identity there meanwhile (409) can't be replaced by
-  /// this one, made for the one before: the installation starts again as a new device (Ruling 26).
+  /// this one, made for the one before: the installation starts again as a new device (Ruling 26), which its state
+  /// says once the key's page goes (review 27's M3).
   Future<void> _resetSaved() async {
     final made = _made;
     final replaces = _replaces;
@@ -1226,7 +1276,8 @@ class E2EEngine implements DeviceSetupActions {
     _setup = null;
     _replaces = null;
     await store.write(keptReset, null).catchError((Object error) => debugPrint("e2e: the record's start over: $error"));
-    if (!published) return _startOver();
+    if (!published) return _startOverChanged();
+    _listChanged = false;
     _set(EngineState.starting);
     try {
       await _settle();
@@ -1362,10 +1413,15 @@ class E2EEngine implements DeviceSetupActions {
     );
     if (!state.rotating) {
       _rotation = null;
-      _relisted = false;
+      if (_relisted) {
+        _relisted = false;
+        await _keepRelisted();
+      }
     }
     final shown = _rotation?.recoveryKey;
     if (shown != null) return EngineState.rotation(recoveryKey: shown);
+    // One another device's keys made impossible, as the record says after a restart, is said at once.
+    if (state.rotating && _relisted) return const EngineState.rotation(stuck: true, relisted: true);
     // A change found stuck this run stays said while the core keeps it: only another device's keys end it.
     return state.rotating && _state.value.stuck ? _state.value : state;
   }
@@ -1378,11 +1434,13 @@ class E2EEngine implements DeviceSetupActions {
     await _released();
   }
 
-  /// The list of a device this one approved, up (the served list names it): this device's own changes go on. Asked at
-  /// its IDENTITY_UPDATE and at each round of the inbox, a READY's too, so a gateway down as it came holds nothing.
+  /// The list of a device this one approved, up (the served list names it): this device's own changes go on, and the
+  /// questions of the new devices that waited for it are asked (review 27's M5). Asked at its IDENTITY_UPDATE and at
+  /// each round of the inbox, a READY's too, so a gateway down as it came holds nothing.
   Future<void> _released() async {
     if (!_approvals.holds()) return;
     if (await servedIdentity(this) case final served?) _approvals.listed(served);
+    if (!_approvals.holds()) await _takeApprovals();
   }
 
   /// «Arranque»: the API's configuration, the user's database, this installation's device and the session bound to it.
@@ -1394,6 +1452,7 @@ class E2EEngine implements DeviceSetupActions {
       final opened = await host.open(user);
       if (opened.state != HostState.ready) return _closed(opened);
       _keysAgain = store.read(keysAgain) == true;
+      _relisted = store.read(keptRelisted) == true;
       final (:status, :keys) = await ownDevice(this);
       final device = status.deviceId;
       _self = device;

@@ -179,4 +179,28 @@ void main() {
     skip: noCore,
     timeout: _slow,
   );
+
+  // Review 27's M3: another identity there meanwhile (409) can't be replaced by this one, made for the one before: the
+  // installation starts again as a new device (Ruling 26), and its state says why once the key's page goes.
+  test(
+    'a_start_over_another_identity_beat_starts_the_device_again,_its_state_saying_why',
+    () async {
+      final fake = FakeApi();
+      final ana = fake.addUser();
+      final a = await firstDevice(fake, ana);
+      await a.engine.stop();
+      final n = await _newDevice(fake, ana);
+      final before = _deviceOf(n);
+      await n.engine.resetIdentity();
+      expect(n.state.recoveryKey, recoveryKeyShape);
+      fake.refuse(_identity, 409, body: {'error': 'identity changed', 'identity_key': 'another'});
+      await n.engine.keySaved();
+      expect(n.state, const EngineState(EngineStage.newDevice, listChanged: true));
+      expect(_deviceOf(n), isNot(before));
+      expect(n.store.read(keptReset), isNull);
+      await n.engine.stop();
+    },
+    skip: noCore,
+    timeout: _slow,
+  );
 }

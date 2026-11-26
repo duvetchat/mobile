@@ -10,7 +10,8 @@
 /// The new device takes the transfer (approval_receive): one sealed to its commitment's key only once the code typed
 /// was accepted, so one that came before is kept, and taken after it. Then it goes on as with the recovery key
 /// (recover.dart's putFirstList). The approving device changes no list and no key until that device's list is up (task
-/// 24's review, M2). The desktop's approval.ts in Dart, with the scan the desktop doesn't have (Ruling 21).
+/// 24's review, M2), and approves no other new device meanwhile (review 27's M5). The desktop's approval.ts in Dart,
+/// with the scan the desktop doesn't have (Ruling 21).
 library;
 
 import 'dart:async';
@@ -192,8 +193,9 @@ class _Asked {
   ApprovalEnd? ended;
   bool unfinished;
 
-  /// A confirmed approval's transfer while its send failed: the same bytes go on the next Confirm.
-  String? transfer;
+  /// A confirmed approval's transfer, and the device the core approved, whose inbox it goes to, while its send failed:
+  /// the same bytes go on the next Confirm.
+  ({String device, String transfer})? approved;
   void Function() stop = _nothing;
 }
 
@@ -233,7 +235,7 @@ DateTime? _endsAt(Map<String, Object?> message) => switch (message['created_at']
 };
 
 class Approvals {
-  Approvals(this._engine, this._soon, this._changed);
+  Approvals(this._engine, this._soon, this._changed, this._askKept);
 
   final E2EEngine _engine;
 
@@ -242,6 +244,9 @@ class Approvals {
 
   /// What the views show changed.
   final void Function() _changed;
+
+  /// The kept frames taken by the engine's role, in its turn: a hold that ends asks the questions that waited for it.
+  final Future<void> Function() _askKept;
   _Attempt? _attempt;
   _Asked? _asked;
   _Confirmed? _confirmed;
@@ -279,6 +284,16 @@ class Approvals {
 
   /// A device this one approved hasn't put up its list yet: no list or key change of this device's may leave it out.
   bool holds() => _confirmed != null;
+
+  /// One new device at a time (review 27's M5): while this device holds for one, another isn't offered, confirmed or
+  /// approved from its QR. Its transfer would carry the list naming the first without its certificate, which the API
+  /// refuses until that one's list is up, and the hold would wait for it alone.
+  void _oneAtATime(String device) {
+    final held = _confirmed;
+    if (held != null && held.device != device) {
+      throw CoreError('approval_waits', message: "a device this one approved hasn't put up its list yet");
+    }
+  }
 
   /// Nothing goes on: timers called off, nothing shown.
   void stop() {
@@ -377,6 +392,7 @@ class Approvals {
   Future<bool> approve(String device) async {
     final asked = _asked;
     if (asked == null || asked.device != device || asked.phase != ApprovalPhase.asked) return true;
+    _oneAtATime(device);
     final frame = _commitmentOf(asked);
     if (frame == null) {
       _end(asked, ApprovalEnd.over);
@@ -447,28 +463,31 @@ class Approvals {
   }
 
   /// The person's Confirm, after they saw the new device accept the code: approval_confirm with the code this device
-  /// showed, then the transfer to the new device, the same bytes again after a send that failed. Android has no box of
-  /// the system's: this Confirm, beside the fingerprint, is the person's act (the web's way). An attempt the core no
-  /// longer has (`not_found`: another offer since, or its ten minutes) is over, and says so.
+  /// showed, then the transfer to the device the core approved (its reply's `device_id`, e2e#52: review 27's M6), the
+  /// same bytes again after a send that failed. Android has no box of the system's: this Confirm, beside the
+  /// fingerprint, is the person's act (the web's way). An attempt the core no longer has (`not_found`: another offer
+  /// since, or its ten minutes) is over, and says so.
   Future<void> confirm(String device) async {
     final asked = _asked;
     final code = asked?.code;
     if (asked == null || asked.device != device || asked.phase != ApprovalPhase.code || code == null) return;
-    if (asked.transfer == null) {
+    _oneAtATime(device);
+    var approved = asked.approved;
+    if (approved == null) {
       if (_commitmentOf(asked) == null) return _end(asked, ApprovalEnd.over);
+      final Map<String, Object?> reply;
       try {
-        asked.transfer =
-            (await _engine.host.handle<Map<String, Object?>>({'cmd': 'approval_confirm', 'code': code}))['transfer']!
-                as String;
+        reply = await _engine.host.handle<Map<String, Object?>>({'cmd': 'approval_confirm', 'code': code});
       } on CoreError catch (error) {
         if (error.code == 'not_found') return _end(asked, ApprovalEnd.over);
         rethrow;
       }
+      approved = asked.approved = (device: reply['device_id']! as String, transfer: reply['transfer']! as String);
     }
-    final message = approvalFrameMessage((step: ApprovalStep.transfer, data: asked.transfer!, name: null));
-    await _engine.api.sendToDevice(device, message);
+    final message = approvalFrameMessage((step: ApprovalStep.transfer, data: approved.transfer, name: null));
+    await _engine.api.sendToDevice(approved.device, message);
     await _forget(device);
-    _hold(_Confirmed(device, asked.name, asked.fingerprint));
+    _hold(_Confirmed(approved.device, asked.name, asked.fingerprint));
   }
 
   /// The device a phone of the user's scanned the QR of, by the ID the QR names, so its person is asked about that
@@ -477,15 +496,17 @@ class Approvals {
   String? scannedDevice(String qr) => qrDevice(qr);
 
   /// The person's yes to the device a QR they scanned names ([named], as [scannedDevice] read it, by its [name]): its
-  /// own user observed first, as for an offer (false, with nothing approved, while the identity it holds was replaced);
+  /// own user observed first, as for an offer (null, with nothing approved, while the identity it holds was replaced);
   /// one this device approved before that never took its transfer off this device's list first; then approval_from_qr
   /// with the text as it was scanned, and its transfer, as an approval frame, to the inbox of the device its reply
   /// names (e2e#52), which takes it with no code. This device's lists and keys wait for that device's list from now
-  /// on, as after a Confirm: the core put it on the list this device holds. A send that fails keeps the transfer for
-  /// [sendScanned], with the same bytes: approving it again would be the core's `exists`.
-  Future<bool> approveScanned(String qr, String named, String name) async {
+  /// on, as after a Confirm: the core put it on the list this device holds. True once the transfer went; false when
+  /// its send failed, the transfer kept for [sendScanned] with the same bytes, as approving it again would be the
+  /// core's `exists` (review 27's M2). Refused while another device this one approved sets up (M5).
+  Future<bool?> approveScanned(String qr, String named, String name) async {
+    _oneAtATime(named);
     final served = await servedIdentity(_engine);
-    if (served != null && await observeOwn(_engine, served) == 'not_own_identity') return false;
+    if (served != null && await observeOwn(_engine, served) == 'not_own_identity') return null;
     if (served != null && await _unfinished(named, served)) {
       await unlist(_engine, named);
       if (_confirmed?.device == named) _release();
@@ -495,27 +516,38 @@ class Approvals {
     // The core read the same QR: another device would be one this app misread, while its person said yes to another.
     if (device is! String || device != named) throw StateError("the QR's device isn't the one its person was asked of");
     _hold(_Confirmed(device, name, '', transfer: approved['transfer']! as String));
-    await sendScanned();
+    try {
+      await sendScanned(device);
+    } catch (error) {
+      debugPrint("e2e: a scanned device's transfer waits for Try again: ${error.runtimeType}");
+      return false;
+    }
     return true;
   }
 
-  /// The transfer of a scanned approval whose send failed, sent again as it was: nothing when none waits.
-  Future<void> sendScanned() async {
+  /// The transfer of a scanned approval of [device] whose send failed, sent again as it was. None waits for it any
+  /// more (its hold ended, another took its place, the engine started again): `not_found` `transfer`, and its QR is
+  /// scanned again.
+  Future<void> sendScanned(String device) async {
     final confirmed = _confirmed;
     final transfer = confirmed?.transfer;
-    if (confirmed == null || transfer == null) return;
+    if (confirmed == null || confirmed.device != device || transfer == null) {
+      throw CoreError('not_found', message: 'no transfer waits for that device', what: 'transfer');
+    }
     final message = approvalFrameMessage((step: ApprovalStep.transfer, data: transfer, name: null));
     await _engine.api.sendToDevice(confirmed.device, message);
     confirmed.transfer = null;
     _changed();
   }
 
-  /// This device's lists and keys wait for the approved device's list, ten minutes at most: the new device's attempt is
-  /// over within ten minutes of the offer it took, or of its QR, which came first.
+  /// This device's lists and keys, and its other approvals, wait for the approved device's list, ten minutes at most:
+  /// the new device's attempt is over within ten minutes of the offer it took, or of its QR, which came first.
   void _hold(_Confirmed confirmed) {
     _confirmed?.stop();
-    confirmed.stop = _after(attemptLife, () {
-      if (identical(_confirmed, confirmed)) _release();
+    confirmed.stop = _after(attemptLife, () async {
+      if (!identical(_confirmed, confirmed)) return;
+      _release();
+      await _askKept();
     });
     _confirmed = confirmed;
     _changed();
@@ -594,6 +626,12 @@ class Approvals {
     if (device is! String) return _Kept.drop;
     final asked = _asked;
     if (frame.step == ApprovalStep.commitment) {
+      // The API names the sender: one that isn't the device the commitment names would have the person asked about one
+      // device, and the yes offer to, and unlist, another (review 27's M6).
+      if (commitmentDevice(frame.data) != device) {
+        debugPrint("e2e: a new device's request came from another device than it names, and goes.");
+        return _Kept.drop;
+      }
       final left = _endsAt(message)?.difference(_engine.clock.now());
       if (left == null || left <= Duration.zero) {
         if (asked != null && asked.message == message['id'] && asked.phase == ApprovalPhase.asked) {
@@ -602,6 +640,8 @@ class Approvals {
         return _Kept.drop;
       }
       if (asked != null && (asked.device != device || asked.message == message['id'])) return _Kept.keep;
+      // Another device than the one this device approved and waits for: asked once that one's list is up (M5).
+      if (_confirmed case final held? when held.device != device) return _Kept.keep;
       // A new attempt of the device's, or the first ask: the question starts over, and ends with that attempt.
       asked?.stop();
       final served = await servedIdentity(_engine);

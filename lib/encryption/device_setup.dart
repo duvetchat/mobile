@@ -46,11 +46,11 @@ String leavesOut(List<String> devices) =>
 
 String fingerprintOf(String fingerprint) => 'Fingerprint: $fingerprint';
 
-/// What a recovery that failed says, by what failed.
+/// What a recovery that failed says, by what failed. The user's devices changing meanwhile is the state's word
+/// ([EngineState.listChanged]): the device starts again as a new one.
 String recoveryProblem(Object error) => switch (error) {
   CoreError(code: 'bad_command', field: 'recovery_key') => keyMistyped,
   CoreError(code: 'decrypt_failed') => keyWrong,
-  CoreError(code: 'list_changed') => setupAgain,
   _ => setupFailed,
 };
 
@@ -58,7 +58,6 @@ String recoveryProblem(Object error) => switch (error) {
 String codeProblem(Object error) => switch (error) {
   CoreError(code: 'rule_violation', rule: 'code_mismatch') => Notice.codeMismatch.text,
   CoreError(code: 'not_found', what: 'approver') => noApprover,
-  CoreError(code: 'list_changed') => setupAgain,
   CoreError(code: 'not_found') => approvalOver,
   _ => setupFailed,
 };
@@ -87,6 +86,10 @@ class _DeviceSetupPageState extends State<DeviceSetupPage> {
   late final ValueListenable<EngineState> _state = widget.repository.encryption;
   DeviceSetupActions get _setup => widget.repository.deviceSetup;
 
+  // An act of the page's that failed, said under its button (review 27's M7).
+  var _beginFailed = false;
+  var _resetFailed = false;
+
   @override
   void initState() {
     super.initState();
@@ -114,6 +117,16 @@ class _DeviceSetupPageState extends State<DeviceSetupPage> {
     if (route != null && route.isActive) route.navigator?.removeRoute(route);
   }
 
+  Future<void> _begin() async {
+    setState(() => _beginFailed = false);
+    try {
+      await _setup.beginApproval();
+    } catch (error) {
+      _failed(error);
+      if (mounted) setState(() => _beginFailed = true);
+    }
+  }
+
   Future<void> _startOver() async {
     final sure = await confirmDestructive(
       context,
@@ -121,7 +134,14 @@ class _DeviceSetupPageState extends State<DeviceSetupPage> {
       body: Notice.startOverWarning.text,
       action: startOverAction,
     );
-    if (sure) await _setup.resetIdentity();
+    if (!sure || !mounted) return;
+    setState(() => _resetFailed = false);
+    try {
+      await _setup.resetIdentity();
+    } catch (error) {
+      debugPrint('e2e: starting over: ${error.runtimeType}');
+      if (mounted) setState(() => _resetFailed = true);
+    }
   }
 
   @override
@@ -131,6 +151,15 @@ class _DeviceSetupPageState extends State<DeviceSetupPage> {
       header: true,
       child: Text(text, style: DuvetType.title.copyWith(color: colors.foreground)),
     );
+    Widget failed(bool shown) => shown
+        ? Padding(
+            padding: const EdgeInsets.only(top: 8),
+            child: Semantics(
+              liveRegion: true,
+              child: Text(setupFailed, style: DuvetType.caption.copyWith(color: colors.error)),
+            ),
+          )
+        : const SizedBox.shrink();
     return Scaffold(
       backgroundColor: colors.background,
       appBar: AppBar(
@@ -147,6 +176,19 @@ class _DeviceSetupPageState extends State<DeviceSetupPage> {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.stretch,
                 children: [
+                  // Started again as a new device, the user's devices changed while it was being set up (M3).
+                  ValueListenableBuilder(
+                    valueListenable: _state,
+                    builder: (context, state, _) => state.listChanged
+                        ? Padding(
+                            padding: const EdgeInsets.only(bottom: 24),
+                            child: Semantics(
+                              liveRegion: true,
+                              child: Text(setupAgain, style: DuvetType.body.copyWith(color: colors.foreground)),
+                            ),
+                          )
+                        : const SizedBox.shrink(),
+                  ),
                   heading(keyHeading),
                   const SizedBox(height: 12),
                   RecoveryKeyField(onRecover: _setup.recover),
@@ -161,9 +203,12 @@ class _DeviceSetupPageState extends State<DeviceSetupPage> {
                         key: ValueKey(setup.fingerprint ?? setup.qr),
                         child: ApprovalNew(setup: setup, actions: _setup),
                       ),
-                      _ => Align(
-                        alignment: Alignment.centerLeft,
-                        child: DuvetButton(label: approveBegin, onPressed: () => unawaited(_setup.beginApproval())),
+                      _ => Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          DuvetButton(label: approveBegin, onPressed: () => unawaited(_begin())),
+                          failed(_beginFailed),
+                        ],
                       ),
                     },
                   ),
@@ -180,6 +225,7 @@ class _DeviceSetupPageState extends State<DeviceSetupPage> {
                       onPressed: () => unawaited(_startOver()),
                     ),
                   ),
+                  failed(_resetFailed),
                 ],
               ),
             ),

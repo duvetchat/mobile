@@ -7,6 +7,7 @@ import 'package:mobile_scanner/mobile_scanner.dart';
 
 import '../data/repository.dart';
 import '../e2e/engine.dart';
+import '../e2e/host.dart' show CoreError;
 import '../e2e/notices.dart';
 import '../theme.dart';
 import '../widgets/rows.dart';
@@ -30,6 +31,7 @@ const approvalListed = 'This device is set up for your account already.';
 const approvalOverHere = "This approval can't go on any more: start it again on the new device.";
 const approvalClose = 'Close';
 const approvalWaits = "A device you approved is still setting up: you can change your devices once it's done.";
+const anotherWaits = "A device you approved is still setting up: approve another once it's done.";
 const deviceUnfinished =
     "A device you approved didn't finish setting up: approve it again from that device, or remove it here.";
 const scanTitle = 'Set up a new device';
@@ -38,10 +40,19 @@ final cameraUnavailable =
     "Duvet can't use the camera here. On your new device, tap «${Notice.useCode.text}»: this device asks you then.";
 const notACode = "This isn't a code for setting up a device.";
 const notYours = "This code is for a device that isn't signed in to your account.";
+const scanCheckFailed = "Couldn't check this code. Try again.";
 const scanSent = 'Your new device finishes setting up now.';
 const scanUnsent = "Couldn't reach your new device. Try again.";
+const scanOver = "This approval can't go on any more: scan your new device's code again.";
 const tryAgain = 'Try again';
 const scanAgain = 'Scan again';
+
+/// What an approval's step that failed says: while another device this one approved sets up, why it waits (review
+/// 27's M5); anything else, to try again.
+String approvalProblem(Object error) => switch (error) {
+  CoreError(code: 'approval_waits') => anotherWaits,
+  _ => approvalFailed,
+};
 
 /// The approval the approving device shows over the app while one asks or goes on: none once its transfer went.
 DeviceApproval? shownApproval(EngineState state) => switch (state.approval) {
@@ -65,7 +76,7 @@ class ApprovalPage extends StatefulWidget {
 class _ApprovalPageState extends State<ApprovalPage> {
   late final ValueListenable<EngineState> _state = widget.repository.encryption;
   var _busy = false;
-  var _failed = false;
+  String? _problem;
 
   @override
   void initState() {
@@ -88,13 +99,13 @@ class _ApprovalPageState extends State<ApprovalPage> {
   Future<void> _run(Future<void> Function() work) async {
     setState(() {
       _busy = true;
-      _failed = false;
+      _problem = null;
     });
     try {
       await work();
     } catch (error) {
       debugPrint("e2e: the approval's step failed: ${error.runtimeType}");
-      if (mounted) setState(() => _failed = true);
+      if (mounted) setState(() => _problem = approvalProblem(error));
     } finally {
       if (mounted) setState(() => _busy = false);
     }
@@ -110,7 +121,7 @@ class _ApprovalPageState extends State<ApprovalPage> {
       return ApprovalView(
         approval: approval,
         busy: _busy,
-        failed: _failed,
+        problem: _problem,
         onApprove: () => _run(() => setup.approveDevice(approval.device)),
         onDecline: () => _run(() => setup.declineDevice(approval.device)),
         onConfirm: () => _run(() => setup.confirmApproval(approval.device)),
@@ -127,13 +138,15 @@ class ApprovalView extends StatelessWidget {
     required this.onDecline,
     required this.onConfirm,
     this.busy = false,
-    this.failed = false,
+    this.problem,
     super.key,
   });
 
   final DeviceApproval approval;
   final bool busy;
-  final bool failed;
+
+  /// What the step that failed says, under the approval.
+  final String? problem;
   final VoidCallback onApprove;
   final VoidCallback onDecline;
   final VoidCallback onConfirm;
@@ -184,11 +197,11 @@ class ApprovalView extends StatelessWidget {
             style: DuvetType.body.copyWith(color: colors.foreground, fontWeight: FontWeight.w600),
           ),
         ],
-        if (failed) ...[
+        if (problem case final problem?) ...[
           const SizedBox(height: 12),
           Semantics(
             liveRegion: true,
-            child: Text(approvalFailed, style: DuvetType.caption.copyWith(color: colors.error)),
+            child: Text(problem, style: DuvetType.caption.copyWith(color: colors.error)),
           ),
         ],
         const SizedBox(height: 24),
@@ -311,16 +324,21 @@ class _ScanDevicePageState extends State<ScanDevicePage> {
     _qr = text;
     unawaited(_controller?.stop());
     ScannedDevice? scanned;
+    var unchecked = false;
     try {
       scanned = await _setup.scannedDevice(text);
     } catch (error) {
+      // The user's devices didn't read: no word on the code itself (review 27's M7).
       debugPrint("e2e: a scanned code's device: ${error.runtimeType}");
+      unchecked = true;
     }
     if (!mounted) return;
     setState(() {
       _busy = false;
       _scanned = scanned;
-      _said = scanned == null
+      _said = unchecked
+          ? scanCheckFailed
+          : scanned == null
           ? notACode
           : scanned.name == null
           ? notYours
@@ -339,20 +357,29 @@ class _ScanDevicePageState extends State<ScanDevicePage> {
     unawaited(_controller?.start());
   }
 
+  // The person's yes, or their Try again of a transfer whose send failed: what the engine says it did is what's said
+  // (review 27's M2). Approved, its transfer not sent, the same bytes go on Try again; none waiting any more, the code
+  // is scanned again.
   Future<void> _approve() async {
     final (qr, scanned) = (_qr, _scanned);
     if (qr == null || scanned == null) return;
     setState(() => _busy = true);
     try {
-      _unsent ? await _setup.sendScanned() : await _setup.approveScanned(qr, scanned);
-      _done = true;
-      _unsent = false;
-      _said = scanSent;
+      final sent = _unsent
+          ? await _setup.sendScanned(scanned.id).then((_) => true)
+          : await _setup.approveScanned(qr, scanned);
+      _done = sent;
+      _unsent = !sent;
+      _said = sent ? scanSent : scanUnsent;
     } catch (error) {
       debugPrint("e2e: a scanned device's approval: ${error.runtimeType}");
-      // Approved, its transfer not sent: the same bytes on Try again. Anything else is said as a failure.
-      _unsent = widget.repository.encryption.value.approval?.phase == ApprovalPhase.confirmed;
-      _said = _unsent ? scanUnsent : approvalFailed;
+      if (error case CoreError(code: 'not_found', what: 'transfer')) {
+        _unsent = false;
+        _said = scanOver;
+      } else {
+        // A transfer kept stays kept: another failed send of it is said as one.
+        _said = _unsent ? scanUnsent : approvalProblem(error);
+      }
     } finally {
       if (mounted) setState(() => _busy = false);
     }
