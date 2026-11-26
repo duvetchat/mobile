@@ -17,6 +17,7 @@ import 'package:duvet_client/duvet.dart' as duvet;
 import 'package:flutter/foundation.dart';
 
 import 'approval.dart';
+import 'backup.dart';
 import 'bootstrap.dart';
 import 'cbor.dart' show listDevices;
 import 'contacts.dart';
@@ -41,6 +42,7 @@ import 'sync.dart';
 
 export 'approval.dart'
     show ApprovalEnd, ApprovalPhase, DeviceApproval, DeviceSetup, ScannedDevice, SetupWay, attemptLife;
+export 'backup.dart' show BackupPause, BackupShown, BackupStage;
 export 'contacts.dart' show ContactsShown, KeyChange, SafetyNumber, ShownChange, changedIn, waitingForYes;
 export 'content.dart' show Authored, MessageStatus, ShownMessage;
 export 'devices.dart' show DeviceNotice, DeviceNoticeKind, inactiveDevice, onlyDevice;
@@ -278,6 +280,9 @@ abstract interface class DeviceSetupActions {
 
 const _day = Duration(days: 1);
 
+/// How long the engine goes without work before the encrypted backup's pass («Lo periódico»).
+const _quietBeforeBackup = Duration(minutes: 1);
+
 /// A start that failed goes again after 2 s, then twice as long each time, up to a minute apart.
 const _retryFirst = Duration(seconds: 2);
 const _retryMost = Duration(minutes: 1);
@@ -430,6 +435,31 @@ class E2EEngine implements DeviceSetupActions {
   /// A new device's approval, and the approvals this device takes part in for the user's new ones (Task 27).
   late final _approvals = Approvals(this, _soon, () => _set(_state.value), _takeApprovals);
 
+  /// The encrypted backup (Task 33): its core's calls, and the inbox it takes first, go in the turn without counting as
+  /// the app's work, so its own never keep it from quiet. What an import brings in shows as a history's does.
+  late final _backups = Backups(
+    host: host,
+    api: api,
+    store: store,
+    clock: clock,
+    failures: _failures,
+    turn: _backingUp,
+    inbox: () => _queue(_inbox, quiet: true),
+    changed: _historyImported,
+    update: (error) => _set(EngineState.update(error.minimum)),
+  );
+
+  /// The minute without the engine's work the backup's pass waits for (calls it off).
+  void Function()? _untilQuiet;
+
+  /// What the views show of the encrypted backup (backup.dart): a ready device's restore, a pause and why, that it's
+  /// up to date, or else days going up.
+  ValueListenable<BackupShown> get backup => _backups.shown;
+
+  /// The backup's pass under way, settled: a test's wait, as its requests run outside the turn.
+  @visibleForTesting
+  Future<void> backupSettled() => _backups.settled();
+
   /// A new device whose core holds an identity already: starting over's, until its upload, or one whose first list
   /// hasn't gone up (Task 27).
   EngineState? _setup;
@@ -455,8 +485,8 @@ class E2EEngine implements DeviceSetupActions {
 
   final _imports = StreamController<String>.broadcast();
 
-  /// Each conversation a shared history or a catch-up was imported into (history.dart): rows its chat's pages left out
-  /// may show now, as well as the ones [messagesChanged] has read again.
+  /// Each conversation a shared history, a catch-up or a day of the backup was imported into (history.dart,
+  /// backup.dart): rows its chat's pages left out may show now, as well as the ones [messagesChanged] has read again.
   Stream<String> get historiesImported => _imports.stream;
 
   void _historyImported(String conversationId) {
@@ -941,11 +971,14 @@ class E2EEngine implements DeviceSetupActions {
     _retry = null;
     _daily?.call();
     _daily = null;
+    _untilQuiet?.call();
+    _untilQuiet = null;
     _groups.stop();
     _sends.stop();
     _failures.stop();
     _approvals.stop();
     _histories.stop();
+    _backups.stop();
     await heard?.cancel();
   }
 
@@ -1365,6 +1398,8 @@ class E2EEngine implements DeviceSetupActions {
   /// installation starts again as a new device (Ruling 26), which its state says ([EngineState.listChanged]), as the
   /// page it was set up on goes with the old device (review 27's M3).
   Future<void> _listThisDevice({required bool signOff}) async {
+    // Set up as a new device: what it holds of before comes from the backup, once it's ready (Task 33).
+    await _backups.restoreDue();
     final FirstList listed;
     try {
       listed = await putFirstList(this, signOff: signOff);
@@ -1448,8 +1483,10 @@ class E2EEngine implements DeviceSetupActions {
   /// The flows queued and not done yet: with none, the engine is quiet, which a catch-up's import waits for.
   var _queued = 0;
 
-  /// Runs [work] once the flow before it ended (nothing once stopped). What it throws fails this call alone.
-  Future<void> _queue(Future<void> Function() work) {
+  /// Runs [work] once the flow before it ended (nothing once stopped). What it throws fails this call alone. The app's
+  /// work puts the backup's pass off until a minute after it; the backup's own ([quiet]) doesn't.
+  Future<void> _queue(Future<void> Function() work, {bool quiet = false}) {
+    if (!quiet) _notQuiet();
     if (_queued++ == 0) _histories.busy();
     final run = _turn.then((_) async {
       if (!_stopped) await work();
@@ -1461,6 +1498,31 @@ class E2EEngine implements DeviceSetupActions {
       }),
     );
     return run;
+  }
+
+  /// The engine has work: the backup's pass waits for a minute after it (none once stopped).
+  void _notQuiet() {
+    _untilQuiet?.call();
+    _untilQuiet = _stopped
+        ? null
+        : clock.later(_quietBeforeBackup, () {
+            _untilQuiet = null;
+            _backups.quiet();
+          });
+  }
+
+  /// The backup's work with the core (Task 33), in the turn without counting as the app's work: only while this device
+  /// backs up, ready with no change of keys waiting for its upload, as the API takes no segment under the key that
+  /// change made. Refused (`not_ready`) otherwise, or once the engine stopped.
+  Future<void> _backingUp(Future<void> Function() work) async {
+    var ran = false;
+    await _queue(() async {
+      final now = _state.value;
+      if (now.stage != EngineStage.ready || now.rotating) return;
+      ran = true;
+      await work();
+    }, quiet: true);
+    if (!ran) throw CoreError('not_ready', message: "this device doesn't back up now");
   }
 
   /// Work an event asks for: what fails is logged, and goes again with the next event that asks for it.
@@ -1678,6 +1740,8 @@ class E2EEngine implements DeviceSetupActions {
     }
     await _warnInactive();
     _daily ??= _everyDay();
+    // A new device's restore starts now; the rest of the backup waits for the app to be quiet.
+    _backups.wake();
   }
 
   /// The user's devices not seen in 45 days, each warned of once (decision 13): at start and every day after.
@@ -1749,6 +1813,7 @@ class E2EEngine implements DeviceSetupActions {
   Future<void> _startOver() async {
     final old = (await api.devices()).where((device) => device.current).firstOrNull?.id;
     await host.destroy(user);
+    _backups.forget();
     for (final key in deviceRecord) {
       await store.write(key, null).catchError((Object error) => debugPrint("e2e: the record's $key: $error"));
     }

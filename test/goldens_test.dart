@@ -601,6 +601,7 @@ void main() {
           );
           repository
             ..encryption.value = EngineState.ready
+            ..backup.value = BackupShown.upToDate
             ..deviceList = [
               device('0193a4b2-0000-7000-8000-0000000000a1', 'Pixel 8 Pro', 'android/1.1.0', 0),
               device('0193a4b2-0000-7000-8000-0000000000a2', 'Duvet for Windows', 'desktop-windows/1.2.0', 50),
@@ -613,6 +614,20 @@ void main() {
           await expectLater(find.byType(DuvetApp), matchesGoldenFile('goldens/devices_${b.name}.png'));
         }),
       ),
+    );
+
+    // A new device's restore of the encrypted backup (PLAN-E2E-CLIENTES.md, Task 33), as it goes: the Chats tab's
+    // strip, with nothing to press but its ×.
+    testWidgets(
+      'backup restoring, ${b.name}',
+      (tester) => withShadows(() async {
+        final repository = await app(tester);
+        repository
+          ..encryption.value = EngineState.ready
+          ..backup.value = const BackupShown.restoring(12, 40);
+        await tester.pumpAndSettle();
+        await expectLater(find.byType(DuvetApp), matchesGoldenFile('goldens/backup_restoring_${b.name}.png'));
+      }),
     );
 
     // #215: a profile's roles, held ones in their color or gradient.

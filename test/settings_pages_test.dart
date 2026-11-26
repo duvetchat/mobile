@@ -308,6 +308,34 @@ void main() {
       semantics.dispose();
     });
 
+    // Task 33: a ready device's encrypted backup, in the desktop's words, and nothing of it on another.
+    testWidgets(
+      'say how the encrypted backup is on a ready device: up to date, going up, restoring, or paused and why',
+      (tester) async {
+        final repository = await pumpDevices(tester);
+        expect(find.text('Encrypted backup'), findsOneWidget);
+        expect(find.text('Backing up…'), findsOneWidget);
+        for (final (shown, words) in [
+          (BackupShown.upToDate, 'Up to date'),
+          (const BackupShown.restoring(12, 40), 'Restoring your messages: 12 of 40'),
+          (const BackupShown.paused(BackupPause.full), 'Your encrypted backup is paused: your storage is full.'),
+          (
+            const BackupShown.paused(BackupPause.tooLarge),
+            'Your encrypted backup is paused: a day of messages is too large to back up.',
+          ),
+          (BackupShown.uploading, 'Backing up…'),
+        ]) {
+          repository.backup.value = shown;
+          await tester.pumpAndSettle();
+          expect(find.text(words), findsOneWidget, reason: '$shown');
+        }
+        repository.encryption.value = EngineState.newDevice;
+        await tester.pumpAndSettle();
+        expect(find.text('Encrypted backup'), findsNothing);
+        semantics.dispose();
+      },
+    );
+
     for (final (state, name) in [
       (EngineState.newDevice, 'a new device'),
       (const EngineState.rotation(), 'a rotation cut before its upload'),

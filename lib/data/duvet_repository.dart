@@ -1062,6 +1062,9 @@ class DuvetRepository implements ChatRepository {
   @override
   final ValueNotifier<EngineState> encryption = ValueNotifier(EngineState.starting);
 
+  @override
+  final ValueNotifier<BackupShown> backup = ValueNotifier(BackupShown.uploading);
+
   /// The gateway's events for the engine, across the session's gateways.
   final _gatewayEvents = StreamController<duvet.GatewayEventPayload>.broadcast();
 
@@ -1319,6 +1322,7 @@ class DuvetRepository implements ChatRepository {
       _showContacts();
 
       engine.historyOffers.addListener(_showOffers);
+      engine.backup.addListener(_showBackup);
       // Only this engine, the app's with a screen, opens a conversation's files (Review Focus 2).
       DecryptedFiles.instance.useOpener(_FileOpener(this, engine));
       _engineHeard.addAll([
@@ -1361,6 +1365,10 @@ class DuvetRepository implements ChatRepository {
     if (_engine case final engine?) historyOffers.value = engine.historyOffers.value;
   }
 
+  void _showBackup() {
+    if (_engine case final engine?) backup.value = engine.backup.value;
+  }
+
   void _groupFailed(Object error) => debugPrint("e2e: the conversation's group didn't open: $error");
 
   // The session ended: its engine closes the core, whose database stays (decision 13).
@@ -1375,6 +1383,7 @@ class DuvetRepository implements ChatRepository {
     contacts.value = ContactsShown.none;
 
     historyOffers.value = const {};
+    backup.value = BackupShown.uploading;
     for (final heard in _engineHeard) {
       unawaited(heard.cancel());
     }
@@ -1388,6 +1397,7 @@ class DuvetRepository implements ChatRepository {
     engine.contacts.removeListener(_showContacts);
 
     engine.historyOffers.removeListener(_showOffers);
+    engine.backup.removeListener(_showBackup);
     _engineStopped = engine.stop().catchError((Object error) => debugPrint("e2e: the engine's stop: $error"));
   }
 
@@ -6303,6 +6313,7 @@ class DuvetRepository implements ChatRepository {
     encryption.dispose();
     conversationStates.dispose();
     historyOffers.dispose();
+    backup.dispose();
     _voiceSignaling.dispose();
     _signedOut.close();
     _resumed.close();

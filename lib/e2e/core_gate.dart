@@ -39,7 +39,8 @@ const _lostKey = (state: HostState.failed, keyStorage: null, reason: 'bad_key');
 const ownWay = {'attachment_encrypt', 'attachment_decrypt', 'history_share', 'catch_up', 'history_import'};
 
 /// The commands only the engine with a screen runs (Review Focus 2; Task 27): a new device's setup by the recovery
-/// key, another device's approval or starting over. A gate that doesn't serve (a push's, WorkManager's, audio_service's
+/// key, another device's approval or starting over; and the encrypted backup's, which goes up, comes down and moves
+/// only with the app open (Task 33; Ruling 23). A gate that doesn't serve (a push's, WorkManager's, audio_service's
 /// engine) refuses them, before it asks the app's engine or runs them itself.
 const screenOnly = {
   'recover',
@@ -52,6 +53,11 @@ const screenOnly = {
   'approval_accept',
   'approval_from_qr',
   'approval_receive',
+  'backup_due',
+  'backup_segment',
+  'backup_uploaded',
+  'backup_import',
+  'backup_reencrypt',
 };
 
 /// The most parts [CoreGate.importShare] hands the core at once, which reads the whole command before it looks at

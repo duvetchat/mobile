@@ -3,6 +3,7 @@ import 'package:flutter/foundation.dart';
 
 import '../e2e/engine.dart'
     show
+        BackupShown,
         ContactsShown,
         DeviceSetupActions,
         EngineState,
@@ -81,6 +82,10 @@ abstract interface class ChatRepository {
 
   /// End-to-end encryption on this device, as its engine has it (lib/e2e/engine.dart): what the app shows of it.
   ValueListenable<EngineState> get encryption;
+
+  /// The encrypted backup of this device's conversations, as its engine has it (lib/e2e/backup.dart): Settings →
+  /// Devices says how it is, and a new device's restore shows as it goes.
+  ValueListenable<BackupShown> get backup;
 
   /// The person's taps on it: make a first device's identity (Set up, or Finish an upload that was cut), say its
   /// recovery key is saved (its upload), put that upload off after it failed (Later), and set this installation up

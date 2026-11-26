@@ -58,6 +58,13 @@ enum Notice {
   membersChanged("This conversation's members changed since you last saw it."),
   membersAccept('Open with these members'),
   backupPaused('Your encrypted backup is paused: your storage is full.'),
+
+  /// The encrypted backup's state, as Settings → Devices shows it, and a new device's restore (Tasks 32 and 33).
+  backup('Encrypted backup'),
+  backupUpToDate('Up to date'),
+  backupUploading('Backing up…'),
+  backupRestoring('Restoring your messages: {done} of {total}'),
+  backupTooLarge('Your encrypted backup is paused: a day of messages is too large to back up.'),
   deviceAdded('A new device was added to your account: {name}.'),
   deleteDevice('Remove this device and delete its data'),
   tooLong('Message too long'),

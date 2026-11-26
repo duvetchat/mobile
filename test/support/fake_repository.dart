@@ -6,6 +6,7 @@ import 'package:duvet/data/recent_chats.dart' as recent show previewOf;
 import 'package:duvet/data/repository.dart';
 import 'package:duvet/e2e/engine.dart'
     show
+        BackupShown,
         ContactsShown,
         DeviceSetupActions,
         EngineStage,
@@ -1607,6 +1608,10 @@ class FakeRepository implements ChatRepository {
   /// What the encryption engine shows; a test sets it. Starting, as an app with no engine shows nothing of it.
   @override
   final ValueNotifier<EngineState> encryption = ValueNotifier(EngineState.starting);
+
+  /// What the encrypted backup shows; a test sets it. Days going up, as an engine shows before its first pass.
+  @override
+  final ValueNotifier<BackupShown> backup = ValueNotifier(BackupShown.uploading);
 
   /// The person's taps on it, by name, in order.
   final encryptionTaps = <String>[];

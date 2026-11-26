@@ -646,14 +646,21 @@ void main() {
         message['sent_at'] as int,
         isUtc: true,
       ).toIso8601String().substring(0, 10);
+      final sealed = await a.run({'cmd': 'backup_segment', 'conversation_id': conversation, 'day': day});
+      final path = '/api/users/@me/backup/segments/$conversation/$day';
+      final first = await call(fake, a.token, 'PUT', '$path?replaces=none', base64Decode(sealed['data'] as String));
+      expect(first.status, 201);
+      // The same bytes again are that copy, sent again (a lost answer): its ID, whatever replaces says, as the API's.
+      expect(
+        await call(fake, a.token, 'PUT', '$path?replaces=none', base64Decode(sealed['data'] as String)),
+        answers(201, {'id': first.body['id']}),
+      );
+      // Another build of the day, sealed under a nonce of its own, must name the copy there.
       final segment = await a.run({'cmd': 'backup_segment', 'conversation_id': conversation, 'day': day});
       final bytes = base64Decode(segment['data'] as String);
-      final path = '/api/users/@me/backup/segments/$conversation/$day';
-      final first = await call(fake, a.token, 'PUT', '$path?replaces=none', bytes);
-      expect(first.status, 201);
       expect(
         await call(fake, a.token, 'PUT', '$path?replaces=none', bytes),
-        refusedWith(409, {'current': first.body['id']}),
+        refusedWith(409, {'error': 'another segment holds this day', 'current': first.body['id']}),
       );
       final second = await call(fake, a.token, 'PUT', '$path?replaces=${first.body['id']}', bytes);
       expect(second.status, 201);
@@ -695,6 +702,60 @@ void main() {
         )).status,
         400,
       );
+    });
+
+    // As the API's dayOf (Task 33): the re-encryption after a change of keys leans on these refusals.
+    test("a segment under a key that isn't the user's, or retired on or before its day, is refused", () async {
+      final (:fake, :ana, bo: _, :a, b: _, :conversation) = await dmWithGroup();
+      await send(fake, a, conversation, 'before the change of keys');
+      String dayOf(DateTime at) => at.toUtc().toIso8601String().substring(0, 10);
+      final now = DateTime.now();
+      final (today, yesterday) = (dayOf(now), dayOf(now.subtract(const Duration(days: 1))));
+      Future<Json> seal(String day) => a.run({'cmd': 'backup_segment', 'conversation_id': conversation, 'day': day});
+      Future<Reply> put(String day, Uint8List bytes) =>
+          call(fake, a.token, 'PUT', '/api/users/@me/backup/segments/$conversation/$day?replaces=none', bytes);
+      Future<List<String>> listed() async => [
+        for (final s in (await call(fake, a.token, 'GET', '/api/users/@me/backup/segments')).body as List)
+          s['day'] as String,
+      ]..sort();
+      final (old, older) = (await seal(today), await seal(yesterday));
+      expect((await put(today, base64Decode(old['data'] as String))).status, 201);
+
+      // A key_id the user never had, in the clear in the header: the API reads it, and refuses it.
+      final other = base64Decode(old['data'] as String);
+      final name = utf8.encode('key_id');
+      var at = 0;
+      while (!List.generate(name.length, (i) => other[at + i] == name[i]).every((same) => same)) {
+        at++;
+      }
+      // Past its name and the head of its 8 bytes.
+      other[at + name.length + 1] ^= 0xff;
+      expect(await put(today, other), refusedWith(400, {'error': 'unknown backup key'}));
+
+      // A change of keys retires the first one now.
+      final served = (await call(fake, a.token, 'GET', '/api/users/$ana/identity')).body as Json;
+      final r = await a.run({'cmd': 'rotate_keys', 'remove': <String>[], 'certificates': served['certificates']});
+      final rotated = await call(fake, a.token, 'PUT', '/api/users/@me/identity', {
+        for (final field in ['identity_key', 'device_list', 'certificate', 'encrypted_identity', 'wrapped_backup_key'])
+          field: r[field],
+        'wrapped_previous_backup_keys': r['wrapped_previous_backup_keys'],
+        'transfers': <Object?>[],
+        'replaces': served['identity_key'],
+      });
+      expect(rotated.status, 200);
+      await a.run({'cmd': 'identity_uploaded'});
+
+      // From the day it was retired on, the old key seals nothing: its copy of today isn't shown, nor taken again.
+      expect(await listed(), isEmpty);
+      expect(await put(today, base64Decode(old['data'] as String)), refusedWith(400, {'error': 'retired backup key'}));
+      // A day before it, it still seals: the backup went on with the new identity, and that day is shown.
+      expect((await put(yesterday, base64Decode(older['data'] as String))).status, 201);
+      expect(await listed(), [yesterday]);
+      // Under the new key, today goes up in the place of the copy no longer shown, whatever it names.
+      final rebuilt = await seal(today);
+      expect(rebuilt['key_id'], isNot(old['key_id']));
+      expect((await put(today, base64Decode(rebuilt['data'] as String))).status, 201);
+      expect(await listed(), [today, yesterday]..sort());
     });
 
     test('a shared history goes up in parts, for its recipient\'s devices', () async {
