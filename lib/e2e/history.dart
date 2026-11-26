@@ -41,9 +41,10 @@ const shareRanges = ['day', 'week', 'month', 'all'];
 /// quiet.
 const quietBeforeImport = Duration(seconds: 5);
 
-/// A catch-up whose import began this many times without ending (the app closed or was killed meanwhile) isn't
-/// imported by itself again, as a package too big for the phone would end the app each time it starts: it waits as an
-/// offer for the person.
+/// A catch-up whose imports began this many times without bringing it in isn't imported by itself again: it waits as
+/// an offer for the person. Those that never ended count (the app closed or was killed meanwhile, as a package too big
+/// for the phone would end it each time it starts), and so do those that failed, so a package that keeps failing isn't
+/// downloaded every hour for its 30 days.
 const _mostStarts = 3;
 
 /// How long the API keeps a package, and the record its key and the ID of one done with: past it, nothing opens it.
@@ -117,7 +118,7 @@ class HistoryOffer {
 /// device has.
 typedef SharedHistory = ({bool truncated, DateTime start});
 
-/// The member to share with has no device that can receive it: no identity, or no device on their list.
+/// The member to share with has no device that can receive it: no identity, or no device of theirs the API serves.
 class NoDeviceToShareWith implements Exception {
   const NoDeviceToShareWith();
 }
@@ -151,22 +152,18 @@ Future<Map<String, Object?>> makeShare(E2EEngine engine, String conversationId, 
   }
   if (identity.certificates.isEmpty) throw const NoDeviceToShareWith();
   await observeUsers(engine, [user]);
-  try {
-    return await withIdentities(
-      engine,
-      () => engine.host.share({
-        'cmd': 'history_share',
-        'conversation_id': conversationId,
-        'to_user': user,
-        'range': range,
-        'devices': identity.certificates,
-      }),
-    );
-  } on CoreError catch (error) {
-    // None of the devices served is on their list as this device holds it.
-    if (error.rule == 'device_not_listed' || error.field == 'devices') throw const NoDeviceToShareWith();
-    rethrow;
-  }
+  // A served device that isn't on their list (the core's device_not_listed) is the server's doing, as a member with
+  // devices is served only theirs: the core's refusal, not a member with no device.
+  return withIdentities(
+    engine,
+    () => engine.host.share({
+      'cmd': 'history_share',
+      'conversation_id': conversationId,
+      'to_user': user,
+      'range': range,
+      'devices': identity.certificates,
+    }),
+  );
 }
 
 /// A package going up, a share or a catch-up: how far it went, so a try that failed goes on from there.
@@ -254,9 +251,13 @@ Future<void> uploadPackage(E2EEngine engine, PackageUpload upload, {void Functio
 }
 
 /// A package's key as the record keeps it ([historyKeys]): its kind (share or catch_up), conversation and sharer, as
-/// the core read them; when it came; how many imports of it began and never ended; whether its import is done, or the
-/// person dismissed it, its acknowledgement still to go.
-typedef _Key = ({String kind, String conversationId, String userId, int at, int starts, bool imported, bool dismissed});
+/// the core read them; when it came; how many imports of it began and never ended, and how many failed; and what only
+/// its acknowledgement is owed for, once it came in (`imported`), the person dismissed it, or it can't come in here
+/// (`refused`).
+typedef _Key = ({String kind, String conversationId, String userId, int at, int starts, int failures, String? owed});
+
+/// What a package may be owed for: its acknowledgement alone is left.
+const _owed = ['imported', 'dismissed', 'refused'];
 
 /// What the record holds: the keys by package, and the packages done with, by ID, with when.
 typedef _Kept = ({Map<String, _Key> keys, Map<String, int> done});
@@ -427,8 +428,11 @@ class Histories {
                 final int starts => starts,
                 _ => 0,
               },
-              imported: one['imported'] == true,
-              dismissed: one['dismissed'] == true,
+              failures: switch (one['failures']) {
+                final int failures => failures,
+                _ => 0,
+              },
+              owed: _owed.contains(one['owed']) ? one['owed']! as String : null,
             );
         }
       }
@@ -446,8 +450,8 @@ class Histories {
         'user_id': key.userId,
         'at': key.at,
         if (key.starts > 0) 'starts': key.starts,
-        if (key.imported) 'imported': true,
-        if (key.dismissed) 'dismissed': true,
+        if (key.failures > 0) 'failures': key.failures,
+        'owed': ?key.owed,
       },
     for (final MapEntry(key: id, value: at) in _done.entries) {'share_id': id, 'done': at},
   ]);
@@ -492,8 +496,8 @@ class Histories {
       userId: received['user_id']! as String,
       at: had?.at ?? time.clock.now().millisecondsSinceEpoch,
       starts: had?.starts ?? 0,
-      imported: had?.imported ?? false,
-      dismissed: had?.dismissed ?? false,
+      failures: had?.failures ?? 0,
+      owed: had?.owed,
     );
     _pruned();
     await _write();
@@ -550,7 +554,7 @@ class Histories {
   Future<void> dismiss(String shareId) async {
     final key = _keys[shareId];
     if (key == null || !_offered(key)) return;
-    _keys[shareId] = _with(key, dismissed: true);
+    _keys[shareId] = _with(key, owed: 'dismissed');
     _shown();
     await _write().catchError((Object error) => debugPrint('e2e: the history keys: $error'));
   }
@@ -618,10 +622,10 @@ class Histories {
     _ => null,
   };
 
-  /// Whether a key's package is offered to the person: a share, or a catch-up whose imports never ended, until it's
-  /// added or dismissed.
+  /// Whether a key's package is offered to the person: a share, or a catch-up whose imports kept not bringing it in,
+  /// until it's added or dismissed.
   static bool _offered(_Key key) =>
-      !key.imported && !key.dismissed && (key.kind == 'share' || key.starts >= _mostStarts);
+      key.owed == null && (key.kind == 'share' || key.starts + key.failures >= _mostStarts);
 
   /// The offers as the packages and keys known now make them, and what's due next arranged.
   void _shown() {
@@ -657,15 +661,15 @@ class Histories {
     });
   }
 
-  /// The package due next by itself, oldest first: one imported or dismissed whose acknowledgement didn't go, or a
-  /// catch-up whose imports haven't kept ending. None that waits after a failure, and no offer, which waits for the
+  /// The package due next by itself, oldest first: one whose acknowledgement alone is owed and didn't go, or a catch-up
+  /// whose imports haven't kept not bringing it in. None that waits after a failure, and no offer, which waits for the
   /// person.
   duvet.HistoryShare? _next() {
     final due = [
       for (final MapEntry(key: id, value: key) in _keys.entries)
         if (_agreed(id, key) case final share?
             when !_waiting.containsKey(id) &&
-                (key.imported || key.dismissed || (key.kind == 'catch_up' && key.starts < _mostStarts)))
+                (key.owed != null || (key.kind == 'catch_up' && key.starts + key.failures < _mostStarts)))
           share,
     ]..sort((a, b) => a.id.compareTo(b.id));
     return due.firstOrNull;
@@ -677,66 +681,109 @@ class Histories {
     return run;
   }
 
-  /// One package imported: its parts downloaded outside the engine's turn, history_import in it, then acknowledged and
-  /// done with. A key the core no longer has was used by an import whose end wasn't recorded: done with too. An import
-  /// counts as begun in the record right before history_import, and no more once it ended (M1 of task 31's review).
+  /// One package taken in: imported, or refused for good here, after which what's owed of it is the API's
+  /// acknowledgement alone, tried until it lands ([_acknowledge]). A failure that may pass waits ([_later]), and the
+  /// person who asked for the import hears of it; a package of a conversation the user left goes, unacknowledged.
   Future<void> _import(duvet.HistoryShare share, {required bool person}) async {
     final id = share.id;
     final kept = _keys[id];
     if (_stopped || kept == null || !_packages.containsKey(id)) return;
     _inFlight = true;
     try {
-      if (!kept.imported && !kept.dismissed) {
-        // Nothing downloads for an import this device can't make now.
-        if (_engine.state.value.stage != EngineStage.ready) throw StateError("encrypted conversations aren't ready");
-        final parts = [for (var n = 0; n < share.parts; n++) await _part(id, n)];
+      Object? refused;
+      if (kept.owed == null) {
         try {
-          await _act(() async {
-            await _sync(kept.conversationId).catchError(
-              (Object error) => debugPrint("e2e: a conversation's queue waits while a history comes in: $error"),
-            );
-            final now = _keys[id];
-            if (now == null) return;
-            _keys[id] = _with(now, starts: now.starts + 1);
-            await _write();
-            await _engine.host.importShare(id, parts);
-          });
-        } on CoreError catch (error) {
-          if (error.code != 'not_found' || error.what != 'share') rethrow;
+          await _bringIn(share, kept);
+        } catch (error) {
+          if (!_forGood(error)) {
+            if (await _userLeft(kept.conversationId)) {
+              // Its conversation is no longer the user's: it goes unacknowledged, as their other devices may still
+              // want it.
+              debugPrint('e2e: a shared history of a conversation the user left goes');
+              await _forget(id);
+            } else {
+              debugPrint("e2e: a shared history wasn't imported, and goes again: ${_why(error)}");
+              _later(id, error);
+              // A catch-up whose tries ran out is offered from now on.
+              _shown();
+            }
+            if (person) rethrow;
+            return;
+          }
+          debugPrint("e2e: a shared history can't be imported here, and goes: ${_why(error)}");
+          refused = error;
         }
-        if (_stopped || !_keys.containsKey(id)) return;
-        _keys[id] = _with(kept, imported: true);
+        final now = _keys[id];
+        if (_stopped || now == null) return;
+        _keys[id] = _with(now, starts: kept.starts, owed: refused == null ? 'imported' : 'refused');
         await _write().catchError((Object error) => debugPrint('e2e: the history keys: $error'));
-        _imported(kept.conversationId);
+        if (refused == null) _imported(kept.conversationId);
         _shown();
       }
-      await _engine.api.ackShare(id);
-      await _forget(id);
-      // The API's page was whole: the next ones come in as this one's place frees.
-      if (_full) _askList();
-    } catch (error) {
-      if (_keys[id] case final now? when now.starts != kept.starts) {
-        _keys[id] = _with(now, starts: kept.starts);
-        await _write().catchError((Object error) => debugPrint('e2e: the history keys: $error'));
-      }
-      if (_forGood(error)) {
-        debugPrint("e2e: a shared history can't be imported here, and goes: ${_why(error)}");
-        await _letGo(id);
-        if (_full) _askList();
-      } else if (await _userLeft(kept.conversationId)) {
-        // Its conversation is no longer the user's: it goes unacknowledged, as their other devices may still want it.
-        debugPrint('e2e: a shared history of a conversation the user left goes');
-        await _forget(id);
-      } else {
-        debugPrint("e2e: a shared history wasn't imported, and goes again: ${_why(error)}");
-        _later(id, error);
-      }
-      if (person) rethrow;
+      await _acknowledge(id);
+      if (person && refused != null) throw refused;
     } finally {
       _inFlight = false;
       _arrange();
     }
   }
+
+  /// Its parts down, outside the engine's turn, then history_import in it, counted as begun in the record right
+  /// before: an import that never ends (the app killed meanwhile) stays counted. One that ended is no longer, and one
+  /// that failed counts as a failure beside them (M1 of the review; the twins' cap on tries). A key the core no longer
+  /// has was used by an import whose end wasn't recorded: it came in.
+  Future<void> _bringIn(duvet.HistoryShare share, _Key kept) async {
+    final id = share.id;
+    var begun = false;
+    try {
+      // Nothing downloads for an import this device can't make now.
+      if (_engine.state.value.stage != EngineStage.ready) throw StateError("encrypted conversations aren't ready");
+      final parts = [for (var n = 0; n < share.parts; n++) await _part(id, n)];
+      await _act(() async {
+        await _sync(kept.conversationId).catchError(
+          (Object error) => debugPrint("e2e: a conversation's queue waits while a history comes in: $error"),
+        );
+        final now = _keys[id];
+        if (now == null) return;
+        _keys[id] = _with(now, starts: now.starts + 1);
+        await _write();
+        begun = true;
+        await _engine.host.importShare(id, parts);
+      });
+    } catch (error) {
+      if (error is CoreError && error.code == 'not_found' && error.what == 'share') return;
+      if (_keys[id] case final now? when now.starts != kept.starts) {
+        _keys[id] = _with(now, starts: kept.starts, failures: now.failures + (begun ? 1 : 0));
+        await _write().catchError((Object error) => debugPrint('e2e: the history keys: $error'));
+      }
+      rethrow;
+    }
+  }
+
+  /// The API told this device is done with the package, then done with here. One a later try may get past goes again
+  /// after its wait; one the API refuses otherwise (a 404 for a package it no longer has among them) is done with all
+  /// the same.
+  Future<void> _acknowledge(String id) async {
+    try {
+      await _engine.api.ackShare(id);
+    } catch (error) {
+      if (_passes(error)) {
+        debugPrint("e2e: a shared history's acknowledgement goes again: ${_why(error)}");
+        _later(id, error);
+        return;
+      }
+      debugPrint("e2e: a shared history's acknowledgement was refused: ${_why(error)}");
+    }
+    await _forget(id);
+    // The API's page was whole: the next ones come in as this one's place frees.
+    if (_full) _askList();
+  }
+
+  /// Whether a later try may get past [error]: no answer, a session's renewal, a slow answer, a limit or the server.
+  static bool _passes(Object error) => switch (error) {
+    duvet.DuvetApiException(:final statusCode) => const {401, 408, 429}.contains(statusCode) || statusCode >= 500,
+    _ => true,
+  };
 
   /// Part [n] of package [id], cut off once it passes what a part holds.
   Future<Uint8List> _part(String id, int n) async {
@@ -765,14 +812,14 @@ class Histories {
     return left;
   }
 
-  static _Key _with(_Key key, {int? starts, bool? imported, bool? dismissed}) => (
+  static _Key _with(_Key key, {int? starts, int? failures, String? owed}) => (
     kind: key.kind,
     conversationId: key.conversationId,
     userId: key.userId,
     at: key.at,
     starts: starts ?? key.starts,
-    imported: imported ?? key.imported,
-    dismissed: dismissed ?? key.dismissed,
+    failures: failures ?? key.failures,
+    owed: owed ?? key.owed,
   );
 
   /// What can never import: a package that doesn't open, isn't what its key says, is past what a package or a part
@@ -798,16 +845,6 @@ class Histories {
     duvet.DuvetApiException(:final statusCode) => '$statusCode',
     _ => '${error.runtimeType}',
   };
-
-  /// A package that can never import here: acknowledged all the same (its key opens nothing here), and done with.
-  Future<void> _letGo(String id) async {
-    try {
-      await _engine.api.ackShare(id);
-    } catch (error) {
-      debugPrint("e2e: a shared history that can't be imported wasn't acknowledged: ${_why(error)}");
-    }
-    await _forget(id);
-  }
 
   /// Done with: its key and package go, and its ID is kept for 30 days, so a key of it that comes again goes.
   Future<void> _forget(String id) async {

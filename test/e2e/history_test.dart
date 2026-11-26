@@ -749,6 +749,130 @@ void main() {
     timeout: _slow,
   );
 
+  // The twins' cap on tries (round 3): a catch-up whose import failed three times stops coming in by itself, and waits
+  // unacknowledged as an offer the person can add, as one whose import never ended three times does. A package that
+  // keeps failing isn't downloaded every hour for its 30 days (the desktop review's M2).
+  test(
+    'an_import_that_failed_three_times_waits_for_the_person',
+    () async {
+      final (:fake, :dee, :a, :dm, :sent) = await _deviceless();
+      final asked = <String>[];
+      var slips = 3;
+      final d = await firstDevice(
+        fake,
+        dee,
+        host: WatchedHost(
+          TestHost().gate,
+          asked,
+          fail: (command) => command['cmd'] == 'history_import' && slips-- > 0 ? CoreError('internal') : null,
+        ),
+      );
+      int imports() => asked.where((cmd) => cmd == 'history_import').length;
+      await until(() {
+        d.clock.advance(const Duration(seconds: 30));
+        return imports() == 3;
+      }, what: 'three imports tried');
+      final [offer] = await _offered(d, dm);
+      for (var waited = Duration.zero; waited < const Duration(hours: 2); waited += const Duration(minutes: 5)) {
+        d.clock.advance(const Duration(minutes: 5));
+        await turnEnded(d);
+      }
+      expect(imports(), 3);
+      expect(await d.api.shares(), hasLength(1));
+      // The person's yes brings it in.
+      await d.engine.takeHistoryOffer(offer.shareId);
+      expect(await _holds(d, dm, sent.id), isTrue);
+      expect(await d.api.shares(), isEmpty);
+      await a.engine.stop();
+      await d.engine.stop();
+    },
+    skip: noCore,
+    timeout: _slow,
+  );
+
+  // The twins' M6 (round 3): the member's served identity had devices, and the core refuses one that isn't on their
+  // list, which is the server's doing: said as a refusal, not as a member with no device to receive it.
+  test(
+    "a_device_off_the_member's_list_is_a_refusal,_not_a_member_without_one",
+    () async {
+      final fake = FakeApi();
+      final (ana, bo) = (fake.addUser(), fake.addUser());
+      final conversation = fake.addConversation(group: false, members: [bo, ana], owner: bo);
+      final app = await appOn(fake, ana, host: _Unlisted.new);
+      await app.ready();
+      final b = await firstDevice(fake, bo);
+      app.repository.chatShown(ConversationTarget(conversation));
+      await until(() async => await groupOf(b, conversation) != null);
+      await expectLater(
+        app.repository.shareHistory(conversation, bo, 'week'),
+        throwsA(isA<ActionFailed>().having((e) => e.message, 'message', Notice.shareHistoryFailed.text)),
+      );
+      await b.engine.stop();
+    },
+    skip: noCore,
+    timeout: _slow,
+  );
+
+  // The twins' acknowledgements (round 3): a package that can never come in here (the core refuses it, or a part is
+  // past its size) is acknowledged as one that came in is, tried again until it lands, so it doesn't hold a place of
+  // the API's page for its 30 days.
+  test(
+    "a_package_that_can't_come_in_is_acknowledged_until_it_lands",
+    () async {
+      final (:fake, :dee, :a, :dm, :sent) = await _deviceless();
+      fake.refuse((method: 'POST', path: RegExp(r'/api/history-shares/[0-9a-f-]+/ack$')), 500);
+      final asked = <String>[];
+      final d = await firstDevice(
+        fake,
+        dee,
+        host: WatchedHost(
+          TestHost().gate,
+          asked,
+          fail: (command) => command['cmd'] == 'history_import' ? CoreError('decrypt_failed') : null,
+        ),
+      );
+      await until(() {
+        d.clock.advance(quietBeforeImport);
+        return asked.contains('history_import');
+      }, what: 'the import refused');
+      // Its acknowledgement refused once, it goes again after its wait, and lands.
+      await until(() async {
+        d.clock.advance(const Duration(seconds: 20));
+        return (await d.api.shares()).isEmpty;
+      }, what: 'its acknowledgement landed');
+      expect(asked.where((cmd) => cmd == 'history_import'), hasLength(1));
+      expect(await _holds(d, dm, sent.id), isFalse);
+      await a.engine.stop();
+      await d.engine.stop();
+    },
+    skip: noCore,
+    timeout: _slow,
+  );
+
+  // Round 3: the person's yes brought the messages in, so its acknowledgement failing then is no failure of theirs: it
+  // goes again by itself, as an imported package's does.
+  test(
+    "a_yes_that_brought_the_messages_in_is_no_failure_when_only_its_acknowledgement_didn't_go",
+    () async {
+      final (:fake, ana: _, :bo, :a, :b, :c, :group, :early, seen: _, bSeen: _) = await _crew();
+      await a.engine.shareHistory(group, bo, 'week');
+      final [offer] = await _offered(b, group);
+      fake.refuse((method: 'POST', path: RegExp(r'/api/history-shares/[0-9a-f-]+/ack$')), 500);
+      await b.engine.takeHistoryOffer(offer.shareId);
+      expect(await _rows(b, group, [for (final m in early) m.id]), hasLength(2));
+      expect(b.engine.historyOffers.value[group] ?? const [], isEmpty);
+      await until(() async {
+        b.clock.advance(const Duration(seconds: 20));
+        return (await b.api.shares()).isEmpty;
+      }, what: 'its acknowledgement landed');
+      for (final d in [a, b, c]) {
+        await d.engine.stop();
+      }
+    },
+    skip: noCore,
+    timeout: _slow,
+  );
+
   // The twins' rule 1: an offer left holds a place of the API's page; three show in a chat at once, the newest first,
   // and a Dismiss tells the API this device is done with one, which lets the next show.
   test(
@@ -838,6 +962,8 @@ void main() {
         return asked.contains('history_import');
       }, what: 'the first import');
       await until(() => key() != null && !key()!.containsKey('starts'), what: 'its start no longer counted');
+      // A failed try, beside them (the twins' cap on tries).
+      expect(key()!['failures'], 1);
       expect(await _holds(d, dm, sent.id), isFalse);
       // Its minute over, it comes in.
       await until(() async {
@@ -867,8 +993,7 @@ void main() {
       // The app ended before the record said the import was done.
       await d.engine.stop();
       await d.store.write(historyKeys, [
-        for (final one in (d.store.read(historyKeys)! as List).cast<Map<String, Object?>>())
-          {...one}..remove('imported'),
+        for (final one in (d.store.read(historyKeys)! as List).cast<Map<String, Object?>>()) {...one}..remove('owed'),
       ]);
       d = await restarted(fake, d);
       await until(() async {
@@ -1076,6 +1201,16 @@ void main() {
       expect(find.text('Pin'), findsNothing);
     });
   });
+}
+
+/// A core that refuses a share as one of the devices it's handed isn't on the member's list, as it does for a device
+/// the server serves beside theirs.
+class _Unlisted extends WatchedHost {
+  _Unlisted(CoreHost host) : super(host, []);
+
+  @override
+  Future<Map<String, Object?>> share(Map<String, Object?> command) async =>
+      throw CoreError('rule_violation', message: "a device isn't on its user's list", rule: 'device_not_listed');
 }
 
 /// A core whose packages didn't all fit: its newest, from [start] on, as history_share says of one past 64 MiB.
