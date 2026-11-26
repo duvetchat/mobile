@@ -4239,7 +4239,7 @@ class DuvetRepository implements ChatRepository {
   /// the API makes it alone. One past 20 members, its owner among them, is refused before anything is asked.
   @override
   Future<ConversationSummary> createGroup(String name, List<String> userIds) async {
-    if ({...userIds, ?profile.value?.id}.length > maxGroupMembers) throw ActionFailed(_tooMany);
+    if ({...userIds, ?profile.value?.id}.length > maxGroupMembers) throw ActionFailed(Notice.groupFull.text);
     final engine = _engine;
     final group = engine == null
         ? await _attempt((api) => api.createGroup(name, userIds))
@@ -4268,17 +4268,25 @@ class DuvetRepository implements ChatRepository {
     await refreshConversations();
   }
 
+  /// Leaving, by the engine; without one, a conversation that has no group yet is left over REST, as it needs no
+  /// statement (the desktop's way).
   @override
   Future<void> leaveConversation(String conversationId) async {
+    if (_engine == null) {
+      final listed = (await _call((api) => api.getConversations())).where((c) => c.id == conversationId).firstOrNull;
+      // A group with no group yet takes no statement, as the desktop leaves one; a DM can't be left.
+      if (listed != null && listed.mls == null && listed.type == duvet.ConversationType.group) {
+        await _attempt((api) => api.leaveConversation(conversationId));
+        return refreshConversations();
+      }
+    }
     await _changeMembers(conversationId, () => _engine!.leaveConversation(conversationId));
     await refreshConversations();
   }
 
-  static const _tooMany = 'A group can have $maxGroupMembers members at most';
-  static const _unanswered = 'Duvet didn’t answer. The change goes through once it can.';
-
   /// What the engine does to a conversation's members ([change]), refused in the app's words: the API's reason, the
-  /// cap, a change still on its way (its bytes go again on their own), or why the conversation takes none now.
+  /// cap, a change still on its way (its bytes go again on their own), the engine's and the core's own refusals, or
+  /// why the conversation takes none now.
   Future<T> _changeMembers<T>(String? conversationId, Future<T> Function() change) async {
     if (_engine == null) throw ActionFailed(Notice.notReady.text);
     try {
@@ -4287,9 +4295,20 @@ class DuvetRepository implements ChatRepository {
       if (_refusal(e) case final reason?) throw ActionFailed(reason);
       rethrow;
     } on CoreError catch (error) {
-      if (error.code == 'too_many_members') throw ActionFailed(_tooMany);
-      if (error.code == 'unanswered') throw const ActionFailed(_unanswered);
-      rethrow;
+      throw ActionFailed(switch (error) {
+        CoreError(code: 'too_many_members') => Notice.groupFull.text,
+        CoreError(code: 'unanswered' || 'pending_commit') => Notice.changeUnanswered.text,
+        CoreError(code: 'rule_violation') => Notice.restartRefused.text,
+        CoreError(code: 'not_in_group') || CoreError(code: 'not_found', what: 'group') =>
+          "This device isn't in this conversation's group yet. Leave it from another of your devices.",
+        CoreError(code: 'not_found', what: 'conversation') => 'You aren’t in this conversation any more.',
+        CoreError(code: 'not_found', what: 'member') => 'They aren’t in this group any more.',
+        CoreError(code: 'exists') ||
+        CoreError(code: 'bad_command', field: 'user_id') => 'They’re in this group already.',
+        CoreError(code: 'bad_command', field: 'conversation_id') => 'A direct message’s members don’t change.',
+        CoreError(code: 'bad_command') => 'Only the group’s owner changes its members.',
+        _ => Notice.notReady.text,
+      });
     } on StateError {
       throw ActionFailed(conversationId == null ? Notice.notReady.text : _cannotSendIn(conversationId));
     }

@@ -603,6 +603,17 @@ class FakeApi {
   final _friends = <String>{};
   final _inactive = <String>{};
 
+  /// Users from whom the API keeps leave statements ([hideStatements]).
+  final _hidden = <String>{};
+
+  /// The API keeps leave statements from the user from now on: the proposals they hear and read come without them, as
+  /// a server that would have their devices miss someone's leaving.
+  void hideStatements(String user) => _hidden.add(user);
+
+  /// An entry as [user] gets it: without its statement when the API keeps those from them.
+  Map<String, Object?> _shownTo(String user, Map<String, Object?> entry) =>
+      _hidden.contains(user) && entry.containsKey('statement') ? ({...entry}..remove('statement')) : entry;
+
   /// The cutover's instant, as GET /api/e2e gives it.
   String? cutoverAt;
 
@@ -1129,7 +1140,7 @@ class FakeApi {
         return _ok({'generation': group.generation, 'epoch': group.epoch, 'group_info': group.groupInfo});
       }),
       route('POST', '$conv/mls/commits', _Needs.listed, (ctx) => _ok(_commit(_memberOf(ctx), ctx, 'commits'), 201)),
-      route('GET', '$conv/mls/queue', _Needs.device, (ctx) => _queue(_memberOf(ctx), ctx.query)),
+      route('GET', '$conv/mls/queue', _Needs.device, (ctx) => _queue(_memberOf(ctx), ctx.query, ctx.me.user)),
       route('POST', '$conv/members', _Needs.listed, _addMember),
       route('DELETE', '$conv/members/@me', _Needs.listed, _leave),
       route('DELETE', '$conv/members/(?<user>$_uuidPath)', _Needs.listed, _removeMember),
@@ -1192,6 +1203,13 @@ class FakeApi {
         if (n >= share.parts) throw _fail(400, 'the share has ${share.parts} parts');
         if (ctx.bytes.length > _limit('history_share_part_bytes')) {
           throw _fail(413, 'a part is 1 MiB and its tag at most');
+        }
+        // The same bytes again change nothing, as the API's (a part sent again); other bytes are a 409.
+        if (share.uploaded[n] case final up?) {
+          if (sha256.convert(_files[up]!) != sha256.convert(ctx.bytes)) {
+            throw _fail(409, 'the part is up with other bytes');
+          }
+          return _noContent;
         }
         share.uploaded[n] = _keepFile(ctx.bytes);
         return _noContent;
@@ -1738,7 +1756,7 @@ class FakeApi {
     };
   }
 
-  _Answer _queue(_Conversation conv, Map<String, String> query) {
+  _Answer _queue(_Conversation conv, Map<String, String> query, String viewer) {
     // As the API binds them (its MlsQueueQuery): a number from 0, and 1 to 500 of them.
     final after = query.containsKey('after') ? int.tryParse(query['after']!) : 0;
     final limit = query.containsKey('limit') ? int.tryParse(query['limit']!) : 200;
@@ -1757,7 +1775,7 @@ class FakeApi {
     for (final entry in all.where((e) => (e['seq']! as int) > after)) {
       size += (entry['data']! as String).length;
       if (entries.length == limit || (entries.isNotEmpty && size > 4 << 20)) break;
-      entries.add(entry);
+      entries.add(_shownTo(viewer, entry));
     }
     return _ok({
       'entries': entries,
@@ -1944,11 +1962,12 @@ class FakeApi {
           'statement': statement,
         });
         for (final member in conv.members) {
-          _emit(member['user_id']! as String, 'MLS_PROPOSAL', {
+          final user = member['user_id']! as String;
+          _emit(user, 'MLS_PROPOSAL', {
             'conversation_id': conv.id,
             'generation': group.generation,
             'epoch': group.epoch,
-            'entry': _forEvent(entry),
+            'entry': _forEvent(_shownTo(user, entry)),
           });
         }
       }
@@ -2018,9 +2037,9 @@ class FakeApi {
   }
 
   /// Leaving: the user's statement, signed by the session's device, which has a leaf in the group, of this
-  /// conversation's generation and an epoch it has reached; without a group, none. A DM has no leaving. The owner passes
-  /// to the member who came first, and each leaf of the user's has its removal proposed, with the statement. Sent again
-  /// once it went, it's refused as the user's who isn't a member (403), as the API's is.
+  /// conversation's generation and an epoch it has reached; without a group, none. A DM has no leaving. The owner
+  /// passes to the member who came first, and each leaf of the user's has its removal proposed, with the statement.
+  /// Sent again once it went, it's refused as the user's who isn't a member (403), as the API's is.
   _Answer _leave(_Context ctx) {
     final conv = _memberOf(ctx);
     final (session, device) = (ctx.me, ctx.device!);
@@ -2059,8 +2078,8 @@ class FakeApi {
   }
 
   /// A new conversation, as the API's CreateConversation makes it: a DM with another user (the one they have, if they
-  /// have one: 201 with its group), or a group of the session's user, its owner, and those it names, 20 at most with the
-  /// owner; its members hear CONVERSATION_CREATE of a new one. It has no group yet.
+  /// have one: 201 with its group), or a group of the session's user, its owner, and those it names, 20 at most with
+  /// the owner; its members hear CONVERSATION_CREATE of a new one. It has no group yet.
   _Answer _createConversation(_Context ctx) {
     // shortcut: no friendship is asked: tests befriend users only for what claims and identities need.
     List<String> users(List<String> ids) {
@@ -2350,7 +2369,6 @@ class FakeApi {
     if (kind != 'share' && kind != 'catch_up') throw _fail(400, "a share's kind is share or catch_up");
     final parts = _numberIn(ctx['parts'], 'parts');
     if (parts < 1 || parts > _limit('history_share_parts')) throw _fail(400, 'a share has 1 to 64 parts');
-    if (_shares.containsKey(ctx.params['share'])) throw _fail(409, 'share id in use');
     final share = _Share(
       ctx.params['share']!,
       conv.id,
@@ -2363,6 +2381,20 @@ class FakeApi {
       _numberIn(ctx['size'], 'size'),
       parts,
     );
+    // The same package sent again is that package, as the API's (its sameAs); another under its ID is a 409.
+    if (_shares[share.id] case final there?) {
+      final same =
+          there.conversationId == share.conversationId &&
+          there.fromUser == share.fromUser &&
+          there.toUser == share.toUser &&
+          there.kind == share.kind &&
+          there.range == share.range &&
+          there.startsAt.isAtSameMomentAs(share.startsAt) &&
+          there.size == share.size &&
+          there.parts == share.parts;
+      if (!same) throw _fail(409, 'share id in use');
+      return _ok(_shareView(there), 201);
+    }
     _shares[share.id] = share;
     return _ok(_shareView(share), 201);
   }

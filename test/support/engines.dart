@@ -685,3 +685,35 @@ List<String> requestsOf(List<http.Request> seen) => [
 
 /// A recovery key as the core makes one (decision 22): 48 base58 characters.
 final recoveryKeyShape = matches(RegExp(r'^[1-9A-HJ-NP-Za-km-z]{48}$'));
+
+/// The group blocked on every device: a commit no device can process gets in, as a server that takes anything would
+/// let it: Ana's leaf renewal, one byte of its signature changed, sent under Bo's session. Ana's own renewal never
+/// went. Her device again after its app restarted, with the two others.
+Future<List<TestDevice>> blockedByHand(FakeApi fake, String conversation, List<TestDevice> devices) async {
+  var [a, b, c] = devices;
+  final before = (await groupOf(a, conversation))!;
+  await stoppedByHand(a);
+  final made = await byHand(a, {'cmd': 'refresh', 'conversation_id': conversation});
+  final bytes = base64Decode(made['commit']! as String);
+  bytes[bytes.length - 1] ^= 0xff;
+  await b.api.commit(
+    conversation,
+    duvet.Commit(
+      generation: before.generation,
+      epoch: before.epoch,
+      commit: base64Encode(bytes),
+      groupInfo: made['group_info']! as String,
+    ),
+  );
+  await a.host.handle<Object?>({
+    'cmd': 'commit_result',
+    'conversation_id': conversation,
+    'accepted': false,
+    'invalid': true,
+  });
+  a = await restarted(fake, a);
+  await until(
+    () => [a, b, c].every((d) => d.engine.conversationState(conversation)?.name == ConversationNotice.blocked),
+  );
+  return [a, b, c];
+}

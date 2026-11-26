@@ -1,4 +1,6 @@
 import 'package:duvet/data/appearance.dart';
+import 'package:duvet/data/models.dart';
+import 'package:duvet/e2e/host.dart' show CoreError;
 import 'package:duvet/e2e/notices.dart';
 import 'package:duvet/e2e/sync.dart';
 import 'package:duvet/encryption/conversation_state.dart';
@@ -24,10 +26,11 @@ Widget _app(Widget child) => MaterialApp(
 void main() {
   final taps = <String>[];
 
-  Widget bar(ConversationState? state) => _app(
+  Widget bar(ConversationState? state, {List<String> members = const []}) => _app(
     ConversationStateBar(
       state: state,
       nameOf: (user) => const {'ana': 'Ana', 'bo': 'Bo'}[user] ?? 'Someone',
+      members: members,
       onRestart: () async => taps.add('restart'),
       onAccept: () async => taps.add('accept'),
     ),
@@ -67,12 +70,21 @@ void main() {
     expect(find.text(Notice.waitRejoin.text), findsOneWidget);
   });
 
-  testWidgets("members_that_changed_since_the_device_last_saw_them,_and_the_person's_yes", (tester) async {
-    await tester.pumpWidget(bar(ConversationState.membersChanged));
-    expect(find.text(Notice.membersChanged.text), findsOneWidget);
+  // I1 of the review: the members a yes goes in with are named, as the API lists them now (the desktop's members_now).
+  testWidgets("members_that_changed_since_the_device_last_saw_them,_whom_they_are_now,_and_the_person's_yes", (
+    tester,
+  ) async {
+    await tester.pumpWidget(bar(ConversationState.membersChanged, members: ['Ana', 'Bo', 'Cy']));
+    expect(
+      find.text('${Notice.membersChanged.text}\n${Notice.membersNow.fill({'names': 'Ana, Bo and Cy'})}'),
+      findsOneWidget,
+    );
     await tester.tap(find.text(Notice.membersAccept.text));
     await tester.pumpAndSettle();
     expect(taps, ['accept']);
+    // Before the members load, the notice alone.
+    await tester.pumpWidget(bar(ConversationState.membersChanged));
+    expect(find.text(Notice.membersChanged.text), findsOneWidget);
   });
 
   testWidgets('members_without_a_device_are_named_before_anything_is_sent', (tester) async {
@@ -145,5 +157,63 @@ void main() {
       'restartGroup c-maya',
       'restartGroup c-maya [${FakeRepository.leo}]',
     ]);
+  });
+
+  // I2 of the review: whom a restart leaves out the app may not know by name (gone from the conversation before it
+  // loaded them): their profile names them, else their ID, never «Someone».
+  testWidgets('a_restart_names_whom_it_leaves_out_by_their_profile,_else_their_ID', (tester) async {
+    tester.view.physicalSize = const Size(390 * 3, 844 * 3);
+    tester.view.devicePixelRatio = 3;
+    addTearDown(tester.view.reset);
+    const gone = '0a0a0a0a-0000-4000-8000-0000000000aa';
+    const lost = '0a0a0a0a-0000-4000-8000-0000000000bb';
+    final repository = FakeRepository()
+      ..restartLeavesOut = [gone, lost]
+      ..users = {gone: const Member(userId: gone, username: 'ines', alias: 'Inés')};
+    final appearance = Appearance(MemoryAppearanceStore());
+    await appearance.load();
+    addTearDown(appearance.dispose);
+    await tester.pumpWidget(DuvetApp(repository: repository, appearance: appearance));
+    await tester.pumpAndSettle();
+    repository.conversationStates.value = {
+      'c-maya': ConversationState.blocked(restart: Restart.mine, owner: FakeRepository.maya),
+    };
+    await tester.tap(find.text('Maya'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text(Notice.blockedOwner.text));
+    await tester.pumpAndSettle();
+    expect(find.text(Notice.restartLeavesOut.fill({'names': 'Inés and $lost'})), findsOneWidget);
+    expect(find.textContaining('Someone'), findsNothing);
+    await tester.tap(find.text('Cancel'));
+    await tester.pumpAndSettle();
+  });
+
+  // M1 of the review: a restart the core or the API refuses says so in the notices' words, and nothing goes again.
+  testWidgets('a_refused_restart_says_so', (tester) async {
+    tester.view.physicalSize = const Size(390 * 3, 844 * 3);
+    tester.view.devicePixelRatio = 3;
+    addTearDown(tester.view.reset);
+    final repository = FakeRepository()
+      ..restartRefusal = CoreError(
+        'rule_violation',
+        message: 'the change breaks the rule member_list_mismatch',
+        rule: 'member_list_mismatch',
+      );
+    final appearance = Appearance(MemoryAppearanceStore());
+    await appearance.load();
+    addTearDown(appearance.dispose);
+    await tester.pumpWidget(DuvetApp(repository: repository, appearance: appearance));
+    await tester.pumpAndSettle();
+    repository.conversationStates.value = {
+      'c-maya': ConversationState.blocked(restart: Restart.mine, owner: FakeRepository.maya),
+    };
+    await tester.tap(find.text('Maya'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text(Notice.blockedOwner.text));
+    await tester.pump();
+    expect(find.text(Notice.restartRefused.text), findsOneWidget);
+    expect(repository.encryptionTaps, ['restartGroup c-maya']);
+    await tester.pump(const Duration(seconds: 4));
+    await tester.pumpAndSettle();
   });
 }

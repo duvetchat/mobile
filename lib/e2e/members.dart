@@ -1,9 +1,9 @@
-/// Who is in a conversation (PLAN-E2E-CLIENTES.md, «Qué se manda», its members' rows; decisions 16 and 17): the owner of
-/// a group adds and removes one user a request, each a commit of exactly that user, and a member leaves with a statement
-/// their device signs, whose removal a member's commit makes once the API proposes it. A group has 20 members at most,
-/// its owner among them: the cap holds before anything is asked. And who a blocked group's restart leaves out, which its
-/// person confirms first; and whether the members of a newer generation are the ones this device holds. The desktop's
-/// members.ts in Dart.
+/// Who is in a conversation (PLAN-E2E-CLIENTES.md, «Qué se manda», its members' rows; decisions 16 and 17): the owner
+/// of a group adds and removes one user a request, each a commit of exactly that user, and a member leaves with a
+/// statement their device signs, whose removal a member's commit makes once the API proposes it. A group has 20 members
+/// at most, its owner among them: the cap holds before anything is asked. And who a blocked group's restart leaves out,
+/// which its person confirms first; and whether the members of a newer generation are the ones this device holds. The
+/// desktop's members.ts in Dart.
 library;
 
 import 'package:duvet_client/duvet.dart' as duvet;

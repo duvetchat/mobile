@@ -1,5 +1,3 @@
-import 'dart:convert';
-
 import 'package:duvet/e2e/engine.dart';
 import 'package:duvet/e2e/host.dart';
 import 'package:duvet/e2e/uuid.dart';
@@ -35,38 +33,6 @@ Future<({FakeApi fake, String ana, String bo, String cy, String conversation, Li
   await a.engine.openConversation(conversation);
   await sameGroup([a, b, c], conversation);
   return (fake: fake, ana: ana, bo: bo, cy: cy, conversation: conversation, devices: [a, b, c]);
-}
-
-/// The group blocked on every device: a commit no device can process gets in, as a server that takes anything would
-/// let it: Ana's leaf renewal, one byte of its signature changed, sent under Bo's session. Ana's own renewal never
-/// went. Her device again after its app restarted, with the two others.
-Future<List<TestDevice>> _blocked(FakeApi fake, String conversation, List<TestDevice> devices) async {
-  var [a, b, c] = devices;
-  final before = (await groupOf(a, conversation))!;
-  await stoppedByHand(a);
-  final made = await byHand(a, {'cmd': 'refresh', 'conversation_id': conversation});
-  final bytes = base64Decode(made['commit']! as String);
-  bytes[bytes.length - 1] ^= 0xff;
-  await b.api.commit(
-    conversation,
-    duvet.Commit(
-      generation: before.generation,
-      epoch: before.epoch,
-      commit: base64Encode(bytes),
-      groupInfo: made['group_info']! as String,
-    ),
-  );
-  await a.host.handle<Object?>({
-    'cmd': 'commit_result',
-    'conversation_id': conversation,
-    'accepted': false,
-    'invalid': true,
-  });
-  a = await restarted(fake, a);
-  await until(
-    () => [a, b, c].every((d) => d.engine.conversationState(conversation)?.name == ConversationNotice.blocked),
-  );
-  return [a, b, c];
 }
 
 void main() {
@@ -154,7 +120,7 @@ void main() {
     'a_blocked_group_offers_its_restart_to_its_owner,_and_everyone_joins_the_next_generation',
     () async {
       final (:fake, :ana, bo: _, cy: _, :conversation, :devices) = await _group();
-      final [a, b, c] = await _blocked(fake, conversation, devices);
+      final [a, b, c] = await blockedByHand(fake, conversation, devices);
       // Its owner is offered the restart, the others wait for her.
       expect(a.engine.conversationState(conversation), ConversationState.blocked(restart: Restart.mine, owner: ana));
       expect(b.engine.conversationState(conversation), ConversationState.blocked(restart: Restart.owner, owner: ana));
@@ -181,7 +147,7 @@ void main() {
     "a_restart's_welcome_brings_every_device_in,_though_its_event_comes_after_the_commit's_turn",
     () async {
       final (:fake, ana: _, bo: _, cy: _, :conversation, :devices) = await _group();
-      final [a, b, c] = await _blocked(fake, conversation, devices);
+      final [a, b, c] = await blockedByHand(fake, conversation, devices);
       fake.holdEvents();
       await a.engine.restartGroup(conversation);
       final restart = (await a.api.queue(conversation, 0)).entries.last;
@@ -312,7 +278,7 @@ void main() {
     'a_restart_names_who_it_leaves_out,_and_restarts_once_the_person_says_yes',
     () async {
       final (:fake, :ana, :bo, :cy, :conversation, :devices) = await _group();
-      final [a, b, c] = await _blocked(fake, conversation, devices);
+      final [a, b, c] = await blockedByHand(fake, conversation, devices);
       // The server took Cy out with no commit: the API lists Ana and Bo.
       fake.dropMembers(conversation, [cy]);
       final last = (await a.api.queue(conversation, 0)).lastSeq;
@@ -338,7 +304,7 @@ void main() {
     "a_successor's_restart_without_the_owner's_statement_leaves_the_group_blocked",
     () async {
       final (:fake, :ana, :bo, cy: _, :conversation, :devices) = await _group();
-      final [a, b, c] = await _blocked(fake, conversation, devices);
+      final [a, b, c] = await blockedByHand(fake, conversation, devices);
       fake.dropMembers(conversation, [ana]);
       // Bo, next in line, is the API's owner: his device hears of it at its next session.
       b.connect(b.registered.last);
@@ -368,7 +334,7 @@ void main() {
     'a_successor_restarts_a_group_its_owner_left,_on_her_statement',
     () async {
       final (:fake, :ana, :bo, :cy, :conversation, :devices) = await _group();
-      final [a, b, c] = await _blocked(fake, conversation, devices);
+      final [a, b, c] = await blockedByHand(fake, conversation, devices);
       await a.engine.leaveConversation(conversation);
       await until(
         () => b.engine.conversationState(conversation) == ConversationState.blocked(restart: Restart.mine, owner: bo),
@@ -396,7 +362,7 @@ void main() {
     "a_restart_that_brings_this_device_no_welcome_waits_for_the_person's_yes",
     () async {
       final (:fake, ana: _, :bo, :cy, :conversation, :devices) = await _group();
-      final [a, b, c] = await _blocked(fake, conversation, devices);
+      final [a, b, c] = await blockedByHand(fake, conversation, devices);
       // Ana leaves the blocked group with her statement, which reaches Bo's core and Cy's with its proposal.
       await a.engine.leaveConversation(conversation);
       await until(() async => (await b.api.queue(conversation, 0)).entries.any((e) => e.kind == 'proposal'));
@@ -439,6 +405,83 @@ void main() {
       await a.engine.stop();
       await b.host.close();
       await c.engine.stop();
+    },
+    skip: noCore,
+    timeout: _slow,
+  );
+
+  // M1 of the review: a refused restart says so once (the core's rule_violation reaches the caller) and keeps Restart
+  // off until a new entry comes, so no further tap claims anyone's key packages for nothing.
+  test(
+    'a_refused_restart_keeps_restart_off_until_a_new_entry_comes',
+    () async {
+      final seen = <http.Request>[];
+      final (:fake, :ana, :bo, :cy, :conversation, :devices) = await _group(boSeen: seen);
+      final [a, b, c] = await blockedByHand(fake, conversation, devices);
+      fake.dropMembers(conversation, [ana]);
+      b.connect(b.registered.last);
+      await until(
+        () => b.engine.conversationState(conversation) == ConversationState.blocked(restart: Restart.mine, owner: bo),
+      );
+      await expectLater(
+        b.engine.restartGroup(conversation, leaving: [ana]),
+        throwsA(isA<CoreError>().having((e) => e.code, 'code', 'rule_violation')),
+      );
+      expect(b.engine.conversationState(conversation), ConversationState.blocked(restart: Restart.none, owner: bo));
+      final from = seen.length;
+      expect(await b.engine.restartGroup(conversation, leaving: [ana]), isEmpty);
+      expect(requestsOf(seen.sublist(from)).where((r) => r.contains('/key-packages/claim')), isEmpty);
+      // A new entry (Cy's leave, which the API proposes) offers it again.
+      await c.engine.leaveConversation(conversation);
+      await until(
+        () => b.engine.conversationState(conversation) == ConversationState.blocked(restart: Restart.mine, owner: bo),
+      );
+      for (final d in [a, b, c]) {
+        await d.engine.stop();
+      }
+    },
+    skip: noCore,
+    timeout: _slow,
+  );
+
+  // The core's #46 with honest cores (M5 of the review, the desktop's case): the server keeps Ana's leave statement
+  // from Cy, so Bo's restart, which leaves her out on his core's statement, is refused at Cy's core. Cy's device
+  // doesn't join it on its own, keeps that across a restart of the app (M4), says why it can't leave from there (M6),
+  // and joins on the person's yes.
+  test(
+    "a_refused_restart_welcome_waits_for_the_person's_yes,_across_a_restart",
+    () async {
+      final cySeen = <http.Request>[];
+      final (:fake, :ana, :bo, :cy, :conversation, :devices) = await _group();
+      var [a, b, c] = await blockedByHand(fake, conversation, devices);
+      fake.hideStatements(cy);
+      await a.engine.leaveConversation(conversation);
+      await until(
+        () => b.engine.conversationState(conversation) == ConversationState.blocked(restart: Restart.mine, owner: bo),
+      );
+      await until(() async => (await b.api.queue(conversation, 0)).entries.any((e) => e.kind == 'proposal'));
+      await turnEnded(b);
+      await turnEnded(c);
+      expect(await b.engine.restartGroup(conversation), [ana]);
+      expect(await b.engine.restartGroup(conversation, leaving: [ana]), isEmpty);
+      await until(() => c.engine.conversationState(conversation) == ConversationState.membersChanged);
+
+      // The app again, on the same record and core: still the person's to say, and nothing joined.
+      c = await restarted(fake, c, client: watchedClient(fake, seen: cySeen.add));
+      await turnEnded(c);
+      expect(c.engine.conversationState(conversation), ConversationState.membersChanged);
+      expect(requestsOf(cySeen), isNot(contains('POST ${commitsPath(conversation)}')));
+      await expectLater(
+        c.engine.leaveConversation(conversation),
+        throwsA(isA<CoreError>().having((e) => e.code, 'code', 'not_in_group')),
+      );
+
+      await c.engine.acceptMembers(conversation);
+      final after = await sameGroup([b, c], conversation);
+      expect((after.generation, after.blocked), (1, false));
+      for (final d in [a, b, c]) {
+        await d.engine.stop();
+      }
     },
     skip: noCore,
     timeout: _slow,

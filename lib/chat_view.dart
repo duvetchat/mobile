@@ -30,6 +30,7 @@ import 'data/gifs.dart' show GifSource;
 import 'e2e/conventions.dart' show waveformSamples;
 import 'e2e/decrypted_files.dart';
 import 'e2e/files.dart' show gifFile, sealedSize, tooLargeToSend;
+import 'e2e/host.dart' show CoreError;
 import 'e2e/notices.dart';
 import 'e2e/uuid.dart';
 import 'encryption/conversation_start.dart';
@@ -649,24 +650,46 @@ class _ChatViewState extends State<ChatView> with SingleTickerProviderStateMixin
     }
   }
 
-  /// What came while the socket was down: everything after the newest
-  /// message here.
   /// A member of the chat, by the name the app shows them.
   String _memberName(String userId) =>
       _members.where((m) => m.userId == userId).firstOrNull?.displayName ?? _repository.nameOf(userId) ?? 'Someone';
 
+  /// Whom a restart leaves out, by name: those the API no longer lists, so not among the chat's members. A name the
+  /// app doesn't know comes from their profile, else it's their ID, never «Someone» (I2 of the review).
+  Future<String> _leftOutName(String userId) async {
+    if (_members.where((m) => m.userId == userId).firstOrNull?.displayName ?? _repository.nameOf(userId)
+        case final known?) {
+      return known;
+    }
+    try {
+      return (await _repository.user(userId)).displayName;
+    } catch (_) {
+      return userId;
+    }
+  }
+
   /// The person's Restart encryption: whom it leaves out, they say yes to first (the core's #46), asked again when
-  /// those changed meanwhile.
+  /// those changed meanwhile. A restart the core or the API refuses says so (M1).
   Future<void> _restart(String conversationId) async {
     var leaving = const <String>[];
     while (true) {
-      final out = await _repository.restartGroup(conversationId, leaving: leaving);
+      final List<String> out;
+      try {
+        out = await _repository.restartGroup(conversationId, leaving: leaving);
+      } on CoreError catch (error) {
+        if (error.code != 'rule_violation') rethrow;
+        if (mounted) _toast(Notice.restartRefused.text);
+        return;
+      }
       if (out.isEmpty || !mounted) return;
-      if (!await confirmRestart(context, peopleNamed([for (final user in out) _memberName(user)]))) return;
+      final names = [for (final user in out) await _leftOutName(user)];
+      if (!mounted || !await confirmRestart(context, peopleNamed(names))) return;
       leaving = out;
     }
   }
 
+  /// What came while the socket was down: everything after the newest
+  /// message here.
   Future<void> _catchUp() async {
     // Still on the kept page: its latest is on the way, or is asked again.
     // shortcut: only the gateway coming back asks again; a failed fetch with the socket up stays on the kept page
@@ -2834,6 +2857,7 @@ class _ChatViewState extends State<ChatView> with SingleTickerProviderStateMixin
                               return ConversationStateBar(
                                 state: state,
                                 nameOf: _memberName,
+                                members: [for (final m in _members) m.displayName],
                                 onRestart: () => _restart(conversationId),
                                 onAccept: () => _repository.acceptMembers(conversationId),
                               );

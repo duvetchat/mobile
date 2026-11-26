@@ -233,11 +233,12 @@ void main() {
       ),
     );
 
-    // A member without a device, named over the message box before anything is sent; and a restart that leaves
-    // someone out, which asks first (Task 23).
+    // A member without a device, named over the message box before anything is sent; a restart that leaves someone
+    // out, which asks first; and members that changed, with whom they are now (Task 23).
     for (final (name, state, restartLeavesOut) in [
       ('no_device', ConversationState.noDevice(const [FakeRepository.maya]), const <String>[]),
       ('restart_confirm', ConversationState.blocked(restart: Restart.mine), const [FakeRepository.leo]),
+      ('members_changed', ConversationState.membersChanged, const <String>[]),
     ]) {
       testWidgets(
         '$name, ${b.name}',

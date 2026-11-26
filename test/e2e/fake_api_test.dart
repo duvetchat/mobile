@@ -305,7 +305,8 @@ void main() {
     expect(
       ed25519Sign(seed, const []),
       hex(
-        'e5564300c360ac729086e2cc806e828a84877f1eb8e5d974d873e065224901555fb8821590a33bacc61e39701cf9b46bd25bf5f0595bbe24655141438e7a100b',
+        'e5564300c360ac729086e2cc806e828a84877f1eb8e5d974d873e065224901555'
+        'fb8821590a33bacc61e39701cf9b46bd25bf5f0595bbe24655141438e7a100b',
       ),
     );
     expect(verifyEd25519(ed25519PublicKey(seed), [1, 2, 3], ed25519Sign(seed, [1, 2, 3])), isTrue);
@@ -722,10 +723,17 @@ void main() {
       expect(await call(fake, a.token, 'PUT', share, about), refusedWith(400));
       final put = await call(fake, a.token, 'PUT', share, {...about, 'starts_at': startsAt.toIso8601String()});
       expect(put, answers(201, has({'starts_at': startsAt.toIso8601String()})));
+      // Sent again, the same package is that package, as the API's; another under its ID is a 409.
+      final again = {...about, 'starts_at': startsAt.toIso8601String()};
+      expect((await call(fake, a.token, 'PUT', share, again)).status, 201);
+      expect(await call(fake, a.token, 'PUT', share, {...again, 'size': (made['size']! as int) + 1}), refusedWith(409));
       expect((await call(fake, a.token, 'POST', '$share/complete')).status, 409); // its parts aren't up yet
       for (var n = 0; n < (made['parts']! as int); n++) {
         final part = await a.core.sharePart(made['share_id']! as String, n);
         expect((await call(fake, a.token, 'PUT', '$share/parts/$n', part)).status, 204);
+        // A part sent again: the same bytes change nothing, other bytes are a 409.
+        expect((await call(fake, a.token, 'PUT', '$share/parts/$n', part)).status, 204);
+        expect(await call(fake, a.token, 'PUT', '$share/parts/$n', Uint8List(part.length)), refusedWith(409));
       }
       expect((await call(fake, a.token, 'POST', '$share/complete')).status, 204);
       for (final key in made['keys']! as List) {

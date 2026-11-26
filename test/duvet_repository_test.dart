@@ -220,8 +220,12 @@ void main() {
   /// Holds a room's move until the test answers it.
   late Completer<http.Response> moveReply;
 
+  /// The API also lists the group c-2, from before the cutover: it has no group yet.
+  late bool groupWithoutMls;
+
   setUp(() {
     requests = [];
+    groupWithoutMls = false;
     store = MemorySessionStore();
     recentsStore = MemoryRecentChatsStore();
     cache = MemoryChatCacheStore();
@@ -326,11 +330,32 @@ void main() {
           jsonEncode({'error': 'you must be friends with $_leo'}),
           403,
         ),
+        ('DELETE', '/api/users/@me/conversations/c-2/members/@me') => http.Response('', 204),
         ('POST', '/api/users/@me/conversations/c-1/members') => http.Response(
           jsonEncode({'error': 'internal server error'}),
           500,
         ),
         ('GET', '/api/users/@me/conversations') => [
+          if (groupWithoutMls)
+            {
+              'id': 'c-2',
+              'type': 2,
+              'name': 'Crew',
+              'owner_id': _maya,
+              'created_at': _at,
+              'updated_at': _at,
+              'members': [
+                for (final (id, name) in [(_me, 'gaby'), (_maya, 'maya')])
+                  {
+                    'id': 'm2-$id',
+                    'conversation_id': 'c-2',
+                    'user_id': id,
+                    'created_at': _at,
+                    'updated_at': _at,
+                    'user': {'id': id, 'username': name},
+                  },
+              ],
+            },
           {
             'id': 'c-1',
             'type': 1,
@@ -619,6 +644,23 @@ void main() {
       for (final r in requests.skip(from))
         if (r.url.path.contains('/members')) r.url.path,
     ], isEmpty);
+  });
+
+  // The comparison's C4, as the desktop does: a group that has no group yet takes no statement, so the app without its
+  // engine leaves it over REST, as the API takes it; a DM still can't be left, nor one with a group, by any but the
+  // engine.
+  test('without its engine, the app leaves a group that has no group yet over REST', () async {
+    groupWithoutMls = true;
+    await repository.logIn('gaby@duvet.chat', 'secret');
+    final from = requests.length;
+    await repository.leaveConversation('c-2');
+    expect(
+      [
+        for (final r in requests.skip(from))
+          if (r.url.path.contains('/members')) '${r.method} ${r.url.path} ${r.body}',
+      ],
+      ['DELETE /api/users/@me/conversations/c-2/members/@me '],
+    );
   });
 
   test('the friends list gives friends their presence, where the gateway hasn\'t told it', () async {

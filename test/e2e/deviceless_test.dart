@@ -1,9 +1,11 @@
 import 'dart:typed_data';
 
 import 'package:duvet/e2e/core_gate.dart';
+import 'package:duvet/e2e/deviceless.dart';
 import 'package:duvet/e2e/engine.dart';
 import 'package:duvet/e2e/uuid.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:http/http.dart' as http;
 
 import '../support/core_lib.dart';
 import '../support/engines.dart';
@@ -127,6 +129,128 @@ void main() {
       expect([
         for (final m in await b.engine.messages(dm, [first.id, second.id])) m.text,
       ], containsAll(['one', 'two']));
+      await a.engine.stop();
+      await b.engine.stop();
+    },
+    skip: noCore,
+    timeout: _slow,
+  );
+
+  // I3 of the review: a member's device with the chat on screen while the owner adds a user who has no device yet. Its
+  // core is told of them as the group's members change, so what it sends meanwhile reaches that user's first device by
+  // its catch-up.
+  test(
+    'a_member_added_without_a_device_gets_what_was_sent_meanwhile_once_their_first_device_joins',
+    () async {
+      final fake = FakeApi();
+      final (ana, bo, cy) = (fake.addUser(), fake.addUser(), fake.addUser());
+      final asked = <Map<String, Object?>>[];
+      final a = await firstDevice(fake, ana);
+      final b = await firstDevice(fake, bo, host: WatchedHost(TestHost().gate, [], commands: asked));
+      final group = (await a.engine.createGroup('Crew', [bo])).id;
+      await sameGroup([a, b], group);
+      // Bo's chat is on screen: who has no device was worked out as it opened (nobody).
+      await b.engine.openConversation(group);
+      await until(() => asked.any((c) => c['cmd'] == 'without_devices'));
+      expect(b.engine.conversationState(group), isNull);
+
+      // Ana adds Cy, who has no device yet: Bo's device applies the addition and tells its core of Cy.
+      fake.befriend(ana, cy);
+      await a.engine.addMember(group, cy);
+      await until(() => b.engine.conversationState(group) == ConversationState.noDevice([cy]));
+      expect(asked.where((c) => c['cmd'] == 'without_devices').last['users'], [cy]);
+      final sent = (await b.engine.sendMessage(Outgoing(conversationId: group, nonce: uuidv4(), text: 'welcome Cy')))!;
+
+      // Cy's first device joins: Bo's hands it what it noted.
+      final c = await firstDevice(fake, cy);
+      await until(() => asked.any((command) => command['cmd'] == 'catch_up_delivered' && command['user_id'] == cy));
+      await _imported(c);
+      expect(
+        [
+          for (final m in await c.engine.messages(group, [sent.id])) m.text,
+        ],
+        ['welcome Cy'],
+      );
+      for (final d in [a, b, c]) {
+        await d.engine.stop();
+      }
+    },
+    skip: noCore,
+    timeout: _slow,
+  );
+
+  // M3 of the review: a catch-up whose turn was skipped (the engine left «ready» before it ran) doesn't keep its key,
+  // which would skip every later one for that member: what was heard goes, and the next apply asks for it again.
+  test(
+    'a_catch-up_whose_turn_was_skipped_is_asked_for_again',
+    () async {
+      final (fake: _, ana: _, :bo, :dm, :a, asked: _) = await _dm();
+      final turns = <Future<void> Function()>[];
+      final catchUps = CatchUps(a.engine, turns.add);
+      catchUps
+        ..due(dm, [bo])
+        ..due(dm, [bo]);
+      // One turn is enough: it carries all that's noted by then.
+      expect(turns, hasLength(1));
+      // The engine left «ready»: that turn never runs, and its key goes with what was heard.
+      turns.clear();
+      catchUps
+        ..dropQueued()
+        ..due(dm, [bo]);
+      expect(turns, hasLength(1));
+      await a.engine.stop();
+    },
+    skip: noCore,
+    timeout: _slow,
+  );
+
+  // A catch-up whose upload failed past its PUT (a part refused) goes again after its wait with the package it made,
+  // which the API takes again: one package, its share and its part sent twice, delivered.
+  test(
+    'a_catch-up_whose_upload_failed_midway_goes_again_with_its_package',
+    () async {
+      final fake = FakeApi();
+      final (ana, bo) = (fake.addUser(), fake.addUser());
+      final asked = <Map<String, Object?>>[];
+      final seen = <http.Request>[];
+      final a = await firstDevice(
+        fake,
+        ana,
+        host: WatchedHost(TestHost().gate, [], commands: asked),
+        client: watchedClient(fake, seen: seen.add),
+      );
+      final dm = (await a.engine.createDM(bo)).id;
+      await a.engine.openConversation(dm);
+      await until(() => a.engine.conversationState(dm) == ConversationState.noDevice([bo]));
+      final sent = (await a.engine.sendMessage(Outgoing(conversationId: dm, nonce: uuidv4(), text: 'hi again')))!;
+      fake.refuse((method: 'PUT', path: RegExp(r'/history-shares/[0-9a-f-]+/parts/0$')), 500);
+      final b = await firstDevice(fake, bo);
+      List<String> puts(String end) => [
+        for (final r in seen)
+          if (r.method == 'PUT' && r.url.path.contains('/history-shares/') && r.url.path.endsWith(end)) r.url.path,
+      ];
+      await until(() => puts('/parts/0').isNotEmpty);
+      expect(asked.where((c) => c['cmd'] == 'catch_up_delivered'), isEmpty);
+
+      // Its wait over (2 s), the same package goes up again, and is delivered.
+      await until(() {
+        a.clock.advance(const Duration(seconds: 2));
+        return asked.any((c) => c['cmd'] == 'catch_up_delivered' && c['user_id'] == bo);
+      });
+      expect(asked.where((c) => c['cmd'] == 'catch_up'), hasLength(1));
+      final parts = puts('/parts/0');
+      expect((parts.length, parts.toSet().length), (2, 1));
+      expect(
+        seen.where((r) => r.method == 'PUT' && RegExp(r'/history-shares/[0-9a-f-]+$').hasMatch(r.url.path)),
+        hasLength(2),
+      );
+      await _imported(b);
+      expect(
+        [
+          for (final m in await b.engine.messages(dm, [sent.id])) m.text,
+        ],
+        ['hi again'],
+      );
       await a.engine.stop();
       await b.engine.stop();
     },

@@ -84,13 +84,16 @@ Future<duvet.Commit> restartGroup(E2EEngine engine, duvet.Conversation conv) asy
 /// The external commit that brings this device into the group as the API serves it (join_external), on the group info
 /// of its latest epoch: held to the record of a conversation from before the cutover, and to the pinned external
 /// sender.
-Future<duvet.Commit> joinGroup(
+Future<duvet.Commit?> joinGroup(
   E2EEngine engine,
   duvet.Conversation conv,
   String externalSender,
-  LegacyRecord? expected,
-) async {
+  LegacyRecord? expected, {
+  Future<bool> Function(int generation)? mayJoin,
+}) async {
   final info = await engine.api.groupInfo(conv.id);
+  // Decided on the generation it would join ([mayJoin]): null when this device may not on its own.
+  if (mayJoin != null && !await mayJoin(info.generation)) return null;
   // A device that never saw the group's members (a new device, joining a group its user was in) is asked for their
   // identities first.
   final made = await withIdentities(

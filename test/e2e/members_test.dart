@@ -2,6 +2,8 @@ import 'dart:convert';
 
 import 'package:duvet/data/models.dart';
 import 'package:duvet/e2e/host.dart';
+import 'package:duvet/e2e/sync.dart' show entryOf;
+import 'package:duvet_client/duvet.dart' as duvet;
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 
@@ -31,6 +33,19 @@ Set<String> _usersIn(HeldGroup held) => {for (final d in held.devices) d.user};
 Future<List<String>> _listed(TestDevice device, String conversation) async {
   final held = await device.host.handle<Map<String, Object?>>({'cmd': 'group', 'conversation_id': conversation});
   return [for (final m in (held['members']! as List).cast<Map<String, Object?>>()) m['user_id']! as String];
+}
+
+/// A stopped device's core brought to the queue's end by hand, as its engine would: its next commit by hand goes on
+/// the epoch the group is at.
+Future<void> _caughtUp(FakeApi fake, TestDevice device, String conversation) async {
+  Future<Map<String, Object?>> apply(List<Map<String, Object?>> entries) => byHand(device, {
+    'cmd': 'apply',
+    'conversation_id': conversation,
+    'entries': entries,
+    'external_sender': fake.externalSender,
+  });
+  final through = (await apply([]))['applied_through'] as int? ?? 0;
+  await apply([for (final entry in (await device.api.queue(conversation, through)).entries) entryOf(entry)]);
 }
 
 /// A group Ana made with Bo and Cy, each on a first device, its group made as she made it; [seen] her requests.
@@ -188,7 +203,8 @@ void main() {
     timeout: _slow,
   );
 
-  // Step 3's closing review: the API refuses a group of more than 20 with its owner, which the app's own cap holds first.
+  // Step 3's closing review: the API refuses a group of more than 20 with its owner, which the app's own cap holds
+  // first.
   test(
     'a_group_past_20_members_is_refused_before_it_is_asked_for',
     () async {
@@ -348,6 +364,265 @@ void main() {
     timeout: _slow,
   );
 
+  // M2 of the review: a change asked for again while the first, unanswered, still waits: the first goes again first,
+  // and the second finds it done, as the person asked. A removal the same.
+  test(
+    'the_same_change_asked_again_after_it_went_unanswered_is_done_once',
+    () async {
+      final seen = <http.Request>[];
+      final fake = FakeApi();
+      final (ana, bo, cy) = (fake.addUser(), fake.addUser(), fake.addUser());
+      final a = await firstDevice(fake, ana, client: watchedClient(fake, seen: seen.add));
+      final b = await firstDevice(fake, bo);
+      final group = (await a.engine.createGroup('Crew', [bo])).id;
+      await sameGroup([a, b], group);
+      fake.befriend(ana, cy);
+      final c = await firstDevice(fake, cy);
+      List<String> asked(String method, String path) => [
+        for (final r in requestsOf(seen))
+          if (r == '$method $path') r,
+      ];
+
+      // The first never reaches the API; asked again before it goes again, it goes, and the second is that one.
+      fake.cutRequest((method: 'POST', path: _membersPath(group)));
+      await expectLater(
+        a.engine.addMember(group, cy),
+        throwsA(isA<CoreError>().having((e) => e.code, 'code', 'unanswered')),
+      );
+      expect((await a.engine.addMember(group, cy)).userId, cy);
+      expect(asked('POST', _membersPath(group)), hasLength(2));
+      expect(_usersIn(await sameGroup([a, b, c], group)), {ana, bo, cy});
+
+      fake.cutRequest((method: 'DELETE', path: '${_membersPath(group)}/$cy'));
+      await expectLater(
+        a.engine.removeMember(group, cy),
+        throwsA(isA<CoreError>().having((e) => e.code, 'code', 'unanswered')),
+      );
+      await a.engine.removeMember(group, cy);
+      expect(asked('DELETE', '${_membersPath(group)}/$cy'), hasLength(2));
+      expect(_usersIn(await sameGroup([a, b], group)), {ana, bo});
+      for (final d in [a, b, c]) {
+        await d.engine.stop();
+      }
+    },
+    skip: noCore,
+    timeout: _slow,
+  );
+
+  // M5 of the review, the desktop's case (Review Focus 3): an addition whose answer is lost goes again, on its own,
+  // with its bytes, to the members route, which the API answers as it did: the user is added once.
+  test(
+    'an_addition_whose_answer_is_lost_is_sent_again_with_its_bytes,_and_the_user_is_added_once',
+    () async {
+      final seen = <http.Request>[];
+      final fake = FakeApi();
+      final (ana, bo, di) = (fake.addUser(), fake.addUser(), fake.addUser());
+      final a = await firstDevice(fake, ana, client: watchedClient(fake, seen: seen.add));
+      final b = await firstDevice(fake, bo);
+      final group = (await a.engine.createGroup('Crew', [bo])).id;
+      await sameGroup([a, b], group);
+      fake.befriend(ana, di);
+      final d = await firstDevice(fake, di);
+      final from = seen.length;
+      List<String> posted() => [
+        for (final r in seen.sublist(from))
+          if (r.method == 'POST' && r.url.path == _membersPath(group)) r.body,
+      ];
+
+      fake.loseAnswer((method: 'POST', path: _membersPath(group)));
+      await expectLater(
+        a.engine.addMember(group, di),
+        throwsA(isA<CoreError>().having((e) => e.code, 'code', 'unanswered')),
+      );
+      await until(() {
+        a.clock.advance(const Duration(seconds: 2));
+        return posted().length >= 2;
+      });
+      expect(posted().toSet(), hasLength(1));
+      expect(requestsOf(seen.sublist(from)), isNot(contains('POST ${commitsPath(group)}')));
+      expect(_usersIn(await sameGroup([a, b, d], group)), {ana, bo, di});
+      final listed = (await a.api.api.getConversations()).singleWhere((conv) => conv.id == group);
+      expect([for (final m in listed.members) m.userId], [ana, bo, di]);
+      for (final device in [a, b, d]) {
+        await device.engine.stop();
+      }
+    },
+    skip: noCore,
+    timeout: _slow,
+  );
+
+  // M5 of the review, the desktop's case: another device of the user's left first, so the API's 403 (they aren't a
+  // member any more) is this device's leave too, which the list confirms; and the same for a 404, the membership gone
+  // as the API looked (the owner's removal crossing the leave).
+  test(
+    'a_leave_the_API_refuses_as_its_user_is_out_already_is_the_leave',
+    () async {
+      final (:fake, ana: _, bo: _, :cy, :group, :devices) = await _group();
+      final [a, b, c] = devices;
+      final c2 = await approvedDevice(fake, c);
+      await sameGroup([a, b, c, c2], group);
+      // Both leave at once: the API takes one, and answers the other 403. The fake holds both until both came.
+      fake.gather((method: 'DELETE', path: '${_membersPath(group)}/@me'), 2);
+      await Future.wait([c.engine.leaveConversation(group), c2.engine.leaveConversation(group)]);
+      final listed = (await a.api.api.getConversations()).singleWhere((conv) => conv.id == group);
+      expect([for (final m in listed.members) m.userId], isNot(contains(cy)));
+      for (final d in [a, b, c, c2]) {
+        await d.engine.stop();
+      }
+
+      // A 404 the list doesn't confirm is the failure it is; one it confirms (the owner's removal crossing the leave,
+      // the membership gone as the API looked) is the leave.
+      final other = FakeApi();
+      final (ana2, bo2, cy2) = (other.addUser(), other.addUser(), other.addUser());
+      String? group2;
+      var crossed = false;
+      final a2 = await firstDevice(other, ana2);
+      final b2 = await firstDevice(other, bo2);
+      final c3 = await firstDevice(
+        other,
+        cy2,
+        client: watchedClient(
+          other,
+          answer: (request) async {
+            final at = group2;
+            if (at == null || request.method != 'DELETE' || request.url.path != '${_membersPath(at)}/@me') return null;
+            if (crossed) other.dropMembers(at, [cy2]);
+            return http.Response(
+              jsonEncode({'error': 'not a member'}),
+              404,
+              headers: {'content-type': 'application/json'},
+            );
+          },
+        ),
+      );
+      group2 = (await a2.engine.createGroup('Crew', [bo2, cy2])).id;
+      await sameGroup([a2, b2, c3], group2);
+      await expectLater(
+        c3.engine.leaveConversation(group2),
+        throwsA(isA<duvet.DuvetApiException>().having((e) => e.statusCode, 'status', 404)),
+      );
+      crossed = true;
+      await c3.engine.leaveConversation(group2);
+      expect(() => other.membershipOf(group2!, cy2), throwsStateError);
+      for (final d in [a2, b2, c3]) {
+        await d.engine.stop();
+      }
+    },
+    skip: noCore,
+    timeout: _slow,
+  );
+
+  // M5 of the review, missing on both sides: a change another commit beat to its epoch (a 409) is made again on top of
+  // it, three tries at most; and one sent again on its own after no answer came, beaten so, is made again too (the
+  // desktop's review, «For task 23»).
+  test(
+    'a_change_another_commit_beat_to_its_epoch_is_made_again,_three_tries_at_most',
+    () async {
+      final fake = FakeApi();
+      final (ana, bo, cy, di) = (fake.addUser(), fake.addUser(), fake.addUser(), fake.addUser());
+      var beat = 0;
+      final seen = <http.Request>[];
+      late final TestDevice b;
+      final a = await firstDevice(
+        fake,
+        ana,
+        client: watchedClient(
+          fake,
+          seen: seen.add,
+          answer: (request) async {
+            // Bo's commit takes the epoch first, as many times as asked.
+            if (beat > 0 && request.method == 'POST' && request.url.path.endsWith('/members')) {
+              beat--;
+              final conversation = request.url.pathSegments[request.url.pathSegments.length - 2];
+              await _caughtUp(fake, b, conversation);
+              await commitByHand(b, conversation);
+            }
+            return null;
+          },
+        ),
+      );
+      b = await firstDevice(fake, bo);
+      final group = (await a.engine.createGroup('Crew', [bo])).id;
+      await sameGroup([a, b], group);
+      fake
+        ..befriend(ana, cy)
+        ..befriend(ana, di);
+      final c = await firstDevice(fake, cy);
+      final d = await firstDevice(fake, di);
+      await stoppedByHand(b);
+      int posts() => seen.where((r) => r.method == 'POST' && r.url.path == _membersPath(group)).length;
+
+      // Beaten once: made again on the epoch Bo's commit made, and taken.
+      beat = 1;
+      var from = posts();
+      expect((await a.engine.addMember(group, cy)).userId, cy);
+      expect(posts() - from, 2);
+      await until(() async => await groupOf(c, group) != null);
+
+      // Beaten three times: the third 409 is the answer.
+      beat = 3;
+      from = posts();
+      await expectLater(
+        a.engine.addMember(group, di),
+        throwsA(isA<duvet.DuvetApiException>().having((e) => e.statusCode, 'status', 409)),
+      );
+      expect(posts() - from, 3);
+
+      // Cut on its way, then beaten as it goes again on its own: made again, and Di is in.
+      beat = 0;
+      fake.cutRequest((method: 'POST', path: _membersPath(group)));
+      await expectLater(
+        a.engine.addMember(group, di),
+        throwsA(isA<CoreError>().having((e) => e.code, 'code', 'unanswered')),
+      );
+      beat = 1;
+      await until(() async {
+        a.clock.advance(const Duration(seconds: 2));
+        return (await groupOf(d, group)) != null;
+      });
+      expect(_usersIn((await groupOf(a, group))!), {ana, bo, cy, di});
+      await b.host.close();
+      for (final device in [a, c, d]) {
+        await device.engine.stop();
+      }
+    },
+    skip: noCore,
+    timeout: _slow,
+  );
+
+  // The desktop's review, «For task 23»: the engine's own refusals reach the person in the app's words, never as its
+  // codes or as «not ready»: a DM's members don't change, only a group's owner changes its members, and a change still
+  // on its way goes again on its own.
+  test(
+    "the_engine's_own_refusals_reach_the_person_in_the_app's_words",
+    () async {
+      final fake = FakeApi();
+      final (ana, bo, cy) = (fake.addUser(), fake.addUser(), fake.addUser());
+      final app = await appOn(fake, ana);
+      await app.ready();
+      final b = await firstDevice(fake, bo);
+      fake
+        ..befriend(ana, cy)
+        ..befriend(bo, cy);
+      Matcher says(String words) => throwsA(isA<ActionFailed>().having((e) => e.message, 'message', words));
+      final dm = fake.addConversation(group: false, members: [ana, bo]);
+      await expectLater(app.repository.addToConversation(dm, cy), says('A direct message’s members don’t change.'));
+      final bos = (await b.engine.createGroup('Crew', [ana])).id;
+      await expectLater(app.repository.addToConversation(bos, cy), says('Only the group’s owner changes its members.'));
+
+      final group = (await app.repository.createGroup('Mine', [bo])).id;
+      await until(() async => await groupOf(b, group) != null);
+      fake.cutRequest((method: 'POST', path: _membersPath(group)));
+      await expectLater(
+        app.repository.addToConversation(group, cy),
+        says('No answer came yet: Duvet tries again on its own.'),
+      );
+      await b.engine.stop();
+    },
+    skip: noCore,
+    timeout: _slow,
+  );
+
   // The app's own wiring: its new group gets its group as it's made, its members change through its engine, and the
   // cap holds before anything is asked.
   test(
@@ -374,7 +649,7 @@ void main() {
       final from = app.seen.length;
       await expectLater(
         app.repository.createGroup('Crowd', [for (var i = 0; i < 20; i++) fake.addUser()]),
-        throwsA(isA<ActionFailed>().having((e) => e.message, 'message', 'A group can have 20 members at most')),
+        throwsA(isA<ActionFailed>().having((e) => e.message, 'message', 'A group can have 20 members at most.')),
       );
       expect(app.count('POST', '/api/users/@me/conversations', from: from), 0);
       await b.engine.stop();
