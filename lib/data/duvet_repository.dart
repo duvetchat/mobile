@@ -756,6 +756,10 @@ class DuvetRepository implements ChatRepository {
     _closeSession();
     _saved = null;
     await _store.clear();
+    // Nor a decrypted file, its engine stopped: the copies set aside to share, and share_plus's of them (mobile#354).
+    await DecryptedFiles.instance.emptyAtStart().catchError(
+      (Object error) => debugPrint("e2e: the decrypted files weren't emptied at a sign-out: $error"),
+    );
   }
 
   void _closeSession() {
@@ -1122,8 +1126,8 @@ class DuvetRepository implements ChatRepository {
   Future<void> finishKeysWithout() async => (_engine ?? (throw ActionFailed(Notice.notReady.text))).finishKeysWithout();
 
   /// The engine deletes this device's data, then the session ends as a sign-out ends it (decision 13), and the folder
-  /// of files it decrypted is emptied whole, the copies set aside to share too, which a sign-out leaves for the next
-  /// start (lib/e2e/decrypted_files.dart).
+  /// of files it decrypted is emptied whole, the copies set aside to share and share_plus's of them too
+  /// (lib/e2e/decrypted_files.dart).
   @override
   Future<void> removeThisDevice() async {
     await (_engine ?? (throw ActionFailed(Notice.notReady.text))).removeThisDevice();
