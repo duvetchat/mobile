@@ -8,6 +8,7 @@ import 'package:duvet/encryption/gate.dart';
 import 'package:duvet/encryption/recovery_key.dart';
 import 'package:duvet/theme.dart';
 import 'package:duvet/widgets/chrome.dart';
+import 'package:duvet/widgets/rows.dart' show TextAction;
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -281,6 +282,33 @@ void main() {
       expect(find.textContaining('on another device'), findsNothing);
       expect(find.text('Finish'), findsNothing);
       expect(find.text(Notice.deleteDevice.text), findsOneWidget);
+    });
+
+    // Task 33: a new device's restore shows as it goes, a strip with nothing to press but its ×, which hides it alone:
+    // a later strip of the ready state still shows.
+    testWidgets("a_new_device's_restore_shows_as_it_goes,_with_nothing_to_press_but_its_×", (tester) async {
+      final repository = await gate(tester, EngineState.ready);
+      expect(find.byType(Text), findsNothing);
+      repository.backup.value = const BackupShown.restoring(12, 40);
+      await tester.pump();
+      expect(find.text('Restoring your messages: 12 of 40'), findsOneWidget);
+      expect(find.byType(TextAction), findsNothing);
+      repository.backup.value = const BackupShown.restoring(13, 40);
+      await tester.pump();
+      expect(find.text('Restoring your messages: 13 of 40'), findsOneWidget);
+      // Its × hides the restore's strip, and only it.
+      await tester.tap(find.byWidgetPredicate((widget) => widget is IconAction && widget.label == 'Dismiss'));
+      await tester.pump();
+      expect(find.byType(Text), findsNothing);
+      repository.encryption.value = const EngineState.rotation();
+      await tester.pump();
+      expect(find.text('Finish changing your security keys.'), findsOneWidget);
+      // Done, nothing of it shows; nor does a pause, which Settings says.
+      repository
+        ..encryption.value = EngineState.ready
+        ..backup.value = const BackupShown.paused(BackupPause.full);
+      await tester.pump();
+      expect(find.byType(Text), findsNothing);
     });
 
     // M6 of the desktop's review: what deletes the device's data asks first.

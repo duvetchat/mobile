@@ -54,6 +54,11 @@
 		"members_changed": "This conversation's members changed since you last saw it.",
 		"members_accept": "Open with these members",
 		"backup_paused": "Your encrypted backup is paused: your storage is full.",
+		"backup": "Encrypted backup",
+		"backup_up_to_date": "Up to date",
+		"backup_uploading": "Backing up…",
+		"backup_restoring": "Restoring your messages: {done} of {total}",
+		"backup_too_large": "Your encrypted backup is paused: a day of messages is too large to back up.",
 		"device_added": "A new device was added to your account: {name}.",
 		"delete_device": "Remove this device and delete its data",
 		"too_long": "Message too long",
@@ -85,6 +90,14 @@
 		"start_over_warning": "Starting over makes new security keys for your account. The history of your encrypted conversations can't be read any more, and your contacts will see that your keys changed."
 	},
 	"filled_notices": [
+		{
+			"key": "backup_restoring",
+			"values": {
+				"done": "12",
+				"total": "1,340"
+			},
+			"text": "Restoring your messages: 12 of 1,340"
+		},
 		{
 			"key": "shared",
 			"values": {
