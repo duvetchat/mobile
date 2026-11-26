@@ -121,6 +121,18 @@ CoreHost Function(Duration lockedWait) _counted(_Phone phone, void Function(Dura
   return _pushGate(phone);
 };
 
+/// [open], the push's waits for its app ending [_ahead] of their time, its own time ([within]) as it is: a timer counts
+/// whole milliseconds and fires on one, so a wait for the time a push has left can end a moment before the push's clock
+/// says that time is up (#341). Here they end well before it, the same way each run.
+Future<T> _waitsAhead<T>(Duration within, Future<T> Function() open) => runZoned(
+  open,
+  zoneSpecification: ZoneSpecification(
+    createTimer: (self, parent, zone, duration, callback) =>
+        parent.createTimer(zone, duration == within || duration <= _ahead ? duration : duration - _ahead, callback),
+  ),
+);
+const _ahead = Duration(milliseconds: 100);
+
 /// Ana's app in an isolate of its own, as the push sees it: it answers on the push's port, and ends a moment after it
 /// takes a request.
 void _takesThenEnds(SendPort ready) {
@@ -346,20 +358,87 @@ void main() {
       final answering = answerPushes((ask) => Completer<PushAnswer?>().future);
       addTearDown(() => stopAnsweringPushes(answering));
       final sent = await _says(phone, 'never answered');
-      var made = 0;
+      final made = <Duration>[];
 
       final started = DateTime.now();
       final opened = (await _open(
         phone,
         phone.fake.pushOf(phone.conversation, sent.id),
         within: const Duration(seconds: 2),
-        core: _counted(phone, (_) => made++),
+        core: _counted(phone, made.add),
       ))!;
       expect((opened.text, opened.authorName), (Notice.newMessage.text, 'Bo'));
       expect(DateTime.now().difference(started), lessThan(const Duration(milliseconds: 2600)));
       // Nothing after its time: no core made, nothing asked.
       await Future<void>.delayed(const Duration(seconds: 3));
-      expect(made, 0);
+      expect(made, isEmpty, reason: "the push made a core with this much time left, though Ana's app took it");
+      expect(phone.requests, isEmpty);
+      expect(await _onAna(phone, sent.id), isNull);
+    },
+    skip: noCore,
+    timeout: _slow,
+  );
+
+  // #341: the same app, the push's wait for its answer ending before the push's clock says its time is up. That wait
+  // was the rest of the push's time: its end is the push's, and no core is made in the moment the clock has left.
+  test(
+    'an_app_that_takes_the_request_and_never_answers_leaves_the_core_closed_when_the_wait_ends_first',
+    () async {
+      final phone = await _phone();
+      await phone.a.engine.stop();
+      final answering = answerPushes((ask) => Completer<PushAnswer?>().future);
+      addTearDown(() => stopAnsweringPushes(answering));
+      final sent = await _says(phone, 'never answered');
+      final made = <Duration>[];
+      const within = Duration(seconds: 2);
+
+      final opened = (await _waitsAhead(
+        within,
+        () => _open(
+          phone,
+          phone.fake.pushOf(phone.conversation, sent.id),
+          within: within,
+          core: _counted(phone, made.add),
+        ),
+      ))!;
+      expect(made, isEmpty, reason: "the push made a core with this much time left, though Ana's app took it");
+      expect((opened.text, opened.authorName), (Notice.newMessage.text, 'Bo'));
+      expect(phone.requests, isEmpty);
+      expect(await _onAna(phone, sent.id), isNull);
+    },
+    skip: noCore,
+    timeout: _slow,
+  );
+
+  // #341: with less time than an app has to take a request, the push's wait for one is the rest of its time. Here the
+  // app's name stayed and nothing takes the request, and the wait ends before the push's clock: no core is made.
+  test(
+    'an_app_that_never_takes_the_request_leaves_the_core_closed_when_the_push_has_less_time_than_it_waits_for_one',
+    () async {
+      final phone = await _phone();
+      await phone.a.engine.stop();
+      final deaf = RawReceivePort((_) {});
+      IsolateNameServer.removePortNameMapping(pushPortName);
+      IsolateNameServer.registerPortWithName(deaf.sendPort, pushPortName);
+      addTearDown(() {
+        IsolateNameServer.removePortNameMapping(pushPortName);
+        deaf.close();
+      });
+      final sent = await _says(phone, 'nothing takes it');
+      final made = <Duration>[];
+      const within = Duration(seconds: 1);
+
+      final opened = (await _waitsAhead(
+        within,
+        () => _open(
+          phone,
+          phone.fake.pushOf(phone.conversation, sent.id),
+          within: within,
+          core: _counted(phone, made.add),
+        ),
+      ))!;
+      expect(made, isEmpty, reason: 'the push made a core with this much time left, past its wait for an app');
+      expect((opened.text, opened.authorName), (Notice.newMessage.text, 'Bo'));
       expect(phone.requests, isEmpty);
       expect(await _onAna(phone, sent.id), isNull);
     },
