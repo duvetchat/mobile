@@ -7,20 +7,22 @@ import 'dart:io';
 import 'dart:math';
 import 'dart:typed_data';
 
+import 'package:duvet/e2e/client.dart';
 import 'package:duvet/e2e/core_gate.dart';
 import 'package:duvet/e2e/db_key.dart';
 import 'package:duvet/e2e/engine.dart';
 import 'package:duvet/e2e/store.dart';
 import 'package:duvet_client/duvet.dart' as duvet;
 import 'package:duvet_client/http/router.dart' show ApiRouter;
+import 'package:flutter/foundation.dart' show TargetPlatform;
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
 
 import 'fake_api.dart';
 
-/// What the engines' requests say the app is (X-Duvet-Client).
-const engineClient = 'android/1.0.0';
+/// What the engines' requests say the app is (X-Duvet-Client): the app on Android, whatever a test's platform.
+final engineClient = duvetClient(platform: TargetPlatform.android);
 
 /// The fake API, as the app's router names it.
 const fakeRouter = ApiRouter(api: 'fake-api.test');

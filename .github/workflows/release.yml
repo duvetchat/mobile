@@ -1,0 +1,146 @@
+# The release APK (arm64-v8a, signed with the release key) as a release of this repository: a release's files don't
+# count against the organisation's artifact storage, where an Actions artifact can't be kept while it's full.
+# - A tag v<pubspec.yaml's version> on main makes that version's release, the app pointed at production; any other
+#   tag stops before the build.
+# - By hand (workflow_dispatch), a test build of the branch it runs on, pointed at the API and the gateway it's given
+#   (production's by default), as a prerelease that says where it points.
+# The APK says it's pubspec.yaml's version (X-Duvet-Client, an identify's client): nothing here overrides it.
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      api:
+        description: The API's host and port, without a scheme (DUVET_API)
+        required: true
+        default: api.duvet.chat
+      gateway:
+        description: The gateway's host and port, without a scheme (DUVET_GATEWAY)
+        required: true
+        default: ws.duvet.chat
+      secure:
+        description: Over https and wss (DUVET_SECURE); off for a local stack's http and ws
+        type: boolean
+        default: true
+
+permissions:
+  contents: write
+
+jobs:
+  apk:
+    # On the organisation's own runner: the 2,000 free Actions minutes a month ran out.
+    runs-on: [self-hosted, linux, x64, duvet]
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          path: mobile
+          # All of main, to tell whether a tag is on it.
+          fetch-depth: 0
+      - name: Only the tag of pubspec.yaml's version, on main
+        if: github.event_name == 'push'
+        working-directory: mobile
+        run: |
+          version=$(sed -n 's/^version: \([0-9.]*\)+[0-9]*$/\1/p' pubspec.yaml)
+          if [ -z "$version" ] || [ "$GITHUB_REF" != "refs/tags/v$version" ]; then
+            echo "::error::$GITHUB_REF isn't v$version, pubspec.yaml's version"
+            exit 1
+          fi
+          if ! git merge-base --is-ancestor HEAD origin/main; then
+            echo "::error::v$version isn't on main"
+            exit 1
+          fi
+      # A host and its port, as the app takes them: with a scheme or a path, every address it makes would be wrong.
+      - name: Where a test build points
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          API: ${{ inputs.api }}
+          GATEWAY: ${{ inputs.gateway }}
+        run: |
+          for address in "$API" "$GATEWAY"; do
+            if [[ ! $address =~ ^[A-Za-z0-9.-]+(:[0-9]+)?$ ]]; then
+              echo "::error::'$address' isn't a host and port, without a scheme"
+              exit 1
+            fi
+          done
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: 17
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: 3.47.7
+          channel: stable
+      - name: Dependencies
+        working-directory: mobile
+        run: flutter pub get
+      # Always: an APK signed with the debug key wouldn't install over the app, and the script stops without the key.
+      - name: Release key
+        env:
+          KEYSTORE: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          STORE_PASSWORD: ${{ secrets.ANDROID_STORE_PASSWORD }}
+          KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: mobile/tool/release_key.sh
+      # A tag's APK keeps the app's own addresses, production's (README, Build flags); a test build, the ones given.
+      - name: Build
+        working-directory: mobile
+        env:
+          API: ${{ inputs.api }}
+          GATEWAY: ${{ inputs.gateway }}
+          SECURE: ${{ inputs.secure }}
+        run: |
+          defines=()
+          if [ "$GITHUB_EVENT_NAME" = workflow_dispatch ]; then
+            defines=(--dart-define=DUVET_API="$API" --dart-define=DUVET_GATEWAY="$GATEWAY")
+            defines+=(--dart-define=DUVET_SECURE="$SECURE")
+          fi
+          flutter build apk --release --target-platform android-arm64 "${defines[@]}"
+      # The release, holding the APK and its SHA-256, through the REST API (no gh here). A tag's is named for its
+      # version; a test build's is a prerelease, on a tag of its own at the commit it built.
+      - name: Publish
+        working-directory: mobile
+        env:
+          TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          API: ${{ inputs.api }}
+          GATEWAY: ${{ inputs.gateway }}
+          SECURE: ${{ inputs.secure }}
+        run: |
+          apk=build/app/outputs/flutter-apk/app-release.apk
+          sum=$(sha256sum "$apk" | cut -d' ' -f1)
+          SHA=$(git rev-parse HEAD)
+          if [ "$GITHUB_EVENT_NAME" = push ]; then
+            version=${GITHUB_REF_NAME#v}
+            TAG=$GITHUB_REF_NAME NAME="Duvet $version" PRERELEASE=false
+            file="duvet-$version.apk"
+            NOTES="Duvet $version for Android: the arm64-v8a APK of $SHA, signed with the release key."
+          else
+            web=https socket=wss
+            if [ "$SECURE" != true ]; then web=http socket=ws; fi
+            TAG="test-$GITHUB_RUN_NUMBER.$GITHUB_RUN_ATTEMPT" PRERELEASE=true
+            NAME="Test build $GITHUB_RUN_NUMBER of $GITHUB_REF_NAME, for $web://$API"
+            file="duvet-$TAG.apk"
+            NOTES="A test build of $GITHUB_REF_NAME at $SHA: the arm64-v8a APK, signed with the release key, pointed"
+            NOTES+=" at the API at $web://$API and the gateway at $socket://$GATEWAY. A phone with Duvet signed with"
+            NOTES+=" another key uninstalls it first."
+          fi
+          NOTES+=$'\n\n'"SHA-256: $sum"
+          export SHA TAG NAME PRERELEASE NOTES
+          body=$(python3 -c '
+          import json, os
+          e = os.environ
+          print(json.dumps({"tag_name": e["TAG"], "target_commitish": e["SHA"], "name": e["NAME"], "body": e["NOTES"],
+                            "prerelease": e["PRERELEASE"] == "true"}))')
+          created=$(curl --fail-with-body -sS -X POST -H "Authorization: Bearer $TOKEN" \
+            -H "Accept: application/vnd.github+json" "https://api.github.com/repos/$REPO/releases" -d "$body") ||
+            { echo "::error::the release wasn't made: $created"; exit 1; }
+          id=$(python3 -c 'import json, sys; print(json.loads(sys.argv[1])["id"])' "$created")
+          curl -fsS -X POST -H "Authorization: Bearer $TOKEN" \
+            -H "Content-Type: application/vnd.android.package-archive" --data-binary @"$apk" \
+            "https://uploads.github.com/repos/$REPO/releases/$id/assets?name=$file" > /dev/null
+          echo "Published $file ($sum) in the release $TAG." >> "$GITHUB_STEP_SUMMARY"
+      - name: Forget the key
+        if: always()
+        run: rm -f "$RUNNER_TEMP/release.jks" mobile/android/key.properties
