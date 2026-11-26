@@ -1107,6 +1107,21 @@ void main() {
     expect([for (final t in dmTyping) (t.name, t.recording)], [('maya', true)]);
   });
 
+  test("a chat's event after the repository is disposed is dropped, not thrown", () {
+    // Work begun before dispose (a message's content read, a send's answer) can end after it.
+    final gone = DuvetRepository(
+      store: MemorySessionStore(),
+      recentsStore: MemoryRecentChatsStore(),
+      httpClient: () => MockClient((_) async => http.Response('not found', 404)),
+      connectGateway: false,
+      cacheStore: MemoryChatCacheStore(),
+    )..dispose();
+    expect(
+      () => gone.handleEvent(_event('MESSAGE_PIN_UPDATE', {'id': '7', 'room_id': 'r-1', 'pinned_at': _at})),
+      returnsNormally,
+    );
+  });
+
   test('a reply says whether it mentions the author it answers, and a v2 message its text displays', () async {
     final events = await listen(_room);
     repository.handleEvent(
