@@ -3,9 +3,10 @@
 /// from the gateway's events and from the queue: a repeat is skipped, and a gap or an entry without its data reads the
 /// queue from where the core is, 50 entries an apply. A device out of the group comes in by its welcome, read from the
 /// queue, or an external commit, and makes the group where it may; its commits go through commits.dart, their bytes
-/// kept until an answer comes. The engine runs this work in its turn, one conversation at a time: this class keeps
-/// what's between turns, the entries heard, the commits whose requests go on, and what each conversation says to the
-/// person. The desktop's sync.ts in Dart, with its review's rulings.
+/// kept until an answer comes, the members routes' too (members.dart: an addition, a removal) and a member's leave.
+/// The engine runs this work in its turn, one conversation at a time: this class keeps what's between turns, the
+/// entries heard, the commits whose requests go on, and what each conversation says to the person. The desktop's
+/// sync.ts in Dart, with its review's rulings.
 library;
 
 import 'dart:async';
@@ -15,30 +16,41 @@ import 'package:duvet_client/duvet.dart' as duvet;
 import 'package:flutter/foundation.dart';
 
 import 'commits.dart';
+import 'deviceless.dart';
 import 'engine.dart';
 import 'failures.dart';
 import 'groups.dart';
 import 'host.dart';
 import 'identity.dart';
 import 'legacy.dart';
+import 'members.dart';
+import 'store.dart';
 
 /// What a conversation says over its message box of its group (PLAN-E2E-CLIENTES.md, «Avisos»): blocked; waiting for
-/// its owner to make it; waiting for another member to let this device back in; or members other than its record's.
-enum ConversationNotice { blocked, waitOwner, waitRejoin, membersChanged }
+/// its owner to make it; waiting for another member to let this device back in; members other than its record's, or
+/// than those its group holds; or, while it goes on, the members who can't receive what's sent yet (`no_device`).
+enum ConversationNotice { blocked, waitOwner, waitRejoin, membersChanged, noDevice }
 
 /// Who may restart a blocked group: this user, its owner, or nobody (a group under an external sender other than the
 /// pinned one, which no restart changes).
 enum Restart { mine, owner, none }
 
 /// What a conversation says of its group ([name]), with who may restart a blocked one, and its owner: a group's, whose
-/// restart or making the others wait for.
+/// restart or making the others wait for; and its members without a device ([users]).
 @immutable
 class ConversationState {
-  const ConversationState.blocked({required Restart this.restart, this.owner}) : name = ConversationNotice.blocked;
+  const ConversationState.blocked({required Restart this.restart, this.owner})
+    : name = ConversationNotice.blocked,
+      users = const [];
 
-  const ConversationState.waitOwner(String this.owner) : name = ConversationNotice.waitOwner, restart = null;
+  const ConversationState.waitOwner(String this.owner)
+    : name = ConversationNotice.waitOwner,
+      restart = null,
+      users = const [];
 
-  const ConversationState._(this.name) : restart = null, owner = null;
+  const ConversationState.noDevice(this.users) : name = ConversationNotice.noDevice, restart = null, owner = null;
+
+  const ConversationState._(this.name) : restart = null, owner = null, users = const [];
 
   static const waitRejoin = ConversationState._(ConversationNotice.waitRejoin);
   static const membersChanged = ConversationState._(ConversationNotice.membersChanged);
@@ -46,16 +58,23 @@ class ConversationState {
   final ConversationNotice name;
   final Restart? restart;
   final String? owner;
+  final List<String> users;
 
   @override
   bool operator ==(Object other) =>
-      other is ConversationState && other.name == name && other.restart == restart && other.owner == owner;
+      other is ConversationState &&
+      other.name == name &&
+      other.restart == restart &&
+      other.owner == owner &&
+      listEquals(other.users, users);
 
   @override
-  int get hashCode => Object.hash(name, restart, owner);
+  int get hashCode => Object.hash(name, restart, owner, Object.hashAll(users));
 
   @override
-  String toString() => 'ConversationState(${name.name}${restart == null ? '' : ', ${restart!.name}'}, $owner)';
+  String toString() =>
+      'ConversationState(${name.name}${restart == null ? '' : ', ${restart!.name}'}, $owner'
+      '${users.isEmpty ? '' : ', $users'})';
 }
 
 /// An entry as the core's apply takes it (PLAN-E2E-API.md, «La entrada de la cola»): `data` null in an event's entry
@@ -167,17 +186,24 @@ enum _Purpose {
   join,
   renew,
   renewAgain,
-  due;
+  due,
+  add,
+  remove;
 
   /// A commit on the group the device holds, which a refusal leaves staged for the queue to settle.
-  bool get member => this == renew || this == renewAgain || this == due;
+  bool get member => this == renew || this == renewAgain || this == due || this == add || this == remove;
 }
 
-/// A commit whose request goes on: its bytes, sent again as they are until an answer comes.
+/// A commit whose request goes on: its bytes, sent again as they are until an answer comes, by its route ([send]: a
+/// member's addition or removal; …/mls/commits without one).
 class _InFlight {
-  _InFlight(this.purpose, this.commit);
+  _InFlight(this.purpose, this.commit, this.send, this.user);
   final _Purpose purpose;
   final duvet.Commit commit;
+  final Future<duvet.CommitTaken> Function(duvet.Commit commit)? send;
+
+  /// The user an addition or a removal is of: made again when its resend loses its epoch.
+  final String? user;
   var tries = 0;
   void Function()? cancel;
 }
@@ -189,7 +215,7 @@ class _Retry {
 }
 
 /// The group as the core holds it (its `group`).
-typedef _Held = ({int generation, int epoch, bool blocked});
+typedef _Held = HeldMembers;
 
 /// Entries an apply takes at most.
 const _applyMost = 50;
@@ -219,13 +245,48 @@ const _finalRules = {'member_list_mismatch', 'external_sender_mismatch', 'group_
 
 int? _statusOf(Object error) => error is duvet.DuvetApiException ? error.statusCode : null;
 
+/// What a welcome is refused for when its members aren't the ones this device holds: its record's (a conversation from
+/// before the cutover), or, for a group it holds, a restart's that leaves out whom no statement it holds lets go, or
+/// that isn't the owner's. Either way the device joins that generation only on its person's yes (the core's #46).
+const membersRefusedRules = {'member_list_mismatch', 'members_changed_by_non_owner'};
+
+/// The generations of conversations whose members a welcome or a join was refused for, as [store] keeps them (M4 of the
+/// review): by conversation, kept across restarts, as a push's engine can see the refusal first.
+Map<String, int> refusedGenerationsIn(EngineStore store) => {
+  for (final MapEntry(:key, :value) in switch (store.read(refusedGenerations)) {
+    final Map<String, Object?> kept => kept.entries,
+    _ => const <MapEntry<String, Object?>>[],
+  })
+    if (value is int) key: value,
+};
+
+/// Keeps [generation] of the conversation as refused in [store] (null: none any more).
+Future<void> recordRefusedGeneration(EngineStore store, String conversationId, int? generation) {
+  final kept = refusedGenerationsIn(store);
+  if (generation == null) {
+    if (kept.remove(conversationId) == null) return Future.value();
+  } else {
+    kept[conversationId] = generation;
+  }
+  return store
+      .write(refusedGenerations, kept)
+      .catchError((Object error) => debugPrint("e2e: a refused generation wasn't kept: $error"));
+}
+
+/// How many times an addition or a removal is made again after another commit took its epoch.
+const _changeTries = 3;
+
+/// A change of the members whose request got no answer yet: its bytes go again on their own (_commit).
+CoreError _unanswered() => CoreError('unanswered', message: 'no answer came yet: the change goes again on its own');
+
 /// The entries that are a conversation's messages, and what an apply did to one that changes what it shows.
 const _messageKinds = {'message', 'edit', 'delete'};
 const _shownChanges = {'applied', 'own', 'undecryptable'};
 
 class Conversations {
   Conversations(this._engine, this._soon, this._failures, this._changed, this._messages, this._deleted)
-    : _legacy = LegacyRecords(_engine.store);
+    : _legacy = LegacyRecords(_engine.store),
+      _catchUps = CatchUps(_engine, _soon);
 
   final E2EEngine _engine;
 
@@ -241,6 +302,7 @@ class Conversations {
   /// (task 18's review, M4).
   final void Function(String conversationId, List<String> messageIds) _deleted;
   final LegacyRecords _legacy;
+  final CatchUps _catchUps;
 
   CoreHost get _host => _engine.host;
   duvet.E2eApi get _api => _engine.api;
@@ -254,6 +316,10 @@ class Conversations {
 
   /// Entries heard by events, by conversation and number, until the conversation's turn.
   final _heard = <String, Map<int, Map<String, Object?>>>{};
+
+  /// The generations of the welcomes heard or read, by conversation and number, until they're applied: a welcome the
+  /// core refuses for its members is marked with its own (M4).
+  final _welcomeGenerations = <String, Map<int, int>>{};
 
   /// Conversations whose turn for what they heard is on its way, which what they hear meanwhile joins.
   final _turns = <String>{};
@@ -286,8 +352,24 @@ class Conversations {
   /// Groups under an external sender other than the pinned one: this device never goes in (Ruling 32).
   final _otherSender = <String>{};
 
-  /// Groups whose members aren't their record's, until the person says yes ([accept]).
-  final _recordRefused = <String>{};
+  /// Groups whose members aren't their record's, or than its group holds (a restart's welcome its core refused, a newer
+  /// generation with other members), until the person says yes ([accept]): the generation refused, by conversation,
+  /// kept in the engine's store across restarts (M4 of the review).
+  late final _refused = refusedGenerationsIn(_engine.store);
+
+  /// The person's yes, by conversation: the generation and the members ([membersKey]) it was given for, which a join
+  /// into that generation with them asks no more; it goes with the refusal it answered (M5 of the desktop's review).
+  final _accepted = <String, ({int generation, String members})>{};
+
+  /// The members [_deviceless] was worked out from, by conversation: once the core's differ, it's asked again (I3).
+  final _devicelessFrom = <String, List<String>>{};
+
+  /// Restarts the core or the API refused, by conversation: the queue's last number then. Restart stays off until a
+  /// new entry comes (M1 of the review).
+  final _restartRefused = <String, int>{};
+
+  /// Each conversation's members without a device, as this device last told its core (deviceless.dart).
+  final _deviceless = <String, List<String>>{};
 
   /// Groups a commit took this device out of: whether its user is still a member is the API's to say (I2 of the
   /// desktop's review).
@@ -323,6 +405,7 @@ class Conversations {
     _due.clear();
     _retries.clear();
     _inFlight.clear();
+    _catchUps.stop();
     dropHeard();
   }
 
@@ -336,7 +419,12 @@ class Conversations {
     }
     _known.clear();
     _joinsLost.clear();
-    for (final kept in [_settling, _otherSender, _recordRefused, _removed, _lostJoin]) {
+    _accepted.clear();
+    _deviceless.clear();
+    _devicelessFrom.clear();
+    _restartRefused.clear();
+    _refused.clear();
+    for (final kept in [_settling, _otherSender, _removed, _lostJoin]) {
       kept.clear();
     }
   }
@@ -344,7 +432,10 @@ class Conversations {
   /// What was heard goes: the engine isn't ready for it, and the queue keeps it all (M3 of the desktop's review).
   void dropHeard() {
     _heard.clear();
+    _welcomeGenerations.clear();
     _turns.clear();
+    // A catch-up whose turn was skipped, as the engine wasn't ready, is asked for again by the next apply (M3).
+    _catchUps.dropQueued();
   }
 
   ConversationState? state(String conversationId) => _states[conversationId];
@@ -377,6 +468,7 @@ class Conversations {
   void _hear(String conversation, Map<String, Object?> entry, int? generation) {
     final seq = entry['seq']! as int;
     (_heard[conversation] ??= {})[seq] = entry;
+    if (generation != null && entry['kind'] == 'welcome') (_welcomeGenerations[conversation] ??= {})[seq] = generation;
     if (_known[conversation]?.group case final group?) {
       group.lastSeq = max(group.lastSeq, seq);
       group.generation = max(group.generation, generation ?? 0);
@@ -448,24 +540,175 @@ class Conversations {
     await _groupless(conv, make: true);
   }
 
-  /// The person's restart of the conversation's blocked group, which only its owner (in a DM, either member) makes.
-  Future<void> restart(String conversationId) async {
-    final conv = _known[conversationId];
-    final state = _states[conversationId];
-    if (conv == null || state?.restart != Restart.mine || _inFlight.containsKey(conversationId)) return;
-    await _commit(conv, _Purpose.restart, await restartGroup(_engine, conv.api));
+  /// The person's restart of the conversation's blocked group, which only its owner (in a DM, either member) makes,
+  /// with the members and owner the API has (reset_group). Whom it leaves out, those the core's group holds that the
+  /// API no longer lists, the person confirms first (the core's #46): while [leaving] isn't them, nothing is made, and
+  /// they're what this answers. A reset the core refuses (a successor's, without a statement it needs) leaves the group
+  /// blocked, and throws.
+  Future<List<String>> restart(String conversationId, List<String> leaving) async {
+    if (_inFlight.containsKey(conversationId)) return const [];
+    // Who may restart, from the list as it is now and the group the core holds blocked (the desktop's check).
+    final conv = await _fresh(conversationId);
+    final held = await _group(conversationId);
+    if (conv == null || held == null || !held.blocked || _blocked(conv).restart != Restart.mine) return const [];
+    final out = leftOut(held, conv.api);
+    if (!sameUsers(out, leaving)) return out;
+    final duvet.Commit commit;
+    try {
+      commit = await restartGroup(_engine, conv.api);
+    } on CoreError catch (error) {
+      if (error.code == 'rule_violation') _refuseRestart(conv);
+      rethrow;
+    }
+    if (await _commit(conv, _Purpose.restart, commit) == Sent.invalid) {
+      _refuseRestart(conv);
+      throw CoreError('rule_violation', message: 'the API refused the restart', rule: 'restart_refused');
+    }
+    return const [];
+  }
+
+  /// A restart refused: Restart stays off until a new entry comes, so no tap claims key packages for nothing (M1).
+  void _refuseRestart(_Conv conv) {
+    _restartRefused[conv.id] = conv.group?.lastSeq ?? 0;
+    _set(conv.id, _blocked(conv));
   }
 
   /// The person's yes to the members of today: the record goes, and this device goes in with none to hold it to, by
-  /// an external commit, or by making the group where there's none (M6 of the desktop's review).
+  /// an external commit, or by making the group where there's none (M6 of the desktop's review); the members it said
+  /// yes to are remembered, so a join made again with them asks no more.
   Future<void> accept(String conversationId) async {
-    final conv = _known[conversationId];
-    if (conv == null || !_recordRefused.contains(conversationId)) return;
+    if (!_refused.containsKey(conversationId)) return;
+    final conv = await _fresh(conversationId);
+    if (conv == null) return _gone(conversationId);
     await _legacy.drop(conversationId);
-    _recordRefused.remove(conversationId);
+    final generation = _refused[conversationId] ?? 0;
+    await _unrefuse(conversationId);
+    _accepted[conversationId] = (
+      generation: max(generation, conv.group?.generation ?? 0),
+      members: membersKey(conv.api),
+    );
     _set(conversationId, null);
     if (conv.group == null) return open(conversationId);
     await _join(conv);
+  }
+
+  Future<void> _refuse(String id, int generation) async {
+    _refused[id] = generation;
+    await recordRefusedGeneration(_engine.store, id, generation);
+  }
+
+  Future<void> _unrefuse(String id) async {
+    if (_refused.remove(id) != null) await recordRefusedGeneration(_engine.store, id, null);
+  }
+
+  /// The owner's addition of a user (PLAN-E2E-CLIENTES.md, «Qué se manda», its members' row): one commit of exactly
+  /// that user, with a key package of each of their devices, to POST …/members, on the group as it is now. The cap
+  /// holds before anything is asked. One whose epoch another commit took is made again on top of it; one that went
+  /// before (its user a member now) is done. The member, as the API answered or lists them.
+  Future<duvet.ConversationMember> add(String conversationId, String user) async {
+    for (var tries = 1; ; tries++) {
+      final conv = await _memberChange(conversationId);
+      if (conv.api.members.where((m) => m.userId == user).firstOrNull case final member?) return member;
+      checkAddition(conv.api, _user, user);
+      final held = await _changeable(conv);
+      // A change that waited went first: the list as it is now says whether it was this one (M2).
+      if (held.members.contains(user)) {
+        final listed = (await _fresh(conv.id))?.api.members.where((m) => m.userId == user).firstOrNull;
+        if (listed != null) return listed;
+      }
+      duvet.ConversationMember? added;
+      final made = await addition(_engine, conv.api, user, held);
+      final (:sent, :refusal) = await _change(conv, _Purpose.add, made, user, (commit) async {
+        final answer = await _api.addMember(conv.id, user, commit);
+        added = answer;
+        return answer.commit;
+      });
+      if (sent == Sent.accepted && added != null) return added!;
+      if (sent != Sent.lost || tries >= _changeTries) throw refusal!;
+    }
+  }
+
+  /// The owner's removal of a member: one commit that takes them out, every device of theirs with them.
+  Future<void> remove(String conversationId, String user) async {
+    for (var tries = 1; ; tries++) {
+      final conv = await _memberChange(conversationId);
+      if (!conv.hasMember(user)) return;
+      final held = await _changeable(conv);
+      if (!held.members.contains(user)) return;
+      final made = await removal(_engine, conv.api, user, held);
+      final (:sent, :refusal) = await _change(
+        conv,
+        _Purpose.remove,
+        made,
+        user,
+        (commit) => _api.removeMember(conv.id, user, commit),
+      );
+      if (sent == Sent.accepted) return;
+      if (sent != Sent.lost || tries >= _changeTries) throw refusal!;
+    }
+  }
+
+  /// The user leaves the conversation (PLAN-E2E-CLIENTES.md, «Qué se manda», its leave's row): with their statement,
+  /// which this device signs on its group as it is now, where it has one; without one where it hasn't. Nobody commits
+  /// their own removal: the API proposes it, and a member's commit makes it. A leave sent again after its answer was
+  /// lost is a 403, as its user isn't a member any more: the list says so, and it's the leave (step 3's closing
+  /// review).
+  Future<void> leave(String conversationId) async {
+    final conv = await _fresh(conversationId);
+    if (conv == null) return _gone(conversationId);
+    String? statement;
+    if (conv.group != null) {
+      // The statement is of the group's generation and an epoch it reached: the queue first.
+      await sync(conv.id);
+      // Only a device in the API's generation signs a statement it takes (M6): another leaves, or this one goes in.
+      final held = await _group(conv.id);
+      if (held == null || held.generation < (conv.group?.generation ?? 0)) {
+        throw CoreError('not_in_group', message: "this device isn't in the conversation's group", what: 'group');
+      }
+      final left = await _host.handle<Map<String, Object?>>({'cmd': 'leave', 'conversation_id': conv.id});
+      statement = left['statement']! as String;
+    }
+    try {
+      await _api.leave(conv.id, statement: statement);
+    } on duvet.DuvetApiException catch (error) {
+      // Gone already, by another of the user's devices or an earlier try: the list says so (a 403 or a 404).
+      if (!const [403, 404].contains(error.statusCode) || await _fresh(conv.id) != null) rethrow;
+    }
+    _gone(conv.id);
+  }
+
+  /// As the person opens the conversation (PLAN-E2E-CLIENTES.md, «Quien no tenía dispositivo»): its members without a
+  /// device, told to the core, which notes what this device sends them; while the group goes on, the conversation
+  /// says who they are. Nothing without a group here, which the core needs.
+  Future<void> checkDevices(String conversationId) async {
+    var conv = _known[conversationId];
+    final held = conv?.group == null ? null : await _group(conversationId);
+    if (conv == null || held == null) return;
+    if (!held.members.every(conv.hasMember)) conv = await _fresh(conversationId) ?? conv;
+    _devicelessFrom[conv.id] = held.members;
+    _deviceless[conv.id] = await withoutDevices(_engine, conv.api, held.members);
+    final now = _states[conv.id];
+    if (now == null || now.name == ConversationNotice.noDevice) _set(conv.id, _goingOn(conv.id));
+  }
+
+  /// A user's identity changed (IDENTITY_UPDATE): their conversations' members without a device are asked again.
+  Future<void> identityChanged(String user) async {
+    for (final conv in [..._known.values]) {
+      if (!conv.hasMember(user)) continue;
+      try {
+        await checkDevices(conv.id);
+      } catch (error) {
+        debugPrint("e2e: who has no device waits for the conversation's next open: $error");
+      }
+    }
+  }
+
+  /// The API changed a conversation (CONVERSATION_UPDATE: its owner, when they left): listed again, its state goes by
+  /// the conversation as it is now, a blocked group's restart offered to its new owner.
+  Future<void> changed(String conversationId) async {
+    if (!_known.containsKey(conversationId)) return;
+    if (await _fresh(conversationId) == null) return _gone(conversationId);
+    await sync(conversationId);
   }
 
   /// The leaf renewals due (refresh_due, «Lo periódico»): a commit in each conversation it names, one that fails
@@ -522,8 +765,13 @@ class Conversations {
     _inFlight.remove(id)?.cancel?.call();
     _due.remove(id)?.call();
     _heard.remove(id);
+    _welcomeGenerations.remove(id);
     _joinsLost.remove(id);
-    for (final kept in [_settling, _otherSender, _recordRefused, _removed, _lostJoin]) {
+    _accepted.remove(id);
+    _deviceless.remove(id);
+    _devicelessFrom.remove(id);
+    _restartRefused.remove(id);
+    for (final kept in [_settling, _otherSender, _removed, _lostJoin]) {
       kept.remove(id);
     }
     _set(id, null);
@@ -560,7 +808,7 @@ class Conversations {
       commit = await makeGroup(_engine, conv.api, _sender, await _legacy.of(conv.api));
     } on CoreError catch (error) {
       if (error.code == 'exists') return debugPrint("e2e: this device holds a group the API doesn't list.");
-      if (error.rule == 'member_list_mismatch') return _refusedRecord(conv);
+      if (error.rule == 'member_list_mismatch') return _membersChanged(conv);
       rethrow;
     }
     await _commit(conv, _Purpose.make, commit);
@@ -669,14 +917,21 @@ class Conversations {
     if (moved || results.any((r) => _messageKinds.contains(r.kind) && _shownChanges.contains(r.result))) {
       _messages(conv.id);
     }
-    for (final (:kind, :result, :rule, seq: _, epoch: _, reason: _) in results) {
+    final generations = _welcomeGenerations[conv.id];
+    for (final (:kind, :result, :rule, :seq, epoch: _, reason: _) in results) {
       final refused = kind == 'welcome' && result == 'rejected';
       if (refused && rule == 'external_sender_mismatch') _otherSender.add(conv.id);
-      if (refused && rule == 'member_list_mismatch' && record != null) _recordRefused.add(conv.id);
+      if (refused && membersRefusedRules.contains(rule)) {
+        await _refuse(conv.id, generations?[seq] ?? conv.group?.generation ?? 0);
+      }
       // A commit of its epoch, its own or another's: a commit of this device's left to settle is settled.
       if (kind == 'commit' && result != 'ignored') _settling.remove(conv.id);
       if (result == 'removed') _removed.add(conv.id);
     }
+    // The welcomes applied go with their generations.
+    generations?.removeWhere((seq, _) => seq <= (through ?? 0));
+    // Members who had no device have one now: what this device noted for them goes (deviceless.dart).
+    if (applied['catch_up_due'] case final List<Object?> due when due.isNotEmpty) _catchUps.due(conv.id, due.cast());
     return applied;
   }
 
@@ -695,6 +950,9 @@ class Conversations {
         group
           ..generation = page.generation
           ..lastSeq = page.lastSeq;
+      }
+      for (final entry in page.entries) {
+        if (entry.kind == 'welcome') (_welcomeGenerations[conv.id] ??= {})[entry.seq] = entry.generation;
       }
       final at = await _applyAll(conv, [for (final entry in page.entries) entryOf(entry)]);
       if (at.gap case final gap?) {
@@ -728,7 +986,13 @@ class Conversations {
   Future<_Held?> _group(String id) async {
     try {
       final held = await _host.handle<Map<String, Object?>>({'cmd': 'group', 'conversation_id': id});
-      return (generation: held['generation']! as int, epoch: held['epoch']! as int, blocked: held['blocked'] == true);
+      return (
+        generation: held['generation']! as int,
+        epoch: held['epoch']! as int,
+        blocked: held['blocked'] == true,
+        owner: held['owner'] as String?,
+        members: [for (final m in (held['members']! as List).cast<Map<String, Object?>>()) m['user_id']! as String],
+      );
     } on CoreError catch (error) {
       if (error.code == 'not_found') return null;
       rethrow;
@@ -745,10 +1009,21 @@ class Conversations {
     final group = conv.group;
     final held = await _group(id);
     if (held != null && held.generation >= (group?.generation ?? 0)) {
-      for (final kept in [_otherSender, _recordRefused, _removed, _lostJoin]) {
+      for (final kept in [_otherSender, _removed, _lostJoin]) {
         kept.remove(id);
       }
-      _set(id, held.blocked ? _blocked(conv) : null);
+      // In the API's generation, at or past any it refused: the refusal and its yes are done with.
+      if (held.generation >= (_refused[id] ?? held.generation)) await _unrefuse(id);
+      if (_accepted[id] case final yes? when held.generation >= yes.generation) _accepted.remove(id);
+      // Its members changed since who has no device was worked out: asked again (I3 of the review).
+      if (_devicelessFrom[id] case final from? when !held.blocked && !sameUsers(from, held.members)) {
+        try {
+          await checkDevices(id);
+        } catch (error) {
+          debugPrint('e2e: who has no device waits for the next change: $error');
+        }
+      }
+      _set(id, held.blocked ? _blocked(conv) : _goingOn(id));
       if (at.due && !held.blocked) _dueLater(id);
       return;
     }
@@ -761,7 +1036,7 @@ class Conversations {
     }
     final joined = now.group?.joinedSeq;
     if (now.group == null) return;
-    final refused = _otherSender.contains(id) || _recordRefused.contains(id);
+    final refused = _otherSender.contains(id) || (_refused[id] ?? -1) >= (now.group?.generation ?? 0);
     // After an external commit of its own lost its epoch, a welcome from where its leaf began is stale by then.
     final from = at.through ?? (_lostJoin.contains(id) || joined == null ? null : joined - 1);
     if (!refused && !at.whole && from != null) {
@@ -772,7 +1047,7 @@ class Conversations {
   }
 
   ConversationState _blocked(_Conv conv) => ConversationState.blocked(
-    restart: _otherSender.contains(conv.id)
+    restart: _otherSender.contains(conv.id) || (_restartRefused[conv.id] ?? -1) >= (conv.group?.lastSeq ?? 0)
         ? Restart.none
         : mayRestart(conv.api, _user)
         ? Restart.mine
@@ -780,9 +1055,66 @@ class Conversations {
     owner: conv.api.type == duvet.ConversationType.group ? conv.api.ownerId : null,
   );
 
-  void _refusedRecord(_Conv conv) {
-    _recordRefused.add(conv.id);
+  /// What a conversation whose group goes on says: who in it has no device yet, or nothing.
+  ConversationState? _goingOn(String id) => switch (_deviceless[id]) {
+    final users? when users.isNotEmpty => ConversationState.noDevice(users),
+    _ => null,
+  };
+
+  /// Its members aren't those this device would go in with: the person says whether to go on ([accept]).
+  Future<void> _membersChanged(_Conv conv, [int? generation]) async {
+    await _refuse(conv.id, generation ?? conv.group?.generation ?? 0);
     _set(conv.id, ConversationState.membersChanged);
+  }
+
+  /// Whether this device may join [generation] (the group info's it fetched) by an external commit on its own: not
+  /// one it refused, nor one newer than the core's with members (or a group's owner) other than those it holds, a
+  /// restart it never saw, its welcome kept from it or past the queue's floor, which its core never judged (the core's
+  /// #46), unless the person's yes was to that generation with these members.
+  Future<bool> _mayJoin(_Conv conv, int generation) async {
+    // The members as the API lists them now: those a join would bring this device in with.
+    final now = (await _fresh(conv.id))?.api ?? conv.api;
+    if (_accepted[conv.id] case final yes? when yes.generation == generation && yes.members == membersKey(now)) {
+      return true;
+    }
+    if ((_refused[conv.id] ?? -1) >= generation) return false;
+    final held = await _group(conv.id);
+    return held == null || held.generation >= generation || sameMembers(held, now);
+  }
+
+  /// A conversation whose members the user may change, as the API lists it now: one they aren't in is refused.
+  Future<_Conv> _memberChange(String id) async =>
+      await _fresh(id) ??
+      (throw CoreError('not_found', message: "the user isn't in this conversation", what: 'conversation'));
+
+  /// The group a change of its members goes on, as it is now: made here where it has none, its queue applied, and a
+  /// commit of this device's still waiting there sent again first, which one left unanswered refuses.
+  Future<_Held> _changeable(_Conv conv) async {
+    if (_inFlight.containsKey(conv.id)) await _resend(conv.id);
+    if (_inFlight.containsKey(conv.id)) throw _unanswered();
+    await current(conv.id);
+    return await _group(conv.id) ??
+        (throw CoreError('not_found', message: 'this device holds no group here', what: 'group'));
+  }
+
+  /// A members route's commit, sent as every commit is (_commit): what came of it, and what the API refused it with.
+  Future<({Sent sent, Object? refusal})> _change(
+    _Conv conv,
+    _Purpose purpose,
+    duvet.Commit commit,
+    String user,
+    Future<duvet.CommitTaken> Function(duvet.Commit commit) send,
+  ) async {
+    Object? refusal;
+    final sent = await _commit(conv, purpose, commit, (bytes) async {
+      try {
+        return await send(bytes);
+      } catch (error) {
+        refusal = error;
+        rethrow;
+      }
+    }, user);
+    return (sent: sent, refusal: sent == Sent.unanswered ? _unanswered() : refusal);
   }
 
   /// This device into the group by an external commit. The core asks no identities for it: refused for a rule, the
@@ -792,15 +1124,24 @@ class Conversations {
   Future<void> _join(_Conv conv) async {
     final id = conv.id;
     if (_otherSender.contains(id)) return _set(id, _blocked(conv));
-    if (_recordRefused.contains(id)) return _set(id, ConversationState.membersChanged);
+    if ((_refused[id] ?? -1) >= (conv.group?.generation ?? 0)) return _set(id, ConversationState.membersChanged);
     if (_inFlight.containsKey(id)) return;
     if ((_joinsLost[id] ?? 0) >= _joinsLostMost) {
       _joinsLost.remove(id);
       return;
     }
     _settling.remove(id);
-    Future<duvet.Commit> join() async => joinGroup(_engine, conv.api, _sender, await _legacy.of(conv.api));
-    duvet.Commit commit;
+    // Decided on the generation of the group info it fetched (M4): one it refused, or never judged, waits for the yes.
+    int? refusedAt;
+    Future<bool> mayJoin(int generation) async {
+      final may = await _mayJoin(conv, generation);
+      if (!may) refusedAt = generation;
+      return may;
+    }
+
+    Future<duvet.Commit?> join() async =>
+        joinGroup(_engine, conv.api, _sender, await _legacy.of(conv.api), mayJoin: mayJoin);
+    duvet.Commit? commit;
     try {
       try {
         commit = await join();
@@ -823,7 +1164,7 @@ class Conversations {
         case 'stale_group_info':
           return;
         case 'member_list_mismatch':
-          return _refusedRecord(conv);
+          return _membersChanged(conv, conv.group?.generation);
         case 'external_sender_mismatch':
           _otherSender.add(id);
           return _set(id, _blocked(conv));
@@ -833,6 +1174,7 @@ class Conversations {
           return _set(id, ConversationState.waitRejoin);
       }
     }
+    if (commit == null) return _membersChanged(conv, refusedAt);
     await _commit(conv, _Purpose.join, commit);
   }
 
@@ -878,25 +1220,35 @@ class Conversations {
 
   /// A commit of this device's to the API, its bytes kept until an answer comes: without one, the same bytes go again
   /// later and at each READY. Answered, the conversation's turn follows, reading the queue when another commit took
-  /// the epoch, and a renewal that lost so is made again on top of it, once.
-  Future<void> _commit(_Conv conv, _Purpose purpose, duvet.Commit commit) async {
+  /// the epoch, and a renewal that lost so is made again on top of it, once. [send] is a members route's request, the
+  /// commits route's without one. What came of it.
+  Future<Sent> _commit(
+    _Conv conv,
+    _Purpose purpose,
+    duvet.Commit commit, [
+    Future<duvet.CommitTaken> Function(duvet.Commit commit)? send,
+    String? user,
+  ]) async {
     final id = conv.id;
-    final flight = _inFlight[id] ??= _InFlight(purpose, commit);
+    final flight = _inFlight[id] ??= _InFlight(purpose, commit, send, user);
     final Sent sent;
     try {
-      sent = await sendCommit(_host, id, () => _api.commit(id, flight.commit));
+      sent = await sendCommit(_host, id, () => flight.send?.call(flight.commit) ?? _api.commit(id, flight.commit));
     } catch (error) {
       _resendLater(id, flight);
       rethrow;
     }
-    if (sent == Sent.unanswered) return _resendLater(id, flight);
+    if (sent == Sent.unanswered) {
+      _resendLater(id, flight);
+      return sent;
+    }
     _inFlight.remove(id);
     if (sent == Sent.invalid) {
       // The validator refused it: it never entered, and nothing changed. An external commit so refused waits for the
       // conversation's next commit, as one the core refused would.
       debugPrint("e2e: the API refused a commit of this device's (${flight.purpose.name}).");
       if (flight.purpose == _Purpose.join) _set(id, ConversationState.waitRejoin);
-      return;
+      return sent;
     }
     if (flight.purpose == _Purpose.join) {
       if (sent == Sent.accepted) {
@@ -914,6 +1266,16 @@ class Conversations {
       final now = _known[id];
       if (now != null && !_inFlight.containsKey(id)) await _own(now, 'refresh', _Purpose.renewAgain);
     }
+    // An addition or a removal sent again on its own that another commit beat to its epoch: made again, as its notice
+    // promised (I1 of the desktop's review). Its first send's caller does this itself.
+    if (flight.user case final user? when sent == Sent.lost && flight.tries > 0) {
+      try {
+        await (flight.purpose == _Purpose.add ? add(id, user) : remove(id, user));
+      } catch (error) {
+        debugPrint("e2e: a change of the members sent again didn't go: $error");
+      }
+    }
+    return sent;
   }
 
   void _resendLater(String id, _InFlight flight) {
@@ -932,7 +1294,7 @@ class Conversations {
     if (conv == null) return _gone(id);
     flight.cancel?.call();
     flight.cancel = null;
-    await _commit(conv, flight.purpose, flight.commit);
+    await _commit(conv, flight.purpose, flight.commit, flight.send, flight.user);
   }
 
   /// The API's conversations, which this device knows from now on; the states of those it's no longer in go.

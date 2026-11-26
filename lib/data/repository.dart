@@ -103,8 +103,10 @@ abstract interface class ChatRepository {
   ValueListenable<Map<String, ConversationState>> get conversationStates;
 
   /// The person's taps on it: Restart encryption, over a blocked group they may restart, and Open with these members,
-  /// over a conversation whose members aren't those this device first saw. Each does nothing in another state.
-  Future<void> restartGroup(String conversationId);
+  /// over a conversation whose members aren't those this device first saw. Each does nothing in another state. A
+  /// restart answers whom it would leave out that the person hasn't said yes to ([leaving]), and restarts only when
+  /// none are left: none once it restarted.
+  Future<List<String>> restartGroup(String conversationId, {List<String> leaving = const []});
 
   Future<void> acceptMembers(String conversationId);
 

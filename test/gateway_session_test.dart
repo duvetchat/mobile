@@ -198,6 +198,15 @@ class _OpensAfter implements CoreHost {
       _core.openFile(key, attachmentId, sealed, progress: progress);
 
   @override
+  Future<Map<String, Object?>> share(Map<String, Object?> command) => _core.share(command);
+
+  @override
+  Future<Uint8List> sharePart(String shareId, int n) => _core.sharePart(shareId, n);
+
+  @override
+  Future<void> dropShare(String shareId) => _core.dropShare(shareId);
+
+  @override
   Future<void> close() => _core.close();
 
   @override

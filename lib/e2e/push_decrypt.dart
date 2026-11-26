@@ -27,7 +27,7 @@ import 'host.dart';
 import 'identity.dart';
 import 'legacy.dart';
 import 'store.dart';
-import 'sync.dart' show entryOf;
+import 'sync.dart' show entryOf, membersRefusedRules, recordRefusedGeneration;
 
 /// The name the app's engine answers pushes under, while its device is ready.
 const pushPortName = 'duvet-e2e-push';
@@ -251,6 +251,7 @@ Future<PushAnswer> openPushed({
           expected: record == null ? null : expectedOf(record),
           failed: failed,
           late: late,
+          records: records,
         );
       }
       if (late()) return _none;
@@ -294,7 +295,11 @@ Future<void> _applyThrough(
   required Map<String, Object?>? expected,
   required List<String> failed,
   required bool Function() late,
+  required EngineStore records,
 }) async {
+  // The generations of the welcomes the queue gives, by number: a welcome the core refuses for its members is marked
+  // with its own.
+  final welcomes = <int, int>{};
   Future<int?> apply(List<Map<String, Object?>> entries) async {
     final applied = await withIdentitiesOn(
       host,
@@ -313,9 +318,14 @@ Future<void> _applyThrough(
       for (final queued in entries)
         if (queued['deleted'] == true) queued['seq']! as int,
     };
-    failed.addAll(
-      failedKinds([for (final result in applied['results']! as List<Object?>) entryResult(result! as Map)], deleted),
-    );
+    final results = [for (final result in applied['results']! as List<Object?>) entryResult(result! as Map)];
+    failed.addAll(failedKinds(results, deleted));
+    // A welcome refused for its members leaves its mark for the app's engine, which asks the person (the core's #46).
+    for (final result in results) {
+      if (result.kind == 'welcome' && result.result == 'rejected' && membersRefusedRules.contains(result.rule)) {
+        await recordRefusedGeneration(records, conversationId, welcomes[result.seq] ?? 0);
+      }
+    }
     return applied['applied_through'] as int?;
   }
 
@@ -327,7 +337,11 @@ Future<void> _applyThrough(
     through = error.from! - 1;
   }
   while (through != null && through < seq && !late()) {
-    final entries = [for (final queued in (await api.queue(conversationId, through)).entries) entryOf(queued)];
+    final page = (await api.queue(conversationId, through)).entries;
+    for (final queued in page) {
+      if (queued.kind == 'welcome') welcomes[queued.seq] = queued.generation;
+    }
+    final entries = [for (final queued in page) entryOf(queued)];
     if (entries.isEmpty) return;
     final was = through;
     for (var at = 0; at < entries.length && !late(); at += 50) {

@@ -111,7 +111,8 @@ void main() {
   );
 
   // M2 of the review: the person's yes, refused the group's info as the conversation is gone, lists the conversations
-  // again and lets it go, as any turn does (I2 of the desktop's review), instead of failing into the tap.
+  // again and lets it go, as any turn does (I2 of the desktop's review), instead of failing into the tap. The yes reads
+  // the list first (the members and generation it's given for, task 23's round 2): the conversation goes right after.
   test(
     "the_person's_yes_lets_go_a_conversation_whose_group_info_is_refused",
     () async {
@@ -119,22 +120,38 @@ void main() {
       final (ana, bo, cy, dee) = (fake.addUser(), fake.addUser(), fake.addUser(), fake.addUser());
       final conversation = fake.addConversation(group: true, members: [ana, bo, cy], owner: ana, legacy: true);
       final seen = <http.Request>[];
-      final c = await firstDevice(fake, cy, client: watchedClient(fake, seen: seen.add));
+      var goAfterList = false;
+      final c = await firstDevice(
+        fake,
+        cy,
+        client: watchedClient(
+          fake,
+          seen: seen.add,
+          change: (request, answered) async {
+            if (goAfterList && request.method == 'GET' && request.url.path == '/api/users/@me/conversations') {
+              // Deleted once the yes has its list: its group's info is refused.
+              goAfterList = false;
+              fake
+                ..deleteConversation(conversation)
+                ..refuse(
+                  (method: 'GET', path: '/api/users/@me/conversations/$conversation/mls/group-info'),
+                  403,
+                  body: {'error': "you aren't a member of this conversation"},
+                );
+            }
+            return answered;
+          },
+        ),
+      );
       fake.addMembers(conversation, [dee]);
       final a = await firstDevice(fake, ana);
       await a.engine.openConversation(conversation);
       await until(() => c.engine.conversationState(conversation) == ConversationState.membersChanged);
-      // Then the conversation is deleted, and its group's info refused.
-      fake
-        ..deleteConversation(conversation)
-        ..refuse(
-          (method: 'GET', path: '/api/users/@me/conversations/$conversation/mls/group-info'),
-          403,
-          body: {'error': "you aren't a member of this conversation"},
-        );
       final before = seen.length;
+      goAfterList = true;
       await c.engine.acceptMembers(conversation);
       expect(requestsOf(seen.sublist(before)), [
+        'GET /api/users/@me/conversations',
         'GET /api/users/@me/conversations/$conversation/mls/group-info',
         'GET /api/users/@me/conversations',
       ]);
