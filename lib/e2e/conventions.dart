@@ -94,12 +94,18 @@ const maxFileName = 255;
 // zero-width joiner, which holds an emoji sequence together. The bidirectional controls are format characters: with
 // one, an invoice named "invoice", a right-to-left override and "cod.exe" shows as "invoiceexe.doc".
 final _unseen = RegExp('[\\p{Cc}\\p{Zl}\\p{Zp}]|(?!${String.fromCharCode(0x200d)})\\p{Cf}', unicode: true);
+final _lone = RegExp(r'\p{Cs}', unicode: true);
+
+// A lone surrogate, which shows as U+FFFD and is written as one in UTF-8, is made one first: halves that a hidden
+// character kept apart would otherwise join into a character of their own once it goes, as U+DB40 U+200B U+DC01 joins
+// into U+E0001, a hidden tag character (the desktop's visible).
+String _visible(String text) => text.replaceAll(_lone, '\u{fffd}').replaceAll(_unseen, '');
 
 /// A file's name as a client may show or use it, whoever wrote it: its last part after any / or \, without the
 /// characters that hide what it is, trimmed, 255 characters at most; "file" when nothing of it is left.
 String cleanName(String name) {
   final last = name.split(RegExp(r'[/\\]')).last;
-  final kept = String.fromCharCodes(last.replaceAll(_unseen, '').trim().runes.take(maxFileName)).trim();
+  final kept = String.fromCharCodes(_visible(last).trim().runes.take(maxFileName)).trim();
   return kept.isEmpty || kept == '.' || kept == '..' ? 'file' : kept;
 }
 
@@ -267,7 +273,7 @@ ApprovalFrame? readApprovalFrame(String message) {
   // The approving device shows the name: it loses what doesn't show, as a file's name does.
   final name = value['name'];
   if (name is! String) return null;
-  final shown = name.replaceAll(_unseen, '').trim();
+  final shown = _visible(name).trim();
   return shown.isEmpty || shown.runes.length > maxDeviceName ? null : (step: step, data: data, name: shown);
 }
 

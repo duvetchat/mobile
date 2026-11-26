@@ -110,4 +110,26 @@ void main() {
       expect({for (var i = 0; i < 1000; i++) uuidv7(5)}, hasLength(1000));
     });
   });
+
+  // Step 5's fuzzing (PLAN-E2E-CLIENTES.md, «Lo que el paso 5 revisa»), with the desktop's findings.
+  group('what the fuzzers found', () {
+    // A lone surrogate is U+FFFD first, as it shows and as UTF-8 writes it: halves a hidden character kept apart would
+    // otherwise join once it goes, as U+DB40 U+200B U+DC01 joins into U+E0001, a hidden tag character.
+    test("a hidden character between a surrogate's halves leaves no hidden character of their own", () {
+      expect(cleanName('invoice\u{db40}\u{200b}\u{dc01}.pdf'), 'invoice\u{fffd}\u{fffd}.pdf');
+      expect(cleanName('a\u{d800}b'), 'a\u{fffd}b');
+      expect(cleanName('\u{dc00}'), '\u{fffd}');
+      // Cleaned once is clean.
+      expect(cleanName(cleanName('x\u{db40}\u{200b}\u{dc01}')), 'x\u{fffd}\u{fffd}');
+    });
+
+    test("nor in a device's name, whose frame reads back as it was read", () {
+      String named(String name) =>
+          base64Encode(utf8.encode('{"duvet":"approval","step":"offer","data":"b2Y=","name":"$name"}'));
+      final frame = readApprovalFrame(named(r'Ana\udb40​\udc01'))!;
+      expect(frame.name, 'Ana\u{fffd}\u{fffd}');
+      expect(readApprovalFrame(approvalFrameMessage(frame)), frame);
+      expect(readApprovalFrame(named(r'\ud800'))?.name, '\u{fffd}');
+    });
+  });
 }
