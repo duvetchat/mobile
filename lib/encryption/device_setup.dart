@@ -7,6 +7,7 @@ import 'package:forui/forui.dart';
 
 import '../data/repository.dart';
 import '../data/scope.dart';
+import '../e2e/conventions.dart' show qrFingerprint;
 import '../e2e/engine.dart';
 import '../e2e/host.dart' show CoreError;
 import '../e2e/notices.dart';
@@ -368,6 +369,17 @@ class _ApprovalNewState extends State<ApprovalNew> {
           Center(child: ApprovalQr(qr)),
           const SizedBox(height: 12),
           Text(qrLine, textAlign: TextAlign.center, style: line),
+          // What a phone that scans it shows, for the person to compare (mobile#363).
+          if (qrFingerprint(qr) case final fingerprint?) ...[
+            const SizedBox(height: 12),
+            Text(
+              fingerprintOf(fingerprint),
+              textAlign: TextAlign.center,
+              style: DuvetType.code.copyWith(fontSize: 16, letterSpacing: 1, color: colors.foreground),
+            ),
+            const SizedBox(height: 4),
+            Text(fingerprintLine, textAlign: TextAlign.center, style: line),
+          ],
           const SizedBox(height: 8),
           Center(
             child: TextAction(

@@ -96,6 +96,12 @@ void main() {
     }
   });
 
+  // mobile#363 (the desktop's #557): what a phone that scans a new device's QR compares, the QR's bytes' own.
+  test("a new device's QR's fingerprint, as a phone that scans it shows it", () {
+    final c = conventions['approval_qr_fingerprint'] as Map<String, dynamic>;
+    expect(qrFingerprint(c['qr'] as String), c['fingerprint']);
+  });
+
   group('uuidv7', () {
     test('is a version 7 UUID whose first 48 bits are the time it was made', () {
       final at = DateTime.utc(2026, 11, 24, 21, 30, 5, 123).millisecondsSinceEpoch;

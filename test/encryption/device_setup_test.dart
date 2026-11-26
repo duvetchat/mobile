@@ -4,6 +4,7 @@ import 'dart:typed_data';
 
 import 'package:duvet/data/scope.dart';
 import 'package:duvet/e2e/cbor.dart' show qrDevice;
+import 'package:duvet/e2e/conventions.dart' show approvalFingerprint;
 import 'package:duvet/e2e/engine.dart';
 import 'package:duvet/e2e/host.dart' show CoreError;
 import 'package:duvet/e2e/notices.dart';
@@ -27,6 +28,14 @@ final _conventions = jsonDecode(File('test/e2e/e2e-conventions.json').readAsStri
 const _device = '0193a4b2-0000-7000-8000-0000000000a2';
 const _fingerprint = '1a2b 3c4d 5e6f 7a8b';
 const _question = '0193a4b2-0000-7000-8000-0000000000c3';
+
+/// A new device's QR as its core writes it (the conventions' approval_qr).
+final _qr = (_conventions['approval_qr'] as Map)['qr'] as String;
+
+/// What the desktop's box and its words say an approving device compares with (its COMPARE_WITH_THE_BOX, #557).
+const _comparedWithTheBox =
+    "Approve it only if it's the device you're setting up now, and it shows the same 16 characters. The Duvet app on a "
+    'computer shows them in a box of its own, outside its window.';
 
 Widget _app(Widget child, FakeRepository repository) => RepositoryScope(
   repository: repository,
@@ -191,21 +200,71 @@ void main() {
     expect(repository.encryptionTaps.last, 'confirmApproval $_device');
   });
 
+  // mobile#363 (the desktop's #557): a script in a new computer's page could draw a QR of its own key, which the scan
+  // approved with nothing compared. It's asked about with the fingerprint of the very text it read, the 16 characters
+  // the new device shows (a computer's Duvet in a box of its own, outside its window), and approved only on the yes.
+  testWidgets(
+    "a scanned QR is asked about with its fingerprint, and the box to compare it with, before it's approved",
+    (tester) async {
+      final repository = FakeRepository()
+        ..encryption.value = EngineState.ready
+        ..scanned = (id: _device, name: 'Pixel 9', listed: false, unfinished: false);
+      late ValueChanged<String> read;
+      await tester.pumpWidget(_scanning(repository, (onRead) => read = onRead));
+      read(_qr);
+      await tester.pumpAndSettle();
+      expect(find.text(fingerprintOf(approvalFingerprint(base64Decode(_qr)))), findsOneWidget);
+      expect(find.text(_comparedWithTheBox), findsOneWidget);
+      expect(repository.encryptionTaps, ['scannedDevice $_qr']);
+      await tester.tap(find.text(approvalYes));
+      await tester.pumpAndSettle();
+      expect(repository.encryptionTaps.last, 'approveScanned $_qr $_device');
+    },
+  );
+
+  testWidgets("«Is this device yours?» says to compare with the new device's own box", (tester) async {
+    final repository = FakeRepository()
+      ..encryption.value = const EngineState(
+        EngineStage.ready,
+        approval: DeviceApproval(
+          device: _device,
+          name: 'Pixel 9',
+          fingerprint: _fingerprint,
+          phase: ApprovalPhase.asked,
+          question: _question,
+        ),
+      );
+    await tester.pumpWidget(_app(ApprovalPage(repository), repository));
+    await tester.pump();
+    expect(find.text(Notice.approvalAsk.text), findsOneWidget);
+    expect(find.text(_comparedWithTheBox), findsOneWidget);
+  });
+
+  // The same comparison's other end on a new phone, which draws its QR itself: the 16 characters a phone that scans it
+  // shows.
+  testWidgets('the QR way shows the 16 characters a phone that scans it shows', (tester) async {
+    final repository = FakeRepository()..encryption.value = EngineState.settingUp(DeviceSetup.qr(_qr));
+    await tester.pumpWidget(_app(DeviceSetupPage(repository), repository));
+    await tester.pump();
+    expect(find.text(fingerprintOf(approvalFingerprint(base64Decode(_qr)))), findsOneWidget);
+    expect(find.text(fingerprintLine), findsOneWidget);
+  });
+
   testWidgets("a scanned code's device is asked about before anything is approved", (tester) async {
     final repository = FakeRepository()
       ..encryption.value = EngineState.ready
       ..scanned = (id: _device, name: 'Pixel 9', listed: false, unfinished: true);
     late ValueChanged<String> read;
     await tester.pumpWidget(_scanning(repository, (onRead) => read = onRead));
-    read('the code');
+    read(_qr);
     await tester.pumpAndSettle();
-    expect(repository.encryptionTaps, ['scannedDevice the code']);
+    expect(repository.encryptionTaps, ['scannedDevice $_qr']);
     expect(find.text(Notice.approvalAsk.text), findsOneWidget);
     expect(find.text(approvalAsks), findsOneWidget);
     expect(find.text(approvalUnfinished), findsOneWidget);
     await tester.tap(find.text(approvalYes));
     await tester.pumpAndSettle();
-    expect(repository.encryptionTaps.last, 'approveScanned the code $_device');
+    expect(repository.encryptionTaps.last, 'approveScanned $_qr $_device');
     expect(find.text(scanSent), findsOneWidget);
   });
 
@@ -242,7 +301,7 @@ void main() {
     repository.scanned = (id: _device, name: name, listed: false, unfinished: true);
     late ValueChanged<String> read;
     await tester.pumpWidget(_scanning(repository, (onRead) => read = onRead));
-    read('the code');
+    read(_qr);
     await tester.pumpAndSettle();
     expect(find.textContaining(name), findsOneWidget);
     expect(tester.widget<Text>(find.textContaining(name)).data, quoted);
@@ -313,7 +372,7 @@ void main() {
       ..scanned = (id: _device, name: 'Pixel 9', listed: false, unfinished: false);
     late ValueChanged<String> read;
     await tester.pumpWidget(_scanning(repository, (onRead) => read = onRead));
-    read('the code');
+    read(_qr);
     await tester.pumpAndSettle();
     // Approved, its transfer's send failed: the engine says it waits, for Try again.
     repository.scanSends = false;
@@ -332,7 +391,7 @@ void main() {
     await tester.tap(find.text(scanAgain));
     await tester.pumpAndSettle();
     repository.scanSends = true;
-    read('the code');
+    read(_qr);
     await tester.pumpAndSettle();
     await tester.tap(find.text(approvalYes));
     await tester.pumpAndSettle();

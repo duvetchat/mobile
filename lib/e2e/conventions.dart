@@ -308,3 +308,11 @@ String approvalFingerprint(List<int> commitment) {
   final hex = [for (final byte in digest.take(8)) byte.toRadixString(16).padLeft(2, '0')].join();
   return '${hex.substring(0, 4)} ${hex.substring(4, 8)} ${hex.substring(8, 12)} ${hex.substring(12, 16)}';
 }
+
+/// The fingerprint of a new device's QR, as a phone that scans it shows it (mobile#363): the approval's fingerprint of
+/// the bytes its text holds, which a computer's box shows beside its commitment's, as the QR's bytes aren't the
+/// commitment's (the desktop's #557). Null for a text that isn't canonical base64.
+String? qrFingerprint(String qr) => switch (canonicalBytes(qr)) {
+  final bytes? => approvalFingerprint(bytes),
+  null => null,
+};
