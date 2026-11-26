@@ -578,7 +578,8 @@ void main() {
       DeviceApproval? asked() => phone.engine.state.value.approval;
       await _eventually(() => asked()?.phase == ApprovalPhase.asked);
       final desktop = asked()!.device;
-      await phone.engine.approveDevice(desktop);
+      // The yes names the question it answers (mobile#355).
+      await phone.engine.approveDevice(desktop, asked()!.question ?? '');
       await _eventually(() => asked()?.phase == ApprovalPhase.code);
       _note('dave-phone-code', {'device': desktop, 'code': asked()!.code});
       expect(await _noted('dave-desktop-accepted'), {'device': desktop});
