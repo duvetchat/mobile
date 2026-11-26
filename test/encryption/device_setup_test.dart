@@ -26,6 +26,7 @@ import '../support/fake_repository.dart';
 final _conventions = jsonDecode(File('test/e2e/e2e-conventions.json').readAsStringSync()) as Map<String, dynamic>;
 const _device = '0193a4b2-0000-7000-8000-0000000000a2';
 const _fingerprint = '1a2b 3c4d 5e6f 7a8b';
+const _question = '0193a4b2-0000-7000-8000-0000000000c3';
 
 Widget _app(Widget child, FakeRepository repository) => RepositoryScope(
   repository: repository,
@@ -159,6 +160,7 @@ void main() {
           name: 'Pixel 9',
           fingerprint: _fingerprint,
           phase: ApprovalPhase.asked,
+          question: _question,
         ),
       );
     await tester.pumpWidget(_app(ApprovalPage(repository), repository));
@@ -169,7 +171,7 @@ void main() {
     expect(repository.encryptionTaps, isEmpty);
     await tester.tap(find.text(approvalYes));
     await tester.pump();
-    expect(repository.encryptionTaps, ['approveDevice $_device']);
+    expect(repository.encryptionTaps, ['approveDevice $_device $_question']);
 
     repository.encryption.value = const EngineState(
       EngineStage.ready,
@@ -386,6 +388,7 @@ void main() {
           name: 'Pixel 9',
           fingerprint: _fingerprint,
           phase: ApprovalPhase.asked,
+          question: _question,
         ),
       )
       ..setupFails = CoreError('approval_waits');
@@ -393,7 +396,7 @@ void main() {
     await tester.pump();
     await tester.tap(find.text(approvalYes));
     await tester.pumpAndSettle();
-    expect(repository.encryptionTaps, ['approveDevice $_device']);
+    expect(repository.encryptionTaps, ['approveDevice $_device $_question']);
     expect(find.text(anotherWaits), findsOneWidget);
   });
 }

@@ -126,7 +126,8 @@ class _ApprovalPageState extends State<ApprovalPage> {
         approval: approval,
         busy: _busy,
         problem: _problem,
-        onApprove: () => _run(() => setup.approveDevice(approval.device)),
+        // The yes answers the question shown: one that replaced it meanwhile waits for its own (mobile#355).
+        onApprove: () => _run(() => setup.approveDevice(approval.device, approval.question ?? '')),
         onDecline: () => _run(() => setup.declineDevice(approval.device)),
         onConfirm: () => _run(() => setup.confirmApproval(approval.device)),
       );

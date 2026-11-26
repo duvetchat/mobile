@@ -28,6 +28,9 @@ DeviceSetup? _setupOf(EngineState state) => state.stage == EngineStage.newDevice
 
 DeviceApproval? _approvalOf(EngineState state) => state.stage == EngineStage.ready ? state.approval : null;
 
+/// The question an approving device shows, which the person's yes answers.
+String _questionOf(TestDevice device) => _approvalOf(device.state)?.question ?? '';
+
 /// The new device's code's way, once an approving device's offer was taken.
 bool _offered(TestDevice device) {
   final setup = _setupOf(device.state);
@@ -76,7 +79,7 @@ Future<String> _toTheCode(TestDevice approver, TestDevice fresh) async {
   await fresh.engine.useCode();
   final fingerprint = _setupOf(fresh.state)!.fingerprint;
   await until(() => _approvalOf(approver.state)?.fingerprint == fingerprint);
-  await approver.engine.approveDevice(_deviceOf(fresh));
+  await approver.engine.approveDevice(_deviceOf(fresh), _questionOf(approver));
   await until(() => _approvalOf(approver.state)?.phase == ApprovalPhase.code);
   await until(() => _offered(fresh));
   return _approvalOf(approver.state)!.code!;
@@ -170,8 +173,10 @@ void main() {
       expect((setup.way, setup.offered, setup.accepted), (SetupWay.code, false, false));
       expect(setup.fingerprint, _fingerprint);
 
-      // The approving device asks the person, naming the new device and showing the same fingerprint.
+      // The approving device asks the person, naming the new device and showing the same fingerprint, about the
+      // commitment's inbox message, which the yes answers.
       await until(() => _approvalOf(a.state)?.phase == ApprovalPhase.asked);
+      expect(_questionOf(a), isNotEmpty);
       expect(
         _approvalOf(a.state),
         DeviceApproval(
@@ -179,9 +184,10 @@ void main() {
           name: 'Pixel 8 Pro',
           fingerprint: setup.fingerprint!,
           phase: ApprovalPhase.asked,
+          question: _questionOf(a),
         ),
       );
-      await a.engine.approveDevice(_deviceOf(n));
+      await a.engine.approveDevice(_deviceOf(n), _questionOf(a));
       await until(() => _approvalOf(a.state)?.phase == ApprovalPhase.code);
       final code = _approvalOf(a.state)!.code!;
       expect(code, matches(RegExp(r'^\d{6}$')));
@@ -235,7 +241,7 @@ void main() {
       final again = await restarted(fake, a);
       await until(() => _approvalOf(again.state)?.phase == ApprovalPhase.asked);
       expect(log, isNot(contains('approval_offer')));
-      await again.engine.approveDevice(_deviceOf(n));
+      await again.engine.approveDevice(_deviceOf(n), _questionOf(again));
       expect(log.where((cmd) => cmd == 'approval_offer'), hasLength(1));
 
       // Confirm too runs on the person's tap alone: Android has no box of the system's, and the app's Confirm, beside
@@ -331,7 +337,7 @@ void main() {
       await n.engine.useCode();
       final fingerprint = _setupOf(n.state)!.fingerprint;
       await until(() => _approvalOf(a.state)?.fingerprint == fingerprint);
-      await a.engine.approveDevice(_deviceOf(n));
+      await a.engine.approveDevice(_deviceOf(n), _questionOf(a));
       expect(_approvalOf(a.state)?.phase, isNot(ApprovalPhase.asked));
       a.clock.advance(attemptLife);
       await turnEnded(a);
@@ -457,7 +463,7 @@ void main() {
       await n.engine.useCode();
       await until(() => _keptSteps(a).contains(ApprovalStep.commitment));
       expect(_approvalOf(a.state), isNull);
-      await a.engine.approveDevice(_deviceOf(n));
+      await a.engine.approveDevice(_deviceOf(n), _questionOf(a));
       expect(log, isNot(contains('approval_offer')));
       // The change done, the new device's question shows.
       await a.engine.keySaved();
@@ -489,7 +495,7 @@ void main() {
       final fingerprint = _setupOf(n.state)!.fingerprint;
       await until(() => _approvalOf(a.state)?.fingerprint == fingerprint);
       expect((_approvalOf(a.state)?.device, _approvalOf(a.state)?.unfinished), (_deviceOf(n), true));
-      await a.engine.approveDevice(_deviceOf(n));
+      await a.engine.approveDevice(_deviceOf(n), _questionOf(a));
       expect(_asked(host, 'sign_device_list').map((command) => command['remove']), [
         [_deviceOf(n)],
       ]);
@@ -541,7 +547,7 @@ void main() {
       fake.replayInbox(_deviceOf(a));
       await until(() => _approvalOf(a.state)?.phase == ApprovalPhase.asked);
       expect((_approvalOf(a.state)?.device, _approvalOf(a.state)?.unfinished), (_deviceOf(b), false));
-      await a.engine.approveDevice(_deviceOf(b));
+      await a.engine.approveDevice(_deviceOf(b), _questionOf(a));
       expect(_asked(host, 'sign_device_list'), isEmpty);
       expect(await _heldList(a), unorderedEquals([_deviceOf(a), _deviceOf(b)]));
       // The core approves no device on its list.
@@ -589,12 +595,104 @@ void main() {
       lies
         ..lying = true
         ..hidden = {_deviceOf(c)};
-      await a.engine.approveDevice(_deviceOf(n));
+      await a.engine.approveDevice(_deviceOf(n), _questionOf(a));
       expect(_asked(host, 'sign_device_list').map((command) => command['remove']), [
         [_deviceOf(n)],
       ]);
       expect(listDevices((await c.api.identity(ana)).deviceList), unorderedEquals([_deviceOf(a), _deviceOf(c)]));
       await Future.wait([a.engine.stop(), c.engine.stop(), n.engine.stop()]);
+    },
+    skip: noCore,
+    timeout: _slow,
+  );
+
+  // Step 5's review, M1 (mobile#355): the yes offered to the question's commitment while a newer attempt of the
+  // device's waited in the record, before the take that keeps the newest alone; the new device then dropped the offer.
+  test(
+    'a_yes_to_a_question_a_newer_attempt_replaced_offers_nothing,_and_the_newer_one_waits_for_its_own_yes',
+    () async {
+      final fake = FakeApi();
+      final ana = fake.addUser();
+      final host = WatchedHost(TestHost().gate, []);
+      var reading = true;
+      final a = await firstDevice(fake, ana, host: host, hears: (event) => reading || event.type != 'DEVICE_MESSAGE');
+      final n = await _newDevice(fake, ana);
+      await n.engine.beginApproval();
+      await n.engine.useCode();
+      await until(() => _approvalOf(a.state)?.phase == ApprovalPhase.asked);
+      final first = _approvalOf(a.state)!;
+      // The new device begins again: its newer commitment is in the record, as an inbox's round keeps every frame, and
+      // the take that asks of it hasn't run.
+      reading = false;
+      await n.engine.useCode();
+      await until(() async => (await a.api.inbox()).length == 1);
+      final newer = (await a.api.inbox()).single;
+      await a.store.write(keptApprovals, [
+        ...a.store.read(keptApprovals)! as List<Object?>,
+        {
+          'id': newer.id,
+          'from_user_id': newer.fromUserId,
+          'from_device_id': newer.fromDeviceId,
+          'message': newer.message,
+          'created_at': newer.createdAt.toUtc().toIso8601String(),
+        },
+      ]);
+      await a.api.clearInbox(newer.id);
+      reading = true;
+
+      // The person's yes to the question shown offers nothing, and the newer attempt is asked of.
+      await a.engine.approveDevice(_deviceOf(n), first.question!);
+      expect(_asked(host, 'approval_offer'), isEmpty);
+      final second = _approvalOf(a.state)!;
+      expect((second.device, second.phase, second.question), (_deviceOf(n), ApprovalPhase.asked, newer.id));
+      expect(second.fingerprint, isNot(first.fingerprint));
+      // Its own yes offers to it, and the new device takes that offer.
+      await a.engine.approveDevice(_deviceOf(n), second.question!);
+      expect(_asked(host, 'approval_offer'), hasLength(1));
+      await until(() => _offered(n));
+      await Future.wait([a.engine.stop(), n.engine.stop()]);
+    },
+    skip: noCore,
+    timeout: _slow,
+  );
+
+  // mobile#355, with step 5's review M1: a yes that met an identity this device doesn't hold read the inbox, whose
+  // newer commitment of the device's replaced the question, and was tried again at once on that new question: an offer
+  // to a fingerprint the person never saw.
+  test(
+    'a_yes_tried_again_after_the_inbox_offers_only_to_the_question_it_answered',
+    () async {
+      final fake = FakeApi();
+      final ana = fake.addUser();
+      var replaced = false;
+      final host = WatchedHost(
+        TestHost().gate,
+        [],
+        answer: (command) {
+          if (!replaced || command['cmd'] != 'observe_user' || command['user_id'] != ana) return null;
+          replaced = false;
+          return {'state': 'rejected', 'verified': true, 'reason': 'not_own_identity'};
+        },
+      );
+      var reading = true;
+      final a = await firstDevice(fake, ana, host: host, hears: (event) => reading || event.type != 'DEVICE_MESSAGE');
+      final n = await _newDevice(fake, ana);
+      await n.engine.beginApproval();
+      await n.engine.useCode();
+      await until(() => _approvalOf(a.state)?.phase == ApprovalPhase.asked);
+      final first = _approvalOf(a.state)!;
+      // The new device begins again, and its newer commitment waits in the inbox, which the yes reads.
+      reading = false;
+      await n.engine.useCode();
+      await until(() async => (await a.api.inbox()).length == 1);
+      reading = true;
+      replaced = true;
+      await a.engine.approveDevice(_deviceOf(n), first.question!);
+      expect(_asked(host, 'approval_offer'), isEmpty);
+      final second = _approvalOf(a.state)!;
+      expect(second.phase, ApprovalPhase.asked);
+      expect(second.fingerprint, isNot(first.fingerprint));
+      await Future.wait([a.engine.stop(), n.engine.stop()]);
     },
     skip: noCore,
     timeout: _slow,
@@ -612,7 +710,7 @@ void main() {
       final code = await _toTheCode(a, n);
       final again = await restarted(fake, a);
       await until(() => _approvalOf(again.state)?.phase == ApprovalPhase.asked);
-      await again.engine.approveDevice(_deviceOf(n));
+      await again.engine.approveDevice(_deviceOf(n), _questionOf(again));
       await until(() => _approvalOf(again.state)?.phase == ApprovalPhase.code);
       expect(_approvalOf(again.state)?.code, code);
       await n.engine.acceptCode(code);
@@ -696,14 +794,14 @@ void main() {
       await n.engine.useCode();
       await until(() => _approvalOf(a.state)?.phase == ApprovalPhase.asked);
       replaced = true;
-      await a.engine.approveDevice(_deviceOf(n));
+      await a.engine.approveDevice(_deviceOf(n), _questionOf(a));
       expect(log, isNot(contains('approval_offer')));
       expect(_approvalOf(a.state)?.phase, ApprovalPhase.asked);
       await expectLater(a.engine.approveScanned(qr, scanned), throwsA(isA<StateError>()));
       expect(log, isNot(contains('approval_from_qr')));
       // Its identity the API's again: the yes offers.
       replaced = false;
-      await a.engine.approveDevice(_deviceOf(n));
+      await a.engine.approveDevice(_deviceOf(n), _questionOf(a));
       expect(log, contains('approval_offer'));
       await Future.wait([a.engine.stop(), n.engine.stop()]);
     },
@@ -809,14 +907,14 @@ void main() {
       }
 
       final first = await scannedAndWaiting();
-      await expectLater(a.engine.approveDevice(_deviceOf(asking)), throwsA(_waits));
+      await expectLater(a.engine.approveDevice(_deviceOf(asking), _questionOf(a)), throwsA(_waits));
       expect(log, isNot(contains('approval_offer')));
 
       // That one set up, the yes offers; another scan's approval waiting, the Confirm goes no further.
       first.connect(_deviceOf(first));
       await until(() => first.state == EngineState.ready);
       await turnEnded(a);
-      await a.engine.approveDevice(_deviceOf(asking));
+      await a.engine.approveDevice(_deviceOf(asking), _questionOf(a));
       await until(() => _approvalOf(a.state)?.phase == ApprovalPhase.code);
       await until(() => _offered(asking));
       await asking.engine.acceptCode(_approvalOf(a.state)!.code!);
@@ -911,7 +1009,7 @@ void main() {
       final fingerprint = _setupOf(n.state)!.fingerprint;
       await until(() => _approvalOf(a.state)?.fingerprint == fingerprint);
       expect(_approvalOf(a.state)?.unfinished, isTrue);
-      await a.engine.approveDevice(_deviceOf(n));
+      await a.engine.approveDevice(_deviceOf(n), _questionOf(a));
       await until(() => _approvalOf(a.state)?.phase == ApprovalPhase.code);
       await until(() => _offered(n));
       await n.engine.acceptCode(_approvalOf(a.state)!.code!);

@@ -2173,7 +2173,7 @@ class _SetupTaps implements DeviceSetupActions {
   @override
   Future<void> finishSetup() => _tap('finishSetup');
   @override
-  Future<void> approveDevice(String deviceId) => _tap('approveDevice $deviceId');
+  Future<void> approveDevice(String deviceId, String question) => _tap('approveDevice $deviceId $question');
   @override
   Future<void> declineDevice(String deviceId) => _tap('declineDevice $deviceId');
   @override

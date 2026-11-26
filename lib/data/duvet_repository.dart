@@ -6462,7 +6462,7 @@ class _NoSetup implements DeviceSetupActions {
   @override
   Future<void> finishSetup() async => _none();
   @override
-  Future<void> approveDevice(String deviceId) async => _none();
+  Future<void> approveDevice(String deviceId, String question) async => _none();
   @override
   Future<void> declineDevice(String deviceId) async => _none();
   @override

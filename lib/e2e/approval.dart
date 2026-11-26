@@ -99,7 +99,8 @@ enum ApprovalEnd { over, listed }
 /// What a device of the user's shows of a new one that asks to be approved: its [name] and the [fingerprint] its screen
 /// shows (Ruling 35; none for one approved by its QR), where it stands ([phase]), the [code] to type into it, why it
 /// [ended], and whether this device approved it before, by its own record, and no list it took names it yet
-/// ([unfinished]): then it comes off this device's list first (the core's way out).
+/// ([unfinished]): then it comes off this device's list first (the core's way out). [question] is the inbox message of
+/// the commitment asked about, which the person's yes answers (mobile#355); none once its transfer went.
 @immutable
 class DeviceApproval {
   const DeviceApproval({
@@ -107,6 +108,7 @@ class DeviceApproval {
     required this.name,
     required this.fingerprint,
     required this.phase,
+    this.question,
     this.code,
     this.ended,
     this.unfinished = false,
@@ -116,6 +118,7 @@ class DeviceApproval {
   final String name;
   final String fingerprint;
   final ApprovalPhase phase;
+  final String? question;
   final String? code;
   final ApprovalEnd? ended;
   final bool unfinished;
@@ -127,12 +130,13 @@ class DeviceApproval {
       other.name == name &&
       other.fingerprint == fingerprint &&
       other.phase == phase &&
+      other.question == question &&
       other.code == code &&
       other.ended == ended &&
       other.unfinished == unfinished;
 
   @override
-  int get hashCode => Object.hash(device, name, fingerprint, phase, code, ended, unfinished);
+  int get hashCode => Object.hash(device, name, fingerprint, phase, question, code, ended, unfinished);
 
   // Never the code: it's for the person's eyes, and a state may end up in a log.
   @override
@@ -266,6 +270,7 @@ class Approvals {
         name: asked.name,
         fingerprint: asked.fingerprint,
         phase: asked.phase,
+        question: asked.message,
         code: asked.code,
         ended: asked.ended,
         unfinished: asked.unfinished,
@@ -389,16 +394,21 @@ class Approvals {
   /// whose transfer this one hasn't taken): the engine takes its inbox first. A device this one approved before that
   /// never took its transfer is still on this device's list, where the core refuses to approve it again: it comes off
   /// first, and alone (the core's way out, a list without it), on this yes, which the question says. Only this
-  /// device's record says which device that is ([unfinished]).
-  Future<bool> approve(String device) async {
+  /// device's record says which device that is ([unfinished]). The yes is to the [question] the person answered: once
+  /// another stands, or a newer attempt of the device's waits for its take, nothing is offered, and the newer question
+  /// waits for its own yes (mobile#355).
+  Future<bool> approve(String device, String question) async {
     final asked = _asked;
-    if (asked == null || asked.device != device || asked.phase != ApprovalPhase.asked) return true;
+    if (asked == null || asked.device != device || asked.message != question || asked.phase != ApprovalPhase.asked) {
+      return true;
+    }
     _oneAtATime(device);
     final frame = _commitmentOf(asked);
     if (frame == null) {
       _end(asked, ApprovalEnd.over);
       return true;
     }
+    if (_replacedAttempt(asked)) return true;
     final served = await servedIdentity(_engine);
     if (served != null && await observeOwn(_engine, served) == 'not_own_identity') return false;
     if (served != null && await unfinished(device)) await _wayOut(device);
@@ -435,6 +445,14 @@ class Approvals {
   ApprovalFrame? _commitmentOf(_Asked asked) {
     final message = _keptIn(_engine.store).where((one) => one['id'] == asked.message).firstOrNull;
     return message == null ? null : _frameOf(message);
+  }
+
+  /// A newer commitment of the device's waits in the record: its attempt replaced the one asked about.
+  bool _replacedAttempt(_Asked asked) {
+    final newest = _keptIn(_engine.store)
+        .where((one) => one['from_device_id'] == asked.device && _frameOf(one)?.step == ApprovalStep.commitment)
+        .lastOrNull;
+    return newest != null && newest['id'] != asked.message;
   }
 
   /// Approved here before, by this device's own record, with no list the core took naming it since, and still on the

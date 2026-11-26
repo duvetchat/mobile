@@ -265,8 +265,9 @@ abstract interface class DeviceSetupActions {
   /// Finish of a setup that waits: its first list, or starting over's key again.
   Future<void> finishSetup();
 
-  /// The approving device's person: yes to «Is this device yours?», no, and Confirm.
-  Future<void> approveDevice(String deviceId);
+  /// The approving device's person: yes to «Is this device yours?» (to the [question] they answered, the
+  /// approval's), no, and Confirm.
+  Future<void> approveDevice(String deviceId, String question);
   Future<void> declineDevice(String deviceId);
   Future<void> confirmApproval(String deviceId);
 
@@ -1264,15 +1265,16 @@ class E2EEngine implements DeviceSetupActions {
     _set(EngineState.newDevice);
   });
 
-  /// The person's yes to «Is this device yours?»: this device offers to approve it (never without it). Its identity
-  /// replaced meanwhile, its inbox goes first, which may bring the change of keys' transfer, and the yes is tried
-  /// again.
+  /// The person's yes to «Is this device yours?», to the [question] they answered (its inbox message): this device
+  /// offers to approve it (never without it). Its identity replaced meanwhile, its inbox goes first, which may bring
+  /// the change of keys' transfer, and the yes is tried again, on that question alone: one the inbox put in its place
+  /// waits for its own yes (mobile#355).
   @override
-  Future<void> approveDevice(String deviceId) => _queue(() async {
+  Future<void> approveDevice(String deviceId, String question) => _queue(() async {
     if (_role() != ApprovalRole.approver) return;
-    if (!await _approvals.approve(deviceId)) {
+    if (!await _approvals.approve(deviceId, question)) {
       await _inbox();
-      if (_role() != ApprovalRole.approver || !await _approvals.approve(deviceId)) return;
+      if (_role() != ApprovalRole.approver || !await _approvals.approve(deviceId, question)) return;
     }
     // A reveal kept from before the app started again: taken now.
     await _approvals.take(ApprovalRole.approver);
