@@ -38,6 +38,22 @@ const _lostKey = (state: HostState.failed, keyStorage: null, reason: 'bad_key');
 /// The commands [CoreGate.handle] refuses: each has a way of its own, which keeps its bytes out of one JSON.
 const ownWay = {'attachment_encrypt', 'attachment_decrypt', 'history_share', 'catch_up', 'history_import'};
 
+/// The commands only the engine with a screen runs (Review Focus 2; Task 27): a new device's setup by the recovery
+/// key, another device's approval or starting over. A gate that doesn't serve (a push's, WorkManager's, audio_service's
+/// engine) refuses them, before it asks the app's engine or runs them itself.
+const screenOnly = {
+  'recover',
+  'reset_identity',
+  'approval_begin',
+  'approval_offer',
+  'approval_reveal',
+  'approval_check',
+  'approval_confirm',
+  'approval_accept',
+  'approval_from_qr',
+  'approval_receive',
+};
+
 /// The most parts [CoreGate.importShare] hands the core at once, which reads the whole command before it looks at
 /// them.
 const maxShareParts = 64;
@@ -345,6 +361,9 @@ final class CoreGate implements CoreHost {
     final cmd = command['cmd'];
     if (ownWay.contains(cmd)) {
       throw CoreError('bad_command', message: '$cmd has a way of its own', field: 'cmd');
+    }
+    if (!serves && screenOnly.contains(cmd)) {
+      throw CoreError('bad_command', message: '$cmd runs only in the app with a screen', field: 'cmd');
     }
     return await _either(
           () => _run(command),

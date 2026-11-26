@@ -1,6 +1,7 @@
 /// The CBOR the core writes its signed objects in (PLAN-E2E-API.md, its formats), read only to tell which device a
-/// certificate is for, as the inbox names a message's sender by its device: the core checks every signature. The
-/// fake API reads it too.
+/// certificate is for, as the inbox names a message's sender by its device, and which device an approval's QR names,
+/// as the phone that scans it asks its person about that device: the core checks every signature, and reads the QR
+/// itself. The fake API reads it too.
 library;
 
 import 'dart:convert';
@@ -100,6 +101,18 @@ String? certificateDevice(String certificate) {
   if (version is! int || devices is! List) return null;
   final ids = [for (final device in devices) asUuid(device)];
   return ids.contains(null) ? null : (version: version, devices: ids.cast<String>());
+}
+
+/// The device an approval's QR names (the core's `qr` in base64, its `device`), or null: read only to ask the person
+/// about that device before the core approves it, never checked, as the core reads the QR itself as it approves.
+String? qrDevice(String qr) {
+  final Uint8List bytes;
+  try {
+    bytes = base64Decode(qr);
+  } on FormatException {
+    return null;
+  }
+  return asUuid(asMap(cbor(bytes))?['device']);
 }
 
 /// The devices a signed device list names, in its order, or null ([deviceListOf]).

@@ -25,10 +25,14 @@ const engineClient = 'android/1.0.0';
 /// The fake API, as the app's router names it.
 const fakeRouter = ApiRouter(api: 'fake-api.test');
 
-/// A clock a test moves on by hand: what's due runs as it passes, in order.
+/// A clock a test moves on by hand: what's due runs as it passes, in order. Its time is the wall clock's, ahead by
+/// what the test moved it on, as the desktop's: the API's own times (an inbox message's) are the wall clock's.
 class TestClock implements EngineClock {
   var _now = Duration.zero;
   final _timers = <({Duration at, void Function() run})>{};
+
+  @override
+  DateTime now() => DateTime.now().add(_now);
 
   @override
   void Function() later(Duration wait, void Function() run) {

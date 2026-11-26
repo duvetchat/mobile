@@ -63,7 +63,19 @@ enum Notice {
   ),
 
   /// A push's notification of a message this device couldn't open in its time (Ruling 18): Android's alone.
-  newMessage('New message');
+  newMessage('New message'),
+
+  // A new device's setup (Tasks 26 and 27): its approval by another device, and starting over.
+  useCode('Use a code instead'),
+  approvalCodeHint('A computer approving this device will show this code'),
+  approvalAsk('Is this device yours?'),
+  approvalConfirmAfter('Confirm only after your new device accepts it'),
+  codeAccepted('Code accepted: confirm it on your other device.'),
+  codeMismatch("That isn't the code your other device shows."),
+  startOverWarning(
+    "Starting over makes new security keys for your account. The history of your encrypted conversations can't be "
+    'read any more, and your contacts will see that your keys changed.',
+  );
 
   const Notice(this.text);
 

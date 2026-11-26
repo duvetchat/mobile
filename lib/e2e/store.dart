@@ -46,6 +46,10 @@ const refusedGenerations = 'refused_generations';
 /// the app offers another, as one of them may still hold the keys.
 const keysAgain = 'keys_again';
 
+/// The identity a start over replaces (start_over.dart), from the person's tap until its upload is confirmed: a start
+/// that finds the core's new identity waiting for its upload knows it for a start over, not a first device's.
+const keptReset = 'reset';
+
 /// What a new device of this installation starts without.
 const deviceRecord = [
   keptDevice,
@@ -58,6 +62,7 @@ const deviceRecord = [
   rotationRemove,
   refusedGenerations,
   keysAgain,
+  keptReset,
 ];
 
 /// The API's external sender as this installation first saw it (Ruling 32), which a new device of it keeps.

@@ -14,6 +14,8 @@ import '../theme.dart';
 import '../widgets/chrome.dart';
 import '../widgets/depth.dart';
 import '../widgets/rows.dart';
+import 'approval.dart' show ApprovalPage, shownApproval;
+import 'device_setup.dart' show finishSetupText, leavesOut, openDeviceSetup, resetFinishText;
 import 'devices.dart' show deleteThisDevice, finishWithout, keysAgainText, stuckText;
 import 'recovery_key.dart';
 
@@ -65,13 +67,15 @@ class _EncryptionBannerState extends State<EncryptionBanner> {
 
   void _follow() {
     if (_watched case final repository? when mounted) {
-      _showKeyPage(Navigator.of(context, rootNavigator: true), repository);
+      final navigator = Navigator.of(context, rootNavigator: true);
+      _showKeyPage(navigator, repository);
+      _showApprovalPage(navigator, repository);
     }
   }
 
   _Bar? _bar(EngineState state) => switch (state.stage) {
-    // The key's page has the screen: a first device's, or a change of keys' (Task 25).
-    EngineStage.firstDevice || EngineStage.ready when state.recoveryKey != null => null,
+    // The key's page has the screen: a first device's, a change of keys' (Task 25), or starting over's (Task 27).
+    EngineStage.firstDevice || EngineStage.ready || EngineStage.newDevice when state.recoveryKey != null => null,
     EngineStage.firstDevice when state.finishing => (
       text: 'Finish setting up end-to-end encryption for your direct messages.',
       action: 'Finish',
@@ -82,10 +86,23 @@ class _EncryptionBannerState extends State<EncryptionBanner> {
       action: 'Set up',
       run: _setUp,
     ),
+    // A new device whose setup waits for the person's Finish (Task 27): its first list, naming the devices it leaves
+    // out, or starting over's key, made before the app closed.
+    EngineStage.newDevice when state.setup?.way == SetupWay.finishing => (
+      text: state.setup!.leavingOut.isEmpty ? finishSetupText : leavesOut(state.setup!.leavingOut),
+      action: 'Finish',
+      run: (context) => context.repository.deviceSetup.finishSetup(),
+    ),
+    EngineStage.newDevice when state.setup?.way == SetupWay.reset => (
+      text: resetFinishText,
+      action: 'Finish',
+      run: (context) => context.repository.deviceSetup.finishSetup(),
+    ),
+    // Its setup's page: the recovery key, another device's approval, or starting over.
     EngineStage.newDevice => (
       text: 'Set up this device to read your encrypted conversations.',
-      action: null,
-      run: null,
+      action: 'Set up',
+      run: openDeviceSetup,
     ),
     EngineStage.removed => (
       text: Notice.removedDevice.text,
@@ -188,6 +205,25 @@ void _showKeyPage(NavigatorState navigator, ChatRepository repository) {
     navigator.push(route).whenComplete(() {
       if (identical(_keyPage, route)) _keyPage = null;
       WidgetsBinding.instance.addPostFrameCallback((_) => _showKeyPage(navigator, repository));
+    }),
+  );
+}
+
+/// The page of a new device's approval this device is asked about (Task 27) while one is up: never two. It takes
+/// itself away once the approval goes, or its transfer went.
+Route<void>? _approvalPage;
+
+void _showApprovalPage(NavigatorState navigator, ChatRepository repository) {
+  if (shownApproval(repository.encryption.value) == null || (_approvalPage?.isActive ?? false) || !navigator.mounted) {
+    return;
+  }
+  final route = _approvalPage = MaterialPageRoute<void>(
+    fullscreenDialog: true,
+    builder: (_) => ApprovalPage(repository),
+  );
+  unawaited(
+    navigator.push(route).whenComplete(() {
+      if (identical(_approvalPage, route)) _approvalPage = null;
     }),
   );
 }

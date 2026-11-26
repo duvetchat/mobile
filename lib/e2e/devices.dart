@@ -40,8 +40,9 @@ Future<duvet.Identity> _observedOwn(E2EEngine engine) async {
 }
 
 /// The devices [list] names whose registration the API took away (a new password's remove_devices, step 3's ruling
-/// 23): no list or rotation may name them again.
-Future<List<String>> _takenAway(E2EEngine engine, String list) async {
+/// 23): no list or rotation may name them again. A device it still registers stays though it has no certificate yet
+/// (one this device approved, whose own list hasn't gone up: task 24's review, M2).
+Future<List<String>> takenAway(E2EEngine engine, String list) async {
   final registered = {for (final device in await engine.api.devices()) device.id};
   return [
     for (final id in listDevices(list) ?? const <String>[])
@@ -50,7 +51,7 @@ Future<List<String>> _takenAway(E2EEngine engine, String list) async {
 }
 
 /// [deviceId] off the user's devices. One never set up goes by its registration (DELETE, which ends its sessions); a
-/// listed one by a list without it ([_unlist]). Done at once when the API has it no more.
+/// listed one by a list without it ([unlist]). Done at once when the API has it no more.
 Future<void> removeDevice(E2EEngine engine, String deviceId) async {
   final device = (await engine.api.devices()).where((d) => d.id == deviceId).firstOrNull;
   if (device == null) return;
@@ -63,26 +64,25 @@ Future<void> removeDevice(E2EEngine engine, String deviceId) async {
       if (error.statusCode != 409) rethrow;
     }
   }
-  await _unlist(engine, deviceId);
+  await unlist(engine, deviceId);
 }
 
 /// A list without [deviceId], and without the devices the API took away: signed on the list this device holds once
 /// the API's is observed, and uploaded on the version the API serves. Only the API's 200 confirms it (Review Focus 11),
 /// and the own user is observed after; a list that lost its race (409) is observed and signed again, three rounds at
-/// most, and any other failure is observed, then thrown (the core's N3). Done once the API's list doesn't name it. A
-/// list of this device's that the API never took (its upload refused) stays the core's own, newer than the API's
-/// (`older_list`), and goes up again as it is when it leaves the device out: the core signs no list without a device
-/// its own doesn't name.
-Future<void> _unlist(E2EEngine engine, String deviceId) async {
+/// most, and any other failure is observed, then thrown (the core's N3). Done once neither the API's list nor the one
+/// this device holds names it: on this device's alone, it's a device this one approved that never took its transfer,
+/// which a list without it lets this device approve again (task 26's I1, the core's way out). A list of this device's
+/// that the API never took (its upload refused) stays the core's own, newer than the API's (`older_list`), and goes up
+/// again as it is when it leaves the device out: the core signs no list without a device its own doesn't name.
+Future<void> unlist(E2EEngine engine, String deviceId) async {
   for (var round = 1; ; round++) {
     final served = await _observedOwn(engine);
-    // Off it already: a list that went up before its answer was lost, or another device's.
-    if (!(listDevices(served.deviceList) ?? const <String>[]).contains(deviceId)) return;
     final held = (await coreStatus(engine.host)).deviceList ?? served.deviceList;
-    final remove = {
-      if ((listDevices(held) ?? const <String>[]).contains(deviceId)) deviceId,
-      ...await _takenAway(engine, held),
-    };
+    final onHeld = (listDevices(held) ?? const <String>[]).contains(deviceId);
+    // Off both: a list that went up before its answer was lost, or another device's.
+    if (!onHeld && !(listDevices(served.deviceList) ?? const <String>[]).contains(deviceId)) return;
+    final remove = {if (onHeld) deviceId, ...await takenAway(engine, held)};
     final list = remove.isEmpty
         ? held
         : (await engine.host.handle<Map<String, Object?>>({
@@ -182,7 +182,7 @@ Future<Rotation> rotateKeys(E2EEngine engine, List<String> remove, {List<String>
     final held = (await coreStatus(engine.host)).deviceList ?? served.deviceList;
     // The core takes off only devices its own list names.
     final listed = listDevices(held) ?? const <String>[];
-    off = {...remove.where(listed.contains), ...await _takenAway(engine, held)}.toList()..sort();
+    off = {...remove.where(listed.contains), ...await takenAway(engine, held)}.toList()..sort();
     // Kept before the command, so a rotation cut right after it runs again with it.
     await engine.store
         .write(rotationRemove, off)

@@ -8,11 +8,13 @@ import 'package:forui/forui.dart';
 
 import '../data/scope.dart';
 import '../e2e/engine.dart';
+import '../e2e/host.dart' show CoreError;
 import '../e2e/notices.dart';
 import '../space_admin.dart' show AdminPage, AdminPanel, confirmDestructive;
 import '../theme.dart';
 import '../widgets/glass.dart';
 import '../widgets/rows.dart';
+import 'approval.dart' show ScanDevicePage, approvalWaits, deviceUnfinished, scanTitle;
 
 /// Whether this device has a database of its own to delete: none while its engine starts, nor where another engine
 /// has it (locked) or there's no core (unsupported).
@@ -68,6 +70,16 @@ String _listed(List<String> names) =>
 const deleteOnlyDeviceQuestion =
     'This is your only device with your encrypted conversations: without your recovery key, their history is lost. '
     'Delete them and their keys, and sign out?';
+
+/// What a removal or a change of keys that failed says: while a device this one approved sets up, why it waits (Task
+/// 27); the API's refusal of a list naming a device this one approved that never finished (task 26's I1), in words;
+/// anything else, to try again.
+String devicesRefusal(Object error) => switch (error) {
+  CoreError(code: 'approval_waits') => approvalWaits,
+  duvet.DuvetApiException(statusCode: 400, :final body?) when body.contains('has no certificate of this identity') =>
+    deviceUnfinished,
+  _ => "Couldn't change your devices. Check your connection, then try again.",
+};
 
 /// What a change of keys that can't finish says, by why (duvetchat/e2e#49).
 String stuckText(EngineState state) => state.relisted
@@ -229,7 +241,7 @@ class _DevicesPageState extends State<DevicesPage> {
       await act();
     } catch (error) {
       debugPrint('e2e: what the person asked of their devices failed: ${error.runtimeType}');
-      if (mounted) _toast(context, "Couldn't change your devices. Check your connection, then try again.");
+      if (mounted) _toast(context, devicesRefusal(error));
     } finally {
       if (mounted) setState(() => _busy = false);
     }
@@ -303,7 +315,9 @@ class _DevicesPageState extends State<DevicesPage> {
     builder: (context, state, _) {
       final devices = _devices;
       // Removing and changing keys only while this device is set up and no change of keys waits.
-      final ready = state.stage == EngineStage.ready && !state.rotating && !_busy;
+      // A device this one approved, until its own list is up: a list or new keys meanwhile would leave it out.
+      final holding = state.approval?.phase == ApprovalPhase.confirmed;
+      final ready = state.stage == EngineStage.ready && !state.rotating && !_busy && !holding;
       // A change of keys that waits, its key put off or cut by the app's close: the banner's strip may be hidden.
       final finish = state.rotating && state.recoveryKey == null && !state.stuck && !_busy;
       final data = hasDeviceData(state);
@@ -342,10 +356,31 @@ class _DevicesPageState extends State<DevicesPage> {
                 child: Text(stuckText(state), style: DuvetType.caption.copyWith(color: context.theme.colors.error)),
               ),
             ),
+          if (holding)
+            Padding(
+              padding: const EdgeInsets.fromLTRB(4, 16, 4, 0),
+              child: Semantics(
+                liveRegion: true,
+                child: Text(
+                  approvalWaits,
+                  style: DuvetType.caption.copyWith(color: context.theme.colors.mutedForeground),
+                ),
+              ),
+            ),
           if (ready || finish || without || data) ...[
             const SizedBox(height: 16),
             AdminPanel(
               children: [
+                if (ready)
+                  GlassRow(
+                    icon: FLucideIcons.scanQrCode,
+                    label: scanTitle,
+                    onPressed: () => unawaited(
+                      Navigator.of(
+                        context,
+                      ).push(MaterialPageRoute<void>(builder: (_) => ScanDevicePage(context.repository))),
+                    ),
+                  ),
                 if (ready) GlassRow(icon: FLucideIcons.keyRound, label: 'Change security keys', onPressed: _changeKeys),
                 if (finish)
                   GlassRow(

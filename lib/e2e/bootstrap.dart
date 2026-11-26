@@ -17,6 +17,7 @@ class CoreStatus {
   CoreStatus.of(Map<String, Object?> status)
     : deviceId = status['device_id'] as String?,
       identityKey = status['identity_key'] as String?,
+      certificate = status['certificate'] as String?,
       deviceList = status['device_list'] as String?,
       waitingUpload = status['waiting_upload'] as String?,
       waitingRemove = switch (status['waiting_remove']) {
@@ -27,6 +28,9 @@ class CoreStatus {
 
   final String? deviceId;
   final String? identityKey;
+
+  /// This device's certificate, as the last identity command (or an approval's transfer) answered it.
+  final String? certificate;
 
   /// The user's list as this device holds it: the last an identity command or a list answered, or observing gave.
   final String? deviceList;

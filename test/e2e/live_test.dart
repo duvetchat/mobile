@@ -12,6 +12,7 @@ import 'dart:typed_data';
 
 import 'dart:ui' show IsolateNameServer;
 
+import 'package:duvet/e2e/cbor.dart' show listDevices;
 import 'package:duvet/e2e/client.dart';
 import 'package:duvet/e2e/content.dart';
 import 'package:duvet/e2e/core_gate.dart';
@@ -173,6 +174,23 @@ final _keptLive = <Future<void> Function()>[];
 /// Alice's and Bob's devices, set up and friends, which the first engine case leaves to the members' case.
 ({_Live a, _Live b})? _aliceAndBob;
 
+/// The recovery keys the groups' case's first devices showed, by user, for the new devices' case (Task 27).
+final _recoveryKeys = <String, String>{};
+
+/// The conversation's group as the device's core holds it, or null without one.
+Future<Map<String, Object?>?> _held(_Live live, String conversation) => live.host.gate
+    .handle<Map<String, Object?>>({'cmd': 'group', 'conversation_id': conversation})
+    .then<Map<String, Object?>?>((group) => group, onError: (Object _) => null);
+
+/// Waits until the devices hold the conversation's group at one epoch, with one authenticator.
+Future<void> _inOneGroup(List<_Live> devices, String conversation) => eventually(() async {
+  final groups = [for (final live in devices) await _held(live, conversation)];
+  for (final group in groups) {
+    expect(group, isNotNull);
+    expect((group!['epoch'], group['authenticator']), (groups.first!['epoch'], groups.first!['authenticator']));
+  }
+}, timeout: const Duration(seconds: 60));
+
 void main() {
   final skip = _env['E2E_LIVE_API'] == null ? "only against a stack, in the API's clients-mobile suite" : null;
 
@@ -254,6 +272,7 @@ void main() {
       for (final live in [c, d]) {
         await live.engine.start();
         await live.engine.makeIdentity();
+        _recoveryKeys[identical(live, c) ? carol.id : dave.id] = shownKey(live.engine.state.value)!;
         await live.engine.keySaved();
         expect(live.engine.state.value, EngineState.ready);
       }
@@ -463,6 +482,93 @@ void main() {
       expect(await devices(), [own]);
       await eventually(() => expect(kept.engine.state.value.stage, EngineStage.removed), timeout: wait);
       expect(c.engine.state.value, EngineState.ready);
+    },
+    skip: skip ?? noCore,
+    timeout: const Timeout(Duration(minutes: 3)),
+  );
+
+  // A new device (PLAN-E2E-CLIENTES.md, Task 27): Dave's second device, set up with the recovery key his first showed
+  // in the groups' case, typed in groups as a person does, goes into his DM with Carol by an external commit and reads
+  // what she sends after.
+  test(
+    'a_second_device_recovers_with_the_key_and_reads_what_comes_after',
+    () async {
+      final pair = _carolAndDave;
+      if (pair == null) fail('the case before left no conversation');
+      final (:c, :d, :dm) = pair;
+      final dave = _account(3);
+      final key = _recoveryKeys[dave.id];
+      if (key == null) fail('the groups case kept no recovery key');
+      final second = await _Live.start(_router(), dave);
+      await second.engine.start();
+      expect(second.engine.state.value, EngineState.newDevice);
+      await second.engine.recover([for (var at = 0; at < key.length; at += 4) key.substring(at, at + 4)].join(' '));
+      expect(second.engine.state.value, EngineState.ready);
+      final own = second.device;
+      expect(
+        [
+          for (final x in await second.api.devices())
+            if (x.current) (x.id, x.listed),
+        ],
+        [(own, true)],
+      );
+      expect(listDevices((await second.api.identity(dave.id)).deviceList), contains(own));
+
+      await second.engine.openConversation(dm);
+      await _inOneGroup([c, d, second], dm);
+      const text = 'after you recovered';
+      final sent = (await c.engine.sendMessage(Outgoing(conversationId: dm, nonce: uuidv4(), text: text)))!;
+      await eventually(
+        () async => expect((await second.engine.messages(dm, [sent.id])).firstOrNull?.text, text),
+        timeout: const Duration(seconds: 30),
+      );
+    },
+    skip: skip ?? noCore,
+    timeout: const Timeout(Duration(minutes: 3)),
+  );
+
+  // Carol's new device, approved by the one the cases above left her, by the code it shows: on the API's list, and in
+  // her DM's group, where it reads what Dave sends.
+  test(
+    'a_device_approved_by_code_joins',
+    () async {
+      final pair = _carolAndDave;
+      if (pair == null) fail('the case before left no conversation');
+      final (:c, :d, :dm) = pair;
+      final carol = _account(2);
+      const wait = Duration(seconds: 30);
+      final fresh = await _Live.start(_router(), carol);
+      await fresh.engine.start();
+      expect(fresh.engine.state.value, EngineState.newDevice);
+      await fresh.engine.beginApproval();
+      await fresh.engine.useCode();
+      final own = fresh.device;
+      DeviceApproval? asked() => c.engine.state.value.approval;
+      await eventually(() => expect(asked()?.phase, ApprovalPhase.asked), timeout: wait);
+      expect((asked()?.device, asked()?.name), (own, 'Pixel 8 Pro'));
+      await c.engine.approveDevice(own!);
+      await eventually(() => expect(asked()?.phase, ApprovalPhase.code), timeout: wait);
+      await eventually(() => expect(fresh.engine.state.value.setup?.offered, isTrue), timeout: wait);
+      await fresh.engine.acceptCode(asked()!.code!);
+      await c.engine.confirmApproval(own);
+      await eventually(() => expect(fresh.engine.state.value, EngineState.ready), timeout: wait);
+      expect(
+        [
+          for (final x in await fresh.api.devices())
+            if (x.current) (x.id, x.listed),
+        ],
+        [(own, true)],
+      );
+      await eventually(() => expect(asked(), isNull), timeout: wait);
+
+      await fresh.engine.openConversation(dm);
+      await _inOneGroup([c, d, fresh], dm);
+      const text = 'welcome, new device';
+      final sent = (await d.engine.sendMessage(Outgoing(conversationId: dm, nonce: uuidv4(), text: text)))!;
+      await eventually(
+        () async => expect((await fresh.engine.messages(dm, [sent.id])).firstOrNull?.text, text),
+        timeout: wait,
+      );
     },
     skip: skip ?? noCore,
     timeout: const Timeout(Duration(minutes: 3)),
