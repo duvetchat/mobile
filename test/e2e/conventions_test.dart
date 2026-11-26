@@ -110,4 +110,66 @@ void main() {
       expect({for (var i = 0; i < 1000; i++) uuidv7(5)}, hasLength(1000));
     });
   });
+
+  // Step 5's fuzzing (PLAN-E2E-CLIENTES.md, «Lo que el paso 5 revisa»), with the desktop's findings.
+  group('what the fuzzers found', () {
+    // A lone surrogate is U+FFFD first, as it shows and as UTF-8 writes it: halves a hidden character kept apart would
+    // otherwise join once it goes, as U+DB40 U+200B U+DC01 joins into U+E0001, a hidden tag character.
+    test("a hidden character between a surrogate's halves leaves no hidden character of their own", () {
+      expect(cleanName('invoice\u{db40}\u{200b}\u{dc01}.pdf'), 'invoice\u{fffd}\u{fffd}.pdf');
+      expect(cleanName('a\u{d800}b'), 'a\u{fffd}b');
+      expect(cleanName('\u{dc00}'), '\u{fffd}');
+      // Cleaned once is clean.
+      expect(cleanName(cleanName('x\u{db40}\u{200b}\u{dc01}')), 'x\u{fffd}\u{fffd}');
+    });
+
+    test("nor in a device's name, whose frame reads back as it was read", () {
+      String named(String name) =>
+          base64Encode(utf8.encode('{"duvet":"approval","step":"offer","data":"b2Y=","name":"$name"}'));
+      final frame = readApprovalFrame(named(r'Ana\udb40​\udc01'))!;
+      expect(frame.name, 'Ana\u{fffd}\u{fffd}');
+      expect(readApprovalFrame(approvalFrameMessage(frame)), frame);
+      expect(readApprovalFrame(named(r'\ud800'))?.name, '\u{fffd}');
+    });
+
+    // Dart's base64Decode takes the URL's alphabet and an escaped padding, which the desktop's atob refuses, as atob
+    // takes spaces, a missing padding and stray bits, which base64Decode refuses: the core and the API write only the
+    // one form, the one both apps read alike, and the inbox would send one message to the approval on one app and to
+    // the core on the other.
+    test('base64 from others is read only in the form the core and the API write', () {
+      final message = approvalFrameMessage((step: ApprovalStep.offer, data: 'b2Y=', name: '???'));
+      expect(message, contains('/'));
+      expect(readApprovalFrame(message), isNotNull);
+      for (final other in [message.replaceAll('/', '_'), message.replaceAll('=', '%3D')]) {
+        expect(readApprovalFrame(other), isNull, reason: other);
+      }
+      // Its data's last character with a bit past its bytes, which no core writes.
+      expect(readApprovalFrame(approvalFrameMessage((step: ApprovalStep.offer, data: 'b2Z=', name: null))), isNull);
+      // A voice note's waveform so is no waveform: a message, never a throw.
+      final waveform = base64Encode(List.filled(waveformSamples, 7));
+      final stray = '${waveform.substring(0, waveform.length - 3)}x==';
+      final note = {'type': 'audio/ogg', 'duration_ms': 1500, 'waveform': waveform};
+      expect(drawnAs(text: null, attachments: [note], sticker: false), Drawn.voiceNote);
+      expect(
+        drawnAs(
+          text: null,
+          attachments: [
+            {...note, 'waveform': stray},
+          ],
+          sticker: false,
+        ),
+        Drawn.message,
+      );
+      expect(
+        drawnAs(
+          text: null,
+          attachments: [
+            {...note, 'waveform': waveform.replaceAll('=', '%3D')},
+          ],
+          sticker: false,
+        ),
+        Drawn.message,
+      );
+    });
+  });
 }

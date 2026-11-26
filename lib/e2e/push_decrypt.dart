@@ -182,7 +182,8 @@ class _AsStored with duvet.RestMethods {
 
 /// The push's [entry] (the API's queue entry, as its push carries it) as the core takes it: none for one that isn't its
 /// own message's (another number, another message), or that doesn't read, which the queue has.
-Map<String, Object?>? _coreEntry(Map<String, Object?>? entry, int? seq, String? messageId) {
+@visibleForTesting
+Map<String, Object?>? pushedEntry(Map<String, Object?>? entry, int? seq, String? messageId) {
   if (entry == null) return null;
   try {
     final read = duvet.MlsEntry.fromJson(entry);
@@ -217,7 +218,7 @@ Future<PushAnswer> openPushed({
   Duration within = pushTime,
 }) async {
   final calls = client ?? http.Client();
-  final given = _coreEntry(entry, seq, lines.firstOrNull?.id);
+  final given = pushedEntry(entry, seq, lines.firstOrNull?.id);
   final watch = Stopwatch()..start();
   Duration left() => within - watch.elapsed;
   var over = false;

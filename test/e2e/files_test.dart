@@ -955,4 +955,20 @@ void main() {
     expect(tooLargeToSend([10 << 20, 10 << 20]), isFalse);
     expect(tooLargeToSend([40 << 20]), isTrue);
   });
+
+  // Step 5's fuzzing, with the desktop's finding: base64Decode takes the URL's alphabet and an escaped padding, which
+  // the desktop's atob refuses, so the two apps read another waveform or thumbnail of the same text.
+  test("a_file's_waveform_and_thumbnail_are_read_only_in_the_form_the_core_writes", () {
+    final file = {'id': uuidv4(), 'key': 'a2V5', 'sha256': 'c2hh', 'name': 'a.ogg', 'size': 3};
+    final waveform = base64Encode(List.filled(waveformSamples, 0xfb));
+    final thumbnail = base64Encode(List.filled(100, 0xfb));
+    expect(shownFile({...file, 'waveform': waveform})!.waveform, waveform);
+    expect(shownFile({...file, 'thumbnail': thumbnail})!.thumbnail, thumbnail);
+    for (final (field, value) in [('waveform', waveform), ('thumbnail', thumbnail)]) {
+      for (final other in [value.replaceAll('+', '-').replaceAll('/', '_'), value.replaceAll('=', '%3D')]) {
+        final shown = shownFile({...file, field: other})!;
+        expect([shown.waveform, shown.thumbnail], [null, null], reason: '$field $other');
+      }
+    }
+  });
 }

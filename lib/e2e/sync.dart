@@ -93,18 +93,30 @@ Map<String, Object?> entryOf(duvet.MlsEntry entry) => {
   'reply_to': ?entry.replyTo,
 };
 
+/// The most JavaScript's numbers hold exactly, which the desktop counts with: the API sends no number past it.
+const _mostExact = (1 << 53) - 1;
+
+/// A number the engine counts with (an entry's, a group's generation): a whole one of 0 or more that the desktop holds
+/// exactly too, which refuses any other.
+bool _counts(int? value) => value != null && value >= 0 && value <= _mostExact;
+
 /// An encrypted message (DM_MESSAGE_CREATE's) as its queue's entry: its ciphertext the data, its ID the message's, its
-/// author and device the sender's. None of a message without a number, a notice's.
+/// author and device the sender's, each as the server gave it. None of a notice's, which has no number, nor of a
+/// message the API never sends so: without its conversation, or whose number, generation, epoch or time isn't one. Its
+/// time is the message's, never one made up, which the core would show as its own.
 ({String conversation, Map<String, Object?> entry})? messageEntry(duvet.DirectMessage message) {
-  final (conversation, seq) = (message.conversationId, message.seq);
-  if (conversation == null || seq == null || message.generation == null || message.epoch == null) return null;
+  final (conversation, seq, sentAt) = (message.conversationId, message.seq, message.sentAt);
+  if (conversation == null || conversation.isEmpty || ![seq, message.generation, message.epoch].every(_counts)) {
+    return null;
+  }
+  if (sentAt == null || sentAt < -_mostExact || sentAt > _mostExact) return null;
   return (
     conversation: conversation,
     entry: {
       'seq': seq,
       'kind': 'message',
       'data': message.ciphertext,
-      'sent_at': message.sentAt ?? 0,
+      'sent_at': sentAt,
       'message_id': message.id,
       'sender_user': message.authorId,
       'sender_device': ?message.senderDeviceId,
@@ -115,40 +127,30 @@ Map<String, Object?> entryOf(duvet.MlsEntry entry) => {
 }
 
 /// The entry an event carries, with its conversation and, of a group's own events, its generation: none from what has
-/// none (a notice's message, its deletion).
-({String conversation, Map<String, Object?> entry, int? generation})? _carried(duvet.GatewayEventPayload event) =>
+/// none (a notice's message, its deletion), nor from what isn't one (no conversation, a number that doesn't count).
+@visibleForTesting
+({String conversation, Map<String, Object?> entry, int? generation})? carriedEntry(duvet.GatewayEventPayload event) =>
     switch (event) {
-      duvet.MlsCommitPayloadEvent(:final data) => (
-        conversation: data.conversationId,
-        entry: entryOf(data.entry),
-        generation: data.generation,
-      ),
-      duvet.MlsWelcomePayloadEvent(:final data) => (
-        conversation: data.conversationId,
-        entry: entryOf(data.entry),
-        generation: data.generation,
-      ),
-      duvet.MlsProposalPayloadEvent(:final data) => (
-        conversation: data.conversationId,
-        entry: entryOf(data.entry),
-        generation: data.generation,
-      ),
-      duvet.DMMessageEditedEvent(:final data) => (
-        conversation: data.conversationId,
-        entry: entryOf(data.entry),
-        generation: null,
-      ),
-      duvet.DMMessageDeletedEvent(data: duvet.DMMessageDeleteEvent(:final conversationId, :final entry?)) => (
-        conversation: conversationId,
-        entry: entryOf(entry),
-        generation: null,
-      ),
+      duvet.MlsCommitPayloadEvent(:final data) => _eventEntry(data.conversationId, data.entry, data.generation),
+      duvet.MlsWelcomePayloadEvent(:final data) => _eventEntry(data.conversationId, data.entry, data.generation),
+      duvet.MlsProposalPayloadEvent(:final data) => _eventEntry(data.conversationId, data.entry, data.generation),
+      duvet.DMMessageEditedEvent(:final data) => _eventEntry(data.conversationId, data.entry, null),
+      duvet.DMMessageDeletedEvent(data: duvet.DMMessageDeleteEvent(:final conversationId, :final entry?)) =>
+        _eventEntry(conversationId, entry, null),
       duvet.DMMessageCreatedEvent(:final data) => switch (messageEntry(data)) {
         (:final conversation, :final entry) => (conversation: conversation, entry: entry, generation: null),
         null => null,
       },
       _ => null,
     };
+
+({String conversation, Map<String, Object?> entry, int? generation})? _eventEntry(
+  String conversation,
+  duvet.MlsEntry entry,
+  int? generation,
+) => conversation.isEmpty || !_counts(entry.seq) || (generation != null && !_counts(generation))
+    ? null
+    : (conversation: conversation, entry: entryOf(entry), generation: generation);
 
 /// A conversation as the API last listed it, and its group's numbers as the events and the queue told of them since.
 class _Conv {
@@ -450,7 +452,7 @@ class Conversations {
   /// with it is heard too, so a batch goes to the core in its order whatever order it came in (M8 of the desktop's
   /// review).
   void heard(duvet.GatewayEventPayload event) {
-    final carried = _carried(event);
+    final carried = carriedEntry(event);
     if (carried == null) return;
     final (:conversation, :entry, :generation) = carried;
     _hear(conversation, entry, generation);
@@ -995,6 +997,9 @@ class Conversations {
       }
       final last = page.entries.lastOrNull?.seq;
       if (last == null || last >= page.lastSeq) return (through: at.through, gap: null, due: at.due, whole: true);
+      // A page that doesn't go past where this read was would come again as it is, for good: the turn ends, as for a
+      // gap that doesn't move, and the queue is read again with the next.
+      if (last <= from) throw StateError("the queue of ${conv.id} doesn't go past entry $from");
       from = last;
     }
   }

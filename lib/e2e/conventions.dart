@@ -43,9 +43,21 @@ Drawn drawnAs({required String? text, required List<Map<String, Object?>> attach
       type.startsWith('audio/') &&
       file!['duration_ms'] is num &&
       waveform is String &&
-      _base64.hasMatch(waveform) &&
-      base64Decode(waveform).length == waveformSamples;
+      canonicalBytes(waveform)?.length == waveformSamples;
   return voice ? Drawn.voiceNote : Drawn.message;
+}
+
+/// The bytes base64 holds, read only in the form the core and the API write it: standard, padded, and with no bit set
+/// past its bytes. base64Decode takes the URL's alphabet and an escaped padding as well, which the desktop's atob
+/// refuses, as that takes spaces, a missing padding and stray bits, which base64Decode refuses: in its one form, both
+/// read the same bytes of the same text. Null for any other text.
+Uint8List? canonicalBytes(String text) {
+  try {
+    final bytes = base64Decode(text);
+    return base64Encode(bytes) == text ? bytes : null;
+  } on FormatException {
+    return null;
+  }
 }
 
 /// A thumbnail's longer side, at most: as an app makes one, and as both draw one.
@@ -94,12 +106,18 @@ const maxFileName = 255;
 // zero-width joiner, which holds an emoji sequence together. The bidirectional controls are format characters: with
 // one, an invoice named "invoice", a right-to-left override and "cod.exe" shows as "invoiceexe.doc".
 final _unseen = RegExp('[\\p{Cc}\\p{Zl}\\p{Zp}]|(?!${String.fromCharCode(0x200d)})\\p{Cf}', unicode: true);
+final _lone = RegExp(r'\p{Cs}', unicode: true);
+
+// A lone surrogate, which shows as U+FFFD and is written as one in UTF-8, is made one first: halves that a hidden
+// character kept apart would otherwise join into a character of their own once it goes, as U+DB40 U+200B U+DC01 joins
+// into U+E0001, a hidden tag character (the desktop's visible).
+String _visible(String text) => text.replaceAll(_lone, '\u{fffd}').replaceAll(_unseen, '');
 
 /// A file's name as a client may show or use it, whoever wrote it: its last part after any / or \, without the
 /// characters that hide what it is, trimmed, 255 characters at most; "file" when nothing of it is left.
 String cleanName(String name) {
   final last = name.split(RegExp(r'[/\\]')).last;
-  final kept = String.fromCharCodes(last.replaceAll(_unseen, '').trim().runes.take(maxFileName)).trim();
+  final kept = String.fromCharCodes(_visible(last).trim().runes.take(maxFileName)).trim();
   return kept.isEmpty || kept == '.' || kept == '..' ? 'file' : kept;
 }
 
@@ -234,8 +252,6 @@ enum ApprovalStep { commitment, offer, reveal, transfer }
 typedef ApprovalFrame = ({ApprovalStep step, String data, String? name});
 
 const _frameFields = {'duvet', 'step', 'data', 'name'};
-// Standard base64, padded, as the core writes binaries.
-final _base64 = RegExp(r'^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$');
 
 /// The most characters a device's name has, counted by code point.
 const maxDeviceName = 64;
@@ -256,11 +272,12 @@ String approvalFrameMessage(ApprovalFrame frame) => base64Encode(
 /// (receive_direct's). A frame is JSON with duvet "approval", one of the four steps, its data in base64, a name of 64
 /// characters at most if any, which looks like neither a fingerprint nor a code, and nothing else.
 ApprovalFrame? readApprovalFrame(String message) {
+  final bytes = canonicalBytes(message);
+  if (bytes == null) return null;
+  // A byte order mark is no JSON's, as the desktop reads it; utf8.decode would drop it.
+  if (bytes.length >= 3 && bytes[0] == 0xef && bytes[1] == 0xbb && bytes[2] == 0xbf) return null;
   final Object? value;
   try {
-    final bytes = base64Decode(message);
-    // A byte order mark is no JSON's, as the desktop reads it; utf8.decode would drop it.
-    if (bytes.length >= 3 && bytes[0] == 0xef && bytes[1] == 0xbb && bytes[2] == 0xbf) return null;
     value = jsonDecode(utf8.decode(bytes));
   } on FormatException {
     return null;
@@ -269,12 +286,12 @@ ApprovalFrame? readApprovalFrame(String message) {
   final step = ApprovalStep.values.asNameMap()[value['step']];
   final data = value['data'];
   if (value['duvet'] != 'approval' || step == null) return null;
-  if (data is! String || data.isEmpty || !_base64.hasMatch(data)) return null;
+  if (data is! String || data.isEmpty || canonicalBytes(data) == null) return null;
   if (!value.containsKey('name')) return (step: step, data: data, name: null);
   // The approving device shows the name: it loses what doesn't show, as a file's name does.
   final name = value['name'];
   if (name is! String) return null;
-  final shown = name.replaceAll(_unseen, '').trim();
+  final shown = _visible(name).trim();
   if (shown.isEmpty || shown.runes.length > maxDeviceName) return null;
   if (_likeFingerprint.hasMatch(shown) || _likeCode.hasMatch(shown)) return null;
   return (step: step, data: data, name: shown);

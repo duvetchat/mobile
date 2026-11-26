@@ -251,15 +251,8 @@ class SealedFiles {
   }
 }
 
-/// The bytes a base64 field holds, or null for one that doesn't read.
-Uint8List? _decoded(Object? value) {
-  if (value is! String) return null;
-  try {
-    return base64Decode(value);
-  } on FormatException {
-    return null;
-  }
-}
+/// The bytes a base64 field holds, in the form the core writes it, or null for one that doesn't read.
+Uint8List? _decoded(Object? value) => value is String ? canonicalBytes(value) : null;
 
 /// A thumbnail's file as its message names it, when it reads as one.
 FileRef? _fileRef(Object? value) {
