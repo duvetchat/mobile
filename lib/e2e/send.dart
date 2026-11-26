@@ -219,6 +219,10 @@ class _Stale implements Exception {
 /// The core's word that no member could open the message's bytes any more.
 bool _staleBytes(Object error) => error is CoreError && error.code == 'rule_violation' && error.rule == 'stale_message';
 
+/// A message held for the person's yes, a verified contact's key changed ([Sends._delivered]): it waits, as an
+/// unanswered one does.
+bool _heldForYes(Object error) => error is CoreError && error.code == 'key_changed';
+
 /// The person's Cancel of a message's upload, which stopped it before its request went or while it waited.
 class UploadCancelled implements Exception {
   const UploadCancelled();
@@ -273,7 +277,17 @@ Future<T> _untilCancelled<T>(Future<T> work, Future<void>? cancel) {
 }
 
 class Sends {
-  Sends(this._engine, this._groups, this._soon, this._turn, this._changed, this._sent, this._refused, this._deleted);
+  Sends(
+    this._engine,
+    this._groups,
+    this._soon,
+    this._turn,
+    this._changed,
+    this._sent,
+    this._refused,
+    this._deleted,
+    this._held,
+  );
 
   final E2EEngine _engine;
   final Conversations _groups;
@@ -297,6 +311,10 @@ class Sends {
   /// A change of the person's the API refused for good where nobody waits for its answer (a restart's, or one sent
   /// after another of its message): the person is told, as the core shows it done here (its kind: `edit`, `delete`).
   final void Function(String conversationId, String messageId, String kind) _refused;
+
+  /// The conversation's people whose changed key holds what goes there until the person's yes (contacts.dart), read in
+  /// the engine's turn.
+  final Future<List<String>> Function(String conversationId) _held;
 
   /// The changes not answered yet, by message, in their order: the first goes, the next once it's answered (I3 of the
   /// desktop's task 16 review).
@@ -677,7 +695,7 @@ class Sends {
       } catch (error) {
         // Stopped by its Cancel or a Dismiss: it went nowhere, and the rest go on.
         if (!wanted && delivery.cancelled) continue;
-        final passing = error is duvet.DuvetUpdateRequiredException || _unanswered(error);
+        final passing = error is duvet.DuvetUpdateRequiredException || _unanswered(error) || _heldForYes(error);
         // Its files' refusal won't change: it waits for the person's Retry.
         if (files != null && !passing && error is duvet.DuvetApiException) _refusedFiles.add(first);
         if (wanted || passing) rethrow;
@@ -716,18 +734,32 @@ class Sends {
     _Upload upload,
   ) async {
     final nonce = row.nonce!;
-    final ciphertext = await _turn(() async {
+    final made = await _turn(() async {
       if (!(await pendingRows(_host, id)).any((other) => other.nonce == nonce)) return null;
+      final String ciphertext;
       try {
-        return await _encrypt(id, nonce, row.text, row.attachments);
+        ciphertext = await _encrypt(id, nonce, row.text, row.attachments);
       } catch (error) {
         if (_staleBytes(error)) throw const _Stale();
         rethrow;
       }
+      // Whom it reaches whose changed key waits for the person's yes, known by now (its encrypt may have just observed
+      // it), read in the same turn.
+      return (ciphertext: ciphertext, holding: await _held(id));
     });
-    if (ciphertext == null) return null;
+    if (made == null) return null;
     // Its Cancel, or a Dismiss, came while older messages went: it isn't sent.
     if (upload.cancelled) throw const UploadCancelled();
+    // A verified contact's changed key: it waits for the person's yes, its bytes kept in the core, as decision 25 asks
+    // before anything more goes there. It counts as unanswered: what waits after it stays.
+    if (made.holding.isNotEmpty) {
+      throw CoreError(
+        'key_changed',
+        message: "a verified contact's key changed: the person says whether to send",
+        users: made.holding,
+      );
+    }
+    final ciphertext = made.ciphertext;
     final text = row.text;
     final duvet.DirectMessage message;
     try {
@@ -953,6 +985,10 @@ class Sends {
 
   Future<void> _trySend(_Change change) async {
     final id = change.conversationId;
+    // An edit is new text: while a verified contact's changed key waits for the person's yes it waits as an unanswered
+    // one does, its bytes as the core last made them, each try looking again, and the yes sends it (review 28's I2). A
+    // deletion carries no text, and goes.
+    if (change.text != null && (await _held(id)).isNotEmpty) return _retryLater(change);
     final duvet.MlsEntry entry;
     try {
       entry = change.text == null

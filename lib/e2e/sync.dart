@@ -691,6 +691,32 @@ class Conversations {
     if (now == null || now.name == ConversationNotice.noDevice) _set(conv.id, _goingOn(conv.id));
   }
 
+  /// Whom what goes to the conversation reaches (review 28's I1, contacts.dart): the users its group holds on this
+  /// device, its members and its devices' users, with those the API lists, as a server could list it without someone
+  /// its group still holds.
+  Future<List<String>> people(String conversationId) async {
+    final users = {...members(conversationId)};
+    try {
+      final held = await _host.handle<Map<String, Object?>>({'cmd': 'group', 'conversation_id': conversationId});
+      for (final part in [held['members'], held['devices']]) {
+        for (final entry in part as List? ?? const []) {
+          if (entry case {'user_id': final String user}) users.add(user);
+        }
+      }
+    } on CoreError catch (error) {
+      if (error.code != 'not_found') rethrow;
+    }
+    return [...users];
+  }
+
+  /// The conversation's members as the API listed them last: none for one it doesn't know.
+  List<String> members(String conversationId) => [
+    for (final member in _known[conversationId]?.api.members ?? const <duvet.ConversationMember>[]) member.userId,
+  ];
+
+  /// The catch-ups held for the person's yes are asked for again (contacts.dart): it may have come.
+  void catchUpsAgain() => _catchUps.again();
+
   /// A user's identity changed (IDENTITY_UPDATE): their conversations' members without a device are asked again.
   Future<void> identityChanged(String user) async {
     for (final conv in [..._known.values]) {

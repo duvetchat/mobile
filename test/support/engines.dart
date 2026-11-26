@@ -78,6 +78,9 @@ class MemoryStore implements EngineStore {
       _values[key] = jsonEncode(value);
     }
   }
+
+  @override
+  Future<void> refresh(List<String> keys) async {}
 }
 
 /// A record that keeps nothing: every write fails, as a full disk's would.
@@ -87,6 +90,9 @@ class RefusingStore implements EngineStore {
 
   @override
   Future<void> write(String key, Object? value) async => throw const FileSystemException('the disk is full');
+
+  @override
+  Future<void> refresh(List<String> keys) async {}
 }
 
 final _random = Random.secure();
@@ -149,10 +155,15 @@ class KeyRefusingStore extends MemoryStore {
 }
 
 /// A host whose first open finds the database locked, as another engine holds it: the core opens after.
-class LockedOnce implements CoreHost {
+class LockedOnce implements CoreHost, ObservingHost {
   LockedOnce(this._host);
   final CoreHost _host;
   var _locked = true;
+
+  @override
+  set onObserved(ObservedListener? listener) {
+    if (_host case final ObservingHost observing) observing.onObserved = listener;
+  }
 
   @override
   Future<Opened> open(String userId) async {
@@ -193,10 +204,17 @@ class LockedOnce implements CoreHost {
 
 /// A host that tells what it's asked (each command's name, in order, and the commands themselves), holds a command
 /// until the future [hold] gives for it completes, fails one when [fail] gives an error for it, and answers one itself
-/// when [answer] gives an answer.
-class WatchedHost implements CoreHost {
+/// when [answer] gives an answer. Its core's observations go to the engine's contacts as the core it wraps tells them:
+/// an observe_user it answers itself isn't the core's, and tells nothing.
+class WatchedHost implements CoreHost, ObservingHost {
   WatchedHost(this._host, this.log, {this.hold, this.fail, this.answer, List<Map<String, Object?>>? commands})
     : commands = commands ?? [];
+
+  @override
+  set onObserved(ObservedListener? listener) {
+    if (_host case final ObservingHost observing) observing.onObserved = listener;
+  }
+
   final CoreHost _host;
   final List<String> log;
   final List<Map<String, Object?>> commands;

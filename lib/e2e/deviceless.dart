@@ -16,7 +16,7 @@ import 'package:duvet_client/duvet.dart' as duvet;
 import 'package:flutter/foundation.dart';
 
 import 'engine.dart';
-import 'history.dart' show PackageUpload, packageWait, uploadPackage;
+import 'history.dart' show HeldForYes, PackageUpload, packageWait, uploadPackage;
 import 'host.dart';
 import 'identity.dart';
 
@@ -70,6 +70,10 @@ class CatchUps {
   final _uploads = <String, PackageUpload>{};
   final _failed = <String, int>{};
 
+  /// Catch-ups whose member's changed key waits for the person's yes (contacts.dart), before their make or after their
+  /// PUT: due still, they try nothing until [again], and one made keeps its package.
+  final _held = <String, (String, String)>{};
+
   /// apply named these members of the conversation due a catch-up: each one's goes in its turn, once, but one waiting
   /// or on its way.
   void due(String conversationId, List<String> users) {
@@ -86,6 +90,16 @@ class CatchUps {
   /// The turns queued and never run (the engine wasn't ready) go: the next apply asks for them again (M3).
   void dropQueued() => _queued.clear();
 
+  /// The person's yes may have come (contacts.dart): the catch-ups held for it are asked for again, one made going on
+  /// with its package from where it stopped.
+  void again() {
+    final held = [..._held.values];
+    _held.clear();
+    for (final (conversationId, user) in held) {
+      due(conversationId, [user]);
+    }
+  }
+
   void stop() {
     for (final cancel in _waiting.values) {
       cancel();
@@ -93,6 +107,7 @@ class CatchUps {
     _waiting.clear();
     _queued.clear();
     _going.clear();
+    _held.clear();
   }
 
   /// In the engine's turn: the member's package, made (or the one made before), then its upload outside the turn.
@@ -108,6 +123,13 @@ class CatchUps {
       }
       _going.add(key);
       unawaited(_upload(key, upload));
+    } on CoreError catch (error) {
+      // Held for the person's yes: it stays due, without a try, until the yes asks for it again (review 28's I3).
+      if (error.code == 'key_changed') {
+        _held[key] = (conversationId, user);
+        return;
+      }
+      _later(key, conversationId, user, error, null);
     } catch (error) {
       _later(key, conversationId, user, error, null);
     }
@@ -116,7 +138,13 @@ class CatchUps {
   Future<void> _upload(String key, PackageUpload upload) async {
     final PackageUpload(:conversationId, :user, :shareId) = upload;
     try {
-      await uploadPackage(_engine, upload);
+      // A change its own identity round brought, after the check before the make, holds it past its PUT (review 29's
+      // I1), as a share's does.
+      await uploadPackage(_engine, upload, held: () => _engine.holding([user]).isNotEmpty);
+    } on HeldForYes {
+      _going.remove(key);
+      _held[key] = (conversationId, user);
+      return;
     } catch (error) {
       _going.remove(key);
       return _later(key, conversationId, user, error, upload);
@@ -180,6 +208,14 @@ Future<Map<String, Object?>?> makeCatchUp(E2EEngine engine, String conversationI
     rethrow;
   }
   await observeUsers(engine, [user]);
+  // Their changed key waits for the person's yes (review 28's I3): what was noted for them waits with it.
+  if (engine.holding([user]).isNotEmpty) {
+    throw CoreError(
+      'key_changed',
+      message: "a verified contact's key changed: their catch-up waits for the person's yes",
+      users: [user],
+    );
+  }
   try {
     return await withIdentities(
       engine,

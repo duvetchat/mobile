@@ -82,7 +82,7 @@ Future<MessagePush?> openedPush(
   ApiRouter router = duvetRouter,
   String? duvetClient,
   http.Client? client,
-  Future<EngineStore> Function(String userId) store = FileEngineStore.open,
+  Future<EngineStore> Function(String userId) store = pushRecord,
   ChatCacheStore? cache,
   Duration within = pushTime,
 }) async {

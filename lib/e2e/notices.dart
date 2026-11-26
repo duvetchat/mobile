@@ -9,6 +9,12 @@ enum Notice {
   noDevice("{name} can't receive encrypted messages yet. Your device will pass them on when they can."),
   keyChanged("{name}'s security key changed."),
   keyChangedVerified('You had verified {name}. Check their security number before you send.'),
+  // A contact's security number, the mark of one the person verified, and the yes a verified one's changed key asks
+  // for before anything more goes to them (Tasks 28 and 29).
+  verifyNumber('Verify security number'),
+  markVerified('Mark as verified'),
+  verified('Verified'),
+  sendAnyway('Send anyway'),
   cutover('Messages from before end-to-end encryption were deleted on {date}'),
   update('Update Duvet'),
   noE2eHere("Direct messages aren't available in this app yet. Use Duvet on the web."),

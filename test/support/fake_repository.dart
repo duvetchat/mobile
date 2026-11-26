@@ -4,7 +4,18 @@ import 'package:duvet/data/models.dart';
 import 'package:duvet/data/recent_chats.dart';
 import 'package:duvet/data/recent_chats.dart' as recent show previewOf;
 import 'package:duvet/data/repository.dart';
-import 'package:duvet/e2e/engine.dart' show DeviceSetupActions, EngineState, HistoryOffer, ScannedDevice, SharedHistory;
+import 'package:duvet/e2e/engine.dart'
+    show
+        ContactsShown,
+        DeviceSetupActions,
+        EngineStage,
+        EngineState,
+        HistoryOffer,
+        KeyChange,
+        SafetyNumber,
+        ScannedDevice,
+        SharedHistory,
+        ShownChange;
 import 'package:duvet/e2e/members.dart' show sameUsers;
 import 'package:duvet/e2e/sync.dart' show ConversationState;
 import 'package:duvet_client/duvet.dart' as duvet show Device;
@@ -232,8 +243,14 @@ class FakeRepository implements ChatRepository {
   @override
   Future<void> sendRecording(ChatTarget target) async => recordings.add(target);
 
+  /// Set, [uploadLimit] answers once it completes.
+  Completer<void>? holdUploadLimit;
+
   @override
-  Future<int?> uploadLimit() async => limit;
+  Future<int?> uploadLimit() async {
+    await holdUploadLimit?.future;
+    return limit;
+  }
 
   final searches = <SearchQuery>[];
   final pinned = <String, List<ChatMessage>>{};
@@ -1670,6 +1687,106 @@ class FakeRepository implements ChatRepository {
 
   @override
   Future<void> acceptMembers(String conversationId) async => encryptionTaps.add('acceptMembers $conversationId');
+
+  /// What the engine shows of the person's contacts; a test sets it, and the taps below change it.
+  @override
+  final ValueNotifier<ContactsShown> contacts = ValueNotifier(ContactsShown.none);
+
+  /// The security number with each user, as the core would give it; a test sets them.
+  final safetyNumbers = <String, SafetyNumber>{};
+
+  /// What reading a security number throws, when a test says.
+  Object? safetyNumberError;
+
+  /// What Mark as verified and a scan answer, and what a scan throws when a test says.
+  bool verifyAnswer = true;
+  Object? verifyScannedError;
+
+  /// Each conversation's changed keys, as the engine holds them; a test sets them.
+  final keyChanges = <String, Map<String, KeyChange>>{};
+
+  @override
+  bool canVerify(String userId) => userId != me.id && encryption.value.stage == EngineStage.ready;
+
+  /// Whom the app looked at as their profile opened ([contactVerified]), in order: none of the person's taps.
+  final contactLooks = <String>[];
+
+  @override
+  Future<bool> contactVerified(String userId) async {
+    contactLooks.add(userId);
+    return contacts.value.verified[userId] ?? false;
+  }
+
+  @override
+  Future<SafetyNumber> safetyNumber(String userId) async {
+    if (safetyNumberError case final error?) throw error;
+    return safetyNumbers[userId] ?? (throw StateError('no number for $userId'));
+  }
+
+  @override
+  Future<bool> verifyContact(String userId, String digits) async {
+    encryptionTaps.add('verifyContact $userId $digits');
+    return _verified(userId, verifyAnswer);
+  }
+
+  @override
+  Future<bool> verifyScanned(String userId, String qr) async {
+    encryptionTaps.add('verifyScanned $userId $qr');
+    if (verifyScannedError case final error?) throw error;
+    return _verified(userId, verifyAnswer);
+  }
+
+  bool _verified(String userId, bool verified) {
+    if (verified) {
+      contacts.value = ContactsShown(
+        changes: {...contacts.value.changes}..remove(userId),
+        verified: {...contacts.value.verified, userId: true},
+      );
+    }
+    return verified;
+  }
+
+  /// Set, [keyChangesIn] answers once it completes, as the engine's turn answers after the work ahead of it: the
+  /// chat's ask before a send waits with it.
+  Completer<void>? holdKeyChanges;
+
+  @override
+  Future<Map<String, KeyChange>> keyChangesIn(String conversationId) async {
+    await holdKeyChanges?.future;
+    return {...?keyChanges[conversationId]};
+  }
+
+  @override
+  Future<void> closeKeyChange(String userId, String change) async {
+    encryptionTaps.add('closeKeyChange $userId $change');
+    _keyChangeDone(userId, change, (now) => now.verified && !now.confirmed ? now.copyWith(closed: true) : null);
+  }
+
+  @override
+  Future<void> confirmKeyChanges(List<ShownChange> changes) async {
+    encryptionTaps.add('confirmKeyChanges ${[for (final c in changes) '${c.user}:${c.change}'].join(' ')}');
+    for (final (:user, :change) in changes) {
+      _keyChangeDone(user, change, (now) => now.closed ? null : now.copyWith(confirmed: true));
+    }
+  }
+
+  // As the engine's contacts: [then] gives what's left of the change, or null once it's done with.
+  void _keyChangeDone(String userId, String change, KeyChange? Function(KeyChange now) then) {
+    for (final changes in keyChanges.values) {
+      final now = changes[userId];
+      if (now == null || now.change != change) continue;
+      final next = then(now);
+      if (next == null) {
+        changes.remove(userId);
+      } else {
+        changes[userId] = next;
+      }
+    }
+    contacts.value = ContactsShown(
+      changes: {...contacts.value.changes}..remove(userId),
+      verified: contacts.value.verified,
+    );
+  }
 
   /// The shares of a conversation's history waiting for the person's yes; a test sets them.
   @override

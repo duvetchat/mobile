@@ -42,6 +42,13 @@ const toldInactive = 'told_inactive';
 /// later generation (sync.dart; the core's #46, kept across restarts).
 const refusedGenerations = 'refused_generations';
 
+/// Contacts' changed keys the person isn't done with (contacts.dart), by user: whether the identity replaced was
+/// verified, the notice closed, the person's yes, and which change it is. Words alone, never a key.
+const keyChanges = 'key_changes';
+
+/// Whom the person verified on this device (contacts.dart), from their tap: user IDs, so a lost change is found again.
+const verifiedContacts = 'verified_contacts';
+
 /// Whether a change of keys of this device's left devices out with gone (duvetchat/e2e#49), until a new one starts:
 /// the app offers another, as one of them may still hold the keys.
 const keysAgain = 'keys_again';
@@ -70,6 +77,8 @@ const deviceRecord = [
   pendingChanges,
   rotationRemove,
   refusedGenerations,
+  keyChanges,
+  verifiedContacts,
   keysAgain,
   keptRelisted,
   keptReset,
@@ -85,17 +94,32 @@ abstract interface class EngineStore {
 
   /// Keeps the JSON [value] under [key], null forgetting it: done once it's kept for good.
   Future<void> write(String key, Object? value);
+
+  /// Takes [keys] again as the record holds them for good, once the writes before have landed: on disk, what another
+  /// engine of this phone (a push's) wrote there while this one didn't hold the core (contacts.dart). Nothing is
+  /// written; a record kept in memory alone has them already.
+  Future<void> refresh(List<String> keys);
 }
 
 final _uuid = RegExp(r'^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$');
 
+/// The record as a push's engine opens it, beside the app's engine (review 29's Minor 4): each of its writes changes
+/// its own key alone over what's on disk then, as the app's engine may have written the others since it read them.
+Future<FileEngineStore> pushRecord(String userId, {Future<Directory> Function()? folder}) =>
+    FileEngineStore.open(userId, folder: folder, ownKeys: true);
+
 /// The record on disk, read once as it opens: a file that doesn't read is an empty record. Each write replaces the
 /// whole file, written beside it then renamed, so a cut write leaves the one before.
 class FileEngineStore implements EngineStore {
-  FileEngineStore._(this._file, this._values);
+  FileEngineStore._(this._file, this._values, this._ownKeys);
 
-  /// [userId]'s record, in the app's support folder (or [folder], a test's).
-  static Future<FileEngineStore> open(String userId, {Future<Directory> Function()? folder}) async {
+  /// [userId]'s record, in the app's support folder (or [folder], a test's). With [ownKeys], each write is the file on
+  /// disk then with its key changed alone ([pushRecord]), or the whole record in memory when the file doesn't read.
+  static Future<FileEngineStore> open(
+    String userId, {
+    Future<Directory> Function()? folder,
+    bool ownKeys = false,
+  }) async {
     if (!_uuid.hasMatch(userId)) throw ArgumentError.value(userId, 'userId', 'a user ID is a UUID');
     final file = File('${(await (folder ?? getApplicationSupportDirectory)()).path}/e2e/$userId/client.json');
     var values = <String, Object?>{};
@@ -104,11 +128,12 @@ class FileEngineStore implements EngineStore {
     } catch (error) {
       debugPrint("e2e: the engine's record didn't read: ${error.runtimeType}");
     }
-    return FileEngineStore._(file, values);
+    return FileEngineStore._(file, values, ownKeys);
   }
 
   final File _file;
   final Map<String, Object?> _values;
+  final bool _ownKeys;
 
   // The writes one at a time, in order: one that failed doesn't hold up the next.
   Future<void> _writing = Future.value();
@@ -124,9 +149,45 @@ class FileEngineStore implements EngineStore {
       _values[key] = value;
     }
     final whole = jsonEncode(_values);
-    final done = _writing.catchError((Object _) {}).then((_) => _save(whole));
+    // The value as it is now, should its caller change it after.
+    final own = _ownKeys && value != null ? jsonDecode(jsonEncode(value)) : null;
+    final done = _writing.catchError((Object _) {}).then((_) async {
+      final kept = _ownKeys ? await _onDisk() : null;
+      if (kept == null) return _save(whole);
+      if (own == null) {
+        kept.remove(key);
+      } else {
+        kept[key] = own;
+      }
+      return _save(jsonEncode(kept));
+    });
     _writing = done;
     return done;
+  }
+
+  @override
+  Future<void> refresh(List<String> keys) async {
+    await _writing.catchError((Object _) {});
+    final kept = await _onDisk();
+    if (kept == null) return;
+    for (final key in keys) {
+      if (kept.containsKey(key)) {
+        _values[key] = kept[key];
+      } else {
+        _values.remove(key);
+      }
+    }
+  }
+
+  /// The record as the file holds it now, or null when there's none or it doesn't read.
+  Future<Map<String, Object?>?> _onDisk() async {
+    try {
+      if (!await _file.exists()) return null;
+      return (jsonDecode(await _file.readAsString()) as Map).cast<String, Object?>();
+    } catch (error) {
+      debugPrint("e2e: the engine's record didn't read again: ${error.runtimeType}");
+      return null;
+    }
   }
 
   Future<void> _save(String whole) async {
