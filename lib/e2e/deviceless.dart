@@ -81,7 +81,8 @@ class CatchUps {
       final key = '$conversationId:$user';
       if (_waiting.containsKey(key) || _going.contains(key) || !_queued.add(key)) continue;
       _soon(() async {
-        _queued.remove(key);
+        // Let go of meanwhile, its conversation left ([forget]): nothing to make.
+        if (!_queued.remove(key)) return;
         await _make(conversationId, user);
       });
     }
@@ -108,6 +109,23 @@ class CatchUps {
     _queued.clear();
     _going.clear();
     _held.clear();
+  }
+
+  /// The user is no longer in the conversation (left, removed, deleted): its catch-ups go, each package made dropped
+  /// and each wait called off, and one on its way up does nothing more once its upload ends (step 5's engines review,
+  /// Minor 7). The API would refuse each of their tries, for as long as the app runs.
+  void forget(String conversationId) {
+    bool of(String key) => key.startsWith('$conversationId:');
+    for (final key in [..._waiting.keys.where(of)]) {
+      _waiting.remove(key)!();
+    }
+    for (final key in [..._uploads.keys.where(of)]) {
+      _drop(key);
+    }
+    _queued.removeWhere(of);
+    _going.removeWhere(of);
+    _failed.removeWhere((key, _) => of(key));
+    _held.removeWhere((key, _) => of(key));
   }
 
   /// In the engine's turn: the member's package, made (or the one made before), then its upload outside the turn.
@@ -137,19 +155,24 @@ class CatchUps {
 
   Future<void> _upload(String key, PackageUpload upload) async {
     final PackageUpload(:conversationId, :user, :shareId) = upload;
+    // Its conversation left meanwhile ([forget]), its package dropped: nothing more.
+    bool forgotten() => !identical(_uploads[key], upload);
     try {
       // A change its own identity round brought, after the check before the make, holds it past its PUT (review 29's
       // I1), as a share's does.
       await uploadPackage(_engine, upload, held: () => _engine.holding([user]).isNotEmpty);
     } on HeldForYes {
+      if (forgotten()) return;
       _going.remove(key);
       _held[key] = (conversationId, user);
       return;
     } catch (error) {
+      if (forgotten()) return;
       _going.remove(key);
       return _later(key, conversationId, user, error, upload);
     }
     _soon(() async {
+      if (forgotten()) return;
       try {
         await confirmCatchUp(_engine, conversationId, user, shareId);
         _done(key);

@@ -152,6 +152,45 @@ void main() {
     timeout: _slow,
   );
 
+  // Minor 7 of step 5's engines review: a catch-up of a conversation the user left goes with it. Its tries would go on
+  // for as long as the app runs, each one reading the member's identity and making a package the API refuses.
+  test(
+    'leaving_a_conversation_lets_its_catch-ups_go',
+    () async {
+      final fake = FakeApi();
+      final (ana, bo, cy) = (fake.addUser(), fake.addUser(), fake.addUser());
+      final asked = <Map<String, Object?>>[];
+      final a = await firstDevice(fake, ana);
+      final c = await firstDevice(fake, cy, host: WatchedHost(TestHost().gate, [], commands: asked));
+      // Cy may read Bo's identity whatever conversation they share: what ends a catch-up is the leave alone.
+      fake.befriend(cy, bo);
+      final group = (await a.engine.createGroup('Crew', [bo, cy])).id;
+      await sameGroup([a, c], group);
+      await c.engine.openConversation(group);
+      await until(() => c.engine.conversationState(group) == ConversationState.noDevice([bo]));
+      await c.engine.sendMessage(Outgoing(conversationId: group, nonce: uuidv4(), text: 'hi Bo'));
+
+      // Bo's first device joins: Cy's catch-up for him is refused for the day, and waits.
+      fake.refuse((method: 'PUT', path: RegExp(r'/history-shares/[0-9a-f-]+$')), 429);
+      final b = await firstDevice(fake, bo);
+      await until(() => asked.any((command) => command['cmd'] == 'catch_up'));
+      await turnEnded(c);
+      expect(asked.where((command) => command['cmd'] == 'catch_up_delivered'), isEmpty);
+
+      // Cy leaves: the catch-up goes with the conversation, and its day ends with nothing made.
+      await c.engine.leaveConversation(group);
+      final made = asked.where((command) => command['cmd'] == 'catch_up').length;
+      c.clock.advance(const Duration(days: 2));
+      await turnEnded(c);
+      expect(asked.where((command) => command['cmd'] == 'catch_up'), hasLength(made));
+      for (final d in [a, b, c]) {
+        await d.engine.stop();
+      }
+    },
+    skip: noCore,
+    timeout: _slow,
+  );
+
   // M3 of the review: a catch-up whose turn was skipped (the engine left «ready» before it ran) doesn't keep its key,
   // which would skip every later one for that member: what was heard goes, and the next apply asks for it again.
   test(

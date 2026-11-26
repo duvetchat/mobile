@@ -793,7 +793,8 @@ class Conversations {
     retry.cancel = _engine.clock.later(_backoff(retry.tries++), () => _soon(() => sync(id)));
   }
 
-  /// The conversation is no longer the user's (left, removed, deleted): nothing more is asked of it.
+  /// The conversation is no longer the user's (left, removed, deleted): nothing more is asked of it, its catch-ups and
+  /// a generation its person was asked about let go too, as the desktop's drop does (step 5's engines review, Minor 7).
   void _gone(String id) {
     _retries.remove(id)?.cancel();
     _inFlight.remove(id)?.cancel?.call();
@@ -802,6 +803,9 @@ class Conversations {
     _welcomeGenerations.remove(id);
     _joinsLost.remove(id);
     _accepted.remove(id);
+    _catchUps.forget(id);
+    // The record's write logs its own failure: the refusal goes from memory at once.
+    unawaited(_unrefuse(id));
     _deviceless.remove(id);
     _devicelessFrom.remove(id);
     _restartRefused.remove(id);
