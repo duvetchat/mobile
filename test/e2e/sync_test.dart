@@ -349,4 +349,81 @@ void main() {
     // A notice has no number: it isn't the queue's.
     expect(messageEntry(duvet.DirectMessage.fromJson(message({'type': 3}))), isNull);
   });
+
+  // Step 5's fuzzing, with the desktop's finding: what the server hands over is an entry only when it reads as one,
+  // each field of it the message's own. A lost event costs nothing: the queue brings what it carried.
+  group('what the fuzzers found', () {
+    const ids = ['0193a4b2-0000-7000-8000-000000000000', '0193a4b2-0000-7000-8000-000000000001'];
+    const at = '2026-11-26T10:00:00Z';
+    duvet.GatewayEventPayload event(String type, Map<String, Object?> data) => duvet.GatewayEnvelope.fromJson({
+      'op': 0,
+      's': 1,
+      'event': 'payload',
+      'd': {'type': type, 'data': data},
+    }).d!;
+    final message = {
+      'id': ids[0],
+      'conversation_id': ids[1],
+      'author_id': ids[0],
+      'type': 0,
+      'created_at': at,
+      'updated_at': at,
+      'ciphertext': 'AAAA',
+      'seq': 5,
+      'sent_at': 1763150000123,
+      'generation': 0,
+      'epoch': 2,
+    };
+    final entry = {'seq': 5, 'kind': 'commit', 'data': 'AAAA', 'sent_at': 1, 'generation': 0, 'epoch': 2};
+    final commit = {'conversation_id': ids[1], 'generation': 0, 'epoch': 2, 'entry': entry};
+
+    test("a message's entry has the message's own time, and there's none without one", () {
+      expect(carriedEntry(event('DM_MESSAGE_CREATE', message))?.entry['sent_at'], 1763150000123);
+      // Not 0, a time the message never carried, which the core would show as its own.
+      expect(carriedEntry(event('DM_MESSAGE_CREATE', {...message}..remove('sent_at'))), isNull);
+    });
+
+    test('an event is an entry only of a conversation, and of numbers the desktop counts with too', () {
+      expect(carriedEntry(event('MLS_COMMIT', commit))?.generation, 0);
+      expect(carriedEntry(event('DM_MESSAGE_CREATE', {...message, 'seq': (1 << 53) - 1})), isNotNull);
+      expect(carriedEntry(event('DM_MESSAGE_CREATE', {...message, 'conversation_id': ''})), isNull);
+      expect(carriedEntry(event('MLS_COMMIT', {...commit, 'conversation_id': ''})), isNull);
+      expect(
+        carriedEntry(
+          event('DM_MESSAGE_UPDATE', {'id': ids[0], 'conversation_id': '', 'edited_at': at, 'entry': entry}),
+        ),
+        isNull,
+      );
+      // Below 0, or past what the desktop's numbers hold exactly (where it refuses them), no number counts.
+      for (final number in [-1, 1 << 53]) {
+        for (final field in ['seq', 'generation', 'epoch']) {
+          expect(carriedEntry(event('DM_MESSAGE_CREATE', {...message, field: number})), isNull, reason: field);
+        }
+        expect(carriedEntry(event('MLS_COMMIT', {...commit, 'generation': number})), isNull);
+        expect(
+          carriedEntry(
+            event('MLS_COMMIT', {
+              ...commit,
+              'entry': {...entry, 'seq': number},
+            }),
+          ),
+          isNull,
+        );
+        expect(
+          carriedEntry(
+            event('DM_MESSAGE_DELETE', {
+              'id': ids[0],
+              'conversation_id': ids[1],
+              'entry': {...entry, 'seq': number},
+            }),
+          ),
+          isNull,
+        );
+      }
+      // Nor a time past them, the least integer among them, whose absolute value is itself in Dart's.
+      for (final time in [1 << 53, -(1 << 53), 1 << 63]) {
+        expect(carriedEntry(event('DM_MESSAGE_CREATE', {...message, 'sent_at': time})), isNull, reason: '$time');
+      }
+    });
+  });
 }
