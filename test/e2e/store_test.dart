@@ -60,6 +60,33 @@ void main() {
     expect(File('${file.path}.next').existsSync(), isFalse);
   });
 
+  // Task 29 (contacts.dart): another engine of the phone (a push's) writes the record while this one has it open, and
+  // this one takes those keys again once the core is its own, writing nothing; its next write keeps them.
+  test('a_refresh_takes_what_another_engine_wrote,_and_the_next_write_keeps_it', () async {
+    final app = await open();
+    await app.write(keptDevice, 'd-1');
+    final push = await open();
+    await push.write(keyChanges, {
+      'bo': {'verified': true, 'change': 'c1'},
+    });
+    expect(app.read(keyChanges), isNull);
+    await app.refresh([keyChanges, verifiedContacts]);
+    expect(app.read(keyChanges), {
+      'bo': {'verified': true, 'change': 'c1'},
+    });
+    await app.write(keptDevice, 'd-2');
+    expect(onDisk(), {
+      keptDevice: 'd-2',
+      keyChanges: {
+        'bo': {'verified': true, 'change': 'c1'},
+      },
+    });
+    // A key the file no longer has goes from memory too.
+    await push.write(keyChanges, null);
+    await app.refresh([keyChanges]);
+    expect(app.read(keyChanges), isNull);
+  });
+
   test("a_record_that_doesn't_read_starts_empty", () async {
     file.parent.createSync(recursive: true);
     file.writeAsStringSync('{"device": "d-1", "device_ke');

@@ -20,6 +20,7 @@ import 'package:duvet_client/http/router.dart' show ApiRouter;
 import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 
+import 'contacts.dart';
 import 'content.dart';
 import 'engine.dart' show EngineStage, EngineState;
 import 'failures.dart';
@@ -236,9 +237,15 @@ Future<PushAnswer> openPushed({
     };
     final record = LegacyRecords(records).kept(conversationId);
     final host = made = core(left());
+    // What this phone's core answers here of other users goes to the record the app's engine reads: the core says
+    // `changed` once (review 28's rule 2). One its gate asks of the app's engine is told there, and written there.
+    final contacts = Contacts(records, userId);
+    if (host case final ObservingHost observing) observing.onObserved = contacts.observed;
     final opened = await host.open(userId);
     try {
       if (opened.state != HostState.ready) throw StateError("the core didn't open: ${opened.state.name}");
+      // What the app's engine noted in the record before it let the core go.
+      await contacts.reload();
       final failed = <String>[];
       if (seq != null && !late()) {
         await _applyThrough(
@@ -258,6 +265,8 @@ Future<PushAnswer> openPushed({
       if (failed.isNotEmpty) reports = _reported(api, failed, late, left);
       return (texts: await textsOf(host, conversationId, lines), onScreen: false);
     } finally {
+      // The record's writes land before the core goes: this engine's isolate may end once its notification shows.
+      await contacts.written;
       await host.close();
     }
   }

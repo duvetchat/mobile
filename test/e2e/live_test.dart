@@ -468,6 +468,61 @@ void main() {
     timeout: const Timeout(Duration(minutes: 3)),
   );
 
+  // Contacts (PLAN-E2E-CLIENTES.md, Task 29; decision 25): Carol and Dave, whom the cases above left in a DM, see the
+  // same 60 digits; Carol marks Dave verified by them, and Dave scans Carol's code. Dave's new keys then hold Carol's
+  // next message (key_changed) until her yes, after which it goes and Dave reads it; their new number is the same
+  // again on both sides. Before the push's case, which stops Dave's app.
+  test(
+    "two_users_compare_their_security_number,_and_a_verified_one's_new_keys_wait_for_a_yes",
+    () async {
+      final pair = _carolAndDave;
+      if (pair == null) fail('the cases before left no conversation');
+      final (:c, :d, :dm) = pair;
+      final (carol, dave) = (_account(2), _account(3));
+      const wait = Duration(seconds: 30);
+      final carols = await c.engine.safetyNumber(dave.id);
+      expect(carols.digits, matches(RegExp(r'^(\d{5} ){11}\d{5}$')));
+      expect(await d.engine.safetyNumber(carol.id), carols);
+      expect(await c.engine.verifyContact(dave.id, carols.digits), isTrue);
+      // Dave's phone scans the code Carol's shows.
+      expect(await d.engine.verifyScanned(carol.id, carols.qr), isTrue);
+      expect(c.engine.contacts.value.verified[dave.id], isTrue);
+      expect(d.engine.contacts.value.verified[carol.id], isTrue);
+
+      // Dave's new keys: Carol's device notes the strong change, and her next message waits for her yes.
+      await d.engine.changeKeys();
+      await d.engine.keySaved();
+      expect(d.engine.state.value, EngineState.ready);
+      await eventually(() => expect(c.engine.contacts.value.changes[dave.id]?.verified, isTrue), timeout: wait);
+      final before = (await c.rest.getDirectMessages(dm)).length;
+      final message = Outgoing(conversationId: dm, nonce: uuidv4(), text: 'still you, Dave?');
+      await expectLater(
+        c.engine.sendMessage(message),
+        throwsA(isA<CoreError>().having((error) => error.code, 'code', 'key_changed')),
+      );
+      expect((await c.rest.getDirectMessages(dm)).length, before);
+
+      // Her yes, to the change she was shown: it goes, and Dave reads it.
+      duvet.DirectMessage? went;
+      final heard = c.engine.sent.listen((sent) {
+        if (sent.nonce == message.nonce) went = sent.message;
+      });
+      addTearDown(heard.cancel);
+      await c.engine.confirmKeyChanges([(user: dave.id, change: c.engine.contacts.value.changes[dave.id]!.change)]);
+      await eventually(() => expect(went, isNotNull), timeout: wait);
+      await eventually(
+        () async => expect((await d.engine.messages(dm, [went!.id])).firstOrNull?.text, 'still you, Dave?'),
+        timeout: wait,
+      );
+      // Their new number, the same again on both sides.
+      final now = await c.engine.safetyNumber(dave.id);
+      expect(now.digits, isNot(carols.digits));
+      expect(await d.engine.safetyNumber(carol.id), now);
+    },
+    skip: skip ?? noCore,
+    timeout: const Timeout(Duration(minutes: 3)),
+  );
+
   // Pushes opened on the phone (PLAN-E2E-CLIENTES.md, Task 21; decision 29): Dave's app closed, a push's engine opens
   // Carol's messages with his core, from the queue's own entry as the API's push carries it (here past a gap, as the
   // message before it never pushed) and, for one too long for its entry, from the queue read with his stored session.

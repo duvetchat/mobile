@@ -42,6 +42,13 @@ const toldInactive = 'told_inactive';
 /// later generation (sync.dart; the core's #46, kept across restarts).
 const refusedGenerations = 'refused_generations';
 
+/// Contacts' changed keys the person isn't done with (contacts.dart), by user: whether the identity replaced was
+/// verified, the notice closed, the person's yes, and which change it is. Words alone, never a key.
+const keyChanges = 'key_changes';
+
+/// Whom the person verified on this device (contacts.dart), from their tap: user IDs, so a lost change is found again.
+const verifiedContacts = 'verified_contacts';
+
 /// What a new device of this installation starts without.
 const deviceRecord = [
   keptDevice,
@@ -53,6 +60,8 @@ const deviceRecord = [
   pendingChanges,
   rotationRemove,
   refusedGenerations,
+  keyChanges,
+  verifiedContacts,
 ];
 
 /// The API's external sender as this installation first saw it (Ruling 32), which a new device of it keeps.
@@ -64,6 +73,11 @@ abstract interface class EngineStore {
 
   /// Keeps the JSON [value] under [key], null forgetting it: done once it's kept for good.
   Future<void> write(String key, Object? value);
+
+  /// Takes [keys] again as the record holds them for good, once the writes before have landed: on disk, what another
+  /// engine of this phone (a push's) wrote there while this one didn't hold the core (contacts.dart). Nothing is
+  /// written; a record kept in memory alone has them already.
+  Future<void> refresh(List<String> keys);
 }
 
 final _uuid = RegExp(r'^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$');
@@ -106,6 +120,26 @@ class FileEngineStore implements EngineStore {
     final done = _writing.catchError((Object _) {}).then((_) => _save(whole));
     _writing = done;
     return done;
+  }
+
+  @override
+  Future<void> refresh(List<String> keys) async {
+    await _writing.catchError((Object _) {});
+    final Map<String, Object?> kept;
+    try {
+      if (!await _file.exists()) return;
+      kept = (jsonDecode(await _file.readAsString()) as Map).cast<String, Object?>();
+    } catch (error) {
+      debugPrint("e2e: the engine's record didn't read again: ${error.runtimeType}");
+      return;
+    }
+    for (final key in keys) {
+      if (kept.containsKey(key)) {
+        _values[key] = kept[key];
+      } else {
+        _values.remove(key);
+      }
+    }
   }
 
   Future<void> _save(String whole) async {

@@ -68,6 +68,10 @@ class CatchUps {
   final _made = <String, Map<String, Object?>>{};
   final _failed = <String, int>{};
 
+  /// Catch-ups whose member's changed key waits for the person's yes (contacts.dart): due still, they try nothing until
+  /// [again].
+  final _held = <String, (String, String)>{};
+
   /// apply named these members of the conversation due a catch-up: each one's goes in its turn, once, but one waiting
   /// or on its way.
   void due(String conversationId, List<String> users) {
@@ -84,6 +88,15 @@ class CatchUps {
   /// The turns queued and never run (the engine wasn't ready) go: the next apply asks for them again (M3).
   void dropQueued() => _queued.clear();
 
+  /// The person's yes may have come (contacts.dart): the catch-ups held for it are asked for again.
+  void again() {
+    final held = [..._held.values];
+    _held.clear();
+    for (final (conversationId, user) in held) {
+      due(conversationId, [user]);
+    }
+  }
+
   void stop() {
     for (final cancel in _waiting.values) {
       cancel();
@@ -91,6 +104,7 @@ class CatchUps {
     _waiting.clear();
     _queued.clear();
     _going.clear();
+    _held.clear();
   }
 
   /// In the engine's turn: the member's package, made (or the one made before), then its upload outside the turn.
@@ -103,6 +117,13 @@ class CatchUps {
       _made[key] = made;
       _going.add(key);
       unawaited(_upload(conversationId, user, made));
+    } on CoreError catch (error) {
+      // Held for the person's yes: it stays due, without a try, until the yes asks for it again (review 28's I3).
+      if (error.code == 'key_changed') {
+        _held[key] = (conversationId, user);
+        return;
+      }
+      _later(key, conversationId, user, error);
     } catch (error) {
       _later(key, conversationId, user, error);
     }
@@ -170,6 +191,14 @@ Future<Map<String, Object?>?> makeCatchUp(E2EEngine engine, String conversationI
     rethrow;
   }
   await observeUsers(engine, [user]);
+  // Their changed key waits for the person's yes (review 28's I3): what was noted for them waits with it.
+  if (engine.holding([user]).isNotEmpty) {
+    throw CoreError(
+      'key_changed',
+      message: "a verified contact's key changed: their catch-up waits for the person's yes",
+      users: [user],
+    );
+  }
   try {
     return await withIdentities(
       engine,

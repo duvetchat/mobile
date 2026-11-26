@@ -1158,6 +1158,49 @@ class DuvetRepository implements ChatRepository {
   @override
   Future<void> acceptMembers(String conversationId) => _engine?.acceptMembers(conversationId) ?? Future.value();
 
+  // ---------------------------------------------------------------------------
+  // Contacts (lib/e2e/contacts.dart; Task 29)
+  // ---------------------------------------------------------------------------
+
+  @override
+  final ValueNotifier<ContactsShown> contacts = ValueNotifier(ContactsShown.none);
+
+  void _showContacts() {
+    if (_engine case final engine?) contacts.value = engine.contacts.value;
+  }
+
+  @override
+  bool canVerify(String userId) =>
+      userId != profile.value?.id &&
+      encryption.value.stage == EngineStage.ready &&
+      (friends.value.friends.any((friend) => friend.userId == userId) ||
+          _conversationMembers.values.any((members) => members.any((m) => m.userId == userId && !m.isBot)));
+
+  @override
+  Future<bool> contactVerified(String userId) async => await _engine?.contact(userId) ?? false;
+
+  @override
+  Future<SafetyNumber> safetyNumber(String userId) =>
+      (_engine ?? (throw ActionFailed(Notice.notReady.text))).safetyNumber(userId);
+
+  @override
+  Future<bool> verifyContact(String userId, String digits) =>
+      (_engine ?? (throw ActionFailed(Notice.notReady.text))).verifyContact(userId, digits);
+
+  @override
+  Future<bool> verifyScanned(String userId, String qr) =>
+      (_engine ?? (throw ActionFailed(Notice.notReady.text))).verifyScanned(userId, qr);
+
+  @override
+  Future<Map<String, KeyChange>> keyChangesIn(String conversationId) async =>
+      await _engine?.keyChangesIn(conversationId) ?? const {};
+
+  @override
+  Future<void> closeKeyChange(String userId, String change) async => _engine?.closeKeyChange(userId, change);
+
+  @override
+  Future<void> confirmKeyChanges(List<ShownChange> changes) async => _engine?.confirmKeyChanges(changes);
+
   /// The conversation on screen, whose group the engine opens: at once, or once it's made and ready.
   String? _conversationOnScreen;
 
@@ -1223,6 +1266,8 @@ class DuvetRepository implements ChatRepository {
       );
       engine.state.addListener(_showEncryption);
       engine.conversations.addListener(_showConversations);
+      engine.contacts.addListener(_showContacts);
+      _showContacts();
       // Only this engine, the app's with a screen, opens a conversation's files (Review Focus 2).
       DecryptedFiles.instance.useOpener(_FileOpener(this, engine));
       _engineHeard.addAll([
@@ -1266,6 +1311,7 @@ class DuvetRepository implements ChatRepository {
     _identifyDevice = null;
     encryption.value = EngineState.starting;
     conversationStates.value = const {};
+    contacts.value = ContactsShown.none;
     for (final heard in _engineHeard) {
       unawaited(heard.cancel());
     }
@@ -1276,6 +1322,7 @@ class DuvetRepository implements ChatRepository {
     if (engine == null) return;
     engine.state.removeListener(_showEncryption);
     engine.conversations.removeListener(_showConversations);
+    engine.contacts.removeListener(_showContacts);
     _engineStopped = engine.stop().catchError((Object error) => debugPrint("e2e: the engine's stop: $error"));
   }
 
@@ -1526,6 +1573,7 @@ class DuvetRepository implements ChatRepository {
       throw ActionFailed(Notice.update.text);
     } on CoreError catch (error) {
       if (error.code == 'too_large') throw ActionFailed(Notice.tooLong.text);
+      // A verified contact's changed key (`key_changed`, with whom) goes on as it is: the chat says it in their names.
       rethrow;
     } on TooManyWaiting {
       throw ActionFailed(Notice.tooManyWaiting.text);

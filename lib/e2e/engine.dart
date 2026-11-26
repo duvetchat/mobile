@@ -17,6 +17,7 @@ import 'package:duvet_client/duvet.dart' as duvet;
 import 'package:flutter/foundation.dart';
 
 import 'bootstrap.dart';
+import 'contacts.dart';
 import 'content.dart';
 import 'content.dart' as content show heldBefore, sentUnder;
 import 'devices.dart';
@@ -33,6 +34,7 @@ import 'send.dart';
 import 'store.dart';
 import 'sync.dart';
 
+export 'contacts.dart' show ContactsShown, KeyChange, SafetyNumber, ShownChange, changedIn, waitingForYes;
 export 'content.dart' show Authored, MessageStatus, ShownMessage;
 export 'devices.dart' show DeviceNotice, DeviceNoticeKind, inactiveDevice, onlyDevice;
 export 'files.dart' show FilesGone;
@@ -170,7 +172,11 @@ class E2EEngine {
     ({String challenge, DateTime at})? loginChallenge,
     double Function()? random,
   }) : _challenge = loginChallenge,
-       random = random ?? Random().nextDouble;
+       random = random ?? Random().nextDouble {
+    // Every observation this device's core answers, whoever asked (a push's engine through the port too), reaches the
+    // contacts (review 28's rule 2): the core says `changed` once.
+    if (host case final ObservingHost observing) observing.onObserved = _contacts.observed;
+  }
 
   final CoreHost host;
 
@@ -263,6 +269,7 @@ class E2EEngine {
     _messageSent,
     _changeRefused,
     _messagesGone,
+    _held,
   );
 
   /// The cutover's instant, as GET /api/e2e gave it: a conversation from before it says when its messages went.
@@ -313,6 +320,129 @@ class E2EEngine {
 
   void _messageSent(String conversationId, String nonce, duvet.DirectMessage message) {
     if (!_sent.isClosed) _sent.add((conversationId: conversationId, nonce: nonce, message: message));
+  }
+
+  // ---------------------------------------------------------------------------------------------------------------
+  // Contacts (Task 29; decision 25)
+
+  /// The person's contacts (contacts.dart): whom they verified, and their changed keys.
+  late final _contacts = Contacts(store, user);
+
+  /// What the views show of the person's contacts: their changed keys, and whom they verified.
+  ValueListenable<ContactsShown> get contacts => _contacts.shown;
+
+  /// Whether the person verified the user, as this device's core holds them once it observed them as the API serves
+  /// them now: a changed key leaves its notice, and one the core refuses changes nothing. False for one the API serves
+  /// no identity of, and before this device is ready.
+  Future<bool> contact(String userId) async {
+    // One that fails (logged by the turn) leaves what the core held before.
+    await _queue(() => _whenReady(() => observeUsers(this, [userId]))).catchError((Object _) {});
+    return _contacts.shown.value.verified[userId] ?? false;
+  }
+
+  /// The security number with a contact (decision 25): its 60 digits in 12 groups of 5, and its QR's text, the core's
+  /// `qr` as it gives it, which the other's phone scans (e2e-conventions.json's safety_qr). The contact is observed as
+  /// the API serves them first, so the number is of the identity they have now; one the core refuses leaves the number
+  /// of the identity this device holds of them.
+  Future<SafetyNumber> safetyNumber(String userId) => _act(() async {
+    await _observed([userId]);
+    return _safetyNumber(userId);
+  });
+
+  /// The person marks the contact verified, having compared these [digits] with theirs: only while they're still the
+  /// number the core holds, read again in the same turn, and by that number's QR, so the core marks only while it pins
+  /// the identities the person compared, whatever another engine asks of it meanwhile (review 28's rule 4). Whether
+  /// they're verified now.
+  Future<bool> verifyContact(String userId, String digits) => _act(() async {
+    final number = await _safetyNumber(userId);
+    if (number.digits != digits) return false;
+    return _verify(userId, number.qr);
+  });
+
+  /// The person scanned the contact's code from their phone (Ruling 21): its text, as read, goes to the core for this
+  /// contact, never one the code names. The core verifies them only if the code holds the identities it pins; for the
+  /// same two users with other keys it unmarks them, and another pair's code changes nothing. Whether they're verified
+  /// now. A text that isn't a security number's code throws the core's `bad_command`.
+  Future<bool> verifyScanned(String userId, String qr) => _act(() => _verify(userId, qr));
+
+  /// verify_user by [qr]: a yes once verified, as verifying the new number is (review 28's Minor 7). A code that
+  /// didn't match leaves the mark as the core holds it, which the contact's observation says at once: unmarked, a
+  /// contact the person had verified waits for their yes again.
+  Future<bool> _verify(String userId, String qr) async {
+    final answered = await withIdentities(
+      this,
+      () => host.handle<Map<String, Object?>>({'cmd': 'verify_user', 'user_id': userId, 'qr': qr}),
+    );
+    final verified = answered['verified'] == true;
+    if (!verified) {
+      await _observed([userId]);
+      return false;
+    }
+    _contacts.verifiedNow(userId, true);
+    _released();
+    return true;
+  }
+
+  /// The core's security number with the contact, as it holds them now: observed first when it asks.
+  Future<SafetyNumber> _safetyNumber(String userId) async {
+    final number = await withIdentities(
+      this,
+      () => host.handle<Map<String, Object?>>({'cmd': 'safety_number', 'user_id': userId}),
+    );
+    final (digits, qr) = (number['digits'], number['qr']);
+    // Without its QR, verify_user would mark whatever the core pins as it runs (review 28's rule 4).
+    if (digits is! String || qr is! String || qr.isEmpty) {
+      throw CoreError('internal', message: 'the core gave the security number no QR');
+    }
+    return (digits: digits, qr: qr);
+  }
+
+  /// The changed keys of the conversation's people (review 28's I1): the users its group holds on this device, members
+  /// and leaves, with those the API lists, as a server could list it without someone its group still holds. None
+  /// while this device isn't ready, where nothing is sent.
+  Future<Map<String, KeyChange>> keyChangesIn(String conversationId) async {
+    var found = const <String, KeyChange>{};
+    await _queue(
+      () => _whenReady(() async {
+        final changes = _contacts.shown.value.changes;
+        found = {for (final user in await _groups.people(conversationId)) user: ?changes[user]};
+      }),
+    );
+    return found;
+  }
+
+  /// The person closes the notice of the contact's change they were shown: it shows no more, wherever it showed.
+  Future<void> closeKeyChange(String userId, String change) async => _contacts.close(userId, change);
+
+  /// The person's yes to sending, the changes they were shown known (decision 25): what waited for it goes, as at a
+  /// READY.
+  Future<void> confirmKeyChanges(List<ShownChange> changes) async {
+    _contacts.confirm(changes);
+    _released();
+  }
+
+  /// Of these users, those whose changed key makes what goes to them wait for the person's yes (deviceless.dart's
+  /// catch-ups).
+  List<String> holding(List<String> users) => _contacts.holding(users);
+
+  /// Whom what goes to the conversation reaches, of those whose changed key waits for the person's yes: its group's
+  /// people, read in the turn (send.dart's hold).
+  Future<List<String>> _held(String conversationId) async => _contacts.holding(await _groups.people(conversationId));
+
+  /// What waited for the person's yes goes: messages and edits, as at a READY, and the catch-ups held for it.
+  void _released() {
+    _soon(() => _whenReady(_sends.resendAll));
+    _groups.catchUpsAgain();
+  }
+
+  /// Other users observed as the API serves them now, a failure logged: what the core held of them stays.
+  Future<void> _observed(List<String> users) async {
+    if (users.isEmpty) return;
+    try {
+      await observeUsers(this, users);
+    } catch (error) {
+      debugPrint("e2e: contacts weren't observed: ${error.runtimeType}");
+    }
   }
 
   /// The person's message, sent after what waits in its conversation (PLAN-E2E-CLIENTES.md, «Enviar»): the API's
@@ -520,6 +650,11 @@ class E2EEngine {
   /// A conversation the person opened, its members without a device asked for once its group goes on.
   Future<void> _open(String conversationId) async {
     await _groups.open(conversationId);
+    // Its people observed as the API serves them now: a changed key leaves its notice there, an event missed or not.
+    await _observed([
+      for (final person in await _groups.people(conversationId))
+        if (person != user) person,
+    ]);
     await _groups.checkDevices(conversationId);
   }
 
@@ -740,6 +875,7 @@ class E2EEngine {
     for (final key in [...deviceRecord, toldAdded, toldInactive]) {
       await store.write(key, null).catchError((Object error) => debugPrint("e2e: the record's $key: $error"));
     }
+    _contacts.forget();
     await _halt();
     if (_device case final device?) await giveUpRegistration(this, device);
     _made = null;
@@ -843,7 +979,13 @@ class E2EEngine {
         _sends.heard(data);
       // Another user's identity: whether they have a device may have changed, which their conversations tell the core.
       case duvet.IdentityUpdatedEvent(:final data) when data.userId != user:
-        _soon(() => _whenReady(() => _groups.identityChanged(data.userId)));
+        _soon(
+          () => _whenReady(() async {
+            // Observed as the API serves them now: a changed key leaves its notice (contacts.dart).
+            await _observed([data.userId]);
+            await _groups.identityChanged(data.userId);
+          }),
+        );
       // A conversation's owner handed on (they left): what it says goes by its new owner.
       case duvet.ConversationUpdatedEvent(:final data):
         _soon(() => _whenReady(() => _groups.changed(data.id)));
@@ -906,6 +1048,8 @@ class E2EEngine {
       _groups.start(await _pin(config.externalSender));
       final opened = await host.open(user);
       if (opened.state != HostState.ready) return _closed(opened);
+      // What a push's engine noted in the record while it held the core (contacts.dart), before anything here writes.
+      await _contacts.reload();
       final (:status, :keys) = await ownDevice(this);
       final device = status.deviceId;
       _self = device;
@@ -947,6 +1091,9 @@ class E2EEngine {
     _set(await _identity());
     await _inbox();
     if (_state.value.stage != EngineStage.ready) return;
+    // Whom the person verified, looked at again: a change of theirs the record never took holds from the start (review
+    // 28's Minor 5).
+    await _observed(_contacts.verifiedUsers());
     await _whenReady(_groups.all);
     // What waits to be sent goes once the queues are applied, before anything new («Enviar»).
     try {
@@ -1036,6 +1183,7 @@ class E2EEngine {
     for (final key in deviceRecord) {
       await store.write(key, null).catchError((Object error) => debugPrint("e2e: the record's $key: $error"));
     }
+    _contacts.forget();
     _made = null;
     _device = null;
     _tries.clear();

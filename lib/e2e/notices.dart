@@ -9,6 +9,12 @@ enum Notice {
   noDevice("{name} can't receive encrypted messages yet. Your device will pass them on when they can."),
   keyChanged("{name}'s security key changed."),
   keyChangedVerified('You had verified {name}. Check their security number before you send.'),
+  // A contact's security number, the mark of one the person verified, and the yes a verified one's changed key asks
+  // for before anything more goes to them (Tasks 28 and 29).
+  verifyNumber('Verify security number'),
+  markVerified('Mark as verified'),
+  verified('Verified'),
+  sendAnyway('Send anyway'),
   cutover('Messages from before end-to-end encryption were deleted on {date}'),
   update('Update Duvet'),
   noE2eHere("Direct messages aren't available in this app yet. Use Duvet on the web."),
@@ -63,7 +69,19 @@ enum Notice {
   ),
 
   /// A push's notification of a message this device couldn't open in its time (Ruling 18): Android's alone.
-  newMessage('New message');
+  newMessage('New message'),
+
+  // A new device's setup (Tasks 26 and 27): its approval by another device, and starting over.
+  useCode('Use a code instead'),
+  approvalCodeHint('A computer approving this device will show this code'),
+  approvalAsk('Is this device yours?'),
+  approvalConfirmAfter('Confirm only after your new device accepts it'),
+  codeAccepted('Code accepted: confirm it on your other device.'),
+  codeMismatch("That isn't the code your other device shows."),
+  startOverWarning(
+    "Starting over makes new security keys for your account. The history of your encrypted conversations can't be "
+    'read any more, and your contacts will see that your keys changed.',
+  );
 
   const Notice(this.text);
 

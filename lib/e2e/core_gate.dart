@@ -55,7 +55,7 @@ class _Gone implements Exception {
 }
 
 /// The core of one engine: its own, or the one the app's engine has, through the port.
-final class CoreGate implements CoreHost {
+final class CoreGate implements CoreHost, ObservingHost {
   CoreGate({
     required this.serves,
     DbKeys keys = const DbKeys(),
@@ -99,6 +99,12 @@ final class CoreGate implements CoreHost {
 
   /// The parts of each package [share] made here, until dropped.
   final _shares = <String, List<Uint8List>>{};
+
+  /// Told of each observe_user this engine's own core answers: its engine's, and another engine's through the port.
+  /// One run through the port is told where it ran, never here (Task 29: the core says `changed` once).
+  @override
+  set onObserved(ObservedListener? listener) => _observed = listener;
+  ObservedListener? _observed;
 
   static const _again = Duration(milliseconds: 100);
 
@@ -372,7 +378,20 @@ final class CoreGate implements CoreHost {
     } on FormatException {
       throw CoreError('internal', message: "the core's reply isn't JSON");
     }
-    return replyOk(answer);
+    final ok = replyOk(answer);
+    if (command['cmd'] == 'observe_user' && ok is Map) _tellObserved(command['user_id'], ok);
+    return ok;
+  }
+
+  /// An observation this core answered, told to its engine's contacts: a listener's failure never fails the command.
+  void _tellObserved(Object? user, Map<Object?, Object?> answer) {
+    final listener = _observed;
+    if (listener == null || user is! String) return;
+    try {
+      listener(user, answer.cast<String, Object?>());
+    } catch (error) {
+      debugPrint("e2e: an observation wasn't noted: ${error.runtimeType}");
+    }
   }
 
   /// Seals a whole file, part by part, so its bytes never go in one JSON; [progress] hears how many are done.

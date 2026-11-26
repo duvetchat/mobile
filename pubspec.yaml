@@ -103,6 +103,10 @@ dependencies:
   # Renews the session every 4 hours while the app sits closed, so a phone left alone keeps getting its pushes
   # (lib/push/renewal.dart).
   workmanager: ^0.10.10
+  # A new device's QR, and the phone that scans it to approve that device (PLAN-E2E-CLIENTES.md, Ruling 21; both BSD).
+  # mobile_scanner brings the camera's permission into the manifest, asked only as a scan starts.
+  qr_flutter: ^4.1.0
+  mobile_scanner: ^7.5.0
 
 # flutter_webrtc 1.6.3 with one audio manager for every Flutter engine of the app (duvetchat/flutter-webrtc, branch
 # duvet-1.6.3). The engines that push notifications (firebase_messaging) and the session's background renewal

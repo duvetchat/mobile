@@ -1,7 +1,7 @@
 import 'package:duvet_client/duvet.dart' show Activity, Device;
 import 'package:flutter/foundation.dart';
 
-import '../e2e/engine.dart' show EngineState;
+import '../e2e/engine.dart' show ContactsShown, EngineState, KeyChange, SafetyNumber, ShownChange;
 import '../e2e/sync.dart' show ConversationState;
 import 'models.dart';
 import 'recent_chats.dart';
@@ -109,6 +109,41 @@ abstract interface class ChatRepository {
   Future<List<String>> restartGroup(String conversationId, {List<String> leaving = const []});
 
   Future<void> acceptMembers(String conversationId);
+
+  /// The person's contacts as the engine has them (lib/e2e/contacts.dart; Task 29): each one's changed key the person
+  /// isn't done with, and whom they verified. None without an engine.
+  ValueListenable<ContactsShown> get contacts;
+
+  /// Whether the person can compare their security number with [userId]: someone else, not a bot, whose identity the
+  /// API lets them read (a friend, or someone they share a conversation with), while encryption is ready here.
+  bool canVerify(String userId);
+
+  /// Whether the person verified [userId], once the engine looked at them as the API serves them now: a changed key
+  /// leaves its notice. False before the engine can say.
+  Future<bool> contactVerified(String userId);
+
+  /// The security number with [userId] (decision 25): its 60 digits and its QR's text. Throws the core's
+  /// `needs_identities` for someone with no identity to compare, or why it couldn't be read.
+  Future<SafetyNumber> safetyNumber(String userId);
+
+  /// The person's Mark as verified, having compared [digits]: true once the core verified [userId], false when their
+  /// number isn't those digits any more (it changed meanwhile).
+  Future<bool> verifyContact(String userId, String digits);
+
+  /// The person scanned [userId]'s code from their phone (Ruling 21): its text, as read, handed to the core, which
+  /// verifies them only if it holds the identities the code names; false when it doesn't. Throws the core's
+  /// `bad_command` for a text that isn't a security number's code.
+  Future<bool> verifyScanned(String userId, String qr);
+
+  /// The changed keys of the conversation's people, as the engine holds them: whom its group holds on this device with
+  /// those the API lists. None without an engine.
+  Future<Map<String, KeyChange>> keyChangesIn(String conversationId);
+
+  /// The person closed the notice of [userId]'s [change]: it shows no more, wherever it showed.
+  Future<void> closeKeyChange(String userId, String change);
+
+  /// The person's yes to sending, these changes known (decision 25): what waited for it goes.
+  Future<void> confirmKeyChanges(List<ShownChange> changes);
 
   Future<void> logIn(String email, String password);
 

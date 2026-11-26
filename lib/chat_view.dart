@@ -6,6 +6,7 @@ import 'dart:ui' show ImageFilter;
 
 import 'package:clock/clock.dart' as time show clock;
 import 'package:flutter/gestures.dart' show TapGestureRecognizer;
+import 'package:flutter/foundation.dart' show mapEquals;
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
@@ -33,8 +34,10 @@ import 'e2e/files.dart' show gifFile, sealedSize, tooLargeToSend;
 import 'e2e/host.dart' show CoreError;
 import 'e2e/notices.dart';
 import 'e2e/uuid.dart';
+import 'e2e/engine.dart' show KeyChange, changedIn, waitingForYes;
 import 'encryption/conversation_start.dart';
 import 'encryption/conversation_state.dart';
+import 'encryption/safety_number.dart';
 import 'members_sheet.dart';
 import 'people.dart';
 import 'search.dart';
@@ -212,6 +215,10 @@ class _ChatViewState extends State<ChatView> with SingleTickerProviderStateMixin
 
   // Who can be mentioned, the space's emoji and stickers, the Unicode set.
   List<Member> _members = const [];
+
+  /// The changed keys of this conversation's people, as the engine says them (Task 29): its group's people on this
+  /// device with those the API lists. Asked again as the contacts or the members change.
+  Map<String, KeyChange> _keyChanges = const {};
   List<CustomEmoji> _customEmojis = const [];
   late final Future<List<Sticker>> _stickers;
   List<Sticker> _stickerList = const [];
@@ -322,6 +329,8 @@ class _ChatViewState extends State<ChatView> with SingleTickerProviderStateMixin
     _voice = context.voice..addListener(_onVoice);
     _load();
     _loadDirectory();
+    _repository.contacts.addListener(_keyChangesAgain);
+    _keyChangesAgain();
   }
 
   // On top with the app in front, the chat is on screen: its mentions show no
@@ -348,6 +357,7 @@ class _ChatViewState extends State<ChatView> with SingleTickerProviderStateMixin
       if (!c.isCompleted) c.complete();
     }
     _lifecycle.dispose();
+    if (_events != null) _repository.contacts.removeListener(_keyChangesAgain);
     _events?.cancel();
     _typingSub?.cancel();
     _resumedSub?.cancel();
@@ -405,6 +415,7 @@ class _ChatViewState extends State<ChatView> with SingleTickerProviderStateMixin
   void _loadDirectory() {
     _repository.members(widget.target).then((m) {
       if (mounted) setState(() => _members = m);
+      _keyChangesAgain();
     }, onError: (Object e) => debugPrint('members: $e'));
     _repository.customEmojis().then((e) {
       if (mounted) setState(() => _customEmojis = e);
@@ -1016,6 +1027,8 @@ class _ChatViewState extends State<ChatView> with SingleTickerProviderStateMixin
         return;
       }
     }
+    // A no keeps what was written (review 28's rule 8).
+    if (!await _mayGo() || !mounted) return;
     final files = [..._files];
     final replyTo = _replyTo;
     _composer.clear();
@@ -1060,13 +1073,14 @@ class _ChatViewState extends State<ChatView> with SingleTickerProviderStateMixin
 
   static String _megabytes(int bytes) => '${(bytes / (1024 * 1024)).round()} MB';
 
-  void _sendSticker(Sticker sticker) => _sendPicked(sticker: sticker);
+  void _sendSticker(Sticker sticker) => unawaited(_sendPicked(sticker: sticker));
 
   void _sendGif(String url) =>
-      widget.target is ConversationTarget ? unawaited(_sendSealedGif(url)) : _sendPicked(content: url);
+      unawaited(widget.target is ConversationTarget ? _sendSealedGif(url) : _sendPicked(content: url));
 
   /// A GIF picked in an encrypted conversation goes as a sealed file of its bytes, never its link (Ruling 12).
   Future<void> _sendSealedGif(String url) async {
+    if (!await _mayGo() || !mounted) return;
     final picked = await gifFile(url, GifSource.instance.bytes);
     if (!mounted) return;
     if (picked == null) return _toast(Notice.gifFailed.text);
@@ -1091,7 +1105,8 @@ class _ChatViewState extends State<ChatView> with SingleTickerProviderStateMixin
 
   // A sticker or a GIF answers the message being replied to, as a text does
   // (on the desktop they all go out the same way), and the strip closes.
-  void _sendPicked({String content = '', Sticker? sticker}) {
+  Future<void> _sendPicked({String content = '', Sticker? sticker}) async {
+    if (!await _mayGo() || !mounted) return;
     final reply = _replyTo;
     if (reply != null) setState(() => _replyTo = null);
     final to = reply?.messageId ?? widget.threadOf;
@@ -1106,21 +1121,26 @@ class _ChatViewState extends State<ChatView> with SingleTickerProviderStateMixin
     ), reply: reply);
   }
 
-  void _sendVoice(Recording recording) => _queue((
-    content: '',
-    files: const [],
-    sticker: null,
-    replyTo: null,
-    mentionReplied: null,
-    voice: recording,
-    // The loudest of each stretch of the take, worked out before the send reads it (task 19's review, Missing 1).
-    waveform: _take.isEmpty ? null : peaksOf(_take),
-  ));
+  Future<void> _sendVoice(Recording recording) async {
+    final _Outgoing note = (
+      content: '',
+      files: const [],
+      sticker: null,
+      replyTo: null,
+      mentionReplied: null,
+      voice: recording,
+      // The loudest of each stretch of the take, worked out before the send reads it (task 19's review, Missing 1).
+      waveform: _take.isEmpty ? null : peaksOf(_take),
+    );
+    // A no keeps the note, waiting with Retry and Dismiss.
+    final go = await _mayGo();
+    if (mounted) _queue(note, deliver: go);
+  }
 
   /// A take's every level, a tenth of a second each, for its waveform.
   final _take = <double>[];
 
-  void _queue(_Outgoing outgoing, {MessageReply? reply}) {
+  void _queue(_Outgoing outgoing, {MessageReply? reply, bool deliver = true}) {
     final nonce = _nonce();
     final profile = _repository.profile.value;
     final pending = ChatMessage(
@@ -1157,8 +1177,8 @@ class _ChatViewState extends State<ChatView> with SingleTickerProviderStateMixin
       ],
     );
     _outgoing[nonce] = outgoing;
-    setState(() => _entries.add((message: pending, delivery: _Delivery.sending)));
-    _deliver(nonce);
+    setState(() => _entries.add((message: pending, delivery: deliver ? _Delivery.sending : _Delivery.failed)));
+    if (deliver) _deliver(nonce);
   }
 
   Future<void> _deliver(String nonce) async {
@@ -1223,7 +1243,7 @@ class _ChatViewState extends State<ChatView> with SingleTickerProviderStateMixin
       });
       _announce(e is UploadTooLarge ? 'Too large to send' : 'Message not sent');
       // Why the API refused it, as the desktop shows it.
-      if (e is ActionFailed) _toast(e.message);
+      _toastWhy(e);
     } finally {
       _cancels.remove(nonce);
     }
@@ -1261,7 +1281,8 @@ class _ChatViewState extends State<ChatView> with SingleTickerProviderStateMixin
     _announce('Upload cancelled');
   }
 
-  void _retry(_Entry entry) {
+  Future<void> _retry(_Entry entry) async {
+    if (!await _mayGo() || !mounted) return;
     final nonce = entry.message.nonce;
     if (nonce != null && !_outgoing.containsKey(nonce) && entry.message.pending) {
       unawaited(_resend(entry, nonce));
@@ -1302,7 +1323,15 @@ class _ChatViewState extends State<ChatView> with SingleTickerProviderStateMixin
         if (i >= 0) _entries[i] = (message: _entries[i].message, delivery: _Delivery.failed);
       });
       _announce('Message not sent');
-      if (e is ActionFailed) _toast(e.message);
+      _toastWhy(e);
+    }
+  }
+
+  /// Why a send didn't go, when it says: the API's refusal, or a verified contact's changed key in the strong words.
+  void _toastWhy(Object error) {
+    if (error is ActionFailed) return _toast(error.message);
+    if (error case CoreError(code: 'key_changed', :final users)) {
+      _toast(heldFor([for (final user in users ?? const <String>[]) _memberName(user)]));
     }
   }
 
@@ -1495,6 +1524,8 @@ class _ChatViewState extends State<ChatView> with SingleTickerProviderStateMixin
     if (editing == null) return;
     final content = _composer.encoded.trim();
     if (content.isEmpty) return;
+    // A no keeps the box, and what was typed in it (review 28's rule 8).
+    if (content != editing.content && (!await _mayGo() || !mounted || !identical(_editing, editing))) return;
     setState(_stopEditing);
     if (content == editing.content) return;
     // Shown at once; put back if the server says no.
@@ -1902,6 +1933,56 @@ class _ChatViewState extends State<ChatView> with SingleTickerProviderStateMixin
     );
     if (video == null || !mounted || !_canCall) return;
     await callConversation(context, widget.target.id, video: video);
+  }
+
+  /// A DM's other person: none in a group, a room or a thread.
+  String? get _dmPartner {
+    if (widget.target is! ConversationTarget || widget.threadOf != null) return null;
+    return _repository.conversations.value.where((c) => c.id == widget.target.id).firstOrNull?.otherUserId;
+  }
+
+  /// A DM's title, with its contact's mark once the person verified them (Task 29).
+  Widget _withMark(Widget title) {
+    final partner = _dmPartner;
+    if (partner == null || _repository.contacts.value.verified[partner] != true) return title;
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Flexible(child: title),
+        const SizedBox(width: 6),
+        const VerifiedMark(),
+      ],
+    );
+  }
+
+  void _keyChangesAgain() {
+    if (widget.target case ConversationTarget(:final conversationId)) {
+      _repository.keyChangesIn(conversationId).then((changes) {
+        if (mounted && !mapEquals(changes, _keyChanges)) setState(() => _keyChanges = changes);
+      }, onError: (Object e) => debugPrint("e2e: a conversation's changed keys: ${e.runtimeType}"));
+    }
+  }
+
+  /// A verified contact's changed key (decision 25): before what goes here next, the person is asked, naming them,
+  /// the engine asked afresh; their yes, to the changes they were shown, lets it go, and what waited with it. True when
+  /// nothing waits. The engine's own hold stands behind this question, for a change it didn't know of yet.
+  Future<bool> _mayGo() async {
+    if (widget.target case ConversationTarget(:final conversationId)) {
+      final Map<String, KeyChange> changes;
+      try {
+        changes = await _repository.keyChangesIn(conversationId);
+      } catch (e) {
+        debugPrint("e2e: a conversation's changed keys: ${e.runtimeType}");
+        return true;
+      }
+      final waiting = waitingForYes(changes, changes.keys);
+      if (waiting.isEmpty) return true;
+      if (!mounted || !await confirmSendAnyway(context, [for (final user in waiting) _memberName(user)])) {
+        return false;
+      }
+      await _repository.confirmKeyChanges([for (final user in waiting) (user: user, change: changes[user]!.change)]);
+    }
+    return true;
   }
 
   /// A DM's other person's presence, under its name: none in a group, a room
@@ -2735,6 +2816,8 @@ class _ChatViewState extends State<ChatView> with SingleTickerProviderStateMixin
                   _repository.presence,
                   // The room's name and description, as they change.
                   _repository.spaces,
+                  // A DM's contact's mark (Task 29).
+                  _repository.contacts,
                 ]),
                 builder: (context, _) => GlassTopBar(
                   hairline: _underTop,
@@ -2757,7 +2840,7 @@ class _ChatViewState extends State<ChatView> with SingleTickerProviderStateMixin
                           final presence? => Column(
                             mainAxisSize: MainAxisSize.min,
                             children: [
-                              Text(widget.title, maxLines: 1, overflow: TextOverflow.ellipsis),
+                              _withMark(Text(widget.title, maxLines: 1, overflow: TextOverflow.ellipsis)),
                               Text(
                                 presenceText(presence),
                                 style: DuvetType.caption.copyWith(color: colors.mutedForeground),
@@ -2781,7 +2864,7 @@ class _ChatViewState extends State<ChatView> with SingleTickerProviderStateMixin
                             );
                             // What the room is for, under its name: one line.
                             final description = isRoom ? _room?.description : null;
-                            if (description == null) return name;
+                            if (description == null) return _withMark(name);
                             return Column(
                               mainAxisSize: MainAxisSize.min,
                               children: [
@@ -2846,6 +2929,17 @@ class _ChatViewState extends State<ChatView> with SingleTickerProviderStateMixin
                   child: Column(
                     mainAxisSize: MainAxisSize.min,
                     children: [
+                      // A contact's changed key, in each conversation with them until it's closed (Task 29).
+                      for (final user in changedIn(_keyChanges, _keyChanges.keys))
+                        Padding(
+                          padding: const EdgeInsets.symmetric(horizontal: 16),
+                          child: _KeyChangeNotice(
+                            name: _memberName(user),
+                            verified: _keyChanges[user]!.verified,
+                            onVerify: () => openSafetyNumber(context, _repository, user, _memberName(user)),
+                            onClose: () => unawaited(_repository.closeKeyChange(user, _keyChanges[user]!.change)),
+                          ),
+                        ),
                       // What a conversation says of its encrypted group, over its message box.
                       if (widget.target case ConversationTarget(:final conversationId))
                         Padding(
