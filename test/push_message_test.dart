@@ -187,6 +187,30 @@ void main() {
     expect(Push.fromData({'type': 'call_end', 'conversation_id': 'x'}), isNull);
   });
 
+  // Step 5's fuzzing: a time a date can't hold (past 8.64e15 ms either way, where DateTime throws a RangeError) is the
+  // server's word too, and its throw cost the notification in the push's engine.
+  test('fromData reads a time no date holds as no time, never a throw', () {
+    const never = '99999999999999999';
+    expect(Push.fromData({..._data(), 'sent_at': never}), isNull);
+    expect(Push.fromData({..._data(), 'sent_at': '-$never'}), isNull);
+    // The least an integer holds, whose absolute value is itself in Dart's.
+    expect(Push.fromData({..._data(), 'sent_at': '-9223372036854775808'}), isNull);
+    expect(MessagePush.kept({..._data(), 'sent_at': never}), isNull);
+    final encrypted = {
+      'type': 'encrypted_message',
+      'message_id': _message,
+      'author_id': _maya,
+      'conversation_id': _conversation,
+      'seq': '7',
+    };
+    expect(Push.fromData({...encrypted, 'sent_at': never}), isNull);
+    final call = {'type': 'call', 'conversation_id': _conversation, 'initiator_id': _maya};
+    expect(Push.fromData({...call, 'started_at': never, 'ring_until': '1794702947695'}), isNull);
+    expect(Push.fromData({...call, 'started_at': '1794702917695', 'ring_until': never}), isNull);
+    // The last time a date holds still reads.
+    expect(Push.fromData({..._data(), 'sent_at': '8640000000000000'}), isA<MessagePush>());
+  });
+
   test("a call's notification has an ID of its own, apart from its conversation's messages", () {
     expect(callNotificationIdOf(_conversation), isNot(notificationIdOf(_conversation)));
     expect(callNotificationIdOf(_conversation), callNotificationIdOf(_conversation));

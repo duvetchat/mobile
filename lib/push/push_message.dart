@@ -27,9 +27,12 @@ String? _field(Map<String, dynamic> data, String key) => switch (data[key]) {
   _ => null,
 };
 
+/// The most milliseconds a DateTime holds either way of 1970: past them, it throws.
+const _mostMillis = 8640000000000000;
+
 DateTime? _millis(Map<String, dynamic> data, String key) => switch (int.tryParse(_field(data, key) ?? '')) {
-  final int ms => DateTime.fromMillisecondsSinceEpoch(ms, isUtc: true),
-  null => null,
+  final int ms when ms >= -_mostMillis && ms <= _mostMillis => DateTime.fromMillisecondsSinceEpoch(ms, isUtc: true),
+  _ => null,
 };
 
 /// A call that rings the user (duvetchat/api#276): who calls, from where (a group's name, or nothing in a direct
@@ -154,7 +157,7 @@ final class MessagePush extends Push {
     };
     final messageId = field('message_id');
     final authorId = field('author_id');
-    final sentAt = int.tryParse(field('sent_at') ?? '');
+    final sentAt = _millis(data, 'sent_at');
     if (messageId == null || !isDuvetId(messageId) || authorId == null || sentAt == null) return null;
     final ChatTarget target;
     if (field('conversation_id') case final conversation? when isDuvetId(conversation)) {
@@ -176,7 +179,7 @@ final class MessagePush extends Push {
       place: field('place') ?? '',
       text: target is ConversationTarget ? '' : field('text') ?? '',
       target: target,
-      sentAt: DateTime.fromMillisecondsSinceEpoch(sentAt, isUtc: true),
+      sentAt: sentAt,
     );
   }
 
