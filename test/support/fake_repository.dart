@@ -261,7 +261,8 @@ class FakeRepository implements ChatRepository {
               ),
     ];
     final from = query.cursor == null ? 0 : all.indexWhere((h) => h.message.id == query.cursor) + 1;
-    return (hits: all.skip(from).take(searchPageSize).toList(), total: all.length);
+    final hits = all.skip(from).take(searchPageSize).toList();
+    return (hits: hits, total: all.length, next: hits.isEmpty ? null : query.from(cursor: hits.last.message.id));
   }
 
   @override

@@ -10,11 +10,17 @@ import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
 
+import 'dart:ui' show IsolateNameServer;
+
 import 'package:duvet/e2e/client.dart';
+import 'package:duvet/e2e/content.dart';
+import 'package:duvet/e2e/core_gate.dart';
 import 'package:duvet/e2e/decrypted_files.dart';
 import 'package:duvet/e2e/engine.dart';
 import 'package:duvet/e2e/files.dart';
 import 'package:duvet/e2e/uuid.dart';
+import 'package:duvet/push/background.dart';
+import 'package:duvet/push/push_message.dart';
 import 'package:duvet_client/duvet.dart' as duvet;
 import 'package:duvet_client/http/router.dart' show ApiRouter;
 import 'package:flutter_test/flutter_test.dart';
@@ -320,6 +326,78 @@ void main() {
       );
       expect(opened.bytes, picture);
       expect(opened.type, 'image/png');
+    },
+    skip: skip ?? noCore,
+    timeout: const Timeout(Duration(minutes: 3)),
+  );
+
+  // Pushes opened on the phone (PLAN-E2E-CLIENTES.md, Task 21; decision 29): Dave's app closed, a push's engine opens
+  // Carol's messages with his core, from the queue's own entry as the API's push carries it (here past a gap, as the
+  // message before it never pushed) and, for one too long for its entry, from the queue read with his stored session.
+  // It runs last, as it stops Dave's app.
+  test(
+    'a_push_opens_on_the_phone_from_its_entry_or_from_the_queue',
+    () async {
+      final pair = _carolAndDave;
+      if (pair == null) fail('the case before left no conversation');
+      final (:c, :d, :dm) = pair;
+      final (carol, dave) = (_account(2), _account(3));
+      await d.engine.stop();
+      // Carol's device, in this process, answers on the core's port: Dave's phone's push engine mustn't find it.
+      IsolateNameServer.removePortNameMapping(corePortName);
+      final first = (await c.engine.sendMessage(
+        Outgoing(conversationId: dm, nonce: uuidv4(), text: 'while Dave was away'),
+      ))!;
+      final second = (await c.engine.sendMessage(
+        Outgoing(conversationId: dm, nonce: uuidv4(), text: 'pushed to Dave'),
+      ))!;
+      final long = 'a long message to Dave. ' * 200;
+      final third = (await c.engine.sendMessage(Outgoing(conversationId: dm, nonce: uuidv4(), text: long)))!;
+      // The second's entry, as the queue gives it: the push's.
+      final page = await d.rest.request(
+        'GET',
+        '/api/users/@me/conversations/$dm/mls/queue',
+        'get queue',
+        query: {'after': second.seq! - 1, 'limit': 1},
+      );
+      final entry = ((jsonDecode(page.body) as Map)['entries'] as List).single;
+      Map<String, String> pushOf(duvet.DirectMessage message, {Object? entry}) => {
+        'type': 'encrypted_message',
+        'message_id': message.id,
+        'author_id': carol.id,
+        'author_name': 'Carol',
+        'author_avatar': '',
+        'place': '',
+        'sent_at': '${message.sentAt}',
+        'conversation_id': dm,
+        'seq': '${message.seq}',
+        'entry': ?(entry == null ? null : jsonEncode(entry)),
+      };
+      Future<String> opened(Map<String, String> data) async {
+        final client = http.Client();
+        addTearDown(client.close);
+        final shown = await openedPush(
+          Push.fromData(data)! as EncryptedMessagePush,
+          earlier: const [],
+          session: (token: d.rest.token, sessionToken: d.rest.sessionToken, refreshedAt: null, userId: dave.id),
+          core: (wait) =>
+              CoreGate(serves: false, keys: d.host.keys, folder: () async => d.host.folder, lockedWait: wait),
+          router: _router(),
+          duvetClient: duvetClient(),
+          client: client,
+          store: (_) async => d.engine.store,
+        );
+        return shown!.text;
+      }
+
+      expect(await opened(pushOf(second, entry: entry)), 'pushed to Dave');
+      expect(await opened(pushOf(third)), pushText(long));
+      // The first, which never pushed, came in from the queue with the second.
+      final gate = CoreGate(serves: false, keys: d.host.keys, folder: () async => d.host.folder);
+      expect((await gate.open(dave.id)).state, HostState.ready);
+      final rows = await shownMessages(gate, dm, [first.id]);
+      await gate.close();
+      expect([for (final row in rows) row.text], ['while Dave was away']);
     },
     skip: skip ?? noCore,
     timeout: const Timeout(Duration(minutes: 3)),

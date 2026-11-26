@@ -17,6 +17,7 @@ import '../e2e/engine.dart';
 import '../e2e/files.dart';
 import '../e2e/host.dart';
 import '../e2e/notices.dart';
+import '../e2e/search.dart';
 import '../e2e/send.dart' show UploadCancelled;
 import '../e2e/store.dart';
 import '../e2e/thumbnails.dart';
@@ -222,6 +223,10 @@ class DuvetRepository implements ChatRepository {
   // Takes a chat's phone notification away as the chat shows (lib/push); none in tests that don't ask.
   final Future<void> Function(String chatId)? _forgetNotifications;
 
+  // Shows as the phone's notification (lib/push) a conversation's notice the app couldn't show, gone to the back during
+  // its wait: its push came while the app was in front, which leaves it alone.
+  final void Function(AwayNotice notice)? _notifyAway;
+
   DuvetRepository({
     SessionStore? store,
     RecentChatsStore? recentsStore,
@@ -231,6 +236,7 @@ class DuvetRepository implements ChatRepository {
     @visibleForTesting bool? preload,
     ChatCacheStore? cacheStore,
     Future<void> Function(String chatId)? forgetNotifications,
+    void Function(AwayNotice notice)? notifyAway,
     CoreHost Function()? encryptionHost,
     bool Function()? onScreen,
   }) : _cache = ChatCache(cacheStore ?? FileChatCacheStore()),
@@ -241,6 +247,7 @@ class DuvetRepository implements ChatRepository {
        _connectsGateway = connectGateway,
        _preloads = preload ?? connectGateway,
        _forgetNotifications = forgetNotifications,
+       _notifyAway = notifyAway,
        _encryptionHost = encryptionHost,
        _appShown = onScreen ?? _always {
     _typing.stream.listen((e) => _setTyping(e.$1, e.$2.userId, e.$2));
@@ -2421,16 +2428,66 @@ class DuvetRepository implements ChatRepository {
   void _showNotice(ChatTarget target, ChatMessage message) {
     // In the background the phone's notification tells of it (lib/push): this one, settled, never shows.
     if (!_inFront) return _settle(message.id);
-    // Nor for a chat at nothing ([quiet]): no notice, so no sound either.
-    if (_settled.contains(message.id) || profile.value?.status == Presence.doNotDisturb || quiet(target.id)) return;
-    // The chat on screen shows it already; a thread of it, its replies.
+    if (_settled.contains(message.id)) return;
+    final place = _noticePlace(target, message);
+    if (place == null) return;
+    _settle(message.id);
+    if (target is ConversationTarget) return unawaited(_noticeOnceRead(target, message));
+    _postNotice(target, message, place, previewOf(message));
+  }
+
+  /// How long a conversation's notice waits for its message's text on this device (as the desktop's NOTICE_WAIT_MS).
+  static const noticeWait = Duration(seconds: 2);
+
+  // The conversations' messages whose notice waits for this device's text: a deletion takes one away.
+  final _noticesReading = <String>{};
+
+  // A conversation's notice says what this device's database holds of its message once its engine applied it
+  // ([noticeWait] at most), and nothing of the API's message, which a server could write under a member's name: without
+  // the text in time, who wrote and that a message came. It's decided again after the wait, and a text that comes later
+  // notifies nothing (rules 6 and 11 of the desktop's task 20 review). Gone to the back meanwhile, the app hands it to
+  // the phone's notifications.
+  Future<void> _noticeOnceRead(ConversationTarget target, ChatMessage message) async {
+    _noticesReading.add(message.id);
+    final author = message.authorId;
+    final text = message.encrypted && author != null
+        ? await _engine?.textOf(target.conversationId, message.id, author, noticeWait).catchError((Object _) => null)
+        : null;
+    if (!_noticesReading.remove(message.id)) return;
+    final place = _noticePlace(target, message);
+    if (place == null) return;
+    if (!_inFront) {
+      final conversation = conversations.value.where((c) => c.id == target.conversationId).firstOrNull;
+      return _notifyAway?.call((
+        target: target,
+        message: message,
+        place: conversation?.name ?? '',
+        text: text == null
+            ? null
+            : readableContent(text, nameOf: nameOf, emojiNameOf: emojiNameOf, roomNameOf: (_) => null),
+      ));
+    }
+    final said = ChatMessage(
+      id: message.id,
+      authorId: author,
+      authorName: message.authorName,
+      content: text ?? '',
+      createdAt: message.createdAt,
+    );
+    _postNotice(target, message, place, previewOf(said));
+  }
+
+  // Where [message]'s notice shows, or null for none now: in do not disturb, in a chat at nothing ([quiet]: no notice,
+  // so no sound either), or with its chat on screen, which shows it already (a thread of it, its replies).
+  ({String title, String where})? _noticePlace(ChatTarget target, ChatMessage message) {
+    if (profile.value?.status == Presence.doNotDisturb || quiet(target.id)) return null;
     if (_onScreen case (
       :final chatId,
       :final threadOf,
     ) when chatId == target.id && (threadOf == null || message.reply?.messageId == threadOf)) {
-      return;
+      return null;
     }
-    final ({String title, String where})? place = switch (target) {
+    return switch (target) {
       RoomTarget(:final spaceId, :final roomId) => () {
         final space = spaces.value.where((s) => s.id == spaceId).firstOrNull;
         final room = space?.rooms.where((r) => r.id == roomId).firstOrNull;
@@ -2444,8 +2501,9 @@ class DuvetRepository implements ChatRepository {
         );
       }(),
     };
-    if (place == null) return;
-    _settle(message.id);
+  }
+
+  void _postNotice(ChatTarget target, ChatMessage message, ({String title, String where}) place, String text) {
     final notice = MentionNotice(
       messageId: message.id,
       target: target,
@@ -2453,7 +2511,7 @@ class DuvetRepository implements ChatRepository {
       authorName: message.authorName,
       authorAvatarUrl: message.authorAvatarUrl,
       where: place.where,
-      text: previewOf(message),
+      text: text,
     );
     final shown = [notice, ...mentionNotices.value];
     for (final gone in shown.skip(noticesShown)) {
@@ -2481,6 +2539,7 @@ class DuvetRepository implements ChatRepository {
   // A message was deleted: its notice goes, and one on its way never shows.
   void _dropMentionNotice(String messageId) {
     _settle(messageId);
+    _noticesReading.remove(messageId);
     _arrived.remove(messageId);
     _awaited.remove(messageId);
     dismissMentionNotice(messageId);
@@ -2494,6 +2553,7 @@ class DuvetRepository implements ChatRepository {
     _arrived.clear();
     _awaited.clear();
     _settled.clear();
+    _noticesReading.clear();
     _onScreen = null;
     mentionNotices.value = const [];
   }
@@ -3621,6 +3681,8 @@ class DuvetRepository implements ChatRepository {
 
   @override
   Future<SearchPage> search(SearchQuery q) async {
+    final spaceId = q.spaceId;
+    if (spaceId == null) return _searchConversations(q);
     final params = duvet.MessageSearch(
       query: q.text,
       roomIds: q.roomIds,
@@ -3632,27 +3694,147 @@ class DuvetRepository implements ChatRepository {
       after: q.after,
       cursor: q.cursor,
     );
-    if (q.conversationId case final id?) {
-      final page = await _call((api) => api.searchConversationMessages(id, params));
-      return (
-        hits: [
-          for (final m in await _contentOf(id, page.messages)) SearchHit(target: ConversationTarget(id), message: m),
-        ],
-        total: page.totalResults,
-      );
-    }
-    final spaceId = q.spaceId;
-    if (spaceId == null) return (hits: const <SearchHit>[], total: 0);
     final page = await _call((api) => api.searchSpaceMessages(spaceId, params));
+    final hits = [
+      for (final m in page.messages)
+        SearchHit(
+          target: RoomTarget(spaceId: spaceId, roomId: m.roomId),
+          message: _roomMessage(m),
+        ),
+    ];
+    return (hits: hits, total: page.totalResults, next: hits.isEmpty ? null : q.from(cursor: hits.last.message.id));
+  }
+
+  // ---------------------------------------------------------------------------
+  // Encrypted conversations' searches and pushes (PLAN-E2E-CLIENTES.md, Task 21; decision 42)
+  // ---------------------------------------------------------------------------
+
+  /// How many results a page of a conversation's search has, as a page of the API's search has; how many of the
+  /// device's the search everywhere shows.
+  static const conversationResults = 25;
+  static const everywhereResults = 20;
+
+  /// A conversation's search ([SearchQuery.conversationId]), or every conversation's, without one. Its words, from:,
+  /// mentions:, dates and has: go to this device, which holds its messages' text, a page at a time; pinned: and
+  /// has:sticker, which the API keeps in the clear, to the API's search, without words, each message's text the
+  /// device's. What needs both can go to neither: it's refused, saying so (search_split). Every conversation's is the
+  /// device's alone, as Search everywhere takes no filters.
+  Future<SearchPage> _searchConversations(SearchQuery q) async {
+    final id = q.conversationId;
+    final onDevice = deviceSearchOf(
+      text: q.text,
+      authors: q.authorIds,
+      mentions: q.mentionIds,
+      has: q.has,
+      pinned: q.pinned,
+      after: q.after,
+      before: q.before,
+    );
+    if (id == null) {
+      if (onDevice == null) return (hits: const <SearchHit>[], total: 0, next: null);
+      return _foundOnDevice(q, onDevice.page(limit: devicePage), most: everywhereResults);
+    }
+    if (onDevice != null) {
+      final request = onDevice.page(conversationId: id, limit: conversationResults, offset: q.offset);
+      return _foundOnDevice(q, request, most: conversationResults);
+    }
+    if (!apiTakes(text: q.text, has: q.has)) throw ActionFailed(Notice.searchSplit.text);
+    if (_engine?.state.value.stage != EngineStage.ready) throw ActionFailed(Notice.notReady.text);
+    // It takes no words: a text of punctuation alone goes no further than here.
+    final params = duvet.MessageSearch(
+      authorIds: q.authorIds,
+      mentions: q.mentionIds,
+      has: q.has,
+      pinned: q.pinned,
+      before: q.before,
+      after: q.after,
+      cursor: q.cursor,
+    );
+    final page = await _call((api) => api.searchConversationMessages(id, params));
+    final hits = [
+      for (final m in await _contentOf(id, page.messages)) SearchHit(target: ConversationTarget(id), message: m),
+    ];
+    final full = hits.length == conversationResults;
+    return (hits: hits, total: page.totalResults, next: full ? q.from(cursor: hits.last.message.id) : null);
+  }
+
+  /// [most] of what this device's search of [request] finds that a result draws ([_deviceHit]), and where the next page
+  /// starts. A device that isn't ready says so, as does its core failing; the core's refusal of the search itself (its
+  /// limits: 200 characters, 10 users) says what it refused.
+  Future<SearchPage> _foundOnDevice(SearchQuery q, DeviceSearch request, {required int most}) async {
+    final engine = _engine;
+    if (engine == null || engine.state.value.stage != EngineStage.ready) throw ActionFailed(Notice.notReady.text);
+    final ({List<SearchHit> found, int total, int? next}) page;
+    try {
+      page = await deviceFinds(engine.search, request, most: most, keep: _deviceHit);
+    } on CoreError catch (error) {
+      throw ActionFailed(error.code == 'internal' ? Notice.notReady.text : error.message);
+    }
+    final next = page.next;
+    return (hits: page.found, total: page.total, next: next == null ? null : q.from(offset: next));
+  }
+
+  /// A row of this device's as a result draws it: the message, its text and its files the row's (each as its envelope
+  /// says it, at no URL, as the result says only what they are and its chat loads them), nothing asked of the API (M8
+  /// of the desktop's review). None for one it can't open (the person's own still being sent has no ID yet), one of a
+  /// conversation the app doesn't list (a group the person left), or a sticker's empty envelope whose sticker only the
+  /// API's row says: drawn as that sticker when the app holds the row (it came live), left out otherwise (M5).
+  SearchHit? _deviceHit(ShownMessage row) {
+    final id = row.messageId;
+    final conversation = conversations.value.where((c) => c.id == row.conversationId).firstOrNull;
+    if (row.status != MessageStatus.ok || id == null || conversation == null) return null;
+    final empty = (row.text ?? '').isEmpty && row.attachments.isEmpty;
+    final held = _arrived[id] ?? latest.value[row.conversationId];
+    final sticker = empty && held?.id == id ? held?.stickerUrl : null;
+    if (empty && sticker == null) return null;
+    final me = profile.value;
+    return SearchHit(
+      target: ConversationTarget(row.conversationId),
+      message: ChatMessage(
+        id: id,
+        authorId: row.userId,
+        authorName: nameOf(row.userId) ?? (row.userId == me?.id ? me!.displayName : 'Someone'),
+        authorAvatarUrl: row.userId == conversation.otherUserId
+            ? conversation.avatarUrl
+            : (row.userId == me?.id ? me?.avatarUrl : null),
+        content: row.text ?? '',
+        createdAt: DateTime.fromMillisecondsSinceEpoch(row.sentAt).toLocal(),
+        edited: row.editedAt != null,
+        stickerUrl: sticker,
+        attachments: sealedAttachments(row, const {}),
+        // A voice note by its convention (Ruling 11), as the chat draws it.
+        isVoice: drawnAs(text: row.text, attachments: row.attachments, sticker: false) == Drawn.voiceNote,
+        seq: row.seq,
+        sharedBy: switch (row.sharedBy) {
+          final user? => _sharerName(user),
+          null => null,
+        },
+      ),
+    );
+  }
+
+  /// What a push's engine asks this one while its device is ready (lib/e2e/push_decrypt.dart): the texts this
+  /// device's database holds of a conversation's push's [lines], its [entry] taken in its conversation's turn first,
+  /// the first waited for [wait] at most; and whether the chat is on screen by then, which shows its messages itself
+  /// (rule 11 of the desktop's task 20 review). Null while this device isn't ready, which has the push's engine read
+  /// them.
+  Future<({Map<String, String> texts, bool onScreen})?> pushTexts(
+    String conversationId,
+    Map<String, Object?>? entry,
+    List<Authored> lines,
+    Duration wait,
+  ) async {
+    final engine = _engine;
+    if (engine == null || engine.state.value.stage != EngineStage.ready) return null;
+    final texts = await engine.pushTexts(conversationId, entry, lines, wait);
+    final shown = _onScreen;
     return (
-      hits: [
-        for (final m in page.messages)
-          SearchHit(
-            target: RoomTarget(spaceId: spaceId, roomId: m.roomId),
-            message: _roomMessage(m),
-          ),
-      ],
-      total: page.totalResults,
+      // The people and emojis they name, by the names this app knows: a push's engine knows only the chat's authors.
+      texts: {
+        for (final MapEntry(:key, :value) in texts.entries)
+          key: readableContent(value, nameOf: nameOf, emojiNameOf: emojiNameOf, roomNameOf: (_) => null),
+      },
+      onScreen: _inFront && shown?.chatId == conversationId && shown?.threadOf == null,
     );
   }
 

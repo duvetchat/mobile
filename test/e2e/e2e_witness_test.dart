@@ -9,10 +9,18 @@ import 'package:duvet/data/session_store.dart';
 import 'package:duvet/e2e/core_gate.dart';
 import 'package:duvet/e2e/decrypted_files.dart';
 import 'package:duvet/e2e/engine.dart';
+import 'package:duvet/e2e/content.dart';
 import 'package:duvet/e2e/files.dart';
+import 'package:duvet/e2e/push_decrypt.dart';
 import 'package:duvet/e2e/uuid.dart';
+import 'package:duvet/push/background.dart';
+import 'package:duvet/push/notifications.dart';
+import 'package:duvet/push/push_history.dart';
+import 'package:duvet/push/push_message.dart';
+import 'package:duvet/search.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
+import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
@@ -23,10 +31,12 @@ import '../support/fake_api.dart';
 
 // Plain text stays in the core's database (PLAN-E2E-CLIENTES.md, Review Focus 1): Ana's app, its repository with its
 // engine, and Bo's device converse with a witness string, sent, read, quoted, edited, deleted and left waiting after a
-// cut request, the chat's page drawn and its preview shown; and a file whose name and bytes hold it goes each way, its
-// copy decrypted in the app's temporary folder alone (Task 19). Then no file of the app's (the engine's record, the
-// core's database, the notifications' history), no record of Bo's engine, no page of the chat cache, no recent chat
-// kept, no body the API saw and no log line holds it. The desktop's e2e-witness.test.ts, over what the phone keeps too.
+// cut request, the chat's page drawn and its preview shown; a file whose name and bytes hold it goes each way, its copy
+// decrypted in the app's temporary folder alone (Task 19); and it's searched for in the conversation and everywhere,
+// noticed in the app and pushed to the phone (Task 21). Then no file of the app's (the engine's record, the core's
+// database, the notifications' history), no record of Bo's engine, no page of the chat cache, no recent chat kept, no
+// request the API saw (its URL or its body) and no log line holds it. The desktop's e2e-witness.test.ts, over what the
+// phone keeps too.
 const _slow = Timeout(Duration(minutes: 3));
 
 /// The recent chats as they're kept, each write of them.
@@ -75,7 +85,7 @@ void main() {
       final bodies = <String>[];
       final session = fake.signIn(ana);
       final client = MockClient((request) async {
-        bodies.add(latin1.decode(request.bodyBytes));
+        bodies.add('${request.url} ${latin1.decode(request.bodyBytes)}');
         final at = DateTime.now().toUtc().toIso8601String();
         final Object? own = switch ((request.method, request.url.path)) {
           ('POST', '/api/auth/login') => {
@@ -118,7 +128,10 @@ void main() {
         fake,
         bo,
         store: boStore,
-        client: watchedClient(fake, seen: (request) => bodies.add(latin1.decode(request.bodyBytes))),
+        client: watchedClient(
+          fake,
+          seen: (request) => bodies.add('${request.url} ${latin1.decode(request.bodyBytes)}'),
+        ),
       );
       // Ana opens the DM: her device makes its group, and Bo's joins it.
       repository.chatShown(target);
@@ -127,6 +140,11 @@ void main() {
           .then<int?>((held) => held['epoch'] as int?, onError: (Object _) => null);
       await until(() async => await anaEpoch() != null && await groupOf(b, conversation) != null);
 
+      Future<String?> textOnAna(String id) async =>
+          switch ((await shownMessages(anaCore, conversation, [id])).firstOrNull) {
+            final shown? when shown.status == MessageStatus.ok => shown.text,
+            _ => null,
+          };
       // Sent, read on Bo's device, quoted in his answer, which Ana's chat and its preview show.
       final sent = await repository.send(target, witness, nonce: uuidv4());
       Future<String?> textOnBo(String id) async => switch ((await b.engine.messages(conversation, [id])).firstOrNull) {
@@ -216,6 +234,56 @@ void main() {
       expect(hisFile.filename, 'his $witness.txt');
       final state = await DecryptedFiles.instance.open(hisFile.sealed!, hisFile.url, his.id);
       expect(File((state as FileReady).path).readAsStringSync(), 'his file of $witness');
+      // Searched for, in the conversation and everywhere: on the device (Task 21).
+      expect([
+        for (final hit in (await repository.search(SearchQuery(witness, conversationId: conversation))).hits)
+          hit.message.id,
+      ], contains(sent.id));
+      expect([
+        for (final hit in await searchEverywhere(repository, witness, spaces: const [])) hit.message.id,
+      ], contains(sent.id));
+      // Noticed in the app, with the chat left: its notice says the device's text.
+      repository.chatHidden(target);
+      final noticed = (await b.engine.sendMessage(
+        Outgoing(conversationId: conversation, nonce: uuidv4(), text: '$witness, noticed'),
+      ))!;
+      await until(() => repository.mentionNotices.value.any((n) => n.messageId == noticed.id));
+      expect(repository.mentionNotices.value.firstWhere((n) => n.messageId == noticed.id).text, '$witness, noticed');
+      // Pushed, and shown on the phone: the app's engine, which holds the core, answers the push's engine.
+      final shows = <String>[];
+      const notifications = MethodChannel('dexterous.com/flutter/local_notifications');
+      debugDefaultTargetPlatformOverride = TargetPlatform.android;
+      FlutterLocalNotificationsPlatform.instance = AndroidFlutterLocalNotificationsPlugin();
+      messenger.setMockMethodCallHandler(notifications, (call) async {
+        if (call.method == 'show') shows.add('${call.arguments}');
+        return call.method == 'getActiveNotifications' ? const <Object>[] : null;
+      });
+      addTearDown(() {
+        messenger.setMockMethodCallHandler(notifications, null);
+        debugDefaultTargetPlatformOverride = null;
+      });
+      final answering = answerPushes((ask) => repository.pushTexts(ask.conversationId, ask.entry, ask.lines, ask.wait));
+      addTearDown(() => stopAnsweringPushes(answering));
+      final pushed = (await b.engine.sendMessage(
+        Outgoing(conversationId: conversation, nonce: uuidv4(), text: '$witness, pushed'),
+      ))!;
+      await until(() async => await textOnAna(pushed.id) == '$witness, pushed');
+      final push = Push.fromData(fake.pushOf(conversation, pushed.id))! as EncryptedMessagePush;
+      final notification = await openedPush(
+        push,
+        earlier: await PushHistory(support).read(conversation),
+        session: (token: session.token, sessionToken: 'refresh', refreshedAt: null, userId: ana),
+        core: (_) => throw StateError('the app holds the core'),
+        router: fakeRouter,
+        duvetClient: engineClient,
+        client: watchedClient(
+          fake,
+          seen: (request) => bodies.add('${request.url} ${latin1.decode(request.bodyBytes)}'),
+        ),
+        store: (_) async => MemoryStore(),
+      );
+      await showPush(notification!);
+      expect(shows.single, contains('$witness, pushed'));
       await b.engine.stop();
       end();
       repository.dispose();

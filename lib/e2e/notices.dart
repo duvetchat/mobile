@@ -52,7 +52,13 @@ enum Notice {
   fileSaveNamed('Save {name}'),
   filePlay('Play video'),
   fileShow('Show picture'),
-  fileNamed('{name}: {status}');
+  fileNamed('{name}: {status}'),
+  searchSplit(
+    "In an encrypted conversation, pinned: and has:sticker can't be combined with words or with has:image, video or sound.",
+  ),
+
+  /// A push's notification of a message this device couldn't open in its time (Ruling 18): Android's alone.
+  newMessage('New message');
 
   const Notice(this.text);
 
