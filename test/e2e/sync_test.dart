@@ -130,6 +130,55 @@ void main() {
     timeout: _slow,
   );
 
+  // Step 5's fuzzing, with the desktop's finding: a page whose entries don't go past where its read began (the server's
+  // word) had the next read start where this one did, and a server that kept sending it held the engine's one turn,
+  // which runs one conversation at a time, for good.
+  test(
+    "a_queue_page_that_doesn't_go_past_where_its_read_began_isn't_asked_for_again_in_that_turn",
+    () async {
+      final seen = <http.Request>[];
+      final (:fake, ana: _, bo: _, :a, :b, :conversation) = await _dmWithGroup(seen);
+      await stoppedByHand(a);
+      // A server that lies: the last entry there is, and a hundred more said to come after it, whatever is asked.
+      final page = await a.api.queue(conversation, 0);
+      final last = page.entries.last;
+      final lie = {
+        'entries': [
+          {
+            'seq': last.seq,
+            'kind': last.kind,
+            'data': last.data,
+            'sent_at': last.sentAt,
+            'generation': last.generation,
+            'epoch': last.epoch,
+            'message_id': ?last.messageId,
+            'sender_user': ?last.senderUser,
+            'sender_device': ?last.senderDevice,
+          },
+        ],
+        'last_seq': page.lastSeq + 100,
+        'floor_seq': page.floorSeq,
+        'generation': page.generation,
+        'epoch': page.epoch,
+      };
+      fake
+        ..refuse((method: 'GET', path: '/api/users/@me/conversations/$conversation/mls/queue'), 200, body: lie)
+        ..stripData = true;
+      final before = _queueReads(seen, conversation).length;
+      await commitByHand(a, conversation);
+      await until(() => _queueReads(seen, conversation).length > before);
+      await turnEnded(b);
+      // Read once, the turn ends, as a gap that doesn't move ends it: the queue is read again with the next turn.
+      expect(_queueReads(seen, conversation).length - before, 1);
+      await commitByHand(a, conversation);
+      await sameGroup([a, b], conversation);
+      await a.host.close();
+      await b.engine.stop();
+    },
+    skip: noCore,
+    timeout: _slow,
+  );
+
   test(
     'an_expired_queue_joins_again_and_keeps_its_database',
     () async {

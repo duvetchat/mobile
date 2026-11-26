@@ -997,6 +997,9 @@ class Conversations {
       }
       final last = page.entries.lastOrNull?.seq;
       if (last == null || last >= page.lastSeq) return (through: at.through, gap: null, due: at.due, whole: true);
+      // A page that doesn't go past where this read was would come again as it is, for good: the turn ends, as for a
+      // gap that doesn't move, and the queue is read again with the next.
+      if (last <= from) throw StateError("the queue of ${conv.id} doesn't go past entry $from");
       from = last;
     }
   }
