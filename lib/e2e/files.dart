@@ -135,6 +135,10 @@ class FilesGone implements Exception {
 /// The most a thumbnail inside a message holds (the core's).
 const _maxThumbnail = 8 << 10;
 
+/// The most a thumbnail of its own holds: more than a JPEG or a PNG of 320 px a side takes, so a larger one, which
+/// every reader would download, is no thumbnail, read or sent (mobile#356; the desktop's MAX_THUMBNAIL_FILE).
+const maxThumbnailFile = 512 << 10;
+
 /// A thumbnail's types.
 const _thumbnailTypes = {'image/jpeg', 'image/png'};
 
@@ -227,7 +231,8 @@ class SealedFiles {
       };
       final pictured = type.startsWith('image/') || type.startsWith('video/');
       final thumbnail = switch (one.thumbnail) {
-        final bytes? when pictured && _thumbnailTypes.contains(_typeOf(bytes)) => bytes,
+        final bytes? when pictured && bytes.length <= maxThumbnailFile && _thumbnailTypes.contains(_typeOf(bytes)) =>
+          bytes,
         _ => null,
       };
       made.add(_Made(attachment, sealed, thumbnail));
@@ -267,7 +272,7 @@ FileRef? _fileRef(Object? value) {
 /// A file the core shows of a message (its `messages`' attachments), as a view may use it: null for one without an
 /// ID or a key. Its name is cleaned; its type is only its sender's word ([ShownFile.said]); a size is any number,
 /// which openSealed bounds; its dimensions, duration and waveform only when they read as such; a thumbnail inside it
-/// only of 8 KiB or less.
+/// only of 8 KiB or less, and one of its own only of [maxThumbnailFile] or less.
 ShownFile? shownFile(Object? raw) {
   if (raw is! Map) return null;
   final (id, key, sha, size) = (raw['id'], raw['key'], raw['sha256'], raw['size']);
@@ -290,7 +295,10 @@ ShownFile? shownFile(Object? raw) {
     durationMs: _duration(length) ? length as int : null,
     waveform: waveform is String && _decoded(waveform)?.length == waveformSamples ? waveform : null,
     thumbnail: kept,
-    thumbnailRef: kept == null ? _fileRef(raw['thumbnail_ref']) : null,
+    thumbnailRef: switch (kept == null ? _fileRef(raw['thumbnail_ref']) : null) {
+      final ref? when ref.size <= maxThumbnailFile => ref,
+      _ => null,
+    },
   );
 }
 
