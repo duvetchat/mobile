@@ -437,5 +437,26 @@ void main() {
       expect(host.opened, isEmpty);
       expect(requests.where((r) => r.method == 'POST' && r.url.path.contains('/conversations/')), isEmpty);
     });
+
+    // Review Focus 2 for Task 25: only the app's engine on a screen signs a list or changes the keys. Off a screen
+    // nothing is signed or uploaded, nor this device's data deleted.
+    test('off_a_screen_no_device_is_removed,_no_key_changed_and_no_data_deleted', () async {
+      await repository.logIn('gaby@duvet.chat', 'secret');
+      await pumpEventQueue();
+      await expectLater(repository.removeDevice('01936d4e-8f00-7000-8000-000000000009'), throwsA(isA<ActionFailed>()));
+      await expectLater(
+        repository.removeDevice('01936d4e-8f00-7000-8000-000000000009', changeKeys: true),
+        throwsA(isA<ActionFailed>()),
+      );
+      await expectLater(repository.changeKeys(), throwsA(isA<ActionFailed>()));
+      await expectLater(repository.removeThisDevice(), throwsA(isA<ActionFailed>()));
+      expect(host.opened, isEmpty);
+      expect(
+        requests.where(
+          (r) => r.method != 'GET' && (r.url.path.contains('/device') || r.url.path.contains('/identity')),
+        ),
+        isEmpty,
+      );
+    });
   });
 }

@@ -700,9 +700,9 @@ Future<TestDevice> restarted(
 }
 
 /// Another device of the first one's user, set up by the first one's approval by QR (Task 27 does it in the app) and
-/// on the user's list: its engine started and ready.
-Future<TestDevice> approvedDevice(FakeApi fake, TestDevice first, {CoreHost? host}) async {
-  final fresh = testDevice(fake, first.user, host: host);
+/// on the user's list: its engine started and ready, its requests through [client] when given.
+Future<TestDevice> approvedDevice(FakeApi fake, TestDevice first, {CoreHost? host, http.Client? client}) async {
+  final fresh = testDevice(fake, first.user, host: host, client: client);
   await fresh.engine.start();
   if (fresh.state != EngineState.newDevice) throw StateError('the new device is ${fresh.state}');
   await stoppedByHand(fresh);
@@ -718,7 +718,7 @@ Future<TestDevice> approvedDevice(FakeApi fake, TestDevice first, {CoreHost? hos
     ),
   );
   await fresh.host.handle<Object?>({'cmd': 'device_list_uploaded', 'version': version});
-  final again = await restarted(fake, fresh);
+  final again = await restarted(fake, fresh, client: client);
   if (again.state != EngineState.ready) throw StateError('the approved device is ${again.state}');
   return again;
 }

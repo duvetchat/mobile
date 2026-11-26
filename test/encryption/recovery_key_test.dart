@@ -245,6 +245,44 @@ void main() {
       expect(find.byType(RecoveryKeyPage, skipOffstage: false), findsNothing);
     });
 
+    // Task 25: a rotation's new key has the screen; one cut before its upload is finished by the person's tap, which
+    // runs the same rotation again (Change security keys), its key's page following.
+    testWidgets("a_rotation's_new_key_has_the_screen,_and_one_cut_before_its_upload_is_finished_by_the_person's_tap", (
+      tester,
+    ) async {
+      final repository = await gate(tester, const EngineState.rotation(recoveryKey: _key));
+      await tester.pumpAndSettle();
+      expect(find.byType(RecoveryKeyPage), findsOneWidget);
+      // Why this key, in the desktop's words: the keys changed, and the recovery key with them.
+      expect(find.text(rotationWhy), findsOneWidget);
+      expect(find.text('Finish', skipOffstage: false), findsNothing);
+      // Saved: the key's page goes, with no bar.
+      repository.encryption.value = EngineState.ready;
+      await tester.pumpAndSettle();
+      expect(find.byType(RecoveryKeyPage), findsNothing);
+      expect(find.byType(Text), findsNothing);
+
+      repository.encryption.value = const EngineState.rotation();
+      await tester.pumpAndSettle();
+      expect(find.text('Finish changing your security keys.'), findsOneWidget);
+      await tester.tap(find.text('Finish'));
+      await tester.pumpAndSettle();
+      expect(repository.encryptionTaps, ['changeKeys']);
+    });
+
+    // Review 24's I1 and review 25's I1: a key change that can't finish says why, with the one way out this core
+    // leaves: no Finish, and this device's data deleted and set up again, as another device's change of keys can't
+    // reach it (duvetchat/e2e#49).
+    testWidgets("a_key_change_that_can't_finish_says_why,_with_deleting_this_device's_data", (tester) async {
+      await gate(tester, const EngineState.rotation(stuck: true));
+      await tester.pumpAndSettle();
+      expect(find.textContaining("This change of your security keys can't finish"), findsOneWidget);
+      expect(find.textContaining("delete this device's data and set it up again"), findsOneWidget);
+      expect(find.textContaining('on another device'), findsNothing);
+      expect(find.text('Finish'), findsNothing);
+      expect(find.text(Notice.deleteDevice.text), findsOneWidget);
+    });
+
     // M6 of the desktop's review: what deletes the device's data asks first.
     testWidgets('setting_up_again_asks_before_it_deletes_anything', (tester) async {
       final repository = await gate(tester, EngineState.removed);

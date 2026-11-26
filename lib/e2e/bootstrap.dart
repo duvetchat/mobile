@@ -17,11 +17,15 @@ class CoreStatus {
   CoreStatus.of(Map<String, Object?> status)
     : deviceId = status['device_id'] as String?,
       identityKey = status['identity_key'] as String?,
+      deviceList = status['device_list'] as String?,
       waitingUpload = status['waiting_upload'] as String?,
       hasIdentity = status['has_identity'] == true;
 
   final String? deviceId;
   final String? identityKey;
+
+  /// The user's list as this device holds it: the last an identity command or a list answered, or observing gave.
+  final String? deviceList;
 
   /// The identity command whose upload the core waits for: `create_identity` or `rotate_keys`.
   final String? waitingUpload;
