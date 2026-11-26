@@ -84,4 +84,26 @@ void main() {
     expect(certificateDevice(base64Encode(_signed(marked))), isNull);
     expect(commitmentDevice(base64Encode(marked)), isNull);
   });
+
+  // Step 5's fuzzing: Dart's integers wrap past 2^63, where the desktop's numbers don't, so the lengths of 8 bytes that
+  // lie read otherwise here.
+  test('a length past what the bytes hold is refused, 2^63 or more too', () {
+    Uint8List of(List<int> bytes) => Uint8List.fromList(bytes);
+    // A list or a map of 2^63 items or more, which a 64-bit integer holds below 0: read as empty, where the desktop
+    // refuses them.
+    expect(cbor(of([0x9b, 0x80, 0, 0, 0, 0, 0, 0, 0])), isNull);
+    expect(cbor(of([0xbb, 0x80, 0, 0, 0, 0, 0, 0, 0])), isNull);
+    expect(cbor(of([0x9b, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff])), isNull);
+    // A list whose devices say 2^63 of them, then its version, names none (not none of them).
+    final body = [0xa2, ..._text('devices'), 0x9b, 0x80, 0, 0, 0, 0, 0, 0, 0, ..._text('version'), 0x01];
+    expect(listDevices(base64Encode(_signed(body))), isNull);
+    // A length just below 2^63, which added to where the reader is wraps below 0, past the check of what's left: its
+    // RangeError left the reader, which says null for anything it can't read.
+    for (final head in [0x5b, 0x7b, 0x9b, 0xbb]) {
+      expect(cbor(of([head, 0x7f, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff])), isNull);
+    }
+    expect(cbor(of([0x82, 0x5b, 0x7f, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xf7])), isNull);
+    // A length of 0 in 8 bytes is a length.
+    expect(cbor(of([0x9b, 0, 0, 0, 0, 0, 0, 0, 0])), isEmpty);
+  });
 }

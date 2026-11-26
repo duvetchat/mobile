@@ -12,8 +12,9 @@ import 'conventions.dart' show canonicalBytes;
 /// One CBOR value, as the core writes them: definite lengths, text keys, no tags; null for anything else.
 Object? cbor(Uint8List bytes) {
   var at = 0;
+  // What's left is compared, never where a length would end: a length of 8 bytes near 2^63 wraps that end below 0.
   Uint8List take(int n) {
-    if (n < 0 || at + n > bytes.length) throw const FormatException('cut short');
+    if (n < 0 || n > bytes.length - at) throw const FormatException('cut short');
     return Uint8List.sublistView(bytes, at, at += n);
   }
 
@@ -21,6 +22,14 @@ Object? cbor(Uint8List bytes) {
     if (info < 24) return info;
     if (info > 27) throw const FormatException('no definite length');
     return take(1 << (info - 24)).fold(0, (value, byte) => value * 256 + byte);
+  }
+
+  // A list's or a map's length, at most what's left, as each item takes a byte at least: one of 2^63 or more is below 0
+  // in Dart's integers, an empty one, where the desktop's is a number past any bytes.
+  int items(int info) {
+    final n = uint(info);
+    if (n < 0 || n > bytes.length - at) throw const FormatException('cut short');
+    return n;
   }
 
   Object? item(int depth) {
@@ -40,10 +49,10 @@ Object? cbor(Uint8List bytes) {
         final marked = text.length >= 3 && text[0] == 0xef && text[1] == 0xbb && text[2] == 0xbf;
         return '${marked ? '\u{feff}' : ''}${utf8.decode(text)}';
       case 4:
-        return [for (var n = uint(info); n > 0; n--) item(depth + 1)];
+        return [for (var n = items(info); n > 0; n--) item(depth + 1)];
       case 5:
         final map = <String, Object?>{};
-        for (var n = uint(info); n > 0; n--) {
+        for (var n = items(info); n > 0; n--) {
           final key = item(depth + 1);
           if (key is! String || map.containsKey(key)) throw const FormatException('not a text key, or one twice');
           map[key] = item(depth + 1);
