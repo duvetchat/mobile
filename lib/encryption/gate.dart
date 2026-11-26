@@ -14,6 +14,7 @@ import '../theme.dart';
 import '../widgets/chrome.dart';
 import '../widgets/depth.dart';
 import '../widgets/rows.dart';
+import 'devices.dart' show deleteThisDevice, rotationStuck;
 import 'recovery_key.dart';
 
 /// Where a client too old gets the new one.
@@ -69,8 +70,8 @@ class _EncryptionBannerState extends State<EncryptionBanner> {
   }
 
   _Bar? _bar(EngineState state) => switch (state.stage) {
-    // The key's page has the screen.
-    EngineStage.firstDevice when state.recoveryKey != null => null,
+    // The key's page has the screen: a first device's, or a change of keys' (Task 25).
+    EngineStage.firstDevice || EngineStage.ready when state.recoveryKey != null => null,
     EngineStage.firstDevice when state.finishing => (
       text: 'Finish setting up end-to-end encryption for your direct messages.',
       action: 'Finish',
@@ -104,6 +105,20 @@ class _EncryptionBannerState extends State<EncryptionBanner> {
       text: Notice.update.text,
       action: 'Download',
       run: (_) => launchUrl(downloadPage, mode: LaunchMode.externalApplication),
+    ),
+    // A change of the security keys that can never finish (review 24's I1): why, and deleting this device's data, the
+    // one way out this core leaves, as another device's change of keys can't reach it (review 25's I1).
+    EngineStage.ready when state.stuck => (
+      text: rotationStuck,
+      action: Notice.deleteDevice.text,
+      run: (context) => deleteThisDevice(context),
+    ),
+    // A change of the security keys put off, or cut by the app's close before its upload (Task 25): Finish runs the
+    // same change again, whose recovery key's page the state then brings up.
+    EngineStage.ready when state.rotating && state.recoveryKey == null => (
+      text: 'Finish changing your security keys.',
+      action: 'Finish',
+      run: (context) => context.repository.changeKeys(),
     ),
     EngineStage.starting || EngineStage.ready => null,
   };
@@ -206,6 +221,7 @@ class _KeyScreenState extends State<_KeyScreen> {
     recoveryKey: widget.recoveryKey,
     onSaved: widget.repository.keySaved,
     onLater: widget.repository.uploadLater,
+    why: _state.value.rotating ? rotationWhy : recoveryWhy,
   );
 }
 

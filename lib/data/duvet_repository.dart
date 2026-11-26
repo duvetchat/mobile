@@ -1023,6 +1023,10 @@ class DuvetRepository implements ChatRepository {
   @override
   void cameToFront() {
     _inFront = true;
+    // What was told of the user's devices out of sight shows now: no push tells of it (review 25's M1).
+    final away = [..._devicesToldAway];
+    _devicesToldAway.clear();
+    away.forEach(_showDeviceNotice);
     unawaited(_startEncryption());
     final renewing = _renewQuietly(renewInFrontAfter);
     if (status.value == LiveStatus.online) return;
@@ -1097,6 +1101,52 @@ class DuvetRepository implements ChatRepository {
 
   @override
   Future<void> startOver() => _engine?.startOver() ?? Future.value();
+
+  @override
+  Future<List<duvet.Device>> devices() => duvet.E2eApi(_SessionRest(this)).devices();
+
+  @override
+  Future<void> removeDevice(String deviceId, {bool changeKeys = false}) async =>
+      (_engine ?? (throw ActionFailed(Notice.notReady.text))).removeDevice(deviceId, changeKeys: changeKeys);
+
+  @override
+  Future<void> changeKeys() async => (_engine ?? (throw ActionFailed(Notice.notReady.text))).changeKeys();
+
+  /// The engine deletes this device's data, then the session ends as a sign-out ends it (decision 13), and the folder
+  /// of files it decrypted is emptied whole, the copies set aside to share too, which a sign-out leaves for the next
+  /// start (lib/e2e/decrypted_files.dart).
+  @override
+  Future<void> removeThisDevice() async {
+    await (_engine ?? (throw ActionFailed(Notice.notReady.text))).removeThisDevice();
+    await logOut();
+    await DecryptedFiles.instance.emptyAtStart().catchError(
+      (Object error) => debugPrint("e2e: this device's decrypted files weren't emptied: $error"),
+    );
+  }
+
+  @override
+  Future<List<String>> unsentRemovals() async => await _engine?.unsentRemovals() ?? const [];
+
+  final _deviceNotices = StreamController<String>.broadcast();
+
+  @override
+  Stream<String> get deviceNotices => _deviceNotices.stream;
+
+  // The device notices told while the app was out of sight, each once, for its return to the front.
+  final _devicesToldAway = <String>{};
+
+  void _toldOfDevice(DeviceNotice notice) {
+    final text = switch (notice.kind) {
+      DeviceNoticeKind.added => Notice.deviceAdded.fill({'name': notice.device.name}),
+      DeviceNoticeKind.inactive => Notice.inactiveWarning.fill({'device': notice.device.name}),
+    };
+    if (_inFront) return _showDeviceNotice(text);
+    _devicesToldAway.add(text);
+  }
+
+  void _showDeviceNotice(String text) {
+    if (!_deviceNotices.isClosed) _deviceNotices.add(text);
+  }
 
   @override
   final ValueNotifier<Map<String, ConversationState>> conversationStates = ValueNotifier(const {});
@@ -1213,6 +1263,7 @@ class DuvetRepository implements ChatRepository {
       // Only this engine, the app's with a screen, opens a conversation's files (Review Focus 2).
       DecryptedFiles.instance.useOpener(_FileOpener(this, engine));
       _engineHeard.addAll([
+        engine.deviceNotices.listen(_toldOfDevice),
         engine.messagesChanged.listen(_contentChanged),
         engine.messagesDeleted.listen((deleted) => deleted.ids.forEach(DecryptedFiles.instance.forgetMessage)),
         engine.sent.listen(_sentElsewhere),
@@ -6158,6 +6209,7 @@ class DuvetRepository implements ChatRepository {
     _renewalRetry?.cancel();
     _downloads?.close();
     unawaited(_changesRefused.close());
+    unawaited(_deviceNotices.close());
     _closeSession();
     unawaited(_gatewayEvents.close());
     encryption.dispose();

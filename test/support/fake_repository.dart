@@ -7,6 +7,7 @@ import 'package:duvet/data/repository.dart';
 import 'package:duvet/e2e/engine.dart' show EngineState, HistoryOffer, SharedHistory;
 import 'package:duvet/e2e/members.dart' show sameUsers;
 import 'package:duvet/e2e/sync.dart' show ConversationState;
+import 'package:duvet_client/duvet.dart' as duvet show Device;
 import 'package:duvet_client/duvet.dart' show Activity;
 import 'package:flutter/foundation.dart';
 
@@ -1604,6 +1605,37 @@ class FakeRepository implements ChatRepository {
 
   @override
   Future<void> startOver() async => encryptionTaps.add('startOver');
+
+  /// The user's devices the Devices page lists; a test sets them. Null fails the read, as an API out of reach would.
+  List<duvet.Device>? deviceList = const [];
+
+  @override
+  Future<List<duvet.Device>> devices() async => deviceList ?? (throw Exception("the devices couldn't be read"));
+
+  @override
+  Future<void> removeDevice(String deviceId, {bool changeKeys = false}) async =>
+      encryptionTaps.add(changeKeys ? 'removeDevice $deviceId, changeKeys' : 'removeDevice $deviceId');
+
+  @override
+  Future<void> changeKeys() async => encryptionTaps.add('changeKeys');
+
+  @override
+  Future<void> removeThisDevice() async {
+    encryptionTaps.add('removeThisDevice');
+    await endSession();
+  }
+
+  /// The devices an earlier removal of this device's takes along with the next list or key change; a test sets them.
+  List<String> unsentRemovalsList = const [];
+
+  @override
+  Future<List<String>> unsentRemovals() async => unsentRemovalsList;
+
+  /// What the engine tells of the user's devices, in the notices' words; a test adds to it.
+  final deviceNoticesTold = StreamController<String>.broadcast();
+
+  @override
+  Stream<String> get deviceNotices => deviceNoticesTold.stream;
 
   /// What each encrypted conversation says over its message box; a test sets it.
   @override
