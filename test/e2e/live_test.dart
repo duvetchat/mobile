@@ -388,6 +388,57 @@ void main() {
     timeout: const Timeout(Duration(minutes: 4)),
   );
 
+  // Shared history (PLAN-E2E-CLIENTES.md, Task 31; decision 26): Carol's group with Alice, where she wrote before she
+  // added Bob. His device holds none of it; Carol shares a week with him, and once he says yes he reads it, as shared
+  // by her.
+  test(
+    'a_member_who_just_joined_gets_a_week_from_another,_and_reads_it',
+    () async {
+      final (pairs, others) = (_carolAndDave, _aliceAndBob);
+      if (pairs == null || others == null) fail('the cases before left no devices');
+      final (:c, d: _, dm: _) = pairs;
+      final (a: _, :b) = others;
+      final (alice, bob, carol) = (_account(0), _account(1), _account(2));
+      const wait = Duration(seconds: 45);
+      final group = (await c.engine.createGroup('History', [alice.id])).id;
+      final early = [
+        for (final text in ['before Bob came', 'and this too'])
+          (await c.engine.sendMessage(Outgoing(conversationId: group, nonce: uuidv4(), text: text)))!,
+      ];
+      final ids = [for (final m in early) m.id];
+      await c.engine.addMember(group, bob.id);
+      await eventually(
+        () async => expect(
+          await b.host.gate
+              .handle<Map<String, Object?>>({'cmd': 'group', 'conversation_id': group})
+              .then<Map<String, Object?>?>((group) => group, onError: (Object _) => null),
+          isNotNull,
+        ),
+        timeout: wait,
+      );
+      expect(await b.engine.messages(group, ids), isEmpty);
+
+      final shared = await c.engine.shareHistory(group, bob.id, 'week');
+      expect(shared.truncated, isFalse);
+      late HistoryOffer offer;
+      await eventually(() {
+        final offers = b.engine.historyOffers.value[group] ?? const [];
+        expect(offers, hasLength(1));
+        offer = offers.single;
+      }, timeout: wait);
+      expect((offer.fromUserId, offer.range), (carol.id, 'week'));
+      await b.engine.takeHistoryOffer(offer.shareId);
+      final rows = {for (final row in await b.engine.messages(group, ids)) row.messageId: row};
+      expect(
+        [for (final id in ids) (rows[id]?.text, rows[id]?.sharedBy)],
+        [('before Bob came', carol.id), ('and this too', carol.id)],
+      );
+      expect(b.engine.historyOffers.value[group] ?? const [], isEmpty);
+    },
+    skip: skip ?? noCore,
+    timeout: const Timeout(Duration(minutes: 3)),
+  );
+
   // Pushes opened on the phone (PLAN-E2E-CLIENTES.md, Task 21; decision 29): Dave's app closed, a push's engine opens
   // Carol's messages with his core, from the queue's own entry as the API's push carries it (here past a gap, as the
   // message before it never pushed) and, for one too long for its entry, from the queue read with his stored session.

@@ -1,7 +1,8 @@
 /// The inbox (PLAN-E2E-CLIENTES.md, «El buzón»): what other devices sent this one, read oldest first at start, at each
 /// READY and on DEVICE_MESSAGE. Each message is handled, then deleted with every one before it (DELETE …?through=):
 /// one that can't be handled yet ends the round, and waits with those after it for the next one. Tasks 23, 27, 31 and
-/// 33 add what their messages are for.
+/// 33 add what their messages are for: a shared history's or a catch-up's key is the core's, and its package
+/// history.dart's.
 library;
 
 import 'dart:math';
@@ -59,9 +60,16 @@ Future<void> _keep(EngineStore store, String key, duvet.InboxMessage message) {
 /// against) and its sender's certificate, from the sender's served identity. A transfer the core keeps for later
 /// (`not_found` `code`: an approval whose code wasn't accepted yet) is kept in the record, as is one a later task takes
 /// ([_forLater]); one no core here can read goes, as does one whose call is cut five rounds running ([tries], by its
-/// ID). One that doesn't open is counted for the API as a failure to decrypt (`direct`, [failures]). True when the
-/// inbox brought a rotation's transfer, after which the own user is observed (the core's rule).
-Future<bool> takeInbox(E2EEngine engine, Map<String, int> tries, [Failures? failures]) async {
+/// ID). One that doesn't open is counted for the API as a failure to decrypt (`direct`, [failures]). What the core
+/// answered goes to [taken] before its message leaves the inbox (a shared history's or a catch-up's key, which the
+/// record keeps: history.dart); one [taken] can't keep waits with the round. True when the inbox brought a rotation's
+/// transfer, after which the own user is observed (the core's rule).
+Future<bool> takeInbox(
+  E2EEngine engine,
+  Map<String, int> tries, [
+  Failures? failures,
+  Future<void> Function(Map<String, Object?> received)? taken,
+]) async {
   final E2EEngine(:api, :host, :store, :user) = engine;
   var rotated = false;
   // Users' identities as served, read once a round when a message needs one: null for one that can't be read.
@@ -98,6 +106,7 @@ Future<bool> takeInbox(E2EEngine engine, Map<String, int> tries, [Failures? fail
         }),
       );
       if (received['type'] == 'rotation.transfer') rotated = true;
+      await taken?.call(received);
     } on CoreError catch (error) {
       if (_again.contains(error.code)) {
         final tried = (tries[message.id] ?? 0) + 1;

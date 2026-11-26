@@ -24,6 +24,7 @@ import 'identity.dart';
 import 'inbox.dart';
 import 'failures.dart';
 import 'files.dart' as files show fileNames;
+import 'history.dart';
 import 'key_packages.dart';
 import 'members.dart';
 import 'search.dart';
@@ -33,6 +34,7 @@ import 'sync.dart';
 
 export 'content.dart' show Authored, MessageStatus, ShownMessage;
 export 'files.dart' show FilesGone;
+export 'history.dart' show HistoryOffer, NoDeviceToShareWith, SharedHistory, quietBeforeImport, shareRanges;
 export 'members.dart' show maxGroupMembers;
 export 'send.dart' show Outgoing, Pending, TooManyWaiting;
 export 'sync.dart' show ConversationNotice, ConversationState, Restart;
@@ -211,6 +213,15 @@ class E2EEngine {
     _conversationChanged,
     _messageChanged,
     _messagesGone,
+  );
+
+  /// The person's shares of a conversation's history, and the packages this device receives (history.dart).
+  late final _histories = Histories(
+    this,
+    _act,
+    (work) => _soon(() => _whenReady(work)),
+    (conversationId) => _groups.sync(conversationId),
+    _messageChanged,
   );
 
   /// The messages this device sends, edits and deletes.
@@ -412,6 +423,19 @@ class E2EEngine {
   /// The person's messages of the conversation still being sent, in their order, with what goes with them.
   Future<List<Pending>> pendingMessages(String conversationId) => _sends.pending(conversationId);
 
+  /// The shares of a conversation's history whose keys this device holds, waiting for the person's yes, by
+  /// conversation (history.dart).
+  ValueListenable<Map<String, List<HistoryOffer>>> get historyOffers => _histories.offers;
+
+  /// The person's share of a conversation's history from [range]'s start (day, week, month or all) with one of its
+  /// other members (PLAN-E2E-CLIENTES.md, Task 31): what came of it. A refusal throws, the API's (a 429 for its ten an
+  /// hour) or [NoDeviceToShareWith]; a client too old for it waits for its update.
+  Future<SharedHistory> shareHistory(String conversationId, String userId, String range) =>
+      _updating(() => _histories.share(conversationId, userId, range));
+
+  /// The person's yes to a share of a conversation's history ([historyOffers]): its messages imported here.
+  Future<void> takeHistoryOffer(String shareId) => _updating(() => _histories.take(shareId));
+
   /// Whether this device's database holds any message of the conversation numbered before [seq].
   Future<bool> heldBefore(String conversationId, int seq) => content.heldBefore(host, conversationId, seq);
 
@@ -549,6 +573,7 @@ class E2EEngine {
     _groups.stop();
     _sends.stop();
     _failures.stop();
+    _histories.stop();
     await _turn;
     await host.close();
     await _messagesChanged.close();
@@ -630,12 +655,21 @@ class E2EEngine {
     }
   }
 
+  /// The flows queued and not done yet: with none, the engine is quiet, which a catch-up's import waits for.
+  var _queued = 0;
+
   /// Runs [work] once the flow before it ended (nothing once stopped). What it throws fails this call alone.
   Future<void> _queue(Future<void> Function() work) {
+    if (_queued++ == 0) _histories.busy();
     final run = _turn.then((_) async {
       if (!_stopped) await work();
     });
-    _turn = run.catchError((Object error) => debugPrint("e2e: the engine's work failed: $error"));
+    final turn = _turn = run.catchError((Object error) => debugPrint("e2e: the engine's work failed: $error"));
+    unawaited(
+      turn.then((_) {
+        if (--_queued == 0 && !_stopped) _histories.idle();
+      }),
+    );
     return run;
   }
 
@@ -657,11 +691,16 @@ class E2EEngine {
           _soon(() => _whenReady(_groups.all));
           // What waits to be sent goes once the queues are applied («Enviar»).
           _soon(() => _whenReady(_sends.resendAll));
+          // The packages for this device that came meanwhile, once its groups are as the queues have them.
+          _soon(() => _whenReady(_histories.list));
         }
       case duvet.DeviceMessagePayloadEvent(:final data) when data.deviceId == _device:
         _soon(_inbox);
       case duvet.KeyPackagesLowPayloadEvent(:final data) when data.deviceId == _device:
         _soon(_keyPackages);
+      // A shared history or a catch-up completed for this user: offered or imported once its key is here too.
+      case duvet.HistoryShareCreatedEvent(:final data) when _state.value.stage == EngineStage.ready:
+        _histories.heard(data);
       case duvet.DeviceRemovedEvent(:final data) when data.deviceId == _device:
         _soon(() async => _set(EngineState.removed));
       // The person's message made again goes under a new nonce, which only the engine knows it by (I1 of task 17's
@@ -709,11 +748,11 @@ class E2EEngine {
   }
 
   /// Step 5, with the inbox for a rotation's transfer this device may need first.
-  Future<EngineState> _identity() => identityState(this, () => takeInbox(this, _tries, _failures));
+  Future<EngineState> _identity() => identityState(this, () => takeInbox(this, _tries, _failures, _histories.keyTaken));
 
   /// The inbox; once it brought a rotation's transfer, the own user observed, which may change what this device is.
   Future<void> _inbox() async {
-    if (await takeInbox(this, _tries, _failures)) _set(await _identity());
+    if (await takeInbox(this, _tries, _failures, _histories.keyTaken)) _set(await _identity());
   }
 
   /// «Arranque»: the API's configuration, the user's database, this installation's device and the session bound to it.
@@ -770,6 +809,12 @@ class E2EEngine {
       await _whenReady(_sends.resendAll);
     } catch (error) {
       debugPrint('e2e: what waits to be sent waits for the next READY: $error');
+    }
+    // The packages for this device, once its groups are as the queues have them.
+    try {
+      await _whenReady(_histories.list);
+    } catch (error) {
+      debugPrint('e2e: the shared histories wait for the next READY: $error');
     }
     await _keyPackages();
     try {
@@ -844,6 +889,7 @@ class E2EEngine {
     _tries.clear();
     _groups.forget();
     _sends.stop();
+    _histories.forget();
     _daily?.call();
     _daily = null;
     _set(EngineState.starting);

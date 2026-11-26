@@ -1,6 +1,3 @@
-import 'dart:typed_data';
-
-import 'package:duvet/e2e/core_gate.dart';
 import 'package:duvet/e2e/deviceless.dart';
 import 'package:duvet/e2e/engine.dart';
 import 'package:duvet/e2e/uuid.dart';
@@ -14,7 +11,7 @@ import '../support/fake_api.dart';
 // Members without a device (PLAN-E2E-CLIENTES.md, «Quien no tenía dispositivo», Task 23; decision 14): who has no
 // identity, or none of whose devices connected lately, is named before anything is sent and told to the core, which
 // notes what this device sends them; once a device of theirs comes in, this device hands them what it noted, as a
-// catch-up. Their device importing it is Task 31's: done here by hand. The desktop's deviceless tests, case for case.
+// catch-up, which their device imports by itself (Task 31). The desktop's deviceless tests, case for case.
 const _slow = Timeout(Duration(minutes: 3));
 
 /// Ana's first device, its core watched, and her DM with Bo, who has no device yet, made as she made it and open.
@@ -28,25 +25,16 @@ Future<({FakeApi fake, String ana, String bo, String dm, TestDevice a, List<Map<
   return (fake: fake, ana: ana, bo: bo, dm: dm, a: a, asked: asked);
 }
 
-/// The catch-ups for Bo's device that the API has, imported by hand as Task 31 imports them: their parts, once its key
-/// came by the inbox.
-Future<void> _imported(TestDevice b) async {
-  final gate = b.host as CoreGate;
+/// What the catch-ups for [b]'s device brought, once its engine imported them by itself: the texts of these messages
+/// of the conversation. Its engine imports with the app quiet, which its clock says.
+Future<List<String?>> _imported(TestDevice b, String conversation, List<String> ids) async {
+  late List<String?> texts;
   await until(() async {
-    final shares = await b.api.shares();
-    if (shares.isEmpty) return false;
-    for (final share in shares) {
-      final parts = <Uint8List>[for (var n = 0; n < share.parts; n++) await b.api.sharePart(share.id, n)];
-      try {
-        await gate.importShare(share.id, parts);
-      } on Object {
-        // Its key isn't in yet.
-        return false;
-      }
-      await b.api.ackShare(share.id);
-    }
-    return true;
+    b.clock.advance(quietBeforeImport);
+    texts = [for (final m in await b.engine.messages(conversation, ids)) m.text];
+    return texts.length == ids.length;
   });
+  return texts;
 }
 
 void main() {
@@ -91,13 +79,7 @@ void main() {
       final b = await firstDevice(fake, bo);
       await until(() => asked.any((c) => c['cmd'] == 'catch_up_delivered' && c['user_id'] == bo));
       await until(() => a.engine.conversationState(dm) == null);
-      await _imported(b);
-      expect(
-        [
-          for (final m in await b.engine.messages(dm, [sent.id])) m.text,
-        ],
-        ['hi Bo'],
-      );
+      expect(await _imported(b, dm, [sent.id]), ['hi Bo']);
       await a.engine.stop();
       await b.engine.stop();
     },
@@ -125,10 +107,7 @@ void main() {
       expect(asked.where((c) => c['cmd'] == 'catch_up'), hasLength(1));
       a.clock.advance(const Duration(days: 1));
       await until(() => asked.any((c) => c['cmd'] == 'catch_up_delivered' && c['user_id'] == bo));
-      await _imported(b);
-      expect([
-        for (final m in await b.engine.messages(dm, [first.id, second.id])) m.text,
-      ], containsAll(['one', 'two']));
+      expect(await _imported(b, dm, [first.id, second.id]), containsAll(['one', 'two']));
       await a.engine.stop();
       await b.engine.stop();
     },
@@ -164,13 +143,7 @@ void main() {
       // Cy's first device joins: Bo's hands it what it noted.
       final c = await firstDevice(fake, cy);
       await until(() => asked.any((command) => command['cmd'] == 'catch_up_delivered' && command['user_id'] == cy));
-      await _imported(c);
-      expect(
-        [
-          for (final m in await c.engine.messages(group, [sent.id])) m.text,
-        ],
-        ['welcome Cy'],
-      );
+      expect(await _imported(c, group, [sent.id]), ['welcome Cy']);
       for (final d in [a, b, c]) {
         await d.engine.stop();
       }
@@ -244,13 +217,7 @@ void main() {
         seen.where((r) => r.method == 'PUT' && RegExp(r'/history-shares/[0-9a-f-]+$').hasMatch(r.url.path)),
         hasLength(2),
       );
-      await _imported(b);
-      expect(
-        [
-          for (final m in await b.engine.messages(dm, [sent.id])) m.text,
-        ],
-        ['hi again'],
-      );
+      expect(await _imported(b, dm, [sent.id]), ['hi again']);
       await a.engine.stop();
       await b.engine.stop();
     },

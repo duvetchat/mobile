@@ -124,6 +124,10 @@ class ChatMessage {
   /// conversation ends); null on any other message.
   final CallNotice? call;
 
+  /// A history share's notice (an [isNotice] the API posts once a member shared an encrypted conversation's history
+  /// with another, its type 4): with whom, and how far back; null on any other message.
+  final SharedHistoryNotice? sharedHistory;
+
   final List<MessageAttachment> attachments;
 
   /// Its files deleted since it was sent: placeholders, apart from
@@ -219,6 +223,7 @@ class ChatMessage {
     this.nonce,
     this.isNotice = false,
     this.call,
+    this.sharedHistory,
     this.attachments = const [],
     this.deletedAttachments = const [],
     this.stickerUrl,
@@ -282,6 +287,7 @@ class ChatMessage {
     nonce: nonce ?? this.nonce,
     isNotice: isNotice,
     call: call,
+    sharedHistory: sharedHistory,
     attachments: attachments ?? this.attachments,
     deletedAttachments: deletedAttachments,
     stickerUrl: stickerUrl,
@@ -330,6 +336,7 @@ class ChatMessage {
           nonce: nonce,
           isNotice: isNotice,
           call: call,
+          sharedHistory: sharedHistory,
           attachments: attachments,
           deletedAttachments: deletedAttachments,
           stickerUrl: update.stickerUrl,
@@ -379,6 +386,7 @@ class ChatMessage {
       nonce: nonce,
       isNotice: isNotice,
       call: call,
+      sharedHistory: sharedHistory,
       attachments: attachments,
       deletedAttachments: deletedAttachments,
       stickerUrl: stickerUrl,
@@ -421,6 +429,7 @@ class ChatMessage {
       nonce: nonce,
       isNotice: isNotice,
       call: call,
+      sharedHistory: sharedHistory,
       attachments: [for (final a in attachments) a.id == attachmentId ? a.withUrl(url) : a],
       deletedAttachments: deletedAttachments,
       stickerUrl: stickerUrl,
@@ -499,6 +508,11 @@ class ChatMessage {
     );
   }
 }
+
+/// What a history share's notice says (PLAN-E2E-CLIENTES.md, «La vista de una conversación»): the member its author
+/// shared the conversation's history with ([toUserId], named [toName] as the app knew them then, "you" for the
+/// reader), and how far back it went ([range]: day, week, month or all).
+typedef SharedHistoryNotice = ({String toUserId, String toName, String range});
 
 /// What a call notice says about its call: who was in it, by user ID, its
 /// caller first, then each member who joined its voice; and when it started

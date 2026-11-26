@@ -1,7 +1,7 @@
 import 'package:duvet_client/duvet.dart' show Activity;
 import 'package:flutter/foundation.dart';
 
-import '../e2e/engine.dart' show EngineState;
+import '../e2e/engine.dart' show EngineState, HistoryOffer, SharedHistory;
 import '../e2e/sync.dart' show ConversationState;
 import 'models.dart';
 import 'recent_chats.dart';
@@ -92,6 +92,19 @@ abstract interface class ChatRepository {
   Future<List<String>> restartGroup(String conversationId, {List<String> leaving = const []});
 
   Future<void> acceptMembers(String conversationId);
+
+  /// The shares of an encrypted conversation's history whose keys this device holds, waiting for the person's yes, by
+  /// conversation (lib/e2e/history.dart): who shared them and how far back.
+  ValueListenable<Map<String, List<HistoryOffer>>> get historyOffers;
+
+  /// The person's share of [conversationId]'s history from [range]'s start (day, week, month or all) with [userId], one
+  /// of its other members: whether it was cut to its newest messages, and from when it holds them. Refused in the app's
+  /// words ([ActionFailed]): the API's ten an hour, a member with no device to receive it.
+  Future<SharedHistory> shareHistory(String conversationId, String userId, String range);
+
+  /// The person's yes to a share of [conversationId]'s history ([historyOffers]): its messages imported into this
+  /// device. Refused in the app's words.
+  Future<void> takeHistoryOffer(String conversationId, String shareId);
 
   Future<void> logIn(String email, String password);
 

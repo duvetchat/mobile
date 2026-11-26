@@ -5,7 +5,7 @@
 /// this device then hands them what it noted as a catch-up (PLAN-E2E-API.md, «Rutas», I), its parts up, its key to each
 /// of their devices' inbox, and only then confirmed (catch_up_delivered). Each runs in the engine's turn, so one at a
 /// time for each member of each conversation; one refused for its limit (a 429: the API takes one a day for each) waits
-/// a day, its notes kept. The desktop's deviceless.ts in Dart.
+/// a day, its notes kept. Their device imports it by itself (history.dart). The desktop's deviceless.ts in Dart.
 library;
 
 import 'dart:async';
@@ -15,6 +15,7 @@ import 'package:duvet_client/duvet.dart' as duvet;
 import 'package:flutter/foundation.dart';
 
 import 'engine.dart';
+import 'history.dart' show uploadPackage;
 import 'host.dart';
 import 'identity.dart';
 
@@ -111,7 +112,7 @@ class CatchUps {
   Future<void> _upload(String conversationId, String user, Map<String, Object?> made) async {
     final key = '$conversationId:$user';
     try {
-      await uploadCatchUp(_engine, conversationId, user, made);
+      await uploadPackage(_engine, conversationId, user, made, kind: 'catch_up');
     } catch (error) {
       _going.remove(key);
       // Its parts went with the core's host (a restart): made again next time.
@@ -183,32 +184,6 @@ Future<Map<String, Object?>?> makeCatchUp(E2EEngine engine, String conversationI
   } on CoreError catch (error) {
     if (error.code == 'not_found' && error.what == 'catch_up') return null;
     rethrow;
-  }
-}
-
-/// A catch-up's package up, part by part, completed, then its key in each device's inbox. The same package and parts
-/// again are taken as they were, so one that failed midway goes again from the start.
-Future<void> uploadCatchUp(E2EEngine engine, String conversationId, String user, Map<String, Object?> made) async {
-  final E2EEngine(:api, :host) = engine;
-  final shareId = made['share_id']! as String;
-  final parts = made['parts']! as int;
-  await api.putShare(
-    conversationId,
-    shareId,
-    duvet.HistoryShareUpload(
-      toUserId: user,
-      kind: 'catch_up',
-      startsAt: DateTime.fromMillisecondsSinceEpoch(made['start']! as int, isUtc: true),
-      size: made['size']! as int,
-      parts: parts,
-    ),
-  );
-  for (var n = 0; n < parts; n++) {
-    await api.putSharePart(conversationId, shareId, n, await host.sharePart(shareId, n));
-  }
-  await api.completeShare(conversationId, shareId);
-  for (final key in (made['keys']! as List).cast<Map<String, Object?>>()) {
-    await api.sendToDevice(key['device_id']! as String, key['message']! as String);
   }
 }
 

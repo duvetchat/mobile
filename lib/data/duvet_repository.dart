@@ -389,6 +389,7 @@ class DuvetRepository implements ChatRepository {
   void _emitMessage((String, MessageEvent) event) {
     if (!_messageEvents.isClosed) _messageEvents.add(event);
   }
+
   final _typing = StreamController<(String, TypingUser)>.broadcast();
 
   // A session's client: logging out (destroying the gateway) closes its HTTP
@@ -1107,6 +1108,42 @@ class DuvetRepository implements ChatRepository {
   @override
   Future<void> acceptMembers(String conversationId) => _engine?.acceptMembers(conversationId) ?? Future.value();
 
+  @override
+  final ValueNotifier<Map<String, List<HistoryOffer>>> historyOffers = ValueNotifier(const {});
+
+  // Shares and imports are the session's engine's, the app's on a screen (Review Focus 2): without one, nothing goes.
+  @override
+  Future<SharedHistory> shareHistory(String conversationId, String userId, String range) async {
+    final engine = _engine;
+    if (engine == null || engine.state.value.stage != EngineStage.ready) throw ActionFailed(Notice.notReady.text);
+    try {
+      return await engine.shareHistory(conversationId, userId, range);
+    } on NoDeviceToShareWith {
+      throw ActionFailed(Notice.shareHistoryNoDevice.fill({'name': nameOf(userId) ?? 'Someone'}));
+    } on duvet.DuvetApiException catch (e) {
+      // duvet_client keeps no Retry-After: the hour's ten are said, and when it frees isn't.
+      if (e.statusCode == 429) throw ActionFailed(Notice.shareHistoryLimit.fill({'when': 'later'}));
+      debugPrint("e2e: a conversation's history wasn't shared: ${e.statusCode}");
+      throw ActionFailed(Notice.shareHistoryFailed.text);
+    } catch (e) {
+      if (e is ActionFailed) rethrow;
+      debugPrint("e2e: a conversation's history wasn't shared: ${e.runtimeType}");
+      throw ActionFailed(Notice.shareHistoryFailed.text);
+    }
+  }
+
+  @override
+  Future<void> takeHistoryOffer(String conversationId, String shareId) async {
+    final engine = _engine;
+    if (engine == null) throw ActionFailed(Notice.notReady.text);
+    try {
+      await engine.takeHistoryOffer(shareId);
+    } catch (e) {
+      debugPrint("e2e: a shared history wasn't added: ${e.runtimeType}");
+      throw ActionFailed(Notice.sharedAddFailed.text);
+    }
+  }
+
   /// The conversation on screen, whose group the engine opens: at once, or once it's made and ready.
   String? _conversationOnScreen;
 
@@ -1172,6 +1209,7 @@ class DuvetRepository implements ChatRepository {
       );
       engine.state.addListener(_showEncryption);
       engine.conversations.addListener(_showConversations);
+      engine.historyOffers.addListener(_showOffers);
       // Only this engine, the app's with a screen, opens a conversation's files (Review Focus 2).
       DecryptedFiles.instance.useOpener(_FileOpener(this, engine));
       _engineHeard.addAll([
@@ -1203,6 +1241,10 @@ class DuvetRepository implements ChatRepository {
     if (_engine case final engine?) conversationStates.value = engine.conversations.value;
   }
 
+  void _showOffers() {
+    if (_engine case final engine?) historyOffers.value = engine.historyOffers.value;
+  }
+
   void _groupFailed(Object error) => debugPrint("e2e: the conversation's group didn't open: $error");
 
   // The session ended: its engine closes the core, whose database stays (decision 13).
@@ -1214,6 +1256,7 @@ class DuvetRepository implements ChatRepository {
     _identifyDevice = null;
     encryption.value = EngineState.starting;
     conversationStates.value = const {};
+    historyOffers.value = const {};
     for (final heard in _engineHeard) {
       unawaited(heard.cancel());
     }
@@ -1224,6 +1267,7 @@ class DuvetRepository implements ChatRepository {
     if (engine == null) return;
     engine.state.removeListener(_showEncryption);
     engine.conversations.removeListener(_showConversations);
+    engine.historyOffers.removeListener(_showOffers);
     _engineStopped = engine.stop().catchError((Object error) => debugPrint("e2e: the engine's stop: $error"));
   }
 
@@ -5971,7 +6015,15 @@ class DuvetRepository implements ChatRepository {
     createdAt: m.createdAt.toLocal(),
     edited: m.updatedAt.difference(m.createdAt) > const Duration(seconds: 1),
     nonce: m.nonce,
-    isNotice: m.type == duvet.MessageType.pinNotice || m.call != null,
+    isNotice: m.type == duvet.MessageType.pinNotice || m.call != null || m.type == duvet.MessageType.historyShare,
+    sharedHistory: switch (m.historyShare) {
+      final s? => (
+        toUserId: s.toUserId,
+        toName: s.toUserId == profile.value?.id ? 'you' : nameOf(s.toUserId) ?? 'Someone',
+        range: s.range,
+      ),
+      null => null,
+    },
     call: switch (m.call) {
       final c? => CallNotice(
         participants: c.participants,
@@ -6110,6 +6162,7 @@ class DuvetRepository implements ChatRepository {
     unawaited(_gatewayEvents.close());
     encryption.dispose();
     conversationStates.dispose();
+    historyOffers.dispose();
     _voiceSignaling.dispose();
     _signedOut.close();
     _resumed.close();

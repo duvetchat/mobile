@@ -207,6 +207,9 @@ class _OpensAfter implements CoreHost {
   Future<void> dropShare(String shareId) => _core.dropShare(shareId);
 
   @override
+  Future<Map<String, Object?>> importShare(String shareId, List<Uint8List> parts) => _core.importShare(shareId, parts);
+
+  @override
   Future<void> close() => _core.close();
 
   @override

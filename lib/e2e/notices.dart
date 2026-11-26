@@ -31,6 +31,20 @@ enum Notice {
   groupFull('A group can have 20 members at most.'),
   membersNow('Members now: {names}'),
   changeUnanswered('No answer came yet: Duvet tries again on its own.'),
+
+  /// A conversation's history shared with a member, and the offer of what another member shared (Tasks 30 and 31).
+  shareHistory('Share history'),
+  shareHistoryWith('Share history with {name}'),
+  shareHistoryLine('{name} gets the messages this device holds from the time you pick, marked as shared by you.'),
+  shareHistorySend('Share'),
+  shareHistorySharing('Sharing…'),
+  shareHistoryTruncated('Not all of it fit: {name} gets the messages from {date} on.'),
+  shareHistoryLimit('You can share history 10 times an hour. Try again {when}.'),
+  shareHistoryFailed("Couldn't share the history. Try again."),
+  shareHistoryNoDevice('{name} has no device that can receive it yet.'),
+  sharedWithYou('{a} shared {range} with you'),
+  sharedAdd('Add to this device'),
+  sharedAddFailed("Couldn't add the shared messages. Try again."),
   removedDevice('This device was removed from your account.'),
   locked('Encrypted conversations are open in another Duvet window.'),
   waitOwner('Waiting for {owner} to open this group'),
@@ -76,4 +90,27 @@ enum Notice {
   /// Its text with its {names} filled from [values] in one pass: what a value holds is never read as a name.
   String fill([Map<String, String> values = const {}]) =>
       text.replaceAllMapped(RegExp(r'\{(\w+)\}'), (match) => values[match[1]] ?? match[0]!);
+
+  /// Its text in parts, each {name} filled from [values] and marked with its name, the text between them with none: a
+  /// row that draws its names apart.
+  List<({String text, String? name})> parts([Map<String, String> values = const {}]) {
+    final parts = <({String text, String? name})>[];
+    var at = 0;
+    for (final match in RegExp(r'\{(\w+)\}').allMatches(text)) {
+      if (match.start > at) parts.add((text: text.substring(at, match.start), name: null));
+      parts.add((text: values[match[1]] ?? match[0]!, name: match[1]));
+      at = match.end;
+    }
+    if (at < text.length) parts.add((text: text.substring(at), name: null));
+    return parts;
+  }
 }
+
+/// A shared history's range as the core names it (day, week, month or all) in its notices' words: «the last 7 days».
+/// One the app doesn't know reads as all of it, as the desktop's.
+String rangeText(String range) => switch (range) {
+  'day' => Notice.rangeDay.text,
+  'week' => Notice.rangeWeek.text,
+  'month' => Notice.rangeMonth.text,
+  _ => Notice.rangeAll.text,
+};

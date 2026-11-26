@@ -195,26 +195,41 @@ Future<String?> _askBanReason(BuildContext context, {required String title}) {
 }
 
 /// Someone's profile, in a glass sheet: banner, avatar, presence, name, what
-/// they wrote, their roles in the Space; Message, Mention, Add friend.
-/// Answers Mention or Message when the caller handles them.
+/// they wrote, their roles in the Space; Message, Mention, Add friend, and in
+/// an encrypted conversation Share history ([canShareHistory]). Answers
+/// Mention, Message or Share history when the caller handles them.
 Future<MemberAction?> showProfileSheet(
   BuildContext context, {
   required Member member,
   String? spaceId,
   bool canMention = false,
+  bool canShareHistory = false,
 }) => showGlassSheet<MemberAction>(
   context,
   label: '${member.displayName}’s profile',
   initialSize: 0.72,
-  builder: (context, scroll) => _Profile(member: member, spaceId: spaceId, canMention: canMention, scroll: scroll),
+  builder: (context, scroll) => _Profile(
+    member: member,
+    spaceId: spaceId,
+    canMention: canMention,
+    canShareHistory: canShareHistory,
+    scroll: scroll,
+  ),
 );
 
 class _Profile extends StatefulWidget {
   final Member member;
   final String? spaceId;
   final bool canMention;
+  final bool canShareHistory;
   final ScrollController scroll;
-  const _Profile({required this.member, required this.spaceId, required this.canMention, required this.scroll});
+  const _Profile({
+    required this.member,
+    required this.spaceId,
+    required this.canMention,
+    required this.scroll,
+    this.canShareHistory = false,
+  });
 
   @override
   State<_Profile> createState() => _ProfileState();
@@ -529,6 +544,15 @@ class _ProfileState extends State<_Profile> {
                           ],
                         ],
                       ),
+                      if (widget.canShareHistory && !m.isBot) ...[
+                        const SizedBox(height: 8),
+                        DuvetButton(
+                          label: Notice.shareHistory.text,
+                          icon: FLucideIcons.history,
+                          expand: true,
+                          onPressed: () => Navigator.of(context).pop(MemberAction.shareHistory),
+                        ),
+                      ],
                     ],
                     const SizedBox(height: 16),
                     Container(
