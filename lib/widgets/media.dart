@@ -587,7 +587,9 @@ class AudioFileTile extends StatelessWidget {
                       : playback.play(
                           attachment.id,
                           attachment.url,
-                          title: attachment.displayName,
+                          // The media session's title leaves the app (the lock screen, a car's display): an encrypted
+                          // conversation's file goes under the app's own word, never its name (mobile#356).
+                          title: attachment.sealed == null ? attachment.displayName : 'Audio file',
                           link: linkSource(context, attachment),
                         ),
                 ),

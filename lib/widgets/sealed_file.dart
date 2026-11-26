@@ -18,6 +18,9 @@ import 'media.dart';
 import 'media_actions.dart';
 import 'message_content.dart' show openImageViewer;
 
+/// The least side of a picture's or a video's box: a tap's room, as the desktop's (48 px).
+const _leastSide = 48.0;
+
 /// A file of an encrypted conversation's message (PLAN-E2E-CLIENTES.md, «Adjuntos»), drawn from its decrypted copy
 /// (lib/e2e/decrypted_files.dart) by its bytes' own type, never its sender's: a picture in an Image, a video in the
 /// player once it came down whole after the tap that asked for it, an audio file and a voice note in today's players.
@@ -77,7 +80,8 @@ class _SealedFileViewState extends State<SealedFileView> {
     // Pictures, audio and voice notes come as they show (a lazy list builds them as they near the screen); a video
     // and a file to save on a tap.
     if (widget.voice || _picture || _said.startsWith('audio/')) _open(auto: true);
-    if (_file.thumbnailRef case final ref?) {
+    // A thumbnail of its own only for what draws one: no other file shows it (mobile#356).
+    if (_file.thumbnailRef case final ref? when _picture || _video) {
       final url = widget.attachment.thumbnailUrl;
       if (url != null) unawaited(_files.open(ref, url, widget.messageId, auto: true));
     }
@@ -186,7 +190,7 @@ class _SealedFileViewState extends State<SealedFileView> {
     return _card(state);
   }
 
-  /// Its copy, as a player takes a file of this device's.
+  /// Its copy, as a player takes a file of this device's: a decrypted one, whose name the media session never gets.
   MessageAttachment _local(FileReady ready) => MessageAttachment(
     id: widget.attachment.id,
     filename: _file.name,
@@ -194,6 +198,7 @@ class _SealedFileViewState extends State<SealedFileView> {
     url: Uri.file(ready.path).toString(),
     sizeBytes: ready.size,
     local: true,
+    sealed: _file,
   );
 
   /// A voice note's bars from the waveform its message carries, 30 of them as today's player draws.
@@ -206,11 +211,15 @@ class _SealedFileViewState extends State<SealedFileView> {
     ];
   }
 
+  /// A picture's or a video's box, inside [SealedFileView.width] × 320 with its shape. It's drawn from what its sender
+  /// says of it before its bytes are here, any sides from 1 to 65535: never thinner than a tap's room, so it shows and
+  /// takes a tap (mobile#356).
   ({double width, double height}) _box() {
     final (w, h) = (_file.width ?? 0, _file.height ?? 0);
     final ratio = w <= 0 || h <= 0 ? 248 / 168 : w / h;
     final height = math.min(widget.width / ratio, 320.0);
-    return (width: math.min(widget.width, height * ratio), height: height);
+    double side(double value, double most) => math.min(most, math.max(_leastSide, value));
+    return (width: side(math.min(widget.width, height * ratio), widget.width), height: side(height, 320));
   }
 
   Widget _pictureOf(FileReady ready) {

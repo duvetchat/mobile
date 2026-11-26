@@ -98,8 +98,9 @@ enum ApprovalEnd { over, listed }
 
 /// What a device of the user's shows of a new one that asks to be approved: its [name] and the [fingerprint] its screen
 /// shows (Ruling 35; none for one approved by its QR), where it stands ([phase]), the [code] to type into it, why it
-/// [ended], and whether this device approved it before and it never took its transfer ([unfinished]): then it comes
-/// off this device's list first (the core's way out).
+/// [ended], and whether this device approved it before, by its own record, and no list it took names it yet
+/// ([unfinished]): then it comes off this device's list first (the core's way out). [question] is the inbox message of
+/// the commitment asked about, which the person's yes answers (mobile#355); none once its transfer went.
 @immutable
 class DeviceApproval {
   const DeviceApproval({
@@ -107,6 +108,7 @@ class DeviceApproval {
     required this.name,
     required this.fingerprint,
     required this.phase,
+    this.question,
     this.code,
     this.ended,
     this.unfinished = false,
@@ -116,6 +118,7 @@ class DeviceApproval {
   final String name;
   final String fingerprint;
   final ApprovalPhase phase;
+  final String? question;
   final String? code;
   final ApprovalEnd? ended;
   final bool unfinished;
@@ -127,12 +130,13 @@ class DeviceApproval {
       other.name == name &&
       other.fingerprint == fingerprint &&
       other.phase == phase &&
+      other.question == question &&
       other.code == code &&
       other.ended == ended &&
       other.unfinished == unfinished;
 
   @override
-  int get hashCode => Object.hash(device, name, fingerprint, phase, code, ended, unfinished);
+  int get hashCode => Object.hash(device, name, fingerprint, phase, question, code, ended, unfinished);
 
   // Never the code: it's for the person's eyes, and a state may end up in a log.
   @override
@@ -266,6 +270,7 @@ class Approvals {
         name: asked.name,
         fingerprint: asked.fingerprint,
         phase: asked.phase,
+        question: asked.message,
         code: asked.code,
         ended: asked.ended,
         unfinished: asked.unfinished,
@@ -388,22 +393,25 @@ class Approvals {
   /// nothing offered, while the identity it holds was replaced (`not_own_identity`: another device changed the keys,
   /// whose transfer this one hasn't taken): the engine takes its inbox first. A device this one approved before that
   /// never took its transfer is still on this device's list, where the core refuses to approve it again: it comes off
-  /// first (the core's way out, a list without it), on this yes, which the question says.
-  Future<bool> approve(String device) async {
+  /// first, and alone (the core's way out, a list without it), on this yes, which the question says. Only this
+  /// device's record says which device that is ([unfinished]). The yes is to the [question] the person answered: once
+  /// another stands, or a newer attempt of the device's waits for its take, nothing is offered, and the newer question
+  /// waits for its own yes (mobile#355).
+  Future<bool> approve(String device, String question) async {
     final asked = _asked;
-    if (asked == null || asked.device != device || asked.phase != ApprovalPhase.asked) return true;
+    if (asked == null || asked.device != device || asked.message != question || asked.phase != ApprovalPhase.asked) {
+      return true;
+    }
     _oneAtATime(device);
     final frame = _commitmentOf(asked);
     if (frame == null) {
       _end(asked, ApprovalEnd.over);
       return true;
     }
+    if (_replacedAttempt(asked)) return true;
     final served = await servedIdentity(_engine);
     if (served != null && await observeOwn(_engine, served) == 'not_own_identity') return false;
-    if (served != null && await _unfinished(device, served)) {
-      await unlist(_engine, device);
-      if (_confirmed?.device == device) _release();
-    }
+    if (served != null && await unfinished(device)) await _wayOut(device);
     final String offer;
     try {
       offer =
@@ -439,11 +447,26 @@ class Approvals {
     return message == null ? null : _frameOf(message);
   }
 
-  /// On the list this device holds and not on the API's: approved here before, its transfer never taken. A served list
-  /// that doesn't read says nothing of it.
-  Future<bool> _unfinished(String device, duvet.Identity served) async {
-    final held = listDevices((await coreStatus(_engine.host)).deviceList ?? '') ?? const <String>[];
-    return held.contains(device) && listDevices(served.deviceList)?.contains(device) == false;
+  /// A newer commitment of the device's waits in the record: its attempt replaced the one asked about.
+  bool _replacedAttempt(_Asked asked) {
+    final newest = _keptIn(_engine.store)
+        .where((one) => one['from_device_id'] == asked.device && _frameOf(one)?.step == ApprovalStep.commitment)
+        .lastOrNull;
+    return newest != null && newest['id'] != asked.message;
+  }
+
+  /// Approved here before, by this device's own record, with no list the core took naming it since, and still on the
+  /// list it holds: its transfer never taken. Never the API's word: neither the list it serves nor the devices it
+  /// registers (mobile#352).
+  Future<bool> unfinished(String device) async =>
+      approvedHereIn(_engine.store).contains(device) &&
+      (listDevices((await coreStatus(_engine.host)).deviceList ?? '') ?? const <String>[]).contains(device);
+
+  /// The way out of an approval of this device's that didn't finish: that device, and no other, off its list.
+  Future<void> _wayOut(String device) async {
+    await unlist(_engine, device, alone: true);
+    await forgetApproved(_engine.store, [device]);
+    if (_confirmed?.device == device) _release();
   }
 
   /// The approval can't go on: it says why until the person closes it, and its timer is called off.
@@ -483,6 +506,8 @@ class Approvals {
         rethrow;
       }
       approved = asked.approved = (device: reply['device_id']! as String, transfer: reply['transfer']! as String);
+      // The core put it on this device's list: an approval of this device's, until a list it takes names it.
+      await noteApproved(_engine.store, approved.device, _engine.clock.now());
     }
     final message = approvalFrameMessage((step: ApprovalStep.transfer, data: approved.transfer, name: null));
     await _engine.api.sendToDevice(approved.device, message);
@@ -497,24 +522,23 @@ class Approvals {
 
   /// The person's yes to the device a QR they scanned names ([named], as [scannedDevice] read it, by its [name]): its
   /// own user observed first, as for an offer (null, with nothing approved, while the identity it holds was replaced);
-  /// one this device approved before that never took its transfer off this device's list first; then approval_from_qr
-  /// with the text as it was scanned, and its transfer, as an approval frame, to the inbox of the device its reply
-  /// names (e2e#52), which takes it with no code. This device's lists and keys wait for that device's list from now
-  /// on, as after a Confirm: the core put it on the list this device holds. True once the transfer went; false when
-  /// its send failed, the transfer kept for [sendScanned] with the same bytes, as approving it again would be the
-  /// core's `exists` (review 27's M2). Refused while another device this one approved sets up (M5).
+  /// one this device approved before that never took its transfer, by its own record, off this device's list first, and
+  /// alone; then approval_from_qr with the text as it was scanned, and its transfer, as an approval frame, to the inbox
+  /// of the device its reply names (e2e#52), which takes it with no code. This device's lists and keys wait for that
+  /// device's list from now on, as after a Confirm: the core put it on the list this device holds, and its record
+  /// keeps it. True once the transfer went; false when its send failed, the transfer kept for [sendScanned] with the
+  /// same bytes, as approving it again would be the core's `exists` (review 27's M2). Refused while another device
+  /// this one approved sets up (M5).
   Future<bool?> approveScanned(String qr, String named, String name) async {
     _oneAtATime(named);
     final served = await servedIdentity(_engine);
     if (served != null && await observeOwn(_engine, served) == 'not_own_identity') return null;
-    if (served != null && await _unfinished(named, served)) {
-      await unlist(_engine, named);
-      if (_confirmed?.device == named) _release();
-    }
+    if (served != null && await unfinished(named)) await _wayOut(named);
     final approved = await _engine.host.handle<Map<String, Object?>>({'cmd': 'approval_from_qr', 'qr': qr});
     final device = approved['device_id'];
     // The core read the same QR: another device would be one this app misread, while its person said yes to another.
     if (device is! String || device != named) throw StateError("the QR's device isn't the one its person was asked of");
+    await noteApproved(_engine.store, device, _engine.clock.now());
     _hold(_Confirmed(device, name, '', transfer: approved['transfer']! as String));
     try {
       await sendScanned(device);
@@ -644,13 +668,12 @@ class Approvals {
       if (_confirmed case final held? when held.device != device) return _Kept.keep;
       // A new attempt of the device's, or the first ask: the question starts over, and ends with that attempt.
       asked?.stop();
-      final served = await servedIdentity(_engine);
       final question = _Asked(
         device,
         frame.name ?? '',
         approvalFingerprint(base64Decode(frame.data)),
         message['id']! as String,
-        unfinished: served != null && await _unfinished(device, served),
+        unfinished: await unfinished(device),
       );
       question.stop = _after(left, () async {
         if (identical(_asked, question) && question.phase == ApprovalPhase.asked) await _forget(device);

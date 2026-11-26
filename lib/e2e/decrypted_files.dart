@@ -102,7 +102,9 @@ class _Entry {
 
 class DecryptedFiles extends ChangeNotifier {
   DecryptedFiles({this.limit = maxDecrypted, this.inFlight = openingBytesMost, Future<Directory> Function()? folder})
-    : _folder = folder ?? _temporary;
+    : _folder = folder ?? _temporary,
+      // A test's folder alone has no share_plus folder beside it.
+      _shared = folder == null ? _sharePlus : null;
 
   /// How many sealed bytes come down at once ([openingBytesMost]).
   final int inFlight;
@@ -112,8 +114,13 @@ class DecryptedFiles extends ChangeNotifier {
 
   static Future<Directory> _temporary() async => Directory('${(await getTemporaryDirectory()).path}/e2e-media');
 
+  /// Where share_plus copies each file it shares (its Share.kt's cacheDir/share_plus), which it empties only as its
+  /// next share starts: a decrypted file shared stays there in the clear (step 5's review, I3).
+  static Future<Directory> _sharePlus() async => Directory('${(await getTemporaryDirectory()).path}/share_plus');
+
   final int limit;
   final Future<Directory> Function() _folder;
+  final Future<Directory> Function()? _shared;
   final _files = <String, _Entry>{};
   final _waiting = <_Entry>[];
   FileOpener? _opener;
@@ -144,22 +151,25 @@ class DecryptedFiles extends ChangeNotifier {
     notifyListeners();
   }
 
-  /// Empties the folder, as the app's engine starts: what's there a run before this one left.
+  /// Empties the folder, and share_plus's copies of the files shared from it (mobile#354): as the app's engine starts
+  /// (what's there a run before this one left), at a sign-out, and as this device's data goes. A share still pending
+  /// loses its file then, as share_plus itself loses one at its next share.
   Future<void> emptyAtStart() async {
-    final folder = await _folder();
-    if (!await folder.exists()) return;
-    await for (final left in folder.list()) {
-      try {
-        await left.delete(recursive: true);
-      } on FileSystemException catch (error) {
-        debugPrint("e2e: a decrypted file of before couldn't go: ${error.osError?.message ?? error.message}");
+    for (final folder in [await _folder(), if (_shared case final shared?) await shared()]) {
+      if (!await folder.exists()) continue;
+      await for (final left in folder.list()) {
+        try {
+          await left.delete(recursive: true);
+        } on FileSystemException catch (error) {
+          debugPrint("e2e: a decrypted file of before couldn't go: ${error.osError?.message ?? error.message}");
+        }
       }
     }
   }
 
   /// A copy beside the files, as [name] (a cleaned one) in a folder of its own under [kind]: a decrypted file shared
   /// under its own name, which the folder's copies don't have (task 19's review, M1), or a GIF picked to send (M5). It
-  /// goes with the folder as the app's engine starts.
+  /// goes with the folder ([emptyAtStart]).
   Future<File> aside(String kind, String name, {String? from, List<int>? bytes}) async {
     final folder = Directory('${(await _folder()).path}/$kind/${uuidv4()}');
     await folder.create(recursive: true);
