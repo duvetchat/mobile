@@ -673,3 +673,81 @@ class _TrayBadge extends StatelessWidget {
     ),
   );
 }
+
+/// A contact's changed key over a conversation's message box (PLAN-E2E-CLIENTES.md, Task 29; decision 25), in each
+/// conversation with them until the person closes it, with their security number to check. For one the person had
+/// verified, the strong notice on a danger tint: it says to check before sending, as what goes there next waits for
+/// their yes. The desktop's KeyChangeNotice, in the encryption banner's look.
+class _KeyChangeNotice extends StatelessWidget {
+  const _KeyChangeNotice({required this.name, required this.verified, required this.onVerify, required this.onClose});
+
+  /// The contact, by the name the app shows them.
+  final String name;
+
+  /// The person had verified the identity that changed.
+  final bool verified;
+  final VoidCallback onVerify;
+  final VoidCallback onClose;
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = context.theme.colors;
+    const radius = BorderRadius.all(Radius.circular(DuvetTokens.radiusField));
+    final named = {'name': name};
+    final text = [Notice.keyChanged.fill(named), if (verified) Notice.keyChangedVerified.fill(named)].join(' ');
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 8),
+      child: Semantics(
+        container: true,
+        liveRegion: true,
+        child: DecoratedBox(
+          decoration: BoxDecoration(
+            color: verified
+                ? Color.alphaBlend(colors.destructive.withValues(alpha: 0.14), colors.secondary)
+                : colors.secondary,
+            borderRadius: radius,
+          ),
+          child: InsetShadow(
+            shadows: context.duvet.shadowWell,
+            borderRadius: radius,
+            padding: const EdgeInsets.only(left: 12),
+            child: Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Padding(
+                  padding: const EdgeInsets.only(top: 12),
+                  child: ExcludeSemantics(
+                    child: Icon(
+                      FLucideIcons.shieldAlert,
+                      size: 16,
+                      color: verified ? colors.destructive : colors.foreground,
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                // The sentence, then its action under it: both wrap, whatever the text's size.
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Padding(
+                        padding: const EdgeInsets.only(top: 10),
+                        child: Text(text, style: DuvetType.caption.copyWith(color: colors.foreground)),
+                      ),
+                      Transform.translate(
+                        // Its label lines up with the sentence: the action's own padding is 8.
+                        offset: const Offset(-8, 0),
+                        child: TextAction(label: Notice.verifyNumber.text, onPressed: onVerify),
+                      ),
+                    ],
+                  ),
+                ),
+                IconAction(icon: FLucideIcons.x, label: closeNotice, onPressed: onClose),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}

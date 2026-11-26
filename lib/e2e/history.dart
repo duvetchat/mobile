@@ -204,10 +204,23 @@ class PackageUpload {
   };
 }
 
+/// A package whose member's changed key waits for the person's yes (contacts.dart; Task 29), a share or a catch-up: it
+/// stops where it is, untried, and goes on from there after the yes.
+class HeldForYes implements Exception {
+  const HeldForYes();
+}
+
 /// A package up, from where it stopped: taken by the API (then [onTaken]), its parts, its key in each of its
 /// recipient's devices' inboxes, then completed, which lists it for them and posts a share's notice. A device the API
-/// no longer has, or no longer lets this user reach, takes no key. What went before is taken again as it was.
-Future<void> uploadPackage(E2EEngine engine, PackageUpload upload, {void Function()? onTaken}) async {
+/// no longer has, or no longer lets this user reach, takes no key. What went before is taken again as it was. Past its
+/// PUT, while [held] says its member's changed key waits for the person's yes, no part, key or completion goes: it
+/// throws [HeldForYes].
+Future<void> uploadPackage(
+  E2EEngine engine,
+  PackageUpload upload, {
+  void Function()? onTaken,
+  bool Function()? held,
+}) async {
   final E2EEngine(:api, :host) = engine;
   final PackageUpload(:conversationId, :shareId, :made) = upload;
   final parts = made['parts']! as int;
@@ -228,10 +241,12 @@ Future<void> uploadPackage(E2EEngine engine, PackageUpload upload, {void Functio
     upload.taken = true;
     onTaken?.call();
   }
+  if (held?.call() ?? false) throw const HeldForYes();
   upload.step = 'part';
   for (; upload.partsUp < parts; upload.partsUp++) {
     await api.putSharePart(conversationId, shareId, upload.partsUp, await host.sharePart(shareId, upload.partsUp));
   }
+  if (held?.call() ?? false) throw const HeldForYes();
   upload.step = 'key';
   for (final key in (made['keys']! as List).cast<Map<String, Object?>>()) {
     final device = key['device_id']! as String;
@@ -268,6 +283,9 @@ class _Sharing {
   final PackageUpload upload;
   final answer = Completer<SharedHistory>();
   void Function()? cancel;
+
+  /// Its member's changed key waits for the person's yes: it tries nothing until [Histories.again].
+  var held = false;
 }
 
 /// The person's shares and the packages this device receives, between the engine's turns.
@@ -322,11 +340,26 @@ class Histories {
           truncated: upload.made['truncated'] == true,
           start: DateTime.fromMillisecondsSinceEpoch(upload.made['start']! as int, isUtc: true),
         )),
+        // Its member's changed key waits for the person's yes (review 28's rule 3).
+        held: () => _engine.holding([upload.user]).isNotEmpty,
       );
+    } on HeldForYes {
+      sharing.held = true;
+      return;
     } catch (error) {
       return _shareFailed(sharing, error);
     }
     _shareDone(sharing);
+  }
+
+  /// The person's yes to a contact's changed key, or their verification of the new number: the shares held for one go
+  /// on from where they stopped, each held again while its member still waits for a yes.
+  void again() {
+    for (final sharing in [..._sharing]) {
+      if (!sharing.held) continue;
+      sharing.held = false;
+      unawaited(_send(sharing));
+    }
   }
 
   /// A try that failed. Before the API took the package, the person hears why, and it goes: Share again makes another.

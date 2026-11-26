@@ -9,6 +9,10 @@
 		"no_device": "{name} can't receive encrypted messages yet. Your device will pass them on when they can.",
 		"key_changed": "{name}'s security key changed.",
 		"key_changed_verified": "You had verified {name}. Check their security number before you send.",
+		"verify_number": "Verify security number",
+		"mark_verified": "Mark as verified",
+		"verified": "Verified",
+		"send_anyway": "Send anyway",
 		"cutover": "Messages from before end-to-end encryption were deleted on {date}",
 		"update": "Update Duvet",
 		"no_e2e_here": "Direct messages aren't available in this app yet. Use Duvet on the web.",
@@ -771,6 +775,12 @@
 				"drawn": false
 			}
 		]
+	},
+	"safety_qr": {
+		"about": "A contact's security number (Task 28): its QR's text is the core's qr exactly as safety_number gives it (standard base64, padded: the two users and their identity keys, in order), in byte mode at error correction M. The phone that scans it hands that text, unchanged, to verify_user {user_id, qr}, which verifies the contact only if it holds the identities this device pinned.",
+		"qr": "omF2AWV1c2Vyc4KiZHVzZXJQAaIW47HRdt2OLuEWvu1DjmxpZGVudGl0eV9rZXlYIDIrdamBxVbDEM7gnW9JzGwKSfYwB7J6xJCRt05rRRVDomR1c2VyUAGiFuOx0ni7o7u6b8Pfnw5saWRlbnRpdHlfa2V5WCB0tRNNwg1JTtJU3xLTV6dyxhMrzz9DBi3tTSuMACWGmQ==",
+		"error_correction": "M",
+		"text": "omF2AWV1c2Vyc4KiZHVzZXJQAaIW47HRdt2OLuEWvu1DjmxpZGVudGl0eV9rZXlYIDIrdamBxVbDEM7gnW9JzGwKSfYwB7J6xJCRt05rRRVDomR1c2VyUAGiFuOx0ni7o7u6b8Pfnw5saWRlbnRpdHlfa2V5WCB0tRNNwg1JTtJU3xLTV6dyxhMrzz9DBi3tTSuMACWGmQ=="
 	},
 	"approval_frames": [
 		{

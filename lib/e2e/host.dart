@@ -50,6 +50,17 @@ abstract interface class CoreHost {
   Future<void> destroy(String userId);
 }
 
+/// What the core answered an observe_user it ran: the user observed, and its `ok` (`state`, `verified`,
+/// `was_verified`, `reason`).
+typedef ObservedListener = void Function(String userId, Map<String, Object?> answer);
+
+/// A host whose core runs here, which tells of each observe_user the core answered on it, whoever asked: the engine of
+/// this phone that holds the core hands what the others ask on to it (core_gate.dart), so a change the core reports
+/// once reaches the record of the engine that holds the database (contacts.dart).
+abstract interface class ObservingHost {
+  set onObserved(ObservedListener? listener);
+}
+
 /// An error of the core, as the engine decides by it: its stable code, never its message, and what it names beside it.
 class CoreError implements Exception {
   CoreError(

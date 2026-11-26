@@ -14,6 +14,7 @@ import 'package:duvet/e2e/notices.dart';
 import 'package:duvet/encryption/approval.dart' show ApprovalView;
 import 'package:duvet/encryption/device_setup.dart';
 import 'package:duvet/encryption/recovery_key.dart';
+import 'package:duvet/encryption/safety_number.dart';
 import 'package:duvet/main.dart';
 import 'package:duvet/people.dart' show RoleChip;
 import 'package:duvet/theme.dart';
@@ -337,6 +338,69 @@ void main() {
           await expectLater(find.byType(DuvetApp), matchesGoldenFile('goldens/share_history_${b.name}.png'));
         }),
       ),
+    );
+
+    // A verified contact's changed key, its strong notice over the message box (Task 29).
+    testWidgets(
+      'a changed key, ${b.name}',
+      (tester) => withClock(
+        Clock.fixed(DateTime(2026, 10, 23, 12)),
+        () => withShadows(() async {
+          phone(tester);
+          final repository = FakeRepository()..encryption.value = EngineState.ready;
+          final appearance = Appearance(MemoryAppearanceStore())
+            ..value = b == Brightness.dark ? ThemeMode.dark : ThemeMode.light;
+          await tester.pumpWidget(DuvetApp(repository: repository, appearance: appearance));
+          await tester.pumpAndSettle();
+          repository.keyChanges['c-maya'] = {FakeRepository.maya: const KeyChange(verified: true, change: 'c1')};
+          await tester.tap(find.text('Maya'));
+          await tester.pumpAndSettle();
+          await expectLater(find.byType(DuvetApp), matchesGoldenFile('goldens/key_changed_${b.name}.png'));
+        }),
+      ),
+    );
+
+    // A contact's profile, the person having verified them: the mark beside their name, their security number among
+    // its actions, and their DM's mark behind it (Task 29).
+    testWidgets(
+      'a verified contact, ${b.name}',
+      (tester) => withClock(
+        Clock.fixed(DateTime(2026, 10, 23, 12)),
+        () => withShadows(() async {
+          phone(tester);
+          final semantics = tester.ensureSemantics();
+          final repository = FakeRepository()
+            ..encryption.value = EngineState.ready
+            ..contacts.value = const ContactsShown(verified: {FakeRepository.maya: true});
+          final appearance = Appearance(MemoryAppearanceStore())
+            ..value = b == Brightness.dark ? ThemeMode.dark : ThemeMode.light;
+          await tester.pumpWidget(DuvetApp(repository: repository, appearance: appearance));
+          await tester.pumpAndSettle();
+          await tester.tap(find.text('Maya'));
+          await tester.pumpAndSettle();
+          await tester.tap(find.bySemanticsLabel('Maya’s profile').last);
+          await tester.pumpAndSettle();
+          await expectLater(find.byType(DuvetApp), matchesGoldenFile('goldens/verified_contact_${b.name}.png'));
+          semantics.dispose();
+        }),
+      ),
+    );
+
+    // A contact's security number (Task 29): its 60 digits, its code as the core gives it, and Mark as verified.
+    testWidgets(
+      'a security number, ${b.name}',
+      (tester) => withShadows(() async {
+        phone(tester);
+        final qr = (jsonDecode(File('test/e2e/e2e-conventions.json').readAsStringSync()) as Map)['safety_qr']['qr'];
+        final repository = FakeRepository()
+          ..safetyNumbers[FakeRepository.maya] = (
+            digits: '02644 98738 31289 55883 56272 73681 86162 82950 01892 45686 92306 73116',
+            qr: qr as String,
+          );
+        await tester.pumpWidget(themed(b, SafetyNumberPage(repository, userId: FakeRepository.maya, name: 'Maya')));
+        await tester.pumpAndSettle();
+        await expectLater(find.byType(MaterialApp), matchesGoldenFile('goldens/safety_number_${b.name}.png'));
+      }),
     );
 
     // An encrypted conversation's files on their way down, each with how far it is (Task 19): a picture in its box with

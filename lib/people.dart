@@ -16,6 +16,7 @@ import 'data/models.dart';
 import 'data/scope.dart';
 import 'e2e/members.dart' show maxGroupMembers;
 import 'e2e/notices.dart';
+import 'encryption/safety_number.dart' show VerifiedMark, openSafetyNumber;
 import 'members_sheet.dart' show MemberAction, PresenceAvatar;
 import 'space_admin.dart' show RoleSwatch, adminTry, confirmDestructive, managesRoleAt, mayRemove;
 import 'shell.dart';
@@ -250,6 +251,12 @@ class _ProfileState extends State<_Profile> {
     final repository = context.repository;
     repository.loadFriends().catchError((Object e) => debugPrint('friends: $e'));
     if (_bansChanged == null) {
+      // Looked at as the API serves them now, as the profile opens: their mark is the core's, and a changed key leaves
+      // its notice (Task 29).
+      final userId = widget.member.userId;
+      if (!widget.member.isBot && repository.canVerify(userId)) {
+        unawaited(repository.contactVerified(userId).catchError((Object _) => false));
+      }
       _bansChanged = repository.bansChanged.listen((id) {
         if (id == widget.spaceId) _checkBan();
       });
@@ -370,9 +377,11 @@ class _ProfileState extends State<_Profile> {
         repository.friends,
         repository.spaces,
         repository.activities,
+        repository.contacts,
       ]),
       builder: (context, _) {
         final spaceId = widget.spaceId;
+        final verified = repository.contacts.value.verified[m.userId] == true;
         final roles = spaceId == null ? const <RoleTag>[] : repository.rolesOf(spaceId, m.userId);
         // As MemberAdminPage; on their own profile only if a role is theirs to change.
         final assignsRoles =
@@ -479,12 +488,20 @@ class _ProfileState extends State<_Profile> {
                       ],
                     ),
                     const SizedBox(height: 16),
-                    Semantics(
-                      header: true,
-                      child: switch (nameColorsOf(roles)) {
-                        final c? => RoleName(m.displayName, colors: c, style: DuvetType.title),
-                        null => Text(m.displayName, style: DuvetType.title.copyWith(color: colors.foreground)),
-                      },
+                    Row(
+                      children: [
+                        Flexible(
+                          child: Semantics(
+                            header: true,
+                            child: switch (nameColorsOf(roles)) {
+                              final c? => RoleName(m.displayName, colors: c, style: DuvetType.title),
+                              null => Text(m.displayName, style: DuvetType.title.copyWith(color: colors.foreground)),
+                            },
+                          ),
+                        ),
+                        // A contact the person verified on this device (Task 29).
+                        if (verified) ...[const SizedBox(width: 8), const VerifiedMark(size: 20)],
+                      ],
                     ),
                     // No handle where only their name is known (a mention of
                     // someone the app hasn't met).
@@ -516,6 +533,15 @@ class _ProfileState extends State<_Profile> {
                               label: 'Mention ${m.displayName}',
                               icon: FLucideIcons.atSign,
                               onPressed: () => Navigator.of(context).pop(MemberAction.mention),
+                            ),
+                          ],
+                          // Their security number, for someone whose identity the person can read (Task 29).
+                          if (!m.isBot && repository.canVerify(m.userId)) ...[
+                            const SizedBox(width: 8),
+                            _SquareButton(
+                              label: Notice.verifyNumber.text,
+                              icon: FLucideIcons.shield,
+                              onPressed: () => openSafetyNumber(context, repository, m.userId, m.displayName),
                             ),
                           ],
                           if (!m.isBot) ...[
