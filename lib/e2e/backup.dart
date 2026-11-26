@@ -707,7 +707,8 @@ class Backups {
       _nextPage(pages);
       final List<String> page;
       try {
-        page = await _api.deletedMessages(conversationId, after: after);
+        // Asked for whole pages: a shorter one is the last by the size asked, whatever the API's default.
+        page = await _api.deletedMessages(conversationId, after: after, limit: _page);
       } on duvet.DuvetApiException catch (error) {
         _answered = true;
         if (error.statusCode != 403 && error.statusCode != 404) rethrow;

@@ -1159,7 +1159,7 @@ void main() {
         api: (api) => api
           ..listing = ((_) async => segments)
           ..download = ((id, _, _) async => Uint8List.fromList(id == _s1 ? [1, 1, 1] : [2, 2, 2]))
-          ..deleted = (conversation, _) async {
+          ..deleted = (conversation, _, _) async {
             if (conversation == first && down) throw http.ClientException('fetch failed');
             return <String>[];
           },
@@ -1200,7 +1200,7 @@ void main() {
         },
         api: (api) => api
           ..listing = ((_) async => [_segmentOf(_s1, '2026-11-21')])
-          ..deleted = ((_, _) async => gone),
+          ..deleted = ((_, _, _) async => gone),
       );
       await restore.store.write(backupRestore, {'done': <String>[]});
       restore.backups.wake();
@@ -1222,7 +1222,7 @@ void main() {
           },
         },
         api: (api) => api
-          ..deleted = ((_, _) async => gone)
+          ..deleted = ((_, _, _) async => gone)
           ..put = (conversation, day, bytes, replaces) async {
             if (!held) return uuidv4();
             held = false;
@@ -1247,7 +1247,7 @@ void main() {
         },
         api: (api) => api
           ..listing = ((_) async => [_segmentOf(_s1, '2026-11-21', keyId: 'older')])
-          ..deleted = ((_, _) async => gone),
+          ..deleted = ((_, _, _) async => gone),
       );
       await move.store.write(backupMove, {'key': 'older'});
       move.backups.quiet();
@@ -1327,7 +1327,7 @@ void main() {
           },
         },
         api: (api) => api
-          ..deleted = (_, _) async {
+          ..deleted = (_, _, _) async {
             if (down) throw http.ClientException('fetch failed');
             return <String>[];
           }
@@ -1419,17 +1419,23 @@ void main() {
       restore.backups.wake();
       await restore.backups.settled();
       expect(listed(restore.log, 'segments'), 1000);
-      // A conversation's deleted messages.
+      // A conversation's deleted messages, each page asked for whole (the review's M1): a page shorter than 1000 is
+      // the last one by the size asked, never by the API's default.
       var deletedPages = 0;
+      final limits = <int?>[];
       final deleted = _onAStub(
         api: (api) => api
           ..listing = ((_) async => [full[0]])
-          ..deleted = (_, _) async => ++deletedPages > 1001 ? <String>[] : ids,
+          ..deleted = (_, _, limit) async {
+            limits.add(limit);
+            return ++deletedPages > 1001 ? <String>[] : ids;
+          },
       );
       await deleted.store.write(backupRestore, {'done': <String>[]});
       deleted.backups.wake();
       await deleted.backups.settled();
       expect(listed(deleted.log, 'deletedMessages'), 1000);
+      expect(limits, everyElement(1000));
       // The move's.
       var movePages = 0;
       final move = _onAStub(api: (api) => api.listing = (_) async => ++movePages > 1001 ? [] : full);
@@ -1575,7 +1581,7 @@ class _StubApi implements duvet.E2eApi {
   final List<String> _log;
 
   Future<List<duvet.BackupSegment>> Function(String? after) listing = (_) async => [];
-  Future<List<String>> Function(String conversationId, String? after) deleted = (_, _) async => [];
+  Future<List<String>> Function(String conversationId, String? after, int? limit) deleted = (_, _, _) async => [];
   Future<Uint8List> Function(String id, void Function(int, int)? onProgress, Future<void>? abortTrigger) download =
       (_, _, _) async => Uint8List.fromList([0, 1, 2]);
   Future<String> Function(String conversationId, String day, List<int> bytes, String? replaces) put =
@@ -1590,7 +1596,7 @@ class _StubApi implements duvet.E2eApi {
   @override
   Future<List<String>> deletedMessages(String conversationId, {String? after, int? limit}) {
     _log.add('deletedMessages');
-    return deleted(conversationId, after);
+    return deleted(conversationId, after, limit);
   }
 
   @override
