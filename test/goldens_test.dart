@@ -11,6 +11,8 @@ import 'package:duvet/e2e/decrypted_files.dart';
 import 'package:duvet/e2e/engine.dart';
 import 'package:duvet/e2e/files.dart';
 import 'package:duvet/e2e/notices.dart';
+import 'package:duvet/encryption/approval.dart' show ApprovalView;
+import 'package:duvet/encryption/device_setup.dart';
 import 'package:duvet/encryption/recovery_key.dart';
 import 'package:duvet/main.dart';
 import 'package:duvet/people.dart' show RoleChip;
@@ -575,6 +577,58 @@ void main() {
       await tester.pumpAndSettle();
       await expectLater(find.byType(MaterialApp), matchesGoldenFile('goldens/role_chips_${b.name}.png'));
     });
+
+    // A new device's setup (PLAN-E2E-CLIENTES.md, Task 27): its QR, which a phone of the person's scans, beside the
+    // recovery key's field and starting over; its code's way once an approving device offered; and the approving
+    // device's question, with the fingerprint the new device's screen shows.
+    for (final (name, state) in [
+      (
+        'device_setup',
+        EngineState.settingUp(
+          DeviceSetup.qr(
+            (jsonDecode(File('test/e2e/e2e-conventions.json').readAsStringSync()) as Map)['approval_qr']['qr']
+                as String,
+          ),
+        ),
+      ),
+      ('device_setup_code', const EngineState.settingUp(DeviceSetup.code('1a2b 3c4d 5e6f 7a8b', offered: true))),
+    ]) {
+      testWidgets(
+        '$name, ${b.name}',
+        (tester) => withShadows(() async {
+          phone(tester, height: 1100);
+          final repository = FakeRepository()..encryption.value = state;
+          await tester.pumpWidget(themed(b, DeviceSetupPage(repository)));
+          await tester.pumpAndSettle();
+          await expectLater(find.byType(MaterialApp), matchesGoldenFile('goldens/${name}_${b.name}.png'));
+        }),
+      );
+    }
+
+    testWidgets(
+      'device approval, ${b.name}',
+      (tester) => withShadows(() async {
+        phone(tester);
+        await tester.pumpWidget(
+          themed(
+            b,
+            ApprovalView(
+              approval: const DeviceApproval(
+                device: '0193a4b2-0000-7000-8000-0000000000a2',
+                name: 'Pixel 9',
+                fingerprint: '1a2b 3c4d 5e6f 7a8b',
+                phase: ApprovalPhase.asked,
+              ),
+              onApprove: () {},
+              onDecline: () {},
+              onConfirm: () {},
+            ),
+          ),
+        );
+        await tester.pumpAndSettle();
+        await expectLater(find.byType(MaterialApp), matchesGoldenFile('goldens/device_approval_${b.name}.png'));
+      }),
+    );
 
     // The first device's recovery key, before it's saved (PLAN-E2E-CLIENTES.md, Task 13).
     testWidgets(

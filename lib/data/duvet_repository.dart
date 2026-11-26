@@ -1112,6 +1112,12 @@ class DuvetRepository implements ChatRepository {
   @override
   Future<void> changeKeys() async => (_engine ?? (throw ActionFailed(Notice.notReady.text))).changeKeys();
 
+  @override
+  DeviceSetupActions get deviceSetup => _engine ?? const _NoSetup();
+
+  @override
+  Future<void> finishKeysWithout() async => (_engine ?? (throw ActionFailed(Notice.notReady.text))).finishKeysWithout();
+
   /// The engine deletes this device's data, then the session ends as a sign-out ends it (decision 13), and the folder
   /// of files it decrypted is emptied whole, the copies set aside to share too, which a sign-out leaves for the next
   /// start (lib/e2e/decrypted_files.dart).
@@ -6366,4 +6372,39 @@ class _SessionRest with duvet.RestMethods {
       ),
     );
   }
+}
+
+/// A new device's setup and approvals while no engine runs (none yet, or signed out): each act refuses, as the others
+/// do without an engine, and a scanned QR names no device.
+class _NoSetup implements DeviceSetupActions {
+  const _NoSetup();
+
+  Never _none() => throw ActionFailed(Notice.notReady.text);
+
+  @override
+  Future<void> recover(String recoveryKey) async => _none();
+  @override
+  Future<void> beginApproval() async => _none();
+  @override
+  Future<void> useCode() async => _none();
+  @override
+  Future<void> acceptCode(String code) async => _none();
+  @override
+  Future<void> endApproval() async {}
+  @override
+  Future<void> resetIdentity() async => _none();
+  @override
+  Future<void> finishSetup() async => _none();
+  @override
+  Future<void> approveDevice(String deviceId) async => _none();
+  @override
+  Future<void> declineDevice(String deviceId) async => _none();
+  @override
+  Future<void> confirmApproval(String deviceId) async => _none();
+  @override
+  Future<ScannedDevice?> scannedDevice(String qr) async => null;
+  @override
+  Future<bool> approveScanned(String qr, ScannedDevice device) async => _none();
+  @override
+  Future<void> sendScanned(String deviceId) async => _none();
 }

@@ -4,7 +4,7 @@ import 'package:duvet/data/models.dart';
 import 'package:duvet/data/recent_chats.dart';
 import 'package:duvet/data/recent_chats.dart' as recent show previewOf;
 import 'package:duvet/data/repository.dart';
-import 'package:duvet/e2e/engine.dart' show EngineState, HistoryOffer, SharedHistory;
+import 'package:duvet/e2e/engine.dart' show DeviceSetupActions, EngineState, HistoryOffer, ScannedDevice, SharedHistory;
 import 'package:duvet/e2e/members.dart' show sameUsers;
 import 'package:duvet/e2e/sync.dart' show ConversationState;
 import 'package:duvet_client/duvet.dart' as duvet show Device;
@@ -1620,6 +1620,20 @@ class FakeRepository implements ChatRepository {
   Future<void> changeKeys() async => encryptionTaps.add('changeKeys');
 
   @override
+  Future<void> finishKeysWithout() async => encryptionTaps.add('finishKeysWithout');
+
+  /// A new device's setup and approvals: each tap recorded in [encryptionTaps], with what it was given; a scanned QR
+  /// names [scanned] (none unless a test sets it), and [setupFails] makes the next act throw it.
+  @override
+  late final DeviceSetupActions deviceSetup = _SetupTaps(this);
+
+  ScannedDevice? scanned;
+
+  /// Whether a scanned device's approval sends its transfer (false: its send failed, and the transfer waits).
+  var scanSends = true;
+  Object? setupFails;
+
+  @override
   Future<void> removeThisDevice() async {
     encryptionTaps.add('removeThisDevice');
     await endSession();
@@ -2007,4 +2021,53 @@ class FakeRepository implements ChatRepository {
     mobileOnly.dispose();
     activities.dispose();
   }
+}
+
+class _SetupTaps implements DeviceSetupActions {
+  _SetupTaps(this._repository);
+
+  final FakeRepository _repository;
+
+  Future<void> _tap(String tap) async {
+    _repository.encryptionTaps.add(tap);
+    if (_repository.setupFails case final error?) {
+      _repository.setupFails = null;
+      throw error;
+    }
+  }
+
+  @override
+  Future<void> recover(String recoveryKey) => _tap('recover $recoveryKey');
+  @override
+  Future<void> beginApproval() => _tap('beginApproval');
+  @override
+  Future<void> useCode() => _tap('useCode');
+  @override
+  Future<void> acceptCode(String code) => _tap('acceptCode $code');
+  @override
+  Future<void> endApproval() => _tap('endApproval');
+  @override
+  Future<void> resetIdentity() => _tap('resetIdentity');
+  @override
+  Future<void> finishSetup() => _tap('finishSetup');
+  @override
+  Future<void> approveDevice(String deviceId) => _tap('approveDevice $deviceId');
+  @override
+  Future<void> declineDevice(String deviceId) => _tap('declineDevice $deviceId');
+  @override
+  Future<void> confirmApproval(String deviceId) => _tap('confirmApproval $deviceId');
+  @override
+  Future<ScannedDevice?> scannedDevice(String qr) async {
+    await _tap('scannedDevice $qr');
+    return _repository.scanned;
+  }
+
+  @override
+  Future<bool> approveScanned(String qr, ScannedDevice device) async {
+    await _tap('approveScanned $qr ${device.id}');
+    return _repository.scanSends;
+  }
+
+  @override
+  Future<void> sendScanned(String deviceId) => _tap('sendScanned $deviceId');
 }

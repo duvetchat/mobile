@@ -71,7 +71,14 @@
 		"file_show": "Show picture",
 		"file_named": "{name}: {status}",
 		"search_split": "In an encrypted conversation, pinned: and has:sticker can't be combined with words or with has:image, video or sound.",
-		"new_message": "New message"
+		"new_message": "New message",
+		"use_code": "Use a code instead",
+		"approval_code_hint": "Type the code your other device shows",
+		"code_accepted": "Code accepted: confirm it on your other device.",
+		"code_mismatch": "That isn't the code your other device shows.",
+		"approval_ask": "Is this device yours?",
+		"approval_confirm_after": "Confirm only after your new device accepts it",
+		"start_over_warning": "Starting over makes new security keys for your account. The history of your encrypted conversations can't be read any more, and your contacts will see that your keys changed."
 	},
 	"filled_notices": [
 		{
@@ -853,5 +860,11 @@
 			"commitment": "Y29tbWl0bWVudA==",
 			"fingerprint": "a200 9367 b562 c028"
 		}
-	]
+	],
+	"approval_qr": {
+		"about": "A new device's QR (Task 26): its text is the core's qr exactly as approval_begin gives it (standard base64, padded), in byte mode at error correction M. The device that scans it hands that text, unchanged, to approval_from_qr {qr}, and sends the transfer to the inbox of the new device the QR names.",
+		"qr": "pmF2AWR1c2VyUAGiF2KTUnBmolwi93sbPQNmZGV2aWNlUAGiF2Kcp3z3hIqiuRMWNhRtc2lnbmF0dXJlX2tleVggpuGLH4CXR+Pw9H5ctygdL0fPc95MCobd6TjNjnZ2mWRoaHBrZV9rZXlYIDUNNKgG6/2FKzh7KxoH239M8PCQARC1fW9FuwqwCNJoY2tleVggYW4XD+cisLmAmdjR1hHNrA916mUzTLSEUaEGMBzm428=",
+		"error_correction": "M",
+		"text": "pmF2AWR1c2VyUAGiF2KTUnBmolwi93sbPQNmZGV2aWNlUAGiF2Kcp3z3hIqiuRMWNhRtc2lnbmF0dXJlX2tleVggpuGLH4CXR+Pw9H5ctygdL0fPc95MCobd6TjNjnZ2mWRoaHBrZV9rZXlYIDUNNKgG6/2FKzh7KxoH239M8PCQARC1fW9FuwqwCNJoY2tleVggYW4XD+cisLmAmdjR1hHNrA916mUzTLSEUaEGMBzm428="
+	}
 }

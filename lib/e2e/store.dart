@@ -42,6 +42,19 @@ const toldInactive = 'told_inactive';
 /// later generation (sync.dart; the core's #46, kept across restarts).
 const refusedGenerations = 'refused_generations';
 
+/// Whether a change of keys of this device's left devices out with gone (duvetchat/e2e#49), until a new one starts:
+/// the app offers another, as one of them may still hold the keys.
+const keysAgain = 'keys_again';
+
+/// Whether another device's change of keys kept a device this device's waiting change takes off, so that the core
+/// refused its transfer (`removed_device_listed`, duvetchat/e2e#49): that change can never finish, and a later start,
+/// which can't read that transfer again, still says so. Until the change ends.
+const keptRelisted = 'relisted';
+
+/// The identity a start over replaces (start_over.dart), from the person's tap until its upload is confirmed: a start
+/// that finds the core's new identity waiting for its upload knows it for a start over, not a first device's.
+const keptReset = 'reset';
+
 /// The shared histories and catch-ups whose keys this device's core took, by package (history.dart): no key, only
 /// what's needed to know a package opens here, kept until it's imported and acknowledged.
 const historyKeys = 'history_keys';
@@ -57,6 +70,9 @@ const deviceRecord = [
   pendingChanges,
   rotationRemove,
   refusedGenerations,
+  keysAgain,
+  keptRelisted,
+  keptReset,
   historyKeys,
 ];
 

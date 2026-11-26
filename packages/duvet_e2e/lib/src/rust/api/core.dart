@@ -7,13 +7,22 @@ import '../frb_generated.dart';
 
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
-// These functions are ignored because they are not marked as `pub`: `open`
+// These functions are ignored because they are not marked as `pub`: `destroy`, `folder_failed`, `open`
 // These types are ignored because they are neither used by any `pub` functions nor (for structs and enums) marked `#[frb(unignore)]`: `Config`
 
 // Rust type: RustOpaqueMoi<flutter_rust_bridge::for_generated::RustAutoOpaqueInner<OpenCore>>
 abstract class OpenCore implements RustOpaqueInterface {
   /// Closes the database and lets another instance open it.
   Future<void> close();
+
+  /// Deletes the database `config_json` names (`{"path"}`) and SQLite's files beside it, holding
+  /// the lock an open core holds: `locked` while one, in this process or another, has it open,
+  /// and nothing is deleted then. The deletion is on the disk once it returns. The lock file
+  /// stays, as `duvet_e2e_destroy` leaves it: an open waiting for it would otherwise lock a deleted
+  /// file while the next one locked a new file. No key is deleted: the app keeps the database's
+  /// key, and deletes it after.
+  static Future<void> destroy({required String configJson}) =>
+      RustLib.instance.api.crateApiCoreOpenCoreDestroy(configJson: configJson);
 
   /// Runs one JSON command and returns its JSON reply: `not_found` once closed.
   Future<String> handle({required String command});
@@ -29,7 +38,7 @@ abstract class OpenCore implements RustOpaqueInterface {
   );
 }
 
-/// A failed `open`: the core's error reply, `{"error": {...}}`.
+/// A failed `open` or `destroy`: the core's error reply, `{"error": {...}}`.
 class OpenError implements FrbException {
   final String reply;
 

@@ -1,18 +1,18 @@
 {
   "repository": "duvetchat/e2e",
-  "commit": "d8642b5ab99ae0dbc0387b2e0759be977d480940",
+  "commit": "4dd1a5f6c0fd841073b5af91d403a8522e9f9524",
   "files": {
-    "packages/duvet_e2e/README.md": "f40afdf642a94a036d4742569d21cdee150755793dd93f475c767b0b1c4fb688",
+    "packages/duvet_e2e/README.md": "e4b0ad460149b20a9bb80ce2ab0eb74ce7e7d9aa3dad3471d2de6c01a287574e",
     "packages/duvet_e2e/android/build.gradle": "0da9cd4927c0a6fc45807619309314dc0e6d39cffa4d2c8a42a9f8af4a0d92b1",
     "packages/duvet_e2e/android/settings.gradle": "b0563273727e73ab52b9af9c2139a1a64f445b4392280deff57c8f8cbfe09c6a",
     "packages/duvet_e2e/android/src/main/AndroidManifest.xml": "81b1e7fde9429805f50708ceb58e072efc425b6f6883f94bc21bf4d00f1ff7bf",
-    "packages/duvet_e2e/android/src/main/jniLibs/arm64-v8a/libduvet_e2e.so": "d8df5126f4746936cdf0c36914945d714afca90461f17e69ccac2b2e2655efc5",
-    "packages/duvet_e2e/lib/duvet_e2e.dart": "8bdc48c80a9c25d30151535c6b296c4c331bbda78aebb5ce4ecfd79bd1caa880",
-    "packages/duvet_e2e/lib/src/rust/api/core.dart": "8a359d40f7c4f353f8103c7bcbd2b6eb98e2462b1c73c315ceca616baec8ea0a",
-    "packages/duvet_e2e/lib/src/rust/frb_generated.dart": "1f933817c8e74ee4c795d70de0140e14ffd8961ffb30ed8ea7d33cef72220a11",
+    "packages/duvet_e2e/android/src/main/jniLibs/arm64-v8a/libduvet_e2e.so": "9828189551edd5909611a9cab4944a3f12dc63c6acdd663692eeab86715acd44",
+    "packages/duvet_e2e/lib/duvet_e2e.dart": "4139e8f06a27fe9c67be123aacdb4416ef46717eabd55d841fe3e37fdfcc90d7",
+    "packages/duvet_e2e/lib/src/rust/api/core.dart": "b243c6357e7decd5c471e57e287e027113db9477f8a8c12703355b035786c4eb",
+    "packages/duvet_e2e/lib/src/rust/frb_generated.dart": "f58ededbe5f7f200ea280321977b647cc2d5b2ff9d9bdc8dbaf26b60f58bb68f",
     "packages/duvet_e2e/lib/src/rust/frb_generated.io.dart": "fba8e4cf0cd62641aae19bf791ac8d04a6aff8579535f51e760f9458f2272892",
     "packages/duvet_e2e/lib/src/rust/frb_generated.web.dart": "515787e8e841ea897dddb10af4493d8c1d32feb91835937f1162255501cf5664",
-    "packages/duvet_e2e/linux-x64/libduvet_e2e.so": "898c4ce8db145b8efec07354b3333bffd172b25f548dba2793268acc6131f1c5",
+    "packages/duvet_e2e/linux-x64/libduvet_e2e.so": "8ddcfabe695ab7a12ed46cb6765627e9cd03f2d597538f6bd27e868d1d63bad0",
     "packages/duvet_e2e/pubspec.yaml": "ea79c13a0c58d1a9d3a721c48f7a494779e54af2ae6fd3ea40a721d40cf08730"
   }
 }

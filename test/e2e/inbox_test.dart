@@ -18,6 +18,11 @@ import '../support/fake_api.dart';
 String _frame(String data) => approvalFrameMessage((step: ApprovalStep.commitment, data: data, name: null));
 String _bytes(String text) => base64Encode(utf8.encode(text));
 
+/// A request of [device]'s to be approved, as its core makes one, naming it: one that names another device than its
+/// sender goes as the approvals take it (review 27's M6).
+Future<String> _commitmentOf(TestDevice device) async =>
+    (await device.host.handle<Map<String, Object?>>({'cmd': 'approval_begin'}))['commitment']! as String;
+
 /// The IDs of the messages the record keeps under [key].
 List<Object?> _kept(EngineStore store, String key) => [for (final m in (store.read(key) as List?) ?? const []) m['id']];
 
@@ -135,14 +140,18 @@ void main() {
     final a = await firstDevice(fake, ana, host: host);
     final other = testDevice(fake, ana);
     await other.engine.start();
+    final another = testDevice(fake, ana);
+    await another.engine.start();
     final device = a.registered.single;
 
-    // Another device of Ana's writes to this one: a step of an approval, two messages of the core's, and another step.
-    // Their DEVICE_MESSAGE events wait for good: here the reads are READY's, one at a time.
+    // Other devices of Ana's write to this one: a step of an approval, two messages of the core's, and another device's
+    // step. Their DEVICE_MESSAGE events wait for good: here the reads are READY's, one at a time.
     fake.holdEvents();
     final sent = [
-      for (final message in [_frame('AAAA'), _bytes("not the core's"), _bytes('kept for later'), _frame('BBBB')])
+      await other.api.sendToDevice(device, _frame(await _commitmentOf(other))),
+      for (final message in [_bytes("not the core's"), _bytes('kept for later')])
         await other.api.sendToDevice(device, message),
+      await another.api.sendToDevice(device, _frame(await _commitmentOf(another))),
     ];
     final [firstFrame, _, kept, lastFrame] = sent;
     // The first round keeps the frame, then stops at the cut call: only the frame is deleted.
@@ -157,6 +166,7 @@ void main() {
     expect(_kept(a.store, keptTransfers), [kept]);
     await a.engine.stop();
     await other.engine.stop();
+    await another.engine.stop();
   }, skip: noCore);
 
   // I4 of the desktop's review: a message's sender certificate goes with it, and one the core takes only with what a
@@ -212,7 +222,7 @@ void main() {
     final device = a.registered.single;
     fake.holdEvents();
     await b.api.sendToDevice(device, _frame('Qk9C'));
-    final own = await mine.api.sendToDevice(device, _frame('QU5B'));
+    final own = await mine.api.sendToDevice(device, _frame(await _commitmentOf(mine)));
     a.connect(device);
     await eventually(() async => expect(await a.api.inbox(), isEmpty));
     expect(_kept(a.store, keptApprovals), [own]);

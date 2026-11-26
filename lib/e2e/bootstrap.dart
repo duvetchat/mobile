@@ -17,18 +17,29 @@ class CoreStatus {
   CoreStatus.of(Map<String, Object?> status)
     : deviceId = status['device_id'] as String?,
       identityKey = status['identity_key'] as String?,
+      certificate = status['certificate'] as String?,
       deviceList = status['device_list'] as String?,
       waitingUpload = status['waiting_upload'] as String?,
+      waitingRemove = switch (status['waiting_remove']) {
+        final List<Object?> ids => ids.whereType<String>().toList(),
+        _ => null,
+      },
       hasIdentity = status['has_identity'] == true;
 
   final String? deviceId;
   final String? identityKey;
+
+  /// This device's certificate, as the last identity command (or an approval's transfer) answered it.
+  final String? certificate;
 
   /// The user's list as this device holds it: the last an identity command or a list answered, or observing gave.
   final String? deviceList;
 
   /// The identity command whose upload the core waits for: `create_identity` or `rotate_keys`.
   final String? waitingUpload;
+
+  /// What a change of keys that waits takes off the list, in its order (duvetchat/e2e#49): what it runs again with.
+  final List<String>? waitingRemove;
   final bool hasIdentity;
 }
 
