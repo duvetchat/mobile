@@ -1139,8 +1139,8 @@ final class MessageDeleted extends MessageEvent {
 final class ContentChanged extends MessageEvent {
   const ContentChanged({this.imported = false});
 
-  /// A shared history or a catch-up came in: rows from before the user joined that a page left out may show now, so
-  /// its pages are read again (Ruling 15; I3 of task 31's review).
+  /// A shared history, a catch-up or a day of the backup came in: rows from before the user joined that a page left out
+  /// may show now, so its pages are read again (Ruling 15; I3 of task 31's review).
   final bool imported;
 }
 

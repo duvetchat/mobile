@@ -341,6 +341,7 @@ class TestDevice {
     this.heard,
     this.registered,
     this.states,
+    this.backups,
     this.connect,
   );
 
@@ -362,6 +363,9 @@ class TestDevice {
 
   /// States the engine went through.
   final List<EngineState> states;
+
+  /// What the engine showed of the encrypted backup, each time it changed.
+  final List<BackupShown> backups;
 
   /// Connects to the gateway again, identified with `device`: its READY comes first.
   final void Function(String? device) connect;
@@ -427,9 +431,11 @@ TestDevice testDevice(
   addTearDown(() => engine.stop().timeout(const Duration(seconds: 10)));
   final states = <EngineState>[];
   engine.state.addListener(() => states.add(engine.state.value));
+  final backups = <BackupShown>[];
+  engine.backup.addListener(() => backups.add(engine.backup.value));
   connect(null);
   shownWhenStuck(() => heldBy(fake, user, engine.state.value, engine.conversations.value, core));
-  return TestDevice._(engine, core, user, session, api, record, clock, heard, registered, states, connect);
+  return TestDevice._(engine, core, user, session, api, record, clock, heard, registered, states, backups, connect);
 }
 
 /// A device through the first device's flow: its identity made, its key saved, both published; the engine ready.
@@ -555,10 +561,12 @@ Future<void> until(FutureOr<bool> Function() holds, {Duration? timeout, String? 
 }
 
 /// Waits for the work the device's engine took on until now, what the events delivered so far asked for included: a
-/// tap that does nothing on a ready device, which waits its turn after them.
+/// tap that does nothing on a ready device, which waits its turn after them; then the encrypted backup's pass, whose
+/// requests run outside the turn.
 Future<void> turnEnded(TestDevice device) async {
   await pumpEventQueue();
   await device.engine.uploadLater();
+  await device.engine.backupSettled();
 }
 
 /// A command run by hand on the device's core, the users it asks for observed first, as the engine does.
@@ -737,8 +745,15 @@ Future<TestDevice> restarted(
 }
 
 /// Another device of the first one's user, set up by the first one's approval by QR (Task 27 does it in the app) and
-/// on the user's list: its engine started and ready, its requests through [client] when given.
-Future<TestDevice> approvedDevice(FakeApi fake, TestDevice first, {CoreHost? host, http.Client? client}) async {
+/// on the user's list: its engine started and ready, its requests through [client] when given, hearing what [hears]
+/// lets through.
+Future<TestDevice> approvedDevice(
+  FakeApi fake,
+  TestDevice first, {
+  CoreHost? host,
+  http.Client? client,
+  bool Function(GatewayEvent event)? hears,
+}) async {
   final fresh = testDevice(fake, first.user, host: host, client: client);
   await fresh.engine.start();
   if (fresh.state != EngineState.newDevice) throw StateError('the new device is ${fresh.state}');
@@ -755,7 +770,7 @@ Future<TestDevice> approvedDevice(FakeApi fake, TestDevice first, {CoreHost? hos
     ),
   );
   await fresh.host.handle<Object?>({'cmd': 'device_list_uploaded', 'version': version});
-  final again = await restarted(fake, fresh, client: client);
+  final again = await restarted(fake, fresh, client: client, hears: hears);
   if (again.state != EngineState.ready) throw StateError('the approved device is ${again.state}');
   return again;
 }

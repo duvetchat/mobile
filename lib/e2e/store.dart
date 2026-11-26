@@ -66,6 +66,17 @@ const keptReset = 'reset';
 /// what's needed to know a package opens here, kept until it's imported and acknowledged.
 const historyKeys = 'history_keys';
 
+/// The encrypted backup's (backup.dart): IDs, times and counts alone. A restore that's due, with the conversations it
+/// went through and whether only what it set aside is left (`{done, waiting}`); the key this device last saw itself
+/// seal with and how far the move of other keys' segments went, the last segment it moved, in one write (`{key,
+/// after}`, `after` gone once the move is over), as two writes of the file aren't atomic; since when a full storage
+/// paused it (`{at}`); and what failed, by conversation and day, by conversation or by segment, with how many passes in
+/// a row did and since when it's set aside.
+const backupRestore = 'backup_restore';
+const backupMove = 'backup_move';
+const backupPaused = 'backup_paused';
+const backupSetAside = 'backup_set_aside';
+
 /// What a new device of this installation starts without.
 const deviceRecord = [
   keptDevice,
@@ -83,6 +94,10 @@ const deviceRecord = [
   keptRelisted,
   keptReset,
   historyKeys,
+  backupRestore,
+  backupMove,
+  backupPaused,
+  backupSetAside,
 ];
 
 /// The API's external sender as this installation first saw it (Ruling 32), which a new device of it keeps.

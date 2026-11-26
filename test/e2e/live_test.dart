@@ -578,6 +578,62 @@ void main() {
     timeout: const Timeout(Duration(minutes: 3)),
   );
 
+  // The encrypted backup (PLAN-E2E-CLIENTES.md, Task 33): what Carol sent before it, a device Dave recovers can't read
+  // from its queue, so it comes from the backup. The API dates messages by its own clock, so no day of theirs has ended
+  // for an engine to back up: Dave's first device seals today's by hand, as its engine seals a day, and the new
+  // device's engine restores it, through the real API and storage.
+  test(
+    'a_recovered_device_restores_what_the_first_one_backed_up',
+    () async {
+      final pair = _carolAndDave;
+      if (pair == null) fail('the case before left no conversation');
+      final (:c, :d, :dm) = pair;
+      final dave = _account(3);
+      final key = _recoveryKeys[dave.id];
+      if (key == null) fail('the groups case kept no recovery key');
+      const wait = Duration(seconds: 30);
+      const text = 'before your new device';
+      final before = (await c.engine.sendMessage(Outgoing(conversationId: dm, nonce: uuidv4(), text: text)))!;
+      await eventually(
+        () async => expect((await d.engine.messages(dm, [before.id])).firstOrNull?.text, text),
+        timeout: wait,
+      );
+      final day = DateTime.fromMillisecondsSinceEpoch(before.sentAt!, isUtc: true).toIso8601String().substring(0, 10);
+      final deleted = await d.api.deletedMessages(dm);
+      final built = await d.host.gate.handle<Map<String, Object?>>({
+        'cmd': 'backup_segment',
+        'conversation_id': dm,
+        'day': day,
+        'deleted': deleted,
+      });
+      await d.api.putSegment(dm, day, base64Decode(built['data']! as String));
+      await d.host.gate.handle<Object?>({
+        'cmd': 'backup_uploaded',
+        'conversation_id': dm,
+        'day': day,
+        'complete': built['complete'],
+        'version': built['version'],
+      });
+      expect([for (final segment in await d.api.segments(conversationId: dm)) segment.day], contains(day));
+
+      final fresh = await _Live.start(_router(), dave);
+      await fresh.engine.start();
+      expect(fresh.engine.state.value, EngineState.newDevice);
+      await fresh.engine.recover(key);
+      await eventually(
+        () async => expect((await fresh.engine.messages(dm, [before.id])).firstOrNull?.text, text),
+        timeout: wait,
+      );
+      // Restored, its backup shows no restore any more, and no pause.
+      await eventually(
+        () => expect(fresh.engine.backup.value.stage, isIn([BackupStage.uploading, BackupStage.upToDate])),
+        timeout: wait,
+      );
+    },
+    skip: skip ?? noCore,
+    timeout: const Timeout(Duration(minutes: 3)),
+  );
+
   // Carol's new device, approved by the one the cases above left her, by the code it shows: on the API's list, and in
   // her DM's group, where it reads what Dave sends.
   test(

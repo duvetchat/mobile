@@ -83,6 +83,15 @@ String devicesRefusal(Object error) => switch (error) {
   _ => "Couldn't change your devices. Check your connection, then try again.",
 };
 
+/// What Settings says of the encrypted backup (Task 33), in the desktop's words: how far a new device's restore went, a
+/// pause and why, that it's up to date, or else days going up.
+String backupLine(BackupShown backup) => switch (backup.stage) {
+  BackupStage.restoring => Notice.backupRestoring.fill({'done': '${backup.done}', 'total': '${backup.total}'}),
+  BackupStage.paused => (backup.pause == BackupPause.full ? Notice.backupPaused : Notice.backupTooLarge).text,
+  BackupStage.upToDate => Notice.backupUpToDate.text,
+  BackupStage.uploading => Notice.backupUploading.text,
+};
+
 /// What a change of keys that can't finish says, by why (duvetchat/e2e#49).
 String stuckText(EngineState state) => state.relisted
     ? rotationRelisted
@@ -188,8 +197,8 @@ String lastSeen(DateTime at, [DateTime? now]) {
 
 /// Settings → Devices (PLAN-E2E-CLIENTES.md, Task 25; decisions 13 and 52), the desktop's DevicesSettings: the user's
 /// devices, each with its client and when it was last seen, this one, one not seen in 45 days and one never set up
-/// marked; removing another and changing the security keys while this device is ready; and deleting this device's
-/// data where it has some.
+/// marked; on a ready device, how its encrypted backup is (Task 33); removing another and changing the security keys
+/// while this device is ready; and deleting this device's data where it has some.
 class DevicesPage extends StatefulWidget {
   const DevicesPage({super.key});
 
@@ -369,6 +378,18 @@ class _DevicesPageState extends State<DevicesPage> {
                 ),
               ),
             ),
+          // A ready device's encrypted backup (Task 33): up to date, going up, restoring, or paused and why.
+          if (state.stage == EngineStage.ready) ...[
+            const SizedBox(height: 16),
+            AdminPanel(
+              children: [
+                ValueListenableBuilder(
+                  valueListenable: context.repository.backup,
+                  builder: (context, backup, _) => _BackupRow(backup),
+                ),
+              ],
+            ),
+          ],
           if (ready || finish || without || data) ...[
             const SizedBox(height: 16),
             AdminPanel(
@@ -463,6 +484,48 @@ class _DeviceRow extends StatelessWidget {
               onTap: remove,
               child: TextAction(label: 'Remove', onPressed: remove, color: colors.error),
             ),
+        ],
+      ),
+    );
+  }
+}
+
+/// The encrypted backup's row: its name, and how it is.
+class _BackupRow extends StatelessWidget {
+  const _BackupRow(this.backup);
+
+  final BackupShown backup;
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = context.theme.colors;
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Padding(
+            padding: const EdgeInsets.only(top: 2),
+            child: ExcludeSemantics(child: Icon(FLucideIcons.archiveRestore, size: 22, color: colors.foreground)),
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Semantics(
+              liveRegion: true,
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(Notice.backup.text, style: DuvetType.rowTitle.copyWith(fontSize: 15, color: colors.foreground)),
+                  Text(
+                    backupLine(backup),
+                    style: DuvetType.caption.copyWith(
+                      color: backup.stage == BackupStage.paused ? colors.error : colors.mutedForeground,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
         ],
       ),
     );

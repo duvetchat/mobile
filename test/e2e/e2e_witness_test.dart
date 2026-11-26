@@ -33,7 +33,8 @@ import '../support/fake_api.dart';
 // engine, and Bo's device converse with a witness string, sent, read, quoted, edited, deleted and left waiting after a
 // cut request, the chat's page drawn and its preview shown; a file whose name and bytes hold it goes each way, its copy
 // decrypted in the app's temporary folder alone (Task 19); and it's searched for in the conversation and everywhere,
-// noticed in the app and pushed to the phone (Task 21); and all of it shared with Bo, who adds it (Task 31). Then no
+// noticed in the app and pushed to the phone (Task 21); all of it shared with Bo, who adds it (Task 31); and a day of
+// it backed up by his device (Task 33). Then no
 // file of the app's (the engine's record, the core's database, the notifications' history), no record of Bo's engine,
 // no page of the chat cache, no recent chat kept, no request the API saw (its URL or its body) and no log line holds
 // it. The desktop's e2e-witness.test.ts, over what the phone keeps too.
@@ -290,6 +291,19 @@ void main() {
       await until(() => (b.engine.historyOffers.value[conversation] ?? const []).isNotEmpty);
       await b.engine.takeHistoryOffer(b.engine.historyOffers.value[conversation]!.single.shareId);
       expect(bodies.where((body) => body.contains('/history-shares/') && body.contains('/parts/')), isNotEmpty);
+      // Bo's device backs up a day holding it (Task 33): a message of his, dated a day back as the API dated it, whose
+      // day ended, goes up sealed in its day's segment, and his record keeps the backup's own.
+      fake.sentAtOffset = -const Duration(days: 1).inMilliseconds;
+      final backedUp = (await b.engine.sendMessage(
+        Outgoing(conversationId: conversation, nonce: uuidv4(), text: '$witness, backed up'),
+      ))!;
+      fake.sentAtOffset = 0;
+      await until(
+        () async => (await b.engine.messages(conversation, [backedUp.id])).firstOrNull?.sentAt == backedUp.sentAt,
+      );
+      b.clock.advance(const Duration(minutes: 1));
+      await until(() => bodies.any((body) => body.contains('/backup/segments/$conversation/')), what: 'its day up');
+      await turnEnded(b);
       await b.engine.stop();
       end();
       repository.dispose();

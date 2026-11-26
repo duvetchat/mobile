@@ -484,7 +484,9 @@ class _Conversation {
 class _Segment {
   _Segment(this.id, this.identity, this.conversationId, this.day, this.complete, this.keyId, this.size, this.file);
   final String id;
-  final String identity;
+
+  /// The identity whose backup it's in: a rotation carries it on to the new one (the API's MoveBackupSegments).
+  String identity;
   final String conversationId;
   final String day;
   final bool complete;
@@ -647,6 +649,19 @@ class FakeApi {
   /// What was left in each inbox, a rotation's transfers aside, for a test to replay ([replayInbox]).
   final _delivered = <({String from, String fromDevice, String to, String message})>[];
   final _segments = <String, _Segment>{};
+
+  /// Each user's backup keys, by the key_id each identity's encrypted identity names (the API's UserBackupKeys): when a
+  /// new identity retired each one (null: the current one); and when they last started over, which takes every key it
+  /// retired out of the backup.
+  final _backupKeys = <String, ({Map<String, DateTime?> retired, List<DateTime> resets})>{};
+
+  /// The most bytes one file takes, as Duvet's storage does: a message's file, or a day of the backup. A test lowers
+  /// it to have a day too large to keep.
+  var fileLimit = fileMost;
+
+  /// What the API's clock is off by, in ms, as it stamps a message or another entry of a conversation's queue
+  /// (sent_at): a test's way to a message, an edit or a deletion of days ago, and so to a day of the backup that ended.
+  var sentAtOffset = 0;
   final _shares = <String, _Share>{};
 
   /// When each package was made, as the API counts them toward its limits (PLAN-E2E-API.md, I): a user's ten shares an
@@ -898,7 +913,7 @@ class FakeApi {
         'nonce': null,
         'ciphertext': base64Encode([i & 0xff]),
         'seq': ++conv.seq,
-        'sent_at': DateTime.now().millisecondsSinceEpoch,
+        'sent_at': DateTime.now().millisecondsSinceEpoch + sentAtOffset,
         'generation': conv.group?.generation ?? 0,
         'epoch': conv.group?.epoch ?? 0,
         'sender_device_id': null,
@@ -1337,7 +1352,8 @@ class FakeApi {
             for (final s in _segments.values)
               if (s.identity == identity?.id &&
                   s.id.compareTo(after) > 0 &&
-                  (conversation == null || conversation.isEmpty || s.conversationId == conversation))
+                  (conversation == null || conversation.isEmpty || s.conversationId == conversation) &&
+                  _shownSegment(ctx.me.user, s))
                 {
                   'id': s.id,
                   'conversation_id': s.conversationId,
@@ -1358,7 +1374,8 @@ class FakeApi {
       ),
       route('GET', '$me/backup/segments/(?<segment>$_uuidPath)', _Needs.device, (ctx) {
         final segment = _segments[ctx.params['segment']];
-        if (segment == null || segment.identity != _identities[ctx.me.user]?.id) throw _fail(404, 'no such segment');
+        final own = segment != null && segment.identity == _identities[ctx.me.user]?.id;
+        if (!own || !_shownSegment(ctx.me.user, segment)) throw _fail(404, 'segment not found');
         return _ok({'url': _signedPath(segment.file)});
       }),
       // A file at the signed path the part's and the segment's routes answer, as the API serves one: with its
@@ -1564,12 +1581,33 @@ class FakeApi {
 
     var identity = current;
     if (change != 'same') {
+      // The backup key its encrypted identity names, in the clear as the core writes it: a new one, as the API's
+      // AddBackupKey takes one. A rotation and starting over retire the user's keys now (RetireBackupKeys).
+      final keyId = _backupKeyOf(ctx['encrypted_identity']);
+      if (keyId == null) throw _fail(400, "the encrypted identity doesn't name the backup key it's sealed with");
+      final keys = _backupKeys[session.user] ??= (retired: <String, DateTime?>{}, resets: <DateTime>[]);
+      if (keys.retired.containsKey(keyId)) {
+        throw _fail(400, 'the encrypted identity is sealed with a backup key you had before');
+      }
+      final at = DateTime.now().toUtc();
+      for (final MapEntry(:key, :value) in [...keys.retired.entries]) {
+        if (value == null) keys.retired[key] = at;
+      }
+      if (change == 'reset') keys.resets.add(at);
+      keys.retired[keyId] = null;
       identity = _Identity(_id(), identityKey, deviceList, list.version, _now(), {
         'encrypted_identity': ctx['encrypted_identity'],
         'wrapped_backup_key': ctx['wrapped_backup_key'],
         'wrapped_previous_backup_keys': ctx['wrapped_previous_backup_keys'],
       });
       _identities[session.user] = identity;
+      // A rotation carries the backup on, each segment under the key that sealed it (MoveBackupSegments); starting over
+      // leaves it with the identity it replaced.
+      if (change == 'rotation') {
+        for (final segment in _segments.values) {
+          if (segment.identity == current!.id) segment.identity = identity.id;
+        }
+      }
       final off = <_Device>[];
       for (final own in _devicesOf(session.user)) {
         if (certificates[own.id] case final signed?) {
@@ -1823,7 +1861,7 @@ class FakeApi {
 
   /// An entry of the conversation's queue, under its next number.
   Map<String, Object?> _addEntry(_Conversation conv, Map<String, Object?> entry) {
-    final added = {'seq': ++conv.seq, 'sent_at': DateTime.now().millisecondsSinceEpoch, ...entry};
+    final added = {'seq': ++conv.seq, 'sent_at': DateTime.now().millisecondsSinceEpoch + sentAtOffset, ...entry};
     conv.entries.add(added);
     return added;
   }
@@ -2314,7 +2352,7 @@ class FakeApi {
       'nonce': nonce,
       'ciphertext': ctx['ciphertext'],
       'seq': ++conv.seq,
-      'sent_at': DateTime.now().millisecondsSinceEpoch,
+      'sent_at': DateTime.now().millisecondsSinceEpoch + sentAtOffset,
       'generation': framed.generation,
       'epoch': framed.epoch,
       'sender_device_id': device.id,
@@ -2425,7 +2463,7 @@ class FakeApi {
   /// A message's file up under [id], as the API takes one: 20 MiB at most (413); one up already that's [owner]'s, on
   /// no message, of these bytes' size and SHA-256, taken again; any other with its ID a 409.
   _Attachment _upFile(String owner, String id, Uint8List bytes) {
-    if (bytes.length > fileMost) throw _fail(413, 'file too large');
+    if (bytes.length > fileLimit) throw _fail(413, 'file too large');
     final sum = '${sha256.convert(bytes)}';
     if (_attachments[id] case final had?) {
       if (had.owner == owner && had.message == null && had.size == bytes.length && had.sha256 == sum) return had;
@@ -2583,7 +2621,37 @@ class FakeApi {
     return _noContent;
   }
 
-  /// A day's segment, in place of the one it names (`replaces`: its ID, or none): its header must be this route's.
+  /// The ID of the backup key an encrypted identity is sealed with, in the clear as the core writes it (`{v: 1, key_id,
+  /// nonce, ct}`), in base64 as the API lists a segment's: null for anything else.
+  static String? _backupKeyOf(Object? sealed) {
+    if (sealed is! String || !_base64.hasMatch(sealed)) return null;
+    final key = asBytes(asMap(cbor(base64Decode(sealed)))?['key_id'], 8);
+    return key == null ? null : base64Encode(key);
+  }
+
+  /// Whether a segment is shown, as the API lists and serves one: its key seals its day, a retired one only the days
+  /// before the UTC day it was retired on (e2e.KeySealsDay).
+  bool _shownSegment(String user, _Segment segment) {
+    final keys = _backupKeys[user];
+    if (keys == null || !keys.retired.containsKey(segment.keyId)) return false;
+    final retired = keys.retired[segment.keyId];
+    return retired == null || segment.day.compareTo(_utcDay(retired)) < 0;
+  }
+
+  static String _utcDay(DateTime at) => at.toUtc().toIso8601String().substring(0, 10);
+
+  /// The bytes the API keeps of a segment of a backup, by the segment's ID: those it serves, which a test may alter.
+  Uint8List? segmentFile(String id) => switch (_segments[id]) {
+    final segment? => _files[segment.file],
+    null => null,
+  };
+
+  /// A day's segment, in place of the one it names (`replaces`: its ID, or none), as the API keeps one: its header must
+  /// be this route's, and its key one of the user's that seals its day: one that isn't theirs is `unknown backup key`,
+  /// and one retired on or before its day, or that starting over retired, `retired backup key` (the API's dayOf). The
+  /// same bytes as the day's segment shown now are that one, sent again: its ID. Another segment shown there must be
+  /// the one it names (409, with it as `current`); one no longer shown holds nothing to lose. One past the storage's
+  /// limit for a file is a 413, in the API's words.
   _Answer _putSegment(_Context ctx) {
     final identity = _identities[ctx.me.user];
     if (identity == null) throw _fail(404, 'no identity');
@@ -2596,14 +2664,31 @@ class FakeApi {
         header['day'] == ctx.params['day'] &&
         header['complete'] is bool;
     if (!fits || keyId == null) throw _fail(400, "the segment's header isn't this route's");
+    final keys = _backupKeys[ctx.me.user];
+    final key = base64Encode(keyId);
+    if (keys == null || !keys.retired.containsKey(key)) throw _fail(400, 'unknown backup key');
+    if (keys.retired[key] case final retired?) {
+      final reset = keys.resets.lastOrNull;
+      if ((reset != null && !retired.isAfter(reset)) || ctx.params['day']!.compareTo(_utcDay(retired)) >= 0) {
+        throw _fail(400, 'retired backup key');
+      }
+    }
     final current = _segments.values
         .where(
           (s) =>
               s.identity == identity.id && s.conversationId == ctx.params['conversation'] && s.day == ctx.params['day'],
         )
         .firstOrNull;
-    if ((ctx.query['replaces'] ?? 'none') != (current?.id ?? 'none')) {
-      throw _fail(409, 'another copy of this day came first', {'current': current?.id});
+    final shown = current != null && _shownSegment(ctx.me.user, current) ? current : null;
+    if (shown != null && _equal(_files[shown.file]!, ctx.bytes)) return _ok({'id': shown.id}, 201);
+    if (shown != null && (ctx.query['replaces'] ?? 'none') != shown.id) {
+      throw _fail(409, 'another segment holds this day', {'current': shown.id});
+    }
+    if (ctx.bytes.length > fileLimit) {
+      throw _fail(
+        413,
+        'uploading a backup segment: file is too large: ${ctx.bytes.length} bytes, your limit is $fileLimit',
+      );
     }
     if (current != null) _segments.remove(current.id);
     final segment = _Segment(

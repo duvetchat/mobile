@@ -41,8 +41,12 @@ typedef _Crew = ({
 });
 
 /// Ana's group with Cy, where she said two things before she added Bo: his first device holds none of it, as a member
-/// who just joined. What Ana's and Bo's devices asked the API; Bo's hears only what [bHears] lets through.
-Future<_Crew> _crew({bool Function(GatewayEvent event)? bHears}) async {
+/// who just joined. What Ana's and Bo's devices asked the API; Bo's hears only what [bHears] lets through, and gets
+/// [bAnswer]'s answer to a request it gives one for.
+Future<_Crew> _crew({
+  bool Function(GatewayEvent event)? bHears,
+  Future<http.Response?> Function(http.Request request)? bAnswer,
+}) async {
   final fake = FakeApi();
   final (ana, bo, cy) = (fake.addUser(), fake.addUser(), fake.addUser());
   fake
@@ -61,7 +65,7 @@ Future<_Crew> _crew({bool Function(GatewayEvent event)? bHears}) async {
   final b = await firstDevice(
     fake,
     bo,
-    client: watchedClient(fake, seen: bSeen.add),
+    client: watchedClient(fake, seen: bSeen.add, answer: bAnswer),
     hears: bHears,
   );
   await a.engine.addMember(group, bo);
@@ -278,8 +282,13 @@ void main() {
     "a_package_whose_key_hasn't_come_waits_for_it",
     () async {
       var keysIn = false;
+      // Until then its inbox holds nothing for it, whoever reads it: the backup's pass takes the inbox first too.
       final (fake: _, ana: _, :bo, :a, :b, :c, :group, early: _, seen: _, :bSeen) = await _crew(
         bHears: (event) => keysIn || event.type != 'DEVICE_MESSAGE',
+        bAnswer: (request) async =>
+            !keysIn && request.method == 'GET' && request.url.path == '/api/users/@me/devices/@me/inbox'
+            ? http.Response('[]', 200, headers: {'content-type': 'application/json'})
+            : null,
       );
       await a.engine.shareHistory(group, bo, 'week');
       // Bo's device hears of the package, and its key isn't read from its inbox yet: nothing is offered or downloaded.

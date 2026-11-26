@@ -16,7 +16,7 @@ import '../widgets/depth.dart';
 import '../widgets/rows.dart';
 import 'approval.dart' show ApprovalPage, shownApproval;
 import 'device_setup.dart' show finishSetupText, leavesOut, openDeviceSetup, resetFinishText, setupAgain, setupFailed;
-import 'devices.dart' show deleteThisDevice, finishWithout, keysAgainText, stuckText;
+import 'devices.dart' show backupLine, deleteThisDevice, finishWithout, keysAgainText, stuckText;
 import 'recovery_key.dart';
 
 /// Where a client too old gets the new one.
@@ -31,11 +31,12 @@ const startOverQuestion =
 typedef _Bar = ({String text, String? action, Future<void> Function(BuildContext context)? run});
 
 /// What the app says of encrypted conversations by its engine's state (PLAN-E2E-CLIENTES.md, «El motor», its states),
-/// in the Chats tab's header where the offline banner is: nothing while it starts or once it's ready, else a strip with
-/// what the person can do, which its × hides until the state changes. A first device's tap makes its identity; its
-/// recovery key's page ([RecoveryKeyPage]) is up whenever the state has the key, as the desktop's dialog is, and no
-/// strip stands in for it (M3 of the review). What deletes the device's data asks first (M6 of the desktop's review).
-/// The DMs' own views take the states with tasks 15 and 17.
+/// in the Chats tab's header where the offline banner is: nothing while it starts or once it's ready, but a new
+/// device's restore of the encrypted backup as it goes (Task 33), else a strip with what the person can do, which its ×
+/// hides until the state changes. A first device's tap makes its identity; its recovery key's page ([RecoveryKeyPage])
+/// is up whenever the state has the key, as the desktop's dialog is, and no strip stands in for it (M3 of the review).
+/// What deletes the device's data asks first (M6 of the desktop's review). The DMs' own views take the states with
+/// tasks 15 and 17.
 class EncryptionBanner extends StatefulWidget {
   const EncryptionBanner({super.key});
 
@@ -44,7 +45,11 @@ class EncryptionBanner extends StatefulWidget {
 }
 
 class _EncryptionBannerState extends State<EncryptionBanner> {
-  EngineStage? _hiddenFor;
+  /// What the × hid: a state's strip, by its stage, or a restore's, by its own key, so a later strip of the ready state
+  /// still shows.
+  Object? _hiddenFor;
+  static const _restoring = 'restoring';
+
   var _busy = false;
   ChatRepository? _watched;
 
@@ -183,23 +188,34 @@ class _EncryptionBannerState extends State<EncryptionBanner> {
   }
 
   @override
-  Widget build(BuildContext context) => ValueListenableBuilder(
-    valueListenable: context.repository.encryption,
-    builder: (context, state, _) {
-      final bar = _bar(state);
-      if (bar == null || _hiddenFor == state.stage) return const SizedBox.shrink();
-      final run = bar.run;
-      return Padding(
-        padding: const EdgeInsets.fromLTRB(16, 12, 16, 0),
-        child: _Strip(
-          text: _failedIn == state ? setupFailed : bar.text,
-          action: bar.action,
-          onAction: run == null || _busy ? null : () => _act(context, state, run),
-          onHide: () => setState(() => _hiddenFor = state.stage),
-        ),
-      );
-    },
-  );
+  Widget build(BuildContext context) {
+    final repository = context.repository;
+    return ListenableBuilder(
+      listenable: Listenable.merge([repository.encryption, repository.backup]),
+      builder: (context, _) {
+        final state = repository.encryption.value;
+        var bar = _bar(state);
+        Object key = state.stage;
+        // A ready device with nothing else to say tells how its restore goes, with nothing to press but its ×.
+        final backup = repository.backup.value;
+        if (bar == null && state.stage == EngineStage.ready && backup.stage == BackupStage.restoring) {
+          bar = (text: backupLine(backup), action: null, run: null);
+          key = _restoring;
+        }
+        if (bar == null || _hiddenFor == key) return const SizedBox.shrink();
+        final run = bar.run;
+        return Padding(
+          padding: const EdgeInsets.fromLTRB(16, 12, 16, 0),
+          child: _Strip(
+            text: _failedIn == state ? setupFailed : bar.text,
+            action: bar.action,
+            onAction: run == null || _busy ? null : () => _act(context, state, run),
+            onHide: () => setState(() => _hiddenFor = key),
+          ),
+        );
+      },
+    );
+  }
 }
 
 /// The key's page while one is up, whichever strip put it there: never two.
