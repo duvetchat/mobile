@@ -678,6 +678,91 @@ void main() {
       timeout: _slow,
     );
 
+    // Review 29's Important 1: a catch-up whose own identity round brings a verified contact's changed key. The server
+    // answers their new identity's certificates, then their old identity to the catch-up's look, then the new one to
+    // the look the core asks for: the change is noted mid-make, and the package sealed under it sends nothing past its
+    // PUT before the person's yes, which sends the rest. What Ana noted while Bo had no identity goes to any of his.
+    test(
+      "a_catch-up_whose_own_identity_round_brings_a_verified_contact's_changed_key_waits_for_the_yes",
+      () async {
+        final fake = FakeApi();
+        final (ana, bo) = (fake.addUser(), fake.addUser());
+        final seen = <http.Request>[];
+        final asked = <Map<String, Object?>>[];
+        TestDevice? b;
+        // From [deaf] on, Ana's device hears neither Bo's new keys nor his commits, and the server lies once.
+        var deaf = false;
+        var lied = false;
+        var lie = false;
+        http.Response? old;
+        bool onlyBo(http.Request r) =>
+            r.method == 'GET' && r.url.path == '/api/users/identities' && r.url.queryParameters['ids'] == bo;
+        final a = await firstDevice(
+          fake,
+          ana,
+          host: WatchedHost(TestHost().gate, [], commands: asked),
+          client: watchedClient(
+            fake,
+            seen: seen.add,
+            answer: (request) async {
+              if (deaf && !lied && request.method == 'GET' && request.url.path == '/api/users/$bo/identity') {
+                // The catch-up's first look: Bo has new keys by its answer, which the API passes on.
+                lied = true;
+                await _newKeys(b!);
+                lie = true;
+              } else if (lie && onlyBo(request)) {
+                lie = false;
+                return old;
+              }
+              return null;
+            },
+            change: (request, answered) async {
+              if (!deaf && onlyBo(request)) old = answered;
+              return answered;
+            },
+          ),
+          hears: (event) => !(deaf && (event.type == 'IDENTITY_UPDATE' || event.type == 'MLS_COMMIT')),
+        );
+        final pastPut = RegExp(r'/history-shares/[0-9a-f-]+/(parts/\d+|complete)$|/api/devices/[0-9a-f-]+/inbox$');
+        int past() => seen.where((r) => r.method != 'GET' && pastPut.hasMatch(r.url.path)).length;
+        final put = RegExp(r'/history-shares/[0-9a-f-]+$');
+        int puts() => seen.where((r) => r.method == 'PUT' && put.hasMatch(r.url.path)).length;
+        final dm = (await a.engine.createDM(bo)).id;
+        await a.engine.openConversation(dm);
+        await until(() => a.engine.conversationState(dm) == ConversationState.noDevice([bo]), what: 'Bo without one');
+        await a.engine.sendMessage(_message(dm, 'hi Bo'));
+        // His first catch-up waits for the API's day (one a day for each member), its notes kept.
+        fake.refuse((method: 'PUT', path: put), 429);
+        b = await firstDevice(fake, bo);
+        await until(() => puts() == 1, what: 'the first catch-up refused');
+        await turnEnded(a);
+        final number = await a.engine.safetyNumber(bo);
+        expect(await a.engine.verifyContact(bo, number.digits), isTrue);
+        expect(old, isNotNull);
+
+        deaf = true;
+        final before = past();
+        a.clock.advance(const Duration(days: 1));
+        await until(() => puts() == 2, what: "the second catch-up's PUT");
+        await turnEnded(a);
+        a.clock.advance(const Duration(hours: 1));
+        await turnEnded(a);
+        expect(lied, isTrue);
+        expect(_shown(a).changes[bo]?.verified, isTrue);
+        expect(past(), before);
+        await a.engine.confirmKeyChanges([(user: bo, change: _changeOf(a, bo))]);
+        await until(
+          () => asked.any((c) => c['cmd'] == 'catch_up_delivered' && c['user_id'] == bo),
+          what: 'the catch-up delivered after the yes',
+        );
+        expect(puts(), 2);
+        await a.engine.stop();
+        await b.engine.stop();
+      },
+      skip: noCore,
+      timeout: _slow,
+    );
+
     // Rule 3 with task 31's shares: a share of the conversation's history to a member whose verified key changed sends
     // no part, key or completion before the person's yes, which sends the rest.
     test(
@@ -831,6 +916,7 @@ void main() {
         expect(await a.engine.verifyScanned(bo, cysWithAna.qr), isFalse);
         expect(await a.engine.contact(bo), isTrue);
         expect(_shown(a).verified[bo], isTrue);
+        expect(a.store.read(verifiedContacts), [bo]);
         expect(_shown(a).changes, isEmpty);
         // Nor is it any contact's but the one whose number is open: Cy isn't marked by it.
         expect(await a.engine.contact(cy), isFalse);
@@ -843,7 +929,7 @@ void main() {
     test(
       'a_scanned_qr_of_the_same_two_users_with_other_keys_unmarks_the_contact',
       () async {
-        final (fake: _, :ana, :bo, dm: _, :a, :b) = await _anaAndBo();
+        final (:fake, :ana, :bo, dm: _, :a, :b) = await _anaAndBo();
         final before = await b.engine.safetyNumber(ana);
         expect(await a.engine.verifyScanned(bo, before.qr), isTrue);
         // Ana's own new keys: the code Bo's phone showed then is of the same two users, with her old key.
@@ -851,8 +937,57 @@ void main() {
         expect(await a.engine.verifyScanned(bo, before.qr), isFalse);
         expect(_shown(a).verified[bo], isFalse);
         expect(await a.engine.contact(bo), isFalse);
-        // The contact she had verified, unverified by the core now: what goes to them waits for her yes.
+        // Her own scan unmarked him, and no key of his changed (review 29's Minor 3): nothing is noted or held, now or
+        // at the next start.
+        expect(_shown(a).changes, isEmpty);
+        expect(a.engine.holding([bo]), isEmpty);
+        expect(_shown(await restarted(fake, a)).changes, isEmpty);
+      },
+      skip: noCore,
+      timeout: _slow,
+    );
+
+    // Review 29's Minor 3: the look after a code that didn't match fails. The mark it took down stays down, as the core
+    // may hold the contact unverified now, and nothing is noted then or at the next start.
+    test(
+      "a_scan_that_didn't_match_leaves_no_mark_on_show_when_the_look_after_it_fails",
+      () async {
+        final (:fake, :ana, :bo, dm: _, :a, :b) = await _anaAndBo();
+        final before = await b.engine.safetyNumber(ana);
+        expect(await a.engine.verifyScanned(bo, before.qr), isTrue);
+        await _newKeys(a);
+        fake.refuse((method: 'GET', path: '/api/users/identities'), 500);
+        expect(await a.engine.verifyScanned(bo, before.qr), isFalse);
+        expect(_shown(a).verified[bo], isFalse);
+        expect(_shown(a).changes, isEmpty);
+        final again = await restarted(fake, a);
+        expect(_shown(again).verified[bo], isNot(isTrue));
+        expect(_shown(again).changes, isEmpty);
+      },
+      skip: noCore,
+      timeout: _slow,
+    );
+
+    // Review 29's Minor 3, what stays: Bo's new keys, which Ana's device hasn't heard of, make the code his phone shows
+    // one of the same two users with other keys. Her scan of it unmarks him, and the look after it brings his change,
+    // strong, as she had verified him: what goes to him waits for her yes.
+    test(
+      "a_scan_of_a_verified_contact's_new_code,_their_change_unheard,_still_waits_for_the_yes",
+      () async {
+        var deaf = false;
+        final (fake: _, :ana, :bo, :dm, :a, :b) = await _anaAndBo(
+          hears: (event) => !(deaf && (event.type == 'IDENTITY_UPDATE' || event.type == 'MLS_COMMIT')),
+        );
+        await _inGroup(a, b, dm);
+        final number = await a.engine.safetyNumber(bo);
+        expect(await a.engine.verifyContact(bo, number.digits), isTrue);
+        deaf = true;
+        await _newKeys(b);
+        expect(_shown(a).changes, isEmpty);
+        expect(await a.engine.verifyScanned(bo, (await b.engine.safetyNumber(ana)).qr), isFalse);
+        expect(_shown(a).verified[bo], isFalse);
         expect(_shown(a).changes[bo]?.verified, isTrue);
+        _expectHeld(await _refusal(a.engine.sendMessage(_message(dm))), [bo]);
       },
       skip: noCore,
       timeout: _slow,
@@ -896,7 +1031,8 @@ void main() {
           router: fakeRouter,
           duvetClient: engineClient,
           client: watchedClient(fake),
-          store: record,
+          // The push's engine opens the record as on the phone.
+          store: (user) => pushRecord(user, folder: () async => folder),
           cache: MemoryChatCacheStore(),
         );
         expect(shown?.text, 'after my new keys');
@@ -930,8 +1066,8 @@ void main() {
         // Ana's app opens its core again, as at a start: its gate answers on the core's port.
         final app = await restarted(fake, a, hears: deaf);
         expect(_shown(app).changes, isEmpty);
-        final pushRecord = MemoryStore();
-        final push = Contacts(pushRecord, app.user);
+        final itsRecord = MemoryStore();
+        final push = Contacts(itsRecord, app.user);
         final gate = CoreGate(serves: false, keys: host.keys, folder: () async => host.folder)
           ..onObserved = push.observed;
         expect((await gate.open(app.user)).state, HostState.ready);
@@ -942,7 +1078,7 @@ void main() {
           bo: {'verified': false, 'change': _changeOf(app, bo)},
         });
         expect(push.shown.value.changes, isEmpty);
-        expect(pushRecord.kept, isEmpty);
+        expect(itsRecord.kept, isEmpty);
       },
       skip: noCore,
       timeout: _slow,

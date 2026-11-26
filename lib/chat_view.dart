@@ -388,23 +388,51 @@ class _ChatViewState extends State<ChatView> with SingleTickerProviderStateMixin
     _replyTo = draft.replyTo;
   }
 
-  void _saveDraft() {
-    // An edit isn't a draft: leaving drops it.
-    final text = _editing == null ? _composer.text : '';
+  /// What the box holds, as a draft keeps it. An edit isn't a draft: leaving drops it.
+  ChatDraft get _inBox {
     final picked = _composer.picked;
-    final draft = ChatDraft(
-      text: text,
+    return ChatDraft(
+      text: _editing == null ? _composer.text : '',
       mentions: picked.mentions,
       emojis: picked.emojis,
       rooms: picked.rooms,
       files: [..._files],
       replyTo: _replyTo,
     );
+  }
+
+  void _saveDraft() {
+    final draft = _inBox;
     if (draft.isEmpty) {
       _repository.drafts.remove(_draftKey);
     } else {
       _repository.drafts[_draftKey] = draft;
     }
+  }
+
+  /// What a send took out of the box, given back on the person's no (review 28's rule 8), or into the chat's draft
+  /// once the view is gone: its files after those there now, its text and reply only while there's neither, as the
+  /// desktop's putBack.
+  void _putBack(ChatDraft taken) {
+    if (!mounted) {
+      final now = _repository.drafts[_draftKey] ?? const ChatDraft();
+      final kept = now.text.trim().isEmpty && now.replyTo == null ? taken : now;
+      _repository.drafts[_draftKey] = ChatDraft(
+        text: kept.text,
+        mentions: kept.mentions,
+        emojis: kept.emojis,
+        rooms: kept.rooms,
+        files: [...now.files, ...taken.files],
+        replyTo: kept.replyTo,
+      );
+      return;
+    }
+    final whole = _composer.text.trim().isEmpty && _replyTo == null;
+    if (whole) _composer.restore(taken.text, mentions: taken.mentions, emojis: taken.emojis, rooms: taken.rooms);
+    setState(() {
+      _files.addAll(taken.files);
+      if (whole) _replyTo = taken.replyTo;
+    });
   }
 
   // ---------------------------------------------------------------------------
@@ -1045,21 +1073,25 @@ class _ChatViewState extends State<ChatView> with SingleTickerProviderStateMixin
         return;
       }
     }
-    // A no keeps what was written (review 28's rule 8).
-    if (!await _mayGo() || !mounted) return;
-    final files = [..._files];
-    final replyTo = _replyTo;
+    // Out of the box before the ask, which waits for the engine's turn: a Send or an Enter meanwhile finds it empty and
+    // sends nothing twice (review 29's I2), as one that waited for the upload limit finds it taken. A no gives it back
+    // (review 28's rule 8).
+    final taken = _inBox;
+    final text = _composer.encoded.trim();
+    if (text.isEmpty && taken.files.isEmpty) return;
     _composer.clear();
     setState(() {
       _files.clear();
       _replyTo = null;
     });
+    if (!await _mayGo() || !mounted) return _putBack(taken);
     _lastTypingSent = DateTime.fromMillisecondsSinceEpoch(0);
+    final replyTo = taken.replyTo;
     // In a thread, a message with no other target replies to the thread's root.
     final to = replyTo?.messageId ?? widget.threadOf;
     _queue((
-      content: content,
-      files: files,
+      content: text,
+      files: taken.files,
       sticker: null,
       replyTo: to,
       mentionReplied: replyTo?.mentionAuthor,

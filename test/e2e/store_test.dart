@@ -87,6 +87,29 @@ void main() {
     expect(app.read(keyChanges), isNull);
   });
 
+  // Review 29's Minor 4: a push's engine read the record as it started, and the app's engine wrote its contacts after.
+  // The push's own write then (a refused generation, applied through the app's core) changes its key alone, never the
+  // app's contacts back to its copy.
+  test("a_push's_write_changes_its_own_key_alone,_never_the_app's_back_to_its_copy", () async {
+    final app = await open();
+    await app.write(keyChanges, {'u': 'before'});
+    final push = await pushRecord(_user, folder: () async => folder);
+    await app.write(keyChanges, {'u': 'after'});
+    await app.write(verifiedContacts, ['u']);
+    await push.write(refusedGenerations, {'c': 2});
+    expect(onDisk(), {
+      keyChanges: {'u': 'after'},
+      verifiedContacts: ['u'],
+      refusedGenerations: {'c': 2},
+    });
+    // What it forgets goes alone too.
+    await push.write(refusedGenerations, null);
+    expect(onDisk(), {
+      keyChanges: {'u': 'after'},
+      verifiedContacts: ['u'],
+    });
+  });
+
   test("a_record_that_doesn't_read_starts_empty", () async {
     file.parent.createSync(recursive: true);
     file.writeAsStringSync('{"device": "d-1", "device_ke');

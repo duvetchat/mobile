@@ -213,7 +213,7 @@ Future<PushAnswer> openPushed({
   required ApiRouter router,
   required String? duvetClient,
   http.Client? client,
-  Future<EngineStore> Function(String userId) store = FileEngineStore.open,
+  Future<EngineStore> Function(String userId) store = pushRecord,
   Duration within = pushTime,
 }) async {
   final calls = client ?? http.Client();

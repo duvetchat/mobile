@@ -204,8 +204,8 @@ class PackageUpload {
   };
 }
 
-/// A share whose member's changed key waits for the person's yes (contacts.dart; Task 29): it stops where it is, untried,
-/// and goes on from there after the yes.
+/// A package whose member's changed key waits for the person's yes (contacts.dart; Task 29), a share or a catch-up: it
+/// stops where it is, untried, and goes on from there after the yes.
 class HeldForYes implements Exception {
   const HeldForYes();
 }

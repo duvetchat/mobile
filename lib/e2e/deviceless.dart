@@ -16,7 +16,7 @@ import 'package:duvet_client/duvet.dart' as duvet;
 import 'package:flutter/foundation.dart';
 
 import 'engine.dart';
-import 'history.dart' show PackageUpload, packageWait, uploadPackage;
+import 'history.dart' show HeldForYes, PackageUpload, packageWait, uploadPackage;
 import 'host.dart';
 import 'identity.dart';
 
@@ -70,8 +70,8 @@ class CatchUps {
   final _uploads = <String, PackageUpload>{};
   final _failed = <String, int>{};
 
-  /// Catch-ups whose member's changed key waits for the person's yes (contacts.dart): due still, they try nothing until
-  /// [again].
+  /// Catch-ups whose member's changed key waits for the person's yes (contacts.dart), before their make or after their
+  /// PUT: due still, they try nothing until [again], and one made keeps its package.
   final _held = <String, (String, String)>{};
 
   /// apply named these members of the conversation due a catch-up: each one's goes in its turn, once, but one waiting
@@ -90,7 +90,8 @@ class CatchUps {
   /// The turns queued and never run (the engine wasn't ready) go: the next apply asks for them again (M3).
   void dropQueued() => _queued.clear();
 
-  /// The person's yes may have come (contacts.dart): the catch-ups held for it are asked for again.
+  /// The person's yes may have come (contacts.dart): the catch-ups held for it are asked for again, one made going on
+  /// with its package from where it stopped.
   void again() {
     final held = [..._held.values];
     _held.clear();
@@ -137,7 +138,13 @@ class CatchUps {
   Future<void> _upload(String key, PackageUpload upload) async {
     final PackageUpload(:conversationId, :user, :shareId) = upload;
     try {
-      await uploadPackage(_engine, upload);
+      // A change its own identity round brought, after the check before the make, holds it past its PUT (review 29's
+      // I1), as a share's does.
+      await uploadPackage(_engine, upload, held: () => _engine.holding([user]).isNotEmpty);
+    } on HeldForYes {
+      _going.remove(key);
+      _held[key] = (conversationId, user);
+      return;
     } catch (error) {
       _going.remove(key);
       return _later(key, conversationId, user, error, upload);

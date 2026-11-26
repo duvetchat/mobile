@@ -243,8 +243,14 @@ class FakeRepository implements ChatRepository {
   @override
   Future<void> sendRecording(ChatTarget target) async => recordings.add(target);
 
+  /// Set, [uploadLimit] answers once it completes.
+  Completer<void>? holdUploadLimit;
+
   @override
-  Future<int?> uploadLimit() async => limit;
+  Future<int?> uploadLimit() async {
+    await holdUploadLimit?.future;
+    return limit;
+  }
 
   final searches = <SearchQuery>[];
   final pinned = <String, List<ChatMessage>>{};
@@ -1740,8 +1746,15 @@ class FakeRepository implements ChatRepository {
     return verified;
   }
 
+  /// Set, [keyChangesIn] answers once it completes, as the engine's turn answers after the work ahead of it: the
+  /// chat's ask before a send waits with it.
+  Completer<void>? holdKeyChanges;
+
   @override
-  Future<Map<String, KeyChange>> keyChangesIn(String conversationId) async => {...?keyChanges[conversationId]};
+  Future<Map<String, KeyChange>> keyChangesIn(String conversationId) async {
+    await holdKeyChanges?.future;
+    return {...?keyChanges[conversationId]};
+  }
 
   @override
   Future<void> closeKeyChange(String userId, String change) async {

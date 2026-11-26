@@ -135,6 +135,10 @@ class Contacts {
   /// Whom the person verified on this device, from their tap until they're done with a change of theirs.
   final Set<String> _listed;
 
+  /// Contacts whose mark a code that didn't match took down ([refused]), with whether they were on the list: their next
+  /// observation decides.
+  final _refused = <String, bool>{};
+
   final _shown = ValueNotifier(ContactsShown.none);
 
   /// What the views show, as it changes.
@@ -152,13 +156,15 @@ class Contacts {
   void observed(String user, Map<String, Object?> answer) {
     if (user == _own) return;
     final verified = answer['verified'] == true;
+    final wasRefused = _refused.remove(user) ?? false;
     var news = _verified[user] != verified;
     _verified[user] = verified;
     if (verified) _list(user, true);
     final before = _changes[user];
     // A change before the person was done with a verified one's keeps it strong: they never said yes to it; and so is
-    // one of a contact they verified whose earlier change the record never took.
-    final strong = (before != null && before.verified && !before.confirmed) || _listed.contains(user);
+    // one of a contact they verified whose earlier change the record never took, or whom a code that didn't match took
+    // off the list (the core unmarked them, a change it reports now included).
+    final strong = (before != null && before.verified && !before.confirmed) || _listed.contains(user) || wasRefused;
     if (answer['state'] == 'changed') {
       _write({..._changes, user: KeyChange(verified: answer['was_verified'] == true || strong, change: uuidv4())});
       news = true;
@@ -167,6 +173,17 @@ class Contacts {
       news = true;
     }
     if (news) _tell();
+  }
+
+  /// verify_user said no to a code of the contact (review 29's Minor 3): another pair's code changed nothing, one of
+  /// the same two users with other keys unmarked them, which is no changed key. The mark comes down at once, and off
+  /// the list, so a look after it that fails leaves «Verified» nowhere and nothing noted at the next start; the look
+  /// that succeeds puts the mark back while the core still holds it, and a change it reports stays strong.
+  void refused(String user) {
+    _refused[user] = _listed.contains(user) || (_refused[user] ?? false);
+    _verified[user] = false;
+    _list(user, false);
+    _tell();
   }
 
   /// What the core answered of the person's verification: once they verified a contact, their change is done with.
@@ -196,6 +213,7 @@ class Contacts {
   void forget() {
     _verified.clear();
     _listed.clear();
+    _refused.clear();
     _keep(verifiedContacts, null);
     _write({});
     _tell();

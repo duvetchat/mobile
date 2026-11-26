@@ -186,11 +186,9 @@ class _SafetyNumberPageState extends State<SafetyNumberPage> {
     }
   }
 
+  // The scanner's widget, built anew for each scan, starts the camera as it comes (review 29's Minor 5).
   void _scan() {
-    if (widget.camera == null) {
-      _controller ??= MobileScannerController(formats: const [BarcodeFormat.qrCode]);
-      unawaited(_controller!.start());
-    }
+    if (widget.camera == null) _controller ??= MobileScannerController(formats: const [BarcodeFormat.qrCode]);
     setState(() {
       _scanning = true;
       _said = null;

@@ -543,8 +543,8 @@ class E2EEngine implements DeviceSetupActions {
   Future<bool> verifyScanned(String userId, String qr) => _act(() => _verify(userId, qr));
 
   /// verify_user by [qr]: a yes once verified, as verifying the new number is (review 28's Minor 7). A code that
-  /// didn't match leaves the mark as the core holds it, which the contact's observation says at once: unmarked, a
-  /// contact the person had verified waits for their yes again.
+  /// didn't match takes the mark down at once, which the contact's observation after it puts back while the core still
+  /// holds it (review 29's Minor 3): no changed key, and nothing held.
   Future<bool> _verify(String userId, String qr) async {
     final answered = await withIdentities(
       this,
@@ -552,6 +552,7 @@ class E2EEngine implements DeviceSetupActions {
     );
     final verified = answered['verified'] == true;
     if (!verified) {
+      _contacts.refused(userId);
       await _observed([userId]);
       return false;
     }
@@ -606,7 +607,8 @@ class E2EEngine implements DeviceSetupActions {
   /// people, read in the turn (send.dart's hold).
   Future<List<String>> _held(String conversationId) async => _contacts.holding(await _groups.people(conversationId));
 
-  /// What waited for the person's yes goes: messages and edits, as at a READY, and the catch-ups and shares held for it.
+  /// What waited for the person's yes goes: messages and edits, as at a READY, and the catch-ups and shares held for
+  /// it.
   void _releaseHeld() {
     _soon(() => _whenReady(_sends.resendAll));
     _groups.catchUpsAgain();
