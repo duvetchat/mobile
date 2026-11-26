@@ -67,6 +67,18 @@ String? _shown(String name, int most) {
   return shown.isEmpty || shown.runes.length > most ? null : shown;
 }
 
+// What a device's name may not look like (mobile#353), beside the fingerprint and the code the approving device says
+// to compare and to type: a fingerprint's two groups of four hex digits apart by anything but a letter or a digit, and
+// a code's six digits that no letter or digit touches.
+final _likeFingerprint = RegExp(r'[0-9a-f]{4}[^\p{L}\p{N}]+[0-9a-f]{4}', caseSensitive: false, unicode: true);
+final _likeCode = RegExp(r'(?<![\p{L}\p{N}])\p{Nd}{6}(?![\p{L}\p{N}])', unicode: true);
+
+/// A device's name as the approving device shows it, or null for one it doesn't show.
+String? _deviceName(String name) => switch (_shown(name, maxDeviceName)) {
+  final shown? when !_likeFingerprint.hasMatch(shown) && !_likeCode.hasMatch(shown) => shown,
+  _ => null,
+};
+
 /// Base64 of text in UTF-8.
 String _utf8(String text) => base64(utf8.encode(text));
 
@@ -101,7 +113,7 @@ String _utf8(String text) => base64(utf8.encode(text));
   if (rng.chance(0.6)) {
     final written = rng.chance(0.9) ? text(rng, rng.pick([8, 64, 80])) : json(rng, 1);
     fields['name'] = written;
-    name = written is String ? _shown(written, maxDeviceName) : null;
+    name = written is String ? _deviceName(written) : null;
     if (name == null) whole = false;
   }
   if (rng.chance(0.05)) {
@@ -147,6 +159,13 @@ List<String> _pickedFrames() {
     named('\u{200b}\u{202e}'),
     named('\u{feff}Ana'),
     named(''),
+    // Shaped like a fingerprint or a code, which it would stand beside, or not: a phone's model keeps its digits.
+    named('ab12 cd34'),
+    named('AB12-CD34 phone'),
+    named('Code 123456'),
+    named('\u{0661}\u{0662}\u{0663}\u{0664}\u{0665}\u{0666}'),
+    named('22041219NY'),
+    named('Pixel 8 Pro'),
     // Dart reads a duplicate key as its last, as JSON.parse does.
     _utf8('{"duvet":"approval","step":"offer","step":"reveal","data":"b2Y="}'),
     _utf8('{"duvet":"approval","step":"offer","data":"b2Y=","name":null}'),
@@ -728,6 +747,7 @@ void main() {
       if (frame.name case final name?) {
         expect(_hidden.hasMatch(name) || !isWellFormed(name) || name != name.trim(), isFalse, reason: shown(message));
         expect(name.runes.length, inInclusiveRange(1, maxDeviceName), reason: shown(message));
+        expect(_likeFingerprint.hasMatch(name) || _likeCode.hasMatch(name), isFalse, reason: shown(message));
       }
       // A frame it reads writes back to the same frame.
       expect(readApprovalFrame(approvalFrameMessage(frame)), frame, reason: shown(message));
@@ -1140,10 +1160,20 @@ void main() {
         expect(thumbnail, at['thumbnail']);
         expect(canonical(thumbnail) && base64Decode(thumbnail).length <= 8 << 10, isTrue, reason: thumbnail);
       }
-      // A thumbnail of its own only where none is inside, an empty one too.
-      if (got.thumbnailRef case final ref?) {
-        expect(got.thumbnail, isNull);
-        final theirs = at['thumbnail_ref']! as Map;
+      // A thumbnail of its own only where none is inside, an empty one too, and of 512 KiB at most (mobile#356): one
+      // that reads as one within it, where none is inside, is kept as it came.
+      final theirs = at['thumbnail_ref'];
+      final refReads =
+          theirs is Map &&
+          theirs['id'] is String &&
+          _uuid.hasMatch(theirs['id']! as String) &&
+          theirs['key'] is String &&
+          theirs['sha256'] is String &&
+          theirs['size'] is int &&
+          (theirs['size']! as int) >= 0 &&
+          (theirs['size']! as int) <= maxThumbnailFile;
+      expect(got.thumbnailRef != null, got.thumbnail == null && refReads, reason: shown(file));
+      if ((got.thumbnailRef, theirs) case (final ref?, final Map theirs)) {
         expect(
           (ref.id, ref.key, ref.sha256, ref.size),
           (theirs['id'], theirs['key'], theirs['sha256'], theirs['size']),

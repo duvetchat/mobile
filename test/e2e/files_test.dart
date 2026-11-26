@@ -875,6 +875,73 @@ void main() {
   );
 
   // Task 18's review, Missing 1: the per-file cap, against the sealed size, and the request's 32 MiB.
+  // Step 5's review, M6 (mobile#356): in the core's format a part's nonce is its index, so one key over two contents
+  // would use GCM's nonces twice. Only a key drawn for each file keeps that from happening.
+  test(
+    'each_file_and_a_thumbnail_apart_take_a_key_of_their_own,_and_a_file_sent_again_another',
+    () async {
+      final (fake: _, :a, :b, :conversation, seen: _, aClient: _, holdNext: _) = await _dm();
+      final first = (await a.engine.sendMessage(
+        Outgoing(
+          conversationId: conversation,
+          nonce: uuidv4(),
+          files: [
+            FileToSeal(bytes: _png(1000), name: 'a.png'),
+            FileToSeal(bytes: _png(2000), name: 'b.png', thumbnail: _jpeg(20 << 10)),
+          ],
+        ),
+      ))!;
+      final [one, two] = await _filesOn(b, conversation, first.id);
+      // The same file sent again with other content, as after a Cancel: a message of its own.
+      final again = (await a.engine.sendMessage(
+        Outgoing(
+          conversationId: conversation,
+          nonce: uuidv4(),
+          files: [FileToSeal(bytes: _png(1000), name: 'a.png')],
+        ),
+      ))!;
+      final [three] = await _filesOn(b, conversation, again.id);
+      expect({one.key, two.key, two.thumbnailRef!.key, three.key}, hasLength(4));
+    },
+    skip: noCore,
+    timeout: _slow,
+  );
+
+  // M4: a thumbnail of its own was taken whatever its size, up to a request's 32 MiB, and every reader downloaded it as
+  // its row neared the screen. Past what a JPEG or a PNG of 320 px a side takes (512 KiB), it's none.
+  test("a_thumbnail_of_its_own_past_512_KiB_is_none:_it's_never_downloaded", () {
+    final ref = {'id': uuidv7(), 'key': 'a2V5', 'sha256': 'aGFzaA=='};
+    final raw = {'id': uuidv7(), 'key': 'a2V5', 'sha256': 'aGFzaA==', 'name': 'a.png', 'type': 'image/png', 'size': 1};
+    expect(
+      shownFile({
+        ...raw,
+        'thumbnail_ref': {...ref, 'size': 512 << 10},
+      })?.thumbnailRef?.size,
+      512 << 10,
+    );
+    expect(
+      shownFile({
+        ...raw,
+        'thumbnail_ref': {...ref, 'size': (512 << 10) + 1},
+      })?.name,
+      'a.png',
+    );
+    expect(
+      shownFile({
+        ...raw,
+        'thumbnail_ref': {...ref, 'size': (512 << 10) + 1},
+      })?.thumbnailRef,
+      isNull,
+    );
+    expect(
+      shownFile({
+        ...raw,
+        'thumbnail_ref': {...ref, 'size': 32 << 20},
+      })?.thumbnailRef,
+      isNull,
+    );
+  });
+
   test('a_file_past_the_limit_once_sealed_is_refused_before_it_goes', () {
     expect(sealedSize(0), 16);
     expect(sealedSize(65536), 65536 + 16);

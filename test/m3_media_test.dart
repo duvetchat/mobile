@@ -26,6 +26,7 @@ import 'package:duvet/widgets/media_actions.dart';
 import 'package:duvet/widgets/message_content.dart';
 import 'package:duvet/widgets/playback_bar.dart';
 import 'package:duvet/widgets/rows.dart';
+import 'package:duvet/widgets/sealed_file.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
@@ -1636,6 +1637,7 @@ void main() {
       int? width,
       int? height,
       String? thumbnail,
+      FileRef? thumbnailRef,
     }) {
       final bytes = Uint8List.fromList(plain);
       opener.plain[id] = bytes;
@@ -1645,6 +1647,9 @@ void main() {
         contentType: said,
         url: 'https://api.duvet.test/attachments/$id?sig=test&exp=4102444800',
         sizeBytes: bytes.length,
+        thumbnailUrl: thumbnailRef == null
+            ? null
+            : 'https://api.duvet.test/attachments/${thumbnailRef.id}?sig=test&exp=4102444800',
         sealed: ShownFile(
           id: id,
           key: 'a2V5',
@@ -1657,6 +1662,7 @@ void main() {
           width: width,
           height: height,
           thumbnail: thumbnail,
+          thumbnailRef: thumbnailRef,
         ),
       );
     }
@@ -1781,6 +1787,62 @@ void main() {
       await tester.pumpAndSettle();
       await tapLabel(tester, 'Play voice note');
       expect(playback.played.single, ('n1', Uri.file(ready.path).toString()));
+      semantics.dispose();
+    });
+
+    // Step 5's review, M2 (mobile#356): a decrypted audio file's name, its sender's word, was the title of the system's
+    // media session, which the lock screen, Bluetooth devices and other apps read.
+    testWidgets("a decrypted audio file plays under the app's own title, never its name", (tester) async {
+      final a = sealedFile('s1', [...ascii.encode('OggS'), ...List.filled(300, 1)], 'plans.ogg', 'audio/ogg');
+      await opened(tester, a, 'e5');
+      final repository = await openMaya(tester);
+      repository.push('c-maya', MessageCreated(withFiles('e5', [a])));
+      await tester.pumpAndSettle();
+      await tapLabel(tester, 'Play plans.ogg');
+      expect(playback.state.value.title, 'Audio file');
+      semantics.dispose();
+    });
+
+    // M3: a picture's or a video's box is drawn from the sides its sender says, before its bytes are here, and any
+    // from 1 to 65535 kept their ratio: 65535 × 1 was a box a fraction of a pixel tall, which nothing showed in or a
+    // tap hit.
+    testWidgets("a conversation's picture or video keeps a box to see and tap, whatever sides its sender says", (
+      tester,
+    ) async {
+      final repository = await openMaya(tester);
+      var n = 0;
+      final files = [
+        for (final said in ['image/png', 'video/mp4'])
+          for (final (width, height) in [(65535, 1), (1, 65535), (640, 480)])
+            sealedFile('b${++n}', List.filled(10, 1), 'shape.bin', said, width: width, height: height),
+      ];
+      repository.push('c-maya', MessageCreated(withFiles('e-box', files)));
+      await tester.pumpAndSettle();
+      for (final a in files) {
+        final shape = '${a.sealed!.said} ${a.sealed!.width} × ${a.sealed!.height}';
+        final view = find.byWidgetPredicate((w) => w is SealedFileView && w.attachment.id == a.id);
+        final size = tester.getSize(view);
+        final most = tester.widget<SealedFileView>(view).width;
+        expect(size.shortestSide, greaterThanOrEqualTo(48), reason: shape);
+        expect((size.width <= most, size.height <= 320), (true, true), reason: shape);
+        // A plain shape keeps its own.
+        if (a.sealed!.width == 640) expect(size.width / size.height, closeTo(640 / 480, 0.01), reason: shape);
+      }
+      semantics.dispose();
+    });
+
+    // M4: a thumbnail of its own came down whatever its file was laid out as, a file only saved on a tap among them,
+    // and was never drawn there.
+    testWidgets('a thumbnail of its own is fetched only for a file laid out as a picture or a video', (tester) async {
+      final repository = await openMaya(tester);
+      const kept = FileRef(id: '0193a4b2-0000-7000-8000-0000000000d1', key: 'a2V5', sha256: 'aGFzaA==', size: 100);
+      const fetched = FileRef(id: '0193a4b2-0000-7000-8000-0000000000d2', key: 'a2V5', sha256: 'aGFzaA==', size: 100);
+      final saved = sealedFile('t1', List.filled(10, 1), 'notes.pdf', 'application/pdf', thumbnailRef: kept);
+      final picture = sealedFile('t2', List.filled(10, 1), 'cat.png', 'image/png', thumbnailRef: fetched);
+      repository.push('c-maya', MessageCreated(withFiles('e6', [saved, picture])));
+      await tester.pumpAndSettle();
+      expect(DecryptedFiles.instance.state(kept, saved.thumbnailUrl), isNull);
+      expect(DecryptedFiles.instance.state(fetched, picture.thumbnailUrl), isNotNull);
       semantics.dispose();
     });
 

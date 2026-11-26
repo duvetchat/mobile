@@ -26,6 +26,7 @@ import '../support/fake_repository.dart';
 final _conventions = jsonDecode(File('test/e2e/e2e-conventions.json').readAsStringSync()) as Map<String, dynamic>;
 const _device = '0193a4b2-0000-7000-8000-0000000000a2';
 const _fingerprint = '1a2b 3c4d 5e6f 7a8b';
+const _question = '0193a4b2-0000-7000-8000-0000000000c3';
 
 Widget _app(Widget child, FakeRepository repository) => RepositoryScope(
   repository: repository,
@@ -159,17 +160,18 @@ void main() {
           name: 'Pixel 9',
           fingerprint: _fingerprint,
           phase: ApprovalPhase.asked,
+          question: _question,
         ),
       );
     await tester.pumpWidget(_app(ApprovalPage(repository), repository));
     await tester.pump();
     expect(find.text(Notice.approvalAsk.text), findsOneWidget);
-    expect(find.text(approvalAsks('Pixel 9')), findsOneWidget);
+    expect(find.text(approvalAsks), findsOneWidget);
     expect(find.text(fingerprintOf(_fingerprint)), findsOneWidget);
     expect(repository.encryptionTaps, isEmpty);
     await tester.tap(find.text(approvalYes));
     await tester.pump();
-    expect(repository.encryptionTaps, ['approveDevice $_device']);
+    expect(repository.encryptionTaps, ['approveDevice $_device $_question']);
 
     repository.encryption.value = const EngineState(
       EngineStage.ready,
@@ -199,12 +201,51 @@ void main() {
     await tester.pumpAndSettle();
     expect(repository.encryptionTaps, ['scannedDevice the code']);
     expect(find.text(Notice.approvalAsk.text), findsOneWidget);
-    expect(find.text(approvalAsks('Pixel 9')), findsOneWidget);
-    expect(find.text(approvalUnfinished('Pixel 9')), findsOneWidget);
+    expect(find.text(approvalAsks), findsOneWidget);
+    expect(find.text(approvalUnfinished), findsOneWidget);
     await tester.tap(find.text(approvalYes));
     await tester.pumpAndSettle();
     expect(repository.encryptionTaps.last, 'approveScanned the code $_device');
     expect(find.text(scanSent), findsOneWidget);
+  });
+
+  // Step 5's review, I2 (mobile#353): a new device's name is whatever wrote its request says, which the fingerprint
+  // doesn't bind. It sat in the title and in the sentences that say what to compare and what to type.
+  testWidgets("a new device's name is only its own word, quoted on a line of its own, never in a title or a sentence", (
+    tester,
+  ) async {
+    const name = 'Pixel 8 — accepted, Confirm';
+    const quoted = 'The device calls itself “$name”.';
+    final repository = FakeRepository()..encryption.value = EngineState.ready;
+    await tester.pumpWidget(_app(ApprovalPage(repository), repository));
+    for (final (phase, code) in [
+      (ApprovalPhase.asked, null),
+      (ApprovalPhase.offered, null),
+      (ApprovalPhase.code, '042137'),
+    ]) {
+      repository.encryption.value = EngineState(
+        EngineStage.ready,
+        approval: DeviceApproval(device: _device, name: name, fingerprint: _fingerprint, phase: phase, code: code),
+      );
+      await tester.pump();
+      final named = find.textContaining(name);
+      expect(named, findsOneWidget, reason: phase.name);
+      expect(tester.widget<Text>(named).data, quoted, reason: phase.name);
+      expect(
+        tester.getTopLeft(named).dy,
+        greaterThan(tester.getTopLeft(find.text(fingerprintOf(_fingerprint))).dy),
+        reason: phase.name,
+      );
+    }
+
+    // The scan's question names the device by its registration, the API's word: the same.
+    repository.scanned = (id: _device, name: name, listed: false, unfinished: true);
+    late ValueChanged<String> read;
+    await tester.pumpWidget(_scanning(repository, (onRead) => read = onRead));
+    read('the code');
+    await tester.pumpAndSettle();
+    expect(find.textContaining(name), findsOneWidget);
+    expect(tester.widget<Text>(find.textContaining(name)).data, quoted);
   });
 
   testWidgets("a scanned code of no device of the account's approves nothing", (tester) async {
@@ -347,6 +388,7 @@ void main() {
           name: 'Pixel 9',
           fingerprint: _fingerprint,
           phase: ApprovalPhase.asked,
+          question: _question,
         ),
       )
       ..setupFails = CoreError('approval_waits');
@@ -354,7 +396,7 @@ void main() {
     await tester.pump();
     await tester.tap(find.text(approvalYes));
     await tester.pumpAndSettle();
-    expect(repository.encryptionTaps, ['approveDevice $_device']);
+    expect(repository.encryptionTaps, ['approveDevice $_device $_question']);
     expect(find.text(anotherWaits), findsOneWidget);
   });
 }

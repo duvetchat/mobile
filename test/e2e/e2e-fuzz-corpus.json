@@ -4994,13 +4994,7 @@
 				"name": "ض 东",
 				"said": "image/png",
 				"width": 1,
-				"height": 65535,
-				"thumbnail_ref": {
-					"id": "002a8298-83c3-84b8-f9b4-0efcf09959e2",
-					"key": "pXJquwnpOQQ7kPIDNEo5eaAWYhVVk8x9QWoWCNlgOpM=",
-					"sha256": "mtwGPYL9a/rQyRCvb43iRp0807kpwFpy8F2Ey9OkEBM=",
-					"size": 843307
-				}
+				"height": 65535
 			}
 		},
 		{
@@ -5252,13 +5246,7 @@
 				"said": "񳴖",
 				"width": 1,
 				"height": 240,
-				"duration_ms": 1500,
-				"thumbnail_ref": {
-					"id": "20e57d95-91c7-55fd-230f-bd69bfea1b5d",
-					"key": "ObeeFCYwLgDN/MN+aT6XVF6DXnU9BasAFsyYMX3Qu4o=",
-					"sha256": "iWI183tCgZF8kwparDN73cl13ghpXeu54YcZGrm7yTk=",
-					"size": 829358
-				}
+				"duration_ms": 1500
 			}
 		},
 		{

@@ -653,7 +653,7 @@ void main() {
       DeviceApproval? asked() => c.engine.state.value.approval;
       await eventually(() => expect(asked()?.phase, ApprovalPhase.asked), timeout: wait);
       expect((asked()?.device, asked()?.name), (own, 'Pixel 8 Pro'));
-      await c.engine.approveDevice(own!);
+      await c.engine.approveDevice(own!, asked()!.question!);
       await eventually(() => expect(asked()?.phase, ApprovalPhase.code), timeout: wait);
       await eventually(() => expect(fresh.engine.state.value.setup?.offered, isTrue), timeout: wait);
       await fresh.engine.acceptCode(asked()!.code!);

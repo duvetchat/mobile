@@ -56,6 +56,15 @@ class _Opener implements FileOpener {
 
 String _sha(List<int> bytes) => base64Encode(sha256.convert(bytes).bytes);
 
+/// What one Share of a decrypted file leaves in the app's [temporary] folder: the app's own copy, set aside under
+/// e2e-media's share, and share_plus's of it, in its own folder.
+List<File> _shared(Directory temporary) => [
+  for (final path in ['e2e-media/share/${uuidv4()}/photo.jpg', 'share_plus/photo.jpg'])
+    File('${temporary.path}/$path')
+      ..createSync(recursive: true)
+      ..writeAsBytesSync([1, 2, 3]),
+];
+
 /// A folder of decrypted files on a temporary folder of its own, its opener, and files to open: [size] bytes, their
 /// first ones [head] (a PNG's), at the API's signed URL of their ID.
 ({
@@ -460,6 +469,44 @@ void main() {
       );
       await app.ready();
       expect(left.single.existsSync(), isFalse);
+    },
+    skip: noCore,
+    timeout: const Timeout(Duration(minutes: 3)),
+  );
+
+  // Step 5's review, I3 (mobile#354): a Share leaves two plaintext copies of the file, the app's own under e2e-media's
+  // share and share_plus's under <temporary>/share_plus, which nothing of the app's deleted and a sign-out left.
+  test(
+    "a_shared_file's_copies_go_as_the_app's_engine_starts_and_at_a_sign-out",
+    () async {
+      TestWidgetsFlutterBinding.ensureInitialized();
+      await loadCore();
+      final fake = FakeApi();
+      final ana = fake.addUser();
+      final copies = <File>[];
+      final app = await appOn(fake, ana, prepare: (support) => copies.addAll(_shared(support)));
+      await app.ready();
+      expect(copies.where((copy) => copy.existsSync()), isEmpty);
+      copies.addAll(_shared(app.support));
+      await app.repository.logOut();
+      expect(copies.where((copy) => copy.existsSync()), isEmpty);
+    },
+    skip: noCore,
+    timeout: const Timeout(Duration(minutes: 3)),
+  );
+
+  test(
+    "a_shared_file's_copies_go_with_this_device's_data",
+    () async {
+      TestWidgetsFlutterBinding.ensureInitialized();
+      await loadCore();
+      final fake = FakeApi();
+      final ana = fake.addUser();
+      final app = await appOn(fake, ana);
+      await app.ready();
+      final copies = _shared(app.support);
+      await app.repository.removeThisDevice();
+      expect(copies.where((copy) => copy.existsSync()), isEmpty);
     },
     skip: noCore,
     timeout: const Timeout(Duration(minutes: 3)),
