@@ -152,6 +152,77 @@ void main() {
     timeout: _slow,
   );
 
+  // #350: a member none of whose devices had a key package to give as the group was made (here Bo's one device, its
+  // key packages refused as it started) has no leaf in it, and counts as without a device there until one of theirs
+  // has a leaf: what's sent meanwhile is noted for him, and his catch-up brings it once his device joins.
+  test(
+    'a_dm_made_before_the_other_member_had_key_packages_brings_them_its_first_messages',
+    () async {
+      final fake = FakeApi();
+      final (ana, bo) = (fake.addUser(), fake.addUser());
+      final asked = <Map<String, Object?>>[];
+      fake.refuse((method: 'PUT', path: RegExp(r'/devices/@me/key-packages$')), 500);
+      var b = await firstDevice(fake, bo);
+      // His app closes before it tries its key packages again.
+      await b.engine.stop();
+      final a = await firstDevice(fake, ana, host: WatchedHost(TestHost().gate, [], commands: asked));
+      final dm = (await a.engine.createDM(bo)).id;
+      await a.engine.openConversation(dm);
+      expect([for (final device in (await groupOf(a, dm))!.devices) device.user], [ana]);
+      final sent = (await a.engine.sendMessage(Outgoing(conversationId: dm, nonce: uuidv4(), text: 'first')))!;
+
+      // Bo's app again: his device joins the group, and Ana's hands it what came before it.
+      b = await restarted(fake, b);
+      await until(
+        () => asked.any((c) => c['cmd'] == 'catch_up_delivered' && c['user_id'] == bo),
+        what: "Bo's catch-up delivered",
+      );
+      expect(await _imported(b, dm, [sent.id]), ['first']);
+      expect(asked.where((c) => c['cmd'] == 'without_devices').first['users'], [bo]);
+      await until(() => a.engine.conversationState(dm) == null);
+      await a.engine.stop();
+      await b.engine.stop();
+    },
+    skip: noCore,
+    timeout: _slow,
+  );
+
+  test(
+    'a_member_added_before_their_device_had_key_packages_gets_what_was_sent_meanwhile',
+    () async {
+      final fake = FakeApi();
+      final (ana, bo, cy) = (fake.addUser(), fake.addUser(), fake.addUser());
+      final asked = <Map<String, Object?>>[];
+      final a = await firstDevice(fake, ana, host: WatchedHost(TestHost().gate, [], commands: asked));
+      final b = await firstDevice(fake, bo);
+      final group = (await a.engine.createGroup('Crew', [bo])).id;
+      await sameGroup([a, b], group);
+      await a.engine.openConversation(group);
+      fake.refuse((method: 'PUT', path: RegExp(r'/devices/@me/key-packages$')), 500);
+      var c = await firstDevice(fake, cy);
+      await c.engine.stop();
+
+      // Ana adds Cy, whose one device has no key package to give: the addition brings no leaf of his.
+      fake.befriend(ana, cy);
+      await a.engine.addMember(group, cy);
+      expect([for (final device in (await groupOf(a, group))!.devices) device.user], unorderedEquals([ana, bo]));
+      final sent = (await a.engine.sendMessage(Outgoing(conversationId: group, nonce: uuidv4(), text: 'welcome Cy')))!;
+
+      // Cy's app again: his device joins, and Ana's hands it what was sent meanwhile.
+      c = await restarted(fake, c);
+      await until(
+        () => asked.any((command) => command['cmd'] == 'catch_up_delivered' && command['user_id'] == cy),
+        what: "Cy's catch-up delivered",
+      );
+      expect(await _imported(c, group, [sent.id]), ['welcome Cy']);
+      for (final d in [a, b, c]) {
+        await d.engine.stop();
+      }
+    },
+    skip: noCore,
+    timeout: _slow,
+  );
+
   // Minor 7 of step 5's engines review: a catch-up of a conversation the user left goes with it. Its tries would go on
   // for as long as the app runs, each one reading the member's identity and making a package the API refuses.
   test(

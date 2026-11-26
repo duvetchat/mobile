@@ -1,12 +1,14 @@
 /// Members without a device (PLAN-E2E-CLIENTES.md, «Quien no tenía dispositivo»; decision 14): a member with no
-/// identity, or none of whose listed devices connected in 45 days, can't read what's sent meanwhile. The core is told
-/// who they are as the person opens the conversation and at each IDENTITY_UPDATE (without_devices, all of them each
-/// time), notes for them what this device sends, and names them in apply's catch_up_due once they have a device again:
-/// this device then hands them what it noted as a catch-up (PLAN-E2E-API.md, «Rutas», I), its parts up, its key to each
-/// of their devices' inbox, then completed, and only then confirmed (catch_up_delivered). Each runs in the engine's
-/// turn, so one at a time for each member of each conversation; a try that fails waits ([packageWait]), one refused
-/// before the API took it for its limit (a 429: one a day for each) as long as it says, its notes kept. Their device
-/// imports it by itself (history.dart). The desktop's deviceless.ts in Dart.
+/// identity, none of whose listed devices connected in 45 days, or none of whose devices is in the group (none had a
+/// key package as it was made, or as they were added: #350), can't read what's sent meanwhile. The core is told who
+/// they are as the person opens the conversation, at each IDENTITY_UPDATE and once the group's members, or those of
+/// them with a device in it, change (without_devices, all of them each time), notes for them what this device sends,
+/// and names them in apply's catch_up_due once they have a device again: this device then hands them what it noted as
+/// a catch-up (PLAN-E2E-API.md, «Rutas», I), its parts up, its key to each of their devices' inbox, then completed, and
+/// only then confirmed (catch_up_delivered). Each runs in the engine's turn, so one at a time for each member of each
+/// conversation; a try that fails waits ([packageWait]), one refused before the API took it for its limit (a 429: one a
+/// day for each) as long as it says, its notes kept. Their device imports it by itself (history.dart). The desktop's
+/// deviceless.ts in Dart.
 library;
 
 import 'dart:async';
@@ -19,16 +21,17 @@ import 'engine.dart';
 import 'history.dart' show HeldForYes, PackageUpload, packageWait, uploadPackage;
 import 'host.dart';
 import 'identity.dart';
+import 'members.dart' show HeldMembers;
 
 const _day = Duration(days: 1);
 
-/// The conversation's members without a device, as the API serves their identities, told to the core: of those its
-/// group holds ([held]), all but this user. The core refuses a user its group doesn't list, which a change the queue
-/// hasn't brought yet can be.
-Future<List<String>> withoutDevices(E2EEngine engine, duvet.Conversation conv, List<String> held) async {
+/// The conversation's members without a device, as the API serves their identities and as its group holds their
+/// devices, told to the core: of those its group holds ([held]), all but this user. The core refuses a user its group
+/// doesn't list, which a change the queue hasn't brought yet can be.
+Future<List<String>> withoutDevices(E2EEngine engine, duvet.Conversation conv, HeldMembers held) async {
   final members = [
     for (final m in conv.members)
-      if (m.userId != engine.user && held.contains(m.userId)) m.userId,
+      if (m.userId != engine.user && held.members.contains(m.userId)) m.userId,
   ];
   final active = <String, bool>{};
   for (var at = 0; at < members.length; at += 50) {
@@ -36,10 +39,12 @@ Future<List<String>> withoutDevices(E2EEngine engine, duvet.Conversation conv, L
       active[identity.userId] = identity.active;
     }
   }
-  // Without an identity (left out of the answer), or with none of their devices seen lately.
+  // Without an identity (left out of the answer), with none of their devices seen lately, or with none in the group:
+  // none of their listed devices had a key package as it was made or they were added, until one of theirs has a leaf
+  // (#350).
   final users = [
     for (final id in members)
-      if (active[id] != true) id,
+      if (active[id] != true || !held.joined.contains(id)) id,
   ];
   await engine.host.handle<Object?>({'cmd': 'without_devices', 'conversation_id': conv.id, 'users': users});
   return users;

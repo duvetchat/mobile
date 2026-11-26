@@ -16,8 +16,15 @@ import 'identity.dart';
 const maxGroupMembers = 20;
 
 /// The group as the core holds it (its `group`): its generation and epoch, whether it's blocked, who's in it by their
-/// order, and its owner.
-typedef HeldMembers = ({int generation, int epoch, bool blocked, String? owner, List<String> members});
+/// order, and its owner; and the users with a device in it ([joined], each once).
+typedef HeldMembers = ({
+  int generation,
+  int epoch,
+  bool blocked,
+  String? owner,
+  List<String> members,
+  List<String> joined,
+});
 
 /// A group of [count] members, its owner among them, past the cap is refused here, before anything is asked of the API.
 void checkRoom(int count) {
