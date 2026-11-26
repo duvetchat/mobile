@@ -1,15 +1,19 @@
 // #284: the You tab lists the desktop's settings sections (SettingsScreen.svelte), in its order, each a page of its
-// own with a heading for screen readers: My account, Attachments, Security, Audio, Appearance, then Developer apart,
-// and Sign out at the foot. The desktop's Activity privacy and S3 buckets have nothing on mobile to hold.
+// own with a heading for screen readers: My account, Attachments, Security, Devices, Audio, Appearance, then Developer
+// apart, and Sign out at the foot. The desktop's Activity privacy and S3 buckets have nothing on mobile to hold.
+// Devices (PLAN-E2E-CLIENTES.md, Task 25) are the desktop's DevicesSettings.test.ts, on the phone.
 import 'package:duvet/data/appearance.dart';
 import 'package:duvet/data/models.dart';
 import 'package:duvet/data/sounds.dart';
 import 'package:duvet/data/voice_prefs.dart';
 import 'package:duvet/deep_links.dart';
+import 'package:duvet/e2e/engine.dart';
+import 'package:duvet/e2e/notices.dart';
 import 'package:duvet/main.dart';
 import 'package:duvet/sounds_settings.dart' show AudioPage;
 import 'package:duvet/widgets/chrome.dart';
 import 'package:duvet/widgets/rows.dart';
+import 'package:duvet_client/duvet.dart' as duvet;
 import 'package:flutter/material.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -95,7 +99,16 @@ void main() {
 
   testWidgets('You lists the sections in the desktop\'s order, then Developer apart, then Sign out', (tester) async {
     await pumpYou(tester);
-    final sections = ['My account', 'Attachments', 'Security', 'Audio', 'Appearance', 'Developer', 'Sign out'];
+    final sections = [
+      'My account',
+      'Attachments',
+      'Security',
+      'Devices',
+      'Audio',
+      'Appearance',
+      'Developer',
+      'Sign out',
+    ];
     final tops = [for (final s in sections) tester.getTopLeft(find.text(s)).dy];
     for (var i = 1; i < tops.length; i++) {
       expect(tops[i], greaterThan(tops[i - 1]), reason: '${sections[i]} under ${sections[i - 1]}');
@@ -120,8 +133,10 @@ void main() {
       expect(find.text(field), findsOneWidget, reason: field);
     }
     expect(find.bySemanticsLabel('Change profile photo'), findsOneWidget);
-    // The card's Edit opens the same page.
+    // The card's Edit opens the same page, at the tab's top, which the way to My account scrolled from.
     await tester.tap(find.text('Cancel'));
+    await tester.pumpAndSettle();
+    await tester.drag(find.text('Friends'), const Offset(0, 600));
     await tester.pumpAndSettle();
     await tester.tap(find.text('Edit'));
     await tester.pumpAndSettle();
@@ -211,6 +226,219 @@ void main() {
     await open(tester, 'Developer');
     headed(tester, 'Developer');
     expect(find.bySemanticsLabel('New team'), findsOneWidget);
+    semantics.dispose();
+  });
+  // Devices (PLAN-E2E-CLIENTES.md, Task 25; decisions 13 and 52): the user's devices, each one's client and when it was
+  // last seen, this one, those not seen in 45 days; removing another, changing the keys, and deleting this one's data,
+  // each where it can be done.
+  group('Devices', () {
+    final now = DateTime.now();
+    duvet.Device device(
+      String id,
+      String name,
+      String client, {
+      bool listed = true,
+      bool current = false,
+      int days = 1,
+    }) => duvet.Device(
+      id: id,
+      name: name,
+      client: client,
+      listed: listed,
+      current: current,
+      createdAt: now.subtract(const Duration(days: 60)),
+      lastSeenAt: now.subtract(Duration(days: days)),
+    );
+    final self = device('0193a4b2-0000-7000-8000-0000000000a1', 'Pixel 8 Pro', 'android/1.1.0', current: true);
+    final computer = device(
+      '0193a4b2-0000-7000-8000-0000000000a2',
+      'Duvet for Windows',
+      'desktop-windows/1.2.0',
+      days: 50,
+    );
+    final browser = device('0193a4b2-0000-7000-8000-0000000000a3', 'Firefox on Linux', 'web/1.2.0', listed: false);
+
+    Future<FakeRepository> pumpDevices(
+      WidgetTester tester, {
+      EngineState state = EngineState.ready,
+      List<duvet.Device>? devices,
+      bool failed = false,
+    }) async {
+      final repository = await pumpYou(tester);
+      repository
+        ..encryption.value = state
+        ..deviceList = failed ? null : devices ?? [self, computer, browser];
+      await open(tester, 'Devices');
+      return repository;
+    }
+
+    Finder button(String label) => find.bySemanticsLabel(label).hitTestable();
+
+    testWidgets('each device with its client and when it was last seen, this one and one not seen in 45 days marked', (
+      tester,
+    ) async {
+      await pumpDevices(tester);
+      headed(tester, 'Devices');
+      for (final d in [self, computer, browser]) {
+        expect(find.textContaining(d.name), findsOneWidget, reason: d.name);
+        expect(find.textContaining(d.client), findsOneWidget, reason: d.client);
+      }
+      expect(find.text('This device'), findsOneWidget);
+      expect(find.text(Notice.inactiveDevice.text), findsOneWidget);
+      expect(
+        tester.getTopLeft(find.text(Notice.inactiveDevice.text)).dy,
+        greaterThan(tester.getTopLeft(find.textContaining(computer.name)).dy),
+      );
+      expect(find.text('Not set up'), findsOneWidget);
+      expect(
+        tester.getTopLeft(find.text('Not set up')).dy,
+        greaterThan(tester.getTopLeft(find.textContaining(browser.name)).dy),
+      );
+      semantics.dispose();
+    });
+
+    testWidgets('offer to remove the other devices and to change the keys only while this one is ready', (
+      tester,
+    ) async {
+      await pumpDevices(tester);
+      expect(button('Remove ${computer.name}'), findsOneWidget);
+      expect(button('Remove ${browser.name}'), findsOneWidget);
+      expect(button('Remove ${self.name}'), findsNothing);
+      expect(button('Change security keys'), findsOneWidget);
+      semantics.dispose();
+    });
+
+    for (final (state, name) in [
+      (EngineState.newDevice, 'a new device'),
+      (const EngineState.rotation(), 'a rotation cut before its upload'),
+    ]) {
+      testWidgets('offer neither on $name', (tester) async {
+        await pumpDevices(tester, state: state);
+        expect(button('Remove ${computer.name}'), findsNothing);
+        expect(button('Change security keys'), findsNothing);
+        semantics.dispose();
+      });
+    }
+
+    testWidgets('removing another device asks first, and one that was lost goes with new keys', (tester) async {
+      final repository = await pumpDevices(tester);
+      await tapLabel(tester, 'Remove ${computer.name}');
+      expect(find.text('Remove ${computer.name}?'), findsOneWidget);
+      await tapLabel(tester, 'Remove');
+      expect(repository.encryptionTaps, ['removeDevice ${computer.id}']);
+
+      await tapLabel(tester, 'Remove ${computer.name}');
+      await tapLabel(tester, 'Remove and change keys');
+      expect(repository.encryptionTaps.last, 'removeDevice ${computer.id}, changeKeys');
+
+      // A device never set up holds no keys: it only goes.
+      await tapLabel(tester, 'Remove ${browser.name}');
+      expect(find.bySemanticsLabel('Remove and change keys'), findsNothing);
+      await tapLabel(tester, 'Remove');
+      expect(repository.encryptionTaps.last, 'removeDevice ${browser.id}');
+      semantics.dispose();
+    });
+
+    testWidgets('changing the security keys asks first', (tester) async {
+      final repository = await pumpDevices(tester);
+      await tapLabel(tester, 'Change security keys');
+      await tapLabel(tester, 'Cancel');
+      expect(repository.encryptionTaps, isEmpty);
+      await tapLabel(tester, 'Change security keys');
+      await tapLabel(tester, 'Change keys');
+      expect(repository.encryptionTaps, ['changeKeys']);
+      semantics.dispose();
+    });
+
+    for (final (state, offered) in [
+      (EngineState.ready, true),
+      (EngineState.newDevice, true),
+      (EngineState.unsupported, false),
+      (EngineState.locked, false),
+      (EngineState.starting, false),
+    ]) {
+      testWidgets("offer to delete this device's data where it has some: ${state.stage.name}", (tester) async {
+        await pumpDevices(tester, state: state);
+        expect(button(Notice.deleteDevice.text), offered ? findsOneWidget : findsNothing);
+        semantics.dispose();
+      });
+    }
+
+    testWidgets("deleting this device's data warns first that its history goes without the recovery key, when it's the "
+        'only one', (tester) async {
+      final repository = await pumpDevices(tester, devices: [self, browser]);
+      await tapLabel(tester, Notice.deleteDevice.text);
+      expect(find.textContaining('only device'), findsOneWidget);
+      await tapLabel(tester, 'Delete');
+      expect(repository.encryptionTaps, ['removeThisDevice']);
+      // Signed out, with the welcome screen in front: no page of the account stays over it.
+      expect(repository.profile.value, isNull);
+      expect(find.text('Talk with your people.'), findsOneWidget);
+      expect(find.byType(GlassTopBar), findsNothing);
+      semantics.dispose();
+    });
+
+    testWidgets("deleting this device's data beside another device says it stays listed until one removes it", (
+      tester,
+    ) async {
+      final repository = await pumpDevices(tester);
+      await tapLabel(tester, Notice.deleteDevice.text);
+      expect(find.textContaining('only device'), findsNothing);
+      // It stays on the list until another device removes it: the API takes no list without the session's device.
+      expect(find.textContaining('until you remove it on one of them'), findsOneWidget);
+      await tapLabel(tester, 'Cancel');
+      expect(repository.encryptionTaps, isEmpty);
+      semantics.dispose();
+    });
+
+    testWidgets("say when they're loading, and when they couldn't be read, with Try again", (tester) async {
+      final repository = await pumpDevices(tester, failed: true);
+      expect(find.text("Couldn't load your devices."), findsOneWidget);
+      repository.deviceList = [self];
+      await tapLabel(tester, 'Try again');
+      expect(find.text("Couldn't load your devices."), findsNothing);
+      expect(find.text('This device'), findsOneWidget);
+      semantics.dispose();
+    });
+  });
+
+  // Decision 13: signing out only ends the session; deleting this device's data is an act of its own, beside it.
+  testWidgets("Sign out asks, and offers to remove this device and delete its data", (tester) async {
+    final repository = await pumpYou(tester);
+    repository.encryption.value = EngineState.ready;
+    await open(tester, 'Sign out');
+    expect(find.bySemanticsLabel(Notice.deleteDevice.text), findsOneWidget);
+    await tapLabel(tester, 'Cancel');
+    expect(repository.profile.value, isNotNull);
+
+    await open(tester, 'Sign out');
+    await tapLabel(tester, Notice.deleteDevice.text);
+    // Its own question, then the data goes, and the session with it.
+    await tapLabel(tester, 'Delete');
+    expect(repository.encryptionTaps, ['removeThisDevice']);
+    expect(repository.profile.value, isNull);
+    semantics.dispose();
+  });
+
+  testWidgets('Sign out in the dialog only signs out', (tester) async {
+    final repository = await pumpYou(tester);
+    repository.encryption.value = EngineState.ready;
+    await open(tester, 'Sign out');
+    await tapLabel(tester, RegExp(r'^Sign out$'));
+    expect(repository.profile.value, isNull);
+    expect(repository.encryptionTaps, isEmpty);
+    semantics.dispose();
+  });
+
+  testWidgets("what the engine tells of the user's devices shows over every screen", (tester) async {
+    final repository = await pumpYou(tester);
+    final added = Notice.deviceAdded.fill({'name': 'Pixel 8 Pro'});
+    repository.deviceNoticesTold.add(added);
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 300));
+    expect(find.text(added), findsOneWidget);
+    await tester.pump(const Duration(seconds: 6));
+    await tester.pumpAndSettle();
     semantics.dispose();
   });
 }

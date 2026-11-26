@@ -666,6 +666,9 @@ void main() {
     await tester.pumpAndSettle();
     await tester.tap(find.text('Sign out'));
     await tester.pumpAndSettle();
+    // Its dialog's own Sign out (decision 13: the device and its data stay).
+    await tester.tap(find.text('Sign out').hitTestable().last);
+    await tester.pumpAndSettle();
     expect(find.text('Talk with your people.'), findsOneWidget);
   });
 

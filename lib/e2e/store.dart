@@ -30,8 +30,25 @@ const pendingSends = 'pending_sends';
 /// its text (send.dart), made again at the next start.
 const pendingChanges = 'pending_changes';
 
+/// What a rotation of this device's takes off the list, kept before it runs: run again before its upload, it must
+/// take the same devices off (devices.dart).
+const rotationRemove = 'rotation_remove';
+
+/// The user's devices the app told of once, as added and as not seen in 45 days (decision 13): it doesn't again.
+const toldAdded = 'told_added';
+const toldInactive = 'told_inactive';
+
 /// What a new device of this installation starts without.
-const deviceRecord = [keptDevice, deviceKeys, keptApprovals, keptTransfers, keptLater, pendingSends, pendingChanges];
+const deviceRecord = [
+  keptDevice,
+  deviceKeys,
+  keptApprovals,
+  keptTransfers,
+  keptLater,
+  pendingSends,
+  pendingChanges,
+  rotationRemove,
+];
 
 /// The API's external sender as this installation first saw it (Ruling 32), which a new device of it keeps.
 const externalSender = 'external_sender';

@@ -1047,6 +1047,36 @@ class DuvetRepository implements ChatRepository {
   Future<void> startOver() => _engine?.startOver() ?? Future.value();
 
   @override
+  Future<List<duvet.Device>> devices() => duvet.E2eApi(_SessionRest(this)).devices();
+
+  @override
+  Future<void> removeDevice(String deviceId, {bool changeKeys = false}) async =>
+      (_engine ?? (throw ActionFailed(Notice.notReady.text))).removeDevice(deviceId, changeKeys: changeKeys);
+
+  @override
+  Future<void> changeKeys() async => (_engine ?? (throw ActionFailed(Notice.notReady.text))).changeKeys();
+
+  /// The engine deletes this device's data, then the session ends as a sign-out ends it (decision 13).
+  @override
+  Future<void> removeThisDevice() async {
+    await (_engine ?? (throw ActionFailed(Notice.notReady.text))).removeThisDevice();
+    await logOut();
+  }
+
+  final _deviceNotices = StreamController<String>.broadcast();
+
+  @override
+  Stream<String> get deviceNotices => _deviceNotices.stream;
+
+  void _toldOfDevice(DeviceNotice notice) {
+    if (_deviceNotices.isClosed) return;
+    _deviceNotices.add(switch (notice.kind) {
+      DeviceNoticeKind.added => Notice.deviceAdded.fill({'name': notice.device.name}),
+      DeviceNoticeKind.inactive => Notice.inactiveWarning.fill({'device': notice.device.name}),
+    });
+  }
+
+  @override
   final ValueNotifier<Map<String, ConversationState>> conversationStates = ValueNotifier(const {});
 
   @override
@@ -1116,6 +1146,7 @@ class DuvetRepository implements ChatRepository {
       engine.state.addListener(_showEncryption);
       engine.conversations.addListener(_showConversations);
       _engineHeard.addAll([
+        engine.deviceNotices.listen(_toldOfDevice),
         engine.messagesChanged.listen(_contentChanged),
         engine.sent.listen(_sentElsewhere),
         engine.changesRefused.listen(
@@ -5669,6 +5700,7 @@ class DuvetRepository implements ChatRepository {
   void dispose() {
     _renewalRetry?.cancel();
     unawaited(_changesRefused.close());
+    unawaited(_deviceNotices.close());
     _closeSession();
     unawaited(_gatewayEvents.close());
     encryption.dispose();

@@ -84,3 +84,19 @@ String? certificateDevice(String certificate) {
   final body = asBytes(asMap(cbor(signed))?['body']);
   return body == null ? null : asUuid(asMap(cbor(body))?['device']);
 }
+
+/// The devices a signed device list names (its signed object in base64, `{body, sig}`, its body's `devices`), in its
+/// order, or null: read, never checked, as the core checks it.
+List<String>? listDevices(String list) {
+  final Uint8List signed;
+  try {
+    signed = base64Decode(list);
+  } on FormatException {
+    return null;
+  }
+  final body = asBytes(asMap(cbor(signed))?['body']);
+  final devices = body == null ? null : asMap(cbor(body))?['devices'];
+  if (devices is! List) return null;
+  final ids = [for (final device in devices) asUuid(device)];
+  return ids.contains(null) ? null : ids.cast<String>();
+}

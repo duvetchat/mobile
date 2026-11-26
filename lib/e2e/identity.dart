@@ -6,10 +6,12 @@ library;
 import 'dart:math';
 
 import 'package:duvet_client/duvet.dart' as duvet;
+import 'package:flutter/foundation.dart';
 
 import 'bootstrap.dart';
 import 'engine.dart';
 import 'host.dart';
+import 'store.dart';
 
 /// What create_identity answers: what goes up, and the recovery key the person saves first.
 class IdentityMade {
@@ -70,7 +72,7 @@ Future<T> withIdentities<T>(E2EEngine engine, Future<T> Function() run) async {
 
 /// observe_user of the user's own identity, as served: what the core made of it (`not_own_identity`, an identity this
 /// device doesn't hold).
-Future<String?> _observeOwn(E2EEngine engine, duvet.Identity served) async {
+Future<String?> observeOwn(E2EEngine engine, duvet.Identity served) async {
   final seen = await engine.host.handle<Map<String, Object?>>({
     'cmd': 'observe_user',
     'user_id': engine.user,
@@ -90,13 +92,18 @@ Future<EngineState> identityState(E2EEngine engine, Future<Object?> Function() t
   if (served == null) return const EngineState.firstDevice();
   final status = await coreStatus(engine.host);
   if (!status.hasIdentity) return EngineState.newDevice;
-  // A rotation of this device's own, cut before its upload, holds the new identity the API doesn't serve yet: it goes
-  // up again as the same rotation (Task 25), never read as this device being off the list.
-  if (status.waitingUpload == 'rotate_keys') return EngineState.ready;
-  if (await _observeOwn(engine, served) != 'not_own_identity') return EngineState.ready;
+  // A rotation of this device's own, cut before its upload's answer (Review Focus 3). The API serving the identity it
+  // made took it: confirmed now, nothing shown or sent again, as its key was saved before it went. Else the core holds
+  // the new identity the API doesn't serve: it goes up again as the same rotation once the person finishes it, never
+  // read as this device being off the list.
+  if (status.waitingUpload == 'rotate_keys') {
+    if (served.identityKey != status.identityKey) return const EngineState.rotation();
+    await confirmIdentity(engine, served.deviceList == status.deviceList ? served.deviceListVersion : null);
+  }
+  if (await observeOwn(engine, served) != 'not_own_identity') return EngineState.ready;
   await takeInbox();
   served = await servedIdentity(engine) ?? served;
-  return await _observeOwn(engine, served) == 'not_own_identity' ? EngineState.removed : EngineState.ready;
+  return await observeOwn(engine, served) == 'not_own_identity' ? EngineState.removed : EngineState.ready;
 }
 
 /// The first device's identity goes up (PUT …/identity) with the list naming this device alone. Only after the API's
@@ -119,6 +126,15 @@ Future<bool> publishIdentity(E2EEngine engine, IdentityMade made) async {
     if (error.statusCode == 409) return false;
     rethrow;
   }
+  await confirmIdentity(engine, version);
+  return true;
+}
+
+/// What the API took of an identity command (create_identity, reset_identity, rotate_keys), confirmed only after its
+/// 200: identity_uploaded, device_list_uploaded with the [version] the API answered (none when the list it serves is
+/// another), then the own user observed (the core's rules after an upload, N2 and N3). A rotation's devices the record
+/// kept for its run again go with it.
+Future<void> confirmIdentity(E2EEngine engine, int? version) async {
   try {
     await engine.host.handle<Object?>({'cmd': 'identity_uploaded'});
   } on CoreError catch (error) {
@@ -126,7 +142,9 @@ Future<bool> publishIdentity(E2EEngine engine, IdentityMade made) async {
     // review).
     if (error.code != 'not_found' || error.what != 'upload') rethrow;
   }
-  await engine.host.handle<Object?>({'cmd': 'device_list_uploaded', 'version': version});
-  if (await servedIdentity(engine) case final served?) await _observeOwn(engine, served);
-  return true;
+  if (version != null) await engine.host.handle<Object?>({'cmd': 'device_list_uploaded', 'version': version});
+  await engine.store
+      .write(rotationRemove, null)
+      .catchError((Object error) => debugPrint("e2e: the rotation's devices: ${error.runtimeType}"));
+  if (await servedIdentity(engine) case final served?) await observeOwn(engine, served);
 }

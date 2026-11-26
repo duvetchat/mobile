@@ -1,4 +1,4 @@
-import 'package:duvet_client/duvet.dart' show Activity;
+import 'package:duvet_client/duvet.dart' show Activity, Device;
 import 'package:flutter/foundation.dart';
 
 import '../e2e/engine.dart' show EngineState;
@@ -80,6 +80,19 @@ abstract interface class ChatRepository {
   Future<void> keySaved();
   Future<void> uploadLater();
   Future<void> startOver();
+
+  /// The user's devices, as the API lists them, this one [Device.current] (Settings → Devices, Task 25).
+  Future<List<Device>> devices();
+
+  /// The person's acts on them, each only where it can be done: remove another device (lost, with new keys whose
+  /// recovery key [encryption] then shows), change the security keys (or finish a change that waits), and remove this
+  /// device and delete its data, which signs out (decision 13).
+  Future<void> removeDevice(String deviceId, {bool changeKeys = false});
+  Future<void> changeKeys();
+  Future<void> removeThisDevice();
+
+  /// What the engine tells of the user's other devices, in the notices' words: one added, one not seen in 45 days.
+  Stream<String> get deviceNotices;
 
   /// What each encrypted conversation says over its message box of its group (lib/e2e/sync.dart), by its ID: none
   /// while its group goes on. A conversation on screen ([chatShown]) gets its group, made where this user may.

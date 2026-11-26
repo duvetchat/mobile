@@ -245,6 +245,31 @@ void main() {
       expect(find.byType(RecoveryKeyPage, skipOffstage: false), findsNothing);
     });
 
+    // Task 25: a rotation's new key has the screen; one cut before its upload is finished by the person's tap, which
+    // runs the same rotation again (Change security keys), its key's page following.
+    testWidgets("a_rotation's_new_key_has_the_screen,_and_one_cut_before_its_upload_is_finished_by_the_person's_tap", (
+      tester,
+    ) async {
+      final repository = await gate(tester, const EngineState.rotation(recoveryKey: _key));
+      await tester.pumpAndSettle();
+      expect(find.byType(RecoveryKeyPage), findsOneWidget);
+      // Why this key, in the desktop's words: the keys changed, and the recovery key with them.
+      expect(find.text(rotationWhy), findsOneWidget);
+      expect(find.text('Finish', skipOffstage: false), findsNothing);
+      // Saved: the key's page goes, with no bar.
+      repository.encryption.value = EngineState.ready;
+      await tester.pumpAndSettle();
+      expect(find.byType(RecoveryKeyPage), findsNothing);
+      expect(find.byType(Text), findsNothing);
+
+      repository.encryption.value = const EngineState.rotation();
+      await tester.pumpAndSettle();
+      expect(find.text('Finish changing your security keys.'), findsOneWidget);
+      await tester.tap(find.text('Finish'));
+      await tester.pumpAndSettle();
+      expect(repository.encryptionTaps, ['changeKeys']);
+    });
+
     // M6 of the desktop's review: what deletes the device's data asks first.
     testWidgets('setting_up_again_asks_before_it_deletes_anything', (tester) async {
       final repository = await gate(tester, EngineState.removed);

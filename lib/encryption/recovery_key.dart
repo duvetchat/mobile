@@ -12,10 +12,13 @@ import '../theme.dart';
 import '../widgets/depth.dart';
 import '../widgets/rows.dart';
 
-/// Why the key matters, as the desktop says it.
+/// Why the key matters, as the desktop says it: a first device's, and a change of keys' new one (Task 25).
 const recoveryWhy =
     "It's the only way to read your encrypted conversations on a new device if you don't have this one. Keep it "
     "somewhere safe: Duvet can't show it again.";
+const rotationWhy =
+    "Your security keys changed, and with them your recovery key. Keep this one somewhere safe: Duvet can't show it "
+    'again.';
 
 /// What a failed upload says, the key still shown.
 const recoveryFailed = "Your keys couldn't be saved. Check your connection, then try again.";
@@ -31,9 +34,18 @@ List<String> keyGroups(String key) => [
 /// screen while the upload waits for Finish, as the key is saved by then (I2 of the desktop's review). Whoever shows
 /// the screen takes it away once the key is done with.
 class RecoveryKeyPage extends StatefulWidget {
-  const RecoveryKeyPage({required this.recoveryKey, required this.onSaved, required this.onLater, super.key});
+  const RecoveryKeyPage({
+    required this.recoveryKey,
+    required this.onSaved,
+    required this.onLater,
+    this.why = recoveryWhy,
+    super.key,
+  });
 
   final String recoveryKey;
+
+  /// Why the key matters: [recoveryWhy], or [rotationWhy] for a change of keys' new one.
+  final String why;
   final Future<void> Function() onSaved;
   final Future<void> Function() onLater;
 
@@ -119,7 +131,7 @@ class _RecoveryKeyPageState extends State<RecoveryKeyPage> {
                       ),
                     ),
                     const SizedBox(height: 12),
-                    Text(recoveryWhy, style: DuvetType.body.copyWith(color: colors.mutedForeground)),
+                    Text(widget.why, style: DuvetType.body.copyWith(color: colors.mutedForeground)),
                     const SizedBox(height: 24),
                     _KeyGroups(groups: keyGroups(widget.recoveryKey)),
                     const SizedBox(height: 12),
