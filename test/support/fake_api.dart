@@ -8,7 +8,8 @@
 // the desktop, two microtasks after it); each is its data as it was when the request sent it; holdEvents gives any
 // other order. It reads what the core signs (CBOR, Ed25519) and an MLS message's framing as the API does, but runs no
 // validator: a commit is taken by its generation and epoch alone, and of what it changes the fake knows only the
-// devices its welcome brings and the one an external commit adds.
+// devices its welcome brings, the one an external commit adds, and the user a removal takes out, who reads the queue up
+// to it.
 import 'dart:async';
 import 'dart:convert';
 import 'dart:math';
@@ -466,6 +467,10 @@ class _Conversation {
   /// The devices with a leaf in its group, by the number of the entry they have had it from.
   var leaves = <String, int>{};
 
+  /// The users a removal took out, by its commit's number: out of the conversation, they read the queue up to it (the
+  /// API's MlsDepartures).
+  final departures = <String, int>{};
+
   /// What each commit taken answered, by its bytes: the same commit again gets it.
   final commits = <String, Map<String, Object?>>{};
 
@@ -762,6 +767,9 @@ class FakeApi {
   }
 
   _Conversation _conversation(String id) => _conversations[id] ?? (throw StateError('no conversation $id'));
+
+  /// Every conversation's ID.
+  Iterable<String> get conversationIds => _conversations.keys;
 
   /// The ID of [user]'s membership of the conversation, which a removal and an addition make anew.
   String membershipOf(String conversationId, String user) =>
@@ -1167,7 +1175,7 @@ class FakeApi {
         return _ok({'generation': group.generation, 'epoch': group.epoch, 'group_info': group.groupInfo});
       }),
       route('POST', '$conv/mls/commits', _Needs.listed, (ctx) => _ok(_commit(_memberOf(ctx), ctx, 'commits'), 201)),
-      route('GET', '$conv/mls/queue', _Needs.device, (ctx) => _queue(_memberOf(ctx), ctx.query, ctx.me.user)),
+      route('GET', '$conv/mls/queue', _Needs.device, _queueOf),
       route('POST', '$conv/members', _Needs.listed, _addMember),
       route('DELETE', '$conv/members/@me', _Needs.listed, _leave),
       route('DELETE', '$conv/members/(?<user>$_uuidPath)', _Needs.listed, _removeMember),
@@ -1787,7 +1795,19 @@ class FakeApi {
     };
   }
 
-  _Answer _queue(_Conversation conv, Map<String, String> query, String viewer) {
+  /// The queue as a member reads it, or as someone a removal took out does: up to its commit, while the queue holds
+  /// that, so their devices apply their own removal (the API's MlsService.Queue).
+  _Answer _queueOf(_Context ctx) {
+    final viewer = ctx.me.user;
+    final conv = _conversations[ctx.params['conversation']];
+    final departure = conv?.departures[viewer];
+    if (conv == null || departure == null || conv.members.any((m) => m['user_id'] == viewer)) {
+      return _queue(_memberOf(ctx), ctx.query, viewer);
+    }
+    return _queue(conv, ctx.query, viewer, through: departure);
+  }
+
+  _Answer _queue(_Conversation conv, Map<String, String> query, String viewer, {int? through}) {
     // As the API binds them (its MlsQueueQuery): a number from 0, and 1 to 500 of them.
     final after = query.containsKey('after') ? int.tryParse(query['after']!) : 0;
     final limit = query.containsKey('limit') ? int.tryParse(query['limit']!) : 200;
@@ -1795,6 +1815,8 @@ class FakeApi {
     if (limit == null || limit < 1 || limit > 500) throw _fail(400, 'limit is 1 to 500');
     final group = conv.group;
     if (group == null) throw _fail(404, 'no group yet');
+    if (through != null && through < conv.floor) throw _fail(403, "you aren't a member of this conversation");
+    final last = min(through ?? conv.seq, conv.seq);
     if (after + 1 < conv.floor) throw _fail(410, 'queue expired', {'floor_seq': conv.floor});
     final all = [
       ...conv.entries,
@@ -1803,14 +1825,14 @@ class FakeApi {
     ]..sort((a, b) => (a['seq']! as int).compareTo(b['seq']! as int));
     final entries = <Map<String, Object?>>[];
     var size = 0;
-    for (final entry in all.where((e) => (e['seq']! as int) > after)) {
+    for (final entry in all.where((e) => (e['seq']! as int) > after && (e['seq']! as int) <= last)) {
       size += (entry['data']! as String).length;
       if (entries.length == limit || (entries.isNotEmpty && size > 4 << 20)) break;
       entries.add(_shownTo(viewer, entry));
     }
     return _ok({
       'entries': entries,
-      'last_seq': conv.seq,
+      'last_seq': last,
       'floor_seq': conv.floor,
       'generation': group.generation,
       'epoch': group.epoch,
@@ -2064,6 +2086,7 @@ class FakeApi {
       for (final m in conv.members)
         if (m['user_id'] != ctx.params['user']) m,
     ];
+    conv.departures[ctx.params['user']!] = commit['seq']! as int;
     return _ok(commit);
   }
 
