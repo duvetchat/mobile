@@ -1088,7 +1088,8 @@ class DuvetRepository implements ChatRepository {
   final ValueNotifier<Map<String, ConversationState>> conversationStates = ValueNotifier(const {});
 
   @override
-  Future<void> restartGroup(String conversationId) => _engine?.restartGroup(conversationId) ?? Future.value();
+  Future<List<String>> restartGroup(String conversationId, {List<String> leaving = const []}) =>
+      _engine?.restartGroup(conversationId, leaving: leaving) ?? Future.value(const []);
 
   @override
   Future<void> acceptMembers(String conversationId) => _engine?.acceptMembers(conversationId) ?? Future.value();
@@ -1440,7 +1441,7 @@ class DuvetRepository implements ChatRepository {
       ConversationNotice.waitOwner => Notice.waitOwner.fill(owner),
       ConversationNotice.waitRejoin => Notice.waitRejoin.text,
       ConversationNotice.membersChanged => Notice.membersChanged.text,
-      null => Notice.notReady.text,
+      ConversationNotice.noDevice || null => Notice.notReady.text,
     };
   }
 
@@ -4046,9 +4047,15 @@ class DuvetRepository implements ChatRepository {
     await _reloadFriends();
   }
 
+  /// A new group, its group made at once by the session's engine (PLAN-E2E-CLIENTES.md, Task 23); without one, as
+  /// the API makes it alone. One past 20 members, its owner among them, is refused before anything is asked.
   @override
   Future<ConversationSummary> createGroup(String name, List<String> userIds) async {
-    final group = await _attempt((api) => api.createGroup(name, userIds));
+    if ({...userIds, ?profile.value?.id}.length > maxGroupMembers) throw ActionFailed(_tooMany);
+    final engine = _engine;
+    final group = engine == null
+        ? await _attempt((api) => api.createGroup(name, userIds))
+        : await _changeMembers(null, () => engine.createGroup(name, userIds));
     await refreshConversations();
     return conversations.value.where((c) => c.id == group.id).firstOrNull ?? _summary(group, profile.value?.id);
   }
@@ -4059,22 +4066,45 @@ class DuvetRepository implements ChatRepository {
     await refreshConversations();
   }
 
+  // A conversation's members change only by the session's engine, the app's on a screen (Review Focus 2): each one
+  // commit of the group's, or a leave's statement. Without one, nothing is asked.
   @override
   Future<void> addToConversation(String conversationId, String userId) async {
-    await _attempt((api) => api.addConversationMember(conversationId, userId));
+    await _changeMembers(conversationId, () => _engine!.addMember(conversationId, userId));
     await refreshConversations();
   }
 
   @override
   Future<void> removeFromConversation(String conversationId, String userId) async {
-    await _attempt((api) => api.removeConversationMember(conversationId, userId));
+    await _changeMembers(conversationId, () => _engine!.removeMember(conversationId, userId));
     await refreshConversations();
   }
 
   @override
   Future<void> leaveConversation(String conversationId) async {
-    await _attempt((api) => api.leaveConversation(conversationId));
+    await _changeMembers(conversationId, () => _engine!.leaveConversation(conversationId));
     await refreshConversations();
+  }
+
+  static const _tooMany = 'A group can have $maxGroupMembers members at most';
+  static const _unanswered = 'Duvet didn’t answer. The change goes through once it can.';
+
+  /// What the engine does to a conversation's members ([change]), refused in the app's words: the API's reason, the
+  /// cap, a change still on its way (its bytes go again on their own), or why the conversation takes none now.
+  Future<T> _changeMembers<T>(String? conversationId, Future<T> Function() change) async {
+    if (_engine == null) throw ActionFailed(Notice.notReady.text);
+    try {
+      return await change();
+    } on duvet.DuvetApiException catch (e) {
+      if (_refusal(e) case final reason?) throw ActionFailed(reason);
+      rethrow;
+    } on CoreError catch (error) {
+      if (error.code == 'too_many_members') throw ActionFailed(_tooMany);
+      if (error.code == 'unanswered') throw const ActionFailed(_unanswered);
+      rethrow;
+    } on StateError {
+      throw ActionFailed(conversationId == null ? Notice.notReady.text : _cannotSendIn(conversationId));
+    }
   }
 
   // [_call], for what the API may refuse: its reason, as it says it, is the
@@ -5522,7 +5552,8 @@ class DuvetRepository implements ChatRepository {
   Future<ConversationSummary> directMessage(String userId) async {
     final duvet.Conversation conversation;
     try {
-      conversation = await _call((api) => api.createDM(userId));
+      // The session's engine makes its group at once (Task 23); without one, the API makes the DM alone.
+      conversation = await (_engine?.createDM(userId) ?? _call((api) => api.createDM(userId)));
     } on duvet.DuvetApiException catch (e) {
       // The server only opens DMs between friends.
       if (e.statusCode == 403) {

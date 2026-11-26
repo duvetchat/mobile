@@ -25,12 +25,14 @@ import 'inbox.dart';
 import 'failures.dart';
 import 'files.dart' as files show fileNames;
 import 'key_packages.dart';
+import 'members.dart';
 import 'send.dart';
 import 'store.dart';
 import 'sync.dart';
 
 export 'content.dart' show MessageStatus, ShownMessage;
 export 'files.dart' show FilesGone;
+export 'members.dart' show maxGroupMembers;
 export 'send.dart' show Outgoing, Pending, TooManyWaiting;
 export 'sync.dart' show ConversationNotice, ConversationState, Restart;
 
@@ -376,18 +378,63 @@ class E2EEngine {
   /// What the conversation says of its group: null while it goes on.
   ConversationState? conversationState(String conversationId) => _conversations.value[conversationId];
 
-  /// The person opened the conversation: its group goes on, or is made here when it has none and this user may. One
-  /// opened before the engine can work goes once it's ready, while it stays open ([closeConversation]).
+  /// The person opened the conversation: its group goes on, or is made here when it has none and this user may, and
+  /// its members without a device are asked for («Quien no tenía dispositivo»). One opened before the engine can work
+  /// goes once it's ready, while it stays open ([closeConversation]).
   Future<void> openConversation(String conversationId) {
     _shown.add(conversationId);
-    return _queue(() => _whenReady(() => _groups.open(conversationId)));
+    return _queue(() => _whenReady(() => _open(conversationId)));
   }
+
+  /// A conversation the person opened, its members without a device asked for once its group goes on.
+  Future<void> _open(String conversationId) async {
+    await _groups.open(conversationId);
+    await _groups.checkDevices(conversationId);
+  }
+
+  /// The person's new DM (PLAN-E2E-CLIENTES.md, Task 23): the API makes the conversation (or answers the one they
+  /// have), then this device its group at once, as either member of a DM may. Before this device is ready, its group is
+  /// made once it is. The API's conversation.
+  Future<duvet.Conversation> createDM(String userId) => _created(() => api.api.createDM(userId));
+
+  /// The person's new group, which they own: as [createDM], its group made at once. One past 20 members, its owner
+  /// among them, is refused before anything is asked.
+  Future<duvet.Conversation> createGroup(String name, List<String> userIds) async {
+    checkRoom({user, ...userIds}.length);
+    return _created(() => api.api.createGroup(name, userIds));
+  }
+
+  Future<duvet.Conversation> _created(Future<duvet.Conversation> Function() create) async {
+    final conv = await _updating(create);
+    // A DM they had, with its group, goes on as its chat opens it.
+    if (conv.mls != null) return conv;
+    await openConversation(conv.id).catchError((Object error) {
+      debugPrint("e2e: the new conversation's group waits for its next open: $error");
+    });
+    return conv;
+  }
+
+  /// The owner's addition of a user to a group, one commit of exactly that user (sync.dart's add): the member added.
+  Future<duvet.ConversationMember> addMember(String conversationId, String userId) =>
+      _act(() => _groups.add(conversationId, userId));
+
+  /// The owner's removal of a member of a group, one commit that takes them and their devices out.
+  Future<void> removeMember(String conversationId, String userId) => _act(() => _groups.remove(conversationId, userId));
+
+  /// The person leaves a group, with the statement this device signs: a member's commit takes them out later.
+  Future<void> leaveConversation(String conversationId) => _act(() => _groups.leave(conversationId));
 
   /// The person left the conversation.
   void closeConversation(String conversationId) => _shown.remove(conversationId);
 
-  /// The person's tap on Restart encryption, over a blocked group they may restart.
-  Future<void> restartGroup(String conversationId) => _queue(() => _whenReady(() => _groups.restart(conversationId)));
+  /// The person's tap on Restart encryption, over a blocked group they may restart: whom it would leave out that the
+  /// person hasn't confirmed yet ([leaving]), and nothing restarted while there are some; else it restarts, and
+  /// answers none.
+  Future<List<String>> restartGroup(String conversationId, {List<String> leaving = const []}) async {
+    var out = const <String>[];
+    await _queue(() => _whenReady(() async => out = await _groups.restart(conversationId, leaving)));
+    return out;
+  }
 
   /// The person's yes to a conversation's members of today, which its record from before the cutover didn't have.
   Future<void> acceptMembers(String conversationId) => _queue(() => _whenReady(() => _groups.accept(conversationId)));
@@ -486,7 +533,7 @@ class E2EEngine {
       _groups.dropHeard();
     } else if (was != EngineStage.ready) {
       for (final id in [..._shown]) {
-        _soon(() => _whenReady(() => _groups.open(id)));
+        _soon(() => _whenReady(() => _open(id)));
       }
     }
   }
@@ -539,6 +586,12 @@ class E2EEngine {
       // review).
       case duvet.DMMessageCreatedEvent(:final data) when data.authorId == user:
         _sends.heard(data);
+      // Another user's identity: whether they have a device may have changed, which their conversations tell the core.
+      case duvet.IdentityUpdatedEvent(:final data) when data.userId != user:
+        _soon(() => _whenReady(() => _groups.identityChanged(data.userId)));
+      // A conversation's owner handed on (they left): what it says goes by its new owner.
+      case duvet.ConversationUpdatedEvent(:final data):
+        _soon(() => _whenReady(() => _groups.changed(data.id)));
       case duvet.IdentityUpdatedEvent(:final data) when data.userId == user:
         // The user's own: another device changed the list or the keys, which may leave this one off it, or published
         // the identity this first device was to make, if it hasn't shown a key yet.

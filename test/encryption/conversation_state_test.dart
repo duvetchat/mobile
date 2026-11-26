@@ -27,7 +27,7 @@ void main() {
   Widget bar(ConversationState? state) => _app(
     ConversationStateBar(
       state: state,
-      ownerName: 'Ana',
+      nameOf: (user) => const {'ana': 'Ana', 'bo': 'Bo'}[user] ?? 'Someone',
       onRestart: () async => taps.add('restart'),
       onAccept: () async => taps.add('accept'),
     ),
@@ -75,6 +75,14 @@ void main() {
     expect(taps, ['accept']);
   });
 
+  testWidgets('members_without_a_device_are_named_before_anything_is_sent', (tester) async {
+    await tester.pumpWidget(bar(const ConversationState.noDevice(['ana', 'bo'])));
+    expect(find.text(Notice.noDevice.fill({'name': 'Ana and Bo'})), findsOneWidget);
+    await tester.pumpWidget(bar(const ConversationState.noDevice(['ana'])));
+    expect(find.text(Notice.noDevice.fill({'name': 'Ana'})), findsOneWidget);
+    expect(peopleNamed(['Ana', 'Bo', 'Cy']), 'Ana, Bo and Cy');
+  });
+
   testWidgets("a_conversation's_state_shows_over_its_message_box,_and_its_restart_goes_to_the_engine", (tester) async {
     tester.view.physicalSize = const Size(390 * 3, 844 * 3);
     tester.view.devicePixelRatio = 3;
@@ -101,5 +109,41 @@ void main() {
     repository.conversationStates.value = {};
     await tester.pumpAndSettle();
     expect(find.text(Notice.blocked.text), findsNothing);
+  });
+
+  // The core's #46: a restart that leaves someone out names them, and goes only on the person's yes.
+  testWidgets('a_restart_that_leaves_someone_out_asks_first', (tester) async {
+    tester.view.physicalSize = const Size(390 * 3, 844 * 3);
+    tester.view.devicePixelRatio = 3;
+    addTearDown(tester.view.reset);
+    final repository = FakeRepository()..restartLeavesOut = [FakeRepository.leo];
+    final appearance = Appearance(MemoryAppearanceStore());
+    await appearance.load();
+    addTearDown(appearance.dispose);
+    await tester.pumpWidget(DuvetApp(repository: repository, appearance: appearance));
+    await tester.pumpAndSettle();
+    repository.conversationStates.value = {
+      'c-maya': ConversationState.blocked(restart: Restart.mine, owner: FakeRepository.maya),
+    };
+    await tester.tap(find.text('Maya'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text(Notice.blockedOwner.text));
+    await tester.pumpAndSettle();
+    final leo = repository.nameOf(FakeRepository.leo)!;
+    expect(find.text(Notice.restartLeavesOut.fill({'names': leo})), findsOneWidget);
+    // Cancel: nothing more goes.
+    await tester.tap(find.text('Cancel'));
+    await tester.pumpAndSettle();
+    expect(repository.encryptionTaps, ['restartGroup c-maya']);
+    // Yes: the restart goes, leaving them out.
+    await tester.tap(find.text(Notice.blockedOwner.text));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text(Notice.blockedOwner.text).last);
+    await tester.pumpAndSettle();
+    expect(repository.encryptionTaps, [
+      'restartGroup c-maya',
+      'restartGroup c-maya',
+      'restartGroup c-maya [${FakeRepository.leo}]',
+    ]);
   });
 }

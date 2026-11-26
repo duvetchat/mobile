@@ -10,6 +10,7 @@ import 'package:duvet/data/models.dart';
 import 'package:duvet/data/recent_chats.dart';
 import 'package:duvet/data/session_store.dart';
 import 'package:duvet/data/voice.dart';
+import 'package:duvet/e2e/notices.dart';
 import 'package:duvet_client/duvet.dart' as duvet;
 import 'package:duvet_client/http/router.dart' show ApiRouter;
 import 'package:fake_async/fake_async.dart';
@@ -591,17 +592,33 @@ void main() {
     expect(repository.conversations.value.single.title, 'Maya');
   });
 
-  test('a group the API refuses to make or change says why, as the API says it', () async {
+  test('a group the API refuses to make says why, as the API says it', () async {
     await repository.logIn('gaby@duvet.chat', 'secret');
     await expectLater(
       repository.createGroup('Crew', [_maya, _leo]),
       throwsA(isA<ActionFailed>().having((e) => e.message, 'message', 'You must be friends with $_leo')),
     );
-    // A server error says the API's words too, as the desktop shows them.
-    await expectLater(
-      repository.addToConversation('c-1', _leo),
-      throwsA(isA<ActionFailed>().having((e) => e.message, 'message', 'Internal server error')),
-    );
+  });
+
+  // Review Focus 2: a conversation's members change only by the engine of the app on a screen, as a commit of its
+  // group or a leave's statement. A repository without one (here, none at all) asks nothing.
+  test("without its engine, the app changes no conversation's members", () async {
+    await repository.logIn('gaby@duvet.chat', 'secret');
+    final from = requests.length;
+    for (final change in [
+      () => repository.addToConversation('c-1', _leo),
+      () => repository.removeFromConversation('c-1', _leo),
+      () => repository.leaveConversation('c-1'),
+    ]) {
+      await expectLater(
+        change(),
+        throwsA(isA<ActionFailed>().having((e) => e.message, 'message', Notice.notReady.text)),
+      );
+    }
+    expect([
+      for (final r in requests.skip(from))
+        if (r.url.path.contains('/members')) r.url.path,
+    ], isEmpty);
   });
 
   test('the friends list gives friends their presence, where the gateway hasn\'t told it', () async {

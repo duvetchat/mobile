@@ -14,6 +14,7 @@ import 'conventions.dart' show readApprovalFrame;
 import 'engine.dart';
 import 'failures.dart';
 import 'host.dart';
+import 'identity.dart';
 import 'store.dart';
 
 /// The most messages a page of the inbox has (the API's most).
@@ -86,12 +87,16 @@ Future<bool> takeInbox(E2EEngine engine, Map<String, int> tries, [Failures? fail
       final own = await identityOf(user);
       final sender = await identityOf(message.fromUserId);
       final certificate = sender?.certificates.where((one) => certificateDevice(one) == message.fromDeviceId);
-      final received = await host.handle<Map<String, Object?>>({
-        'cmd': 'receive_direct',
-        'message': message.message,
-        'identity_key': ?own?.identityKey,
-        'from_certificate': ?certificate?.firstOrNull,
-      });
+      // A catch-up's key (Task 23) or a history's is taken once its sender's identity is known here: observed first.
+      final received = await withIdentities(
+        engine,
+        () => host.handle<Map<String, Object?>>({
+          'cmd': 'receive_direct',
+          'message': message.message,
+          'identity_key': ?own?.identityKey,
+          'from_certificate': ?certificate?.firstOrNull,
+        }),
+      );
       if (received['type'] == 'rotation.transfer') rotated = true;
     } on CoreError catch (error) {
       if (_again.contains(error.code)) {

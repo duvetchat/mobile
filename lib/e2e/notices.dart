@@ -26,6 +26,7 @@ enum Notice {
   blocked("This conversation can't go on securely."),
   blockedOwner('Restart encryption'),
   blockedWait('Waiting for {owner} to restart it.'),
+  restartLeavesOut('Restarting encryption leaves {names} out of this conversation.'),
   removedDevice('This device was removed from your account.'),
   locked('Encrypted conversations are open in another Duvet window.'),
   waitOwner('Waiting for {owner} to open this group'),

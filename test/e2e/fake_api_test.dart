@@ -12,6 +12,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 
 import '../support/core_lib.dart';
+import '../support/ed25519.dart';
 import '../support/fake_api.dart';
 
 // Real cores (the vendored core's Linux library, through CoreGate) talking through the fake API by hand, with the
@@ -293,6 +294,22 @@ void main() {
     if (coreLibrary != null) await loadCore();
   });
   setUp(() => FlutterSecureStorage.setMockInitialValues({}));
+
+  // The fake signs the removals it proposes as the groups' external sender (RFC 8032's first vector).
+  test('the fake signs as Ed25519 does', () {
+    List<int> hex(String text) => [
+      for (var i = 0; i < text.length; i += 2) int.parse(text.substring(i, i + 2), radix: 16),
+    ];
+    final seed = hex('9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60');
+    expect(ed25519PublicKey(seed), hex('d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a'));
+    expect(
+      ed25519Sign(seed, const []),
+      hex(
+        'e5564300c360ac729086e2cc806e828a84877f1eb8e5d974d873e065224901555fb8821590a33bacc61e39701cf9b46bd25bf5f0595bbe24655141438e7a100b',
+      ),
+    );
+    expect(verifyEd25519(ed25519PublicKey(seed), [1, 2, 3], ed25519Sign(seed, [1, 2, 3])), isTrue);
+  });
 
   group('the fake API, with real cores', () {
     test('two cores converse through the fake', () async {
@@ -1079,12 +1096,14 @@ void main() {
     });
 
     test("a reset keeps each device's joined_seq, and a message of the generation before is stale", () async {
-      final (:fake, ana: _, :bo, :a, :b, :conversation) = await dmWithGroup();
+      final (:fake, :ana, :bo, :a, :b, :conversation) = await dmWithGroup();
       final old = await encrypt(a, conversation, 'before the reset');
       final claimed = await call(fake, a.token, 'POST', '/api/users/$bo/key-packages/claim');
       final reset = await a.run({
         'cmd': 'reset_group',
         'conversation_id': conversation,
+        // The DM's members, as the API gives them (the core's #46).
+        'members': [ana, bo],
         'key_packages': {
           bo: [for (final kp in claimed.body['key_packages']) kp['data']],
         },

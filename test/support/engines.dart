@@ -167,6 +167,15 @@ class LockedOnce implements CoreHost {
       _host.openFile(key, attachmentId, sealed, progress: progress);
 
   @override
+  Future<Map<String, Object?>> share(Map<String, Object?> command) => _host.share(command);
+
+  @override
+  Future<Uint8List> sharePart(String shareId, int n) => _host.sharePart(shareId, n);
+
+  @override
+  Future<void> dropShare(String shareId) => _host.dropShare(shareId);
+
+  @override
   Future<void> close() => _host.close();
 
   @override
@@ -200,6 +209,19 @@ class WatchedHost implements CoreHost {
   @override
   Future<Uint8List> openFile(String key, String attachmentId, Uint8List sealed, {void Function(int)? progress}) =>
       _host.openFile(key, attachmentId, sealed, progress: progress);
+
+  @override
+  Future<Map<String, Object?>> share(Map<String, Object?> command) {
+    log.add(command['cmd']! as String);
+    commands.add(command);
+    return _host.share(command);
+  }
+
+  @override
+  Future<Uint8List> sharePart(String shareId, int n) => _host.sharePart(shareId, n);
+
+  @override
+  Future<void> dropShare(String shareId) => _host.dropShare(shareId);
 
   @override
   Future<Opened> open(String userId) => _host.open(userId);

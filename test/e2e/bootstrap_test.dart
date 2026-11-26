@@ -43,6 +43,16 @@ class _ClosedHost implements CoreHost {
       throw CoreError('internal', message: 'no core');
 
   @override
+  Future<Map<String, Object?>> share(Map<String, Object?> command) async =>
+      throw CoreError('internal', message: 'no core');
+
+  @override
+  Future<Uint8List> sharePart(String shareId, int n) async => throw CoreError('internal', message: 'no core');
+
+  @override
+  Future<void> dropShare(String shareId) async {}
+
+  @override
   Future<void> close() async {}
 
   @override
@@ -70,6 +80,15 @@ class _KeysUnread implements CoreHost {
   @override
   Future<Uint8List> openFile(String key, String attachmentId, Uint8List sealed, {void Function(int)? progress}) =>
       _core.openFile(key, attachmentId, sealed, progress: progress);
+
+  @override
+  Future<Map<String, Object?>> share(Map<String, Object?> command) => _core.share(command);
+
+  @override
+  Future<Uint8List> sharePart(String shareId, int n) => _core.sharePart(shareId, n);
+
+  @override
+  Future<void> dropShare(String shareId) => _core.dropShare(shareId);
 
   @override
   Future<void> close() => _core.close();

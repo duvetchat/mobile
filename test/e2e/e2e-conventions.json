@@ -26,6 +26,7 @@
 		"blocked": "This conversation can't go on securely.",
 		"blocked_owner": "Restart encryption",
 		"blocked_wait": "Waiting for {owner} to restart it.",
+		"restart_leaves_out": "Restarting encryption leaves {names} out of this conversation.",
 		"removed_device": "This device was removed from your account.",
 		"locked": "Encrypted conversations are open in another Duvet window.",
 		"wait_owner": "Waiting for {owner} to open this group",

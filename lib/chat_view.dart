@@ -651,6 +651,22 @@ class _ChatViewState extends State<ChatView> with SingleTickerProviderStateMixin
 
   /// What came while the socket was down: everything after the newest
   /// message here.
+  /// A member of the chat, by the name the app shows them.
+  String _memberName(String userId) =>
+      _members.where((m) => m.userId == userId).firstOrNull?.displayName ?? _repository.nameOf(userId) ?? 'Someone';
+
+  /// The person's Restart encryption: whom it leaves out, they say yes to first (the core's #46), asked again when
+  /// those changed meanwhile.
+  Future<void> _restart(String conversationId) async {
+    var leaving = const <String>[];
+    while (true) {
+      final out = await _repository.restartGroup(conversationId, leaving: leaving);
+      if (out.isEmpty || !mounted) return;
+      if (!await confirmRestart(context, peopleNamed([for (final user in out) _memberName(user)]))) return;
+      leaving = out;
+    }
+  }
+
   Future<void> _catchUp() async {
     // Still on the kept page: its latest is on the way, or is asked again.
     // shortcut: only the gateway coming back asks again; a failed fetch with the socket up stays on the kept page
@@ -2817,9 +2833,8 @@ class _ChatViewState extends State<ChatView> with SingleTickerProviderStateMixin
                               final state = states[conversationId];
                               return ConversationStateBar(
                                 state: state,
-                                ownerName:
-                                    _members.where((m) => m.userId == state?.owner).firstOrNull?.displayName ?? '',
-                                onRestart: () => _repository.restartGroup(conversationId),
+                                nameOf: _memberName,
+                                onRestart: () => _restart(conversationId),
                                 onAccept: () => _repository.acceptMembers(conversationId),
                               );
                             },
