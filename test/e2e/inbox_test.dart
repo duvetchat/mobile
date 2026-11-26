@@ -6,6 +6,7 @@ import 'package:duvet/e2e/engine.dart';
 import 'package:duvet/e2e/host.dart';
 import 'package:duvet/e2e/inbox.dart';
 import 'package:duvet/e2e/store.dart';
+import 'package:duvet/e2e/uuid.dart';
 import 'package:duvet_client/duvet.dart' as duvet;
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
@@ -213,6 +214,55 @@ void main() {
     await a.engine.stop();
     await b.engine.stop();
   }, skip: noCore);
+
+  // Minor 3 of step 5's engines review: a key its sender won't send again, which the core couldn't take as it came
+  // (here, its sender's certificate not served yet), is given to the core again first at each round until it's taken:
+  // then it leaves the record, and its catch-up comes in.
+  test(
+    'a_key_the_core_could_not_take_is_given_to_it_again_the_next_round',
+    () async {
+      final fake = FakeApi();
+      final (ana, bo) = (fake.addUser(), fake.addUser());
+      final a = await firstDevice(fake, ana);
+      final dm = (await a.engine.createDM(bo)).id;
+      await a.engine.openConversation(dm);
+      await until(() => a.engine.conversationState(dm) == ConversationState.noDevice([bo]));
+      final sent = (await a.engine.sendMessage(Outgoing(conversationId: dm, nonce: uuidv4(), text: 'hi Bo')))!;
+
+      // Bo's first device: the first time its core is given a message from another device, it can't take it yet.
+      var refuse = true;
+      final b = await firstDevice(
+        fake,
+        bo,
+        host: WatchedHost(
+          TestHost().gate,
+          [],
+          fail: (command) {
+            if (command['cmd'] != 'receive_direct' || !refuse) return null;
+            refuse = false;
+            return CoreError('bad_command', message: 'from_certificate is required', field: 'from_certificate');
+          },
+        ),
+      );
+      // Ana's device hands him its catch-up: its key comes, and waits in the record, the inbox read past it.
+      await until(() => _kept(b.store, keptLater).isNotEmpty, what: 'the key kept for later');
+      await until(() async => (await b.api.inbox()).isEmpty, what: 'the inbox read past it');
+
+      // The next round gives it to the core again: taken, it leaves the record, and the catch-up comes in.
+      b.connect(b.registered.last);
+      await until(() => _kept(b.store, keptLater).isEmpty, what: 'the key taken, out of the record');
+      await until(() async {
+        b.clock.advance(quietBeforeImport);
+        return [
+          for (final m in await b.engine.messages(dm, [sent.id])) m.text,
+        ].contains('hi Bo');
+      }, what: 'the catch-up imported');
+      await a.engine.stop();
+      await b.engine.stop();
+    },
+    skip: noCore,
+    timeout: const Timeout(Duration(minutes: 3)),
+  );
 
   // M3 of the desktop's review: approvals are between the user's own devices.
   test("an_approval's_step_from_another_user_is_dropped,_never_kept", () async {
