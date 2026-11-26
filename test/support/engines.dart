@@ -167,6 +167,15 @@ class LockedOnce implements CoreHost {
       _host.openFile(key, attachmentId, sealed, progress: progress);
 
   @override
+  Future<Map<String, Object?>> share(Map<String, Object?> command) => _host.share(command);
+
+  @override
+  Future<Uint8List> sharePart(String shareId, int n) => _host.sharePart(shareId, n);
+
+  @override
+  Future<void> dropShare(String shareId) => _host.dropShare(shareId);
+
+  @override
   Future<void> close() => _host.close();
 
   @override
@@ -203,6 +212,19 @@ class WatchedHost implements CoreHost {
   @override
   Future<Uint8List> openFile(String key, String attachmentId, Uint8List sealed, {void Function(int)? progress}) =>
       _host.openFile(key, attachmentId, sealed, progress: progress);
+
+  @override
+  Future<Map<String, Object?>> share(Map<String, Object?> command) {
+    log.add(command['cmd']! as String);
+    commands.add(command);
+    return _host.share(command);
+  }
+
+  @override
+  Future<Uint8List> sharePart(String shareId, int n) => _host.sharePart(shareId, n);
+
+  @override
+  Future<void> dropShare(String shareId) => _host.dropShare(shareId);
 
   @override
   Future<Opened> open(String userId) => _host.open(userId);
@@ -712,3 +734,35 @@ List<String> requestsOf(List<http.Request> seen) => [
 
 /// A recovery key as the core makes one (decision 22): 48 base58 characters.
 final recoveryKeyShape = matches(RegExp(r'^[1-9A-HJ-NP-Za-km-z]{48}$'));
+
+/// The group blocked on every device: a commit no device can process gets in, as a server that takes anything would
+/// let it: Ana's leaf renewal, one byte of its signature changed, sent under Bo's session. Ana's own renewal never
+/// went. Her device again after its app restarted, with the two others.
+Future<List<TestDevice>> blockedByHand(FakeApi fake, String conversation, List<TestDevice> devices) async {
+  var [a, b, c] = devices;
+  final before = (await groupOf(a, conversation))!;
+  await stoppedByHand(a);
+  final made = await byHand(a, {'cmd': 'refresh', 'conversation_id': conversation});
+  final bytes = base64Decode(made['commit']! as String);
+  bytes[bytes.length - 1] ^= 0xff;
+  await b.api.commit(
+    conversation,
+    duvet.Commit(
+      generation: before.generation,
+      epoch: before.epoch,
+      commit: base64Encode(bytes),
+      groupInfo: made['group_info']! as String,
+    ),
+  );
+  await a.host.handle<Object?>({
+    'cmd': 'commit_result',
+    'conversation_id': conversation,
+    'accepted': false,
+    'invalid': true,
+  });
+  a = await restarted(fake, a);
+  await until(
+    () => [a, b, c].every((d) => d.engine.conversationState(conversation)?.name == ConversationNotice.blocked),
+  );
+  return [a, b, c];
+}

@@ -32,6 +32,14 @@ abstract interface class CoreHost {
   /// Opens a sealed file, part by part; [progress] hears how many of its bytes are done.
   Future<Uint8List> openFile(String key, String attachmentId, Uint8List sealed, {void Function(int done)? progress});
 
+  /// `history_share` or `catch_up`: its reply with its parts counted (`parts`), which stay with the host until
+  /// dropped; [sharePart] gives each, and [dropShare] lets them go.
+  Future<Map<String, Object?>> share(Map<String, Object?> command);
+
+  Future<Uint8List> sharePart(String shareId, int n);
+
+  Future<void> dropShare(String shareId);
+
   /// Closes what's open: the database stays.
   Future<void> close();
 

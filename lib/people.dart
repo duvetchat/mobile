@@ -14,6 +14,8 @@ import 'data/images.dart';
 import 'data/links.dart' show isDuvetId;
 import 'data/models.dart';
 import 'data/scope.dart';
+import 'e2e/members.dart' show maxGroupMembers;
+import 'e2e/notices.dart';
 import 'members_sheet.dart' show MemberAction, PresenceAvatar;
 import 'space_admin.dart' show RoleSwatch, adminTry, confirmDestructive, managesRoleAt, mayRemove;
 import 'shell.dart';
@@ -1771,6 +1773,8 @@ class _GroupInfoPageState extends State<GroupInfoPage> {
   Future<void> _addPeople() async {
     final repository = context.repository;
     final here = {for (final m in _members) m.userId};
+    // A full group says so as the sheet opens, and its rows take no tap (the desktop's way).
+    final full = here.length >= maxGroupMembers;
     final picked = await showGlassSheet<Member>(
       context,
       label: 'Add people',
@@ -1787,6 +1791,7 @@ class _GroupInfoPageState extends State<GroupInfoPage> {
             controller: scroll,
             children: [
               const SheetTitle(title: 'Add people'),
+              if (full) ListNote(Notice.groupFull.text),
               for (final m in candidates)
                 ListRow(
                   leading: UserAvatar(name: m.displayName, url: m.avatarUrl, size: 48),
@@ -1794,7 +1799,7 @@ class _GroupInfoPageState extends State<GroupInfoPage> {
                   snippet: '@${m.username}',
                   banner: m.bannerUrl,
                   bannerOffline: isOffline(context.repository.presence.value[m.userId]),
-                  onTap: () => Navigator.of(context).pop(m),
+                  onTap: full ? null : () => Navigator.of(context).pop(m),
                 ),
               if (candidates.isEmpty) const ListNote('No friends available to add'),
             ],

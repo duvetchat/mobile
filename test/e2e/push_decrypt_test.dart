@@ -10,6 +10,7 @@ import 'package:duvet/e2e/core_gate.dart';
 import 'package:duvet/e2e/engine.dart';
 import 'package:duvet/e2e/notices.dart';
 import 'package:duvet/e2e/push_decrypt.dart';
+import 'package:duvet/e2e/sync.dart' show refusedGenerationsIn;
 import 'package:duvet/e2e/uuid.dart';
 import 'package:duvet/push/background.dart';
 import 'package:duvet/push/push_message.dart';
@@ -510,6 +511,73 @@ void main() {
       final again = await restarted(fake, c);
       addTearDown(again.engine.stop);
       await until(() => again.engine.conversationState(conversation) == ConversationState.membersChanged);
+    },
+    skip: noCore,
+    timeout: _slow,
+  );
+
+  // M4 of task 23's review: a restart's welcome that the push's engine applies, and that Cy's core refuses (it never
+  // saw the statement that let Ana go), is recorded as the app's engine records it. Cy's app, next, says the members
+  // changed and joins nothing on its own.
+  test(
+    "a_restart's_welcome_the_core_refuses_in_the_push's_engine_is_recorded_for_the_app",
+    () async {
+      final fake = FakeApi();
+      final (ana, bo, cy) = (fake.addUser(), fake.addUser(), fake.addUser());
+      final conversation = fake.addConversation(group: true, members: [ana, bo, cy], owner: ana);
+      final host = TestHost();
+      final first = [
+        await firstDevice(fake, ana),
+        await firstDevice(fake, bo),
+        await firstDevice(fake, cy, host: host.gate),
+      ];
+      await first[0].engine.openConversation(conversation);
+      await sameGroup(first, conversation);
+      final [a, b, c] = await blockedByHand(fake, conversation, first);
+      addTearDown(a.engine.stop);
+      addTearDown(b.engine.stop);
+      fake.hideStatements(cy);
+      await a.engine.leaveConversation(conversation);
+      await until(
+        () => b.engine.conversationState(conversation) == ConversationState.blocked(restart: Restart.mine, owner: bo),
+      );
+      await until(() async => (await b.api.queue(conversation, 0)).entries.any((e) => e.kind == 'proposal'));
+      await turnEnded(b);
+      await turnEnded(c);
+      // Cy's app ends: Bo's restart and his message reach Cy's phone by a push.
+      await c.engine.stop();
+      expect(await b.engine.restartGroup(conversation), [ana]);
+      expect(await b.engine.restartGroup(conversation, leaving: [ana]), isEmpty);
+      await until(() async => (await groupOf(b, conversation))?.generation == 1);
+      final sent = (await b.engine.sendMessage(
+        Outgoing(conversationId: conversation, nonce: uuidv4(), text: 'in the new generation'),
+      ))!;
+      IsolateNameServer.removePortNameMapping(corePortName);
+      final phone = (
+        fake: fake,
+        ana: cy,
+        bo: bo,
+        a: c,
+        b: b,
+        host: host,
+        conversation: conversation,
+        requests: <http.Request>[],
+      );
+
+      final opened = (await _open(phone, fake.pushOf(conversation, sent.id)))!;
+      expect(opened.text, Notice.newMessage.text);
+      expect(refusedGenerationsIn(c.store), {conversation: 1});
+      // Cy's app, next: the members changed, and nothing joins on its own.
+      final seen = <http.Request>[];
+      final again = await restarted(fake, c, client: watchedClient(fake, seen: seen.add));
+      addTearDown(again.engine.stop);
+      await until(() => again.engine.conversationState(conversation) == ConversationState.membersChanged);
+      await turnEnded(again);
+      expect(requestsOf(seen), isNot(contains('POST ${commitsPath(conversation)}')));
+      // On Cy's yes it joins, and the record goes.
+      await again.engine.acceptMembers(conversation);
+      await until(() async => (await groupOf(again, conversation))?.generation == 1);
+      expect(refusedGenerationsIn(again.store), isEmpty);
     },
     skip: noCore,
     timeout: _slow,

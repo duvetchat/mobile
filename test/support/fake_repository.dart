@@ -5,6 +5,7 @@ import 'package:duvet/data/recent_chats.dart';
 import 'package:duvet/data/recent_chats.dart' as recent show previewOf;
 import 'package:duvet/data/repository.dart';
 import 'package:duvet/e2e/engine.dart' show EngineState;
+import 'package:duvet/e2e/members.dart' show sameUsers;
 import 'package:duvet/e2e/sync.dart' show ConversationState;
 import 'package:duvet_client/duvet.dart' show Activity;
 import 'package:flutter/foundation.dart';
@@ -1609,7 +1610,17 @@ class FakeRepository implements ChatRepository {
   final ValueNotifier<Map<String, ConversationState>> conversationStates = ValueNotifier(const {});
 
   @override
-  Future<void> restartGroup(String conversationId) async => encryptionTaps.add('restartGroup $conversationId');
+  Future<List<String>> restartGroup(String conversationId, {List<String> leaving = const []}) async {
+    encryptionTaps.add('restartGroup $conversationId${leaving.isEmpty ? '' : ' $leaving'}');
+    if (restartRefusal case final refusal?) throw refusal;
+    return sameUsers(leaving, restartLeavesOut) ? const [] : restartLeavesOut;
+  }
+
+  /// What a restart is refused with, as the engine throws the core's or the API's refusal; none goes through.
+  Object? restartRefusal;
+
+  /// Whom a restart leaves out, which the person is asked about first.
+  List<String> restartLeavesOut = const [];
 
   @override
   Future<void> acceptMembers(String conversationId) async => encryptionTaps.add('acceptMembers $conversationId');
@@ -1851,9 +1862,12 @@ class FakeRepository implements ChatRepository {
   /// More members of the rooms, after [everyone].
   final extraRoomMembers = <Member>[];
 
+  /// More members of the conversations, after [everyone] but Leo.
+  final extraConversationMembers = <Member>[];
+
   @override
   Future<List<Member>> members(ChatTarget target, {bool refresh = false}) async {
-    if (target is! RoomTarget) return everyone.where((m) => m.userId != leo).toList();
+    if (target is! RoomTarget) return [...everyone.where((m) => m.userId != leo), ...extraConversationMembers];
     final list = [...everyone, ...extraRoomMembers];
     // As the real one: a list loaded tells who's in the Space.
     (spaceMembers[target.spaceId] ??= {}).addAll(list.map((m) => m.userId));

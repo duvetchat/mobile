@@ -31,7 +31,20 @@ const pendingSends = 'pending_sends';
 const pendingChanges = 'pending_changes';
 
 /// What a new device of this installation starts without.
-const deviceRecord = [keptDevice, deviceKeys, keptApprovals, keptTransfers, keptLater, pendingSends, pendingChanges];
+/// The generation of each conversation whose members a welcome or a join was refused for, until the person's yes or a
+/// later generation (sync.dart; the core's #46, kept across restarts).
+const refusedGenerations = 'refused_generations';
+
+const deviceRecord = [
+  keptDevice,
+  deviceKeys,
+  keptApprovals,
+  keptTransfers,
+  keptLater,
+  pendingSends,
+  pendingChanges,
+  refusedGenerations,
+];
 
 /// The API's external sender as this installation first saw it (Ruling 32), which a new device of it keeps.
 const externalSender = 'external_sender';
