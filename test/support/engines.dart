@@ -180,6 +180,9 @@ class LockedOnce implements CoreHost {
   Future<void> dropShare(String shareId) => _host.dropShare(shareId);
 
   @override
+  Future<Map<String, Object?>> importShare(String shareId, List<Uint8List> parts) => _host.importShare(shareId, parts);
+
+  @override
   Future<void> close() => _host.close();
 
   @override
@@ -229,6 +232,16 @@ class WatchedHost implements CoreHost {
 
   @override
   Future<void> dropShare(String shareId) => _host.dropShare(shareId);
+
+  /// Told as `history_import` with its `share_id`, and failed as [fail] says for that command.
+  @override
+  Future<Map<String, Object?>> importShare(String shareId, List<Uint8List> parts) async {
+    final command = {'cmd': 'history_import', 'share_id': shareId};
+    log.add('history_import');
+    commands.add(command);
+    if (fail?.call(command) case final error?) throw error;
+    return _host.importShare(shareId, parts);
+  }
 
   @override
   Future<Opened> open(String userId) => _host.open(userId);

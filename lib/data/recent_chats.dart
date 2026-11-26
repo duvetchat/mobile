@@ -93,6 +93,10 @@ String previewOf(ChatMessage m, String Function(String content) readable) {
         ? 'started a call that lasted ${callDuration(call.duration)}'
         : 'started a call. No one answered.';
   }
+  // The list names its author, or "You", before it, as a call's.
+  if (m.sharedHistory case final shared?) {
+    return Notice.shared.fill({'a': '', 'range': rangeText(shared.range), 'b': shared.toName}).trimLeft();
+  }
   if (m.isNotice) return 'pinned a message';
   if (m.waiting) return Notice.waiting.text;
   if (m.stickerUrl != null) return 'Sticker';

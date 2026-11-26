@@ -1530,6 +1530,56 @@ class _CallNoticeRow extends StatelessWidget {
   }
 }
 
+/// A history share's notice (the API's type 4), as the desktop's: who shared how far back of the conversation with
+/// whom, their names apart ([parts]). A notice like the others: no edit, pin or reply, and held, its options ([onHold];
+/// null for those who may not delete it).
+class _SharedNoticeRow extends StatelessWidget {
+  final List<({String text, String? name})> parts;
+  final ValueChanged<BuildContext>? onHold;
+  const _SharedNoticeRow({required this.parts, this.onHold});
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = context.theme.colors;
+    final named = TextStyle(color: colors.foreground, fontWeight: FontWeight.w500);
+    return Builder(
+      builder: (anchor) => Semantics(
+        container: true,
+        label: parts.map((part) => part.text).join(),
+        excludeSemantics: true,
+        customSemanticsActions: {
+          if (onHold case final onHold?) const CustomSemanticsAction(label: 'Options'): () => onHold(anchor),
+        },
+        child: GestureDetector(
+          onLongPress: onHold == null ? null : () => onHold!(anchor),
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(16, 12, 16, 0),
+            child: Row(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                Icon(FLucideIcons.history, size: 14, color: colors.mutedForeground),
+                const SizedBox(width: 6),
+                Flexible(
+                  child: Text.rich(
+                    TextSpan(
+                      children: [
+                        for (final part in parts)
+                          TextSpan(text: part.text, style: part.name == 'a' || part.name == 'b' ? named : null),
+                      ],
+                    ),
+                    textAlign: TextAlign.center,
+                    style: DuvetType.caption.copyWith(color: colors.mutedForeground),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
 /// Above the composer: the ghost and its typing dots, then who's typing and
 /// who's recording a voice message, as the desktop's typing indicator says it.
 class _TypingLine extends StatelessWidget {

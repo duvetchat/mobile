@@ -55,6 +55,10 @@ void main() {
     refusals.add(const ChangeRefused('c', 'm', deletion: true));
     await tester.pumpAndSettle();
     expect(find.text(Notice.deleteRefused.text), findsOneWidget);
+    // A share of a conversation's history the person was told went, which ended for good (task 31's ruling 1).
+    refusals.add(const ChangeRefused('c', 's', deletion: false, share: true));
+    await tester.pumpAndSettle();
+    expect(find.text(Notice.shareHistoryFailed.text), findsOneWidget);
     // The toasts' timers run out.
     await tester.pump(const Duration(seconds: 4));
     await tester.pumpAndSettle();

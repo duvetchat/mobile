@@ -1131,6 +1131,33 @@ void main() {
       semantics.dispose();
     });
 
+    // I3 of task 31's review: a share that came in where rows from before the user joined gave way has the chat read
+    // its pages again: what it brought shows, shared by its sender, and the notice at the start goes.
+    testWidgets('an import reads the pages again where rows from before joining gave way', (tester) async {
+      final repository = await openMaya(
+        tester,
+        setUp: (r) {
+          r.history['c-maya'] = [held('e2', text: 'since joining').copyWith(seq: 2)];
+          r.chatStarts['c-maya'] = (legacy: false, cutoverAt: null, beforeJoining: true);
+        },
+      );
+      expect(find.text(Notice.beforeJoining.text), findsOneWidget);
+      // The share brought the one from before: the device holds it now, and none gives way any more.
+      repository.history['c-maya'] = [
+        held('e1', text: 'from before you joined', sharedBy: 'Maya').copyWith(seq: 1),
+        held('e2', text: 'since joining').copyWith(seq: 2),
+      ];
+      repository.push('c-maya', const ContentChanged(imported: true));
+      // Heard while rows still give way; the page read again leaves none out.
+      await tester.pump();
+      repository.chatStarts['c-maya'] = quietStart;
+      await tester.pumpAndSettle();
+      expect(find.text('from before you joined'), findsOneWidget);
+      expect(find.text(Notice.sharedBy.fill({'name': 'Maya'})), findsOneWidget);
+      expect(find.text(Notice.beforeJoining.text), findsNothing);
+      semantics.dispose();
+    });
+
     testWidgets("a message the device hasn't applied yet loads, neither empty nor waiting", (tester) async {
       final repository = await openMaya(
         tester,

@@ -124,6 +124,10 @@ class ChatMessage {
   /// conversation ends); null on any other message.
   final CallNotice? call;
 
+  /// A history share's notice (an [isNotice] the API posts once a member shared an encrypted conversation's history
+  /// with another, its type 4): with whom, and how far back; null on any other message.
+  final SharedHistoryNotice? sharedHistory;
+
   final List<MessageAttachment> attachments;
 
   /// Its files deleted since it was sent: placeholders, apart from
@@ -219,6 +223,7 @@ class ChatMessage {
     this.nonce,
     this.isNotice = false,
     this.call,
+    this.sharedHistory,
     this.attachments = const [],
     this.deletedAttachments = const [],
     this.stickerUrl,
@@ -282,6 +287,7 @@ class ChatMessage {
     nonce: nonce ?? this.nonce,
     isNotice: isNotice,
     call: call,
+    sharedHistory: sharedHistory,
     attachments: attachments ?? this.attachments,
     deletedAttachments: deletedAttachments,
     stickerUrl: stickerUrl,
@@ -330,6 +336,7 @@ class ChatMessage {
           nonce: nonce,
           isNotice: isNotice,
           call: call,
+          sharedHistory: sharedHistory,
           attachments: attachments,
           deletedAttachments: deletedAttachments,
           stickerUrl: update.stickerUrl,
@@ -379,6 +386,7 @@ class ChatMessage {
       nonce: nonce,
       isNotice: isNotice,
       call: call,
+      sharedHistory: sharedHistory,
       attachments: attachments,
       deletedAttachments: deletedAttachments,
       stickerUrl: stickerUrl,
@@ -421,6 +429,7 @@ class ChatMessage {
       nonce: nonce,
       isNotice: isNotice,
       call: call,
+      sharedHistory: sharedHistory,
       attachments: [for (final a in attachments) a.id == attachmentId ? a.withUrl(url) : a],
       deletedAttachments: deletedAttachments,
       stickerUrl: stickerUrl,
@@ -499,6 +508,11 @@ class ChatMessage {
     );
   }
 }
+
+/// What a history share's notice says (PLAN-E2E-CLIENTES.md, «La vista de una conversación»): the member its author
+/// shared the conversation's history with ([toUserId], named [toName] as the app knew them then, "you" for the
+/// reader), and how far back it went ([range]: day, week, month or all).
+typedef SharedHistoryNotice = ({String toUserId, String toName, String range});
 
 /// What a call notice says about its call: who was in it, by user ID, its
 /// caller first, then each member who joined its voice; and when it started
@@ -1123,16 +1137,24 @@ final class MessageDeleted extends MessageEvent {
 /// What this device's own database holds of the chat's messages changed (an encrypted conversation's, after an apply,
 /// a send, an edit, a deletion or an import): what shows of them is read again ([ChatRepository.withContent]).
 final class ContentChanged extends MessageEvent {
-  const ContentChanged();
+  const ContentChanged({this.imported = false});
+
+  /// A shared history or a catch-up came in: rows from before the user joined that a page left out may show now, so
+  /// its pages are read again (Ruling 15; I3 of task 31's review).
+  final bool imported;
 }
 
 /// An edit or a deletion of the user's in an encrypted conversation the server refused for good: shown done on this
-/// device, it never reached the others, which the app says wherever the person is (M3 of task 17's review).
+/// device, it never reached the others, which the app says wherever the person is (M3 of task 17's review). A share
+/// of the conversation's history that ended for good after the person was told it went ([share]) is said the same way.
 final class ChangeRefused {
-  const ChangeRefused(this.conversationId, this.messageId, {required this.deletion});
+  const ChangeRefused(this.conversationId, this.messageId, {required this.deletion, this.share = false});
   final String conversationId;
   final String messageId;
   final bool deletion;
+
+  /// A share of the conversation's history the person was told went, which ended for good ([messageId]: its package).
+  final bool share;
 }
 
 /// What the start of a chat says (PLAN-E2E-CLIENTES.md, «La vista de una conversación»): a conversation from before

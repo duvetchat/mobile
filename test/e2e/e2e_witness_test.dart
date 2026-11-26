@@ -33,10 +33,10 @@ import '../support/fake_api.dart';
 // engine, and Bo's device converse with a witness string, sent, read, quoted, edited, deleted and left waiting after a
 // cut request, the chat's page drawn and its preview shown; a file whose name and bytes hold it goes each way, its copy
 // decrypted in the app's temporary folder alone (Task 19); and it's searched for in the conversation and everywhere,
-// noticed in the app and pushed to the phone (Task 21). Then no file of the app's (the engine's record, the core's
-// database, the notifications' history), no record of Bo's engine, no page of the chat cache, no recent chat kept, no
-// request the API saw (its URL or its body) and no log line holds it. The desktop's e2e-witness.test.ts, over what the
-// phone keeps too.
+// noticed in the app and pushed to the phone (Task 21); and all of it shared with Bo, who adds it (Task 31). Then no
+// file of the app's (the engine's record, the core's database, the notifications' history), no record of Bo's engine,
+// no page of the chat cache, no recent chat kept, no request the API saw (its URL or its body) and no log line holds
+// it. The desktop's e2e-witness.test.ts, over what the phone keeps too.
 const _slow = Timeout(Duration(minutes: 3));
 
 /// The recent chats as they're kept, each write of them.
@@ -284,6 +284,12 @@ void main() {
       );
       await showPush(notification!);
       expect(shows.single, contains('$witness, pushed'));
+      // All of it shared from Ana's app with Bo's device, which adds it (Task 31): its package's parts go up and come
+      // down sealed, its key through the inbox.
+      await repository.shareHistory(conversation, bo, 'all');
+      await until(() => (b.engine.historyOffers.value[conversation] ?? const []).isNotEmpty);
+      await b.engine.takeHistoryOffer(b.engine.historyOffers.value[conversation]!.single.shareId);
+      expect(bodies.where((body) => body.contains('/history-shares/') && body.contains('/parts/')), isNotEmpty);
       await b.engine.stop();
       end();
       repository.dispose();
