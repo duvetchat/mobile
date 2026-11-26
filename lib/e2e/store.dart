@@ -9,6 +9,8 @@ import 'dart:io';
 import 'package:flutter/foundation.dart';
 import 'package:path_provider/path_provider.dart';
 
+import 'uuid.dart';
+
 /// The device this installation registered for the user, which each identify names (Ruling 30): kept so the app
 /// identifies before its core opens.
 const keptDevice = 'device';
@@ -97,29 +99,30 @@ abstract interface class EngineStore {
 
   /// Takes [keys] again as the record holds them for good, once the writes before have landed: on disk, what another
   /// engine of this phone (a push's) wrote there while this one didn't hold the core (contacts.dart). Nothing is
-  /// written; a record kept in memory alone has them already.
+  /// written; a record kept in memory alone has them already, and a key whose change here hasn't landed keeps it.
   Future<void> refresh(List<String> keys);
 }
 
 final _uuid = RegExp(r'^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$');
 
-/// The record as a push's engine opens it, beside the app's engine (review 29's Minor 4): each of its writes changes
-/// its own key alone over what's on disk then, as the app's engine may have written the others since it read them.
+/// The keys both the app's engine and a push's change through the store, each from what it read (a refused
+/// generation: recordRefusedGeneration, sync.dart): read as the file holds them, so neither writes back its older copy
+/// over the other's change (mobile#345). The contacts' keys are taken again with the core instead (Contacts.reload).
+const _readOnDisk = {refusedGenerations};
+
+/// The record as a push's engine opens it, beside the app's engine (review 29's Minor 4): as every record's, its writes
+/// change its own keys alone over what's on disk then, as the app's engine may have written the others since.
 Future<FileEngineStore> pushRecord(String userId, {Future<Directory> Function()? folder}) =>
-    FileEngineStore.open(userId, folder: folder, ownKeys: true);
+    FileEngineStore.open(userId, folder: folder);
 
-/// The record on disk, read once as it opens: a file that doesn't read is an empty record. Each write replaces the
-/// whole file, written beside it then renamed, so a cut write leaves the one before.
+/// The record on disk, read once as it opens: a file that doesn't read is an empty record. Each write is the file as it
+/// is then with the keys this record changed and the file hasn't taken yet, or the whole record in memory when the file
+/// doesn't read, written beside it then renamed, so a cut write leaves the one before and another engine's keys stay.
 class FileEngineStore implements EngineStore {
-  FileEngineStore._(this._file, this._values, this._ownKeys);
+  FileEngineStore._(this._file, this._values) : _next = File('${_file.path}.${uuidv4()}.next');
 
-  /// [userId]'s record, in the app's support folder (or [folder], a test's). With [ownKeys], each write is the file on
-  /// disk then with its key changed alone ([pushRecord]), or the whole record in memory when the file doesn't read.
-  static Future<FileEngineStore> open(
-    String userId, {
-    Future<Directory> Function()? folder,
-    bool ownKeys = false,
-  }) async {
+  /// [userId]'s record, in the app's support folder (or [folder], a test's).
+  static Future<FileEngineStore> open(String userId, {Future<Directory> Function()? folder}) async {
     if (!_uuid.hasMatch(userId)) throw ArgumentError.value(userId, 'userId', 'a user ID is a UUID');
     final file = File('${(await (folder ?? getApplicationSupportDirectory)()).path}/e2e/$userId/client.json');
     var values = <String, Object?>{};
@@ -128,18 +131,30 @@ class FileEngineStore implements EngineStore {
     } catch (error) {
       debugPrint("e2e: the engine's record didn't read: ${error.runtimeType}");
     }
-    return FileEngineStore._(file, values, ownKeys);
+    return FileEngineStore._(file, values);
   }
 
   final File _file;
   final Map<String, Object?> _values;
-  final bool _ownKeys;
+
+  /// This record's own file beside the record, so two engines writing at once never write one file.
+  final File _next;
+
+  /// The keys this record changed and the file hasn't taken yet, each with its change's number: one the file refused
+  /// goes again with the next write.
+  final _unsaved = <String, int>{};
+  var _changes = 0;
 
   // The writes one at a time, in order: one that failed doesn't hold up the next.
   Future<void> _writing = Future.value();
 
   @override
-  Object? read(String key) => _values[key];
+  Object? read(String key) {
+    if (_readOnDisk.contains(key) && !_unsaved.containsKey(key)) {
+      if (_onDiskNow() case final kept?) _take(kept, key);
+    }
+    return _values[key];
+  }
 
   @override
   Future<void> write(String key, Object? value) {
@@ -148,18 +163,31 @@ class FileEngineStore implements EngineStore {
     } else {
       _values[key] = value;
     }
+    _unsaved[key] = ++_changes;
     final whole = jsonEncode(_values);
-    // The value as it is now, should its caller change it after.
-    final own = _ownKeys && value != null ? jsonDecode(jsonEncode(value)) : null;
+    // What this write puts over the file, as it is now, should its caller change it after: null forgets.
+    final changes = {..._unsaved};
+    final changed = jsonEncode({for (final name in changes.keys) name: _values[name]});
     final done = _writing.catchError((Object _) {}).then((_) async {
-      final kept = _ownKeys ? await _onDisk() : null;
-      if (kept == null) return _save(whole);
-      if (own == null) {
-        kept.remove(key);
+      // shortcut: another engine's write between this one's read and its rename is lost, one key's; a lock between
+      // the isolates would close it, should that ever be seen.
+      final kept = await _onDisk();
+      if (kept == null) {
+        await _save(whole);
       } else {
-        kept[key] = own;
+        for (final MapEntry(key: name, value: now) in (jsonDecode(changed) as Map<String, Object?>).entries) {
+          if (now == null) {
+            kept.remove(name);
+          } else {
+            kept[name] = now;
+          }
+        }
+        await _save(jsonEncode(kept));
       }
-      return _save(jsonEncode(kept));
+      // Taken: a key changed again since goes with the next write.
+      for (final MapEntry(key: name, value: change) in changes.entries) {
+        if (_unsaved[name] == change) _unsaved.remove(name);
+      }
     });
     _writing = done;
     return done;
@@ -171,11 +199,15 @@ class FileEngineStore implements EngineStore {
     final kept = await _onDisk();
     if (kept == null) return;
     for (final key in keys) {
-      if (kept.containsKey(key)) {
-        _values[key] = kept[key];
-      } else {
-        _values.remove(key);
-      }
+      if (!_unsaved.containsKey(key)) _take(kept, key);
+    }
+  }
+
+  void _take(Map<String, Object?> kept, String key) {
+    if (kept.containsKey(key)) {
+      _values[key] = kept[key];
+    } else {
+      _values.remove(key);
     }
   }
 
@@ -190,10 +222,20 @@ class FileEngineStore implements EngineStore {
     }
   }
 
+  /// [_onDisk], read at once: what [read] gives of a key another engine changes too.
+  Map<String, Object?>? _onDiskNow() {
+    try {
+      if (!_file.existsSync()) return null;
+      return (jsonDecode(_file.readAsStringSync()) as Map).cast<String, Object?>();
+    } catch (error) {
+      debugPrint("e2e: the engine's record didn't read again: ${error.runtimeType}");
+      return null;
+    }
+  }
+
   Future<void> _save(String whole) async {
     await _file.parent.create(recursive: true);
-    final next = File('${_file.path}.next');
-    await next.writeAsString(whole, flush: true);
-    await next.rename(_file.path);
+    await _next.writeAsString(whole, flush: true);
+    await _next.rename(_file.path);
   }
 }

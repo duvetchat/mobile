@@ -2,11 +2,12 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:duvet/e2e/store.dart';
+import 'package:duvet/e2e/sync.dart' show recordRefusedGeneration, refusedGenerationsIn;
 import 'package:flutter_test/flutter_test.dart';
 
-// The engine's record on disk (lib/e2e/store.dart; M2 of the review): `e2e/<user_id>/client.json`, each write the
-// whole record, written beside the file and renamed over it, one at a time and in order. It holds the device's keys,
-// and the inbox messages kept for later, which their senders never send again.
+// The engine's record on disk (lib/e2e/store.dart; M2 of the review): `e2e/<user_id>/client.json`, each write the file
+// as it is then with the store's own changes, written beside it and renamed over it, one at a time and in order. It
+// holds the device's keys, and the inbox messages kept for later, which their senders never send again.
 const _user = '01936d4e-8f00-7000-8000-000000000001';
 
 void main() {
@@ -21,6 +22,20 @@ void main() {
 
   Future<FileEngineStore> open() => FileEngineStore.open(_user, folder: () async => folder);
   Object? onDisk() => jsonDecode(file.readAsStringSync());
+  // What's left beside the record: no write's file once it's done.
+  List<String> beside() => [
+    for (final entry in file.parent.listSync())
+      if (entry.path != file.path) entry.path,
+  ];
+  // A write cut before its rename: here, one whose rename is refused, a folder standing in the record's place, which
+  // is back as it was after.
+  Future<void> cut(Future<void> Function() write) async {
+    final before = file.renameSync('${file.path}.before');
+    final blocker = Directory(file.path)..createSync();
+    await expectLater(write(), throwsA(isA<FileSystemException>()));
+    blocker.deleteSync();
+    before.renameSync(file.path);
+  }
 
   test(
     'a_write_goes_beside_the_record_and_takes_its_place:_one_cut_leaves_the_one_before,_and_holds_up_none_after',
@@ -29,20 +44,18 @@ void main() {
       expect(store.read(keptDevice), isNull);
       await store.write(keptDevice, 'd-1');
       expect(onDisk(), {keptDevice: 'd-1'});
-      expect(File('${file.path}.next').existsSync(), isFalse);
+      expect(beside(), isEmpty);
 
-      // A write cut before its rename: here, one whose file beside the record can't be written.
-      final beside = Directory('${file.path}.next')..createSync();
-      await expectLater(store.write(keptLater, ['m-1']), throwsA(isA<FileSystemException>()));
+      await cut(() => store.write(keptLater, ['m-1']));
       expect(onDisk(), {keptDevice: 'd-1'});
 
-      // The next write goes, with the whole record by then, and a new record reads it back.
-      beside.deleteSync();
+      // The next write goes, with what the cut one changed, and a new record reads it back.
       await store.write(keptDevice, 'd-2');
       expect(onDisk(), {
         keptDevice: 'd-2',
         keptLater: ['m-1'],
       });
+      expect(beside(), isEmpty);
       final again = await open();
       expect(again.read(keptDevice), 'd-2');
       expect(again.read(keptLater), ['m-1']);
@@ -57,7 +70,7 @@ void main() {
     // None awaited before the next: each waits for the one before, and the file ends with the last.
     await Future.wait([for (var at = 0; at < 20; at++) store.write(keptDevice, 'd-$at')]);
     expect(onDisk(), {keptDevice: 'd-19'});
-    expect(File('${file.path}.next').existsSync(), isFalse);
+    expect(beside(), isEmpty);
   });
 
   // Task 29 (contacts.dart): another engine of the phone (a push's) writes the record while this one has it open, and
@@ -85,6 +98,15 @@ void main() {
     await push.write(keyChanges, null);
     await app.refresh([keyChanges]);
     expect(app.read(keyChanges), isNull);
+    // A change of its own the file hasn't taken yet stays, and the next write takes it.
+    await cut(() => app.write(verifiedContacts, ['u']));
+    await app.refresh([keyChanges, verifiedContacts]);
+    expect(app.read(verifiedContacts), ['u']);
+    await app.write(keptDevice, 'd-3');
+    expect(onDisk(), {
+      keptDevice: 'd-3',
+      verifiedContacts: ['u'],
+    });
   });
 
   // Review 29's Minor 4: a push's engine read the record as it started, and the app's engine wrote its contacts after.
@@ -108,6 +130,52 @@ void main() {
       keyChanges: {'u': 'after'},
       verifiedContacts: ['u'],
     });
+  });
+
+  // mobile#345: the app's engine holds the record while a push's engine records a refused generation (sync.dart, a
+  // welcome refused through the app's core). The app's next write, of another key or of the refusals themselves,
+  // keeps it, and what the app reads after is the file's; the push's later write keeps the app's change too.
+  test("a_push's_refused_generation_outlives_the_app's_next_writes", () async {
+    final app = await open();
+    await app.write(keptDevice, 'd-1');
+    expect(refusedGenerationsIn(app), isEmpty);
+    final push = await pushRecord(_user, folder: () async => folder);
+    await recordRefusedGeneration(push, 'c1', 1);
+    await app.write(keptDevice, 'd-2');
+    expect(onDisk(), {
+      keptDevice: 'd-2',
+      refusedGenerations: {'c1': 1},
+    });
+    expect(refusedGenerationsIn(app), {'c1': 1});
+    // The app's own refusal of another conversation, then the person's yes to the push's.
+    await recordRefusedGeneration(app, 'c2', 3);
+    expect(refusedGenerationsIn(await open()), {'c1': 1, 'c2': 3});
+    await recordRefusedGeneration(app, 'c1', null);
+    // The push's engine, still open, refuses a third: the first stays gone.
+    await recordRefusedGeneration(push, 'c3', 2);
+    expect(onDisk(), {
+      keptDevice: 'd-2',
+      refusedGenerations: {'c2': 3, 'c3': 2},
+    });
+    expect(refusedGenerationsIn(app), {'c2': 3, 'c3': 2});
+    // Two in a row, the first not taken by the file yet as the second reads: both stay.
+    await Future.wait([recordRefusedGeneration(app, 'c4', 1), recordRefusedGeneration(app, 'c5', 1)]);
+    expect(refusedGenerationsIn(await open()), {'c2': 3, 'c3': 2, 'c4': 1, 'c5': 1});
+  });
+
+  // Two engines writing at the same moment (the app's and a push's, each in its isolate) write each its own file beside
+  // the record: the record is always one write's whole file, and no write fails for the other's.
+  test('two_stores_writing_at_once_never_mix_their_files', () async {
+    final app = await open();
+    final push = await pushRecord(_user, folder: () async => folder);
+    await Future.wait([
+      for (var at = 0; at < 10; at++) ...[
+        app.write(keptLater, [for (var line = 0; line < 100; line++) 'm-$at-$line']),
+        push.write(refusedGenerations, {'c': at}),
+      ],
+    ]);
+    expect(onDisk(), isA<Map<String, Object?>>());
+    expect(beside(), isEmpty);
   });
 
   test("a_record_that_doesn't_read_starts_empty", () async {
