@@ -36,6 +36,11 @@ const pendingChanges = 'pending_changes';
 /// take the same devices off (devices.dart).
 const rotationRemove = 'rotation_remove';
 
+/// The devices this device approved (approval_confirm, or approval_from_qr after a scan), each with when, until a list
+/// the core took names it (identity.dart): one still kept is an approval of this device's that didn't finish, whose
+/// way out is to sign it off (approval.dart). This device's own word, never the API's (mobile#352).
+const approvedHere = 'approved_here';
+
 /// The user's devices the app told of once, as added and as not seen in 45 days (decision 13): it doesn't again.
 const toldAdded = 'told_added';
 const toldInactive = 'told_inactive';
@@ -78,6 +83,7 @@ const deviceRecord = [
   pendingSends,
   pendingChanges,
   rotationRemove,
+  approvedHere,
   refusedGenerations,
   keyChanges,
   verifiedContacts,

@@ -42,20 +42,26 @@ Future<duvet.Identity?> servedIdentity(E2EEngine engine) async {
   }
 }
 
-/// observe_user of each user, as the API serves their identities, 50 at a time: one it doesn't serve stays as it was.
-Future<void> observeUsers(E2EEngine engine, List<String> users) => observeOn(engine.host, engine.api, users);
+/// What an observation made of an identity the API served: the core's answer ([observeOn]'s `seen`).
+typedef Observed = Future<void> Function(duvet.Identity identity, Map<String, Object?> answer);
 
-/// [observeUsers] on a core and a session of their own: a push's engine's, which runs no engine.
-Future<void> observeOn(CoreHost host, duvet.E2eApi api, List<String> users) async {
+/// observe_user of each user, as the API serves their identities, 50 at a time: one it doesn't serve stays as it was.
+Future<void> observeUsers(E2EEngine engine, List<String> users) =>
+    observeOn(engine.host, engine.api, users, seen: _ownSeen(engine));
+
+/// [observeUsers] on a core and a session of their own: a push's engine's, which runs no engine. [seen] is told what
+/// the core answered of each.
+Future<void> observeOn(CoreHost host, duvet.E2eApi api, List<String> users, {Observed? seen}) async {
   for (var at = 0; at < users.length; at += 50) {
     for (final identity in await api.identities(users.sublist(at, min(at + 50, users.length)))) {
-      await host.handle<Object?>({
+      final answer = await host.handle<Map<String, Object?>>({
         'cmd': 'observe_user',
         'user_id': identity.userId,
         'identity_key': identity.identityKey,
         'device_list': identity.deviceList,
         'certificates': identity.certificates,
       });
+      await seen?.call(identity, answer);
     }
   }
 }
@@ -63,23 +69,23 @@ Future<void> observeOn(CoreHost host, duvet.E2eApi api, List<String> users) asyn
 /// A command that may first ask for users' identities (`needs_identities`): they're observed, and it runs again.
 /// Three rounds at most: the core asks once for what it knows of each user, and goes on with that the next time.
 Future<T> withIdentities<T>(E2EEngine engine, Future<T> Function() run) =>
-    withIdentitiesOn(engine.host, engine.api, run);
+    withIdentitiesOn(engine.host, engine.api, run, seen: _ownSeen(engine));
 
 /// [withIdentities] on a core and a session of their own: a push's engine's.
-Future<T> withIdentitiesOn<T>(CoreHost host, duvet.E2eApi api, Future<T> Function() run) async {
+Future<T> withIdentitiesOn<T>(CoreHost host, duvet.E2eApi api, Future<T> Function() run, {Observed? seen}) async {
   for (var round = 1; ; round++) {
     try {
       return await run();
     } on CoreError catch (error) {
       final asked = error.code == 'needs_identities' ? error.users : null;
       if (asked == null || asked.isEmpty || round >= 3) rethrow;
-      await observeOn(host, api, asked);
+      await observeOn(host, api, asked, seen: seen);
     }
   }
 }
 
 /// observe_user of the user's own identity, as served: what the core made of it (`not_own_identity`, an identity this
-/// device doesn't hold).
+/// device doesn't hold). A list it took finishes the approvals of this device's it names (mobile#352).
 Future<String?> observeOwn(E2EEngine engine, duvet.Identity served) async {
   final seen = await engine.host.handle<Map<String, Object?>>({
     'cmd': 'observe_user',
@@ -88,7 +94,61 @@ Future<String?> observeOwn(E2EEngine engine, duvet.Identity served) async {
     'device_list': served.deviceList,
     'certificates': served.certificates,
   });
+  await _ownListSeen(engine.store, served.deviceList, seen);
   return seen['reason'] as String?;
+}
+
+/// The own user's observations among an engine's: each list the core took finishes the approvals it names.
+Observed _ownSeen(E2EEngine engine) => (identity, answer) async {
+  if (identity.userId == engine.user) await _ownListSeen(engine.store, identity.deviceList, answer);
+};
+
+/// The own user's [deviceList], as the core just answered of it: one it took (not `rejected`) names the devices this
+/// one approved that set up since.
+Future<void> _ownListSeen(EngineStore store, String deviceList, Map<String, Object?> answer) async {
+  if (answer['state'] != 'rejected') await forgetApproved(store, listDevices(deviceList) ?? const []);
+}
+
+/// The most approvals the record keeps: the newest.
+const _approvedKept = 20;
+
+/// The approvals the record keeps, as it keeps them.
+List<Map<String, Object?>> _approvedIn(EngineStore store) => [
+  for (final one in switch (store.read(approvedHere)) {
+    final List<Object?> list => list,
+    _ => const <Object?>[],
+  })
+    if (one case final Map<Object?, Object?> kept when kept['device'] is String && kept['at'] is int)
+      kept.cast<String, Object?>(),
+];
+
+/// The devices this one approved that no list the core took has named since: approvals of its own that didn't
+/// finish (mobile#352). This device's word alone: neither the list the API serves nor the devices it registers.
+Set<String> approvedHereIn(EngineStore store) => {for (final one in _approvedIn(store)) one['device']! as String};
+
+/// This device approved [device] (approval_confirm, approval_from_qr) [at]: kept until a list the core took names it.
+Future<void> noteApproved(EngineStore store, String device, DateTime at) {
+  final kept = [
+    for (final one in _approvedIn(store))
+      if (one['device'] != device) one,
+    {'device': device, 'at': at.millisecondsSinceEpoch},
+  ];
+  return store
+      .write(approvedHere, kept.sublist(max(0, kept.length - _approvedKept)))
+      .catchError((Object error) => debugPrint("e2e: the record's approvals here: ${error.runtimeType}"));
+}
+
+/// These devices are no approvals of this device's left to finish: on a list the core took, or signed off.
+Future<void> forgetApproved(EngineStore store, Iterable<String> devices) async {
+  final kept = _approvedIn(store);
+  final left = [
+    for (final one in kept)
+      if (!devices.contains(one['device'])) one,
+  ];
+  if (left.length == kept.length) return;
+  await store
+      .write(approvedHere, left.isEmpty ? null : left)
+      .catchError((Object error) => debugPrint("e2e: the record's approvals here: ${error.runtimeType}"));
 }
 
 /// Whether this device took the identity the API serves (recovered, or approved: Tasks 26 and 27) and the API's list

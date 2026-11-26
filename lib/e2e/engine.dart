@@ -1271,9 +1271,13 @@ class E2EEngine implements DeviceSetupActions {
       if (id == null || _role() != ApprovalRole.approver) return;
       final registered = (await api.devices()).where((device) => device.id == id).firstOrNull;
       final served = await servedIdentity(this);
-      final held = listDevices((await coreStatus(host)).deviceList ?? '') ?? const <String>[];
       final listed = served != null && (listDevices(served.deviceList)?.contains(id) ?? false);
-      scanned = (id: id, name: registered?.name, listed: listed, unfinished: !listed && held.contains(id));
+      scanned = (
+        id: id,
+        name: registered?.name,
+        listed: listed,
+        unfinished: !listed && await _approvals.unfinished(id),
+      );
     });
     return scanned;
   }

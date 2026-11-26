@@ -1,3 +1,5 @@
+import 'dart:convert';
+
 import 'package:duvet/e2e/cbor.dart';
 import 'package:duvet/e2e/conventions.dart';
 import 'package:duvet/e2e/devices.dart' show takenAway;
@@ -95,6 +97,41 @@ http.Client _inboxOf(FakeApi fake, String? Function() to, List<String> bodies) =
     }
   },
 );
+
+/// A server that lies to one device (its [client]) once [lying]: the user's identity as it served it at [freeze] (a
+/// list from before), when frozen, and the user's devices without [hidden].
+class _Lies {
+  _Lies(FakeApi fake) {
+    client = watchedClient(
+      fake,
+      change: (request, answered) async {
+        final path = request.url.path;
+        if (request.method != 'GET') return answered;
+        if (RegExp(r'^/api/users/[^/@]+/identity$').hasMatch(path)) {
+          if (lying && frozen != null) return frozen!;
+          latest = answered;
+        }
+        if (lying && path == '/api/users/@me/devices') {
+          final devices = [
+            for (final device in jsonDecode(answered.body) as List<Object?>)
+              if (!hidden.contains((device! as Map)['id'])) device,
+          ];
+          return http.Response(jsonEncode(devices), 200, headers: answered.headers);
+        }
+        return answered;
+      },
+    );
+  }
+
+  late final http.Client client;
+  http.Response? latest;
+  http.Response? frozen;
+  var lying = false;
+  var hidden = <String>{};
+
+  /// The identity as it was served last, served from now on while lying.
+  void freeze() => frozen = latest;
+}
 
 /// A core whose approval_confirm names another device than the one it approved ([other], once set): the device the
 /// transfer goes to is the core's word, not the inbox's.
@@ -468,6 +505,96 @@ void main() {
       await until(() => n.state == EngineState.ready);
       expect(listDevices((await n.api.identity(ana)).deviceList), unorderedEquals([_deviceOf(a), _deviceOf(n)]));
       await Future.wait([a.engine.stop(), n.engine.stop()]);
+    },
+    skip: noCore,
+    timeout: _slow,
+  );
+
+  // Step 5's review, I1 (mobile#352): what didn't finish is this device's own record, never the API's word. A listed
+  // device's request, replayed while the server serves a list from before that device, and its devices without it,
+  // asks only «Is this device yours?», and the yes changes no list: by the code, and by the scan.
+  test(
+    "a_listed_device's_request,_while_the_served_list_and_the_devices_leave_it_out,_changes_no_list_on_the_yes",
+    () async {
+      final fake = FakeApi();
+      final ana = fake.addUser();
+      final lies = _Lies(fake);
+      final host = WatchedHost(TestHost().gate, []);
+      final a = await firstDevice(fake, ana, host: host, client: lies.client);
+      // The list naming this device alone, kept to serve later.
+      lies.freeze();
+      // B, approved here by the code: its list up, which this device observed.
+      final b = await _newDevice(fake, ana);
+      await b.engine.beginApproval();
+      final qr = _qrOf(b)!;
+      await b.engine.acceptCode(await _toTheCode(a, b));
+      await a.engine.confirmApproval(_deviceOf(b));
+      await until(() => b.state == EngineState.ready);
+      await until(() => _approvalOf(a.state) == null);
+      await turnEnded(a);
+      expect(await _heldList(a), unorderedEquals([_deviceOf(a), _deviceOf(b)]));
+
+      // The server lies from now on, and replays the request B was set up by.
+      lies
+        ..lying = true
+        ..hidden = {_deviceOf(b)};
+      fake.replayInbox(_deviceOf(a));
+      await until(() => _approvalOf(a.state)?.phase == ApprovalPhase.asked);
+      expect((_approvalOf(a.state)?.device, _approvalOf(a.state)?.unfinished), (_deviceOf(b), false));
+      await a.engine.approveDevice(_deviceOf(b));
+      expect(_asked(host, 'sign_device_list'), isEmpty);
+      expect(await _heldList(a), unorderedEquals([_deviceOf(a), _deviceOf(b)]));
+      // The core approves no device on its list.
+      expect((_approvalOf(a.state)?.phase, _approvalOf(a.state)?.ended), (ApprovalPhase.ended, ApprovalEnd.listed));
+      await a.engine.declineDevice(_deviceOf(b));
+
+      // B's QR from before it was set up, scanned while only the served list leaves it out: the same.
+      lies.hidden = {};
+      final scanned = await a.engine.scannedDevice(qr);
+      expect((scanned?.id, scanned?.unfinished), (_deviceOf(b), false));
+      await expectLater(
+        a.engine.approveScanned(qr, scanned!),
+        throwsA(isA<CoreError>().having((e) => e.code, 'code', 'exists')),
+      );
+      expect(_asked(host, 'sign_device_list'), isEmpty);
+      expect(listDevices((await b.api.identity(ana)).deviceList), unorderedEquals([_deviceOf(a), _deviceOf(b)]));
+      await Future.wait([a.engine.stop(), b.engine.stop()]);
+    },
+    skip: noCore,
+    timeout: _slow,
+  );
+
+  // mobile#352 too: the way out of an approval that didn't finish signs off that device and no other, whatever the
+  // API says of the user's other devices.
+  test(
+    "an_unfinished_approval's_way_out_signs_off_that_device_alone",
+    () async {
+      final fake = FakeApi();
+      final ana = fake.addUser();
+      final lies = _Lies(fake);
+      final host = WatchedHost(TestHost().gate, []);
+      final a = await firstDevice(fake, ana, host: host, client: lies.client);
+      final c = await approvedDevice(fake, a);
+      var reading = true;
+      final n = await _newDevice(fake, ana, hears: (event) => reading || event.type != 'DEVICE_MESSAGE');
+      await _toTheCode(a, n);
+      reading = false;
+      await a.engine.confirmApproval(_deviceOf(n));
+      await n.engine.useCode();
+      final fingerprint = _setupOf(n.state)!.fingerprint;
+      await until(() => _approvalOf(a.state)?.fingerprint == fingerprint);
+      expect(_approvalOf(a.state)?.unfinished, isTrue);
+
+      // The API's devices leave C out as the yes runs: C stays on the list all the same.
+      lies
+        ..lying = true
+        ..hidden = {_deviceOf(c)};
+      await a.engine.approveDevice(_deviceOf(n));
+      expect(_asked(host, 'sign_device_list').map((command) => command['remove']), [
+        [_deviceOf(n)],
+      ]);
+      expect(listDevices((await c.api.identity(ana)).deviceList), unorderedEquals([_deviceOf(a), _deviceOf(c)]));
+      await Future.wait([a.engine.stop(), c.engine.stop(), n.engine.stop()]);
     },
     skip: noCore,
     timeout: _slow,

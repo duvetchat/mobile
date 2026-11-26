@@ -74,15 +74,16 @@ Future<void> removeDevice(E2EEngine engine, String deviceId) async {
 /// this device holds names it: on this device's alone, it's a device this one approved that never took its transfer,
 /// which a list without it lets this device approve again (task 26's I1, the core's way out). A list of this device's
 /// that the API never took (its upload refused) stays the core's own, newer than the API's (`older_list`), and goes up
-/// again as it is when it leaves the device out: the core signs no list without a device its own doesn't name.
-Future<void> unlist(E2EEngine engine, String deviceId) async {
+/// again as it is when it leaves the device out: the core signs no list without a device its own doesn't name. [alone]
+/// signs off that device and no other: an approval's way out, which takes nothing off on the API's word (mobile#352).
+Future<void> unlist(E2EEngine engine, String deviceId, {bool alone = false}) async {
   for (var round = 1; ; round++) {
     final served = await _observedOwn(engine);
     final held = (await coreStatus(engine.host)).deviceList ?? served.deviceList;
     final onHeld = (listDevices(held) ?? const <String>[]).contains(deviceId);
     // Off both: a list that went up before its answer was lost, or another device's.
     if (!onHeld && !(listDevices(served.deviceList) ?? const <String>[]).contains(deviceId)) return;
-    final remove = {if (onHeld) deviceId, ...await takenAway(engine, held)};
+    final remove = {if (onHeld) deviceId, if (!alone) ...await takenAway(engine, held)};
     final list = remove.isEmpty
         ? held
         : (await engine.host.handle<Map<String, Object?>>({
