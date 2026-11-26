@@ -78,4 +78,21 @@ void main() {
     expect(labels('during:'), ['2026-11-08']);
     expect(searchSuggestions('', members: members).map((s) => s.label), isNot(contains('in:')));
   });
+
+  // PLAN-E2E-CLIENTES.md, Task 21: an encrypted conversation's messages have no previews, and the device doesn't search
+  // their links, so has: offers file, image, video, sound and sticker there.
+  test("in a conversation, has: takes file, image, video, sound and sticker", () {
+    SearchQuery inConversation(String input) => parseSearch(input, members: members, conversationId: 'c');
+    expect(inConversation('has:image has:sticker').has, ['image', 'sticker']);
+    expect(
+      () => inConversation('has:link'),
+      throwsA(
+        isA<FormatException>().having((e) => e.message, 'message', 'has: takes file, image, video, sound, sticker'),
+      ),
+    );
+    final offered = searchSuggestions('has:', members: members);
+    expect([for (final s in offered) s.label], ['file', 'image', 'video', 'sound', 'sticker']);
+    final filter = searchSuggestions('h', members: members).single;
+    expect((filter.label, filter.detail), ('has:', 'file, image, video, sound or sticker'));
+  });
 }

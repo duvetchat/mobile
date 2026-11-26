@@ -6,6 +6,7 @@ import 'dart:io';
 
 import 'package:duvet/data/cache.dart';
 import 'package:duvet/data/duvet_repository.dart';
+import 'package:duvet/data/models.dart' show AwayNotice;
 import 'package:duvet/data/recent_chats.dart';
 import 'package:duvet/data/session_store.dart';
 import 'package:duvet/e2e/core_gate.dart';
@@ -54,12 +55,18 @@ class TestApp {
 
 /// [user]'s app on [fake], signed in and connected, its engine starting: [TestApp.ready] sets its device up. Its
 /// connection hands on only what [hears] lets through, and [answers] answer routes the fake lacks, by `METHOD path`.
+/// [answer] takes a request before the fake does (null passes it on), as a Space's search, which the fake has none of;
+/// [host] stands between the engine and its core; [prepare] leaves in the app's folders what a run before this one
+/// left; [notifyAway] hears what the app hands the phone's notifications.
 Future<TestApp> appOn(
   FakeApi fake,
   String user, {
   RecentChatsStore? recents,
   ChatCacheStore? cache,
   bool Function(GatewayEvent event)? hears,
+  Future<http.Response?> Function(http.Request request)? answer,
+  CoreHost Function(CoreGate core)? host,
+  void Function(AwayNotice notice)? notifyAway,
   void Function(Directory support)? prepare,
   Map<String, Object?> answers = const {},
 }) async {
@@ -98,6 +105,7 @@ Future<TestApp> appOn(
       _ => answers['${request.method} ${request.url.path}'],
     };
     if (own != null) return http.Response(jsonEncode(own), 200, headers: {'content-type': 'application/json'});
+    if (await answer?.call(request) case final answered?) return answered;
     final copy = http.Request(request.method, request.url)
       ..headers.addAll(request.headers)
       ..bodyBytes = request.bodyBytes;
@@ -112,7 +120,11 @@ Future<TestApp> appOn(
     httpClient: () => client,
     connectGateway: false,
     cacheStore: cache ?? MemoryChatCacheStore(),
-    encryptionHost: () => core = TestHost(folder: folder, keys: keys).gate,
+    notifyAway: notifyAway,
+    encryptionHost: () {
+      core = TestHost(folder: folder, keys: keys).gate;
+      return host?.call(core) ?? core;
+    },
     onScreen: () => true,
   );
   await repository.logIn('user@duvet.chat', 'secret');

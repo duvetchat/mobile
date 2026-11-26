@@ -62,6 +62,10 @@ class LegacyRecords {
     return made;
   }
 
+  /// The record kept for the conversation, as a push's engine reads it without the API's list: none for one from after
+  /// the cutover, one this device never applied, or one let go.
+  LegacyRecord? kept(String conversationId) => recordIn(_kept()[conversationId]);
+
   /// The person said yes to the members of today: the record goes, and none is made again.
   Future<void> drop(String conversationId) => _keep(conversationId, null);
 

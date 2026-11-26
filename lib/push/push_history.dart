@@ -1,11 +1,13 @@
 import 'dart:convert';
 import 'dart:io';
 
+import '../data/models.dart' show ConversationTarget;
 import 'push_message.dart';
 
 /// The last messages pushed for each chat, which its notification shows. They're kept on disk
 /// (`push/<chatId>.json` under [dir]), as a push is shown by the background isolate or the app's own, whichever
-/// runs.
+/// runs. A conversation's are kept without their text (PLAN-E2E-CLIENTES.md, Task 21): its notification reads them from
+/// this device's database.
 class PushHistory {
   /// How many messages a chat's notification shows.
   static const kept = 6;
@@ -19,7 +21,9 @@ class PushHistory {
   /// first.
   Future<List<MessagePush>> addAll(List<MessagePush> pushes) async {
     final file = _file(pushes.first.chatId);
-    final byMessage = {for (final p in await _read(file)) p.messageId: p, for (final p in pushes) p.messageId: p};
+    // A conversation's lines are kept, and given back, without their text.
+    final lines = [for (final p in pushes) p.target is ConversationTarget ? p.withText('') : p];
+    final byMessage = {for (final p in await _read(file)) p.messageId: p, for (final p in lines) p.messageId: p};
     final all = byMessage.values.toList()..sort((a, b) => a.sentAt.compareTo(b.sentAt));
     final last = all.length > kept ? all.sublist(all.length - kept) : all;
     await file.parent.create(recursive: true);
@@ -37,6 +41,30 @@ class PushHistory {
   Future<void> forget(String chatId) async {
     try {
       await _file(chatId).delete();
+    } on PathNotFoundException {
+      // None kept.
+    }
+  }
+
+  /// Deletes the histories of conversations a version before this one kept, with their text in the clear: as the app
+  /// starts, and before a push shows. Those this version keeps, without it, stay.
+  Future<void> forgetConversationTexts() async {
+    try {
+      await for (final entry in Directory('${dir.path}/push').list()) {
+        if (entry is! File || !entry.path.endsWith('.json')) continue;
+        final List<Object?> lines;
+        try {
+          lines = switch (jsonDecode(await entry.readAsString())) {
+            final List<Object?> read => read,
+            _ => const [],
+          };
+        } on FormatException {
+          continue;
+        }
+        if (lines.any((line) => line is Map && line['conversation_id'] != null && (line['text'] ?? '') != '')) {
+          await entry.delete();
+        }
+      }
     } on PathNotFoundException {
       // None kept.
     }
@@ -61,8 +89,7 @@ class PushHistory {
       if (list is! List) return [];
       return [
         for (final item in list)
-          if (item is Map<String, dynamic>)
-            if (Push.fromData(item) case final MessagePush push) push,
+          if (item is Map<String, dynamic>) ?MessagePush.kept(item),
       ];
     } on FileSystemException {
       return [];
