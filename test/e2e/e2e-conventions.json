@@ -53,7 +53,9 @@
 		"file_save_named": "Save {name}",
 		"file_play": "Play video",
 		"file_show": "Show picture",
-		"file_named": "{name}: {status}"
+		"file_named": "{name}: {status}",
+		"search_split": "In an encrypted conversation, pinned: and has:sticker can't be combined with words or with has:image, video or sound.",
+		"new_message": "New message"
 	},
 	"filled_notices": [
 		{

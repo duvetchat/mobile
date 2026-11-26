@@ -31,6 +31,7 @@ import 'calls.dart';
 import 'deep_links.dart';
 // The core's gate needs dart:io and isolates, which the web build lacks.
 import 'e2e/app_host_web.dart' if (dart.library.io) 'e2e/app_host.dart';
+import 'e2e/push_decrypt.dart';
 import 'encryption/change_refusals.dart';
 import 'mention_notices.dart';
 import 'push/background.dart';
@@ -81,6 +82,11 @@ Future<void> main() async {
   );
   final repository = DuvetRepository(
     forgetNotifications: forgetChat,
+    // A conversation's notice the app couldn't show, gone to the back while it waited, shows as the phone's
+    // notification (Android's alone are set up).
+    notifyAway: onAndroid
+        ? (notice) => unawaited(showPush(MessagePush.away(notice)).catchError((Object e) => debugPrint('push: $e')))
+        : null,
     // The encryption engine runs here, the app's engine, on its gate (lib/e2e), once the app is on a screen: main()
     // runs on audio_service's engine too, which may start with none (shownAtStart).
     encryptionHost: appCoreHost,
@@ -90,6 +96,18 @@ Future<void> main() async {
   // The background renewal asks this isolate first: the session keeps one owner while the app runs
   // (lib/push/renewal.dart).
   answerRenewals(() => repository.renewForBackground(renewalEvery));
+  // A push of a conversation's message asks this engine for its text while its device is ready, as it holds the core
+  // then (lib/e2e/push_decrypt.dart). The notifications' histories of conversations a version before this one kept,
+  // with their text in the clear, go as the app starts.
+  answerPushesWhileReady(
+    repository.encryption,
+    (ask) => repository.pushTexts(ask.conversationId, ask.entry, ask.lines, ask.wait),
+  );
+  unawaited(
+    pushHistory()
+        .then((history) => history.forgetConversationTexts())
+        .catchError((Object e) => debugPrint('push: the histories before: $e')),
+  );
   // Signing out leaves none of the account's notifications on the phone. Before the session starts: one found
   // ended tells of it at once.
   repository.signedOut.listen(

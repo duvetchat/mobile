@@ -14,9 +14,9 @@ import 'dart:math';
 import 'package:crypto/crypto.dart';
 import 'package:flutter/foundation.dart';
 
-import 'content.dart';
 import 'conventions.dart';
 import 'host.dart';
+import 'search.dart' show DeviceSearch, devicePage, searchDevice;
 import 'uuid.dart';
 
 /// The most bytes a request to the API takes: a message's form, its sealed files and their thumbnails together.
@@ -386,24 +386,14 @@ Future<({Uint8List bytes, String name})?> gifFile(String url, Future<Uint8List?>
   return (bytes: bytes, name: name.toLowerCase().endsWith('.gif') ? name : '$name.gif');
 }
 
-/// How many messages a search page gives.
-const _searchPage = 100;
-
 /// The names of the files whose messages this device holds, by their IDs, a thumbnail of its own named as its file:
-/// one pass of the core's search of the messages with files, a page at a time (Ruling 31).
+/// one pass of the core's search of the messages with files ([searchDevice], the one way this device's database is
+/// searched), a page at a time (Ruling 31).
 Future<Map<String, String>> fileNames(CoreHost host) async {
   final names = <String, String>{};
-  for (var offset = 0; ; offset += _searchPage) {
-    final found = await host.handle<Map<String, Object?>>({
-      'cmd': 'search',
-      'has': ['file'],
-      'limit': _searchPage,
-      'offset': offset,
-    });
-    final messages = [
-      for (final row in found['messages'] as List? ?? const []) ShownMessage.of((row as Map).cast<String, Object?>()),
-    ];
-    for (final message in messages) {
+  for (var offset = 0; ; offset += devicePage) {
+    final found = await searchDevice(host, DeviceSearch(has: const ['file'], offset: offset));
+    for (final message in found.messages) {
       for (final raw in message.attachments) {
         final file = shownFile(raw);
         if (file == null) continue;
@@ -411,7 +401,6 @@ Future<Map<String, String>> fileNames(CoreHost host) async {
         if (file.thumbnailRef case final ref?) names[ref.id] = file.name;
       }
     }
-    final total = found['total'] as int? ?? 0;
-    if (messages.length < _searchPage || offset + _searchPage >= total) return names;
+    if (found.messages.length < devicePage || offset + devicePage >= found.total) return names;
   }
 }

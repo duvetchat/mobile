@@ -361,9 +361,9 @@ void main() {
         ],
         // The API answers the newest first.
         ('GET', '/api/users/@me/conversations/c-1/messages') => [_dm('2', _me, 'second'), _dm('1', _maya, 'first')],
-        ('GET', '/api/users/@me/conversations/c-1/messages/search') => {
+        ('GET', '/api/spaces/s-1/messages/search') => {
           'total_results': 40,
-          'messages': [_dm('2', _me, 'second')],
+          'messages': [_roomMessage('2', 'second')],
         },
         ('POST', '/api/users/@me/conversations/c-1/messages')
             when (request.headers['content-type'] ?? '').startsWith('multipart/') =>
@@ -2796,25 +2796,34 @@ void main() {
 
     test('a search sends the desktop\'s filters and a cursor, and answers the total', () async {
       await repository.logIn('gaby@duvet.chat', 'secret');
-      final page = await repository.search(
-        SearchQuery(
-          'second',
-          conversationId: 'c-1',
-          authorIds: const [_me],
-          has: const ['image', 'link'],
-          pinned: false,
-          after: DateTime.utc(2026, 11, 8),
-          cursor: '9',
-        ),
+      final query = SearchQuery(
+        'second',
+        spaceId: 's-1',
+        authorIds: const [_me],
+        has: const ['image', 'link'],
+        pinned: false,
+        after: DateTime.utc(2026, 11, 8),
+        cursor: '9',
       );
-      // A conversation's hit shows what this device's own database holds of it: none of the API's words.
-      expect((page.total, page.hits.single.message.content), (40, ''));
+      final page = await repository.search(query);
+      expect((page.total, page.hits.single.message.content), (40, 'second'));
       final url = requests.lastWhere((r) => r.url.path.endsWith('/messages/search')).url;
+      expect(url.queryParameters['query'], 'second');
       expect(url.queryParametersAll['has'], ['image', 'link']);
       expect(url.queryParameters['author_id'], _me);
       expect(url.queryParameters['pinned'], 'false');
       expect(url.queryParameters['after'], startsWith('2026-11-08T00:00:00'));
       expect(url.queryParameters['cursor'], '9');
+      // The next page starts after this one's last.
+      expect(page.next?.cursor, '2');
+      // A conversation's search goes to this device's database (test/e2e/search_test.dart): without an engine here,
+      // none is ready, and the API isn't asked.
+      final asked = requests.length;
+      await expectLater(
+        repository.search(const SearchQuery('', conversationId: 'c-1', pinned: true)),
+        throwsA(isA<ActionFailed>().having((e) => e.message, 'message', Notice.notReady.text)),
+      );
+      expect(requests.length, asked);
     });
 
     test('the newest message of a room is fetched alone, and kept live', () async {

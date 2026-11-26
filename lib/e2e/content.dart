@@ -74,6 +74,25 @@ Future<List<ShownMessage>> shownMessages(CoreHost host, String conversationId, L
       ShownMessage.of((row as Map).cast<String, Object?>()),
 ];
 
+/// A message by its ID, and the author the API names for it.
+typedef Authored = ({String id, String author});
+
+/// The texts this device's database holds of [messages] of the conversation, by ID: each opened (`ok`) and only from
+/// the author the API names for it; none for one it doesn't hold, one without text, or another author's (a notice
+/// never says what the server wrote: rule 6 of the desktop's task 20 review).
+Future<Map<String, String>> textsOf(CoreHost host, String conversationId, List<Authored> messages) async {
+  final authors = {for (final message in messages) message.id: message.author};
+  if (authors.isEmpty) return const {};
+  return {
+    for (final row in await shownMessages(host, conversationId, [...authors.keys]))
+      if ((row.messageId, row.text) case (
+        final id?,
+        final text?,
+      ) when row.status == MessageStatus.ok && authors[id] == row.userId)
+        id: text,
+  };
+}
+
 /// This device's own messages of the conversation still being sent, in the order they were made.
 Future<List<ShownMessage>> pendingRows(CoreHost host, String conversationId) async {
   // A page lists them first, the newest first.
