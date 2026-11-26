@@ -131,5 +131,45 @@ void main() {
       expect(readApprovalFrame(approvalFrameMessage(frame)), frame);
       expect(readApprovalFrame(named(r'\ud800'))?.name, '\u{fffd}');
     });
+
+    // Dart's base64Decode takes the URL's alphabet and an escaped padding, which the desktop's atob refuses, as atob
+    // takes spaces, a missing padding and stray bits, which base64Decode refuses: the core and the API write only the
+    // one form, the one both apps read alike, and the inbox would send one message to the approval on one app and to
+    // the core on the other.
+    test('base64 from others is read only in the form the core and the API write', () {
+      final message = approvalFrameMessage((step: ApprovalStep.offer, data: 'b2Y=', name: '???'));
+      expect(message, contains('/'));
+      expect(readApprovalFrame(message), isNotNull);
+      for (final other in [message.replaceAll('/', '_'), message.replaceAll('=', '%3D')]) {
+        expect(readApprovalFrame(other), isNull, reason: other);
+      }
+      // Its data's last character with a bit past its bytes, which no core writes.
+      expect(readApprovalFrame(approvalFrameMessage((step: ApprovalStep.offer, data: 'b2Z=', name: null))), isNull);
+      // A voice note's waveform so is no waveform: a message, never a throw.
+      final waveform = base64Encode(List.filled(waveformSamples, 7));
+      final stray = '${waveform.substring(0, waveform.length - 3)}x==';
+      final note = {'type': 'audio/ogg', 'duration_ms': 1500, 'waveform': waveform};
+      expect(drawnAs(text: null, attachments: [note], sticker: false), Drawn.voiceNote);
+      expect(
+        drawnAs(
+          text: null,
+          attachments: [
+            {...note, 'waveform': stray},
+          ],
+          sticker: false,
+        ),
+        Drawn.message,
+      );
+      expect(
+        drawnAs(
+          text: null,
+          attachments: [
+            {...note, 'waveform': waveform.replaceAll('=', '%3D')},
+          ],
+          sticker: false,
+        ),
+        Drawn.message,
+      );
+    });
   });
 }

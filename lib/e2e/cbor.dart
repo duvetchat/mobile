@@ -7,6 +7,8 @@ library;
 import 'dart:convert';
 import 'dart:typed_data';
 
+import 'conventions.dart' show canonicalBytes;
+
 /// One CBOR value, as the core writes them: definite lengths, text keys, no tags; null for anything else.
 Object? cbor(Uint8List bytes) {
   var at = 0;
@@ -76,12 +78,8 @@ String? asUuid(Object? value) {
 /// The device a certificate names (its signed object in base64, `{body, sig}`, its body's `device`), or null: read,
 /// never checked, as the core checks it.
 String? certificateDevice(String certificate) {
-  final Uint8List signed;
-  try {
-    signed = base64Decode(certificate);
-  } on FormatException {
-    return null;
-  }
+  final signed = canonicalBytes(certificate);
+  if (signed == null) return null;
   final body = asBytes(asMap(cbor(signed))?['body']);
   return body == null ? null : asUuid(asMap(cbor(body))?['device']);
 }
@@ -89,12 +87,8 @@ String? certificateDevice(String certificate) {
 /// A signed device list's version and the devices it names, in its order (its signed object in base64, `{body, sig}`,
 /// its body's `version` and `devices`), or null: read, never checked, as the core checks it.
 ({int version, List<String> devices})? deviceListOf(String list) {
-  final Uint8List signed;
-  try {
-    signed = base64Decode(list);
-  } on FormatException {
-    return null;
-  }
+  final signed = canonicalBytes(list);
+  if (signed == null) return null;
   final body = asBytes(asMap(cbor(signed))?['body']);
   final fields = body == null ? null : asMap(cbor(body));
   final (version, devices) = (fields?['version'], fields?['devices']);
@@ -112,13 +106,8 @@ String? qrDevice(String qr) => _approvalDevice(qr);
 String? commitmentDevice(String commitment) => _approvalDevice(commitment);
 
 String? _approvalDevice(String text) {
-  final Uint8List bytes;
-  try {
-    bytes = base64Decode(text);
-  } on FormatException {
-    return null;
-  }
-  return asUuid(asMap(cbor(bytes))?['device']);
+  final bytes = canonicalBytes(text);
+  return bytes == null ? null : asUuid(asMap(cbor(bytes))?['device']);
 }
 
 /// The devices a signed device list names, in its order, or null ([deviceListOf]).

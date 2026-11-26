@@ -43,9 +43,21 @@ Drawn drawnAs({required String? text, required List<Map<String, Object?>> attach
       type.startsWith('audio/') &&
       file!['duration_ms'] is num &&
       waveform is String &&
-      _base64.hasMatch(waveform) &&
-      base64Decode(waveform).length == waveformSamples;
+      canonicalBytes(waveform)?.length == waveformSamples;
   return voice ? Drawn.voiceNote : Drawn.message;
+}
+
+/// The bytes base64 holds, read only in the form the core and the API write it: standard, padded, and with no bit set
+/// past its bytes. base64Decode takes the URL's alphabet and an escaped padding as well, which the desktop's atob
+/// refuses, as that takes spaces, a missing padding and stray bits, which base64Decode refuses: in its one form, both
+/// read the same bytes of the same text. Null for any other text.
+Uint8List? canonicalBytes(String text) {
+  try {
+    final bytes = base64Decode(text);
+    return base64Encode(bytes) == text ? bytes : null;
+  } on FormatException {
+    return null;
+  }
 }
 
 /// A thumbnail's longer side, at most: as an app makes one, and as both draw one.
@@ -240,8 +252,6 @@ enum ApprovalStep { commitment, offer, reveal, transfer }
 typedef ApprovalFrame = ({ApprovalStep step, String data, String? name});
 
 const _frameFields = {'duvet', 'step', 'data', 'name'};
-// Standard base64, padded, as the core writes binaries.
-final _base64 = RegExp(r'^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$');
 
 /// The most characters a device's name has, counted by code point.
 const maxDeviceName = 64;
@@ -255,11 +265,12 @@ String approvalFrameMessage(ApprovalFrame frame) => base64Encode(
 /// (receive_direct's). A frame is JSON with duvet "approval", one of the four steps, its data in base64, a name of 64
 /// characters at most if any, and nothing else.
 ApprovalFrame? readApprovalFrame(String message) {
+  final bytes = canonicalBytes(message);
+  if (bytes == null) return null;
+  // A byte order mark is no JSON's, as the desktop reads it; utf8.decode would drop it.
+  if (bytes.length >= 3 && bytes[0] == 0xef && bytes[1] == 0xbb && bytes[2] == 0xbf) return null;
   final Object? value;
   try {
-    final bytes = base64Decode(message);
-    // A byte order mark is no JSON's, as the desktop reads it; utf8.decode would drop it.
-    if (bytes.length >= 3 && bytes[0] == 0xef && bytes[1] == 0xbb && bytes[2] == 0xbf) return null;
     value = jsonDecode(utf8.decode(bytes));
   } on FormatException {
     return null;
@@ -268,7 +279,7 @@ ApprovalFrame? readApprovalFrame(String message) {
   final step = ApprovalStep.values.asNameMap()[value['step']];
   final data = value['data'];
   if (value['duvet'] != 'approval' || step == null) return null;
-  if (data is! String || data.isEmpty || !_base64.hasMatch(data)) return null;
+  if (data is! String || data.isEmpty || canonicalBytes(data) == null) return null;
   if (!value.containsKey('name')) return (step: step, data: data, name: null);
   // The approving device shows the name: it loses what doesn't show, as a file's name does.
   final name = value['name'];
