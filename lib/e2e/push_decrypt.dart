@@ -116,8 +116,9 @@ void answerPushesWhileReady(ValueListenable<EngineState> state, Future<PushAnswe
 }
 
 /// Asks the app's engine, when one answers on [pushPortName], within the push's time [left]: null when none takes it
-/// within [_takes] (none runs, or its isolate ended since it registered), when its isolate ends before it answers, when
-/// it doesn't answer in time, or when it can't (its device not ready).
+/// within [_takes] (none runs, or its isolate ended since it registered), when its isolate ends before it answers, or
+/// when it can't (its device not ready). Its wait for the rest of the push's time ends as that time does, with a
+/// [TimeoutException].
 Future<PushAnswer?> _askApp(PushAsk ask, Duration Function() left) async {
   final app = IsolateNameServer.lookupPortByName(pushPortName);
   if (app == null) return null;
@@ -128,12 +129,18 @@ Future<PushAnswer?> _askApp(PushAsk ask, Duration Function() left) async {
   Isolate? engine;
   try {
     app.send([answers.sendPort, _askJson(ask)]);
-    if (!await next(left() < _takes ? left() : _takes)) return null;
+    // A wait for the rest of the push's time ends it, never with null: the wait's timer counts whole milliseconds and
+    // may end up to one before the push's clock does, which would leave the push a moment to make a core in (#341).
+    final take = left();
+    if (!await next(take < _takes ? take : _takes)) {
+      if (take < _takes) throw TimeoutException('no app took the request');
+      return null;
+    }
     if (replies.current case ['taken', final SendPort control]) {
       // shortcut: an isolate that ends before this listens sends no exit message, and the push waits out its time then.
       engine = Isolate(control)..addOnExitListener(answers.sendPort, response: const ['gone']);
     }
-    if (!await next(left())) return null;
+    if (!await next(left())) throw TimeoutException("the app's engine didn't answer");
     return switch (replies.current) {
       final String answered => switch (jsonDecode(answered)) {
         {'texts': final Map<String, dynamic> texts, 'on_screen': final bool onScreen} => (
