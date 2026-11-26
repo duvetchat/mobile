@@ -224,7 +224,7 @@ const _messageKinds = {'message', 'edit', 'delete'};
 const _shownChanges = {'applied', 'own', 'undecryptable'};
 
 class Conversations {
-  Conversations(this._engine, this._soon, this._failures, this._changed, this._messages)
+  Conversations(this._engine, this._soon, this._failures, this._changed, this._messages, this._deleted)
     : _legacy = LegacyRecords(_engine.store);
 
   final E2EEngine _engine;
@@ -236,6 +236,10 @@ class Conversations {
 
   /// A conversation's messages changed on this device: an apply opened, kept or took some.
   final void Function(String conversationId) _messages;
+
+  /// Messages an apply learned were deleted (a tombstone it took, one the queue serves as deleted): their files go
+  /// (task 18's review, M4).
+  final void Function(String conversationId, List<String> messageIds) _deleted;
   final LegacyRecords _legacy;
 
   CoreHost get _host => _engine.host;
@@ -651,6 +655,13 @@ class Conversations {
         if (entry['deleted'] == true) entry['seq']! as int,
     };
     failedKinds(results, deleted).forEach(_failures.note);
+    final resultOf = {for (final r in results) r.seq: r.result};
+    _deleted(conv.id, [
+      for (final entry in entries)
+        if (entry['message_id'] case final String message)
+          if (entry['deleted'] == true || (entry['kind'] == 'delete' && _shownChanges.contains(resultOf[entry['seq']])))
+            message,
+    ]);
     final through = applied['applied_through'] as int?;
     final moved = !_through.containsKey(conv.id) || _through[conv.id] != through;
     _through[conv.id] = through;

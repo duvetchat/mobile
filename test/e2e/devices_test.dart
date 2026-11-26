@@ -473,6 +473,11 @@ void main() {
         await app.ready();
         final session = sessionOf(app);
         expect(databaseOf(app, ana).existsSync(), isTrue);
+        // A decrypted file set aside to share (task 19), which a sign-out leaves for the next start.
+        final media = Directory('${app.support.path}/e2e-media');
+        File('${media.path}/share/a/shared.txt')
+          ..createSync(recursive: true)
+          ..writeAsStringSync('a decrypted file');
 
         await app.repository.removeThisDevice();
         // Signed out: the API ended its session.
@@ -481,9 +486,10 @@ void main() {
           duvet.RestClient(fake.client, router: fakeRouter, token: session, duvetClient: engineClient),
         ).devices();
         await expectLater(ended, throwsA(isA<duvet.DuvetApiException>().having((e) => e.statusCode, 'status', 401)));
-        // Its data is gone: the database and its key.
+        // Its data is gone: the database and its key, and every file it decrypted.
         expect(databaseOf(app, ana).existsSync(), isFalse);
         expect(app.keys.keyOf(ana), isNull);
+        expect(media.existsSync() ? media.listSync() : const <FileSystemEntity>[], isEmpty);
       },
       skip: noCore,
       timeout: _slow,

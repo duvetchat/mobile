@@ -190,6 +190,14 @@ class _OpensAfter implements CoreHost {
   Future<T> handle<T>(Map<String, Object?> command) => _core.handle<T>(command);
 
   @override
+  Future<Uint8List> sealFile(String key, String attachmentId, Uint8List plain, {void Function(int)? progress}) =>
+      _core.sealFile(key, attachmentId, plain, progress: progress);
+
+  @override
+  Future<Uint8List> openFile(String key, String attachmentId, Uint8List sealed, {void Function(int)? progress}) =>
+      _core.openFile(key, attachmentId, sealed, progress: progress);
+
+  @override
   Future<void> close() => _core.close();
 
   @override

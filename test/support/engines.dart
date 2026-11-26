@@ -159,6 +159,14 @@ class LockedOnce implements CoreHost {
   Future<T> handle<T>(Map<String, Object?> command) => _host.handle<T>(command);
 
   @override
+  Future<Uint8List> sealFile(String key, String attachmentId, Uint8List plain, {void Function(int)? progress}) =>
+      _host.sealFile(key, attachmentId, plain, progress: progress);
+
+  @override
+  Future<Uint8List> openFile(String key, String attachmentId, Uint8List sealed, {void Function(int)? progress}) =>
+      _host.openFile(key, attachmentId, sealed, progress: progress);
+
+  @override
   Future<void> close() => _host.close();
 
   @override
@@ -186,6 +194,14 @@ class WatchedHost implements CoreHost {
   }
 
   @override
+  Future<Uint8List> sealFile(String key, String attachmentId, Uint8List plain, {void Function(int)? progress}) =>
+      _host.sealFile(key, attachmentId, plain, progress: progress);
+
+  @override
+  Future<Uint8List> openFile(String key, String attachmentId, Uint8List sealed, {void Function(int)? progress}) =>
+      _host.openFile(key, attachmentId, sealed, progress: progress);
+
+  @override
   Future<Opened> open(String userId) => _host.open(userId);
 
   @override
@@ -196,20 +212,35 @@ class WatchedHost implements CoreHost {
 }
 
 /// An http client on the fake that tells [seen] of each request first, and can answer one itself ([answer]: null
-/// passes it on) or change the fake's answer ([change]).
+/// passes it on) or change the fake's answer ([change]). A request aborted while [answer] holds it never reaches the
+/// fake, as a real client's never reaches the API (task 19's review, M10).
 http.Client watchedClient(
   FakeApi fake, {
   void Function(http.Request request)? seen,
   Future<http.Response?> Function(http.Request request)? answer,
   Future<http.Response> Function(http.Request request, http.Response answered)? change,
-}) => MockClient((request) async {
+}) => MockClient.streaming((sent, body) async {
+  final request = http.Request(sent.method, sent.url)
+    ..headers.addAll(sent.headers)
+    ..bodyBytes = await body.toBytes();
+  var aborted = false;
+  if (sent case http.Abortable(:final abortTrigger?)) {
+    unawaited(abortTrigger.then((_) => aborted = true, onError: (Object _) => aborted = true));
+  }
   seen?.call(request);
-  if (await answer?.call(request) case final answered?) return answered;
-  final copy = http.Request(request.method, request.url)
-    ..headers.addAll(request.headers)
-    ..bodyBytes = request.bodyBytes;
-  final answered = await http.Response.fromStream(await fake.client.send(copy));
-  return change == null ? answered : change(request, answered);
+  var answered = await answer?.call(request);
+  if (aborted) throw http.RequestAbortedException(sent.url);
+  if (answered == null) {
+    answered = await http.Response.fromStream(await fake.client.send(request));
+    if (change != null) answered = await change(request, answered);
+  }
+  return http.StreamedResponse(
+    http.ByteStream.fromBytes(answered.bodyBytes),
+    answered.statusCode,
+    headers: answered.headers,
+    reasonPhrase: answered.reasonPhrase,
+    request: sent,
+  );
 });
 
 /// A gateway event as the app's gateway client hands it on: the fake's READY with what duvet_client reads of it.

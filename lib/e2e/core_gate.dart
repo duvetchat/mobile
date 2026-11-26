@@ -38,10 +38,6 @@ const _lostKey = (state: HostState.failed, keyStorage: null, reason: 'bad_key');
 /// The commands [CoreGate.handle] refuses: each has a way of its own, which keeps its bytes out of one JSON.
 const ownWay = {'attachment_encrypt', 'attachment_decrypt', 'history_share', 'catch_up', 'history_import'};
 
-/// A file's parts as the core seals them: 64 KiB of the file each, and its 16-byte tag.
-const attachmentPart = 65536;
-const partTag = 16;
-
 /// The most parts [CoreGate.importShare] hands the core at once, which reads the whole command before it looks at
 /// them.
 const maxShareParts = 64;
@@ -380,6 +376,7 @@ final class CoreGate implements CoreHost {
   }
 
   /// Seals a whole file, part by part, so its bytes never go in one JSON; [progress] hears how many are done.
+  @override
   Future<Uint8List> sealFile(
     String key,
     String attachmentId,
@@ -394,6 +391,7 @@ final class CoreGate implements CoreHost {
           as Uint8List;
 
   /// Opens a sealed file, part by part; [progress] hears how many of its bytes are done.
+  @override
   Future<Uint8List> openFile(
     String key,
     String attachmentId,

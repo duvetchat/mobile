@@ -48,6 +48,45 @@ Drawn drawnAs({required String? text, required List<Map<String, Object?>> attach
   return voice ? Drawn.voiceNote : Drawn.message;
 }
 
+/// A thumbnail's longer side, at most: as an app makes one, and as both draw one.
+const thumbnailSide = 320;
+
+/// Whether a thumbnail's bytes are drawn: a JPEG or a PNG whose header says it's [thumbnailSide] a side at most, read
+/// before anything decodes it. What its sender writes is theirs, and an 8 KiB JPEG whose header says 12000 × 12000
+/// would take a bitmap of 576 MB on every visit (task 19's review, I3; the desktop's thumbnailDrawn).
+bool thumbnailDrawn(Uint8List bytes) {
+  final size = switch (sniffType(bytes)) {
+    'image/png' when bytes.length >= 24 && ascii.decode(bytes.sublist(12, 16), allowInvalid: true) == 'IHDR' => (
+      width: ByteData.sublistView(bytes).getUint32(16),
+      height: ByteData.sublistView(bytes).getUint32(20),
+    ),
+    'image/jpeg' => _jpegSize(bytes),
+    _ => null,
+  };
+  return size != null && size.width > 0 && size.height > 0 && max(size.width, size.height) <= thumbnailSide;
+}
+
+/// A JPEG's size, from its first frame header (SOF): its segments are each a marker, then most of them a length.
+({int width, int height})? _jpegSize(Uint8List bytes) {
+  final view = ByteData.sublistView(bytes);
+  for (var at = 2; at + 4 <= bytes.length;) {
+    if (bytes[at] != 0xff) return null;
+    final marker = bytes[at + 1];
+    if (marker == 0xff) {
+      at++; // fill
+    } else if (marker == 0x01 || (marker >= 0xd0 && marker <= 0xd8)) {
+      at += 2; // no length
+    } else if (marker == 0xd9 || marker == 0xda) {
+      return null; // its end, or its data, before any frame header
+    } else if (marker >= 0xc0 && marker <= 0xcf && marker != 0xc4 && marker != 0xc8 && marker != 0xcc) {
+      return at + 9 <= bytes.length ? (width: view.getUint16(at + 7), height: view.getUint16(at + 5)) : null;
+    } else {
+      at += 2 + view.getUint16(at + 2);
+    }
+  }
+  return null;
+}
+
 /// The most characters a file's name keeps, counted by code point.
 const maxFileName = 255;
 

@@ -44,6 +44,14 @@ class _Host implements CoreHost {
   Future<T> handle<T>(Map<String, Object?> command) async => throw CoreError('internal', message: 'no core');
 
   @override
+  Future<Uint8List> sealFile(String key, String attachmentId, Uint8List plain, {void Function(int)? progress}) =>
+      throw CoreError('internal', message: 'no core');
+
+  @override
+  Future<Uint8List> openFile(String key, String attachmentId, Uint8List sealed, {void Function(int)? progress}) =>
+      throw CoreError('internal', message: 'no core');
+
+  @override
   Future<void> close() async => closed++;
 
   @override

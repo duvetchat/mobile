@@ -21,6 +21,7 @@ import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
 
 import 'ed25519.dart';
+import 'multipart.dart';
 
 /// Where the fake answers: any origin does, only the path counts.
 const fakeApiUrl = 'https://fake-api.test';
@@ -445,7 +446,7 @@ class _Connection {
 }
 
 class _Context {
-  _Context(this.session, this.device, this.params, this.query, this.body, this.bytes, this.headers);
+  _Context(this.session, this.device, this.params, this.query, this.body, this.bytes, this.headers, this.files);
   final _Session? session;
   final _Device? device;
   final Map<String, String> params;
@@ -453,6 +454,9 @@ class _Context {
   final Map<String, Object?>? body;
   final Uint8List bytes;
   final Map<String, String> headers;
+
+  /// A form's files, in their order: none for a JSON body.
+  final List<FormPart> files;
 
   _Session get me => session!;
   Object? operator [](String field) => body?[field];
@@ -474,9 +478,26 @@ const _noContent = _Answer(204);
 /// A copy of JSON's values, so what's sent is what was there then.
 T _clone<T>(T value) => jsonDecode(jsonEncode(value)) as T;
 
-// A switch's effects but an answer of its own: the answer lost, or the request never reaching the API.
+// A switch's effects but an answer of its own: the answer lost, the request never reaching the API, or a message's
+// connection cut once its files went up.
 const _lose = #lose;
 const _cut = #cut;
+const _cutAfterFiles = #cutAfterFiles;
+
+/// The most bytes one file of a message takes, as Duvet's storage does: past it, a 413.
+const fileMost = 20 << 20;
+
+/// A message's file the fake keeps, as the API's attachment row: whose, its sealed bytes' size and SHA-256, and the
+/// message it's on (none while it isn't on one).
+class _Attachment {
+  _Attachment(this.id, this.owner, this.size, this.sha256, this.createdAt);
+  final String id;
+  final String owner;
+  final int size;
+  final String sha256;
+  final String createdAt;
+  String? message;
+}
 
 class FakeApi {
   FakeApi() {
@@ -510,6 +531,18 @@ class FakeApi {
   final _segments = <String, _Segment>{};
   final _shares = <String, _Share>{};
   final _files = <String, Uint8List>{};
+
+  /// Messages' files, by their IDs: their bytes are in [_files].
+  final _attachments = <String, _Attachment>{};
+
+  /// The next message's request whose files go up has its connection cut before its message is taken.
+  var _cuttingAfterFiles = false;
+
+  /// The sealed bytes the API keeps of a message's file, by its ID; null for none.
+  Uint8List? fileBytes(String id) => _attachments.containsKey(id) ? _files[id] : null;
+
+  /// Where a file the fake keeps is downloaded from, signed now, as its message's reads give it.
+  String signedUrlOf(String file) => _signedPath(file);
 
   /// The inbox messages that are a rotation's transfers, by ID.
   final _transfers = <String>{};
@@ -679,6 +712,10 @@ class FakeApi {
   /// The next request [match] takes does its work, and its answer is lost: the client fails, as with a cut connection.
   void loseAnswer(RouteMatch match) => _switches.add((match: match, effect: _lose));
 
+  /// The next message [match] takes has its files go up, then its connection cut: the files stay up, on no message,
+  /// and the message isn't taken.
+  void cutAfterFiles(RouteMatch match) => _switches.add((match: match, effect: _cutAfterFiles));
+
   /// The next request [match] takes is refused, and does nothing: 426 and 503 in the API's words (503 with its
   /// Retry-After), any other with the [body] given.
   void refuse(RouteMatch match, int status, {Object? body, Map<String, String> headers = const {}}) {
@@ -743,6 +780,7 @@ class FakeApi {
     final effect = switched < 0 ? null : _switches.removeAt(switched).effect;
     if (effect == _cut) throw http.ClientException('the request never reached the API', request.url);
     if (effect case final _Answer answer) return _respond(answer);
+    _cuttingAfterFiles = effect == _cutAfterFiles;
     final (answer, events) = _answer(request);
     // Its events go once its answer is made, lost or not: after the code that awaited it ran on.
     Timer.run(() => _send(events));
@@ -765,12 +803,24 @@ class FakeApi {
       }
       if (route.needs == _Needs.listed && !device!.listed) throw _fail(403, "this device isn't on your device list");
       Map<String, Object?>? body;
+      var files = const <FormPart>[];
       if ((request.headers['content-type'] ?? '').contains('json') && request.bodyBytes.isNotEmpty) {
         try {
           body = asMap(jsonDecode(utf8.decode(request.bodyBytes)));
         } on FormatException {
           throw _fail(400, "the body isn't JSON");
         }
+      } else if (formParts(request.headers['content-type'], request.bodyBytes) case final parts?) {
+        // A form, as the API's binding reads it: a value once is its text, repeated a list; a part with a file name a
+        // file, and one without a name none (Go's multipart reader can't open it).
+        final form = formOf(parts);
+        body = {
+          for (final MapEntry(:key, :value) in form.values.entries) key: value.length == 1 ? value.single : value,
+        };
+        files = [
+          for (final file in form.files)
+            if (file.filename!.isNotEmpty) file,
+        ];
       }
       final match = route.path.firstMatch(path)!;
       final params = {for (final name in match.groupNames) name: match.namedGroup(name)!};
@@ -782,6 +832,7 @@ class FakeApi {
         body,
         request.bodyBytes,
         request.headers,
+        files,
       );
       final answer = route.handler(ctx);
       final events = [..._outbox];
@@ -855,6 +906,13 @@ class FakeApi {
           'min_clients': minClients,
           'limits': _limits,
         });
+      }),
+      // The user's files, as their attachments' list gives them: a message's sealed files, which name nothing of it.
+      route('GET', '$me/attachments', _Needs.session, any: true, (ctx) {
+        return _ok([
+          for (final a in _attachments.values)
+            if (a.owner == ctx.me.user) _attachmentView(a),
+        ]);
       }),
       route('POST', '/api/e2e/decrypt-failures', _Needs.session, (ctx) {
         decryptFailures.add((kind: '${ctx['kind']}', count: ctx['count'] ?? 1));
@@ -1777,23 +1835,41 @@ class FakeApi {
       throw _fail(400, 'a message has its nonce, 64 characters at most');
     }
     final ciphertext = _bytesIn(ctx['ciphertext'], 'ciphertext', max: _limit('ciphertext_bytes'), min: 1);
-    final listed = ctx['mentions'] ?? const [];
+    // A form's list is its value repeated, one value alone a list of one; its objects are JSON in text.
+    Object? listIn(Object? value) => value is String ? [value] : value ?? const [];
+    Object? objectIn(Object? value) => value is String ? jsonDecode(value) : value;
+    final listed = listIn(ctx['mentions']);
     if (listed is! List || listed.length > 20 || listed.any((id) => id is! String || !_uuid.hasMatch(id))) {
       throw _fail(400, 'invalid mentions');
     }
-    final framed = _checkMessage(conv, device, ciphertext);
-    // shortcut: no files go up with a message here (attachment_ids and files): the attachments' task brings them.
+    final ids = listIn(ctx['attachment_ids']);
+    if (ids is! List ||
+        ids.length != ctx.files.length ||
+        ids.any((id) => id is! String || !_uuid.hasMatch(id)) ||
+        ids.toSet().length != ids.length) {
+      throw _fail(400, 'attachment_ids names each of files, in their order, each with an ID of its own');
+    }
+    // A nonce it has answers with its message, before anything is checked of the group, as the API's checkSend.
     final sent = conv.messages.where((m) => m['sender_device_id'] == device.id && m['nonce'] == nonce).firstOrNull;
     if (sent != null) {
       if (conv.deleted.contains(sent['id'])) throw _fail(409, 'this message was deleted');
       if (sent['ciphertext'] != ctx['ciphertext']) throw _fail(409, 'this nonce went with another message');
       return _ok(sent, 201);
     }
-    final replied = _repliedIn(conv, ctx['message_reference']);
+    final framed = _checkMessage(conv, device, ciphertext);
+    final replied = _repliedIn(conv, objectIn(ctx['message_reference']));
+    // Its files go up first, each under the ID its client gave it, as the API's uploadEncryptedFiles: one up already
+    // from a send that failed is taken again.
+    final files = [for (final (i, file) in ctx.files.indexed) _upFile(session.user, ids[i] as String, file.bytes)];
+    if (_cuttingAfterFiles) {
+      _cuttingAfterFiles = false;
+      _outbox.clear();
+      throw http.ClientException('the connection was cut once its files went up');
+    }
     // Whom it mentions, as the API has it: whom it names, then the author of what it answers (unless its
     // allowed_mentions say not to, or that's a notice), each once, of the members, never its own author.
     final members = [for (final m in conv.members) m['user_id']];
-    final allowed = ctx['allowed_mentions'];
+    final allowed = objectIn(ctx['allowed_mentions']);
     final mentionReplied = allowed == null || (allowed is Map && allowed['replied_user'] == true);
     final notice = replied?['type'] == 2 || replied?['type'] == 3;
     final named = [
@@ -1801,8 +1877,9 @@ class FakeApi {
       if (replied != null && mentionReplied && !notice) replied['author_id']! as String,
     ];
     final at = _now();
+    final id = _id();
     final message = <String, Object?>{
-      'id': _id(),
+      'id': id,
       'conversation_id': conv.id,
       'author_id': session.user,
       'content': null,
@@ -1832,7 +1909,8 @@ class FakeApi {
               'created_at': replied['created_at'],
               'mention_author': mentionReplied && !notice && replied['author_id'] != session.user,
             },
-      'attachment_ids': <String>[],
+      'attachment_ids': [...ids.cast<String>()],
+      'attachments': [for (final file in files) _attachmentView(file..message = id)],
       'sticker_attachment_id': ctx['sticker_attachment_id'],
     };
     conv.messages.add(message);
@@ -1918,6 +1996,34 @@ class FakeApi {
     _files[id] = Uint8List.fromList(bytes);
     return id;
   }
+
+  /// A message's file up under [id], as the API takes one: 20 MiB at most (413); one up already that's [owner]'s, on
+  /// no message, of these bytes' size and SHA-256, taken again; any other with its ID a 409.
+  _Attachment _upFile(String owner, String id, Uint8List bytes) {
+    if (bytes.length > fileMost) throw _fail(413, 'file too large');
+    final sum = '${sha256.convert(bytes)}';
+    if (_attachments[id] case final had?) {
+      if (had.owner == owner && had.message == null && had.size == bytes.length && had.sha256 == sum) return had;
+      throw _fail(409, 'attachment id in use');
+    }
+    if (_files.containsKey(id)) throw _fail(409, 'attachment id in use');
+    final made = _attachments[id] = _Attachment(id, owner, bytes.length, sum, _now());
+    _files[id] = Uint8List.fromList(bytes);
+    return made;
+  }
+
+  /// A message's file as the API's reads and events give it: sealed (named file, application/octet-stream), at its
+  /// signed path, an encrypted file (kind 1).
+  Map<String, Object?> _attachmentView(_Attachment a) => {
+    'id': a.id,
+    'message_id': a.message,
+    'filename': 'file',
+    'content_type': 'application/octet-stream',
+    'size_bytes': a.size,
+    'created_at': a.createdAt,
+    'url': _signedPath(a.id),
+    'kind': 1,
+  };
 
   // What signs the files' paths, the fake's own (the API's ATTACHMENT_SIGNING_KEY).
   final _signingKey = _randomBytes(32);

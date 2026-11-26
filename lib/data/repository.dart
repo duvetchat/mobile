@@ -166,7 +166,16 @@ abstract interface class ChatRepository {
 
   /// Sends a voice note: [audio] in [format] (`ogg` for Ogg/Opus). A refusal
   /// the API explains throws an [ActionFailed] with its reason.
-  Future<ChatMessage> sendVoiceNote(ChatTarget target, List<int> audio, {required String nonce, String format});
+  /// In an encrypted conversation it goes by its convention: its [waveform] (64 peaks, a byte each) and its [length]
+  /// with it, sealed as any file.
+  Future<ChatMessage> sendVoiceNote(
+    ChatTarget target,
+    List<int> audio, {
+    required String nonce,
+    String format,
+    List<int>? waveform,
+    Duration? length,
+  });
 
   /// Tells the chat the user is recording a voice note.
   Future<void> sendRecording(ChatTarget target);

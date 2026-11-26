@@ -431,7 +431,7 @@ Future<void> _showOriginalSheet(
           ),
           if (message.attachments.isNotEmpty) ...[
             const SizedBox(height: 4),
-            MessageAttachments(attachments: message.attachments),
+            MessageAttachments(attachments: message.attachments, messageId: message.id),
           ],
         ],
       ),
