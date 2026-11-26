@@ -1620,6 +1620,9 @@ class FakeRepository implements ChatRepository {
   Future<void> changeKeys() async => encryptionTaps.add('changeKeys');
 
   @override
+  Future<void> finishKeysWithout() async => encryptionTaps.add('finishKeysWithout');
+
+  @override
   Future<void> removeThisDevice() async {
     encryptionTaps.add('removeThisDevice');
     await endSession();

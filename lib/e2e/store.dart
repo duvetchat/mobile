@@ -42,6 +42,10 @@ const toldInactive = 'told_inactive';
 /// later generation (sync.dart; the core's #46, kept across restarts).
 const refusedGenerations = 'refused_generations';
 
+/// Whether a change of keys of this device's left devices out with gone (duvetchat/e2e#49), until a new one starts:
+/// the app offers another, as one of them may still hold the keys.
+const keysAgain = 'keys_again';
+
 /// What a new device of this installation starts without.
 const deviceRecord = [
   keptDevice,
@@ -53,6 +57,7 @@ const deviceRecord = [
   pendingChanges,
   rotationRemove,
   refusedGenerations,
+  keysAgain,
 ];
 
 /// The API's external sender as this installation first saw it (Ruling 32), which a new device of it keeps.

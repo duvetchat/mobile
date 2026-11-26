@@ -14,7 +14,7 @@ import '../theme.dart';
 import '../widgets/chrome.dart';
 import '../widgets/depth.dart';
 import '../widgets/rows.dart';
-import 'devices.dart' show deleteThisDevice, rotationStuck;
+import 'devices.dart' show deleteThisDevice, finishWithout, keysAgainText, stuckText;
 import 'recovery_key.dart';
 
 /// Where a client too old gets the new one.
@@ -106,12 +106,24 @@ class _EncryptionBannerState extends State<EncryptionBanner> {
       action: 'Download',
       run: (_) => launchUrl(downloadPage, mode: LaunchMode.externalApplication),
     ),
-    // A change of the security keys that can never finish (review 24's I1): why, and deleting this device's data, the
-    // one way out this core leaves, as another device's change of keys can't reach it (review 25's I1).
+    // A change of the security keys that can't finish (review 24's I1): without the devices another device took off,
+    // on the person's yes; else why, and deleting this device's data, beside another device's change of keys, whose
+    // transfer now reaches this one (duvetchat/e2e#49).
+    EngineStage.ready when state.stuck && state.gone.isNotEmpty && !state.relisted => (
+      text: stuckText(state),
+      action: finishWithout,
+      run: (context) => context.repository.finishKeysWithout(),
+    ),
     EngineStage.ready when state.stuck => (
-      text: rotationStuck,
+      text: stuckText(state),
       action: Notice.deleteDevice.text,
       run: (context) => deleteThisDevice(context),
+    ),
+    // After a change of keys that left devices out: one of them may hold the keys (e2e#49).
+    EngineStage.ready when state.keysAgain => (
+      text: keysAgainText,
+      action: 'Change keys',
+      run: (context) => context.repository.changeKeys(),
     ),
     // A change of the security keys put off, or cut by the app's close before its upload (Task 25): Finish runs the
     // same change again, whose recovery key's page the state then brings up.

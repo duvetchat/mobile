@@ -1112,6 +1112,9 @@ class DuvetRepository implements ChatRepository {
   @override
   Future<void> changeKeys() async => (_engine ?? (throw ActionFailed(Notice.notReady.text))).changeKeys();
 
+  @override
+  Future<void> finishKeysWithout() async => (_engine ?? (throw ActionFailed(Notice.notReady.text))).finishKeysWithout();
+
   /// The engine deletes this device's data, then the session ends as a sign-out ends it (decision 13), and the folder
   /// of files it decrypted is emptied whole, the copies set aside to share too, which a sign-out leaves for the next
   /// start (lib/e2e/decrypted_files.dart).

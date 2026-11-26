@@ -59,9 +59,16 @@ Future<void> _keep(EngineStore store, String key, duvet.InboxMessage message) {
 /// against) and its sender's certificate, from the sender's served identity. A transfer the core keeps for later
 /// (`not_found` `code`: an approval whose code wasn't accepted yet) is kept in the record, as is one a later task takes
 /// ([_forLater]); one no core here can read goes, as does one whose call is cut five rounds running ([tries], by its
-/// ID). One that doesn't open is counted for the API as a failure to decrypt (`direct`, [failures]). True when the
-/// inbox brought a rotation's transfer, after which the own user is observed (the core's rule).
-Future<bool> takeInbox(E2EEngine engine, Map<String, int> tries, [Failures? failures]) async {
+/// ID). One that doesn't open is counted for the API as a failure to decrypt (`direct`, [failures]). A rotation's
+/// transfer that keeps a device this device's own waiting change takes off is refused (`removed_device_listed`,
+/// duvetchat/e2e#49), which [relisted] hears: that change can never finish. True when the inbox brought a rotation's
+/// transfer, after which the own user is observed (the core's rule).
+Future<bool> takeInbox(
+  E2EEngine engine,
+  Map<String, int> tries, [
+  Failures? failures,
+  void Function()? relisted,
+]) async {
   final E2EEngine(:api, :host, :store, :user) = engine;
   var rotated = false;
   // Users' identities as served, read once a round when a message needs one: null for one that can't be read.
@@ -111,6 +118,9 @@ Future<bool> takeInbox(E2EEngine engine, Map<String, int> tries, [Failures? fail
         await _keep(store, keptTransfers, message);
       } else if (_forLater(error)) {
         await _keep(store, keptLater, message);
+      } else if (error.code == 'rule_violation' && error.rule == 'removed_device_listed') {
+        debugPrint("e2e: another device's change of keys keeps a device this one takes off, and goes.");
+        relisted?.call();
       } else {
         if (error.code == 'decrypt_failed') failures?.note('direct');
         debugPrint("e2e: a message from another device can't be read here (${error.code}), and goes.");

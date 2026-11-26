@@ -505,8 +505,9 @@ final class CoreGate implements CoreHost {
 
   /// Closes, then deletes [userId]'s database and its key: what «Remove this device and delete its data» does. The
   /// database is taken first, here or by the app's engine, so no engine has it open while it goes: one that's locked
-  /// is refused. One no key opens is deleted all the same, as nothing can read it. The core's lock file stays, empty,
-  /// as the core's own destroy leaves it: an open racing this one takes the same lock.
+  /// is refused. One no key opens is deleted all the same, as nothing can read it. The core's own destroy deletes the
+  /// files under its lock (the plugin's, duvetchat/e2e#50), so an open racing it can't hold the database as it goes,
+  /// and its lock file stays, empty; then the key, which the app keeps.
   @override
   Future<void> destroy(String userId) async {
     if (!_uuid.hasMatch(userId)) throw CoreError('bad_command', message: "a user's ID is a UUID", field: 'user_id');
@@ -533,10 +534,10 @@ final class CoreGate implements CoreHost {
     final core = _core;
     _core = null;
     await core?.close();
-    final path = await _path(userId);
-    for (final suffix in ['', '-journal', '-wal', '-shm']) {
-      final file = File('$path$suffix');
-      if (await file.exists()) await file.delete();
+    try {
+      await DuvetE2e.destroy(jsonEncode({'path': await _path(userId)}));
+    } on DuvetE2eException catch (error) {
+      throw CoreError.of(((jsonDecode(error.reply) as Map)['error'] as Map).cast<String, Object?>());
     }
     await _keys.delete(userId);
     await _close();

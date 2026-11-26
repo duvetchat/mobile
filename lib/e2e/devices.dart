@@ -160,9 +160,12 @@ class Rotation {
 
 /// rotate_keys (a lost device, decision 13): new keys, sealed to every device that stays, [remove] taken off with the
 /// devices the API took away. Run again before its upload it's the same rotation, which the core takes only with the
-/// same remove: the record keeps it, and without the record it's read back from the lists, the API's (of the identity
-/// it replaces) against the core's (of the one it made). The served certificates go as each device uploaded them.
-Future<Rotation> rotateKeys(E2EEngine engine, List<String> remove) async {
+/// same remove: the record keeps it, and without the record the core says it (`status`'s waiting_remove, its client
+/// rule: never read back from the lists, which name too much once the rotation was signed on a list of this device's
+/// that never went up, e2e#49). The served certificates go as each device uploaded them. Run again with [gone], the
+/// devices it keeps that the API's list no longer names ([goneDevices]), on the person's yes, it signs its list again
+/// without them, the served list its proof (e2e#49).
+Future<Rotation> rotateKeys(E2EEngine engine, List<String> remove, {List<String> gone = const []}) async {
   final status = await coreStatus(engine.host);
   final again = status.waitingUpload == 'rotate_keys';
   // Before its upload the core holds the new identity: the API's, the one it replaces, isn't observed then.
@@ -171,13 +174,9 @@ Future<Rotation> rotateKeys(E2EEngine engine, List<String> remove) async {
       : await _observedOwn(engine);
   final List<String> off;
   if (again) {
-    final kept = listDevices(status.deviceList ?? '') ?? const <String>[];
     off = switch (engine.store.read(rotationRemove)) {
       final List<Object?> ids => ids.whereType<String>().toList(),
-      _ => [
-        for (final id in listDevices(served.deviceList) ?? const <String>[])
-          if (!kept.contains(id)) id,
-      ],
+      _ => [...?status.waitingRemove],
     };
   } else {
     final held = (await coreStatus(engine.host)).deviceList ?? served.deviceList;
@@ -193,8 +192,24 @@ Future<Rotation> rotateKeys(E2EEngine engine, List<String> remove) async {
     'cmd': 'rotate_keys',
     'remove': off..sort(),
     'certificates': served.certificates,
+    if (again && gone.isNotEmpty) ...{'gone': gone, 'served_list': served.deviceList},
   });
   return Rotation._(made, served.identityKey);
+}
+
+/// The devices a change of keys that waits keeps and the API's list no longer names, never this one: another device
+/// took them off with a list of the identity this change replaces, which the API took and whose certificates it no
+/// longer serves, so the change can't run again with them (its `bad_command` `certificates`). Its run again leaves
+/// them out with `gone`, on the person's yes (e2e#49). None when nothing waits.
+Future<List<String>> goneDevices(E2EEngine engine) async {
+  final status = await coreStatus(engine.host);
+  final served = await servedIdentity(engine);
+  if (status.waitingUpload != 'rotate_keys' || served == null) return const [];
+  final listed = listDevices(served.deviceList) ?? const <String>[];
+  return [
+    for (final id in listDevices(status.deviceList ?? '') ?? const <String>[])
+      if (id != status.deviceId && !listed.contains(id)) id,
+  ];
 }
 
 /// The rotation goes up with its transfers, confirmed only after the API's 200 ([confirmIdentity]). A refusal or a lost

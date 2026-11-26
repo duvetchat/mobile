@@ -59,10 +59,13 @@ enum EngineStage { starting, firstDevice, newDevice, ready, removed, locked, uns
 /// The engine's [stage], and what goes with it. A first device waits for the person's tap to make its identity, then
 /// shows its [recoveryKey] until it's saved; [finishing] when an identity it made before the app closed still waits
 /// for its upload. A ready device [rotating] its keys (Task 25) shows the new [recoveryKey] until it's saved, and none
-/// once the rotation waits for the person to finish it (Later, or the app closed before its upload), or [stuck] once it
-/// can never go up, another device having changed the user's devices or keys meanwhile (review 24's I1). A [lostKey] is
-/// a database no key opens any more. [minimum] is the lowest version with encryption of a client the API told to
-/// update, null where its platform has none.
+/// once the rotation waits for the person to finish it (Later, or the app closed before its upload), or [stuck] once
+/// it can't go up as it is, another device having changed the user's devices or keys meanwhile (review 24's I1): it
+/// goes on without the devices [gone] names, which another device took off, on the person's yes (duvetchat/e2e#49);
+/// for good when another device's change of keys kept a device this one took off ([relisted]). A ready device whose
+/// last change of keys left devices out with gone offers another one ([keysAgain]): one such device may still hold
+/// the keys. A [lostKey] is a database no key opens any more. [minimum] is the lowest version with encryption of a
+/// client the API told to update, null where its platform has none.
 @immutable
 class EngineState {
   const EngineState(
@@ -73,21 +76,28 @@ class EngineState {
     this.minimum,
     this.rotating = false,
     this.stuck = false,
+    this.gone = const [],
+    this.relisted = false,
+    this.keysAgain = false,
   });
 
-  const EngineState.rotation({this.recoveryKey, this.stuck = false})
+  const EngineState.rotation({this.recoveryKey, this.stuck = false, this.gone = const [], this.relisted = false})
     : stage = EngineStage.ready,
       finishing = false,
       lostKey = false,
       minimum = null,
-      rotating = true;
+      rotating = true,
+      keysAgain = false;
 
   const EngineState.firstDevice({this.recoveryKey, this.finishing = false})
     : stage = EngineStage.firstDevice,
       lostKey = false,
       minimum = null,
       rotating = false,
-      stuck = false;
+      stuck = false,
+      gone = const [],
+      relisted = false,
+      keysAgain = false;
 
   const EngineState.failed({this.lostKey = false})
     : stage = EngineStage.failed,
@@ -95,7 +105,10 @@ class EngineState {
       finishing = false,
       minimum = null,
       rotating = false,
-      stuck = false;
+      stuck = false,
+      gone = const [],
+      relisted = false,
+      keysAgain = false;
 
   const EngineState.update(this.minimum)
     : stage = EngineStage.update,
@@ -103,7 +116,10 @@ class EngineState {
       finishing = false,
       lostKey = false,
       rotating = false,
-      stuck = false;
+      stuck = false,
+      gone = const [],
+      relisted = false,
+      keysAgain = false;
 
   static const starting = EngineState(EngineStage.starting);
   static const newDevice = EngineState(EngineStage.newDevice);
@@ -119,6 +135,9 @@ class EngineState {
   final String? minimum;
   final bool rotating;
   final bool stuck;
+  final List<String> gone;
+  final bool relisted;
+  final bool keysAgain;
 
   @override
   bool operator ==(Object other) =>
@@ -129,16 +148,31 @@ class EngineState {
       other.lostKey == lostKey &&
       other.minimum == minimum &&
       other.rotating == rotating &&
-      other.stuck == stuck;
+      other.stuck == stuck &&
+      listEquals(other.gone, gone) &&
+      other.relisted == relisted &&
+      other.keysAgain == keysAgain;
 
   @override
-  int get hashCode => Object.hash(stage, recoveryKey, finishing, lostKey, minimum, rotating, stuck);
+  int get hashCode => Object.hash(
+    stage,
+    recoveryKey,
+    finishing,
+    lostKey,
+    minimum,
+    rotating,
+    stuck,
+    Object.hashAll(gone),
+    relisted,
+    keysAgain,
+  );
 
   // Never the recovery key itself: a state may end up in a log.
   @override
   String toString() =>
       'EngineState(${stage.name}${rotating ? ', rotating' : ''}${stuck ? ', stuck' : ''}'
-      '${recoveryKey == null ? '' : ', a key shown'}'
+      '${gone.isEmpty ? '' : ', gone ${gone.join(', ')}'}${relisted ? ', relisted' : ''}'
+      '${keysAgain ? ', keys again' : ''}${recoveryKey == null ? '' : ', a key shown'}'
       '${finishing ? ', finishing' : ''}'
       '${lostKey ? ', its key lost' : ''}${stage == EngineStage.update ? ', minimum $minimum' : ''})';
 }
@@ -236,6 +270,15 @@ class E2EEngine {
 
   /// What rotate_keys answered while its key shows, until it's uploaded or put off (Task 25).
   Rotation? _rotation;
+
+  /// Another device's change of keys kept a device this one's waiting change takes off, and the core refused its
+  /// transfer (`removed_device_listed`, duvetchat/e2e#49): this change can never finish. Said while it waits this run.
+  // shortcut: in memory, so a restart says the change is stuck without why, until the record keeps it if it matters.
+  var _relisted = false;
+
+  /// The last change of keys of this device's left devices out with gone, one of which may still hold its keys if the
+  /// API worked with its holder: another change is offered (e2e#49), from the record, until a new one starts.
+  var _keysAgain = false;
 
   /// How many rounds each inbox message's call was cut (inbox.dart).
   final _tries = <String, int>{};
@@ -675,24 +718,50 @@ class E2EEngine {
 
   /// The person's Change security keys (Task 25), with no device taken off: or, with a rotation waiting, its Finish,
   /// the same rotation again, its key shown once more.
-  Future<void> changeKeys() => _deviceAct(() => _rotate(const []));
+  Future<void> changeKeys() => _deviceAct(() async {
+    // A new change, not the Finish of one that waits: the offer of one after a gone is taken up.
+    if (!_state.value.rotating && _keysAgain) await _offerKeysAgain(false);
+    await _rotate(const []);
+  });
+
+  /// The person's yes to finish a change of keys that waits without the devices another device took off meanwhile
+  /// ([EngineState.gone]): the same change, its list signed again without them (duvetchat/e2e#49), its recovery key
+  /// shown again to be saved. Once it's up another change is offered ([EngineState.keysAgain]): such a device may still
+  /// hold the keys, if the API worked with its holder.
+  Future<void> finishKeysWithout() => _deviceAct(() async {
+    final gone = _state.value.gone;
+    if (!_state.value.rotating || gone.isEmpty) return;
+    await _rotate(const [], gone: gone);
+    if (_state.value.recoveryKey != null) await _offerKeysAgain(true);
+  });
+
+  Future<void> _offerKeysAgain(bool offer) async {
+    _keysAgain = offer;
+    await store
+        .write(keysAgain, offer ? true : null)
+        .catchError((Object error) => debugPrint("e2e: the record's offer of new keys: ${error.runtimeType}"));
+  }
 
   /// The devices a list of this device's took off that the API didn't take, which the next list or key change takes
   /// along (review 24's M3): its confirmation names them.
   Future<List<String>> unsentRemovals() => devices.unsentRemovals(this);
 
-  Future<void> _rotate(List<String> remove) async {
+  Future<void> _rotate(List<String> remove, {List<String> gone = const []}) async {
     final Rotation rotation;
     try {
-      rotation = _rotation = await rotateKeys(this, remove);
+      rotation = _rotation = await rotateKeys(this, remove, gone: gone);
     } on CoreError catch (error) {
       // Finish of a change that waits, which the core runs again only with a certificate the API serves, of an identity
-      // it knows, for every device it keeps: another device took one off, or changed the keys (review 24's I1).
-      final gone =
-          (error.code == 'bad_command' && error.field == 'certificates') ||
-          (error.code == 'invalid_signature' && error.what == 'certificate');
-      if (!_state.value.rotating || !gone) rethrow;
-      return _set(const EngineState.rotation(stuck: true));
+      // it knows, for every device it keeps (review 24's I1): another device took one off, which the change can go on
+      // without (gone, on the person's yes); or changed the keys, whose transfer the inbox may bring (e2e#49).
+      if (!_state.value.rotating) rethrow;
+      if (error.code == 'bad_command' && error.field == 'certificates') {
+        return _set(EngineState.rotation(stuck: true, gone: await goneDevices(this), relisted: _relisted));
+      }
+      if (error.code != 'invalid_signature' || error.what != 'certificate') rethrow;
+      await _inbox();
+      if (_state.value.rotating) _set(EngineState.rotation(stuck: true, relisted: _relisted));
+      return;
     }
     _set(EngineState.rotation(recoveryKey: rotation.recoveryKey));
   }
@@ -709,23 +778,25 @@ class E2EEngine {
       _rotation = null;
       return _set(EngineState.update(error.minimum));
     } on duvet.DuvetIdentityChangedException {
-      // Another device changed the keys first. The inbox is read, but while this change waits the core checks that
-      // device's transfer against the identity this change made and refuses it (invalid_signature), which the inbox
-      // lets go: the change can never go up, and only this device's data deleted gets out, until duvetchat/e2e#49 has
-      // the core take such a transfer (review 25's I1).
+      // Another device changed the keys first: the inbox brings its transfer, which the core takes over this change,
+      // which ends (duvetchat/e2e#49): this device goes on with that identity. One that keeps a device this change
+      // takes off is refused (removed_device_listed), and this change can never go up.
       _rotation = null;
-      await takeInbox(this, _tries, _failures);
+      await takeInbox(this, _tries, _failures, _relistedSeen);
       final next = await _identity();
-      return _set(next.rotating ? const EngineState.rotation(stuck: true) : next);
+      return _set(next.rotating ? EngineState.rotation(stuck: true, relisted: _relisted) : next);
     } on duvet.DuvetApiException catch (error) {
-      // A device it keeps was taken off on another device meanwhile: its transfer can't go (review 24's I1).
+      // A device it keeps was taken off on another device meanwhile: its transfer can't go (review 24's I1), and the
+      // change goes on without it, on the person's yes.
       if (error.statusCode != 400 || !(error.body ?? '').contains("isn't a registered device of yours")) rethrow;
       _rotation = null;
-      return _set(const EngineState.rotation(stuck: true));
+      return _set(EngineState.rotation(stuck: true, gone: await goneDevices(this), relisted: _relisted));
     }
     _rotation = null;
     _set(EngineState.ready);
   }
+
+  void _relistedSeen() => _relisted = true;
 
   /// «Remove this device and delete its data» (decision 13; Task 25): its database destroyed with its key, then the
   /// record's device and what it told of the user's devices forgotten, the engine stopped for good, and last its
@@ -774,7 +845,10 @@ class E2EEngine {
 
   void _set(EngineState state) {
     final was = _state.value.stage;
-    _state.value = state;
+    // A ready device offers a new change of keys after one that left devices out (e2e#49).
+    _state.value = state.stage == EngineStage.ready && !state.rotating && _keysAgain
+        ? const EngineState(EngineStage.ready, keysAgain: true)
+        : state;
     if (state.stage != EngineStage.ready) {
       // Nothing heard is kept while the device can't work: the queue keeps it all (M3 of the desktop's review).
       _groups.dropHeard();
@@ -885,8 +959,11 @@ class E2EEngine {
   /// shows stays shown, as its saving or Later alone puts it away; one gone (another device's transfer replaced the
   /// identity) is forgotten.
   Future<EngineState> _identity() async {
-    final state = await identityState(this, () => takeInbox(this, _tries, _failures));
-    if (!state.rotating) _rotation = null;
+    final state = await identityState(this, () => takeInbox(this, _tries, _failures, _relistedSeen));
+    if (!state.rotating) {
+      _rotation = null;
+      _relisted = false;
+    }
     final shown = _rotation?.recoveryKey;
     if (shown != null) return EngineState.rotation(recoveryKey: shown);
     // A change found stuck this run stays said while the core keeps it: only another device's keys end it.
@@ -895,7 +972,7 @@ class E2EEngine {
 
   /// The inbox; once it brought a rotation's transfer, the own user observed, which may change what this device is.
   Future<void> _inbox() async {
-    if (await takeInbox(this, _tries, _failures)) _set(await _identity());
+    if (await takeInbox(this, _tries, _failures, _relistedSeen)) _set(await _identity());
   }
 
   /// «Arranque»: the API's configuration, the user's database, this installation's device and the session bound to it.
@@ -906,6 +983,7 @@ class E2EEngine {
       _groups.start(await _pin(config.externalSender));
       final opened = await host.open(user);
       if (opened.state != HostState.ready) return _closed(opened);
+      _keysAgain = store.read(keysAgain) == true;
       final (:status, :keys) = await ownDevice(this);
       final device = status.deviceId;
       _self = device;

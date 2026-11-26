@@ -30,17 +30,51 @@ const deleteListedDeviceQuestion =
     'history is lost unless another of your devices still holds it. This device stays on your device list until you '
     'remove it on another device.';
 
-/// A change of keys that can never finish (review 24's I1), and the one way out this core leaves: this device's data
-/// deleted and set up again. Another device's change of keys is none: while this one waits, the core checks that
-/// change's transfer against the identity this one made and refuses it (`invalid_signature`), which the inbox lets go,
-/// until duvetchat/e2e#49 (review 25's I1).
+/// A change of keys that can't finish (review 24's I1), and its two ways out: another device's change of keys, whose
+/// transfer the core takes over the change that waits (duvetchat/e2e#49), or this device's data deleted and set up
+/// again.
 const rotationStuck =
     "This change of your security keys can't finish: another of your devices changed your devices or keys meanwhile, "
-    "and the recovery key it showed won't work. To use encrypted conversations here again, delete this device's data "
-    'and set it up again.';
+    "and the recovery key it showed won't work. Change your security keys on another of your devices, or delete this "
+    "device's data and set it up again.";
+
+/// A change of keys that can't finish with the devices another device took off meanwhile ([gone], by the start of
+/// their IDs, as their names went with them), which it finishes without on the person's yes (duvetchat/e2e#49): its
+/// recovery key stays the same.
+String rotationGone(List<String> gone) =>
+    "This change of your security keys can't finish with ${_listed([for (final id in gone) _idStart(id)])}, which "
+    'another of your devices took off your account meanwhile. Finish it without them: the recovery key it showed still '
+    'works.';
+
+/// Its action.
+const finishWithout = 'Finish without them';
+
+/// A change of keys another device's made impossible for good: that one kept a device this one takes off, and the
+/// core refuses its keys (`removed_device_listed`, duvetchat/e2e#49).
+const rotationRelisted =
+    "Another of your devices changed your security keys and kept a device you removed here, so this device can't "
+    "take them. To use encrypted conversations here again, delete this device's data and set it up again.";
+
+/// After a change of keys that left devices out ([finishWithout]): one of them may still hold the keys, if the API
+/// worked with whoever has it (duvetchat/e2e#49).
+const keysAgainText =
+    "A device that left your account may still hold your security keys: change them once more, so it can't read "
+    "what's sent from now on.";
+
+String _idStart(String id) => id.length > 8 ? id.substring(0, 8) : id;
+
+String _listed(List<String> names) =>
+    names.length < 2 ? names.join() : '${names.take(names.length - 1).join(', ')} and ${names.last}';
 const deleteOnlyDeviceQuestion =
     'This is your only device with your encrypted conversations: without your recovery key, their history is lost. '
     'Delete them and their keys, and sign out?';
+
+/// What a change of keys that can't finish says, by why (duvetchat/e2e#49).
+String stuckText(EngineState state) => state.relisted
+    ? rotationRelisted
+    : state.gone.isNotEmpty
+    ? rotationGone(state.gone)
+    : rotationStuck;
 
 /// «Remove this device and delete its data» (decision 13), from Devices or from the sign-out dialog: it asks first, as
 /// the user's [devices] make it (read here when not given; the most careful way when they can't be read), then deletes
@@ -273,6 +307,7 @@ class _DevicesPageState extends State<DevicesPage> {
       // A change of keys that waits, its key put off or cut by the app's close: the banner's strip may be hidden.
       final finish = state.rotating && state.recoveryKey == null && !state.stuck && !_busy;
       final data = hasDeviceData(state);
+      final without = state.stuck && state.gone.isNotEmpty && !_busy;
       return AdminPage(
         title: 'Devices',
         children: [
@@ -304,10 +339,10 @@ class _DevicesPageState extends State<DevicesPage> {
               padding: const EdgeInsets.fromLTRB(4, 16, 4, 0),
               child: Semantics(
                 liveRegion: true,
-                child: Text(rotationStuck, style: DuvetType.caption.copyWith(color: context.theme.colors.error)),
+                child: Text(stuckText(state), style: DuvetType.caption.copyWith(color: context.theme.colors.error)),
               ),
             ),
-          if (ready || finish || data) ...[
+          if (ready || finish || without || data) ...[
             const SizedBox(height: 16),
             AdminPanel(
               children: [
@@ -317,6 +352,12 @@ class _DevicesPageState extends State<DevicesPage> {
                     icon: FLucideIcons.keyRound,
                     label: 'Finish changing your security keys',
                     onPressed: () => _act(context.repository.changeKeys),
+                  ),
+                if (state.stuck && state.gone.isNotEmpty && !_busy)
+                  GlassRow(
+                    icon: FLucideIcons.keyRound,
+                    label: finishWithout,
+                    onPressed: () => _act(context.repository.finishKeysWithout),
                   ),
                 if (data)
                   GlassRow(

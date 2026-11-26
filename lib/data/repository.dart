@@ -89,6 +89,10 @@ abstract interface class ChatRepository {
   /// device and delete its data, which signs out (decision 13).
   Future<void> removeDevice(String deviceId, {bool changeKeys = false});
   Future<void> changeKeys();
+
+  /// A change of keys that waits, finished without the devices another device took off meanwhile, on the person's yes
+  /// ([EngineState.gone]; duvetchat/e2e#49).
+  Future<void> finishKeysWithout();
   Future<void> removeThisDevice();
 
   /// The devices an earlier removal of this device's took off that the API didn't take: the next removal or change of

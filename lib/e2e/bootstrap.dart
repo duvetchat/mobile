@@ -19,6 +19,10 @@ class CoreStatus {
       identityKey = status['identity_key'] as String?,
       deviceList = status['device_list'] as String?,
       waitingUpload = status['waiting_upload'] as String?,
+      waitingRemove = switch (status['waiting_remove']) {
+        final List<Object?> ids => ids.whereType<String>().toList(),
+        _ => null,
+      },
       hasIdentity = status['has_identity'] == true;
 
   final String? deviceId;
@@ -29,6 +33,9 @@ class CoreStatus {
 
   /// The identity command whose upload the core waits for: `create_identity` or `rotate_keys`.
   final String? waitingUpload;
+
+  /// What a change of keys that waits takes off the list, in its order (duvetchat/e2e#49): what it runs again with.
+  final List<String>? waitingRemove;
   final bool hasIdentity;
 }
 
