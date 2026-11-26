@@ -29,6 +29,22 @@ abstract final class DuvetE2e {
       throw DuvetE2eException(error.reply);
     }
   }
+
+  /// Deletes the database `configJson` names (`{"path"}`) and SQLite's files beside it, as the
+  /// core's lock is held: once it returns they're gone from the disk, and an open makes a new
+  /// database. Its lock file stays, and its key, which the app keeps, is the app's to delete after.
+  ///
+  /// Throws [DuvetE2eException] with the core's error reply: `locked` while an instance, in this
+  /// process or another, has the database open, and nothing is deleted then; `storage` when a file
+  /// can't be deleted.
+  static Future<void> destroy(String configJson) async {
+    await init();
+    try {
+      await OpenCore.destroy(configJson: configJson);
+    } on OpenError catch (error) {
+      throw DuvetE2eException(error.reply);
+    }
+  }
 }
 
 /// The core over one open database. Its commands run one at a time.
@@ -44,7 +60,7 @@ final class DuvetE2eCore {
   Future<void> close() => _core.close();
 }
 
-/// An `open` that failed.
+/// An `open` or a `destroy` that failed.
 final class DuvetE2eException implements Exception {
   DuvetE2eException(this.reply);
 

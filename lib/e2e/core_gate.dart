@@ -38,6 +38,22 @@ const _lostKey = (state: HostState.failed, keyStorage: null, reason: 'bad_key');
 /// The commands [CoreGate.handle] refuses: each has a way of its own, which keeps its bytes out of one JSON.
 const ownWay = {'attachment_encrypt', 'attachment_decrypt', 'history_share', 'catch_up', 'history_import'};
 
+/// The commands only the engine with a screen runs (Review Focus 2; Task 27): a new device's setup by the recovery
+/// key, another device's approval or starting over. A gate that doesn't serve (a push's, WorkManager's, audio_service's
+/// engine) refuses them, before it asks the app's engine or runs them itself.
+const screenOnly = {
+  'recover',
+  'reset_identity',
+  'approval_begin',
+  'approval_offer',
+  'approval_reveal',
+  'approval_check',
+  'approval_confirm',
+  'approval_accept',
+  'approval_from_qr',
+  'approval_receive',
+};
+
 /// The most parts [CoreGate.importShare] hands the core at once, which reads the whole command before it looks at
 /// them.
 const maxShareParts = 64;
@@ -342,6 +358,9 @@ final class CoreGate implements CoreHost, ObservingHost {
     if (ownWay.contains(cmd)) {
       throw CoreError('bad_command', message: '$cmd has a way of its own', field: 'cmd');
     }
+    if (!serves && screenOnly.contains(cmd)) {
+      throw CoreError('bad_command', message: '$cmd runs only in the app with a screen', field: 'cmd');
+    }
     return await _either(
           () => _run(command),
           (app, user) async => jsonDecode((await _ask(app, 'handle', user, [jsonEncode(command)]))! as String),
@@ -518,8 +537,9 @@ final class CoreGate implements CoreHost, ObservingHost {
 
   /// Closes, then deletes [userId]'s database and its key: what «Remove this device and delete its data» does. The
   /// database is taken first, here or by the app's engine, so no engine has it open while it goes: one that's locked
-  /// is refused. One no key opens is deleted all the same, as nothing can read it. The core's lock file stays, empty,
-  /// as the core's own destroy leaves it: an open racing this one takes the same lock.
+  /// is refused. One no key opens is deleted all the same, as nothing can read it. The core's own destroy deletes the
+  /// files under its lock (the plugin's, duvetchat/e2e#50), so an open racing it can't hold the database as it goes,
+  /// and its lock file stays, empty; then the key, which the app keeps.
   @override
   Future<void> destroy(String userId) async {
     if (!_uuid.hasMatch(userId)) throw CoreError('bad_command', message: "a user's ID is a UUID", field: 'user_id');
@@ -546,10 +566,10 @@ final class CoreGate implements CoreHost, ObservingHost {
     final core = _core;
     _core = null;
     await core?.close();
-    final path = await _path(userId);
-    for (final suffix in ['', '-journal', '-wal', '-shm']) {
-      final file = File('$path$suffix');
-      if (await file.exists()) await file.delete();
+    try {
+      await DuvetE2e.destroy(jsonEncode({'path': await _path(userId)}));
+    } on DuvetE2eException catch (error) {
+      throw CoreError.of(((jsonDecode(error.reply) as Map)['error'] as Map).cast<String, Object?>());
     }
     await _keys.delete(userId);
     await _close();

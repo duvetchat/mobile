@@ -7,7 +7,7 @@ import 'package:duvet/e2e/host.dart';
 import 'package:duvet/e2e/legacy.dart' show legacyRecords;
 import 'package:duvet/e2e/notices.dart';
 import 'package:duvet/e2e/store.dart';
-import 'package:duvet/encryption/devices.dart' show rotationStuck;
+import 'package:duvet/encryption/devices.dart' show rotationRelisted, rotationStuck, stuckText;
 import 'package:duvet_client/duvet.dart' as duvet;
 import 'package:flutter/foundation.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -512,19 +512,36 @@ void main() {
       final c = await approvedDevice(fake, a);
       final d = await approvedDevice(fake, a);
 
-      // Put off, then b takes c off: Finish can't run the same change again.
+      // Put off, then b takes c off: Finish can't run the same change again, and says which device is gone.
       await a.engine.changeKeys();
+      final key = _rotationKey(a.state);
       await a.engine.uploadLater();
       expect(a.state, const EngineState.rotation());
       await b.engine.removeDevice(_deviceOf(c));
       await turnEnded(a);
       await a.engine.changeKeys();
-      expect(a.state, const EngineState.rotation(stuck: true));
+      expect(a.state, EngineState.rotation(stuck: true, gone: [_deviceOf(c)]));
+      expect(stuckText(a.state), contains(_deviceOf(c).substring(0, 8)));
+      // The person's yes: the same change without it (duvetchat/e2e#49), its key the same, and once it's up, another
+      // change of keys offered, as c may still hold these keys.
+      await a.engine.finishKeysWithout();
+      expect(_rotationKey(a.state), key);
+      await a.engine.keySaved();
+      expect(a.state, const EngineState(EngineStage.ready, keysAgain: true));
+      final after = await a.api.identity(ana);
+      expect(after.identityKey, (await _status(a))['identity_key']);
+      expect(listDevices(after.deviceList), unorderedEquals([_deviceOf(a), _deviceOf(b), _deviceOf(d)]));
+      await until(() async => (await _status(d))['identity_key'] == after.identityKey);
+      // The offer, taken up: a new change, then nothing more offered.
+      await a.engine.changeKeys();
+      await a.engine.keySaved();
+      expect(a.state, EngineState.ready);
+      expect(a.store.read(keysAgain), isNull);
       await Future.wait([
         for (final device in [a, b, c, d]) device.engine.stop(),
       ]);
 
-      // Its key shown, then b takes d off: the upload can't go.
+      // Its key shown, then b takes d off: the upload can't go, and the change goes on without d on the person's yes.
       final fake2 = FakeApi();
       final bo = fake2.addUser();
       final e = await firstDevice(fake2, bo);
@@ -536,7 +553,11 @@ void main() {
       // Not turnEnded: its tap is Later, which would put this change off.
       await pumpEventQueue();
       await e.engine.keySaved();
-      expect(e.state, const EngineState.rotation(stuck: true));
+      expect(e.state, EngineState.rotation(stuck: true, gone: [_deviceOf(g)]));
+      await e.engine.finishKeysWithout();
+      await e.engine.keySaved();
+      expect(e.state, const EngineState(EngineStage.ready, keysAgain: true));
+      expect(listDevices((await e.api.identity(bo)).deviceList), unorderedEquals([_deviceOf(e), _deviceOf(f)]));
       await Future.wait([
         for (final device in [e, f, g]) device.engine.stop(),
       ]);
@@ -545,12 +566,61 @@ void main() {
     timeout: _slow,
   );
 
-  // Review 24's rule 4 and review 25's I1: a key change another device's beat (409 identity changed) reads the inbox,
-  // but while this change waits the core checks the winner's transfer against the identity this change made and
-  // refuses it (invalid_signature), until duvetchat/e2e#49. The change can never finish, and its words name the one
-  // way out: this device's data deleted and set up again.
+  // Review 27's M1: the offer of new keys after a change that left devices out stays until a new change is made. One
+  // that fails before it's made (its read of the identity cut) leaves the offer, in the state and the record.
   test(
-    "a_key_change_another_device's_beat_reads_the_inbox",
+    'the_offer_of_new_keys_stays_until_a_new_change_is_made',
+    () async {
+      final fake = FakeApi();
+      final ana = fake.addUser();
+      // This device's next read of the identity cut, as its connection would be (the others' reads go on).
+      var cut = false;
+      final client = watchedClient(
+        fake,
+        answer: (request) async {
+          if (!cut || request.method != 'GET' || request.url.path != '/api/users/$ana/identity') return null;
+          cut = false;
+          throw http.ClientException('cut', request.url);
+        },
+      );
+      final a = await firstDevice(fake, ana, client: client);
+      final b = await approvedDevice(fake, a);
+      final c = await approvedDevice(fake, a);
+      await a.engine.changeKeys();
+      await a.engine.uploadLater();
+      await b.engine.removeDevice(_deviceOf(c));
+      await turnEnded(a);
+      await a.engine.changeKeys();
+      await a.engine.finishKeysWithout();
+      await a.engine.keySaved();
+      expect(a.state, const EngineState(EngineStage.ready, keysAgain: true));
+
+      await turnEnded(a);
+      cut = true;
+      await expectLater(a.engine.changeKeys(), throwsA(isA<http.ClientException>()));
+      expect(cut, isFalse);
+      expect(a.state.rotating, isFalse);
+      expect(a.store.read(keysAgain), isTrue);
+      final again = await restarted(fake, a);
+      expect(again.state, const EngineState(EngineStage.ready, keysAgain: true));
+      // Made, the new change carries it: the offer goes.
+      await again.engine.changeKeys();
+      expect(again.store.read(keysAgain), isNull);
+      await again.engine.keySaved();
+      expect(again.state, EngineState.ready);
+      await Future.wait([
+        for (final device in [again, b, c]) device.engine.stop(),
+      ]);
+    },
+    skip: noCore,
+    timeout: _slow,
+  );
+
+  // Review 24's rule 4, and duvetchat/e2e#49: a key change another device's beat (409 identity changed) reads the
+  // inbox, whose transfer the core takes over the change that waits, which ends: this device goes on with the
+  // winner's keys. Such a change of keys is a stuck change's way out again, which its words name (review 25's I1).
+  test(
+    "a_key_change_another_device's_beat_takes_the_winner's_transfer",
     () async {
       final fake = FakeApi();
       final ana = fake.addUser();
@@ -573,11 +643,76 @@ void main() {
         requests.indexOf('GET /api/users/@me/devices/@me/inbox'),
         greaterThan(requests.indexOf('PUT /api/users/@me/identity')),
       );
-      expect(b.state, const EngineState.rotation(stuck: true));
-      // Another device's change of keys is no way out: the words name only this device's data deleted.
+      expect(b.state, EngineState.ready);
+      expect((await _status(b))['identity_key'], (await b.api.identity(ana)).identityKey);
+      expect((await _status(b))['waiting_upload'], isNull);
+      expect(rotationStuck, contains('Change your security keys on another of your devices'));
       expect(rotationStuck, contains("delete this device's data and set it up again"));
-      expect(rotationStuck, isNot(contains('on another device')));
       await Future.wait([a.engine.stop(), b.engine.stop()]);
+    },
+    skip: noCore,
+    timeout: _slow,
+  );
+
+  // duvetchat/e2e#49 (ronda 2, S2): the winner's change keeps a device this one's change takes off. The core refuses
+  // its transfer (removed_device_listed), which would put that device back on this one's list unsaid: this change can
+  // never finish, and its words say why.
+  test(
+    "a_winner's_change_that_keeps_a_device_this_one_took_off_is_refused_and_said",
+    () async {
+      final fake = FakeApi();
+      final ana = fake.addUser();
+      final b = await firstDevice(fake, ana, hears: (event) => event.type != 'DEVICE_MESSAGE');
+      final a = await approvedDevice(fake, b);
+      final c = await approvedDevice(fake, b);
+      // b's change takes c off; a's, keeping c, goes up first.
+      await b.engine.removeDevice(_deviceOf(c), changeKeys: true);
+      await a.engine.changeKeys();
+      await a.engine.keySaved();
+      await b.engine.keySaved();
+      expect(b.state, const EngineState.rotation(stuck: true, relisted: true));
+      expect(stuckText(b.state), rotationRelisted);
+      // Kept in the record: after a restart the words still name the one way out (review 27's choice), and the winner's
+      // transfer, refused, isn't in the inbox any more to say it again.
+      final again = await restarted(fake, b, hears: (event) => event.type != 'DEVICE_MESSAGE');
+      expect(again.state, const EngineState.rotation(stuck: true, relisted: true));
+      await Future.wait([
+        for (final device in [a, again, c]) device.engine.stop(),
+      ]);
+    },
+    skip: noCore,
+    timeout: _slow,
+  );
+
+  // duvetchat/e2e#49's client rule (review 25's M5): a change cut before its upload whose record lost what it takes off
+  // runs again with the core's word on it (status's waiting_remove), never the lists' difference, which names too much
+  // once an earlier removal of this device's never went up.
+  test(
+    'a_cut_change_whose_record_lost_its_removal_runs_again_with_the_cores',
+    () async {
+      final fake = FakeApi();
+      final ana = fake.addUser();
+      final store = KeyRefusingStore(rotationRemove);
+      final a = await firstDevice(fake, ana, store: store);
+      final b = await approvedDevice(fake, a);
+      final c = await approvedDevice(fake, a);
+      // A removal of b's whose upload is refused: the core keeps its list without b.
+      fake.refuse(_list, 500, body: {'error': 'internal server error'});
+      await expectLater(a.engine.removeDevice(_deviceOf(b)), throwsA(isA<duvet.DuvetApiException>()));
+      // A change of keys taking c off, on top of it, cut before its upload; the record kept nothing of it.
+      await a.engine.removeDevice(_deviceOf(c), changeKeys: true);
+      final key = _rotationKey(a.state);
+      expect(store.read(rotationRemove), isNull);
+      final again = await restarted(fake, a);
+      expect(again.state, const EngineState.rotation());
+      await again.engine.changeKeys();
+      expect(_rotationKey(again.state), key);
+      await again.engine.keySaved();
+      expect(again.state, EngineState.ready);
+      expect(listDevices((await again.api.identity(ana)).deviceList), [_deviceOf(a)]);
+      await Future.wait([
+        for (final device in [again, b, c]) device.engine.stop(),
+      ]);
     },
     skip: noCore,
     timeout: _slow,

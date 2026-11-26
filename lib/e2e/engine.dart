@@ -16,7 +16,9 @@ import 'package:clock/clock.dart' as time;
 import 'package:duvet_client/duvet.dart' as duvet;
 import 'package:flutter/foundation.dart';
 
+import 'approval.dart';
 import 'bootstrap.dart';
+import 'cbor.dart' show listDevices;
 import 'contacts.dart';
 import 'content.dart';
 import 'content.dart' as content show heldBefore, sentUnder;
@@ -30,11 +32,15 @@ import 'files.dart' as files show fileNames;
 import 'history.dart';
 import 'key_packages.dart';
 import 'members.dart';
+import 'recover.dart';
 import 'search.dart';
 import 'send.dart';
+import 'start_over.dart';
 import 'store.dart';
 import 'sync.dart';
 
+export 'approval.dart'
+    show ApprovalEnd, ApprovalPhase, DeviceApproval, DeviceSetup, ScannedDevice, SetupWay, attemptLife;
 export 'contacts.dart' show ContactsShown, KeyChange, SafetyNumber, ShownChange, changedIn, waitingForYes;
 export 'content.dart' show Authored, MessageStatus, ShownMessage;
 export 'devices.dart' show DeviceNotice, DeviceNoticeKind, inactiveDevice, onlyDevice;
@@ -48,6 +54,9 @@ export 'sync.dart' show ConversationNotice, ConversationState, Restart;
 abstract interface class EngineClock {
   /// Runs [run] once [wait] has passed; what it gives calls it off.
   void Function() later(Duration wait, void Function() run);
+
+  /// The time now: an approval's question ends when its attempt does, by the time the API gave its request (Task 27).
+  DateTime now();
 }
 
 class SystemClock implements EngineClock {
@@ -55,6 +64,9 @@ class SystemClock implements EngineClock {
 
   @override
   void Function() later(Duration wait, void Function() run) => Timer(wait, run).cancel;
+
+  @override
+  DateTime now() => time.clock.now();
 }
 
 /// Where the engine is (PLAN-E2E-CLIENTES.md, «El motor», its states), which the app shows.
@@ -63,10 +75,17 @@ enum EngineStage { starting, firstDevice, newDevice, ready, removed, locked, uns
 /// The engine's [stage], and what goes with it. A first device waits for the person's tap to make its identity, then
 /// shows its [recoveryKey] until it's saved; [finishing] when an identity it made before the app closed still waits
 /// for its upload. A ready device [rotating] its keys (Task 25) shows the new [recoveryKey] until it's saved, and none
-/// once the rotation waits for the person to finish it (Later, or the app closed before its upload), or [stuck] once it
-/// can never go up, another device having changed the user's devices or keys meanwhile (review 24's I1). A [lostKey] is
-/// a database no key opens any more. [minimum] is the lowest version with encryption of a client the API told to
-/// update, null where its platform has none.
+/// once the rotation waits for the person to finish it (Later, or the app closed before its upload), or [stuck] once
+/// it can't go up as it is, another device having changed the user's devices or keys meanwhile (review 24's I1): it
+/// goes on without the devices [gone] names, which another device took off, on the person's yes (duvetchat/e2e#49);
+/// for good when another device's change of keys kept a device this one took off ([relisted]). A ready device whose
+/// last change of keys left devices out with gone offers another one ([keysAgain]): one such device may still hold
+/// the keys. A [lostKey] is a database no key opens any more. [minimum] is the lowest version with encryption of a
+/// client the API told to update, null where its platform has none. A new device shows its [setup] (Tasks 26 and
+/// 27): its approval's attempt, or, its core holding the identity, starting over's (its [recoveryKey] until it's
+/// saved, [finishing] once its upload waits for Finish) or its first list still to go up; [listChanged] once it
+/// started again as a new one, the user's devices or keys changed while it was being set up (another list, or another
+/// identity, went up first), until it's set up. A ready device shows a new device's [approval] it takes part in.
 @immutable
 class EngineState {
   const EngineState(
@@ -77,21 +96,37 @@ class EngineState {
     this.minimum,
     this.rotating = false,
     this.stuck = false,
+    this.gone = const [],
+    this.relisted = false,
+    this.keysAgain = false,
+    this.setup,
+    this.listChanged = false,
+    this.approval,
   });
 
-  const EngineState.rotation({this.recoveryKey, this.stuck = false})
+  const EngineState.rotation({this.recoveryKey, this.stuck = false, this.gone = const [], this.relisted = false})
     : stage = EngineStage.ready,
       finishing = false,
       lostKey = false,
       minimum = null,
-      rotating = true;
+      rotating = true,
+      keysAgain = false,
+      setup = null,
+      listChanged = false,
+      approval = null;
 
   const EngineState.firstDevice({this.recoveryKey, this.finishing = false})
     : stage = EngineStage.firstDevice,
       lostKey = false,
       minimum = null,
       rotating = false,
-      stuck = false;
+      stuck = false,
+      gone = const [],
+      relisted = false,
+      keysAgain = false,
+      setup = null,
+      listChanged = false,
+      approval = null;
 
   const EngineState.failed({this.lostKey = false})
     : stage = EngineStage.failed,
@@ -99,7 +134,13 @@ class EngineState {
       finishing = false,
       minimum = null,
       rotating = false,
-      stuck = false;
+      stuck = false,
+      gone = const [],
+      relisted = false,
+      keysAgain = false,
+      setup = null,
+      listChanged = false,
+      approval = null;
 
   const EngineState.update(this.minimum)
     : stage = EngineStage.update,
@@ -107,7 +148,27 @@ class EngineState {
       finishing = false,
       lostKey = false,
       rotating = false,
-      stuck = false;
+      stuck = false,
+      gone = const [],
+      relisted = false,
+      keysAgain = false,
+      setup = null,
+      listChanged = false,
+      approval = null;
+
+  /// A new device as it's being set up, with what it shows ([setup]), or starting over's recovery key ([recoveryKey],
+  /// [finishing]).
+  const EngineState.settingUp(DeviceSetup this.setup, {this.recoveryKey, this.finishing = false})
+    : stage = EngineStage.newDevice,
+      lostKey = false,
+      minimum = null,
+      rotating = false,
+      stuck = false,
+      gone = const [],
+      relisted = false,
+      keysAgain = false,
+      listChanged = false,
+      approval = null;
 
   static const starting = EngineState(EngineStage.starting);
   static const newDevice = EngineState(EngineStage.newDevice);
@@ -123,6 +184,12 @@ class EngineState {
   final String? minimum;
   final bool rotating;
   final bool stuck;
+  final List<String> gone;
+  final bool relisted;
+  final bool keysAgain;
+  final DeviceSetup? setup;
+  final bool listChanged;
+  final DeviceApproval? approval;
 
   @override
   bool operator ==(Object other) =>
@@ -133,18 +200,80 @@ class EngineState {
       other.lostKey == lostKey &&
       other.minimum == minimum &&
       other.rotating == rotating &&
-      other.stuck == stuck;
+      other.stuck == stuck &&
+      listEquals(other.gone, gone) &&
+      other.relisted == relisted &&
+      other.keysAgain == keysAgain &&
+      other.setup == setup &&
+      other.listChanged == listChanged &&
+      other.approval == approval;
 
   @override
-  int get hashCode => Object.hash(stage, recoveryKey, finishing, lostKey, minimum, rotating, stuck);
+  int get hashCode => Object.hash(
+    stage,
+    recoveryKey,
+    finishing,
+    lostKey,
+    minimum,
+    rotating,
+    stuck,
+    Object.hashAll(gone),
+    relisted,
+    keysAgain,
+    setup,
+    listChanged,
+    approval,
+  );
 
-  // Never the recovery key itself: a state may end up in a log.
+  // Never the recovery key itself, an attempt's QR nor an approval's code: a state may end up in a log.
   @override
   String toString() =>
       'EngineState(${stage.name}${rotating ? ', rotating' : ''}${stuck ? ', stuck' : ''}'
-      '${recoveryKey == null ? '' : ', a key shown'}'
+      '${gone.isEmpty ? '' : ', gone ${gone.join(', ')}'}${relisted ? ', relisted' : ''}'
+      '${keysAgain ? ', keys again' : ''}${recoveryKey == null ? '' : ', a key shown'}'
       '${finishing ? ', finishing' : ''}'
-      '${lostKey ? ', its key lost' : ''}${stage == EngineStage.update ? ', minimum $minimum' : ''})';
+      '${lostKey ? ', its key lost' : ''}${stage == EngineStage.update ? ', minimum $minimum' : ''}'
+      '${setup == null ? '' : ', $setup'}${listChanged ? ', its devices changed' : ''}'
+      '${approval == null ? '' : ', $approval'})';
+}
+
+/// What the person does to set up a new device, and to approve one from this device (PLAN-E2E-CLIENTES.md, Tasks 26
+/// and 27; decisions 22, 24 and 47): the screens' acts, which the engine runs in its turn, each only in the state it's
+/// for. The engine with a screen alone has them (Review Focus 2): no background engine recovers, approves or starts
+/// over.
+abstract interface class DeviceSetupActions {
+  /// A new device set up with the person's recovery key, as they typed it.
+  Future<void> recover(String recoveryKey);
+
+  /// The setup's page opened: an approval's attempt begins, shown as its QR.
+  Future<void> beginApproval();
+
+  /// «Use a code instead»: an attempt by the code.
+  Future<void> useCode();
+
+  /// The code the person typed, from the approving device's screen.
+  Future<void> acceptCode(String code);
+
+  /// The setup's page closed: its attempt is over.
+  Future<void> endApproval();
+
+  /// Starting over, after its warning.
+  Future<void> resetIdentity();
+
+  /// Finish of a setup that waits: its first list, or starting over's key again.
+  Future<void> finishSetup();
+
+  /// The approving device's person: yes to «Is this device yours?», no, and Confirm.
+  Future<void> approveDevice(String deviceId);
+  Future<void> declineDevice(String deviceId);
+  Future<void> confirmApproval(String deviceId);
+
+  /// The device a QR the person scanned names, which they're asked about first; then their yes, true once its transfer
+  /// went (false: its send failed, and the transfer waits), and a send again of that transfer, which throws `not_found`
+  /// `transfer` once none waits for that device any more.
+  Future<ScannedDevice?> scannedDevice(String qr);
+  Future<bool> approveScanned(String qr, ScannedDevice device);
+  Future<void> sendScanned(String deviceId);
 }
 
 const _day = Duration(days: 1);
@@ -161,7 +290,7 @@ bool _refusedForGood(Object error) =>
     error.statusCode < 500 &&
     !const [401, 426, 429].contains(error.statusCode);
 
-class E2EEngine {
+class E2EEngine implements DeviceSetupActions {
   E2EEngine({
     required this.host,
     required this.api,
@@ -245,6 +374,19 @@ class E2EEngine {
   /// What rotate_keys answered while its key shows, until it's uploaded or put off (Task 25).
   Rotation? _rotation;
 
+  /// Another device's change of keys kept a device this one's waiting change takes off, and the core refused its
+  /// transfer (`removed_device_listed`, duvetchat/e2e#49): this change can never finish. Said while it waits, from the
+  /// record after a restart too, as that transfer isn't read again.
+  var _relisted = false;
+
+  /// This new device started again as a new one: the user's devices or keys changed while it was being set up (Task
+  /// 27's review, M3). Its setup says so until it's set up.
+  var _listChanged = false;
+
+  /// The last change of keys of this device's left devices out with gone, one of which may still hold its keys if the
+  /// API worked with its holder: another change is offered (e2e#49), from the record, until a new one starts.
+  var _keysAgain = false;
+
   /// How many rounds each inbox message's call was cut (inbox.dart).
   final _tries = <String, int>{};
 
@@ -284,6 +426,16 @@ class E2EEngine {
     _messagesGone,
     _held,
   );
+
+  /// A new device's approval, and the approvals this device takes part in for the user's new ones (Task 27).
+  late final _approvals = Approvals(this, _soon, () => _set(_state.value), _takeApprovals);
+
+  /// A new device whose core holds an identity already: starting over's, until its upload, or one whose first list
+  /// hasn't gone up (Task 27).
+  EngineState? _setup;
+
+  /// The identity the start over under way replaces (also kept in the record, which a later start reads).
+  String? _replaces;
 
   /// The cutover's instant, as GET /api/e2e gave it: a conversation from before it says when its messages went.
   DateTime? cutoverAt;
@@ -404,7 +556,7 @@ class E2EEngine {
       return false;
     }
     _contacts.verifiedNow(userId, true);
-    _released();
+    _releaseHeld();
     return true;
   }
 
@@ -443,7 +595,7 @@ class E2EEngine {
   /// READY.
   Future<void> confirmKeyChanges(List<ShownChange> changes) async {
     _contacts.confirm(changes);
-    _released();
+    _releaseHeld();
   }
 
   /// Of these users, those whose changed key makes what goes to them wait for the person's yes (deviceless.dart's
@@ -455,7 +607,7 @@ class E2EEngine {
   Future<List<String>> _held(String conversationId) async => _contacts.holding(await _groups.people(conversationId));
 
   /// What waited for the person's yes goes: messages and edits, as at a READY, and the catch-ups and shares held for it.
-  void _released() {
+  void _releaseHeld() {
     _soon(() => _whenReady(_sends.resendAll));
     _groups.catchUpsAgain();
     _histories.again();
@@ -790,6 +942,7 @@ class E2EEngine {
     _groups.stop();
     _sends.stop();
     _failures.stop();
+    _approvals.stop();
     _histories.stop();
     await heard?.cancel();
   }
@@ -809,6 +962,7 @@ class E2EEngine {
   /// rotation's new key the same: its identity goes up with its transfers ([_rotationSaved]).
   Future<void> keySaved() => _queue(() async {
     if (_state.value.rotating) return _rotationSaved();
+    if (_state.value.stage == EngineStage.newDevice && _setup?.setup?.way == SetupWay.reset) return _resetSaved();
     final made = _made;
     if (made == null || _state.value.stage != EngineStage.firstDevice) return;
     final bool published;
@@ -839,6 +993,12 @@ class E2EEngine {
       _rotation = null;
       return _set(const EngineState.rotation());
     }
+    // And starting over's: its upload waits for Finish, which brings the same identity and key back.
+    if (now.stage == EngineStage.newDevice && _setup?.setup?.way == SetupWay.reset) {
+      _made = null;
+      _setup = const EngineState.settingUp(DeviceSetup.reset, finishing: true);
+      return _set(EngineState.newDevice);
+    }
     if (now.stage != EngineStage.firstDevice) return;
     _made = null;
     _set(const EngineState.firstDevice(finishing: true));
@@ -850,30 +1010,69 @@ class E2EEngine {
   Future<void> removeDevice(String deviceId, {bool changeKeys = false}) => _deviceAct(() async {
     if (deviceId == _device) throw ArgumentError.value(deviceId, 'deviceId', "this device's data goes another way");
     if (_state.value.rotating) throw StateError('finish changing the security keys first');
+    _holdForApproval();
     if (!changeKeys) return devices.removeDevice(this, deviceId);
     await _rotate([deviceId]);
   });
 
   /// The person's Change security keys (Task 25), with no device taken off: or, with a rotation waiting, its Finish,
   /// the same rotation again, its key shown once more.
-  Future<void> changeKeys() => _deviceAct(() => _rotate(const []));
+  Future<void> changeKeys() => _deviceAct(() async {
+    _holdForApproval();
+    // A new change, not the Finish of one that waits, takes up the offer of one after a gone, once it's made: then its
+    // waiting change carries it (review 27's M1). One that fails before stays offered.
+    final takesUp = !_state.value.rotating && _keysAgain;
+    await _rotate(const []);
+    if (takesUp) await _offerKeysAgain(false);
+  });
+
+  /// The person's yes to finish a change of keys that waits without the devices another device took off meanwhile
+  /// ([EngineState.gone]): the same change, its list signed again without them (duvetchat/e2e#49), its recovery key
+  /// shown again to be saved. Once it's up another change is offered ([EngineState.keysAgain]): such a device may still
+  /// hold the keys, if the API worked with its holder.
+  Future<void> finishKeysWithout() => _deviceAct(() async {
+    final gone = _state.value.gone;
+    if (!_state.value.rotating || gone.isEmpty) return;
+    await _rotate(const [], gone: gone);
+    if (_state.value.recoveryKey != null) await _offerKeysAgain(true);
+  });
+
+  Future<void> _offerKeysAgain(bool offer) async {
+    _keysAgain = offer;
+    await store
+        .write(keysAgain, offer ? true : null)
+        .catchError((Object error) => debugPrint("e2e: the record's offer of new keys: ${error.runtimeType}"));
+  }
+
+  /// A device this one approved hasn't put up its list yet (task 24's review, M2): it has no certificate of the
+  /// identity until then, so a list or a change of keys now would leave it out, and its own list would lose to it
+  /// (409).
+  void _holdForApproval() {
+    if (_approvals.holds()) {
+      throw CoreError('approval_waits', message: "a device this one approved hasn't put up its list yet");
+    }
+  }
 
   /// The devices a list of this device's took off that the API didn't take, which the next list or key change takes
   /// along (review 24's M3): its confirmation names them.
   Future<List<String>> unsentRemovals() => devices.unsentRemovals(this);
 
-  Future<void> _rotate(List<String> remove) async {
+  Future<void> _rotate(List<String> remove, {List<String> gone = const []}) async {
     final Rotation rotation;
     try {
-      rotation = _rotation = await rotateKeys(this, remove);
+      rotation = _rotation = await rotateKeys(this, remove, gone: gone);
     } on CoreError catch (error) {
       // Finish of a change that waits, which the core runs again only with a certificate the API serves, of an identity
-      // it knows, for every device it keeps: another device took one off, or changed the keys (review 24's I1).
-      final gone =
-          (error.code == 'bad_command' && error.field == 'certificates') ||
-          (error.code == 'invalid_signature' && error.what == 'certificate');
-      if (!_state.value.rotating || !gone) rethrow;
-      return _set(const EngineState.rotation(stuck: true));
+      // it knows, for every device it keeps (review 24's I1): another device took one off, which the change can go on
+      // without (gone, on the person's yes); or changed the keys, whose transfer the inbox may bring (e2e#49).
+      if (!_state.value.rotating) rethrow;
+      if (error.code == 'bad_command' && error.field == 'certificates') {
+        return _set(EngineState.rotation(stuck: true, gone: await goneDevices(this), relisted: _relisted));
+      }
+      if (error.code != 'invalid_signature' || error.what != 'certificate') rethrow;
+      await _inbox();
+      if (_state.value.rotating) _set(EngineState.rotation(stuck: true, relisted: _relisted));
+      return;
     }
     _set(EngineState.rotation(recoveryKey: rotation.recoveryKey));
   }
@@ -890,23 +1089,34 @@ class E2EEngine {
       _rotation = null;
       return _set(EngineState.update(error.minimum));
     } on duvet.DuvetIdentityChangedException {
-      // Another device changed the keys first. The inbox is read, but while this change waits the core checks that
-      // device's transfer against the identity this change made and refuses it (invalid_signature), which the inbox
-      // lets go: the change can never go up, and only this device's data deleted gets out, until duvetchat/e2e#49 has
-      // the core take such a transfer (review 25's I1).
+      // Another device changed the keys first: the inbox brings its transfer, which the core takes over this change,
+      // which ends (duvetchat/e2e#49): this device goes on with that identity. One that keeps a device this change
+      // takes off is refused (removed_device_listed), and this change can never go up.
       _rotation = null;
-      await takeInbox(this, _tries, _failures, _histories.keyTaken);
+      await takeInbox(this, _tries, _failures, _relistedSeen, _histories.keyTaken);
       final next = await _identity();
-      return _set(next.rotating ? const EngineState.rotation(stuck: true) : next);
+      return _set(next.rotating ? EngineState.rotation(stuck: true, relisted: _relisted) : next);
     } on duvet.DuvetApiException catch (error) {
-      // A device it keeps was taken off on another device meanwhile: its transfer can't go (review 24's I1).
+      // A device it keeps was taken off on another device meanwhile: its transfer can't go (review 24's I1), and the
+      // change goes on without it, on the person's yes.
       if (error.statusCode != 400 || !(error.body ?? '').contains("isn't a registered device of yours")) rethrow;
       _rotation = null;
-      return _set(const EngineState.rotation(stuck: true));
+      return _set(EngineState.rotation(stuck: true, gone: await goneDevices(this), relisted: _relisted));
     }
     _rotation = null;
     _set(EngineState.ready);
+    // A new device's request kept while the change waited is asked now.
+    await _takeApprovals();
   }
+
+  void _relistedSeen() {
+    _relisted = true;
+    unawaited(_keepRelisted());
+  }
+
+  Future<void> _keepRelisted() => store
+      .write(keptRelisted, _relisted ? true : null)
+      .catchError((Object error) => debugPrint("e2e: the record's refused change: ${error.runtimeType}"));
 
   /// «Remove this device and delete its data» (decision 13; Task 25): its database destroyed with its key, then the
   /// record's device and what it told of the user's devices forgotten, the engine stopped for good, and last its
@@ -926,6 +1136,8 @@ class E2EEngine {
     if (_device case final device?) await giveUpRegistration(this, device);
     _made = null;
     _rotation = null;
+    _setup = null;
+    _replaces = null;
     _device = null;
     _set(EngineState.starting);
   });
@@ -954,9 +1166,154 @@ class E2EEngine {
     if (now.stage == EngineStage.removed || (now.stage == EngineStage.failed && now.lostKey)) await _startOver();
   });
 
+  // A new device's setup, and approving one from this device (PLAN-E2E-CLIENTES.md, Task 27; decisions 22, 24, 47).
+
+  /// A new device set up with the person's recovery key, typed as they like, spaces and dashes too: a mistyped one is
+  /// the core's refusal (`bad_command` `recovery_key`) before the API is asked for anything; one that doesn't open the
+  /// identity is `decrypt_failed`. Then the device's first list goes up, and it's ready, or it names the devices that
+  /// list leaves out and waits for the person's Finish. The key goes to the core alone: nothing here keeps or logs it.
+  @override
+  Future<void> recover(String recoveryKey) => _queue(() async {
+    if (!_isNew()) return;
+    await checkRecoveryKey(this, recoveryKey);
+    await recoverIdentity(this, recoveryKey);
+    // One way per attempt: an approval under way is over.
+    _approvals.end();
+    await _listThisDevice(signOff: false);
+  });
+
+  @override
+  Future<void> beginApproval() => _queue(() async {
+    if (_isNew()) await _approvals.begin();
+  });
+
+  @override
+  Future<void> useCode() => _queue(() async {
+    if (_isNew()) await _approvals.useCode();
+  });
+
+  /// The code the person typed, from the approving device's screen: accepted, a transfer kept for it is taken.
+  @override
+  Future<void> acceptCode(String code) => _queue(() async {
+    if (_isNew() && await _approvals.accept(code)) await _takeApprovals();
+  });
+
+  @override
+  Future<void> endApproval() => _queue(() async => _approvals.end());
+
+  /// The person's start over (decision 47), after the app's warning ([Notice.startOverWarning]): a new identity in the
+  /// place of the one the API serves, its recovery key shown next, which goes up once saved ([keySaved]).
+  @override
+  Future<void> resetIdentity() => _queue(() async {
+    if (!_isNew()) return;
+    final served = await servedIdentity(this);
+    if (served == null) return;
+    final made = _made = await makeReset(this, served.identityKey);
+    _replaces = served.identityKey;
+    _approvals.end();
+    _setup = EngineState.settingUp(DeviceSetup.reset, recoveryKey: made.recoveryKey);
+    _set(EngineState.newDevice);
+  });
+
+  /// The person's Finish on a new device whose setup waits: its first list (signed without the devices the API took
+  /// away), or starting over's recovery key again, made before the app closed.
+  @override
+  Future<void> finishSetup() => _queue(() async {
+    final setup = _setup;
+    if (_state.value.stage != EngineStage.newDevice || setup == null) return;
+    if (setup.setup?.way == SetupWay.finishing) return _listThisDevice(signOff: true);
+    final replaces = _replaces;
+    if (setup.setup?.way != SetupWay.reset || !setup.finishing || replaces == null) return;
+    final made = _made = await makeReset(this, replaces);
+    _setup = EngineState.settingUp(DeviceSetup.reset, recoveryKey: made.recoveryKey, finishing: true);
+    _set(EngineState.newDevice);
+  });
+
+  /// The person's yes to «Is this device yours?»: this device offers to approve it (never without it). Its identity
+  /// replaced meanwhile, its inbox goes first, which may bring the change of keys' transfer, and the yes is tried
+  /// again.
+  @override
+  Future<void> approveDevice(String deviceId) => _queue(() async {
+    if (_role() != ApprovalRole.approver) return;
+    if (!await _approvals.approve(deviceId)) {
+      await _inbox();
+      if (_role() != ApprovalRole.approver || !await _approvals.approve(deviceId)) return;
+    }
+    // A reveal kept from before the app started again: taken now.
+    await _approvals.take(ApprovalRole.approver);
+  });
+
+  /// The person's no: the new device's request goes, and another one waiting its turn is asked.
+  @override
+  Future<void> declineDevice(String deviceId) => _queue(() async {
+    await _approvals.decline(deviceId);
+    await _takeApprovals();
+  });
+
+  /// The person's Confirm, once the new device accepted the code: the transfer goes, and this device's lists and keys
+  /// wait for the new device's list.
+  @override
+  Future<void> confirmApproval(String deviceId) => _queue(() async {
+    if (_role() != ApprovalRole.approver) return;
+    await _approvals.confirm(deviceId);
+    await _takeApprovals();
+  });
+
+  /// The device a QR the person scanned names, so they're asked about it before anything is approved: by its name
+  /// among the user's devices, null for a text that isn't an approval's QR, or while this device may approve none.
+  @override
+  Future<ScannedDevice?> scannedDevice(String qr) async {
+    ScannedDevice? scanned;
+    await _queue(() async {
+      final id = _approvals.scannedDevice(qr);
+      if (id == null || _role() != ApprovalRole.approver) return;
+      final registered = (await api.devices()).where((device) => device.id == id).firstOrNull;
+      final served = await servedIdentity(this);
+      final held = listDevices((await coreStatus(host)).deviceList ?? '') ?? const <String>[];
+      final listed = served != null && (listDevices(served.deviceList)?.contains(id) ?? false);
+      scanned = (id: id, name: registered?.name, listed: listed, unfinished: !listed && held.contains(id));
+    });
+    return scanned;
+  }
+
+  /// The person's yes to the device a QR they scanned names ([scannedDevice]): approved from the QR's text, as it was
+  /// scanned, after this device observed its own user (its inbox first while the identity it holds was replaced), its
+  /// transfer to that device's inbox. True once it went; false when its send failed, the transfer kept for
+  /// [sendScanned] (review 27's M2). Refused for a device the account doesn't have, one set up already, while this
+  /// device may approve none, or while another device it approved sets up (`approval_waits`, M5).
+  @override
+  Future<bool> approveScanned(String qr, ScannedDevice device) async {
+    bool? sent;
+    await _queue(() async {
+      final name = device.name;
+      if (_role() != ApprovalRole.approver || name == null || device.listed) {
+        throw StateError("this device can't approve that one now");
+      }
+      sent = await _approvals.approveScanned(qr, device.id, name);
+      if (sent != null) return;
+      await _inbox();
+      if (_role() == ApprovalRole.approver) sent = await _approvals.approveScanned(qr, device.id, name);
+      if (sent == null) throw StateError("this device's security keys changed: scan the new device's code again");
+    });
+    return sent ?? (throw StateError('the encryption engine stopped'));
+  }
+
+  /// The person's Try again of a scanned device's transfer whose send failed: the same bytes. None waits for that
+  /// device any more (its hold ended, or the engine started again) is `not_found` `transfer`: its QR is scanned again.
+  @override
+  Future<void> sendScanned(String deviceId) async {
+    var sent = false;
+    await _queue(() async {
+      await _approvals.sendScanned(deviceId);
+      sent = true;
+    });
+    // A stopped engine runs nothing, and keeps no transfer.
+    if (!sent) throw CoreError('not_found', message: 'no transfer waits for that device', what: 'transfer');
+  }
+
   void _set(EngineState state) {
     final was = _state.value.stage;
-    _state.value = state;
+    _state.value = _withSetup(state);
     if (state.stage != EngineStage.ready) {
       // Nothing heard is kept while the device can't work: the queue keeps it all (M3 of the desktop's review).
       _groups.dropHeard();
@@ -965,6 +1322,111 @@ class E2EEngine {
         _soon(() => _whenReady(() => _open(id)));
       }
     }
+  }
+
+  /// The state with what a new device shows of its setup, and a ready one of a new device's approval (Task 27), as
+  /// they are now: none while a change of keys waits, which approves nothing.
+  EngineState _withSetup(EngineState state) {
+    if (state.stage == EngineStage.newDevice) {
+      return _setup ?? EngineState(EngineStage.newDevice, setup: _approvals.setup(), listChanged: _listChanged);
+    }
+    if (state.stage != EngineStage.ready || state.rotating) return state;
+    // And the offer of a new change of keys after one that left devices out (e2e#49).
+    return EngineState(EngineStage.ready, approval: _approvals.shown(), keysAgain: _keysAgain);
+  }
+
+  /// Which approvals this device takes part in: as a new one, or as one that may approve the user's new ones.
+  ApprovalRole? _role() {
+    final state = _state.value;
+    if (state.stage == EngineStage.newDevice) return _setup == null ? ApprovalRole.newDevice : null;
+    return state.stage == EngineStage.ready && !state.rotating ? ApprovalRole.approver : null;
+  }
+
+  /// A new device with no identity in its core yet: one way of setting it up may begin.
+  bool _isNew() => _role() == ApprovalRole.newDevice;
+
+  /// The kept approval frames, by this device's role; a transfer that set it up lists it next.
+  Future<void> _takeApprovals() async {
+    if (!await _approvals.take(_role())) return;
+    _approvals.end();
+    await _listThisDevice(signOff: false);
+  }
+
+  /// This device, holding the user's identity now (recovered, or approved), puts up its first list (recover.dart), and
+  /// once it's listed starts its last steps. One that must leave devices out names them, by the start of their IDs as
+  /// Settings does, and waits for the person's Finish ([signOff]), at a start too; one that fails leaves Finish too.
+  /// One that lost to another list (409) can't be listed any more, as the core adds no device to a list: the
+  /// installation starts again as a new device (Ruling 26), which its state says ([EngineState.listChanged]), as the
+  /// page it was set up on goes with the old device (review 27's M3).
+  Future<void> _listThisDevice({required bool signOff}) async {
+    final FirstList listed;
+    try {
+      listed = await putFirstList(this, signOff: signOff);
+    } catch (error) {
+      _waitToFinish(_setup?.setup?.leavingOut ?? const []);
+      rethrow;
+    }
+    if (listed.leavingOut.isNotEmpty) return _waitToFinish([for (final id in listed.leavingOut) id.substring(0, 8)]);
+    if (listed.lost) return _startOverChanged();
+    _setup = null;
+    _listChanged = false;
+    _set(EngineState.starting);
+    // Listed: what fails now goes again later, as a first device's start does, never left starting.
+    try {
+      await _settle();
+    } catch (error) {
+      _failed(error);
+    }
+  }
+
+  /// The user's devices or keys changed while this new device was being set up, which it can't be any more: it starts
+  /// again as a new one, saying why until it's set up.
+  Future<void> _startOverChanged() async {
+    _listChanged = true;
+    await _startOver();
+  }
+
+  /// Finish is left for the person, naming the devices the list leaves out.
+  void _waitToFinish(List<String> leavingOut) {
+    _setup = EngineState.settingUp(DeviceSetup.finishing([...leavingOut]..sort()));
+    _set(EngineState.newDevice);
+  }
+
+  /// The person saved starting over's recovery key: the new identity goes up in the place of the one it replaces, and
+  /// only once the API took it is it confirmed; the record lets go of it then. A refusal or a lost answer throws, the
+  /// key still shown, and the same bytes go next time. Another identity there meanwhile (409) can't be replaced by
+  /// this one, made for the one before: the installation starts again as a new device (Ruling 26), which its state
+  /// says once the key's page goes (review 27's M3).
+  Future<void> _resetSaved() async {
+    final made = _made;
+    final replaces = _replaces;
+    if (made == null || replaces == null) return;
+    final bool published;
+    try {
+      published = await publishIdentity(this, made, replaces: replaces);
+    } on duvet.DuvetUpdateRequiredException catch (error) {
+      _made = null;
+      _setup = const EngineState.settingUp(DeviceSetup.reset, finishing: true);
+      return _set(EngineState.update(error.minimum));
+    }
+    _made = null;
+    _setup = null;
+    _replaces = null;
+    await store.write(keptReset, null).catchError((Object error) => debugPrint("e2e: the record's start over: $error"));
+    if (!published) return _startOverChanged();
+    _listChanged = false;
+    _set(EngineState.starting);
+    try {
+      await _settle();
+    } catch (error) {
+      _failed(error);
+    }
+  }
+
+  /// This device holds the identity the API serves, and the API's list doesn't name it yet.
+  Future<bool> _firstListWaits() async {
+    final served = await servedIdentity(this);
+    return served != null && firstListWaits(served, await coreStatus(host));
   }
 
   /// Conversations' work, only while this device is ready: a client too old for it waits for its update.
@@ -1058,6 +1520,7 @@ class E2EEngine {
             // Its own list may now leave out a device that still has leaves: the groups say whether a commit is due to
             // take them out.
             _set(await _identity());
+            await _released();
             await _whenReady(_groups.all);
           } else if (now.stage == EngineStage.firstDevice && now.recoveryKey == null) {
             await _stillFirst();
@@ -1087,17 +1550,40 @@ class E2EEngine {
   /// shows stays shown, as its saving or Later alone puts it away; one gone (another device's transfer replaced the
   /// identity) is forgotten.
   Future<EngineState> _identity() async {
-    final state = await identityState(this, () => takeInbox(this, _tries, _failures, _histories.keyTaken));
-    if (!state.rotating) _rotation = null;
+    final state = await identityState(
+      this,
+      () => takeInbox(this, _tries, _failures, _relistedSeen, _histories.keyTaken),
+    );
+    if (!state.rotating) {
+      _rotation = null;
+      if (_relisted) {
+        _relisted = false;
+        await _keepRelisted();
+      }
+    }
     final shown = _rotation?.recoveryKey;
     if (shown != null) return EngineState.rotation(recoveryKey: shown);
+    // One another device's keys made impossible, as the record says after a restart, is said at once.
+    if (state.rotating && _relisted) return const EngineState.rotation(stuck: true, relisted: true);
     // A change found stuck this run stays said while the core keeps it: only another device's keys end it.
     return state.rotating && _state.value.stuck ? _state.value : state;
   }
 
   /// The inbox; once it brought a rotation's transfer, the own user observed, which may change what this device is.
+  /// Then the approval frames it kept, for this device's role (approval.dart), and a hold the served list ends.
   Future<void> _inbox() async {
-    if (await takeInbox(this, _tries, _failures, _histories.keyTaken)) _set(await _identity());
+    if (await takeInbox(this, _tries, _failures, _relistedSeen, _histories.keyTaken)) _set(await _identity());
+    await _takeApprovals();
+    await _released();
+  }
+
+  /// The list of a device this one approved, up (the served list names it): this device's own changes go on, and the
+  /// questions of the new devices that waited for it are asked (review 27's M5). Asked at its IDENTITY_UPDATE and at
+  /// each round of the inbox, a READY's too, so a gateway down as it came holds nothing.
+  Future<void> _released() async {
+    if (!_approvals.holds()) return;
+    if (await servedIdentity(this) case final served?) _approvals.listed(served);
+    if (!_approvals.holds()) await _takeApprovals();
   }
 
   /// «Arranque»: the API's configuration, the user's database, this installation's device and the session bound to it.
@@ -1110,6 +1596,8 @@ class E2EEngine {
       if (opened.state != HostState.ready) return _closed(opened);
       // What a push's engine noted in the record while it held the core (contacts.dart), before anything here writes.
       await _contacts.reload();
+      _keysAgain = store.read(keysAgain) == true;
+      _relisted = store.read(keptRelisted) == true;
       final (:status, :keys) = await ownDevice(this);
       final device = status.deviceId;
       _self = device;
@@ -1129,8 +1617,14 @@ class E2EEngine {
       registered(device);
       _retries = 0;
       // An identity made before the app closed, still waiting for its upload: the same command gives it again, its
-      // recovery key with it, from the person's tap as the first time (step 4).
-      if (status.waitingUpload == 'create_identity') return _set(const EngineState.firstDevice(finishing: true));
+      // recovery key with it, from the person's tap as the first time (step 4). A start over's, as its record says, is
+      // a new device's (Task 27), never a first device's that lost its race.
+      if (status.waitingUpload == 'create_identity') {
+        final replaces = _replaces = replacedByReset(store);
+        if (replaces == null) return _set(const EngineState.firstDevice(finishing: true));
+        _setup = const EngineState.settingUp(DeviceSetup.reset, finishing: true);
+        return _set(EngineState.newDevice);
+      }
       await _settle();
     } catch (error) {
       _failed(error);
@@ -1148,7 +1642,10 @@ class E2EEngine {
   /// queues, before its key packages, so a welcome waiting there takes its keys before key_packages lets them go; then
   /// the leaf renewals due («Lo periódico»), as every day after: a phone seldom runs a whole day.
   Future<void> _settle() async {
-    _set(await _identity());
+    final state = await _identity();
+    // Set up here before the app closed, its first list not up: it goes up now, or waits for the person's Finish.
+    if (state.stage == EngineStage.newDevice && await _firstListWaits()) return _listThisDevice(signOff: false);
+    _set(state);
     await _inbox();
     if (_state.value.stage != EngineStage.ready) return;
     // Whom the person verified, looked at again: a change of theirs the record never took holds from the start (review
@@ -1251,6 +1748,9 @@ class E2EEngine {
     }
     _contacts.forget();
     _made = null;
+    _setup = null;
+    _replaces = null;
+    _approvals.stop();
     _device = null;
     _tries.clear();
     _groups.forget();

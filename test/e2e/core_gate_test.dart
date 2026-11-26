@@ -117,6 +117,27 @@ void main() {
     await app.close();
   }, skip: noCore);
 
+  // Review Focus 2 (Task 27): only the engine with a screen recovers, approves or starts over.
+  test(
+    "a device's setup runs only in the app's engine: another engine refuses it, with the app's engine or alone",
+    () async {
+      final refused = isA<CoreError>().having((e) => (e.code, e.field), 'refusal', ('bad_command', 'cmd'));
+      final (app, _) = await appWithDevice();
+      final other = gate(app: false);
+      expect(await other.open(ana), ready);
+      for (final cmd in screenOnly) {
+        await expectLater(other.handle<Object?>({'cmd': cmd}), throwsA(refused));
+      }
+      await other.close();
+      await app.close();
+      final alone = gate(app: false);
+      expect(await alone.open(ana), ready);
+      await expectLater(alone.handle<Object?>({'cmd': 'recover'}), throwsA(refused));
+      await alone.close();
+    },
+    skip: noCore,
+  );
+
   test('without_a_port_it_opens_and_closes', () async {
     final (app, device) = await appWithDevice();
     await app.close();
