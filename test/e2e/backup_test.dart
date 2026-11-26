@@ -409,6 +409,44 @@ void main() {
       timeout: _slow,
     );
 
+    // The review's I1: a copy that still holds a message the API saw deleted since restores without it.
+    test(
+      "a_message_deleted_after_its_day_went_up_stays_out_of_a_new_device's_restore",
+      () async {
+        final fake = FakeApi();
+        final (ana, bo) = (fake.addUser(), fake.addUser());
+        final timeline = <String>[];
+        final client = _watching(fake, timeline);
+        final conversation = fake.addConversation(group: false, members: [ana, bo]);
+        final (device: a, :key) = await _withKey(fake, ana, client);
+        final b = await firstDevice(fake, bo, client: client);
+        await a.engine.openConversation(conversation);
+        await sameGroup([a, b], conversation);
+        final kept = await _sent(fake, a, conversation, 'kept', _day, [a, b]);
+        final gone = await _sent(fake, a, conversation, 'deleted for everyone', _day, [a, b]);
+        a.clock.advance(_minute);
+        await until(() async => (await a.api.segments()).length == 1, what: 'the day backed up');
+        await turnEnded(a);
+        final copy = (await a.api.segments()).single;
+        // Deleted for everyone, then her device stops before a pass builds the day again: the copy still holds it.
+        await a.engine.deleteMessage(conversation, gone.id);
+        await until(() async => (await b.engine.messages(conversation, [gone.id])).isEmpty);
+        await a.engine.stop();
+
+        final n = testDevice(fake, ana, client: client);
+        await n.engine.start();
+        timeline.clear();
+        await n.engine.recover(key);
+        await until(() async => await _textOn(n, conversation, kept.id) == 'kept', what: 'the day restored');
+        await turnEnded(n);
+        // It restored that copy, and the message isn't in its database.
+        expect(_downloadsIn(timeline), [copy.id]);
+        expect(await _textOn(n, conversation, gone.id), isNull);
+      },
+      skip: noCore,
+      timeout: _slow,
+    );
+
     test(
       'a_new_device_restores_its_days,_newest_conversations_first,_and_the_rows_that_waited_fill_in',
       () async {
@@ -1142,6 +1180,75 @@ void main() {
       expect(imported, ['AgIC', 'AQEB']);
       expect(stub.store.read(backupRestore), isNull);
       expect(stub.store.read(backupSetAside), isNull);
+    });
+
+    // The review's I1: what the API saw deleted goes with every segment the backup opens, as with every day it builds.
+    test("a_restore,_another_device's_copy_and_a_move_take_what_the_API_saw_deleted", () async {
+      const gone = ['0193a4b2-0000-7000-8000-0000000d0001', '0193a4b2-0000-7000-8000-0000000d0002'];
+      // A restore's segment.
+      final restored = <Object?>[];
+      final restore = _onAStub(
+        core: {
+          'backup_import': (command) {
+            restored.add(command['deleted']);
+            return {'imported': 1};
+          },
+        },
+        api: (api) => api
+          ..listing = ((_) async => [_segmentOf(_s1, '2026-11-21')])
+          ..deleted = ((_, _) async => gone),
+      );
+      await restore.store.write(backupRestore, {'done': <String>[]});
+      restore.backups.wake();
+      await restore.backups.settled();
+      expect(restored, [gone]);
+      // Another device's copy of a day this device builds, which the API answers with a 409 that names it.
+      final takenIn = <Object?>[];
+      var held = true;
+      final copy = _onAStub(
+        core: {
+          'backup_due': (_) => {
+            'segments': [
+              {'conversation_id': _c, 'day': '2026-11-20', 'complete': true},
+            ],
+          },
+          'backup_import': (command) {
+            takenIn.add(command['deleted']);
+            return {'imported': 1};
+          },
+        },
+        api: (api) => api
+          ..deleted = ((_, _) async => gone)
+          ..put = (conversation, day, bytes, replaces) async {
+            if (!held) return uuidv4();
+            held = false;
+            throw duvet.DuvetApiException(
+              action: 'test the backup',
+              statusCode: 409,
+              body: jsonEncode({'error': 'another segment holds this day', 'current': _s2}),
+            );
+          },
+      );
+      copy.backups.quiet();
+      await copy.backups.settled();
+      expect(takenIn, [gone]);
+      // A move's segment.
+      final moved = <Object?>[];
+      final move = _onAStub(
+        core: {
+          'backup_reencrypt': (command) {
+            moved.add(command['deleted']);
+            return {'data': 'AAEC', 'key_id': 'current'};
+          },
+        },
+        api: (api) => api
+          ..listing = ((_) async => [_segmentOf(_s1, '2026-11-21', keyId: 'older')])
+          ..deleted = ((_, _) async => gone),
+      );
+      await move.store.write(backupMove, {'key': 'older'});
+      move.backups.quiet();
+      await move.backups.settled();
+      expect(moved, [gone]);
     });
 
     // Round 3: a key this device doesn't hold yet may still come, with a change of keys' transfer.
