@@ -148,6 +148,9 @@ Future<bool> takeInbox(
   String? after;
   while (true) {
     final page = await api.inbox(after: after);
+    // A page that ends where this read began came again as it was (the server's word: the API's after is exclusive),
+    // and would for good: the round ends, and the inbox is read again with the next.
+    if (after != null && page.lastOrNull?.id == after) return rotated;
     String? handled;
     for (final message in page) {
       if (!await handle(message)) break;

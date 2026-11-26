@@ -3,9 +3,13 @@ import 'dart:convert';
 import 'package:duvet/e2e/conventions.dart';
 import 'package:duvet/e2e/core_gate.dart';
 import 'package:duvet/e2e/engine.dart';
+import 'package:duvet/e2e/host.dart';
+import 'package:duvet/e2e/inbox.dart';
 import 'package:duvet/e2e/store.dart';
 import 'package:duvet_client/duvet.dart' as duvet;
 import 'package:flutter_test/flutter_test.dart';
+import 'package:http/http.dart' as http;
+import 'package:http/testing.dart';
 
 import '../support/core_lib.dart';
 import '../support/engines.dart';
@@ -261,4 +265,55 @@ void main() {
     await a.engine.stop();
     await other.engine.stop();
   }, skip: noCore);
+
+  // Step 5's fuzzing: a page whose last message is the one the read began after (the server's word, which the API never
+  // gives so: its after is exclusive) had the next read begin there again, and a server that kept sending it held the
+  // engine's one turn, which the inbox takes, for good, each round handling the page anew.
+  test("an_inbox_page_that_doesn't_go_past_where_its_read_began_ends_the_round", () async {
+    const user = '0193a4b2-0000-7000-8000-000000000001';
+    // A full page of approval frames from the user's own devices, which the record keeps: no core is asked.
+    final page = [
+      for (var n = 0; n < 100; n++)
+        {
+          'id': '0193a4b2-0000-7000-8000-${n.toString().padLeft(12, '0')}',
+          'from_user_id': user,
+          'from_device_id': '0193a4b2-0000-7000-8000-0000000000dd',
+          'message': _frame(base64Encode([n])),
+          'created_at': '2026-11-26T10:00:00Z',
+        },
+    ];
+    final reads = <String?>[];
+    final cleared = <String?>[];
+    final client = MockClient((request) async {
+      if (request.method == 'DELETE') {
+        cleared.add(request.url.queryParameters['through']);
+        return http.Response('', 204);
+      }
+      reads.add(request.url.queryParameters['after']);
+      // A server that gives up after a while: the test can't wait for good.
+      if (reads.length > 5) return http.Response('{"error":"enough"}', 500);
+      return http.Response(jsonEncode(page), 200);
+    });
+    final engine = E2EEngine(
+      host: _NoCore(),
+      api: duvet.E2eApi(duvet.RestClient(client, router: fakeRouter, token: 'token', duvetClient: engineClient)),
+      events: const Stream.empty(),
+      store: MemoryStore(),
+      clock: TestClock(),
+      user: user,
+      deviceName: 'Pixel 8 Pro',
+      registered: (_) {},
+    );
+    expect(await takeInbox(engine, {}), isFalse);
+    // Its first page, then the same page again, past whose last message nothing came: the round ends there.
+    expect(reads, [null, page.last['id']]);
+    expect(cleared, [page.last['id']]);
+    expect(_kept(engine.store, keptApprovals), hasLength(20));
+  });
+}
+
+/// A core no test of this file's own reaches: each command fails.
+class _NoCore implements CoreHost {
+  @override
+  dynamic noSuchMethod(Invocation invocation) => throw UnimplementedError('${invocation.memberName}');
 }
