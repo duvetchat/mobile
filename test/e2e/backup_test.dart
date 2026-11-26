@@ -685,7 +685,7 @@ void main() {
     test(
       'a_full_quota_pauses_the_backup_and_says_so',
       () async {
-        final (:fake, :a, :b, :conversation, :timeline, asked: _, client: _) = await _dm();
+        final (:fake, :a, :b, :conversation, :timeline, asked: _, :client) = await _dm();
         final day = _daysBack(_day);
         await _sent(fake, a, conversation, 'kept for later', _day, [a, b]);
         fake.refuse(
@@ -701,16 +701,20 @@ void main() {
         expect(timeline, isNot(contains('backup_uploaded')));
         expect(await _dueOn(a), ['$conversation/$day']);
 
+        // The review's I2: the app restarted during the pause says so at once, before any pass.
+        final again = await restarted(fake, a, client: client);
+        expect(again.engine.backup.value, const BackupShown.paused(BackupPause.full));
+
         // Quiet minutes don't try again: the next day does, and the backup goes on.
         timeline.clear();
-        a.clock.advance(_minute);
-        await turnEnded(a);
+        again.clock.advance(_minute);
+        await turnEnded(again);
         expect(_putsIn(timeline), isEmpty);
-        a.clock.advance(_day);
+        again.clock.advance(_day);
         await until(() => timeline.contains('backup_uploaded'), what: 'the day after');
-        await turnEnded(a);
-        expect(a.engine.backup.value, BackupShown.upToDate);
-        expect(await _dueOn(a), isEmpty);
+        await turnEnded(again);
+        expect(again.engine.backup.value, BackupShown.upToDate);
+        expect(await _dueOn(again), isEmpty);
       },
       skip: noCore,
       timeout: _slow,

@@ -268,9 +268,11 @@ class Backups {
       .write(backupRestore, {'done': <String>[]})
       .catchError((Object error) => debugPrint("e2e: the backup's restore isn't in the record: ${error.runtimeType}"));
 
-  /// The device is ready: a restore that's due starts now, as the person waits for their messages.
+  /// The device is ready: it shows what the record holds (a pause or a day set aside outlives the app), and a restore
+  /// that's due starts now, as the person waits for their messages.
   void wake() {
     _atTheLatest();
+    _show();
     if (_restoreRecord() != null) _start(_Run.restore);
   }
 
