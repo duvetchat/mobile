@@ -31,6 +31,7 @@ import 'engine.dart' show EngineClock;
 import 'failures.dart';
 import 'host.dart';
 import 'store.dart';
+import 'tls_web.dart' if (dart.library.io) 'tls.dart';
 
 const _minute = Duration(minutes: 1);
 const _hour = Duration(hours: 1);
@@ -167,8 +168,9 @@ bool _tooLarge(Object error) =>
 bool _refusedKey(Object error) =>
     _statusOf(error) == 400 && RegExp(r'^(retired|unknown) backup key$').hasMatch('${_said(error)}');
 
-/// A request that got no answer at all: the network's, which counts against no day or segment.
-bool _noAnswer(Object error) => error is http.ClientException || error is TimeoutException;
+/// A request that got no answer at all: the network's, which counts against no day or segment. A TLS handshake that
+/// failed is one.
+bool _noAnswer(Object error) => error is http.ClientException || error is TimeoutException || tlsFailed(error);
 
 /// An error as a log line says it: its code or status, never what a segment holds.
 String _why(Object error) => switch (error) {

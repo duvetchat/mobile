@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:io' show HandshakeException;
 import 'dart:math';
 import 'dart:typed_data';
 
@@ -1315,37 +1316,44 @@ void main() {
       expect(stub.store.read(backupSetAside), isNull);
     });
 
+    // A TLS handshake that fails is the network's too (a wrong clock, a network that inspects TLS): IOClient passes
+    // dart:io's TlsException on as it is (the review's M2).
     test("a_network_that_doesn't_answer_counts_against_no_day", () async {
-      var down = true;
-      final puts = <String>[];
-      final stub = _onAStub(
-        core: {
-          'backup_due': (_) => {
-            'segments': [
-              if (puts.isEmpty || down) {'conversation_id': _c, 'day': '2026-11-20', 'complete': true},
-            ],
+      for (final failure in <Object Function()>[
+        () => http.ClientException('fetch failed'),
+        () => const HandshakeException('CERTIFICATE_VERIFY_FAILED: certificate is not yet valid'),
+      ]) {
+        var down = true;
+        final puts = <String>[];
+        final stub = _onAStub(
+          core: {
+            'backup_due': (_) => {
+              'segments': [
+                if (puts.isEmpty || down) {'conversation_id': _c, 'day': '2026-11-20', 'complete': true},
+              ],
+            },
           },
-        },
-        api: (api) => api
-          ..deleted = (_, _, _) async {
-            if (down) throw http.ClientException('fetch failed');
-            return <String>[];
-          }
-          ..put = (conversation, day, bytes, replaces) async {
-            puts.add(day);
-            return uuidv4();
-          },
-      );
-      stub.backups.quiet();
-      await stub.backups.settled();
-      for (final minutes in [1, 2, 4, 8, 16]) {
-        await _moveOn(stub, _minute * minutes);
+          api: (api) => api
+            ..deleted = (_, _, _) async {
+              if (down) throw failure();
+              return <String>[];
+            }
+            ..put = (conversation, day, bytes, replaces) async {
+              puts.add(day);
+              return uuidv4();
+            },
+        );
+        stub.backups.quiet();
+        await stub.backups.settled();
+        for (final minutes in [1, 2, 4, 8, 16]) {
+          await _moveOn(stub, _minute * minutes);
+        }
+        expect(stub.store.read(backupSetAside), isNull, reason: '${failure().runtimeType}');
+        // Back up, the day goes at the next pass.
+        down = false;
+        await _moveOn(stub, _minute * 32);
+        expect(puts, ['2026-11-20'], reason: '${failure().runtimeType}');
       }
-      expect(stub.store.read(backupSetAside), isNull);
-      // Back up, the day goes at the next pass.
-      down = false;
-      await _moveOn(stub, _minute * 32);
-      expect(puts, ['2026-11-20']);
     });
 
     // The review's M8: however busy the app, a pass at the latest 30 minutes after the last one ended, and as a day
