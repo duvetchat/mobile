@@ -14,8 +14,9 @@ import 'engine.dart';
 /// How long a failure waits for the others of its minute.
 const _window = Duration(minutes: 1);
 
-/// How long reports wait after the API refused one for its rate (429; the route takes 60 an hour): duvet_client keeps
-/// no Retry-After for the engine to read, so an hour, the most the route's window can ask (M2 of the desktop's review).
+/// How long reports wait after the API refused one for its rate (429; the route takes 60 an hour) without saying how
+/// long: an hour, the most the route's window can ask (M2 of the desktop's review). One that says waits its
+/// Retry-After (step 5's engines review, Minor 8).
 const _refusedWait = Duration(hours: 1);
 
 /// The most one report counts (the route's): the rest go in the next.
@@ -85,7 +86,7 @@ class Failures {
   }
 
   /// Each kind's count in one request; what the API didn't take waits for the next minute. A refusal for the route's
-  /// rate stops the round there, the other kinds waiting with it, an hour.
+  /// rate stops the round there, the other kinds waiting with it, its Retry-After, an hour without one.
   Future<void> _report() async {
     for (final kind in [..._counts.keys]) {
       if (_stopped) return;
@@ -97,11 +98,12 @@ class Failures {
       } catch (error) {
         _counts[kind] = (_counts[kind] ?? 0) + sent;
         if (error is duvet.DuvetApiException && error.statusCode == 429) {
-          debugPrint('e2e: failures to decrypt wait an hour: the API takes no more now.');
+          final wait = error.retryAfter ?? _refusedWait;
+          debugPrint('e2e: failures to decrypt wait ${wait.inSeconds} s: the API takes no more now.');
           // In place of a minute's wait a failure noted meanwhile started.
           _timer?.call();
           _timer = null;
-          return _wait(_refusedWait);
+          return _wait(wait);
         }
         debugPrint("e2e: failures to decrypt weren't reported ($kind): $error");
       }
