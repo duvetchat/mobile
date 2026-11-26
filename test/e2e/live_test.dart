@@ -324,7 +324,8 @@ void main() {
           Push.fromData(data)! as EncryptedMessagePush,
           earlier: const [],
           session: (token: d.rest.token, sessionToken: d.rest.sessionToken, refreshedAt: null, userId: dave.id),
-          core: () => CoreGate(serves: false, keys: d.host.keys, folder: () async => d.host.folder),
+          core: (wait) =>
+              CoreGate(serves: false, keys: d.host.keys, folder: () async => d.host.folder, lockedWait: wait),
           router: _router(),
           duvetClient: duvetClient(),
           client: client,

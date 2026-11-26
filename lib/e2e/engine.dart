@@ -284,27 +284,45 @@ class E2EEngine {
   Future<DeviceFound> search(DeviceSearch request) => searchDevice(host, request);
 
   /// The text this device's database holds of [messageId] of the conversation, from [authorId], the author the API
-  /// names: read now, and again each time the conversation's messages change here (its entry applied), [wait] at most.
-  /// Null without it by then, or for one without text: its notice then says who wrote it and that a message came, as
-  /// the desktop's deviceText does. It's kept nowhere.
-  Future<String?> textOf(String conversationId, String messageId, String authorId, Duration wait) async {
+  /// names: its row read now, and again each time the conversation's messages change here (its entry applied), [wait]
+  /// at most, each read raced against it; a read that fails is none yet. Once the row is opened (`ok`) it's decided:
+  /// its text, or null for one without text (a sticker, files) or another author's. Null too without it by then, or
+  /// once [settled] says what would bring it came and one more read found none. A notice then says who wrote it and
+  /// that a message came, as the desktop's deviceText does. It's kept nowhere.
+  Future<String?> textOf(
+    String conversationId,
+    String messageId,
+    String authorId,
+    Duration wait, {
+    Future<void>? settled,
+  }) async {
     final timeUp = Completer<void>();
     var changed = Completer<void>();
+    var done = false;
     final heard = messagesChanged.listen((id) {
       if (id == conversationId && !changed.isCompleted) changed.complete();
     });
+    unawaited(
+      settled?.then((_) {
+        done = true;
+        if (!changed.isCompleted) changed.complete();
+      }),
+    );
     final cancel = clock.later(wait, timeUp.complete);
     try {
       while (!timeUp.isCompleted) {
         // A change that comes while it reads has it read again.
         final next = changed = Completer<void>();
-        final Map<String, String> texts;
-        try {
-          texts = await textsOf(host, conversationId, [(id: messageId, author: authorId)]);
-        } on CoreError {
-          return null;
-        }
-        if (texts[messageId] case final text?) return text;
+        final last = done;
+        final row = await Future.any([
+          shownMessages(host, conversationId, [messageId]).then(
+            (rows) => rows.where((row) => row.messageId == messageId && row.status == MessageStatus.ok).firstOrNull,
+            onError: (Object _) => null,
+          ),
+          timeUp.future.then((_) => null),
+        ]);
+        if (row != null) return row.userId == authorId ? row.text : null;
+        if (last) return null;
         await Future.any([next.future, timeUp.future]);
       }
       return null;
@@ -317,21 +335,30 @@ class E2EEngine {
   /// A push's message, as the push's engine asks this one for it while this one holds the core (lib/e2e/
   /// push_decrypt.dart; decision 29): its [entry] taken in its conversation's turn, or, without one, the conversation's
   /// queue read; then the texts this device's database holds of [lines] (the push's message first, then its chat's
-  /// earlier ones), the first waited for [wait] at most.
+  /// earlier ones), the first waited for until its entry is taken, all of it [wait] at most: past it, the first line's
+  /// text alone, if it came.
   Future<Map<String, String>> pushTexts(
     String conversationId,
     Map<String, Object?>? entry,
     List<Authored> lines,
     Duration wait,
   ) async {
-    _soon(
-      () => _whenReady(
-        () => entry == null ? _groups.sync(conversationId, read: true) : _groups.take(conversationId, [entry]),
-      ),
-    );
-    final first = lines.firstOrNull;
-    if (first != null) await textOf(conversationId, first.id, first.author, wait);
-    return textsOf(host, conversationId, lines);
+    final timeUp = Completer<void>();
+    final cancel = clock.later(wait, timeUp.complete);
+    try {
+      final taken = _queue(
+        () => _whenReady(
+          () => entry == null ? _groups.sync(conversationId, read: true) : _groups.take(conversationId, [entry]),
+        ),
+      ).catchError((Object _) {});
+      final first = lines.firstOrNull;
+      final text = first == null ? null : await textOf(conversationId, first.id, first.author, wait, settled: taken);
+      final alone = {if (first != null && text != null) first.id: text};
+      if (timeUp.isCompleted) return alone;
+      return await Future.any([textsOf(host, conversationId, lines), timeUp.future.then((_) => alone)]);
+    } finally {
+      cancel();
+    }
   }
 
   /// The person's messages of the conversation still being sent, in their order, with what goes with them.

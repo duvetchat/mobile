@@ -563,9 +563,10 @@ class FakeApi {
   /// The session ends, as one past its time does: each of its requests is refused (401) from now on.
   void endSession(String token) => _sessions.remove(token);
 
-  /// The push of a conversation's message as the API sends it (push.EncryptedData; PLAN-E2E-API.md, «Push»): who wrote
-  /// it ([authorName] as the API names them), where ([place]: a group's name, or nothing in a DM) and when, its number,
-  /// and its queue entry as the queue gives it while the whole data fits FCM's 4096 bytes. Never its text.
+  /// The push of a conversation's message as the API sends it (push.EncryptedData; PLAN-E2E-API.md, its section on
+  /// pushes): who wrote it ([authorName] as the API names them), where ([place]: a group's name, or nothing in a DM)
+  /// and when, its number, and its queue entry as the queue gives it while the whole data fits FCM's 4096 bytes. Never
+  /// its text.
   Map<String, String> pushOf(String conversationId, String messageId, {String authorName = 'Bo', String place = ''}) {
     final conv = _conversation(conversationId);
     final m = conv.messages.firstWhere((m) => m['id'] == messageId);
@@ -1580,9 +1581,9 @@ class FakeApi {
     });
   }
 
-  /// A conversation's search, as the API's answers it (ConversationController.SearchMessages): never by words, which it
-  /// can't read; by what it keeps in the clear, its author, whom its sender says it mentions, when, whether it's pinned,
-  /// and whether it has a file or a sticker. Its encrypted messages, newest first, a page after `cursor`.
+  /// A conversation's search, as the API answers it (ConversationController.SearchMessages): never by words, which it
+  /// can't read; by what it keeps in the clear, its author, whom its sender says it mentions, when, whether it's
+  /// pinned, and whether it has a file or a sticker. Its encrypted messages, newest first, a page after `cursor`.
   _Answer _search(_Conversation conv, _Context ctx) {
     List<String> all(String key) => ctx.queryAll[key] ?? const [];
     if ((ctx.query['query'] ?? '').trim().isNotEmpty) throw _fail(400, 'search conversations on the device');

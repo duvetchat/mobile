@@ -1152,6 +1152,11 @@ final class ReactionChanged extends MessageEvent {
   });
 }
 
+/// A conversation's message whose notice the app couldn't show, gone to the back while it waited for the message's text
+/// (DuvetRepository): for the phone's notifications, with its group's name as [place] (empty for a DM) and this
+/// device's text of it, readable ([text], null without one).
+typedef AwayNotice = ({ConversationTarget target, ChatMessage message, String place, String? text});
+
 /// A notice at the top of the app that someone mentioned the user in a chat
 /// that isn't on screen: who, where, and what they wrote. Tapping it opens
 /// the message.

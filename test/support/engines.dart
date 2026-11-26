@@ -462,6 +462,44 @@ Future<duvet.CommitTaken> commitByHand(TestDevice device, String conversation) a
   return taken;
 }
 
+/// A message of the device's own, sent by hand with its engine stopped (its core open): the API's message. [spoil]
+/// changes a byte of its tag, so no member can open it.
+Future<duvet.DirectMessage> sentByHand(
+  TestDevice device,
+  String conversation,
+  String text, {
+  bool spoil = false,
+}) async {
+  final nonce = '0f4b6c1e-${text.hashCode.toRadixString(16).padLeft(8, '0').substring(0, 4)}-4000-8000-000000000000';
+  final made = await device.host.handle<Map<String, Object?>>({
+    'cmd': 'encrypt',
+    'conversation_id': conversation,
+    'nonce': nonce,
+    'envelope': {'text': text},
+  });
+  var ciphertext = made['ciphertext']! as String;
+  if (spoil) {
+    // One byte of its tag changed: no member can open it.
+    final bytes = base64Decode(ciphertext);
+    bytes[bytes.length - 1] ^= 0xff;
+    ciphertext = base64Encode(bytes);
+  }
+  final message = await device.api.sendMessage(
+    conversation,
+    duvet.EncryptedMessage(ciphertext: ciphertext, nonce: nonce),
+  );
+  if (!spoil) {
+    await device.host.handle<Object?>({
+      'cmd': 'sent',
+      'conversation_id': conversation,
+      'nonce': nonce,
+      'message_id': message.id,
+      'seq': message.seq,
+    });
+  }
+  return message;
+}
+
 /// The device's engine stopped, and its core opened again, for commits by hand.
 Future<void> stoppedByHand(TestDevice device) async {
   await device.engine.stop();

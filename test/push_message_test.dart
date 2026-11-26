@@ -1,6 +1,7 @@
 import 'dart:convert';
 
 import 'package:duvet/data/models.dart';
+import 'package:duvet/e2e/notices.dart';
 import 'package:duvet/push/push_message.dart';
 import 'package:flutter_test/flutter_test.dart';
 
@@ -42,7 +43,8 @@ void main() {
     expect(Push.fromData(_data(space: null, room: null, conversation: _conversation)), isNull);
   });
 
-  // PLAN-E2E-API.md, «Push»; decision 29: who wrote it, where and when, its number, and its queue entry when it fit.
+  // PLAN-E2E-API.md, its section on pushes; decision 29: who wrote it, where and when, its number, and its queue entry
+  // when it fit.
   test("fromData reads a conversation's encrypted message: its number and its entry, and no text", () {
     final entry = {
       'seq': 7,
@@ -189,5 +191,26 @@ void main() {
     expect(callNotificationIdOf(_conversation), isNot(notificationIdOf(_conversation)));
     expect(callNotificationIdOf(_conversation), callNotificationIdOf(_conversation));
     expect(callNotificationIdOf(_conversation), greaterThanOrEqualTo(0));
+  });
+
+  // M8 of the task 21 review: a conversation's message the app couldn't tell in front, gone to the back while its
+  // notice waited, shows as its push would: the device's text worded as a push words it, never the API's message.
+  test("a conversation's message the app couldn't tell in front shows as its push would", () {
+    final message = ChatMessage(
+      id: _message,
+      authorId: _maya,
+      authorName: 'Maya',
+      authorAvatarUrl: 'https://cdn.example/maya.png',
+      content: 'written by the server',
+      createdAt: DateTime.fromMillisecondsSinceEpoch(1794702917695, isUtc: true),
+    );
+    final target = ConversationTarget(_conversation);
+    final away = MessagePush.away((target: target, message: message, place: 'Crew', text: 'see ||this||   now'));
+    expect(
+      (away.messageId, away.authorId, away.authorName, away.authorAvatar, away.place, away.text, away.target),
+      (_message, _maya, 'Maya', 'https://cdn.example/maya.png', 'Crew', 'see ▮▮▮ now', target),
+    );
+    expect(away.sentAt, message.createdAt);
+    expect(MessagePush.away((target: target, message: message, place: '', text: null)).text, Notice.newMessage.text);
   });
 }

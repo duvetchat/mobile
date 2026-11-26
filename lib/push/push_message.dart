@@ -130,6 +130,19 @@ final class MessagePush extends Push {
   /// A line a chat's history kept (push_history.dart): a conversation's without its text, which it never keeps.
   static MessagePush? kept(Map<String, dynamic> data) => _fromData(data, kept: true);
 
+  /// A conversation's message the app couldn't tell in front, gone to the back while its notice waited (the
+  /// repository's notifyAway): worded as its push is ([pushText]), or «New message» without its text.
+  factory MessagePush.away(AwayNotice notice) => MessagePush(
+    messageId: notice.message.id,
+    authorId: notice.message.authorId ?? '',
+    authorName: notice.message.authorName,
+    authorAvatar: notice.message.authorAvatarUrl ?? '',
+    place: notice.place,
+    text: pushText(notice.text ?? '') ?? Notice.newMessage.text,
+    target: notice.target,
+    sentAt: notice.message.createdAt,
+  );
+
   // Its IDs are UUIDs, as the API's are: the chat's names a file (push_history.dart) and the link a path. A
   // conversation's message of this type the API never pushes, being end-to-end encrypted: one would show words the
   // server wrote, under a member's name (rule 6 of the desktop's task 20 review), and is read as nothing. A history
@@ -202,9 +215,9 @@ final class MessagePush extends Push {
   };
 }
 
-/// A conversation's message (decision 29; PLAN-E2E-API.md, «Push»): who wrote it, where and when, its number in the
-/// conversation's queue, and its queue entry while the push's data fit FCM's 4096 bytes, which this device's core opens.
-/// Never its text: the API has none.
+/// A conversation's message (decision 29; PLAN-E2E-API.md, its section on pushes): who wrote it, where and when, its
+/// number in the conversation's queue, and its queue entry while the push's data fit FCM's 4096 bytes, which this
+/// device's core opens. Never its text: the API has none.
 final class EncryptedMessagePush extends Push {
   final String messageId;
   final String conversationId;

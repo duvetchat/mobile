@@ -215,7 +215,7 @@ void main() {
         push,
         earlier: await PushHistory(support).read(conversation),
         session: (token: session.token, sessionToken: 'refresh', refreshedAt: null, userId: ana),
-        core: () => throw StateError('the app holds the core'),
+        core: (_) => throw StateError('the app holds the core'),
         router: fakeRouter,
         duvetClient: engineClient,
         client: watchedClient(fake, seen: (request) => bodies.add('${request.url} ${request.body}')),

@@ -185,6 +185,10 @@ class DuvetRepository implements ChatRepository {
   // Takes a chat's phone notification away as the chat shows (lib/push); none in tests that don't ask.
   final Future<void> Function(String chatId)? _forgetNotifications;
 
+  // Shows as the phone's notification (lib/push) a conversation's notice the app couldn't show, gone to the back during
+  // its wait: its push came while the app was in front, which leaves it alone.
+  final void Function(AwayNotice notice)? _notifyAway;
+
   DuvetRepository({
     SessionStore? store,
     RecentChatsStore? recentsStore,
@@ -194,6 +198,7 @@ class DuvetRepository implements ChatRepository {
     @visibleForTesting bool? preload,
     ChatCacheStore? cacheStore,
     Future<void> Function(String chatId)? forgetNotifications,
+    void Function(AwayNotice notice)? notifyAway,
     CoreHost Function()? encryptionHost,
     bool Function()? onScreen,
   }) : _cache = ChatCache(cacheStore ?? FileChatCacheStore()),
@@ -204,6 +209,7 @@ class DuvetRepository implements ChatRepository {
        _connectsGateway = connectGateway,
        _preloads = preload ?? connectGateway,
        _forgetNotifications = forgetNotifications,
+       _notifyAway = notifyAway,
        _encryptionHost = encryptionHost,
        _appShown = onScreen ?? _always {
     _typing.stream.listen((e) => _setTyping(e.$1, e.$2.userId, e.$2));
@@ -2355,16 +2361,28 @@ class DuvetRepository implements ChatRepository {
   // A conversation's notice says what this device's database holds of its message once its engine applied it
   // ([noticeWait] at most), and nothing of the API's message, which a server could write under a member's name: without
   // the text in time, who wrote and that a message came. It's decided again after the wait, and a text that comes later
-  // notifies nothing (rules 6 and 11 of the desktop's task 20 review).
+  // notifies nothing (rules 6 and 11 of the desktop's task 20 review). Gone to the back meanwhile, the app hands it to
+  // the phone's notifications.
   Future<void> _noticeOnceRead(ConversationTarget target, ChatMessage message) async {
     _noticesReading.add(message.id);
     final author = message.authorId;
     final text = message.encrypted && author != null
         ? await _engine?.textOf(target.conversationId, message.id, author, noticeWait).catchError((Object _) => null)
         : null;
-    if (!_noticesReading.remove(message.id) || !_inFront) return;
+    if (!_noticesReading.remove(message.id)) return;
     final place = _noticePlace(target, message);
     if (place == null) return;
+    if (!_inFront) {
+      final conversation = conversations.value.where((c) => c.id == target.conversationId).firstOrNull;
+      return _notifyAway?.call((
+        target: target,
+        message: message,
+        place: conversation?.name ?? '',
+        text: text == null
+            ? null
+            : readableContent(text, nameOf: nameOf, emojiNameOf: emojiNameOf, roomNameOf: (_) => null),
+      ));
+    }
     final said = ChatMessage(
       id: message.id,
       authorId: author,

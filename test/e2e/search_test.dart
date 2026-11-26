@@ -25,8 +25,8 @@ import '../support/engines.dart';
 import '../support/fake_api.dart';
 import '../support/fake_repository.dart';
 
-// A conversation's search runs on the device (PLAN-E2E-CLIENTES.md, Task 21, as the desktop's Task 20; decision 42): its
-// words, from:, mentions:, dates and has: through the core's search, its results drawn from the device's database.
+// A conversation's search runs on the device (PLAN-E2E-CLIENTES.md, Task 21, as the desktop's Task 20; decision 42):
+// its words, from:, mentions:, dates and has: through the core's search, its results drawn from the device's database.
 // pinned: and has:sticker, which the API keeps in the clear, go to its search without words, and their text comes from
 // the device. Search everywhere mixes the Spaces', which the API searches, with one search on the device over every
 // conversation. Ana's device is her app's own engine (the repository's), on a core of the test's; Bo's and Cy's are
@@ -444,7 +444,7 @@ void main() {
     "a_sticker's_message_found_on_the_device_shows_as_its_sticker,_never_as_an_empty_card",
     () async {
       final unheard = uuidv7();
-      // Ana's app never hears one sticker's message: her device takes it from the queue, and the app holds no row of it.
+      // Ana's app never hears one sticker's message: her device takes it from the queue; the app holds no row of it.
       final (fake: _, :app, ana: _, :bo, :b, :conversation, target: _) = await _talking(
         hears: (event) => event.type != 'DM_MESSAGE_CREATE' || (event.data! as Map)['sticker_attachment_id'] != unheard,
       );
@@ -469,6 +469,24 @@ void main() {
         (shown.id, true),
       ]);
       expect([for (final r in app.seen.skip(searching)) r.url.path], isNot(contains(contains('/messages'))));
+    },
+    skip: noCore,
+    timeout: _slow,
+  );
+
+  // Rule 9 of the desktop's task 20 review: the core's own limits refuse a search past them, and the person reads why.
+  test(
+    "a_conversation's_search_past_the_core's_limits_says_why",
+    () async {
+      final (fake: _, :app, ana: _, bo: _, b: _, :conversation, target: _) = await _talking();
+      Future<SearchPage> search(String text, {List<String> authors = const []}) =>
+          app.repository.search(SearchQuery(text, conversationId: conversation, authorIds: authors));
+      Matcher refused(String why) => throwsA(isA<ActionFailed>().having((e) => e.message, 'message', why));
+      await expectLater(search('a' * 201), refused("a search's text has 200 characters at most"));
+      await expectLater(
+        search('', authors: [for (var n = 0; n < 11; n++) uuidv7()]),
+        refused('a search takes 10 authors at most'),
+      );
     },
     skip: noCore,
     timeout: _slow,

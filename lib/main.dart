@@ -82,6 +82,11 @@ Future<void> main() async {
   );
   final repository = DuvetRepository(
     forgetNotifications: forgetChat,
+    // A conversation's notice the app couldn't show, gone to the back while it waited, shows as the phone's
+    // notification (Android's alone are set up).
+    notifyAway: onAndroid
+        ? (notice) => unawaited(showPush(MessagePush.away(notice)).catchError((Object e) => debugPrint('push: $e')))
+        : null,
     // The encryption engine runs here, the app's engine, on its gate (lib/e2e), once the app is on a screen: main()
     // runs on audio_service's engine too, which may start with none (shownAtStart).
     encryptionHost: appCoreHost,
@@ -92,8 +97,8 @@ Future<void> main() async {
   // (lib/push/renewal.dart).
   answerRenewals(() => repository.renewForBackground(renewalEvery));
   // A push of a conversation's message asks this engine for its text while its device is ready, as it holds the core
-  // then (lib/e2e/push_decrypt.dart). The notifications' histories of conversations a version before this one kept, with
-  // their text in the clear, go as the app starts.
+  // then (lib/e2e/push_decrypt.dart). The notifications' histories of conversations a version before this one kept,
+  // with their text in the clear, go as the app starts.
   answerPushesWhileReady(
     repository.encryption,
     (ask) => repository.pushTexts(ask.conversationId, ask.entry, ask.lines, ask.wait),

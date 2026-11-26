@@ -7,7 +7,7 @@ import 'host.dart';
 CoreHost appCoreHost() => const _NoCore();
 
 /// A push's engine's core: none either.
-CoreHost pushCoreHost() => const _NoCore();
+CoreHost pushCoreHost([Duration lockedWait = Duration.zero]) => const _NoCore();
 
 class _NoCore implements CoreHost {
   const _NoCore();

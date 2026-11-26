@@ -1,11 +1,14 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:duvet/data/models.dart';
 import 'package:duvet/data/session_store.dart';
+import 'package:duvet/e2e/push_decrypt.dart' show pushTime;
 import 'package:duvet/push/background.dart';
 import 'package:duvet/push/call_decline.dart';
 import 'package:duvet/push/notifications.dart';
+import 'package:duvet/push/push_history.dart';
 import 'package:duvet/push/push_message.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
@@ -271,6 +274,123 @@ void main() {
       );
     },
   );
+
+  // The app shows as a notification a conversation's message it couldn't tell in front once it went to the back (M8 of
+  // the task 21 review), and the message's push may come after it: a message shown already isn't shown, nor sounded,
+  // again.
+  test("a message shown already isn't shown again", () async {
+    final said = MessagePush(
+      messageId: _id(1),
+      authorId: _id(901),
+      authorName: 'Bo',
+      authorAvatar: '',
+      place: '',
+      text: 'once',
+      target: ConversationTarget(_id(300)),
+      sentAt: DateTime.fromMillisecondsSinceEpoch(1794702917695, isUtc: true),
+    );
+    await showPush(said);
+    await showPush(said);
+    await showPush(_push(1));
+    await showPush(_push(1));
+    expect(
+      [for (final (_, post) in posts()) texts(post)],
+      [
+        ['once'],
+        ['number 1'],
+      ],
+    );
+  });
+
+  // M7 of the task 21 review: the background handler opens a conversation's pushes one at a time, each within what's
+  // left of its time since it arrived, with the session the phone keeps and its chat's lines, after the histories a
+  // version before this one kept with their text are gone.
+  test("the background handler opens a conversation's pushes one at a time, each within its time left", () async {
+    final conversation = _id(300);
+    final older = File('${dir.path}/push/$conversation.json')
+      ..createSync(recursive: true)
+      ..writeAsStringSync(
+        jsonEncode([
+          {
+            'type': 'message',
+            'message_id': _id(9),
+            'author_id': _id(901),
+            'author_name': 'Bo',
+            'conversation_id': conversation,
+            'text': 'kept in the clear',
+            'sent_at': '1794702917000',
+          },
+        ]),
+      );
+    const session = (
+      token: 'access',
+      sessionToken: 'session',
+      refreshedAt: null,
+      userId: '01920000-0000-7000-8000-000000000001',
+    );
+    final opens = <({String id, Duration within, int earlier, StoredSession? session, DateTime from, DateTime to})>[];
+    Future<MessagePush?> open(
+      EncryptedMessagePush push, {
+      required List<MessagePush> earlier,
+      required StoredSession? session,
+      Duration within = pushTime,
+    }) async {
+      final from = DateTime.now();
+      await Future<void>.delayed(const Duration(milliseconds: 500));
+      opens.add((
+        id: push.messageId,
+        within: within,
+        earlier: earlier.length,
+        session: session,
+        from: from,
+        to: DateTime.now(),
+      ));
+      return push.shown(const {});
+    }
+
+    EncryptedMessagePush pushed(int n) => EncryptedMessagePush(
+      messageId: _id(n),
+      conversationId: conversation,
+      authorId: _id(901),
+      authorName: 'Bo',
+      authorAvatar: '',
+      place: '',
+      sentAt: DateTime.fromMillisecondsSinceEpoch(1794702917695 + n, isUtc: true),
+      seq: n,
+    );
+    final arrived = DateTime.now();
+    final shown = await Future.wait([
+      for (final n in [1, 2])
+        openedInBackground(
+          pushed(n),
+          arrived,
+          sessions: MemorySessionStore(session),
+          history: () async => PushHistory(dir),
+          open: open,
+        ),
+    ]);
+    expect([for (final push in shown) (push! as MessagePush).messageId], [_id(1), _id(2)]);
+    // One at a time, each within what's left since it arrived.
+    expect(opens[1].from.isBefore(opens[0].to), isFalse);
+    expect(
+      opens[0].within,
+      allOf(lessThanOrEqualTo(pushTime), greaterThan(pushTime - const Duration(milliseconds: 300))),
+    );
+    expect(
+      opens[1].within,
+      allOf(
+        lessThanOrEqualTo(pushTime - const Duration(milliseconds: 500)),
+        greaterThan(pushTime - const Duration(milliseconds: 900)),
+      ),
+    );
+    // With the session the phone keeps, and none of the older history, which went first.
+    expect([for (final o in opens) o.session], [session, session]);
+    expect(opens[0].earlier, 0);
+    expect(older.existsSync(), isFalse);
+    // Anything else shows as it came.
+    final room = _push(1);
+    expect(await openedInBackground(room, arrived, open: open), same(room));
+  });
 
   test('the end of the session takes the notifications away with what they kept, and asks to sign in', () async {
     await showPush(_push(1));

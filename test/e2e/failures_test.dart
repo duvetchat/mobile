@@ -21,38 +21,6 @@ import '../support/fake_api.dart';
 // review's rulings.
 const _slow = Timeout(Duration(minutes: 3));
 
-/// A message of the device's own, sent by hand with its engine stopped: the API's message.
-Future<duvet.DirectMessage> _send(TestDevice device, String conversation, String text, {bool spoil = false}) async {
-  final nonce = '0f4b6c1e-${text.hashCode.toRadixString(16).padLeft(8, '0').substring(0, 4)}-4000-8000-000000000000';
-  final made = await device.host.handle<Map<String, Object?>>({
-    'cmd': 'encrypt',
-    'conversation_id': conversation,
-    'nonce': nonce,
-    'envelope': {'text': text},
-  });
-  var ciphertext = made['ciphertext']! as String;
-  if (spoil) {
-    // One byte of its tag changed: no member can open it.
-    final bytes = base64Decode(ciphertext);
-    bytes[bytes.length - 1] ^= 0xff;
-    ciphertext = base64Encode(bytes);
-  }
-  final message = await device.api.sendMessage(
-    conversation,
-    duvet.EncryptedMessage(ciphertext: ciphertext, nonce: nonce),
-  );
-  if (!spoil) {
-    await device.host.handle<Object?>({
-      'cmd': 'sent',
-      'conversation_id': conversation,
-      'nonce': nonce,
-      'message_id': message.id,
-      'seq': message.seq,
-    });
-  }
-  return message;
-}
-
 void main() {
   setUpAll(() async {
     if (coreLibrary != null) await loadCore();
@@ -72,14 +40,14 @@ void main() {
       // While Bo's device is away, Ana's sends a message and deletes it, then sends one nobody can open.
       await b.engine.stop();
       await stoppedByHand(a);
-      final gone = await _send(a, conversation, 'gone');
+      final gone = await sentByHand(a, conversation, 'gone');
       final tombstone = await a.host.handle<Map<String, Object?>>({
         'cmd': 'delete',
         'conversation_id': conversation,
         'message_id': gone.id,
       });
       await a.api.deleteMessage(conversation, gone.id, tombstone['ciphertext']! as String);
-      await _send(a, conversation, 'spoiled', spoil: true);
+      await sentByHand(a, conversation, 'spoiled', spoil: true);
 
       // Bo's device reads the queue: the deleted message's emptied entry isn't a failure; the spoiled one is, a
       // message, reported within the minute with the others.

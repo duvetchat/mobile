@@ -6,6 +6,7 @@ import 'dart:io';
 
 import 'package:duvet/data/cache.dart';
 import 'package:duvet/data/duvet_repository.dart';
+import 'package:duvet/data/models.dart' show AwayNotice;
 import 'package:duvet/data/recent_chats.dart';
 import 'package:duvet/data/session_store.dart';
 import 'package:duvet/e2e/core_gate.dart';
@@ -60,6 +61,7 @@ Future<TestApp> appOn(
   bool Function(GatewayEvent event)? hears,
   Future<http.Response?> Function(http.Request request)? answer,
   CoreHost Function(CoreGate core)? host,
+  void Function(AwayNotice notice)? notifyAway,
 }) async {
   final support = Directory.systemTemp.createTempSync('duvet-app-');
   const paths = MethodChannel('plugins.flutter.io/path_provider');
@@ -97,6 +99,7 @@ Future<TestApp> appOn(
     httpClient: () => client,
     connectGateway: false,
     cacheStore: cache ?? MemoryChatCacheStore(),
+    notifyAway: notifyAway,
     encryptionHost: () {
       core = TestHost(folder: Directory('${support.path}/core')..createSync()).gate;
       return host?.call(core) ?? core;

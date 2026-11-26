@@ -1,8 +1,8 @@
 /// This device's search of its conversations' messages (decision 42; PLAN-E2E-CLIENTES.md, Task 21, as the desktop's
 /// Task 20): the core's `search` over its own database, by what a message's text says (its words, its mentions) and
 /// what its envelope holds (the kinds of its files), and by its author and when the API took it. The API can't read a
-/// message, so it never gets words: it only knows what it keeps in the clear, which pins and stickers are. The desktop's
-/// engine/search.ts in Dart.
+/// message, so it never gets words: it only knows what it keeps in the clear, which pins and stickers are. The
+/// desktop's engine/search.ts in Dart.
 library;
 
 import 'content.dart';

@@ -19,11 +19,14 @@ import '../support/fake_api.dart';
 // notifies once.
 const _slow = Timeout(Duration(minutes: 3));
 
-/// A core whose applies wait while it's held: an engine slow to open what came.
+/// A core whose applies wait while it's held: an engine slow to open what came. Its reads of messages fail [failReads]
+/// times, then wait while [holdReads] holds them.
 class _SlowApplies implements CoreHost {
   _SlowApplies(this._core);
   final CoreHost _core;
   Completer<void>? _held;
+  Completer<void>? _reads;
+  var failReads = 0;
 
   void hold() => _held ??= Completer();
   void release() {
@@ -31,8 +34,36 @@ class _SlowApplies implements CoreHost {
     _held = null;
   }
 
+  // The reads let through before [holdReads] holds the next ones, and how many it holds.
+  var _passing = 0;
+  var readsHeld = 0;
+
+  void holdReads({int after = 0}) {
+    _reads ??= Completer();
+    _passing = after;
+  }
+
+  void releaseReads() {
+    _reads?.complete();
+    _reads = null;
+  }
+
   @override
   Future<T> handle<T>(Map<String, Object?> command) async {
+    if (command['cmd'] == 'messages') {
+      if (failReads > 0) {
+        failReads--;
+        throw CoreError('internal', message: 'the core is busy');
+      }
+      if (_reads case final held?) {
+        if (_passing > 0) {
+          _passing--;
+        } else {
+          readsHeld++;
+          await held.future;
+        }
+      }
+    }
     if (command['cmd'] == 'apply') await _held?.future;
     return _core.handle<T>(command);
   }
@@ -50,12 +81,17 @@ class _SlowApplies implements CoreHost {
 typedef _Chat = ({FakeApi fake, TestApp app, String bo, TestDevice b, String conversation, ConversationTarget target});
 
 /// Ana's app, ready, and Bo's device in their DM, whose group her app made as she opened it, then left: the notices of
-/// its messages show. Every notice that showed, the newest last, in [shown].
-Future<_Chat> _chat(List<MentionNotice> shown, {_SlowApplies Function(CoreGate core)? host}) async {
+/// its messages show. Every notice that showed, the newest last, in [shown]; what the app hands the phone's
+/// notifications, to [notifyAway].
+Future<_Chat> _chat(
+  List<MentionNotice> shown, {
+  _SlowApplies Function(CoreGate core)? host,
+  void Function(AwayNotice notice)? notifyAway,
+}) async {
   final fake = FakeApi();
   final (ana, bo) = (fake.addUser(), fake.addUser());
   final conversation = fake.addConversation(group: false, members: [ana, bo]);
-  final app = await appOn(fake, ana, host: host);
+  final app = await appOn(fake, ana, host: host, notifyAway: notifyAway);
   await app.ready();
   final b = await firstDevice(fake, bo);
   addTearDown(b.engine.stop);
@@ -78,6 +114,23 @@ Future<_Chat> _chat(List<MentionNotice> shown, {_SlowApplies Function(CoreGate c
   notices.addListener(heard);
   addTearDown(() => notices.removeListener(heard));
   return (fake: fake, app: app, bo: bo, b: b, conversation: conversation, target: target);
+}
+
+/// Ana's device, its core behind the [host] made of it, and Bo's, in a DM whose group both hold: what an app's engine
+/// does with a notice's wait.
+Future<({TestDevice a, TestDevice b, String bo, String conversation})> _devices(
+  _SlowApplies Function(CoreGate core) host,
+) async {
+  final fake = FakeApi();
+  final (ana, bo) = (fake.addUser(), fake.addUser());
+  final conversation = fake.addConversation(group: false, members: [ana, bo]);
+  final a = await firstDevice(fake, ana, host: host(TestHost().gate));
+  final b = await firstDevice(fake, bo);
+  addTearDown(b.engine.stop);
+  addTearDown(a.engine.stop);
+  await a.engine.openConversation(conversation);
+  await sameGroup([a, b], conversation);
+  return (a: a, b: b, bo: bo, conversation: conversation);
 }
 
 Future<String> _says(TestDevice device, String conversation, String text) async =>
@@ -220,6 +273,129 @@ void main() {
       app.repository.chatShown(target);
       app.repository.wentToBack();
       expect((await answer())?.onScreen, isFalse);
+    },
+    skip: noCore,
+    timeout: _slow,
+  );
+
+  // I2 of the review: a message without text, a sticker's, gets its notice as soon as the device holds it, not after
+  // the whole wait.
+  test(
+    "a_sticker's_notice_shows_as_soon_as_the_device_holds_its_message",
+    () async {
+      final shown = <MentionNotice>[];
+      final (fake: _, app: _, bo: _, :b, :conversation, target: _) = await _chat(shown);
+      final sentAt = DateTime.now();
+      final sticker = (await b.engine.sendMessage(
+        Outgoing(conversationId: conversation, nonce: uuidv4(), stickerAttachmentId: uuidv7()),
+      ))!.id;
+      await until(() => shown.any((n) => n.messageId == sticker), timeout: const Duration(seconds: 10));
+      expect(DateTime.now().difference(sentAt), lessThan(const Duration(milliseconds: 1500)));
+      expect(
+        [
+          for (final n in shown)
+            if (n.messageId == sticker) n.text,
+        ],
+        ['Sent a message'],
+      );
+    },
+    skip: noCore,
+    timeout: _slow,
+  );
+
+  // M5 of the review: a read that fails is nothing yet, and the wait reads again as the message is applied.
+  test(
+    'a_failed_read_has_the_wait_read_again',
+    () async {
+      late _SlowApplies slow;
+      final (:a, :b, :bo, :conversation) = await _devices((core) => slow = _SlowApplies(core));
+      addTearDown(() => slow.release());
+      slow.hold();
+      final id = await _says(b, conversation, 'read the second time');
+      slow.failReads = 1;
+      final text = a.engine.textOf(conversation, id, bo, const Duration(seconds: 10));
+      await until(() => slow.failReads == 0);
+      await Future<void>.delayed(const Duration(milliseconds: 100));
+      slow.release();
+      expect(await text, 'read the second time');
+    },
+    skip: noCore,
+    timeout: _slow,
+  );
+
+  // M5 of the review: a read that doesn't answer ends with the wait.
+  test(
+    'a_read_that_does_not_answer_ends_with_the_wait',
+    () async {
+      late _SlowApplies slow;
+      final (:a, :b, :bo, :conversation) = await _devices((core) => slow = _SlowApplies(core));
+      addTearDown(() => slow.releaseReads());
+      final id = await _says(b, conversation, 'read too late');
+      await until(() async => (await a.engine.messages(conversation, [id])).isNotEmpty);
+      slow.holdReads();
+      final text = a.engine.textOf(conversation, id, bo, const Duration(seconds: 1));
+      await pumpEventQueue();
+      a.clock.advance(const Duration(seconds: 1));
+      expect(await text.timeout(const Duration(seconds: 5), onTimeout: () => 'never answered'), isNull);
+    },
+    skip: noCore,
+    timeout: _slow,
+  );
+
+  // M8 of the review: a notice decided away as the app went to the back during its wait shows as the phone's
+  // notification, with the device's text: its push came while the app was in front, which left it alone.
+  test(
+    "a_notice_the_app_went_to_the_back_during_shows_as_the_phone's_notification",
+    () async {
+      final shown = <MentionNotice>[];
+      final away = <AwayNotice>[];
+      late _SlowApplies slow;
+      final (fake: _, :app, :bo, :b, :conversation, :target) = await _chat(
+        shown,
+        host: (core) => slow = _SlowApplies(core),
+        notifyAway: away.add,
+      );
+      addTearDown(() => slow.release());
+      slow.hold();
+      final id = await _says(b, conversation, 'told while away');
+      await Future<void>.delayed(const Duration(milliseconds: 300));
+      app.repository.wentToBack();
+      slow.release();
+      await until(() => away.isNotEmpty, timeout: const Duration(seconds: 10));
+      expect(
+        [for (final n in away) (n.message.id, n.message.authorId, n.target, n.place, n.text)],
+        [(id, bo, target, '', 'told while away')],
+      );
+      await Future<void>.delayed(const Duration(milliseconds: 300));
+      expect(shown.where((n) => n.messageId == id), isEmpty);
+      expect(away, hasLength(1));
+    },
+    skip: noCore,
+    timeout: _slow,
+  );
+
+  // M5 of the review: the app's answer to a push comes within its wait, whatever its reads: past it, the first line's
+  // text alone.
+  test(
+    "the_app's_answer_to_a_push_comes_within_its_wait",
+    () async {
+      late _SlowApplies slow;
+      final (:a, :b, :bo, :conversation) = await _devices((core) => slow = _SlowApplies(core));
+      addTearDown(() => slow.releaseReads());
+      final earlier = await _says(b, conversation, 'an earlier line');
+      final pushed = await _says(b, conversation, 'the pushed line');
+      await until(() async => (await a.engine.messages(conversation, [earlier, pushed])).length == 2);
+      // Its first read answers; the next, of the chat's lines, doesn't.
+      slow.holdReads(after: 1);
+      final texts = a.engine.pushTexts(conversation, null, [
+        (id: pushed, author: bo),
+        (id: earlier, author: bo),
+      ], const Duration(seconds: 1));
+      await until(() => slow.readsHeld > 0);
+      a.clock.advance(const Duration(seconds: 1));
+      expect(await texts.timeout(const Duration(seconds: 5), onTimeout: () => {'never': 'answered'}), {
+        pushed: 'the pushed line',
+      });
     },
     skip: noCore,
     timeout: _slow,

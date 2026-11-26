@@ -336,6 +336,14 @@ Future<void> forgetChat(String chatId) async {
 Future<void> _showMessages(List<MessagePush> pushes, {required bool alert}) async {
   final dir = await pushDirectory();
   final history = PushHistory(dir);
+  // A message shown already isn't shown, nor sounded, again: the app shows a conversation's it couldn't tell in front
+  // once it went to the back (MessagePush.away), and its push may come after.
+  final shown = {for (final line in await history.read(pushes.first.chatId)) line.messageId};
+  pushes = [
+    for (final push in pushes)
+      if (!shown.contains(push.messageId)) push,
+  ];
+  if (pushes.isEmpty) return;
   final kept = await history.addAll(pushes);
   await Future.wait({for (final push in kept) push.authorAvatar}.map((avatar) => _keepPhoto(dir, avatar)));
   // The chat came on screen meanwhile, which took its messages away (forgetChat): they stay away.
