@@ -53,6 +53,10 @@ class _ClosedHost implements CoreHost {
   Future<void> dropShare(String shareId) async {}
 
   @override
+  Future<Map<String, Object?>> importShare(String shareId, List<Uint8List> parts) async =>
+      throw CoreError('internal', message: 'no core');
+
+  @override
   Future<void> close() async {}
 
   @override
@@ -89,6 +93,9 @@ class _KeysUnread implements CoreHost {
 
   @override
   Future<void> dropShare(String shareId) => _core.dropShare(shareId);
+
+  @override
+  Future<Map<String, Object?>> importShare(String shareId, List<Uint8List> parts) => _core.importShare(shareId, parts);
 
   @override
   Future<void> close() => _core.close();

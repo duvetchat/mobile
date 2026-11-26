@@ -49,6 +49,10 @@ const keyChanges = 'key_changes';
 /// Whom the person verified on this device (contacts.dart), from their tap: user IDs, so a lost change is found again.
 const verifiedContacts = 'verified_contacts';
 
+/// The shared histories and catch-ups whose keys this device's core took, by package (history.dart): no key, only
+/// what's needed to know a package opens here, kept until it's imported and acknowledged.
+const historyKeys = 'history_keys';
+
 /// What a new device of this installation starts without.
 const deviceRecord = [
   keptDevice,
@@ -62,6 +66,7 @@ const deviceRecord = [
   refusedGenerations,
   keyChanges,
   verifiedContacts,
+  historyKeys,
 ];
 
 /// The API's external sender as this installation first saw it (Ruling 32), which a new device of it keeps.

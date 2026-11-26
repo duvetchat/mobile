@@ -1,7 +1,8 @@
 import 'package:duvet_client/duvet.dart' show Activity, Device;
 import 'package:flutter/foundation.dart';
 
-import '../e2e/engine.dart' show ContactsShown, EngineState, KeyChange, SafetyNumber, ShownChange;
+import '../e2e/engine.dart'
+    show ContactsShown, EngineState, HistoryOffer, KeyChange, SafetyNumber, SharedHistory, ShownChange;
 import '../e2e/sync.dart' show ConversationState;
 import 'models.dart';
 import 'recent_chats.dart';
@@ -144,6 +145,24 @@ abstract interface class ChatRepository {
 
   /// The person's yes to sending, these changes known (decision 25): what waited for it goes.
   Future<void> confirmKeyChanges(List<ShownChange> changes);
+
+  /// The shares of an encrypted conversation's history whose keys this device holds, waiting for the person's yes, by
+  /// conversation (lib/e2e/history.dart): who shared them and how far back.
+  ValueListenable<Map<String, List<HistoryOffer>>> get historyOffers;
+
+  /// The person's share of [conversationId]'s history from [range]'s start (day, week, month or all) with [userId], one
+  /// of its other members: whether it was cut to its newest messages, and from when it holds them, once the server took
+  /// it; the rest goes by itself, and a share that then ends for good is said on [changesRefused]. Refused in the app's
+  /// words ([ActionFailed]): the API's ten an hour, a member with no device to receive it.
+  Future<SharedHistory> shareHistory(String conversationId, String userId, String range);
+
+  /// The person's yes to a share of [conversationId]'s history ([historyOffers]): its messages imported into this
+  /// device. Refused in the app's words.
+  Future<void> takeHistoryOffer(String conversationId, String shareId);
+
+  /// The person's Dismiss of a share of [conversationId]'s history ([historyOffers]): it shows no more, and the server
+  /// is told this device is done with it.
+  Future<void> dismissHistoryOffer(String conversationId, String shareId);
 
   Future<void> logIn(String email, String password);
 

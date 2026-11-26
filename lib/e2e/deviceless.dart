@@ -3,9 +3,10 @@
 /// who they are as the person opens the conversation and at each IDENTITY_UPDATE (without_devices, all of them each
 /// time), notes for them what this device sends, and names them in apply's catch_up_due once they have a device again:
 /// this device then hands them what it noted as a catch-up (PLAN-E2E-API.md, «Rutas», I), its parts up, its key to each
-/// of their devices' inbox, and only then confirmed (catch_up_delivered). Each runs in the engine's turn, so one at a
-/// time for each member of each conversation; one refused for its limit (a 429: the API takes one a day for each) waits
-/// a day, its notes kept. The desktop's deviceless.ts in Dart.
+/// of their devices' inbox, then completed, and only then confirmed (catch_up_delivered). Each runs in the engine's
+/// turn, so one at a time for each member of each conversation; a try that fails waits ([packageWait]), one refused
+/// before the API took it for its limit (a 429: one a day for each) as long as it says, its notes kept. Their device
+/// imports it by itself (history.dart). The desktop's deviceless.ts in Dart.
 library;
 
 import 'dart:async';
@@ -15,6 +16,7 @@ import 'package:duvet_client/duvet.dart' as duvet;
 import 'package:flutter/foundation.dart';
 
 import 'engine.dart';
+import 'history.dart' show PackageUpload, packageWait, uploadPackage;
 import 'host.dart';
 import 'identity.dart';
 
@@ -45,17 +47,17 @@ Future<List<String>> withoutDevices(E2EEngine engine, duvet.Conversation conv, L
 
 /// The catch-ups this device hands members who had no device: each package made, and confirmed, in the engine's turn
 /// ([_soon]), its upload outside it, so the engine's other work goes on meanwhile. One at a time for each member of
-/// each conversation. A package stays until it's delivered: one whose upload failed past its `PUT` resumes, as the API
-/// takes the same package and parts again. A refusal for the API's limit (a 429: one a day for each member) waits a day
-/// with its notes, as the plan's table says (`duvet_client` keeps no `Retry-After`); any other failure goes again after
-/// a wait, 2 s doubling up to an hour.
+/// each conversation. A package stays until it's delivered: one whose upload failed goes on from where it stopped after
+/// a wait ([packageWait]: a minute, doubling up to an hour, a 429 as long as it says). A package the API didn't take
+/// for its limit (one a day for each member) goes, and the next try, a day later unless its Retry-After says when,
+/// makes another with all that's noted by then; so does one the API refused, or whose parts the core no longer has.
 class CatchUps {
   CatchUps(this._engine, this._soon);
 
   final E2EEngine _engine;
   final void Function(Future<void> Function() work) _soon;
 
-  /// Catch-ups waiting before they go again (a day, or a backoff), by conversation and member: their timers.
+  /// Catch-ups waiting before they go again, by conversation and member: their timers.
   final _waiting = <String, void Function()>{};
 
   /// Catch-ups whose turn is on its way: one is enough, as it carries all that's noted by then.
@@ -65,7 +67,7 @@ class CatchUps {
   final _going = <String>{};
 
   /// Each package made and not delivered yet, by conversation and member, and how many tries failed in a row.
-  final _made = <String, Map<String, Object?>>{};
+  final _uploads = <String, PackageUpload>{};
   final _failed = <String, int>{};
 
   /// Catch-ups whose member's changed key waits for the person's yes (contacts.dart): due still, they try nothing until
@@ -112,40 +114,42 @@ class CatchUps {
     final key = '$conversationId:$user';
     if (_waiting.containsKey(key) || _going.contains(key)) return;
     try {
-      final made = _made[key] ?? await makeCatchUp(_engine, conversationId, user);
-      if (made == null) return _done(key);
-      _made[key] = made;
+      var upload = _uploads[key];
+      if (upload == null) {
+        final made = await makeCatchUp(_engine, conversationId, user);
+        if (made == null) return _done(key);
+        upload = _uploads[key] = PackageUpload(conversationId, user, made, kind: 'catch_up');
+      }
       _going.add(key);
-      unawaited(_upload(conversationId, user, made));
+      unawaited(_upload(key, upload));
     } on CoreError catch (error) {
       // Held for the person's yes: it stays due, without a try, until the yes asks for it again (review 28's I3).
       if (error.code == 'key_changed') {
         _held[key] = (conversationId, user);
         return;
       }
-      _later(key, conversationId, user, error);
+      _later(key, conversationId, user, error, null);
     } catch (error) {
-      _later(key, conversationId, user, error);
+      _later(key, conversationId, user, error, null);
     }
   }
 
-  Future<void> _upload(String conversationId, String user, Map<String, Object?> made) async {
-    final key = '$conversationId:$user';
+  Future<void> _upload(String key, PackageUpload upload) async {
+    final PackageUpload(:conversationId, :user, :shareId) = upload;
     try {
-      await uploadCatchUp(_engine, conversationId, user, made);
+      await uploadPackage(_engine, upload);
     } catch (error) {
       _going.remove(key);
-      // Its parts went with the core's host (a restart): made again next time.
-      if (error is CoreError && error.code == 'not_found') _made.remove(key);
-      return _later(key, conversationId, user, error);
+      return _later(key, conversationId, user, error, upload);
     }
     _soon(() async {
       try {
-        await confirmCatchUp(_engine, conversationId, user, made['share_id']! as String);
+        await confirmCatchUp(_engine, conversationId, user, shareId);
         _done(key);
       } catch (error) {
+        // Delivered: only the confirmation goes again, with the same package.
         _going.remove(key);
-        _later(key, conversationId, user, error);
+        _later(key, conversationId, user, error, null);
       }
     });
   }
@@ -153,23 +157,29 @@ class CatchUps {
   void _done(String key) {
     _going.remove(key);
     _failed.remove(key);
-    if (_made.remove(key)?['share_id'] case final String share) {
-      unawaited(_engine.host.dropShare(share).catchError((Object _) {}));
+    _drop(key);
+  }
+
+  /// The package goes from the core's engine: the next try makes another.
+  void _drop(String key) {
+    if (_uploads.remove(key) case final upload?) {
+      unawaited(_engine.host.dropShare(upload.shareId).catchError((Object _) {}));
     }
   }
 
-  /// A failure: a 429 waits a day, its package dropped (the day's slot is spent); anything else waits its backoff.
-  void _later(String key, String conversationId, String user, Object error) {
-    final Duration wait;
-    if (error is duvet.DuvetApiException && error.statusCode == 429) {
-      wait = _day;
-      _done(key);
-    } else {
-      final tries = _failed[key] = (_failed[key] ?? 0) + 1;
-      final backoff = const Duration(seconds: 2) * (1 << min(tries - 1, 11));
-      wait = backoff < const Duration(hours: 1) ? backoff : const Duration(hours: 1);
-      debugPrint("e2e: a catch-up didn't go, and goes again: $error");
-    }
+  /// A try that failed waits for its next ([packageWait]; [upload] is the package that went, if one did). A package the
+  /// API didn't take goes: for its limit (a 429), as long as its Retry-After says, a day without one; refused
+  /// otherwise, the backoff. So does one that ends for good once taken (the core lost its parts, or the API refused
+  /// what no try changes). Anything else goes on with the same package after its wait.
+  void _later(String key, String conversationId, String user, Object error, PackageUpload? upload) {
+    final tries = _failed[key] ?? 0;
+    _failed[key] = tries + 1;
+    final status = error is duvet.DuvetApiException ? error.statusCode : null;
+    // A refusal no try changes, not a session's renewal, a slow answer, a limit or the server.
+    final refused = status != null && status < 500 && !const {401, 408, 429}.contains(status);
+    if (upload != null && (upload.taken ? upload.endsWith(error) : status == 429 || refused)) _drop(key);
+    final wait = packageWait(error, tries, unsaid: upload != null && !upload.taken ? _day : null);
+    debugPrint("e2e: a catch-up didn't go, and goes again: $error");
     _waiting[key]?.call();
     _waiting[key] = _engine.clock.later(wait, () {
       _waiting.remove(key);
@@ -212,32 +222,6 @@ Future<Map<String, Object?>?> makeCatchUp(E2EEngine engine, String conversationI
   } on CoreError catch (error) {
     if (error.code == 'not_found' && error.what == 'catch_up') return null;
     rethrow;
-  }
-}
-
-/// A catch-up's package up, part by part, completed, then its key in each device's inbox. The same package and parts
-/// again are taken as they were, so one that failed midway goes again from the start.
-Future<void> uploadCatchUp(E2EEngine engine, String conversationId, String user, Map<String, Object?> made) async {
-  final E2EEngine(:api, :host) = engine;
-  final shareId = made['share_id']! as String;
-  final parts = made['parts']! as int;
-  await api.putShare(
-    conversationId,
-    shareId,
-    duvet.HistoryShareUpload(
-      toUserId: user,
-      kind: 'catch_up',
-      startsAt: DateTime.fromMillisecondsSinceEpoch(made['start']! as int, isUtc: true),
-      size: made['size']! as int,
-      parts: parts,
-    ),
-  );
-  for (var n = 0; n < parts; n++) {
-    await api.putSharePart(conversationId, shareId, n, await host.sharePart(shareId, n));
-  }
-  await api.completeShare(conversationId, shareId);
-  for (final key in (made['keys']! as List).cast<Map<String, Object?>>()) {
-    await api.sendToDevice(key['device_id']! as String, key['message']! as String);
   }
 }
 

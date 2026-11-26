@@ -513,7 +513,7 @@ class _Share {
   final String fromDevice;
   final String toUser;
   final String kind;
-  final String range;
+  final String? range;
   final DateTime startsAt;
   final int size;
   final int parts;
@@ -643,8 +643,15 @@ class FakeApi {
   final _keyPackages = <String, Map<String, _KeyPackage>>{};
   final _conversations = <String, _Conversation>{};
   final _inboxes = <String, List<Map<String, Object?>>>{};
+
+  /// What was left in each inbox, a rotation's transfers aside, for a test to replay ([replayInbox]).
+  final _delivered = <({String from, String fromDevice, String to, String message})>[];
   final _segments = <String, _Segment>{};
   final _shares = <String, _Share>{};
+
+  /// When each package was made, as the API counts them toward its limits (PLAN-E2E-API.md, I): a user's ten shares an
+  /// hour; their thirty catch-ups an hour, and one a day to each member of each conversation.
+  final _sharesMade = <({String user, String kind, String conversation, String to, DateTime at})>[];
   final _files = <String, Uint8List>{};
 
   /// Messages' files, by their IDs: their bytes are in [_files].
@@ -795,6 +802,59 @@ class FakeApi {
 
   /// Two users become friends: each may claim the other's key packages and read their identity, as the API lets them.
   void befriend(String a, String b) => _friends.add(([a, b]..sort()).join(':'));
+
+  /// A package complete for [to], from [from]'s first device, in [conversation], as a server that lists what it likes
+  /// would have it: [parts] parts of a byte each, its size as said ([size], the parts' by default), no event and no
+  /// notice. Its ID.
+  String addShare({
+    required String conversation,
+    required String from,
+    required String to,
+    String kind = 'catch_up',
+    String? range,
+    int parts = 1,
+    int? size,
+  }) {
+    final device = _devices.values.firstWhere((d) => d.user == from);
+    final share = _Share(
+      _id(),
+      conversation,
+      from,
+      device.id,
+      to,
+      kind,
+      range,
+      DateTime.now().toUtc(),
+      size ?? parts,
+      parts,
+    );
+    for (var n = 0; n < parts; n++) {
+      share.uploaded[n] = _keepFile(Uint8List(1));
+    }
+    share.completed = true;
+    _shares[share.id] = share;
+    return share.id;
+  }
+
+  /// Part [n] of the package grows by [bytes], as a storage that pads what it serves.
+  void padSharePart(String shareId, int n, int bytes) {
+    final file = _shares[shareId]!.uploaded[n]!;
+    _files[file] = Uint8List.fromList([..._files[file]!, ...Uint8List(bytes)]);
+  }
+
+  /// The package listed again for [device], as if it never acknowledged it: a server that replays it.
+  void unackShare(String shareId, String device) => _shares[shareId]!.acked.remove(device);
+
+  /// Every message left in [device]'s inbox before (a rotation's transfers aside) left there again, each under a new
+  /// ID, with its DEVICE_MESSAGE: a server that replays them.
+  void replayInbox(String device) {
+    for (final one in [..._delivered.where((one) => one.to == device)]) {
+      _deliver(one.from, one.fromDevice, one.to, one.message);
+    }
+    final events = [..._outbox];
+    _outbox.clear();
+    Timer.run(() => _send(events));
+  }
 
   bool _friendsWith(String a, String b) => _friends.contains(([a, b]..sort()).join(':'));
 
@@ -1246,12 +1306,13 @@ class FakeApi {
         return _noContent;
       }),
       route('POST', '$conv/history-shares/(?<share>$_uuidPath)/complete', _Needs.listed, _completeShare),
+      // The oldest 100 the device hasn't acknowledged, as the API's page: the next once those are.
       route('GET', '$me/history-shares', _Needs.device, (ctx) {
-        return _ok([
+        final unacked = [
           for (final share in _shares.values)
-            if (share.completed && share.toUser == ctx.me.user && !share.acked.contains(ctx.device!.id))
-              _shareView(share),
-        ]);
+            if (share.completed && share.toUser == ctx.me.user && !share.acked.contains(ctx.device!.id)) share,
+        ]..sort((a, b) => a.id.compareTo(b.id));
+        return _ok([for (final share in unacked.take(100)) _shareView(share)]);
       }),
       route('GET', '/api/history-shares/(?<share>$_uuidPath)/parts/(?<n>\\d+)', _Needs.session, (ctx) {
         final share = _shares[ctx.params['share']];
@@ -1697,6 +1758,7 @@ class FakeApi {
     final device = _devices[to];
     if (device == null) return '';
     final id = _id();
+    if (!transfer) _delivered.add((from: from, fromDevice: fromDevice, to: to, message: message));
     _inboxes[to] = [
       for (final m in _inboxes[to] ?? const <Map<String, Object?>>[])
         if (!transfer || !_transfers.contains(m['id'])) m,
@@ -2426,7 +2488,7 @@ class FakeApi {
       ctx.device!.id,
       to,
       kind! as String,
-      '${ctx['range']}',
+      ctx['range'] as String?,
       _timeIn(ctx['starts_at'], 'starts_at'),
       _numberIn(ctx['size'], 'size'),
       parts,
@@ -2445,8 +2507,42 @@ class FakeApi {
       if (!same) throw _fail(409, 'share id in use');
       return _ok(_shareView(there), 201);
     }
+    _limitShares(share);
     _shares[share.id] = share;
     return _ok(_shareView(share), 201);
+  }
+
+  /// A new package counted toward its sender's limits, or refused for them as the API refuses one: a 429 and its wait.
+  void _limitShares(_Share share) {
+    final now = DateTime.now();
+    final made = [
+      for (final one in _sharesMade)
+        if (one.user == share.fromUser && one.kind == share.kind) one,
+    ];
+    int within(
+      Duration window, [
+      bool Function(({String user, String kind, String conversation, String to, DateTime at}))? to,
+    ]) => made.where((one) => now.difference(one.at) < window && (to?.call(one) ?? true)).length;
+    final over = share.kind == 'share'
+        ? within(const Duration(hours: 1)) >= 10
+        : within(const Duration(hours: 1)) >= 30 ||
+              within(
+                    const Duration(days: 1),
+                    (one) => one.conversation == share.conversationId && one.to == share.toUser,
+                  ) >=
+                  1;
+    if (over) {
+      throw const _Refusal(
+        _Answer(429, body: {'error': 'too many requests, try again later'}, headers: {'Retry-After': '3600'}),
+      );
+    }
+    _sharesMade.add((
+      user: share.fromUser,
+      kind: share.kind,
+      conversation: share.conversationId,
+      to: share.toUser,
+      at: now,
+    ));
   }
 
   _Share _ownShare(_Context ctx) {

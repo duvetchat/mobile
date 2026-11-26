@@ -266,6 +266,78 @@ void main() {
       );
     }
 
+    // A member's share of an encrypted conversation's history (Task 31): its notice in the chat, and its offer over the
+    // message box until the person adds it.
+    testWidgets(
+      'a shared history offered, ${b.name}',
+      (tester) => withClock(
+        Clock.fixed(DateTime(2026, 10, 23, 12)),
+        () => withShadows(() async {
+          phone(tester);
+          final repository = FakeRepository();
+          final appearance = Appearance(MemoryAppearanceStore())
+            ..value = b == Brightness.dark ? ThemeMode.dark : ThemeMode.light;
+          await tester.pumpWidget(DuvetApp(repository: repository, appearance: appearance));
+          await tester.pumpAndSettle();
+          repository.history['c-maya']!.add(
+            ChatMessage(
+              id: 'm5',
+              authorId: FakeRepository.maya,
+              authorName: 'Maya',
+              content: '',
+              createdAt: DateTime(2026, 10, 23, 9, 5),
+              isNotice: true,
+              sharedHistory: (toUserId: FakeRepository.me.id, toName: 'you', range: 'week'),
+            ),
+          );
+          repository.historyOffers.value = {
+            'c-maya': [
+              const HistoryOffer(
+                shareId: 's1',
+                conversationId: 'c-maya',
+                fromUserId: FakeRepository.maya,
+                range: 'week',
+              ),
+            ],
+          };
+          await tester.tap(find.text('Maya'));
+          await tester.pumpAndSettle();
+          await expectLater(find.byType(DuvetApp), matchesGoldenFile('goldens/history_offer_${b.name}.png'));
+        }),
+      ),
+    );
+
+    // Sharing the conversation's history with another member, from the members sheet: how far back (Task 31).
+    testWidgets(
+      'sharing history, ${b.name}',
+      (tester) => withClock(
+        Clock.fixed(DateTime(2026, 10, 23, 12)),
+        () => withShadows(() async {
+          phone(tester);
+          final repository = FakeRepository()..encryption.value = EngineState.ready;
+          final appearance = Appearance(MemoryAppearanceStore())
+            ..value = b == Brightness.dark ? ThemeMode.dark : ThemeMode.light;
+          await tester.pumpWidget(DuvetApp(repository: repository, appearance: appearance));
+          await tester.pumpAndSettle();
+          await tester.tap(find.text('Maya'));
+          await tester.pumpAndSettle();
+          await tester.tap(find.bySemanticsLabel('More').last);
+          await tester.pumpAndSettle();
+          await tester.tap(find.text('Members').last);
+          await tester.pumpAndSettle();
+          await tester.tap(find.text('Maya').last);
+          await tester.pumpAndSettle();
+          // Maya's profile, opened from the members sheet, offers it under its buttons.
+          await tester.ensureVisible(find.text(Notice.shareHistory.text));
+          await tester.pumpAndSettle();
+          await expectLater(find.byType(DuvetApp), matchesGoldenFile('goldens/member_share_history_${b.name}.png'));
+          await tester.tap(find.text(Notice.shareHistory.text));
+          await tester.pumpAndSettle();
+          await expectLater(find.byType(DuvetApp), matchesGoldenFile('goldens/share_history_${b.name}.png'));
+        }),
+      ),
+    );
+
     // A verified contact's changed key, its strong notice over the message box (Task 29).
     testWidgets(
       'a changed key, ${b.name}',

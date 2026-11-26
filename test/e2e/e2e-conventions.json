@@ -35,6 +35,18 @@
 		"group_full": "A group can have 20 members at most.",
 		"members_now": "Members now: {names}",
 		"change_unanswered": "No answer came yet: Duvet tries again on its own.",
+		"share_history": "Share history",
+		"share_history_with": "Share history with {name}",
+		"share_history_line": "{name} gets the messages this device holds from the time you pick, marked as shared by you.",
+		"share_history_send": "Share",
+		"share_history_sharing": "Sharing…",
+		"share_history_truncated": "Not all of it fit: {name} gets the messages from {date} on.",
+		"share_history_limit": "You can share history 10 times an hour. Try again {when}.",
+		"share_history_failed": "Couldn't share the history. Try again.",
+		"share_history_no_device": "{name} has no device that can receive it yet.",
+		"shared_with_you": "{a} shared {range} with you",
+		"shared_add": "Add to this device",
+		"shared_add_failed": "Couldn't add the shared messages. Try again.",
 		"removed_device": "This device was removed from your account.",
 		"locked": "Encrypted conversations are open in another Duvet window.",
 		"wait_owner": "Waiting for {owner} to open this group",
@@ -88,6 +100,22 @@
 				"name": "{owner}"
 			},
 			"text": "{owner} can't receive encrypted messages yet. Your device will pass them on when they can."
+		},
+		{
+			"key": "shared_with_you",
+			"values": {
+				"a": "Ana",
+				"range": "the last 7 days"
+			},
+			"text": "Ana shared the last 7 days with you"
+		},
+		{
+			"key": "share_history_truncated",
+			"values": {
+				"name": "Bo",
+				"date": "November 19, 2026"
+			},
+			"text": "Not all of it fit: Bo gets the messages from November 19, 2026 on."
 		}
 	],
 	"envelopes": [

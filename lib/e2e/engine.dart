@@ -27,6 +27,7 @@ import 'identity.dart';
 import 'inbox.dart';
 import 'failures.dart';
 import 'files.dart' as files show fileNames;
+import 'history.dart';
 import 'key_packages.dart';
 import 'members.dart';
 import 'search.dart';
@@ -38,6 +39,7 @@ export 'contacts.dart' show ContactsShown, KeyChange, SafetyNumber, ShownChange,
 export 'content.dart' show Authored, MessageStatus, ShownMessage;
 export 'devices.dart' show DeviceNotice, DeviceNoticeKind, inactiveDevice, onlyDevice;
 export 'files.dart' show FilesGone;
+export 'history.dart' show HistoryOffer, NoDeviceToShareWith, ShareLimit, SharedHistory, quietBeforeImport, shareRanges;
 export 'members.dart' show maxGroupMembers;
 export 'send.dart' show Outgoing, Pending, TooManyWaiting;
 export 'sync.dart' show ConversationNotice, ConversationState, Restart;
@@ -259,6 +261,17 @@ class E2EEngine {
     _messagesGone,
   );
 
+  /// The person's shares of a conversation's history, and the packages this device receives (history.dart).
+  late final _histories = Histories(
+    this,
+    _act,
+    (work) => _soon(() => _whenReady(work)),
+    (conversationId) => _groups.sync(conversationId),
+    (conversationId) => _groups.left(conversationId),
+    _historyImported,
+    (conversationId, shareId) => _changeRefused(conversationId, shareId, 'share'),
+  );
+
   /// The messages this device sends, edits and deletes.
   late final _sends = Sends(
     this,
@@ -288,6 +301,17 @@ class E2EEngine {
     if (!_deleted.isClosed && ids.isNotEmpty) _deleted.add((conversationId: conversationId, ids: ids));
   }
 
+  final _imports = StreamController<String>.broadcast();
+
+  /// Each conversation a shared history or a catch-up was imported into (history.dart): rows its chat's pages left out
+  /// may show now, as well as the ones [messagesChanged] has read again.
+  Stream<String> get historiesImported => _imports.stream;
+
+  void _historyImported(String conversationId) {
+    _messageChanged(conversationId);
+    if (!_imports.isClosed) _imports.add(conversationId);
+  }
+
   final _sent = StreamController<({String conversationId, String nonce, duvet.DirectMessage message})>.broadcast();
   final _refused = StreamController<({String conversationId, String messageId, String kind})>.broadcast();
 
@@ -300,7 +324,8 @@ class E2EEngine {
   Stream<({String conversationId, String nonce, duvet.DirectMessage message})> get sent => _sent.stream;
 
   /// Each edit (`edit`) or deletion (`delete`) of the person's the API refused for good with nobody waiting for its
-  /// answer: shown done here, it never reached the others, which the person is told.
+  /// answer: shown done here, it never reached the others, which the person is told. A share of a conversation's
+  /// history (`share`, by the package's ID) the person was told went and that ended for good is one too.
   Stream<({String conversationId, String messageId, String kind})> get changesRefused => _refused.stream;
 
   /// What the engine tells of the user's other devices (Task 25): one added, and once each, one not seen in 45 days.
@@ -591,6 +616,24 @@ class E2EEngine {
   /// The person's messages of the conversation still being sent, in their order, with what goes with them.
   Future<List<Pending>> pendingMessages(String conversationId) => _sends.pending(conversationId);
 
+  /// The shares of a conversation's history whose keys this device holds, waiting for the person's yes, by
+  /// conversation (history.dart).
+  ValueListenable<Map<String, List<HistoryOffer>>> get historyOffers => _histories.offers;
+
+  /// The person's share of a conversation's history from [range]'s start (day, week, month or all) with one of its
+  /// other members (PLAN-E2E-CLIENTES.md, Task 31): what came of it, once the API took it; the rest goes by itself, and
+  /// a share that then ends for good is told on [changesRefused]. A refusal throws: [ShareLimit] for the API's ten an
+  /// hour, [NoDeviceToShareWith], or the API's; a client too old for it waits for its update.
+  Future<SharedHistory> shareHistory(String conversationId, String userId, String range) =>
+      _updating(() => _histories.share(conversationId, userId, range));
+
+  /// The person's yes to a share of a conversation's history ([historyOffers]): its messages imported here.
+  Future<void> takeHistoryOffer(String shareId) => _updating(() => _histories.take(shareId));
+
+  /// The person's Dismiss of a share of a conversation's history ([historyOffers]): it shows no more, and the API is
+  /// told this device is done with it.
+  Future<void> dismissHistoryOffer(String shareId) => _histories.dismiss(shareId);
+
   /// Whether this device's database holds any message of the conversation numbered before [seq].
   Future<bool> heldBefore(String conversationId, int seq) => content.heldBefore(host, conversationId, seq);
 
@@ -727,6 +770,7 @@ class E2EEngine {
     await _turn;
     await host.close();
     await _messagesChanged.close();
+    await _imports.close();
     await _deleted.close();
     await _sent.close();
     await _refused.close();
@@ -745,6 +789,7 @@ class E2EEngine {
     _groups.stop();
     _sends.stop();
     _failures.stop();
+    _histories.stop();
     await heard?.cancel();
   }
 
@@ -849,7 +894,7 @@ class E2EEngine {
       // lets go: the change can never go up, and only this device's data deleted gets out, until duvetchat/e2e#49 has
       // the core take such a transfer (review 25's I1).
       _rotation = null;
-      await takeInbox(this, _tries, _failures);
+      await takeInbox(this, _tries, _failures, _histories.keyTaken);
       final next = await _identity();
       return _set(next.rotating ? const EngineState.rotation(stuck: true) : next);
     } on duvet.DuvetApiException catch (error) {
@@ -931,12 +976,21 @@ class E2EEngine {
     }
   }
 
+  /// The flows queued and not done yet: with none, the engine is quiet, which a catch-up's import waits for.
+  var _queued = 0;
+
   /// Runs [work] once the flow before it ended (nothing once stopped). What it throws fails this call alone.
   Future<void> _queue(Future<void> Function() work) {
+    if (_queued++ == 0) _histories.busy();
     final run = _turn.then((_) async {
       if (!_stopped) await work();
     });
-    _turn = run.catchError((Object error) => debugPrint("e2e: the engine's work failed: $error"));
+    final turn = _turn = run.catchError((Object error) => debugPrint("e2e: the engine's work failed: $error"));
+    unawaited(
+      turn.then((_) {
+        if (--_queued == 0 && !_stopped) _histories.idle();
+      }),
+    );
     return run;
   }
 
@@ -958,11 +1012,16 @@ class E2EEngine {
           _soon(() => _whenReady(_groups.all));
           // What waits to be sent goes once the queues are applied («Enviar»).
           _soon(() => _whenReady(_sends.resendAll));
+          // The packages for this device that came meanwhile, once its groups are as the queues have them.
+          _soon(() => _whenReady(_histories.list));
         }
       case duvet.DeviceMessagePayloadEvent(:final data) when data.deviceId == _device:
         _soon(_inbox);
       case duvet.KeyPackagesLowPayloadEvent(:final data) when data.deviceId == _device:
         _soon(_keyPackages);
+      // A shared history or a catch-up completed for this user: offered or imported once its key is here too.
+      case duvet.HistoryShareCreatedEvent(:final data) when _state.value.stage == EngineStage.ready:
+        _histories.heard(data);
       case duvet.DeviceRemovedEvent(:final data) when data.deviceId == _device:
         _soon(() async => _set(EngineState.removed));
       // Another device of the user's: its registration, then its listing, told once (Task 25), and never this one,
@@ -1027,7 +1086,7 @@ class E2EEngine {
   /// shows stays shown, as its saving or Later alone puts it away; one gone (another device's transfer replaced the
   /// identity) is forgotten.
   Future<EngineState> _identity() async {
-    final state = await identityState(this, () => takeInbox(this, _tries, _failures));
+    final state = await identityState(this, () => takeInbox(this, _tries, _failures, _histories.keyTaken));
     if (!state.rotating) _rotation = null;
     final shown = _rotation?.recoveryKey;
     if (shown != null) return EngineState.rotation(recoveryKey: shown);
@@ -1037,7 +1096,7 @@ class E2EEngine {
 
   /// The inbox; once it brought a rotation's transfer, the own user observed, which may change what this device is.
   Future<void> _inbox() async {
-    if (await takeInbox(this, _tries, _failures)) _set(await _identity());
+    if (await takeInbox(this, _tries, _failures, _histories.keyTaken)) _set(await _identity());
   }
 
   /// «Arranque»: the API's configuration, the user's database, this installation's device and the session bound to it.
@@ -1100,6 +1159,12 @@ class E2EEngine {
       await _whenReady(_sends.resendAll);
     } catch (error) {
       debugPrint('e2e: what waits to be sent waits for the next READY: $error');
+    }
+    // The packages for this device, once its groups are as the queues have them.
+    try {
+      await _whenReady(_histories.list);
+    } catch (error) {
+      debugPrint('e2e: the shared histories wait for the next READY: $error');
     }
     await _keyPackages();
     try {
@@ -1189,6 +1254,7 @@ class E2EEngine {
     _tries.clear();
     _groups.forget();
     _sends.stop();
+    _histories.forget();
     _daily?.call();
     _daily = null;
     _set(EngineState.starting);

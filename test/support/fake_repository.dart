@@ -5,7 +5,7 @@ import 'package:duvet/data/recent_chats.dart';
 import 'package:duvet/data/recent_chats.dart' as recent show previewOf;
 import 'package:duvet/data/repository.dart';
 import 'package:duvet/e2e/engine.dart'
-    show ContactsShown, EngineStage, EngineState, KeyChange, SafetyNumber, ShownChange;
+    show ContactsShown, EngineStage, EngineState, HistoryOffer, KeyChange, SafetyNumber, SharedHistory, ShownChange;
 import 'package:duvet/e2e/members.dart' show sameUsers;
 import 'package:duvet/e2e/sync.dart' show ConversationState;
 import 'package:duvet_client/duvet.dart' as duvet show Device;
@@ -1747,6 +1747,45 @@ class FakeRepository implements ChatRepository {
       verified: contacts.value.verified,
     );
   }
+
+  /// The shares of a conversation's history waiting for the person's yes; a test sets them.
+  @override
+  final ValueNotifier<Map<String, List<HistoryOffer>>> historyOffers = ValueNotifier(const {});
+
+  /// What a share comes to, or what it's refused with; a share is told in [encryptionTaps].
+  SharedHistory shareAnswer = (truncated: false, start: DateTime.utc(2026, 11, 19));
+  Object? shareRefusal;
+
+  @override
+  Future<SharedHistory> shareHistory(String conversationId, String userId, String range) async {
+    encryptionTaps.add('shareHistory $conversationId $userId $range');
+    if (shareRefusal case final refusal?) throw refusal;
+    return shareAnswer;
+  }
+
+  /// What a yes to an offer is refused with; one that goes takes its offer away.
+  Object? offerRefusal;
+
+  @override
+  Future<void> takeHistoryOffer(String conversationId, String shareId) async {
+    encryptionTaps.add('takeHistoryOffer $conversationId $shareId');
+    if (offerRefusal case final refusal?) throw refusal;
+    _dropOffer(shareId);
+  }
+
+  @override
+  Future<void> dismissHistoryOffer(String conversationId, String shareId) async {
+    encryptionTaps.add('dismissHistoryOffer $conversationId $shareId');
+    _dropOffer(shareId);
+  }
+
+  void _dropOffer(String shareId) => historyOffers.value = {
+    for (final MapEntry(:key, :value) in historyOffers.value.entries)
+      key: [
+        for (final offer in value)
+          if (offer.shareId != shareId) offer,
+      ],
+  };
 
   @override
   Future<void> logIn(String email, String password) async {

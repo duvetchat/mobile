@@ -87,6 +87,9 @@ class _SlowApplies implements CoreHost {
   Future<void> dropShare(String shareId) => _core.dropShare(shareId);
 
   @override
+  Future<Map<String, Object?>> importShare(String shareId, List<Uint8List> parts) => _core.importShare(shareId, parts);
+
+  @override
   Future<Opened> open(String userId) => _core.open(userId);
 
   @override

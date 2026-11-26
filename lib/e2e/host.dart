@@ -40,6 +40,9 @@ abstract interface class CoreHost {
 
   Future<void> dropShare(String shareId);
 
+  /// `history_import` of a package whose key the core took, with its [parts] as they downloaded: `{imported}`.
+  Future<Map<String, Object?>> importShare(String shareId, List<Uint8List> parts);
+
   /// Closes what's open: the database stays.
   Future<void> close();
 
