@@ -51,7 +51,10 @@ Future<_Chat> _chat({bool group = false, bool Function(GatewayEvent event)? hear
   } else {
     app.repository.chatShown(target);
   }
-  await until(() async => await _epoch(app, conversation) != null && await groupOf(b, conversation) != null);
+  await until(
+    () async => await _epoch(app, conversation) != null && await groupOf(b, conversation) != null,
+    what: "the group on Ana's app and Bo's device",
+  );
   return (fake: fake, ana: ana, bo: bo, app: app, b: b, conversation: conversation, target: target);
 }
 
@@ -307,11 +310,11 @@ void main() {
       final keyPackages = await b.api.claimKeyPackages(ana);
       await stoppedByHand(b);
       await removeByHand(b, conversation, ana);
-      await until(() async => await _epoch(app, conversation) == null);
+      await until(() async => await _epoch(app, conversation) == null, what: "Ana's app out of the group");
       // Ana away: Bo's 350 messages, then she's back.
       fake.addOpaqueMessages(conversation, bo, 350);
       await addByHand(b, conversation, ana, keyPackages);
-      await until(() async => await _epoch(app, conversation) != null);
+      await until(() async => await _epoch(app, conversation) != null, what: "Ana's app back in the group");
       await app.repository.refreshConversations();
       final after = await app.repository.send(target, 'after', nonce: uuidv4());
       final from = app.seen.length;

@@ -173,14 +173,16 @@ class LockedOnce implements CoreHost {
   Future<void> destroy(String userId) => _host.destroy(userId);
 }
 
-/// A host that tells what it's asked (each command's name, in order, and the commands themselves), fails a command
-/// when [fail] gives an error for it, and answers one itself when [answer] gives an answer.
+/// A host that tells what it's asked (each command's name, in order, and the commands themselves), holds a command
+/// until the future [hold] gives for it completes, fails one when [fail] gives an error for it, and answers one itself
+/// when [answer] gives an answer.
 class WatchedHost implements CoreHost {
-  WatchedHost(this._host, this.log, {this.fail, this.answer, List<Map<String, Object?>>? commands})
+  WatchedHost(this._host, this.log, {this.hold, this.fail, this.answer, List<Map<String, Object?>>? commands})
     : commands = commands ?? [];
   final CoreHost _host;
   final List<String> log;
   final List<Map<String, Object?>> commands;
+  final Future<void>? Function(Map<String, Object?> command)? hold;
   final CoreError? Function(Map<String, Object?> command)? fail;
   final Object? Function(Map<String, Object?> command)? answer;
 
@@ -188,6 +190,7 @@ class WatchedHost implements CoreHost {
   Future<T> handle<T>(Map<String, Object?> command) async {
     log.add(command['cmd']! as String);
     commands.add(command);
+    if (hold?.call(command) case final wait?) await wait;
     if (fail?.call(command) case final error?) throw error;
     if (answer?.call(command) case final answered?) return answered as T;
     return _host.handle<T>(command);
@@ -366,6 +369,7 @@ TestDevice testDevice(
   final states = <EngineState>[];
   engine.state.addListener(() => states.add(engine.state.value));
   connect(null);
+  shownWhenStuck(() => heldBy(fake, user, engine.state.value, engine.conversations.value, core));
   return TestDevice._(engine, core, user, session, api, record, clock, heard, registered, states, connect);
 }
 
@@ -421,27 +425,72 @@ Future<HeldGroup?> groupOf(TestDevice device, String conversation) async {
 /// Waits until every device holds the conversation's group at one generation and epoch, with one authenticator.
 Future<HeldGroup> sameGroup(List<TestDevice> devices, String conversation, {Duration? timeout}) async {
   late HeldGroup held;
-  await until(() async {
-    final groups = [for (final device in devices) await groupOf(device, conversation)];
-    final first = groups.first;
-    if (first == null) return false;
-    held = first;
-    return groups.every(
-      (g) =>
-          g != null && (g.generation, g.epoch, g.authenticator) == (first.generation, first.epoch, first.authenticator),
-    );
-  }, timeout: timeout);
+  await until(
+    () async {
+      final groups = [for (final device in devices) await groupOf(device, conversation)];
+      final first = groups.first;
+      if (first == null) return false;
+      held = first;
+      return groups.every(
+        (g) =>
+            g != null &&
+            (g.generation, g.epoch, g.authenticator) == (first.generation, first.epoch, first.authenticator),
+      );
+    },
+    timeout: timeout,
+    what: 'one group, at one generation and epoch, on every device',
+  );
   return held;
 }
 
 /// How long a test waits for what an engine does in its own time: a minute, or E2E_WAIT_SECONDS.
 final _wait = Duration(seconds: int.tryParse(Platform.environment['E2E_WAIT_SECONDS'] ?? '') ?? 60);
 
-/// Waits until [holds] is true, as an engine's work after an event ends in its own time: past [timeout], it fails.
-Future<void> until(FutureOr<bool> Function() holds, {Duration? timeout}) async {
+/// What each device the running test made holds, which a wait that gives up tells.
+final _shown = <Future<String> Function()>[];
+
+/// [describe] tells what one of the running test's devices holds, when a wait gives up ([until]).
+void shownWhenStuck(Future<String> Function() describe) {
+  _shown.add(describe);
+  addTearDown(() => _shown.remove(describe));
+}
+
+/// What a device holds, as a wait that gave up tells it: its engine's state, then for each conversation of the fake,
+/// the group its core holds and what the conversation says.
+Future<String> heldBy(
+  FakeApi fake,
+  String who,
+  EngineState state,
+  Map<String, ConversationState> states,
+  CoreHost host,
+) async {
+  final lines = ['$who: $state'];
+  for (final id in fake.conversationIds) {
+    String group;
+    try {
+      final held = await host.handle<Map<String, Object?>>({'cmd': 'group', 'conversation_id': id});
+      group = 'generation ${held['generation']}, epoch ${held['epoch']}${held['blocked'] == true ? ', blocked' : ''}';
+    } on CoreError catch (error) {
+      group = error.code == 'not_found' ? 'no group' : 'its group not read (${error.code})';
+    }
+    lines.add('  conversation $id: $group; ${states[id] ?? 'no notice'}');
+  }
+  return lines.join('\n');
+}
+
+/// Waits until [holds] is true, as an engine's work after an event ends in its own time: past [timeout], it fails,
+/// telling [what] it waited for and what each of the test's devices holds.
+Future<void> until(FutureOr<bool> Function() holds, {Duration? timeout, String? what}) async {
   final end = DateTime.now().add(timeout ?? _wait);
   while (!await holds()) {
-    if (DateTime.now().isAfter(end)) fail('what the test waited for never came');
+    if (DateTime.now().isAfter(end)) {
+      fail(
+        [
+          'what the test waited for never came${what == null ? '' : ': $what'}',
+          for (final describe in [..._shown]) await describe(),
+        ].join('\n'),
+      );
+    }
     await Future<void>.delayed(const Duration(milliseconds: 20));
   }
 }
