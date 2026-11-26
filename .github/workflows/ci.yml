@@ -19,7 +19,8 @@ jobs:
   flutter:
     # On the organisation's own runner: the 2,000 free Actions minutes a month ran out.
     runs-on: [self-hosted, linux, x64, duvet]
-    timeout-minutes: 30
+    # 45: a passing run takes 23 to 27 minutes, and a runner busy with other repositories' runs stretches it past 30 (#351).
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v7
         with:
