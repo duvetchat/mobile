@@ -273,9 +273,9 @@ void main() {
     timeout: const Timeout(Duration(minutes: 3)),
   );
 
-  // Encrypted attachments (PLAN-E2E-CLIENTES.md, Task 19): Carol's device seals a file and sends it with its ID; the API
-  // keeps its sealed bytes, and Dave's device downloads them from its signed URL, with none of the app's headers and
-  // through the storage's redirect, opens them and checks them against what the message says.
+  // Encrypted attachments (PLAN-E2E-CLIENTES.md, Task 19): Carol's device seals a file and sends it with its ID; the
+  // API keeps its sealed bytes, and Dave's device downloads them from its signed URL, with none of the app's headers
+  // and through the storage's redirect, opens them and checks them against what the message says.
   test(
     'a_file_crosses_between_two_users',
     () async {

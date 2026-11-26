@@ -50,7 +50,7 @@ class TestApp {
 }
 
 /// [user]'s app on [fake], signed in and connected, its engine starting: [TestApp.ready] sets its device up. Its
-/// connection hands on only what [hears] lets through.
+/// connection hands on only what [hears] lets through, and [answers] answer routes the fake lacks, by `METHOD path`.
 Future<TestApp> appOn(
   FakeApi fake,
   String user, {
@@ -58,6 +58,7 @@ Future<TestApp> appOn(
   ChatCacheStore? cache,
   bool Function(GatewayEvent event)? hears,
   void Function(Directory support)? prepare,
+  Map<String, Object?> answers = const {},
 }) async {
   final support = Directory.systemTemp.createTempSync('duvet-app-');
   // What a run before this one left in the app's folders.
@@ -81,7 +82,7 @@ Future<TestApp> appOn(
         'device_challenge': session.deviceChallenge,
       },
       ('GET', '/api/users/@me') => {'id': user, 'username': 'user', 'created_at': at, 'updated_at': at},
-      _ => null,
+      _ => answers['${request.method} ${request.url.path}'],
     };
     if (own != null) return http.Response(jsonEncode(own), 200, headers: {'content-type': 'application/json'});
     final copy = http.Request(request.method, request.url)

@@ -21,6 +21,7 @@ import '../data/markdown.dart';
 import '../deep_links.dart';
 import '../data/message_tokens.dart';
 import '../data/models.dart';
+import '../e2e/decrypted_files.dart';
 import '../theme.dart';
 import 'apng.dart';
 import 'attachment_link.dart';
@@ -551,7 +552,7 @@ class MessageAttachments extends StatelessWidget {
     this.maxWidth = 260,
     this.uploadProgress,
     this.onDoubleTap,
-    this.messageId = '',
+    required this.messageId,
     super.key,
   });
 
@@ -1892,7 +1893,14 @@ class _ImageViewerState extends State<ImageViewer> with TickerProviderStateMixin
   Future<void> _share(MessageAttachment a) async {
     final link = linkSource(context, a);
     try {
-      await MediaActions.instance.share(await link(), a.displayName, a.contentType);
+      if (a.sealed != null) {
+        // A decrypted copy, under its cleaned name from a copy beside the folder's, which nothing else keeps (task 19's
+        // review, M1).
+        final copy = await DecryptedFiles.instance.aside('share', a.displayName, from: a.url);
+        await MediaActions.instance.shareFile(copy.path, a.displayName, a.contentType);
+      } else {
+        await MediaActions.instance.share(await link(), a.displayName, a.contentType);
+      }
     } catch (_) {
       _toast('Couldn’t share the photo');
     }
@@ -2098,7 +2106,9 @@ class _ImageViewerState extends State<ImageViewer> with TickerProviderStateMixin
                   ),
                 ),
               ),
-              if (!current.local)
+              // A decrypted copy is saved and shared, with no link to copy: its path opens nothing elsewhere (task 19's
+              // review, M8).
+              if (!current.local || current.sealed != null)
                 Positioned(
                   left: 0,
                   right: 0,
@@ -2115,11 +2125,12 @@ class _ImageViewerState extends State<ImageViewer> with TickerProviderStateMixin
                             children: [
                               action(FLucideIcons.download, 'Save', () => _save(current)),
                               action(FLucideIcons.share2, 'Share', () => _share(current)),
-                              action(FLucideIcons.link, 'Copy link', () async {
-                                final link = linkSource(context, current);
-                                await Clipboard.setData(ClipboardData(text: await link()));
-                                _toast('Link copied');
-                              }),
+                              if (!current.local)
+                                action(FLucideIcons.link, 'Copy link', () async {
+                                  final link = linkSource(context, current);
+                                  await Clipboard.setData(ClipboardData(text: await link()));
+                                  _toast('Link copied');
+                                }),
                             ],
                           ),
                         ),

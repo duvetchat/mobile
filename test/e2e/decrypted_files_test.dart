@@ -6,9 +6,11 @@ import 'dart:typed_data';
 import 'package:crypto/crypto.dart';
 import 'package:duvet/data/models.dart';
 import 'package:duvet/e2e/decrypted_files.dart';
+import 'package:duvet/e2e/engine.dart';
 import 'package:duvet/e2e/files.dart';
 import 'package:duvet/e2e/host.dart';
 import 'package:duvet/e2e/notices.dart';
+import 'package:duvet/e2e/thumbnails.dart';
 import 'package:duvet/e2e/uuid.dart';
 import 'package:duvet_client/duvet.dart' as duvet;
 import 'package:flutter_test/flutter_test.dart';
@@ -62,13 +64,13 @@ String _sha(List<int> bytes) => base64Encode(sha256.convert(bytes).bytes);
   _Opener opener,
   ({FileRef file, String url}) Function(String, int, [List<int>]) fileOf,
 })
-_folder({int limit = maxDecrypted}) {
+_folder({int limit = maxDecrypted, int inFlight = openingBytesMost}) {
   final root = Directory.systemTemp.createTempSync('duvet-media-');
   addTearDown(() {
     if (root.existsSync()) root.deleteSync(recursive: true);
   });
   final folder = Directory('${root.path}/e2e-media');
-  final files = DecryptedFiles(limit: limit, folder: () async => folder);
+  final files = DecryptedFiles(limit: limit, inFlight: inFlight, folder: () async => folder);
   final opener = _Opener();
   files.useOpener(opener);
   ({FileRef file, String url}) fileOf(String id, int size, [List<int> head = _pngHead]) {
@@ -92,6 +94,53 @@ Future<void> _until(bool Function() holds) async {
     await Future<void>.delayed(const Duration(milliseconds: 5));
   }
   expect(holds(), isTrue);
+}
+
+/// Ana's app and Bo's first device in their DM, its group made: Ana's app hears what [hears] lets through, and
+/// [answers] answer routes the fake lacks.
+Future<({TestApp app, TestDevice b, String conversation, ConversationTarget target, String ana})> _appAndBo({
+  bool Function(GatewayEvent event)? hears,
+  Map<String, Object?> answers = const {},
+}) async {
+  TestWidgetsFlutterBinding.ensureInitialized();
+  await loadCore();
+  final fake = FakeApi();
+  final (ana, bo) = (fake.addUser(), fake.addUser());
+  final conversation = fake.addConversation(group: false, members: [ana, bo]);
+  final target = ConversationTarget(conversation);
+  final app = await appOn(fake, ana, hears: hears, answers: answers);
+  await app.ready();
+  final b = await firstDevice(fake, bo);
+  addTearDown(b.engine.stop);
+  app.repository.chatShown(target);
+  await until(() async => await groupOf(b, conversation) != null);
+  return (app: app, b: b, conversation: conversation, target: target, ana: ana);
+}
+
+/// Bo's message with a picture, as Ana's app shows it, and the picture opened there.
+Future<({String id, MessageAttachment file, FileReady ready})> _pictureFromBo(
+  TestApp app,
+  TestDevice b,
+  String conversation,
+  ConversationTarget target,
+) async {
+  final sent = (await b.engine.sendMessage(
+    Outgoing(
+      conversationId: conversation,
+      nonce: uuidv4(),
+      files: [
+        FileToSeal(bytes: Uint8List.fromList([..._pngHead, 9, 9, 9]), name: 'plan.png'),
+      ],
+    ),
+  ))!;
+  MessageAttachment? file;
+  await until(() async {
+    final shown = (await app.repository.messages(target)).where((m) => m.id == sent.id).firstOrNull;
+    file = shown?.attachments.where((a) => a.sealed != null && a.url.isNotEmpty).firstOrNull;
+    return file != null;
+  });
+  final ready = await DecryptedFiles.instance.open(file!.sealed!, file!.url, sent.id);
+  return (id: sent.id, file: file!, ready: ready as FileReady);
 }
 
 void main() {
@@ -264,6 +313,100 @@ void main() {
     ], everyElement(isA<FileReady>()));
   });
 
+  // Task 19's review, I2: a file that waited for its place has it now; its message's deletion lets it go, and the
+  // message's other files with it.
+  test("a_file_coming_down_after_it_waited_for_its_place_goes_with_its_message's_deletion", () async {
+    final (:files, :folder, :opener, :fileOf) = _folder();
+    final gates = <String, Completer<void>>{};
+    opener.downloads = (url, most, progress) async {
+      await (gates[url] = Completer<void>()).future;
+      return Uint8List(most);
+    };
+    final all = [
+      for (final id in ['1', '2', '3', '4', '5', '6']) fileOf(id, 100),
+    ];
+    // The fifth and the sixth are the same message's.
+    final opening = [for (final (i, f) in all.indexed) files.open(f.file, f.url, i < 4 ? 'm$i' : 'last', auto: true)];
+    await _until(() => opener.started.length == 4);
+    gates[all[0].url]!.complete();
+    // The fifth has its place, and comes down.
+    await _until(() => opener.started.length == 5);
+    expect(() => files.forgetMessage('last'), returnsNormally);
+    expect(files.state(all[4].file, all[4].url), isNull);
+    expect(files.state(all[5].file, all[5].url), isNull);
+    gates[all[4].url]!.complete();
+    await opening[4];
+    expect(_copies(folder), hasLength(1));
+    // The rest come down in the places left.
+    for (final f in all.take(4)) {
+      if (gates[f.url] case final gate? when !gate.isCompleted) gate.complete();
+    }
+    await Future.wait(opening.take(4));
+    expect(_copies(folder), hasLength(4));
+  });
+
+  // Task 19's review, M6: Android clears its cache under storage pressure, the copies with it.
+  test('a_copy_the_system_deleted_is_opened_again', () async {
+    final (:files, folder: _, :opener, :fileOf) = _folder();
+    final f = fileOf('1', 100);
+    final ready = await files.open(f.file, f.url, 'm', auto: true) as FileReady;
+    File(ready.path).deleteSync();
+    final again = await files.open(f.file, f.url, 'm', auto: true);
+    expect(again, isA<FileReady>());
+    expect(File((again as FileReady).path).existsSync(), isTrue);
+    expect(opener.started, hasLength(2));
+    expect(files.used, 100);
+  });
+
+  // Task 19's review, M7: each file in flight holds its sealed bytes a few times over, so they go within a budget
+  // beside the count; one past it goes alone.
+  test('files_come_down_within_a_budget_of_sealed_bytes,_and_one_past_it_alone', () async {
+    final (:files, folder: _, :opener, :fileOf) = _folder(inFlight: 2 * sealedSize(100));
+    final gates = <String, Completer<void>>{};
+    opener.downloads = (url, most, progress) async {
+      await (gates[url] = Completer<void>()).future;
+      return Uint8List(most);
+    };
+    final small = [
+      for (final id in ['1', '2', '3']) fileOf(id, 100),
+    ];
+    final large = fileOf('4', 1000);
+    final opening = [
+      for (final f in [...small, large]) files.open(f.file, f.url, 'm', auto: true),
+    ];
+    await _until(() => opener.started.length == 2);
+    await pumpEventQueue();
+    expect(opener.started, [small[0].url, small[1].url]);
+    gates[small[0].url]!.complete();
+    await _until(() => opener.started.length == 3);
+    gates[small[1].url]!.complete();
+    gates[small[2].url]!.complete();
+    // Past the budget alone: it goes once nothing else comes down.
+    await _until(() => opener.started.length == 4);
+    gates[large.url]!.complete();
+    expect(await Future.wait(opening), everyElement(isA<FileReady>()));
+  });
+
+  // Task 19's review, M9: the download's 40 s of silence don't cover an error's body.
+  test("an_error_answer's_body_isn't_read:_a_storage_that_trickles_one_holds_no_place", () async {
+    var asked = 0;
+    final client = MockClient.streaming((request, _) async {
+      asked++;
+      final trickle = StreamController<List<int>>()..add([1]);
+      if (asked == 1) return http.StreamedResponse(trickle.stream, 429, headers: {'retry-after': '1'});
+      if (asked == 2) return http.StreamedResponse(Stream.value([1, 2, 3]), 200);
+      return http.StreamedResponse(trickle.stream, 500);
+    });
+    final url = Uri.parse('https://api.duvet.test/attachments/x');
+    // A 429 whose body never ends is waited out, and the next answer read.
+    expect(await downloadSigned(client, url, 10, wait: (_) async {}).timeout(const Duration(seconds: 5)), [1, 2, 3]);
+    // A refusal whose body never ends is the API's word at once.
+    await expectLater(
+      downloadSigned(client, url, 10).timeout(const Duration(seconds: 5)),
+      throwsA(isA<duvet.DuvetApiException>()),
+    );
+  });
+
   // Task 18's review, Missing 2: decision 40 counts them, under the kind attachment.
   test("a_file_that_doesn't_open,_or_opens_to_other_bytes,_is_counted;_one_that_doesn't_come_down_isn't", () async {
     final (:files, folder: _, :opener, :fileOf) = _folder();
@@ -372,6 +515,127 @@ void main() {
       // Nothing previews or downloads their sealed bytes.
       expect([for (final f in files) (f.contentType, f.url)], everyElement(('application/octet-stream', '')));
       await b.engine.stop();
+    },
+    skip: noCore,
+    timeout: const Timeout(Duration(minutes: 3)),
+  );
+
+  // Task 19's review, M10: the app's own wiring of a deletion to the folder, each way the engine learns of one.
+  test(
+    'a_message_the_gateway_says_is_deleted_lets_its_files_go_at_once',
+    () async {
+      GatewayEvent? deletion;
+      final (:app, :b, :conversation, :target, :ana) = await _appAndBo(
+        hears: (event) {
+          if (event.type != 'DM_MESSAGE_DELETE') return true;
+          deletion = event;
+          return false;
+        },
+      );
+      final (:id, :file, :ready) = await _pictureFromBo(app, b, conversation, target);
+      await b.engine.deleteMessage(conversation, id);
+      await until(() => deletion != null);
+      app.repository.handleEvent(payloadOf(deletion!, ana)!);
+      // At once, as the chat drops its row: the engine's turn, which applies the tombstone, hasn't come yet.
+      expect(DecryptedFiles.instance.state(file.sealed!, file.url), isNull);
+      expect(File(ready.path).existsSync(), isFalse);
+    },
+    skip: noCore,
+    timeout: const Timeout(Duration(minutes: 3)),
+  );
+
+  test(
+    'a_message_the_queue_says_is_deleted_lets_its_files_go',
+    () async {
+      // Its event lost: only the queue's tombstone tells of it.
+      final (:app, :b, :conversation, :target, ana: _) = await _appAndBo(
+        hears: (event) => event.type != 'DM_MESSAGE_DELETE',
+      );
+      final (:id, :file, :ready) = await _pictureFromBo(app, b, conversation, target);
+      await b.engine.deleteMessage(conversation, id);
+      // The next message has the engine read the queue up to it, the tombstone included.
+      await b.engine.sendMessage(Outgoing(conversationId: conversation, nonce: uuidv4(), text: 'and another'));
+      await until(() => !File(ready.path).existsSync());
+      expect(DecryptedFiles.instance.state(file.sealed!, file.url), isNull);
+    },
+    skip: noCore,
+    timeout: const Timeout(Duration(minutes: 3)),
+  );
+
+  test(
+    "a_file_over_the_active_bucket's_limit_once_sealed_is_refused_before_it_goes",
+    () async {
+      final at = DateTime.now().toUtc().toIso8601String();
+      final (:app, b: _, :conversation, :target, ana: _) = await _appAndBo(
+        answers: {
+          // The storage takes 1 MiB a file; the bucket files go to, 2000 bytes.
+          'GET /api/users/@me/storage': {
+            'used_bytes': 0,
+            'max_bytes': 1 << 30,
+            'upload_limit_bytes': 1 << 20,
+            'percentage_used': 0,
+          },
+          'GET /api/users/@me/buckets': [
+            {
+              'id': uuidv4(),
+              'owner_id': uuidv4(),
+              'name': 'mine',
+              'endpoint': 'https://s3.duvet.test',
+              'bucket_name': 'files',
+              'access_key_id': 'key',
+              'is_active': true,
+              'upload_limit_bytes': 2000,
+              'created_at': at,
+              'updated_at': at,
+            },
+          ],
+        },
+      );
+      final picked = Directory.systemTemp.createTempSync('duvet-picked-');
+      addTearDown(() => picked.deleteSync(recursive: true));
+      final file = File('${picked.path}/big.png')..writeAsBytesSync([..._pngHead, ...List.filled(1990, 0)]);
+      final from = app.seen.length;
+      await expectLater(
+        app.repository.send(
+          target,
+          '',
+          nonce: uuidv4(),
+          files: [OutgoingFile(path: file.path, name: 'big.png', contentType: 'image/png', sizeBytes: 1998)],
+        ),
+        throwsA(isA<UploadTooLarge>()),
+      );
+      expect(app.count('POST', '/api/users/@me/conversations/$conversation/messages', from: from), 0);
+    },
+    skip: noCore,
+    timeout: const Timeout(Duration(minutes: 3)),
+  );
+
+  // Task 19's review, M11: video_player reads a video's size and length, which its message carries as the desktop's
+  // does; a frame of it would take a frame grabber.
+  test(
+    "a_video's_size_and_length_go_with_it",
+    () async {
+      final was = videoFactsOf;
+      videoFactsOf = (_) async => (width: 1280, height: 720, durationMs: 4200);
+      addTearDown(() => videoFactsOf = was);
+      final (:app, :b, :conversation, :target, ana: _) = await _appAndBo();
+      final picked = Directory.systemTemp.createTempSync('duvet-picked-');
+      addTearDown(() => picked.deleteSync(recursive: true));
+      final file = File('${picked.path}/clip.mp4')..writeAsBytesSync([..._mp4Head, ...List.filled(200, 0)]);
+      final sent = await app.repository.send(
+        target,
+        '',
+        nonce: uuidv4(),
+        files: [OutgoingFile(path: file.path, name: 'clip.mp4', contentType: 'video/mp4', sizeBytes: 212)],
+      );
+      late ShownFile shown;
+      await until(() async {
+        final row = (await b.engine.messages(conversation, [sent.id])).firstOrNull;
+        if (row?.status != MessageStatus.ok) return false;
+        shown = shownFile(row!.attachments.single)!;
+        return true;
+      });
+      expect((shown.width, shown.height, shown.durationMs), (1280, 720, 4200));
     },
     skip: noCore,
     timeout: const Timeout(Duration(minutes: 3)),

@@ -2,13 +2,14 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'dart:math' as math;
+import 'dart:typed_data';
 import 'dart:ui' show ImageFilter;
 
 import 'package:flutter/material.dart';
 import 'package:forui/forui.dart';
 
 import '../data/models.dart';
-import '../e2e/conventions.dart' show sniffType, waveformSamples;
+import '../e2e/conventions.dart' show sniffPrefix, thumbnailDrawn, waveformSamples;
 import '../e2e/decrypted_files.dart';
 import '../e2e/files.dart';
 import '../e2e/notices.dart';
@@ -21,8 +22,8 @@ import 'message_content.dart' show openImageViewer;
 /// (lib/e2e/decrypted_files.dart) by its bytes' own type, never its sender's: a picture in an Image, a video in the
 /// player once it came down whole after the tap that asked for it, an audio file and a voice note in today's players.
 /// Anything else is a card that saves its copy as bytes or shares it, and nothing opens it (Review Focus 6); so is a
-/// picture or a video the phone doesn't draw (task 18's review, rule 10). Its thumbnail shows while it comes. What its
-/// sender said of it (its type, its size) only lays it out.
+/// picture, a video or a sound the phone doesn't draw or play (task 18's review, rule 10). A picture's box shows its
+/// thumbnail while it comes. What its sender said of it (its type, its size) only lays it out.
 class SealedFileView extends StatefulWidget {
   const SealedFileView({
     required this.attachment,
@@ -59,6 +60,9 @@ class _SealedFileViewState extends State<SealedFileView> {
   String get _url => widget.attachment.url;
   DecryptedFiles get _files => DecryptedFiles.instance;
 
+  /// The player, which says what the phone couldn't play.
+  final _playback = AudioPlayback.instance;
+
   /// Laid out as its sender says; drawn as its bytes say.
   String get _said => _file.said;
   bool get _picture => !widget.voice && _said.startsWith('image/');
@@ -69,6 +73,7 @@ class _SealedFileViewState extends State<SealedFileView> {
   void initState() {
     super.initState();
     _files.addListener(_changed);
+    _playback.failed.addListener(_changed);
     // Pictures, audio and voice notes come as they show (a lazy list builds them as they near the screen); a video
     // and a file to save on a tap.
     if (widget.voice || _picture || _said.startsWith('audio/')) _open(auto: true);
@@ -81,6 +86,7 @@ class _SealedFileViewState extends State<SealedFileView> {
   @override
   void dispose() {
     _files.removeListener(_changed);
+    _playback.failed.removeListener(_changed);
     super.dispose();
   }
 
@@ -128,7 +134,9 @@ class _SealedFileViewState extends State<SealedFileView> {
 
   Future<void> _share(FileReady ready) async {
     try {
-      await MediaActions.instance.shareFile(ready.path, _file.name, _typeOut(ready));
+      // From a copy under its cleaned name, as the folder's are named by a hash (task 19's review, M1).
+      final copy = await _files.aside('share', _file.name, from: ready.path);
+      await MediaActions.instance.shareFile(copy.path, _file.name, _typeOut(ready));
     } catch (_) {
       _toast('Couldn’t share the file');
     }
@@ -138,23 +146,17 @@ class _SealedFileViewState extends State<SealedFileView> {
     if (mounted) showFToast(context: context, title: Text(text), duration: const Duration(seconds: 3));
   }
 
-  /// Its thumbnail while it comes, when its message has one that reads as a JPEG or a PNG: inside the message, or a
-  /// file of its own, opened as any file is.
-  Widget? _thumbnail() {
+  /// Its thumbnail while it comes, [width] wide, when its message has one the conventions draw (a JPEG or a PNG of
+  /// 320 px a side at most): inside the message, or a file of its own, opened as any file is.
+  Widget? _thumbnail(double width) {
     if (_file.thumbnail case final inside?) {
       final bytes = base64Decode(inside);
-      if (!const {'image/jpeg', 'image/png'}.contains(sniffType(bytes))) return null;
-      return Image.memory(bytes, fit: BoxFit.cover, gaplessPlayback: true, excludeFromSemantics: true);
+      return thumbnailDrawn(bytes) ? _Thumbnail.memory(bytes, width: width) : null;
     }
     final (ref, url) = (_file.thumbnailRef, widget.attachment.thumbnailUrl);
     if (ref == null || url == null) return null;
     return switch (_files.state(ref, url)) {
-      final FileReady ready when const {'image/jpeg', 'image/png'}.contains(ready.type) => Image.file(
-        File(ready.path),
-        fit: BoxFit.cover,
-        gaplessPlayback: true,
-        excludeFromSemantics: true,
-      ),
+      final FileReady ready => _Thumbnail.file(ready.path, width: width, key: ValueKey(ready.path)),
       _ => null,
     };
   }
@@ -164,7 +166,9 @@ class _SealedFileViewState extends State<SealedFileView> {
     final state = _files.state(_file, _url);
     final ready = state is FileReady ? state : null;
     final drawn = ready == null ? null : drawnBy(ready.type);
-    if (widget.voice && ready != null && drawn == DrawnIn.audio) {
+    // A sound the phone couldn't play is a file to save (task 19's review, M3).
+    final plays = drawn == DrawnIn.audio && _playback.failed.value != widget.attachment.id;
+    if (widget.voice && ready != null && plays) {
       return VoiceNotePlayer(
         attachment: _local(ready),
         mine: widget.mine,
@@ -173,10 +177,11 @@ class _SealedFileViewState extends State<SealedFileView> {
         bars: _bars(),
       );
     }
-    if (!widget.voice && _said.startsWith('audio/') && ready != null && drawn == DrawnIn.audio) {
-      return AudioFileTile(attachment: _local(ready));
+    if (!widget.voice && _said.startsWith('audio/') && ready != null && plays) {
+      return AudioFileTile(attachment: _local(ready), trailing: _saveAndShare(ready));
     }
     if (_picture && ready != null && drawn == DrawnIn.image) return _pictureOf(ready);
+    if (_picture && (state == null || state is FileLoading || state is FileGone)) return _pictureBox(state);
     if (_video && state is! FileFailed && (ready == null || drawn == DrawnIn.video)) return _videoTile(state);
     return _card(state);
   }
@@ -220,6 +225,8 @@ class _SealedFileViewState extends State<SealedFileView> {
       height: _file.height,
       sizeBytes: ready.size,
       local: true,
+      // A decrypted copy: the viewer saves and shares it, with no link (task 19's review, M1 and M8).
+      sealed: _file,
     );
     return Semantics(
       container: true,
@@ -246,6 +253,71 @@ class _SealedFileViewState extends State<SealedFileView> {
                 // A picture this phone doesn't decode (an AVIF before Android 12, say) is a file to save.
                 errorBuilder: (_, _, _) => _card(ready),
               ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  /// A picture not drawn yet, on its way or let go of for room: its box, as large as the picture will be, with its
+  /// thumbnail (blurred under a spoiler), how far it came, or a tap that asks for it (task 19's review, Missing 2).
+  Widget _pictureBox(FileState? state) {
+    final box = _box();
+    final loading = state is FileLoading ? state : null;
+    final asks = _spoiler || loading == null;
+    final label = _spoiler
+        ? 'Spoiler, Photo, ${_file.name}'
+        : loading != null
+        ? '${Notice.fileProgress.fill({'percent': '${(loading.progress * 100).floor()}'})}, ${_file.name}'
+        : 'Photo, ${_file.name}. ${Notice.fileShow.text}';
+    void tap() {
+      if (_spoiler) return setState(() => _revealed = true);
+      if (loading == null) _open(auto: false);
+    }
+
+    return Semantics(
+      container: true,
+      image: true,
+      button: asks,
+      label: label,
+      excludeSemantics: true,
+      onTap: asks ? tap : null,
+      child: GestureDetector(
+        onTap: tap,
+        child: ClipRRect(
+          borderRadius: BorderRadius.circular(DuvetTokens.radiusButton),
+          child: Container(
+            width: box.width,
+            height: box.height,
+            color: context.theme.colors.secondary,
+            child: Stack(
+              fit: StackFit.expand,
+              children: [
+                ImageFiltered(
+                  enabled: _spoiler,
+                  imageFilter: ImageFilter.blur(sigmaX: 24, sigmaY: 24, tileMode: TileMode.decal),
+                  child: _thumbnail(box.width) ?? const SizedBox.shrink(),
+                ),
+                if (loading != null)
+                  Positioned(
+                    left: 12,
+                    right: 12,
+                    bottom: 12,
+                    child: DecoratedBox(
+                      decoration: BoxDecoration(
+                        color: DuvetTokens.mediaScrim,
+                        borderRadius: BorderRadius.circular(DuvetTokens.radiusButton),
+                      ),
+                      child: Padding(
+                        padding: const EdgeInsets.all(8),
+                        child: _Progress(share: loading.progress, onMedia: true),
+                      ),
+                    ),
+                  )
+                else if (!_spoiler)
+                  const Center(child: PlayMark(icon: FLucideIcons.image)),
+              ],
             ),
           ),
         ),
@@ -289,7 +361,7 @@ class _SealedFileViewState extends State<SealedFileView> {
               ImageFiltered(
                 enabled: _spoiler,
                 imageFilter: ImageFilter.blur(sigmaX: 24, sigmaY: 24, tileMode: TileMode.decal),
-                child: _thumbnail() ?? const SizedBox.shrink(),
+                child: _thumbnail(box.width) ?? const SizedBox.shrink(),
               ),
               const Center(child: PlayMark()),
               if (loading != null)
@@ -370,14 +442,9 @@ class _SealedFileViewState extends State<SealedFileView> {
                   ),
                 ),
               ),
-              if (ready != null) ...[
-                _Action(
-                  icon: FLucideIcons.download,
-                  label: Notice.fileSaveNamed.fill({'name': _file.name}),
-                  onTap: () => _save(ready),
-                ),
-                _Action(icon: FLucideIcons.share2, label: 'Share ${_file.name}', onTap: () => _share(ready)),
-              ] else if (state == null || state is FileGone || again)
+              if (ready != null)
+                _saveAndShare(ready)
+              else if (state == null || state is FileGone || again)
                 ExcludeSemantics(child: Icon(FLucideIcons.download, size: 20, color: colors.mutedForeground)),
             ],
           ),
@@ -386,10 +453,85 @@ class _SealedFileViewState extends State<SealedFileView> {
     );
   }
 
+  /// Save and Share of its copy.
+  Widget _saveAndShare(FileReady ready) => Row(
+    mainAxisSize: MainAxisSize.min,
+    children: [
+      _Action(
+        icon: FLucideIcons.download,
+        label: Notice.fileSaveNamed.fill({'name': _file.name}),
+        onTap: () => _save(ready),
+      ),
+      _Action(icon: FLucideIcons.share2, label: 'Share ${_file.name}', onTap: () => _share(ready)),
+    ],
+  );
+
   static String _size(int bytes) {
     if (bytes < 1024) return '$bytes B';
     if (bytes < 1024 * 1024) return '${(bytes / 1024).toStringAsFixed(1)} KB';
     return '${(bytes / (1024 * 1024)).toStringAsFixed(1)} MB';
+  }
+}
+
+/// A thumbnail decoded at its box's size, [width] wide: one inside its message, which the conventions checked, or one
+/// of its own, drawn once its copy's header says it's 320 px a side at most (thumbnailDrawn: a sender's header can
+/// claim any size, task 19's review, I3).
+class _Thumbnail extends StatefulWidget {
+  const _Thumbnail.memory(Uint8List this.bytes, {required this.width}) : path = null;
+  const _Thumbnail.file(String this.path, {required this.width, super.key}) : bytes = null;
+
+  final Uint8List? bytes;
+  final String? path;
+  final double width;
+
+  @override
+  State<_Thumbnail> createState() => _ThumbnailState();
+}
+
+class _ThumbnailState extends State<_Thumbnail> {
+  late var _drawn = widget.bytes != null;
+
+  @override
+  void initState() {
+    super.initState();
+    if (widget.path case final path?) unawaited(_read(path));
+  }
+
+  Future<void> _read(String path) async {
+    try {
+      final file = await File(path).open();
+      try {
+        final head = await file.read(sniffPrefix);
+        if (mounted && thumbnailDrawn(head)) setState(() => _drawn = true);
+      } finally {
+        await file.close();
+      }
+    } on FileSystemException catch (error) {
+      debugPrint("e2e: a thumbnail's copy wasn't read: ${error.osError?.message ?? error.message}");
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (!_drawn) return const SizedBox.shrink();
+    final width = math.max(1, (widget.width * MediaQuery.devicePixelRatioOf(context)).round());
+    return switch ((widget.bytes, widget.path)) {
+      (final bytes?, _) => Image.memory(
+        bytes,
+        fit: BoxFit.cover,
+        cacheWidth: width,
+        gaplessPlayback: true,
+        excludeFromSemantics: true,
+      ),
+      (_, final path?) => Image.file(
+        File(path),
+        fit: BoxFit.cover,
+        cacheWidth: width,
+        gaplessPlayback: true,
+        excludeFromSemantics: true,
+      ),
+      _ => const SizedBox.shrink(),
+    };
   }
 }
 

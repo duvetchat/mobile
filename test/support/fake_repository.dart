@@ -189,8 +189,9 @@ class FakeRepository implements ChatRepository {
   void Function(double progress)? lastUpload;
   final voiceNotes = <(List<int>, String)>[];
 
-  /// Each voice note's waveform as it was sent (an encrypted conversation's convention).
+  /// Each voice note's waveform and length as they were sent (an encrypted conversation's convention).
   final voiceWaveforms = <List<int>?>[];
+  final voiceLengths = <Duration?>[];
   final recordings = <ChatTarget>[];
   final joined = <String>[];
   final invites = <String, InvitePreview>{};
@@ -206,6 +207,7 @@ class FakeRepository implements ChatRepository {
   }) async {
     voiceNotes.add((audio, format));
     voiceWaveforms.add(waveform);
+    voiceLengths.add(length);
     return ChatMessage(
       id: 'voice-${voiceNotes.length}',
       authorId: me.id,

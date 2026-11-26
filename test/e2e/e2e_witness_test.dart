@@ -24,9 +24,9 @@ import '../support/fake_api.dart';
 // Plain text stays in the core's database (PLAN-E2E-CLIENTES.md, Review Focus 1): Ana's app, its repository with its
 // engine, and Bo's device converse with a witness string, sent, read, quoted, edited, deleted and left waiting after a
 // cut request, the chat's page drawn and its preview shown; and a file whose name and bytes hold it goes each way, its
-// copy decrypted in the app's temporary folder alone (Task 19). Then no file of the app's (the engine's record, the core's
-// database, the notifications' history), no record of Bo's engine, no page of the chat cache, no recent chat kept, no
-// body the API saw and no log line holds it. The desktop's e2e-witness.test.ts, over what the phone keeps too.
+// copy decrypted in the app's temporary folder alone (Task 19). Then no file of the app's (the engine's record, the
+// core's database, the notifications' history), no record of Bo's engine, no page of the chat cache, no recent chat
+// kept, no body the API saw and no log line holds it. The desktop's e2e-witness.test.ts, over what the phone keeps too.
 const _slow = Timeout(Duration(minutes: 3));
 
 /// The recent chats as they're kept, each write of them.
@@ -166,8 +166,8 @@ void main() {
       );
 
       // A file whose name and bytes hold the witness, picked from outside the app's folders: sent from Ana's app and
-      // opened on Bo's device; and Bo's, opened in Ana's app, whose copy is in its temporary folder (e2e-media), the one
-      // place a file's bytes may be.
+      // opened on Bo's device; and Bo's, opened in Ana's app, whose copy is in its temporary folder (e2e-media), the
+      // one place a file's bytes may be.
       final picked = Directory.systemTemp.createTempSync('duvet-picked-');
       addTearDown(() => picked.deleteSync(recursive: true));
       final source = File('${picked.path}/picked.bin')..writeAsBytesSync(utf8.encode('the file of $witness'));

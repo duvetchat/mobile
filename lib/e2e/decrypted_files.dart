@@ -23,12 +23,17 @@ import 'package:http/http.dart' as http;
 import 'package:path_provider/path_provider.dart';
 
 import 'files.dart';
+import 'uuid.dart';
 
 /// How much the folder holds: 256 MiB, the desktop's cap.
 const maxDecrypted = 256 << 20;
 
 /// How many files come down and open at once: each holds its sealed bytes a few times over while it does.
 const openingMost = 4;
+
+/// How many sealed bytes come down at once, beside the count: four of a bucket's large files would hold hundreds of MB
+/// (task 19's review, M7). A file past it comes down alone.
+const openingBytesMost = 64 << 20;
 
 /// Where a file is: on its way (how far, from 0 to 1), here (its copy, and its bytes' type), not shown (why), or let go
 /// of for room.
@@ -75,7 +80,7 @@ const _final = {FileFailure.hash, FileFailure.size, FileFailure.open};
 const _unavailable = FileFailed(FileFailure.unavailable);
 
 class _Entry {
-  _Entry(this.serial, this.messages, this.used);
+  _Entry(this.serial, this.messages, this.used, this.bytes);
 
   /// Which of its place's entries it is: its copy's name has it, so one let go of never deletes a later one's.
   final int serial;
@@ -90,10 +95,17 @@ class _Entry {
 
   /// Its place among those that open files, while it waits for one: true once it has it, false when it's given up.
   Completer<bool>? place;
+
+  /// Its sealed bytes, which it holds while it comes down.
+  final int bytes;
 }
 
 class DecryptedFiles extends ChangeNotifier {
-  DecryptedFiles({this.limit = maxDecrypted, Future<Directory> Function()? folder}) : _folder = folder ?? _temporary;
+  DecryptedFiles({this.limit = maxDecrypted, this.inFlight = openingBytesMost, Future<Directory> Function()? folder})
+    : _folder = folder ?? _temporary;
+
+  /// How many sealed bytes come down at once ([openingBytesMost]).
+  final int inFlight;
 
   /// The app's: the repository gives it its opener as its engine starts (lib/data/duvet_repository.dart).
   static DecryptedFiles instance = DecryptedFiles();
@@ -109,6 +121,7 @@ class DecryptedFiles extends ChangeNotifier {
   var _serial = 0;
   var _used = 0;
   var _opening = 0;
+  var _openingBytes = 0;
 
   /// How many bytes of decrypted files the folder holds.
   int get used => _used;
@@ -144,6 +157,16 @@ class DecryptedFiles extends ChangeNotifier {
     }
   }
 
+  /// A copy beside the files, as [name] (a cleaned one) in a folder of its own under [kind]: a decrypted file shared
+  /// under its own name, which the folder's copies don't have (task 19's review, M1), or a GIF picked to send (M5). It
+  /// goes with the folder as the app's engine starts.
+  Future<File> aside(String kind, String name, {String? from, List<int>? bytes}) async {
+    final folder = Directory('${(await _folder()).path}/$kind/${uuidv4()}');
+    await folder.create(recursive: true);
+    final file = File('${folder.path}/$name');
+    return from != null ? File(from).copy(file.path) : file.writeAsBytes(bytes!, flush: true);
+  }
+
   /// Where the file is: null while nobody asked for it, and unavailable when its message's API row names no URL of
   /// it. Reading it counts as drawing it.
   FileState? state(FileRef file, String? url) {
@@ -168,15 +191,20 @@ class DecryptedFiles extends ChangeNotifier {
       return work;
     }
     final state = had?.state;
+    // A copy the system deleted (Android clears an app's cache under storage pressure) opens again (task 19's review,
+    // M6).
+    final copyGone = state is FileReady && !File(state.path).existsSync();
+    if (copyGone) _release(had!);
     final kept =
-        state is FileReady ||
+        (state is FileReady && !copyGone) ||
         (state is FileFailed && (auto || _final.contains(state.reason))) ||
         (auto && state is FileGone);
     if (had != null && state != null && kept) {
       had.used = ++_clock;
       return Future.value(state);
     }
-    final entry = _files[place] = _Entry(++_serial, {messageId}, ++_clock);
+    // Every message that asked for it before still shows it.
+    final entry = _files[place] = _Entry(++_serial, {...?had?.messages, messageId}, ++_clock, sealedSize(file.size));
     notifyListeners();
     final work = entry.work = _inPlace(entry, first: !auto).then((go) async {
       if (!go) return _settled(place, entry, _unavailable);
@@ -189,6 +217,7 @@ class DecryptedFiles extends ChangeNotifier {
         return _settled(place, entry, FileFailed(reason));
       } finally {
         _opening--;
+        _openingBytes -= entry.bytes;
         _next();
       }
     });
@@ -203,7 +232,9 @@ class DecryptedFiles extends ChangeNotifier {
       _release(entry);
       _files.remove(place);
       _waiting.remove(entry);
-      entry.place?.complete(false);
+      // One that has its place and comes down settles as its work ends; only one still waiting gives its place up
+      // (task 19's review, I2).
+      if (entry.place case final place? when !place.isCompleted) place.complete(false);
       any = true;
     }
     if (any) notifyListeners();
@@ -231,22 +262,24 @@ class DecryptedFiles extends ChangeNotifier {
     return FileReady(copy.path, opened.type, opened.bytes.length);
   }
 
-  /// Its place among those that open files: at once while there's one, or after those before it, a tap's before the
-  /// views' asks.
+  /// Its place among those that open files: at once while there's one and its bytes fit, or after those before it, a
+  /// tap's before the views' asks.
   Future<bool> _inPlace(_Entry entry, {required bool first}) {
-    if (_opening < openingMost) {
-      _opening++;
-      return Future.value(true);
-    }
     final place = entry.place = Completer<bool>();
     first ? _waiting.insert(0, entry) : _waiting.add(entry);
+    _next();
     return place.future;
   }
 
+  /// The files that wait, in their order, as long as there's a place and their bytes fit: one past the budget alone.
   void _next() {
-    while (_opening < openingMost && _waiting.isNotEmpty) {
+    while (_waiting.isNotEmpty &&
+        _opening < openingMost &&
+        (_opening == 0 || _openingBytes + _waiting.first.bytes <= inFlight)) {
+      final entry = _waiting.removeAt(0);
       _opening++;
-      _waiting.removeAt(0).place?.complete(true);
+      _openingBytes += entry.bytes;
+      entry.place?.complete(true);
     }
   }
 
@@ -257,6 +290,7 @@ class DecryptedFiles extends ChangeNotifier {
     _waiting
       ..removeAt(at)
       ..insert(0, entry);
+    _next();
   }
 
   /// A file's work ended: kept, unless it was let go of meanwhile; a file kept past the limit lets others go.
@@ -331,14 +365,15 @@ Future<Uint8List> downloadSigned(
   for (var waited = 0; ; waited++) {
     final response = await client.send(http.Request('GET', url)).timeout(_silence);
     if (response.statusCode == 429 && waited < _budgetWaits) {
-      await response.stream.drain<void>();
+      // Its body isn't read: a storage that trickles one out would hold the file's place (task 19's review, M9).
+      await response.stream.listen(null).cancel();
       final seconds = int.tryParse(response.headers['retry-after'] ?? '') ?? 1;
       final pause = Duration(seconds: seconds.clamp(1, _budgetWaitMost.inSeconds));
       await (wait == null ? Future<void>.delayed(pause) : wait(pause));
       continue;
     }
     if (response.statusCode < 200 || response.statusCode >= 300) {
-      await response.stream.drain<void>();
+      await response.stream.listen(null).cancel();
       throw duvet.DuvetApiException(
         action: 'download a file',
         statusCode: response.statusCode,

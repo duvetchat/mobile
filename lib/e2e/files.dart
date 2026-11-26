@@ -25,20 +25,14 @@ const maxRequestBytes = 32 << 20;
 /// What a file of [size] bytes is once sealed: each part of 64 KiB with its tag, and an empty file one part.
 int sealedSize(int size) => size + partTag * max(1, (size + attachmentPart - 1) ~/ attachmentPart);
 
-/// Why a message's files can't go as they are (the per-file cap of where they go, [fileLimit], compared with each one's
-/// sealed size, and the request's 32 MiB with them all): its words for the person, or null when they fit. The API's
-/// 413 stays the last word, as only it knows the storage's room.
-String? tooLargeToSend(List<int> sizes, {int? fileLimit}) {
+/// Whether a message's files can't go as they are: one past the per-file cap of where they go ([fileLimit]) once
+/// sealed, or all of them past the request's 32 MiB. The API's 413 stays the last word, as only it knows the storage's
+/// room.
+bool tooLargeToSend(List<int> sizes, {int? fileLimit}) {
   final sealed = [for (final size in sizes) sealedSize(size)];
-  if (fileLimit != null && sealed.any((size) => size > fileLimit)) {
-    final over = sealed.where((size) => size > fileLimit).length;
-    return over == 1 ? 'A file is over your upload limit once encrypted' : '$over files are over your upload limit';
-  }
+  if (fileLimit != null && sealed.any((size) => size > fileLimit)) return true;
   // The form's text beside the files: a message's 32 KiB of ciphertext, and its fields.
-  if (sealed.fold(0, (all, size) => all + size) + (40 << 10) > maxRequestBytes) {
-    return 'These files are over 32 MB together';
-  }
-  return null;
+  return sealed.fold(0, (all, size) => all + size) + (40 << 10) > maxRequestBytes;
 }
 
 /// A file the person sends, as the app has it: its bytes, its name as picked, and what the app could tell of it.

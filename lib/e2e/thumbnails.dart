@@ -4,13 +4,14 @@
 /// thumbnails.ts in Dart.
 library;
 
+import 'dart:io';
 import 'dart:math';
 
 import 'package:flutter/foundation.dart';
 import 'package:image/image.dart' as img;
+import 'package:video_player/video_player.dart';
 
-/// A thumbnail's longer side, at most.
-const thumbnailSide = 320;
+import 'conventions.dart';
 
 /// A thumbnail's size: its picture's proportions, its longer side at most [thumbnailSide]; null for no picture.
 ({int width, int height})? thumbnailSize(int width, int height) {
@@ -31,9 +32,33 @@ bool opaque(Uint8List rgba) {
 typedef PictureFacts = ({int width, int height, Uint8List? thumbnail});
 
 /// A picture's size and thumbnail (its first frame, a GIF's), or null when no decoder takes its bytes.
+Future<PictureFacts?> pictureFacts(Uint8List bytes) => compute(_facts, bytes);
+
+/// A video's size and length.
+typedef VideoFacts = ({int width, int height, int durationMs});
+
+/// A video's size, as it's shown, and its length, read by the player once it opened the file (task 19's review, M11):
+/// none when it can't within 5 s. Tests stand in for the player.
 // shortcut: no video's first frame (video_player hands out no picture of one): a video goes without a thumbnail, its
 // tile showing the play mark until it's downloaded; upgrade with a frame grabber the app takes on.
-Future<PictureFacts?> pictureFacts(Uint8List bytes) => compute(_facts, bytes);
+Future<VideoFacts?> Function(String path) videoFactsOf = _videoFacts;
+
+Future<VideoFacts?> _videoFacts(String path) async {
+  final player = VideoPlayerController.file(File(path));
+  try {
+    await player.initialize().timeout(const Duration(seconds: 5));
+    // ExoPlayer gives a turned video's size as it's shown.
+    final video = player.value;
+    final (width, height) = (video.size.width.round(), video.size.height.round());
+    if (!video.isInitialized || width <= 0 || height <= 0) return null;
+    return (width: width, height: height, durationMs: video.duration.inMilliseconds);
+  } catch (error) {
+    debugPrint("e2e: a video's size and length weren't read: $error");
+    return null;
+  } finally {
+    await player.dispose();
+  }
+}
 
 PictureFacts? _facts(Uint8List bytes) {
   final img.Image? picture;

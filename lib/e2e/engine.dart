@@ -313,6 +313,8 @@ class E2EEngine {
   /// API's ID of a message that went after all (its answer and its event lost), whose copy the views show in its place;
   /// else null.
   Future<String?> discardMessage(String conversationId, String nonce) async {
+    // Its request, when one is out, stopped and settled first, outside the turn (task 19's review, M4).
+    await _sends.settle(nonce);
     String? went;
     await _queue(() async => went = await _sends.discard(conversationId, nonce));
     _messageChanged(conversationId);

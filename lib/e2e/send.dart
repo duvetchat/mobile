@@ -227,15 +227,30 @@ class UploadCancelled implements Exception {
   String toString() => 'UploadCancelled: the person cancelled the upload';
 }
 
-/// A message's upload as the person's send follows it: its request's progress, and its Cancel.
+/// A message's upload as it goes: the person's send's, with its request's progress and its Cancel, or a flush's own for
+/// a message it sends again. Whichever flush delivers the message uses it, and a Dismiss stops its request and waits
+/// for it to settle (task 19's review, M4, the desktop's N1).
 class _Upload {
   _Upload(this.onProgress, this.cancel) {
-    cancel?.then((_) => cancelled = true);
+    cancel?.then((_) => abort());
   }
 
   final void Function(int sent, int total)? onProgress;
+
+  /// The person's Cancel of their send.
   final Future<void>? cancel;
-  var cancelled = false;
+  final _aborted = Completer<void>();
+
+  /// Its delivery's end, the API's answer bound here: what a Dismiss waits for.
+  Future<void> settled = Future<void>.value();
+
+  /// Its Cancel or a Dismiss stopped it.
+  bool get cancelled => _aborted.isCompleted;
+  Future<void> get aborted => _aborted.future;
+
+  void abort() {
+    if (!_aborted.isCompleted) _aborted.complete();
+  }
 }
 
 /// The person's send, as its lane settles it, or its Cancel's refusal at once: a newer message's Cancel never waits for
@@ -311,6 +326,10 @@ class Sends {
   /// Each conversation's flushes, one after the other («Los pendientes van primero y en orden»), outside the turn.
   final _lanes = <String, Future<void>>{};
 
+  /// Each message's upload, by the nonce the person sent it with, while a send or a flush delivers it; a cancelled one
+  /// until its Dismiss, so no later flush sends it meanwhile (task 19's review, M4).
+  final _uploads = <String, _Upload>{};
+
   CoreHost get _host => _engine.host;
   duvet.E2eApi get _api => _engine.api;
 
@@ -375,7 +394,24 @@ class Sends {
   /// it from going with the others, not from this.
   Future<duvet.DirectMessage?> _personal(String id, String first, _Upload upload) {
     _refusedFiles.remove(first);
-    return _untilCancelled(_inLane(id, () => _flush(id, wantedFirst: first, upload: upload)), upload.cancel);
+    _uploads[first] = upload;
+    final run = _inLane(id, () => _flush(id, wantedFirst: first, upload: upload));
+    unawaited(run.then<void>((_) => _letGo(first, upload), onError: (Object _) => _letGo(first, upload)));
+    return _untilCancelled(run, upload.cancel);
+  }
+
+  /// A message's upload once its delivery or its send ended: a cancelled one stays for its Dismiss.
+  void _letGo(String first, _Upload upload) {
+    if (identical(_uploads[first], upload) && !upload.cancelled) _uploads.remove(first);
+  }
+
+  /// The person's Dismiss of their message [nonce] stops its request, if one is out, and waits for it to settle,
+  /// outside the turn: a message the API took first is bound here, and the Dismiss gives its ID (task 19's review, M4).
+  Future<void> settle(String nonce) async {
+    final upload = _uploads[firstOf(nonce)];
+    if (upload == null) return;
+    upload.abort();
+    await upload.settled;
   }
 
   /// Work in the conversation's lane, after what's already there: a failure there never stops what comes after.
@@ -445,6 +481,7 @@ class Sends {
     await _prune(conversationId, [...rows, ...older]);
     _files.remove(nonce);
     _refusedFiles.remove(nonce);
+    _uploads.remove(nonce);
     final went = _went.remove(nonce);
     return its.isEmpty ? went?.message : null;
   }
@@ -559,6 +596,7 @@ class Sends {
     _files.clear();
     _refusedFiles.clear();
     _lanes.clear();
+    _uploads.clear();
   }
 
   /// What waits in the conversation, in the person's order ([wantedFirst]: the nonce the person sent theirs with, whose
@@ -593,13 +631,18 @@ class Sends {
       if (!wanted && clear == null && row.text == null && row.attachments.isEmpty) continue;
       // One the API refused with its files goes again only on the person's Retry (task 18's review, I3).
       if (!wanted && _refusedFiles.contains(first)) continue;
+      // Its own upload, whichever flush sends it; one whose Cancel came waits for its Dismiss (task 19's review, M4).
+      final own = wanted ? upload : _uploads[first];
+      if (!wanted && (own?.cancelled ?? false)) continue;
       final files = row.attachments.isEmpty ? null : _files[first];
       if (row.attachments.isNotEmpty && files == null) {
         if (wanted) throw const FilesGone();
         continue;
       }
+      // Sent again by this flush: an upload of its own, which a Dismiss stops.
+      final delivery = own ?? (_uploads[first] = _Upload(null, null));
       try {
-        final sent = await _deliver(id, row, clear ?? _Clear(id), files, wanted ? upload : null);
+        final sent = await _deliver(id, row, clear ?? _Clear(id), files, delivery);
         if (wanted) message = sent;
       } on _Stale {
         // Made again in this flush and stale again: it waits, and so does every message after it, so none goes before
@@ -632,11 +675,15 @@ class Sends {
         ];
         at--;
       } catch (error) {
+        // Stopped by its Cancel or a Dismiss: it went nowhere, and the rest go on.
+        if (!wanted && delivery.cancelled) continue;
         final passing = error is duvet.DuvetUpdateRequiredException || _unanswered(error);
         // Its files' refusal won't change: it waits for the person's Retry.
         if (files != null && !passing && error is duvet.DuvetApiException) _refusedFiles.add(first);
         if (wanted || passing) rethrow;
         debugPrint('e2e: a message that waits was refused: it stays, to send again or dismiss. $error');
+      } finally {
+        if (own == null) _letGo(first, delivery);
       }
     }
     return message;
@@ -650,7 +697,23 @@ class Sends {
     ShownMessage row,
     _Clear clear,
     SealedFiles? files,
-    _Upload? upload,
+    _Upload upload,
+  ) async {
+    final settled = Completer<void>();
+    upload.settled = settled.future;
+    try {
+      return await _delivered(id, row, clear, files, upload);
+    } finally {
+      settled.complete();
+    }
+  }
+
+  Future<duvet.DirectMessage?> _delivered(
+    String id,
+    ShownMessage row,
+    _Clear clear,
+    SealedFiles? files,
+    _Upload upload,
   ) async {
     final nonce = row.nonce!;
     final ciphertext = await _turn(() async {
@@ -663,8 +726,8 @@ class Sends {
       }
     });
     if (ciphertext == null) return null;
-    // Its Cancel came while older messages went: it isn't sent.
-    if (upload?.cancelled ?? false) throw const UploadCancelled();
+    // Its Cancel, or a Dismiss, came while older messages went: it isn't sent.
+    if (upload.cancelled) throw const UploadCancelled();
     final text = row.text;
     final duvet.DirectMessage message;
     try {
@@ -686,8 +749,8 @@ class Sends {
           attachmentIds: files?.ids ?? const [],
         ),
         files: files?.parts ?? const [],
-        onProgress: upload?.onProgress,
-        abortTrigger: upload?.cancel,
+        onProgress: upload.onProgress,
+        abortTrigger: upload.aborted,
       );
     } on duvet.DuvetStaleMessageException {
       // The core learns the epochs the API is at first, so the new bytes are of them.
@@ -715,6 +778,7 @@ class Sends {
       final first = clear.first ?? nonce;
       _files.remove(first);
       _refusedFiles.remove(first);
+      _uploads.remove(first);
       if (first != nonce) _went[first] = (nonce: nonce, message: message.id);
       _changed(id);
       _sent(id, first, message);

@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:clock/clock.dart';
@@ -19,6 +20,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:forui/forui.dart';
+import 'package:image/image.dart' as img;
 
 import 'support/fake_repository.dart';
 import 'support/fonts.dart';
@@ -229,8 +231,8 @@ void main() {
       ),
     );
 
-    // An encrypted conversation's files on their way down, each with how far it is (Task 19): a video, downloaded
-    // whole before it plays, and a file to save.
+    // An encrypted conversation's files on their way down, each with how far it is (Task 19): a picture in its box with
+    // its thumbnail, a video, downloaded whole before it plays, and a file to save.
     testWidgets(
       'an attachment downloading, ${b.name}',
       (tester) => withClock(
@@ -244,7 +246,8 @@ void main() {
             ..value = b == Brightness.dark ? ThemeMode.dark : ThemeMode.light;
           await tester.pumpWidget(DuvetApp(repository: repository, appearance: appearance));
           await tester.pumpAndSettle();
-          final (video, report) = (
+          final (picture, video, report) = (
+            _sealed('p1', 'garden.jpg', 'image/jpeg', 300000, width: 1600, height: 1200, thumbnail: _thumbnail()),
             _sealed('v1', 'tour.mp4', 'video/mp4', 400000),
             _sealed('f1', 'report.pdf', 'application/pdf', 1200000),
           );
@@ -255,13 +258,23 @@ void main() {
               authorName: 'Maya',
               content: '',
               createdAt: DateTime(2026, 10, 23, 9, 6),
-              attachments: [video, report],
+              attachments: [picture, video, report],
             ),
           );
-          for (final file in [video, report]) {
+          for (final file in [picture, video, report]) {
             unawaited(DecryptedFiles.instance.open(file.sealed!, file.url, 'm6'));
           }
           await tester.tap(find.text('Maya'));
+          await tester.pumpAndSettle();
+          // The thumbnail decoded, as a phone draws it.
+          await tester.runAsync(() async {
+            for (final element in find.byType(Image).evaluate()) {
+              final image = (element.widget as Image).image;
+              if ((image is ResizeImage ? image.imageProvider : image) is MemoryImage) {
+                await precacheImage(image, element);
+              }
+            }
+          });
           await tester.pumpAndSettle();
           await expectLater(find.byType(DuvetApp), matchesGoldenFile('goldens/attachment_downloading_${b.name}.png'));
         }),
@@ -468,12 +481,42 @@ class _HeldFiles implements FileOpener {
   void failed() {}
 }
 
-/// A file of an encrypted conversation's message, sealed, of [size] bytes.
-MessageAttachment _sealed(String id, String name, String said, int size) => MessageAttachment(
+/// A file of an encrypted conversation's message, sealed, of [size] bytes, its sides and its thumbnail as it says.
+MessageAttachment _sealed(
+  String id,
+  String name,
+  String said,
+  int size, {
+  int? width,
+  int? height,
+  String? thumbnail,
+}) => MessageAttachment(
   id: id,
   filename: name,
   contentType: said,
   url: 'https://api.duvet.test/attachments/$id?sig=golden&exp=4102444800',
   sizeBytes: size,
-  sealed: ShownFile(id: id, key: 'a2V5', sha256: 'c2hh', size: size, name: name, said: said),
+  sealed: ShownFile(
+    id: id,
+    key: 'a2V5',
+    sha256: 'c2hh',
+    size: size,
+    name: name,
+    said: said,
+    width: width,
+    height: height,
+    thumbnail: thumbnail,
+  ),
 );
+
+/// A picture's thumbnail as its message carries it: 32 × 24, a green field under a darker sky.
+String _thumbnail() {
+  final picture = img.Image(width: 32, height: 24);
+  for (final pixel in picture) {
+    pixel
+      ..r = pixel.y < 10 ? 40 : 90
+      ..g = pixel.y < 10 ? 70 : 150
+      ..b = pixel.y < 10 ? 120 : 70;
+  }
+  return base64Encode(img.encodePng(picture));
+}

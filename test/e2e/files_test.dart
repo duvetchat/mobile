@@ -27,8 +27,10 @@ const _slow = Timeout(Duration(minutes: 3));
 String _messagesPath(String conversation) => '/api/users/@me/conversations/$conversation/messages';
 
 /// A message's request held where it's about to reach the API: [held] completes as it's held, and it goes on (or,
-/// [drop]ped, never reaches the API) once [release] completes.
+/// [drop]ped, never reaches the API) once [release] completes; with a [nonce], the request of that message alone.
 class _Hold {
+  _Hold({this.nonce});
+  final String? nonce;
   final held = Completer<void>();
   final release = Completer<void>();
   var drop = false;
@@ -59,6 +61,7 @@ _dm({bool Function(GatewayEvent event)? aHears}) async {
     answer: (request) async {
       final holding = hold;
       if (holding == null || request.method != 'POST' || request.url.path != _messagesPath(conversation)) return null;
+      if (holding.nonce case final nonce? when !latin1.decode(request.bodyBytes).contains(nonce)) return null;
       hold = null;
       holding.held.complete();
       await holding.release.future;
@@ -455,7 +458,7 @@ void main() {
     'a_cancelled_upload_discards_its_message',
     () async {
       final (fake: _, :a, :b, :conversation, seen: _, aClient: _, :holdNext) = await _dm();
-      final hold = _Hold()..drop = true;
+      final hold = _Hold();
       holdNext(hold);
       final cancel = Completer<void>();
       final nonce = uuidv4();
@@ -472,11 +475,93 @@ void main() {
       cancel.complete();
       // The send stops at once, its request still held, not once the request gives up.
       await _refused(sending).timeout(const Duration(seconds: 5));
+      // Let go once its abort came: the Cancel stopped its request, which never reaches the API (task 19's review,
+      // M10).
+      await pumpEventQueue();
       hold.release.complete();
       // The person's Cancel: the core lets the message go, and nothing of it reached anyone.
       expect(await a.engine.discardMessage(conversation, nonce), isNull);
       expect(await a.engine.pendingMessages(conversation), isEmpty);
       expect(await _posted(b, conversation), isEmpty);
+    },
+    skip: noCore,
+    timeout: _slow,
+  );
+
+  // Task 19's review, M4 (the desktop's N1): a message made while an older one's flush reads what waits goes in that
+  // flush, with its own upload.
+  test(
+    "a_message_another_flush_sends_has_its_own_upload:_its_progress,_and_its_Cancel's_abort",
+    () async {
+      final (fake: _, :a, :b, :conversation, seen: _, aClient: _, :holdNext) = await _dm();
+      final second = uuidv4();
+      final hold = _Hold(nonce: second);
+      holdNext(hold);
+      final cancel = Completer<void>();
+      final progress = <int>[];
+      // Two sends in one tick: the second is made before the first's flush reads what waits, and goes in it.
+      final sendingFirst = a.engine.sendMessage(Outgoing(conversationId: conversation, nonce: uuidv4(), text: 'one'));
+      final sendingSecond = a.engine.sendMessage(
+        Outgoing(
+          conversationId: conversation,
+          nonce: second,
+          text: 'two',
+          files: [FileToSeal(bytes: _png(5000), name: 'b.png')],
+        ),
+        onProgress: (sent, _) => progress.add(sent),
+        cancel: cancel.future,
+      );
+      await hold.held.future;
+      // Its bar moves, whichever flush sends it.
+      expect(progress, isNotEmpty);
+      cancel.complete();
+      await _refused(sendingSecond).timeout(const Duration(seconds: 5));
+      await pumpEventQueue();
+      hold.release.complete();
+      final first = await sendingFirst;
+      // The person's Cancel stopped its request: only the first message reached anyone.
+      expect(await a.engine.discardMessage(conversation, second), isNull);
+      expect(await _posted(b, conversation), [first!.id]);
+    },
+    skip: noCore,
+    timeout: _slow,
+  );
+
+  test(
+    'a_failed_message_another_flush_sends_again_is_stopped_by_its_Dismiss,_or_bound_once_it_went',
+    () async {
+      final (:fake, :a, :b, :conversation, seen: _, aClient: _, :holdNext) = await _dm();
+      final failed = uuidv4();
+      // Its request never reaches the API: it waits, with its files, and the next send's flush sends it again.
+      fake.cutRequest((method: 'POST', path: _messagesPath(conversation)));
+      await _refused(
+        a.engine.sendMessage(
+          Outgoing(
+            conversationId: conversation,
+            nonce: failed,
+            text: 'first try',
+            files: [FileToSeal(bytes: _png(3000), name: 'c.png')],
+          ),
+        ),
+      );
+      final hold = _Hold(nonce: failed);
+      holdNext(hold);
+      final next = a.engine.sendMessage(Outgoing(conversationId: conversation, nonce: uuidv4(), text: 'next'));
+      await hold.held.future;
+      // The person's Dismiss while that flush's request is out.
+      final went = await a.engine.discardMessage(conversation, failed).timeout(const Duration(seconds: 10));
+      await pumpEventQueue();
+      hold.release.complete();
+      final sent = (await next)!;
+      final posted = await _posted(b, conversation);
+      if (went == null) {
+        // Stopped before the API took it: only the next message went.
+        expect(posted, [sent.id]);
+      } else {
+        // The API took it first: it's bound here, and this device reads it as its own.
+        expect(posted, unorderedEquals([went, sent.id]));
+        expect((await a.engine.messages(conversation, [went])).single.status, MessageStatus.ok);
+      }
     },
     skip: noCore,
     timeout: _slow,
@@ -554,7 +639,8 @@ void main() {
         ),
       );
       await hold.held.future;
-      // A newer message waits behind it in its conversation's lane; its Cancel ends it at once, and so does its Dismiss.
+      // A newer message waits behind it in its conversation's lane; its Cancel ends it at once, and so does its
+      // Dismiss.
       final cancel = Completer<void>();
       final nonce = uuidv4();
       final newer = a.engine.sendMessage(
@@ -795,11 +881,11 @@ void main() {
     expect(sealedSize(65537), 65537 + 32);
     const limit = 20 << 20;
     // Its plain size fits, its sealed one doesn't: the API would refuse it with a 413 once it all went up.
-    expect(tooLargeToSend([limit - 100], fileLimit: limit), isNotNull);
-    expect(tooLargeToSend([limit - (1 << 20)], fileLimit: limit), isNull);
+    expect(tooLargeToSend([limit - 100], fileLimit: limit), isTrue);
+    expect(tooLargeToSend([limit - (1 << 20)], fileLimit: limit), isFalse);
     // Files under the cap each, past the request's 32 MiB together.
-    expect(tooLargeToSend([18 << 20, 18 << 20], fileLimit: limit), isNotNull);
-    expect(tooLargeToSend([10 << 20, 10 << 20]), isNull);
-    expect(tooLargeToSend([40 << 20]), isNotNull);
+    expect(tooLargeToSend([18 << 20, 18 << 20], fileLimit: limit), isTrue);
+    expect(tooLargeToSend([10 << 20, 10 << 20]), isFalse);
+    expect(tooLargeToSend([40 << 20]), isTrue);
   });
 }

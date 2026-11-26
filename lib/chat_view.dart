@@ -28,6 +28,7 @@ import 'data/scope.dart';
 import 'data/voice.dart' show VoiceController;
 import 'data/gifs.dart' show GifSource;
 import 'e2e/conventions.dart' show waveformSamples;
+import 'e2e/decrypted_files.dart';
 import 'e2e/files.dart' show gifFile, sealedSize, tooLargeToSend;
 import 'e2e/notices.dart';
 import 'e2e/uuid.dart';
@@ -131,6 +132,8 @@ typedef _Outgoing = ({
   String? replyTo,
   bool? mentionReplied,
   Recording? voice,
+  // A voice note's 64 peaks, an encrypted conversation's voice note's convention: kept for its Retry too.
+  List<int>? waveform,
 });
 
 /// How many files one message takes.
@@ -956,9 +959,9 @@ class _ChatViewState extends State<ChatView> with SingleTickerProviderStateMixin
       final limit = await _repository.uploadLimit();
       if (!mounted) return;
       final sealed = widget.target is ConversationTarget;
-      final together = sealed ? tooLargeToSend([for (final f in _files) f.sizeBytes ?? 0]) : null;
-      if (together != null) {
-        _toast(together);
+      // The request's 32 MiB, which no room's words name: a message too large to send, as the rooms' failure says.
+      if (sealed && tooLargeToSend([for (final f in _files) f.sizeBytes ?? 0])) {
+        _toast('Too large to send');
         return;
       }
       final over = [
@@ -991,6 +994,7 @@ class _ChatViewState extends State<ChatView> with SingleTickerProviderStateMixin
       replyTo: to,
       mentionReplied: replyTo?.mentionAuthor,
       voice: null,
+      waveform: null,
     ), reply: replyTo);
   }
 
@@ -1027,8 +1031,9 @@ class _ChatViewState extends State<ChatView> with SingleTickerProviderStateMixin
     final picked = await gifFile(url, GifSource.instance.bytes);
     if (!mounted) return;
     if (picked == null) return _toast(Notice.gifFailed.text);
-    final folder = await Directory.systemTemp.createTemp('gif');
-    final copy = await File('${folder.path}/${picked.name}').writeAsBytes(picked.bytes);
+    // Beside the decrypted files, which the engine's start empties: the engine keeps its sealed bytes for a Retry
+    // (task 19's review, M5).
+    final copy = await DecryptedFiles.instance.aside('gif', picked.name, bytes: picked.bytes);
     if (!mounted) return;
     final reply = _replyTo;
     if (reply != null) setState(() => _replyTo = null);
@@ -1041,6 +1046,7 @@ class _ChatViewState extends State<ChatView> with SingleTickerProviderStateMixin
       replyTo: reply?.messageId ?? widget.threadOf,
       mentionReplied: reply?.mentionAuthor,
       voice: null,
+      waveform: null,
     ), reply: reply);
   }
 
@@ -1057,27 +1063,25 @@ class _ChatViewState extends State<ChatView> with SingleTickerProviderStateMixin
       replyTo: to,
       mentionReplied: reply?.mentionAuthor,
       voice: null,
+      waveform: null,
     ), reply: reply);
   }
 
-  void _sendVoice(Recording recording) {
-    final nonce = _queue((
-      content: '',
-      files: const [],
-      sticker: null,
-      replyTo: null,
-      mentionReplied: null,
-      voice: recording,
-    ));
-    // Its 64 peaks, an encrypted conversation's voice note's convention: the loudest of each stretch of the take.
-    if (nonce != null && _take.isNotEmpty) _waveforms[nonce] = peaksOf(_take);
-  }
+  void _sendVoice(Recording recording) => _queue((
+    content: '',
+    files: const [],
+    sticker: null,
+    replyTo: null,
+    mentionReplied: null,
+    voice: recording,
+    // The loudest of each stretch of the take, worked out before the send reads it (task 19's review, Missing 1).
+    waveform: _take.isEmpty ? null : peaksOf(_take),
+  ));
 
-  /// A take's every level, a tenth of a second each, for its waveform; and each queued voice note's, by its nonce.
+  /// A take's every level, a tenth of a second each, for its waveform.
   final _take = <double>[];
-  final _waveforms = <String, List<int>>{};
 
-  String? _queue(_Outgoing outgoing, {MessageReply? reply}) {
+  void _queue(_Outgoing outgoing, {MessageReply? reply}) {
     final nonce = _nonce();
     final profile = _repository.profile.value;
     final pending = ChatMessage(
@@ -1116,7 +1120,6 @@ class _ChatViewState extends State<ChatView> with SingleTickerProviderStateMixin
     _outgoing[nonce] = outgoing;
     setState(() => _entries.add((message: pending, delivery: _Delivery.sending)));
     _deliver(nonce);
-    return nonce;
   }
 
   Future<void> _deliver(String nonce) async {
@@ -1132,7 +1135,7 @@ class _ChatViewState extends State<ChatView> with SingleTickerProviderStateMixin
           voice.bytes,
           nonce: nonce,
           format: voice.format,
-          waveform: _waveforms.remove(nonce),
+          waveform: outgoing.waveform,
           length: voice.length,
         );
       } else {

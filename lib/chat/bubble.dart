@@ -285,6 +285,7 @@ class _Bubble extends StatelessWidget {
             directory: directory,
             choices: selectChoices,
             onUse: entry.delivery == _Delivery.sent ? onUseComponent : (_, _) async {},
+            messageId: m.id,
           ),
       ];
 

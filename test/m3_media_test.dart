@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'dart:math' show max;
 
 import 'package:crypto/crypto.dart';
 import 'package:duvet/chat_view.dart';
@@ -49,6 +50,11 @@ class _Playback implements AudioPlayback {
   final _state = ValueNotifier(PlaybackState.idle);
   @override
   ValueListenable<PlaybackState> get state => _state;
+
+  /// The file the phone couldn't play, as a test says.
+  final failedNow = ValueNotifier<String?>(null);
+  @override
+  ValueListenable<String?> get failed => failedNow;
 
   @override
   Future<void> play(
@@ -104,9 +110,19 @@ class _Playback implements AudioPlayback {
 }
 
 class _Recorder implements VoiceRecorder {
+  _Recorder() {
+    last = this;
+  }
+
   static int started = 0;
   static int cancelled = 0;
+
+  /// The recorder the chat made last, whose levels a test plays.
+  static _Recorder? last;
   final _levels = StreamController<double>.broadcast();
+
+  /// The microphone's level, from 0 to 1, as the take goes on.
+  void say(double level) => _levels.add(level);
 
   @override
   Future<bool> start() async {
@@ -141,14 +157,21 @@ class _Actions extends MediaActions {
   @override
   Future<void> share(String url, String name, String contentType) async => calls.add('share $name');
 
+  /// The copies each Save and Share of a decrypted file was handed, by their paths.
+  final paths = <String>[];
+
   @override
   Future<bool> saveFile(String path, String name, String type) async {
     calls.add('saveFile $name $type');
+    paths.add(path);
     return true;
   }
 
   @override
-  Future<void> shareFile(String path, String name, String type) async => calls.add('shareFile $name $type');
+  Future<void> shareFile(String path, String name, String type) async {
+    calls.add('shareFile $name $type');
+    paths.add(path);
+  }
 }
 
 /// An opener of a conversation's files with no core and no API: each file opens to its own bytes ([plain], by ID), its
@@ -357,7 +380,9 @@ void main() {
           theme: Duvet.material(Brightness.light),
           home: FTheme(
             data: Duvet.theme(Brightness.light),
-            child: const Scaffold(body: MessageAttachments(attachments: [a], maxWidth: 200)),
+            child: const Scaffold(
+              body: MessageAttachments(attachments: [a], maxWidth: 200, messageId: 'm'),
+            ),
           ),
         ),
       );
@@ -389,7 +414,9 @@ void main() {
         theme: Duvet.material(Brightness.light),
         home: FTheme(
           data: Duvet.theme(Brightness.light),
-          child: const Scaffold(body: MessageAttachments(attachments: [a], maxWidth: 200)),
+          child: const Scaffold(
+            body: MessageAttachments(attachments: [a], maxWidth: 200, messageId: 'm'),
+          ),
         ),
       ),
     );
@@ -724,6 +751,24 @@ void main() {
     semantics.dispose();
   });
 
+  // Task 19's review, Missing 1: the peaks are the voice note's convention in an encrypted conversation, and they go
+  // with the note.
+  testWidgets("a conversation's recorded voice note goes with its 64 peaks and its length", (tester) async {
+    final repository = await openMaya(tester);
+    await tapLabel(tester, 'Add photos, a sticker or a mention');
+    await tapLabel(tester, 'Voice note');
+    for (final level in [0.1, 0.5, 0.9, 0.3]) {
+      _Recorder.last!.say(level);
+    }
+    await tester.pump(const Duration(seconds: 2));
+    await tapLabel(tester, 'Send voice note');
+    final peaks = repository.voiceWaveforms.single;
+    expect(peaks, hasLength(64));
+    expect(peaks!.reduce(max), 230);
+    expect(repository.voiceLengths.single, const Duration(seconds: 3));
+    semantics.dispose();
+  });
+
   testWidgets('holding the mic records; sliding left cancels', (tester) async {
     final repository = await openMaya(tester);
     final send = find.bySemanticsLabel(RegExp('^Voice note, touch and hold'));
@@ -791,6 +836,9 @@ void main() {
     DeepLinkSource.instance = _NoLinks();
     final gifs = _Gifs();
     GifSource.instance = gifs;
+    final media = Directory.systemTemp.createTempSync('duvet-media-test-');
+    addTearDown(() => media.deleteSync(recursive: true));
+    DecryptedFiles.instance = DecryptedFiles(folder: () async => media);
     final repository = await openMaya(tester);
     await tapLabel(tester, 'Emoji and stickers');
     await tester.tap(find.text('GIFs'));
@@ -805,6 +853,8 @@ void main() {
     expect(gifs.fetched, [_Gifs.party.url]);
     expect(repository.sent.last.content, isEmpty);
     expect([for (final f in repository.sent.last.files) (f.name, f.contentType)], [('party.gif', 'image/gif')]);
+    // Its copy is in the folder the engine's start empties, not left in the cache for good (task 19's review, M5).
+    expect(repository.sent.last.files.single.path, startsWith('${media.path}/gif/'));
     semantics.dispose();
   });
 
@@ -813,6 +863,9 @@ void main() {
     final gifs = _Gifs()
       ..trend = const [Gif(id: 'g2', url: 'https://static.klipy.com/flat.gif', preview: 'p', width: 0, height: 150)];
     GifSource.instance = gifs;
+    final media = Directory.systemTemp.createTempSync('duvet-media-test-');
+    addTearDown(() => media.deleteSync(recursive: true));
+    DecryptedFiles.instance = DecryptedFiles(folder: () async => media);
     final repository = await openMaya(tester);
     await tapLabel(tester, 'Emoji and stickers');
     await tester.tap(find.text('GIFs'));
@@ -1580,6 +1633,9 @@ void main() {
       String said, {
       int? durationMs,
       String? waveform,
+      int? width,
+      int? height,
+      String? thumbnail,
     }) {
       final bytes = Uint8List.fromList(plain);
       opener.plain[id] = bytes;
@@ -1598,8 +1654,36 @@ void main() {
           said: said,
           durationMs: durationMs,
           waveform: waveform,
+          width: width,
+          height: height,
+          thumbnail: thumbnail,
         ),
       );
+    }
+
+    /// A thumbnail drawn from these bytes, inside its message.
+    Finder thumbnailOf(List<int> bytes) => find.byWidgetPredicate((w) {
+      final image = w is Image ? w.image : null;
+      final inside = image is ResizeImage ? image.imageProvider : image;
+      return inside is MemoryImage && listEquals(inside.bytes, bytes);
+    });
+
+    /// Lets what a tap started on the real clock end (a copy to share is written there), until [done].
+    Future<void> onRealClock(WidgetTester tester, bool Function() done) async {
+      for (var i = 0; i < 100 && !done(); i++) {
+        await tester.runAsync(() => Future<void>.delayed(const Duration(milliseconds: 10)));
+        await tester.pump();
+      }
+    }
+
+    /// Lets a file the view asked for come down and open on the real clock, as its copy is written.
+    Future<FileReady> comeDown(WidgetTester tester, MessageAttachment a) async {
+      for (var i = 0; i < 100 && DecryptedFiles.instance.state(a.sealed!, a.url) is! FileReady; i++) {
+        await tester.runAsync(() => Future<void>.delayed(const Duration(milliseconds: 20)));
+        await tester.pump();
+      }
+      await tester.pumpAndSettle();
+      return DecryptedFiles.instance.state(a.sealed!, a.url)! as FileReady;
     }
 
     /// The file opened beforehand, as the chat would as it shows it: on the real clock, as its copy is written.
@@ -1633,10 +1717,16 @@ void main() {
       expect(copyDrawn(ready.path), findsNothing);
       await tapLabel(tester, Notice.fileSaveNamed.fill({'name': 'cat.png'}));
       await tapLabel(tester, 'Share cat.png');
+      await onRealClock(tester, () => actions.calls.length == 2);
       expect(actions.calls, [
         'saveFile cat.png application/octet-stream',
         'shareFile cat.png application/octet-stream',
       ]);
+      // Saved from its copy; shared from a copy under its cleaned name, which the engine's start empties with the rest
+      // (task 19's review, M1).
+      expect(actions.paths.first, ready.path);
+      expect(Uri.file(actions.paths.last).pathSegments.last, 'cat.png');
+      expect(actions.paths.last, startsWith('${media.path}/share/'));
       semantics.dispose();
     });
 
@@ -1713,6 +1803,186 @@ void main() {
       expect(find.text(Notice.filesGone.text), findsOneWidget);
       expect(find.bySemanticsLabel('Retry'), findsNothing);
       expect(find.bySemanticsLabel('Delete'), findsOneWidget);
+      semantics.dispose();
+    });
+
+    // Task 19's review, Missing 2: «Ver: primero la miniatura».
+    testWidgets('a picture on its way is its box, its thumbnail and its progress; let go of, a tap asks again', (
+      tester,
+    ) async {
+      final thumbnail = img.encodePng(img.Image(width: 32, height: 24));
+      final a = sealedFile(
+        'p4',
+        img.encodePng(img.Image(width: 8, height: 6)),
+        'view.png',
+        'image/png',
+        width: 1600,
+        height: 1200,
+        thumbnail: base64Encode(thumbnail),
+      );
+      // Room for this picture alone: another file lets it go.
+      DecryptedFiles.instance = DecryptedFiles(limit: a.sealed!.size, folder: () async => media)..useOpener(opener);
+      opener
+        ..hold = Completer<void>()
+        ..progress = 0.5;
+      final repository = await openMaya(tester);
+      repository.push('c-maya', MessageCreated(withFiles('e10', [a])));
+      await tester.pumpAndSettle();
+      // As large as the picture will be, with its thumbnail and how far it came.
+      final box = find.bySemanticsLabel(RegExp(r'^Downloading · \d+%, view.png$'));
+      expect(box, findsOneWidget);
+      expect(thumbnailOf(thumbnail), findsOneWidget);
+      final size = tester.getSize(box);
+      expect(size.width / size.height, closeTo(4 / 3, 0.01));
+      opener.hold!.complete();
+      opener.hold = null;
+      expect(copyDrawn((await comeDown(tester, a)).path), findsOneWidget);
+      final other = sealedFile('o1', List.filled(200, 7), 'other.bin', 'application/octet-stream');
+      await opened(tester, other, 'e11');
+      await tester.pumpAndSettle();
+      expect(DecryptedFiles.instance.state(a.sealed!, a.url), isA<FileGone>());
+      await tapLabel(tester, 'Photo, view.png. ${Notice.fileShow.text}');
+      expect(copyDrawn((await comeDown(tester, a)).path), findsOneWidget);
+      semantics.dispose();
+    });
+
+    // Task 19's review, I3: what a sender writes of a thumbnail is theirs, its header's size too.
+    testWidgets("a thumbnail whose header says it's past 320 px isn't drawn; the rest is decoded at its box's size", (
+      tester,
+    ) async {
+      final huge = base64Decode('/9j/wAARCC7gLuADASIAAhEBAxEB');
+      final small = img.encodePng(img.Image(width: 32, height: 18));
+      final video = sealedFile(
+        'v3',
+        [0, 0, 0, 0x20, ...ascii.encode('ftypisom'), ...List.filled(500, 0)],
+        'big.mp4',
+        'video/mp4',
+        thumbnail: base64Encode(huge),
+      );
+      final picture = sealedFile(
+        'p6',
+        img.encodePng(img.Image(width: 8, height: 6)),
+        'small.png',
+        'image/png',
+        width: 320,
+        height: 180,
+        thumbnail: base64Encode(small),
+      );
+      opener.hold = Completer<void>();
+      final repository = await openMaya(tester);
+      repository.push('c-maya', MessageCreated(withFiles('e12', [video, picture])));
+      await tester.pumpAndSettle();
+      expect(thumbnailOf(huge), findsNothing);
+      final drawn = tester.widget<Image>(thumbnailOf(small));
+      final box = tester.getSize(find.bySemanticsLabel(RegExp(r'small.png$')));
+      expect((drawn.image as ResizeImage).width, (box.width * tester.view.devicePixelRatio).round());
+      opener.hold!.complete();
+      semantics.dispose();
+    });
+
+    // Task 19's review, M1 and M8: a drawn picture's viewer works from its copy, under its cleaned name, with no link.
+    testWidgets("a decrypted picture's viewer saves and shares its copy, and has no link to copy", (tester) async {
+      final a = sealedFile('p2', img.encodePng(img.Image(width: 4, height: 4)), 'cat.png', 'image/png');
+      await opened(tester, a, 'e7');
+      final repository = await openMaya(tester);
+      repository.push('c-maya', MessageCreated(withFiles('e7', [a])));
+      await tester.pumpAndSettle();
+      await tapLabel(tester, 'Photo, cat.png');
+      expect(find.bySemanticsLabel('Copy link'), findsNothing);
+      await tapLabel(tester, 'Share');
+      await onRealClock(tester, () => actions.paths.isNotEmpty);
+      expect(Uri.file(actions.paths.single).pathSegments.last, 'cat.png');
+      expect(actions.paths.single, startsWith('${media.path}/share/'));
+      await tapLabel(tester, 'Save');
+      expect(actions.calls.last, 'save cat.png');
+      semantics.dispose();
+    });
+
+    // Task 19's review, M2: a reply's original, shown on its own, opens its files as its message's.
+    testWidgets("a reply's original shown on its own has its files go with that message's deletion", (tester) async {
+      final a = sealedFile('p3', img.encodePng(img.Image(width: 4, height: 4)), 'old.png', 'image/png');
+      await openMaya(
+        tester,
+        setUp: (r) {
+          r.older['c-maya'] = [
+            withFiles('m0', [a]),
+          ];
+          r.history['c-maya']!.add(
+            ChatMessage(
+              id: 'm5',
+              authorId: _maya,
+              authorName: 'Maya',
+              content: 'About that',
+              createdAt: DateTime(2026, 10, 23, 10, 5),
+              reply: const MessageReply(messageId: 'm0', authorId: _maya, authorName: 'Maya', content: 'Look'),
+            ),
+          );
+        },
+      );
+      await tapLabel(tester, RegExp('^Replying to Maya: Look'));
+      expect(find.bySemanticsLabel('Original message'), findsOneWidget);
+      final ready = await comeDown(tester, a);
+      DecryptedFiles.instance.forgetMessage('m0');
+      expect(DecryptedFiles.instance.state(a.sealed!, a.url), isNull);
+      expect(File(ready.path).existsSync(), isFalse);
+      semantics.dispose();
+    });
+
+    // Task 19's review, M3: rule 10's Save, for a sound the phone plays or doesn't.
+    testWidgets("a decrypted audio file saves and shares from its tile, and one that won't play is a card", (
+      tester,
+    ) async {
+      final a = sealedFile('s1', [...ascii.encode('OggS'), ...List.filled(300, 2)], 'song.ogg', 'audio/ogg');
+      final ready = await opened(tester, a, 'e8') as FileReady;
+      final repository = await openMaya(tester);
+      repository.push('c-maya', MessageCreated(withFiles('e8', [a])));
+      await tester.pumpAndSettle();
+      expect(find.bySemanticsLabel(RegExp('^Audio file song.ogg')), findsOneWidget);
+      await tapLabel(tester, Notice.fileSaveNamed.fill({'name': 'song.ogg'}));
+      await tapLabel(tester, 'Share song.ogg');
+      await onRealClock(tester, () => actions.calls.length == 2);
+      expect(actions.calls, ['saveFile song.ogg audio/ogg', 'shareFile song.ogg audio/ogg']);
+      expect(actions.paths.first, ready.path);
+      playback.failedNow.value = 's1';
+      await tester.pumpAndSettle();
+      expect(find.bySemanticsLabel(RegExp('^Audio file song.ogg')), findsNothing);
+      expect(find.bySemanticsLabel(Notice.fileNamed.fill({'name': 'song.ogg', 'status': '304 B'})), findsOneWidget);
+      semantics.dispose();
+    });
+
+    // Task 19's review, M10: rule 9, never under a spoiler.
+    testWidgets('a video under a spoiler: its first tap shows it, the next asks for it', (tester) async {
+      VideoPage.controllerFor = _PlayingVideo.new;
+      final a = sealedFile(
+        'v2',
+        [0, 0, 0, 0x20, ...ascii.encode('ftypisom'), ...List.filled(500, 0)],
+        'SPOILER_clip.mp4',
+        'video/mp4',
+      );
+      final repository = await openMaya(tester);
+      repository.push('c-maya', MessageCreated(withFiles('e9', [a])));
+      await tester.pumpAndSettle();
+      await tapLabel(tester, RegExp('^Video, SPOILER_clip.mp4'));
+      expect(DecryptedFiles.instance.state(a.sealed!, a.url), isNull);
+      await tapLabel(tester, RegExp('^Video, SPOILER_clip.mp4'));
+      await comeDown(tester, a);
+      expect(find.byType(VideoPage), findsOneWidget);
+      semantics.dispose();
+    });
+
+    // Task 19's review, a nit: the rooms' words, as no notice names the request's 32 MB.
+    testWidgets("a conversation's files over 32 MB together stay in the tray, too large to send", (tester) async {
+      final repository = await openMaya(tester);
+      ChatView.debugPickFiles = () async => const [
+        OutgoingFile(path: '/tmp/a.bin', name: 'a.bin', contentType: 'application/octet-stream', sizeBytes: 17 << 20),
+        OutgoingFile(path: '/tmp/b.bin', name: 'b.bin', contentType: 'application/octet-stream', sizeBytes: 17 << 20),
+      ];
+      await tapLabel(tester, 'Add photos, a sticker or a mention');
+      await tapLabel(tester, 'File');
+      await tapLabel(tester, 'Send');
+      expect(find.text('Too large to send'), findsOneWidget);
+      expect(repository.sent, isEmpty);
+      expect(find.bySemanticsLabel('File, a.bin'), findsOneWidget);
       semantics.dispose();
     });
   });

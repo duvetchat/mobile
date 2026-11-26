@@ -27,6 +27,9 @@ class BotComponents extends StatefulWidget {
   final MessageDirectory directory;
   final SelectChoices choices;
 
+  /// Their message, whose files they show.
+  final String messageId;
+
   /// Uses a button (no values) or a select (its values).
   final Future<void> Function(UiComponent component, List<String>? values) onUse;
   const BotComponents({
@@ -34,6 +37,7 @@ class BotComponents extends StatefulWidget {
     required this.directory,
     required this.choices,
     required this.onUse,
+    required this.messageId,
     super.key,
   });
 
@@ -195,6 +199,7 @@ class _BotComponentsState extends State<BotComponents> {
         return _Spoiler(
           hidden: c.spoiler,
           child: MessageAttachments(
+            messageId: widget.messageId,
             maxWidth: 268,
             attachments: [
               MessageAttachment(

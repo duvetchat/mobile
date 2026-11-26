@@ -1403,7 +1403,7 @@ class DuvetRepository implements ChatRepository {
     final engine = _engine ?? (throw ActionFailed(Notice.notReady.text));
     if (files.isNotEmpty) {
       final sizes = [for (final f in files) f.bytes.length];
-      if (tooLargeToSend(sizes, fileLimit: await _sealedLimit()) != null) throw const UploadTooLarge();
+      if (tooLargeToSend(sizes, fileLimit: await _sealedLimit())) throw const UploadTooLarge();
     }
     cancel?.then((_) async {
       try {
@@ -3530,13 +3530,17 @@ class DuvetRepository implements ChatRepository {
   /// spoiler's prefix with it), and what the app can tell of a picture (its size and thumbnail, thumbnails.dart).
   static Future<FileToSeal> _toSeal(OutgoingFile f) async {
     final bytes = await File(f.path).readAsBytes();
-    final facts = sniffType(bytes).startsWith('image/') ? await pictureFacts(bytes) : null;
+    final type = sniffType(bytes);
+    final picture = type.startsWith('image/') ? await pictureFacts(bytes) : null;
+    // A video's size and length go too, as the desktop's do (task 19's review, M11).
+    final video = type.startsWith('video/') ? await videoFactsOf(f.path) : null;
     return FileToSeal(
       bytes: bytes,
       name: f.name,
-      width: facts?.width ?? f.width,
-      height: facts?.height ?? f.height,
-      thumbnail: facts?.thumbnail,
+      width: picture?.width ?? video?.width ?? f.width,
+      height: picture?.height ?? video?.height ?? f.height,
+      durationMs: video?.durationMs,
+      thumbnail: picture?.thumbnail,
     );
   }
 
@@ -3566,8 +3570,8 @@ class DuvetRepository implements ChatRepository {
         RoomTarget(:final roomId) => _call(
           (api) => api.sendVoiceNote(roomId, audio, nonce: nonce, format: format),
         ).then(_roomMessage),
-        // An encrypted conversation's voice note, by its convention (Ruling 11): no text, one audio file sealed with its
-        // waveform and its duration.
+        // An encrypted conversation's voice note, by its convention (Ruling 11): no text, one audio file sealed with
+        // its waveform and its duration.
         ConversationTarget(:final conversationId) => _sendEncrypted(
           conversationId,
           '',
