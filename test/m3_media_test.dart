@@ -880,6 +880,113 @@ void main() {
     semantics.dispose();
   });
 
+  // Step 5's review, I1 (mobile#365): a picker writes what it hands the app to send under the app's cache folder, the
+  // file in the clear, which in a conversation only the core's database may keep. A camera's photo has no other copy.
+  group("a conversation's picked files", () {
+    late Directory cache;
+    late DecryptedFiles before;
+    setUp(() {
+      // Nothing of the platform's answers while a test lets the real clock run.
+      DeepLinkSource.instance = _NoLinks();
+      cache = Directory.systemTemp.createTempSync('duvet-cache-');
+      before = DecryptedFiles.instance;
+    });
+    tearDown(() {
+      DecryptedFiles.instance = before;
+      if (cache.existsSync()) cache.deleteSync(recursive: true);
+    });
+
+    /// The app's folders under [cache], as path_provider names it, and its engine's start, which empties the decrypted
+    /// files' folder there.
+    Future<void> started(WidgetTester tester) async {
+      const paths = MethodChannel('plugins.flutter.io/path_provider');
+      final messenger = tester.binding.defaultBinaryMessenger;
+      messenger.setMockMethodCallHandler(paths, (_) async => cache.path);
+      addTearDown(() => messenger.setMockMethodCallHandler(paths, null));
+      DecryptedFiles.instance = DecryptedFiles();
+      await tester.runAsync(DecryptedFiles.instance.emptyAtStart);
+    }
+
+    /// The camera's photo as image_picker hands it over: scaled to its quality, a file of its own in the cache folder.
+    void camera() => ChatView.debugPickMedia = (source) async {
+      expect(source, ImageSource.camera);
+      final photo = File('${cache.path}/scaled_${DateTime.now().microsecondsSinceEpoch}.jpg')
+        ..writeAsBytesSync(img.encodeJpg(img.Image(width: 8, height: 8)));
+      return [OutgoingFile(path: photo.path, name: 'photo.jpg', contentType: 'image/jpeg', sizeBytes: 100)];
+    };
+
+    List<String> filesInCache() => [
+      for (final entry in cache.listSync(recursive: true))
+        if (entry is File) entry.path,
+    ];
+
+    /// A photo taken and in the tray, on the real clock: a conversation's moves as it's picked.
+    Future<void> takePhoto(WidgetTester tester) async {
+      await tapLabel(tester, 'Add photos, a sticker or a mention');
+      await tapLabel(tester, 'Camera');
+      final inTray = find.bySemanticsLabel('Photo, photo.jpg');
+      for (var i = 0; i < 100 && inTray.evaluate().isEmpty; i++) {
+        await tester.runAsync(() => Future<void>.delayed(const Duration(milliseconds: 20)));
+        await tester.pump();
+      }
+      expect(inTray, findsOneWidget);
+    }
+
+    testWidgets('a camera photo sent in a DM leaves no file under the cache once sent', (tester) async {
+      await started(tester);
+      camera();
+      final repository = await openMaya(tester);
+      await takePhoto(tester);
+      // In the folder the engine's start empties, as it's picked: a kill before its send settles leaves it there.
+      expect(filesInCache(), [startsWith('${cache.path}/e2e-media/picked/')]);
+      await tapLabel(tester, 'Send');
+      expect(repository.sent.last.files.single.name, 'photo.jpg');
+      expect(filesInCache(), isEmpty);
+      semantics.dispose();
+    });
+
+    testWidgets('a failed send keeps its photo for a Retry, and its Delete takes it', (tester) async {
+      await started(tester);
+      camera();
+      final repository = await openMaya(tester);
+      repository.failSends = true;
+      await takePhoto(tester);
+      await tapLabel(tester, 'Send');
+      expect(find.bySemanticsLabel('Retry'), findsOneWidget);
+      expect(filesInCache(), hasLength(1));
+      await tapLabel(tester, 'Delete');
+      expect(filesInCache(), isEmpty);
+      semantics.dispose();
+    });
+
+    testWidgets('a photo taken out of the tray goes', (tester) async {
+      await started(tester);
+      camera();
+      await openMaya(tester);
+      await takePhoto(tester);
+      await tapLabel(tester, 'Remove photo.jpg');
+      expect(filesInCache(), isEmpty);
+      semantics.dispose();
+    });
+
+    testWidgets("a room's camera photo stays where the picker put it, as rooms aren't encrypted", (tester) async {
+      await started(tester);
+      camera();
+      final repository = await pumpApp(tester);
+      for (final place in [find.text('Spaces').last, find.text('Design Guild'), find.text('# general')]) {
+        await tester.tap(place);
+        await tester.pumpAndSettle();
+      }
+      await takePhoto(tester);
+      final picked = filesInCache();
+      expect(picked, [startsWith('${cache.path}/scaled_')]);
+      await tapLabel(tester, 'Send');
+      expect(repository.sent.last.target, isA<RoomTarget>());
+      expect(filesInCache(), picked);
+      semantics.dispose();
+    });
+  });
+
   testWidgets('GIFs: typing searches once it pauses, and a topic drops the search that waited', (tester) async {
     final gifs = _Gifs();
     GifSource.instance = gifs;

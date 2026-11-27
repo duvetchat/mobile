@@ -628,8 +628,8 @@ class FakeApi {
   final _senderSeed = _randomBytes(32);
 
   /// The API's Ed25519 public key, its groups' one external sender, in base64 (GET /api/e2e's). A test that sets
-  /// another plays a server that changed it: the fake checks no commit against it.
-  late String externalSender = base64Encode(ed25519PublicKey(_senderSeed));
+  /// another plays a server that changed it: the fake checks no commit against it. None is an API without one.
+  late String? externalSender = base64Encode(ed25519PublicKey(_senderSeed));
 
   /// Pairs of friends, each as its two IDs in order, and users none of whose listed devices connected lately.
   final _friends = <String>{};

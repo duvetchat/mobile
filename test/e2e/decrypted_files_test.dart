@@ -13,6 +13,8 @@ import 'package:duvet/e2e/notices.dart';
 import 'package:duvet/e2e/thumbnails.dart';
 import 'package:duvet/e2e/uuid.dart';
 import 'package:duvet_client/duvet.dart' as duvet;
+import 'package:file_picker/file_picker.dart';
+import 'package:flutter/services.dart' show MethodChannel;
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
@@ -32,6 +34,18 @@ const _pngHead = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a];
 const _mp4Head = [0, 0, 0, 0x20, 0x66, 0x74, 0x79, 0x70, 0x69, 0x73, 0x6f, 0x6d];
 
 /// An opener whose downloads and opens a test can stand in for, counting what it's asked.
+/// The file picker's platform, which deletes its copies' folder as Android's does (android_file_picker's clearCache).
+class _ClearingPicker extends FilePickerPlatform {
+  Directory? folder;
+  var cleared = 0;
+
+  @override
+  Future<void> clearTemporaryFiles() async {
+    cleared++;
+    if (folder case final copies? when copies.existsSync()) copies.deleteSync(recursive: true);
+  }
+}
+
 class _Opener implements FileOpener {
   /// What each file opens to, by ID.
   final plain = <String, Uint8List>{};
@@ -473,6 +487,77 @@ void main() {
     skip: noCore,
     timeout: const Timeout(Duration(minutes: 3)),
   );
+
+  // Step 5's review, I1 (mobile#365): what a send left under the app's cache folder when the app ended before it
+  // settled goes as the app's engine starts. A picked file moved in among the decrypted files, file_picker's copies
+  // (its clearTemporaryFiles, which deletes its folder on Android), and a voice note a kill cut short; nothing else.
+  test(
+    "what_a_send_left_in_the_cache_goes_as_the_app's_engine_starts",
+    () async {
+      TestWidgetsFlutterBinding.ensureInitialized();
+      await loadCore();
+      final picker = _ClearingPicker();
+      final before = FilePickerPlatform.instance;
+      FilePickerPlatform.instance = picker;
+      addTearDown(() => FilePickerPlatform.instance = before);
+      final fake = FakeApi();
+      final ana = fake.addUser();
+      final left = <File>[];
+      late File kept;
+      final app = await appOn(
+        fake,
+        ana,
+        prepare: (cache) {
+          picker.folder = Directory('${cache.path}/file_picker');
+          for (final path in [
+            'e2e-media/picked/${uuidv4()}/scaled_photo.jpg',
+            'file_picker/${uuidv4()}/notes.pdf',
+            'voice-1764000000000.ogg',
+            'voice-1764000000001.m4a',
+          ]) {
+            left.add(File('${cache.path}/$path')..createSync(recursive: true));
+          }
+          kept = File('${cache.path}/kept.ogg')..createSync();
+        },
+      );
+      await app.ready();
+      expect(left.where((file) => file.existsSync()), isEmpty);
+      expect(picker.cleared, 1);
+      expect(kept.existsSync(), isTrue);
+    },
+    skip: noCore,
+    timeout: const Timeout(Duration(minutes: 3)),
+  );
+
+  // mobile#365: file_picker hands over a picked file's canonical path, which path_provider's name of the cache folder
+  // may not be (Android's /data/user/0 leads to /data/data). A file outside the cache folder is the person's own:
+  // never moved, never deleted. Before the start learns the cache folder, nothing is taken in.
+  test("a_picked_file_is_taken_in_under_either_path_of_the_cache,_and_the_person's_own_stays", () async {
+    TestWidgetsFlutterBinding.ensureInitialized();
+    final root = Directory.systemTemp.createTempSync('duvet-cache-');
+    addTearDown(() => root.deleteSync(recursive: true));
+    final real = Directory('${root.path}/real')..createSync();
+    final cache = Link('${root.path}/cache')..createSync(real.path);
+    const paths = MethodChannel('plugins.flutter.io/path_provider');
+    final messenger = TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
+    messenger.setMockMethodCallHandler(paths, (_) async => cache.path);
+    addTearDown(() => messenger.setMockMethodCallHandler(paths, null));
+    final files = DecryptedFiles();
+    // As file_picker names it: canonical, every link resolved (macOS's /var leads to /private/var too).
+    final picked = File('${real.resolveSymbolicLinksSync()}/file_picker/${uuidv4()}/notes.pdf')
+      ..createSync(recursive: true);
+    final own = File('${root.path}/notes.pdf')..createSync();
+    expect(await files.takeIn(picked.path), picked.path);
+
+    await files.emptyAtStart();
+    final moved = await files.takeIn(picked.path);
+    expect(moved, startsWith('${cache.path}/e2e-media/picked/'));
+    expect(picked.existsSync(), isFalse);
+    expect(await files.takeIn(own.path), own.path);
+    files.letGo([moved, own.path]);
+    expect(File(moved).existsSync(), isFalse);
+    expect(own.existsSync(), isTrue);
+  });
 
   // Step 5's review, I3 (mobile#354): a Share leaves two plaintext copies of the file, the app's own under e2e-media's
   // share and share_plus's under <temporary>/share_plus, which nothing of the app's deleted and a sign-out left.

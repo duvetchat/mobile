@@ -21,6 +21,23 @@ import '../support/fake_repository.dart';
 // desktop's RecoveryKeySheet.test.ts and the gate's rulings of its review.
 const _key = 'abcdEFGHjkmnPQRS23456789ABCDEFGHJKLMNPQRSTUVWXYZ';
 
+/// Android's clipboard, through MainActivity, which marks the key's copy sensitive and takes it back (mobile#367).
+const _clipboard = MethodChannel('chat.duvet/clipboard');
+
+/// The app away and back in front, as Android tells it.
+void _awayAndBack(WidgetTester tester) {
+  for (final state in const [
+    AppLifecycleState.inactive,
+    AppLifecycleState.hidden,
+    AppLifecycleState.paused,
+    AppLifecycleState.hidden,
+    AppLifecycleState.inactive,
+    AppLifecycleState.resumed,
+  ]) {
+    tester.binding.handleAppLifecycleStateChanged(state);
+  }
+}
+
 Widget _app(Widget child, {FakeRepository? repository}) {
   final app = MaterialApp(
     theme: Duvet.material(Brightness.light),
@@ -109,11 +126,11 @@ void main() {
       addTearDown(() => FilePickerPlatform.instance = before);
       final copied = <Object?>[];
       final messenger = tester.binding.defaultBinaryMessenger;
-      messenger.setMockMethodCallHandler(SystemChannels.platform, (call) async {
-        if (call.method == 'Clipboard.setData') copied.add((call.arguments as Map<Object?, Object?>)['text']);
-        return null;
+      messenger.setMockMethodCallHandler(_clipboard, (call) async {
+        if (call.method == 'copySensitive') copied.add(call.arguments);
+        return call.method == 'clearIf' ? true : null;
       });
-      addTearDown(() => messenger.setMockMethodCallHandler(SystemChannels.platform, null));
+      addTearDown(() => messenger.setMockMethodCallHandler(_clipboard, null));
       await tester.pumpWidget(_app(RecoveryKeyPage(recoveryKey: _key, onSaved: () async {}, onLater: () async {})));
       final grouped = keyGroups(_key).join(' ');
 
@@ -130,6 +147,41 @@ void main() {
       // Copied goes back to Copy.
       await tester.pump(const Duration(seconds: 2));
       expect(find.text('Copy'), findsOneWidget);
+      // A minute on, the key goes from the clipboard.
+      await tester.pump(const Duration(minutes: 1));
+    });
+
+    // Step 5's review, Minor 5 (mobile#367): the key, the identity's and the backup's, goes to Android's clipboard
+    // marked sensitive (ClipDescription's EXTRA_IS_SENSITIVE), which neither the system's preview of a copy nor a
+    // keyboard's history shows or keeps, and goes from it a minute later while it still holds it. Android lets only the
+    // app in front read the clipboard: away then, it's asked again once the app is back.
+    testWidgets('the_key_goes_to_the_clipboard_marked_sensitive,_and_from_it_a_minute_later', (tester) async {
+      final asked = <(String, Object?)>[];
+      // As the phone answers: away, the clipboard can't be read; back, it still holds the key, which goes.
+      final answers = <bool?>[null, true];
+      final messenger = tester.binding.defaultBinaryMessenger;
+      messenger.setMockMethodCallHandler(_clipboard, (call) async {
+        asked.add((call.method, call.arguments));
+        return call.method == 'clearIf' ? answers.removeAt(0) : null;
+      });
+      addTearDown(() => messenger.setMockMethodCallHandler(_clipboard, null));
+      await tester.pumpWidget(_app(RecoveryKeyPage(recoveryKey: _key, onSaved: () async {}, onLater: () async {})));
+      final grouped = keyGroups(_key).join(' ');
+
+      await tester.tap(find.text('Copy'));
+      await tester.pump();
+      expect(asked, [('copySensitive', grouped)]);
+      await tester.pump(const Duration(seconds: 59));
+      expect(asked, hasLength(1));
+      await tester.pump(const Duration(seconds: 1));
+      expect(asked, [('copySensitive', grouped), ('clearIf', grouped)]);
+      _awayAndBack(tester);
+      await tester.pump();
+      expect(asked, [('copySensitive', grouped), ('clearIf', grouped), ('clearIf', grouped)]);
+      // Gone: nothing more is asked.
+      _awayAndBack(tester);
+      await tester.pump();
+      expect(asked, hasLength(3));
     });
 
     // I2 of the desktop's review: the key saved, what's left is its upload.
@@ -179,7 +231,8 @@ void main() {
       for (final (state, words) in [
         (const EngineState.firstDevice(), 'Set up end-to-end encryption for your direct messages.'),
         (EngineState.removed, Notice.removedDevice.text),
-        (EngineState.locked, Notice.locked.text),
+        // A phone has no windows: what holds its database is the app's own push, or its engine before (mobile#366).
+        (EngineState.locked, 'Encrypted conversations are busy on this phone. Duvet tries again on its own.'),
         (EngineState.unsupported, Notice.noE2eHere.text),
         (const EngineState.update('1.1.0'), Notice.update.text),
         (const EngineState.update(null), Notice.noE2eHere.text),

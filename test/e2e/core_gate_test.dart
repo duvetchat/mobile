@@ -55,6 +55,11 @@ void main() {
   Future<String?> deviceOf(CoreGate gate) async =>
       (await gate.handle<Map<String, Object?>>({'cmd': 'status'}))['device_id'] as String?;
 
+  /// The read another engine makes, a push's: a page of a conversation's messages, which none has here. Only the app's
+  /// engine reads its device's status (inBackground).
+  Future<Object?> pageOn(CoreGate gate) async =>
+      (await gate.handle<Map<String, Object?>>({'cmd': 'messages', 'conversation_id': ana, 'limit': 1}))['messages'];
+
   test('opens_with_the_stored_key', () async {
     final key = Uint8List.fromList(List.generate(32, (i) => i * 7));
     FlutterSecureStorage.setMockInitialValues({DbKeys.nameOf(ana): base64Encode(key)});
@@ -100,15 +105,16 @@ void main() {
 
   test('second_engine_asks_the_first', () async {
     final (app, device) = await appWithDevice();
+    final key = (await app.handle<Map<String, Object?>>({'cmd': 'attachment_key'}))['key']! as String;
     // Another engine: an isolate with neither the core's library nor the phone's storage, which would fail to open
-    // the database. It opens, reads its status and seals a file through the port, then closes, which leaves the app's
-    // core open.
+    // the database. It opens, reads a page of messages and seals a file through the port, then closes, which leaves
+    // the app's core open.
     final answers = ReceivePort();
-    await Isolate.spawn(_secondEngine, (answers.sendPort, ana));
+    await Isolate.spawn(_secondEngine, (answers.sendPort, ana, key));
     final answer = await answers.first.timeout(const Duration(seconds: 30));
     expect(answer, {
       'opened': 'ready',
-      'device_id': device,
+      'page': <Object?>[],
       'sealed_back': 'a file of the second engine',
       'progress': ['a file of the second engine'.length],
       'refused': 'bad_command',
@@ -117,22 +123,39 @@ void main() {
     await app.close();
   }, skip: noCore);
 
-  // Review Focus 2 (Task 27): only the engine with a screen recovers, approves or starts over.
+  // Review Focus 2 and 3 (Task 27; step 5's review, Minor 2, mobile#366): another engine runs only what a push sends,
+  // by a list of it: every other command the app sends its core runs only in the app's engine, the one with a screen.
+  // Another engine refuses it before it asks the app's engine or runs it itself, so no change in a background path
+  // makes a commit or an upload it never sends, in an engine with 15 s.
   test(
-    "a device's setup runs only in the app's engine: another engine refuses it, with the app's engine or alone",
+    "another engine runs only what a push sends: it refuses every other command, with the app's engine or alone",
     () async {
-      final refused = isA<CoreError>().having((e) => (e.code, e.field), 'refusal', ('bad_command', 'cmd'));
+      final refused = isA<CoreError>()
+          .having((e) => (e.code, e.field), 'refusal', ('bad_command', 'cmd'))
+          .having((e) => e.message, 'message', endsWith('runs only in the app with a screen'));
       final (app, _) = await appWithDevice();
       final other = gate(app: false);
       expect(await other.open(ana), ready);
-      for (final cmd in screenOnly) {
-        await expectLater(other.handle<Object?>({'cmd': cmd}), throwsA(refused));
+      for (final cmd in _withAScreen) {
+        await expectLater(other.handle<Object?>({'cmd': cmd}), throwsA(refused), reason: cmd);
+      }
+      // What a push sends reaches the app's core, which answers it.
+      final page = await other.handle<Map<String, Object?>>({
+        'cmd': 'messages',
+        'conversation_id': uuidv7(),
+        'limit': 1,
+      });
+      expect(page['messages'], isEmpty);
+      for (final cmd in ['apply', 'observe_user']) {
+        await expectLater(other.handle<Object?>({'cmd': cmd}), throwsA(isNot(refused)), reason: cmd);
       }
       await other.close();
       await app.close();
       final alone = gate(app: false);
       expect(await alone.open(ana), ready);
-      await expectLater(alone.handle<Object?>({'cmd': 'recover'}), throwsA(refused));
+      for (final cmd in _withAScreen) {
+        await expectLater(alone.handle<Object?>({'cmd': cmd}), throwsA(refused), reason: cmd);
+      }
       await alone.close();
     },
     skip: noCore,
@@ -147,7 +170,7 @@ void main() {
     final other = gate(app: false);
     expect(await other.open(ana), ready);
     expect(IsolateNameServer.lookupPortByName(corePortName), isNull);
-    expect(await deviceOf(other), device);
+    expect(await pageOn(other), isEmpty);
     await other.close();
 
     // Closed once its work is done: the next engine opens it.
@@ -167,7 +190,7 @@ void main() {
     await Future<void>.delayed(const Duration(milliseconds: 400));
     IsolateNameServer.registerPortWithName(port, corePortName);
     expect(await opening, ready);
-    expect(await deviceOf(other), device);
+    expect(await pageOn(other), isEmpty);
     await other.close();
     expect(await deviceOf(app), device);
     await app.close();
@@ -183,16 +206,16 @@ void main() {
   }, skip: noCore);
 
   test("a call whose engine went away is internal, and the next one opens the database again", () async {
-    final (app, device) = await appWithDevice();
+    final (app, _) = await appWithDevice();
     final other = gate(app: false, answerWait: const Duration(milliseconds: 300));
     expect(await other.open(ana), ready);
     // The app's engine went away without a word: its port answers nothing.
     final port = IsolateNameServer.lookupPortByName(corePortName)!;
     await app.close();
     IsolateNameServer.registerPortWithName(port, corePortName);
-    await expectLater(deviceOf(other), throwsA(isA<CoreError>().having((error) => error.code, 'code', 'internal')));
+    await expectLater(pageOn(other), throwsA(isA<CoreError>().having((error) => error.code, 'code', 'internal')));
     // Its name stayed, and still answers nothing: the next call opens the database here.
-    expect(await deviceOf(other), device);
+    expect(await pageOn(other), isEmpty);
     expect(IsolateNameServer.lookupPortByName(corePortName), port);
     await other.close();
   }, skip: noCore);
@@ -299,10 +322,7 @@ void main() {
     final other = gate(app: false, answerWait: const Duration(seconds: 20));
     expect(await other.open(ana), ready);
     final asked = Stopwatch()..start();
-    await expectLater(
-      other.handle<Object?>({'cmd': 'status'}),
-      throwsA(isA<CoreError>().having((error) => error.code, 'code', 'internal')),
-    );
+    await expectLater(pageOn(other), throwsA(isA<CoreError>().having((error) => error.code, 'code', 'internal')));
     expect(asked.elapsed, lessThan(const Duration(seconds: 10)));
   });
 
@@ -377,14 +397,64 @@ void main() {
   });
 }
 
+/// Every command the app sends its core (lib/e2e) but the three a push sends, and those that go their own way.
+const _withAScreen = [
+  'add_members',
+  'approval_accept',
+  'approval_begin',
+  'approval_check',
+  'approval_confirm',
+  'approval_from_qr',
+  'approval_offer',
+  'approval_receive',
+  'approval_reveal',
+  'attachment_key',
+  'backup_due',
+  'backup_import',
+  'backup_reencrypt',
+  'backup_segment',
+  'backup_uploaded',
+  'bind_proof',
+  'catch_up_delivered',
+  'commit_pending',
+  'commit_result',
+  'create_device',
+  'create_group',
+  'create_identity',
+  'delete',
+  'device_list_uploaded',
+  'discard',
+  'edit',
+  'encrypt',
+  'group',
+  'identity_uploaded',
+  'join_external',
+  'key_packages',
+  'leave',
+  'receive_direct',
+  'recover',
+  'refresh',
+  'refresh_due',
+  'remove_members',
+  'reset_group',
+  'reset_identity',
+  'rotate_keys',
+  'safety_number',
+  'search',
+  'sent',
+  'sign_device_list',
+  'status',
+  'verify_user',
+  'without_devices',
+];
+
 /// The second engine of second_engine_asks_the_first, in an isolate of its own: no core library is loaded here, and
 /// neither the phone's storage nor its folders answer.
-Future<void> _secondEngine((SendPort, String) start) async {
-  final (answer, user) = start;
+Future<void> _secondEngine((SendPort, String, String) start) async {
+  final (answer, user, key) = start;
   final gate = CoreGate(serves: false, folder: () => throw StateError("this engine can't reach the database"));
   final opened = await gate.open(user);
-  final device = (await gate.handle<Map<String, Object?>>({'cmd': 'status'}))['device_id'];
-  final key = (await gate.handle<Map<String, Object?>>({'cmd': 'attachment_key'}))['key']! as String;
+  final page = await gate.handle<Map<String, Object?>>({'cmd': 'messages', 'conversation_id': user, 'limit': 1});
   final id = uuidv7();
   final progress = <int>[];
   final plain = Uint8List.fromList(utf8.encode('a file of the second engine'));
@@ -399,7 +469,7 @@ Future<void> _secondEngine((SendPort, String) start) async {
   await gate.close();
   answer.send({
     'opened': opened.state.name,
-    'device_id': device,
+    'page': page['messages'],
     'sealed_back': utf8.decode(back),
     'progress': progress,
     'refused': refused,

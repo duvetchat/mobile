@@ -38,27 +38,13 @@ const _lostKey = (state: HostState.failed, keyStorage: null, reason: 'bad_key');
 /// The commands [CoreGate.handle] refuses: each has a way of its own, which keeps its bytes out of one JSON.
 const ownWay = {'attachment_encrypt', 'attachment_decrypt', 'history_share', 'catch_up', 'history_import'};
 
-/// The commands only the engine with a screen runs (Review Focus 2; Task 27): a new device's setup by the recovery
-/// key, another device's approval or starting over; and the encrypted backup's, which goes up, comes down and moves
-/// only with the app open (Task 33; Ruling 23). A gate that doesn't serve (a push's, WorkManager's, audio_service's
-/// engine) refuses them, before it asks the app's engine or runs them itself.
-const screenOnly = {
-  'recover',
-  'reset_identity',
-  'approval_begin',
-  'approval_offer',
-  'approval_reveal',
-  'approval_check',
-  'approval_confirm',
-  'approval_accept',
-  'approval_from_qr',
-  'approval_receive',
-  'backup_due',
-  'backup_segment',
-  'backup_uploaded',
-  'backup_import',
-  'backup_reencrypt',
-};
+/// The commands a gate that doesn't serve runs (Review Focus 2 and 3; step 5's review, Minor 2): what a push's engine
+/// sends, the only other engine that calls the core (lib/e2e/push_decrypt.dart). It applies its message's entry or the
+/// queue up to it, observes the users that asks for, and reads the texts. It refuses every other command before it
+/// asks the app's engine or runs it itself: a new device's setup, another device's approval or starting over (Task
+/// 27), the encrypted backup, which goes up, comes down and moves only with the app open (Task 33; Ruling 23), and
+/// whatever makes a commit, a message or an upload, or confirms one, which no background engine sends.
+const inBackground = {'apply', 'observe_user', 'messages'};
 
 /// The most parts [CoreGate.importShare] hands the core at once, which reads the whole command before it looks at
 /// them.
@@ -364,7 +350,7 @@ final class CoreGate implements CoreHost, ObservingHost {
     if (ownWay.contains(cmd)) {
       throw CoreError('bad_command', message: '$cmd has a way of its own', field: 'cmd');
     }
-    if (!serves && screenOnly.contains(cmd)) {
+    if (!serves && !inBackground.contains(cmd)) {
       throw CoreError('bad_command', message: '$cmd runs only in the app with a screen', field: 'cmd');
     }
     return await _either(

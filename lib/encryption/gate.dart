@@ -116,7 +116,7 @@ class _EncryptionBannerState extends State<EncryptionBanner> {
       action: 'Set up again',
       run: (context) => _startOver(context, 'Set up again'),
     ),
-    EngineStage.locked => (text: Notice.locked.text, action: null, run: null),
+    EngineStage.locked => (text: Notice.lockedPhone.text, action: null, run: null),
     EngineStage.unsupported => (text: Notice.noE2eHere.text, action: null, run: null),
     EngineStage.failed when state.lostKey => (
       text: "Your encrypted conversations can't be opened on this device: its key is gone.",

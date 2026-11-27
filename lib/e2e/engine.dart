@@ -1669,8 +1669,11 @@ class E2EEngine implements DeviceSetupActions {
   Future<void> _boot() async {
     try {
       final config = await api.config();
+      // An API with no external sender makes no group (duvetchat/client#54): no encryption there, which this device's
+      // start waits out as it does an API that answers no GET /api/e2e, trying again later.
+      final sender = config.externalSender ?? (throw StateError('the API serves no external sender'));
       cutoverAt = config.cutoverAt;
-      _groups.start(await _pin(config.externalSender));
+      _groups.start(await _pin(sender));
       final opened = await host.open(user);
       if (opened.state != HostState.ready) return _closed(opened);
       // What a push's engine noted in the record while it held the core (contacts.dart), before anything here writes.

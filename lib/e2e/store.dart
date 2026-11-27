@@ -277,7 +277,8 @@ class FileEngineStore implements EngineStore {
   /// [work] while this engine holds the record's lock, `client.json.lock`, which each write, refresh and open takes: an
   /// exclusive create, which one engine of the phone makes at a time, in any isolate or process, where
   /// RandomAccessFile.lock is the process's, which every isolate of one process takes at once. A lock a write left as
-  /// it ended holding it goes once it's [_lockLeft] old; past [_lockWait], the work fails.
+  /// it ended holding it goes once it's [_lockLeft] old, or as far ahead of the clock; past [_lockWait], the work
+  /// fails.
   static Future<T> _locked<T>(File record, Future<T> Function() work) async {
     final lock = File('${record.path}.lock');
     final waited = Stopwatch()..start();
@@ -302,10 +303,11 @@ class FileEngineStore implements EngineStore {
     }
   }
 
-  /// A lock [_lockLeft] old, which a write left as it ended holding it: moved away, by one engine alone, then deleted.
+  /// A lock [_lockLeft] old, which a write left as it ended holding it, or as far ahead of the clock, which was set
+  /// back since (mobile#366): moved away, by one engine alone, then deleted. A lock a moment ahead is a write's.
   static Future<void> _dropIfLeft(File lock) async {
     try {
-      if (DateTime.now().difference(await lock.lastModified()) < _lockLeft) return;
+      if (DateTime.now().difference(await lock.lastModified()).abs() < _lockLeft) return;
       await (await lock.rename('${lock.path}.${uuidv4()}.left')).delete();
     } on FileSystemException {
       // Let go or moved away meanwhile: the next try takes the lock as it is then.

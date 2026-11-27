@@ -23,6 +23,49 @@ const rotationWhy =
 /// What a failed upload says, the key still shown.
 const recoveryFailed = "Your keys couldn't be saved. Check your connection, then try again.";
 
+/// Android's clipboard, through MainActivity: the key's copy marked sensitive (ClipDescription's EXTRA_IS_SENSITIVE),
+/// which neither the system's preview of a copy nor a keyboard's clipboard history shows or keeps (mobile#367).
+const _clipboard = MethodChannel('chat.duvet/clipboard');
+
+Timer? _keyGoes;
+AppLifecycleListener? _keyGoesOnReturn;
+
+/// [text], the recovery key, on the clipboard marked sensitive, and taken from it a minute later while it still holds
+/// it. Where the app's channel isn't (another platform), Flutter's clipboard has it as it is.
+Future<void> _copySecret(String text) async {
+  try {
+    await _clipboard.invokeMethod<void>('copySensitive', text);
+  } on MissingPluginException {
+    await Clipboard.setData(ClipboardData(text: text));
+  }
+  _keyGoes?.cancel();
+  _keyGoesOnReturn?.dispose();
+  _keyGoesOnReturn = null;
+  _keyGoes = Timer(const Duration(minutes: 1), () => unawaited(_takeBack(text)));
+}
+
+/// [text] taken from the clipboard while it still holds it. Android lets only the app in front read the clipboard:
+/// while it can't, it's asked again once the app is back.
+Future<void> _takeBack(String text) async {
+  final bool? read;
+  try {
+    read = await _clipboard.invokeMethod<bool>('clearIf', text);
+  } on MissingPluginException {
+    // No such clipboard here: Flutter's copy stays as the platform keeps it.
+    return;
+  } on PlatformException catch (error) {
+    return debugPrint("e2e: the recovery key wasn't taken from the clipboard: ${error.code}");
+  }
+  if (read != null) return;
+  _keyGoesOnReturn = AppLifecycleListener(
+    onResume: () {
+      _keyGoesOnReturn?.dispose();
+      _keyGoesOnReturn = null;
+      unawaited(_takeBack(text));
+    },
+  );
+}
+
 /// A recovery key in its groups of 4: 12 of them (decision 22).
 List<String> keyGroups(String key) => [
   for (var at = 0; at < key.length; at += 4) key.substring(at, min(at + 4, key.length)),
@@ -69,7 +112,7 @@ class _RecoveryKeyPageState extends State<RecoveryKeyPage> {
   }
 
   Future<void> _copy() async {
-    await Clipboard.setData(ClipboardData(text: _text));
+    await _copySecret(_text);
     if (!mounted) return;
     setState(() => _copied = true);
     _copiedFor?.cancel();

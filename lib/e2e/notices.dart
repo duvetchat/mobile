@@ -53,6 +53,9 @@ enum Notice {
   sharedAddFailed("Couldn't add the shared messages. Try again."),
   removedDevice('This device was removed from your account.'),
   locked('Encrypted conversations are open in another Duvet window.'),
+
+  /// The same on a phone, which has no windows: a push's engine holds the database as the app opens it (Android's).
+  lockedPhone('Encrypted conversations are busy on this phone. Duvet tries again on its own.'),
   waitOwner('Waiting for {owner} to open this group'),
   waitRejoin("You'll be back in this conversation when another member opens it."),
   membersChanged("This conversation's members changed since you last saw it."),

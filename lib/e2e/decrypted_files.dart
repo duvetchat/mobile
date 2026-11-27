@@ -18,7 +18,9 @@ import 'dart:typed_data';
 
 import 'package:crypto/crypto.dart';
 import 'package:duvet_client/duvet.dart' as duvet;
+import 'package:file_picker/file_picker.dart';
 import 'package:flutter/foundation.dart';
+import 'package:flutter/services.dart';
 import 'package:http/http.dart' as http;
 import 'package:path_provider/path_provider.dart';
 
@@ -103,8 +105,9 @@ class _Entry {
 class DecryptedFiles extends ChangeNotifier {
   DecryptedFiles({this.limit = maxDecrypted, this.inFlight = openingBytesMost, Future<Directory> Function()? folder})
     : _folder = folder ?? _temporary,
-      // A test's folder alone has no share_plus folder beside it.
-      _shared = folder == null ? _sharePlus : null;
+      // A test's folder alone has no share_plus folder beside it, nor the app's cache folder around it.
+      _shared = folder == null ? _sharePlus : null,
+      _cache = folder == null ? getTemporaryDirectory : null;
 
   /// How many sealed bytes come down at once ([openingBytesMost]).
   final int inFlight;
@@ -121,6 +124,14 @@ class DecryptedFiles extends ChangeNotifier {
   final int limit;
   final Future<Directory> Function() _folder;
   final Future<Directory> Function()? _shared;
+
+  /// The app's cache folder, where the pickers copy what they hand over and the recorder writes a voice note
+  /// (mobile#365).
+  final Future<Directory> Function()? _cache;
+
+  /// The cache folder's paths as the start's emptying found them, as path_provider names it and as its links lead
+  /// (file_picker hands over a canonical path): none before it, when nothing is taken in or let go of.
+  var _cachePaths = const <String>[];
   final _files = <String, _Entry>{};
   final _waiting = <_Entry>[];
   FileOpener? _opener;
@@ -153,7 +164,8 @@ class DecryptedFiles extends ChangeNotifier {
 
   /// Empties the folder, and share_plus's copies of the files shared from it (mobile#354): as the app's engine starts
   /// (what's there a run before this one left), at a sign-out, and as this device's data goes. A share still pending
-  /// loses its file then, as share_plus itself loses one at its next share.
+  /// loses its file then, as share_plus itself loses one at its next share. So go what a send left in the cache folder
+  /// (mobile#365): file_picker's copies, and a voice note a kill cut short (VoiceRecorder's `voice-<ms>`).
   Future<void> emptyAtStart() async {
     for (final folder in [await _folder(), if (_shared case final shared?) await shared()]) {
       if (!await folder.exists()) continue;
@@ -165,17 +177,55 @@ class DecryptedFiles extends ChangeNotifier {
         }
       }
     }
+    final cache = await _cache?.call();
+    if (cache == null || !await cache.exists()) return;
+    _cachePaths = {cache.path, await cache.resolveSymbolicLinks()}.toList();
+    try {
+      await FilePicker.clearTemporaryFiles();
+    } on PlatformException catch (error) {
+      debugPrint("e2e: file_picker's copies weren't cleared: ${error.code}");
+    }
+    await for (final left in cache.list()) {
+      if (left is File && left.uri.pathSegments.last.startsWith('voice-')) _deleteCopy(left.path);
+    }
   }
 
   /// A copy beside the files, as [name] (a cleaned one) in a folder of its own under [kind]: a decrypted file shared
-  /// under its own name, which the folder's copies don't have (task 19's review, M1), or a GIF picked to send (M5). It
-  /// goes with the folder ([emptyAtStart]).
-  Future<File> aside(String kind, String name, {String? from, List<int>? bytes}) async {
+  /// under its own name, which the folder's copies don't have (task 19's review, M1), a GIF picked to send (M5), or,
+  /// [move]d in, a file picked to send ([takeIn]). It goes with the folder ([emptyAtStart]).
+  Future<File> aside(String kind, String name, {String? from, List<int>? bytes, bool move = false}) async {
     final folder = Directory('${(await _folder()).path}/$kind/${uuidv4()}');
     await folder.create(recursive: true);
     final file = File('${folder.path}/$name');
-    return from != null ? File(from).copy(file.path) : file.writeAsBytes(bytes!, flush: true);
+    if (from == null) return file.writeAsBytes(bytes!, flush: true);
+    return move ? File(from).rename(file.path) : File(from).copy(file.path);
   }
+
+  /// A file picked to send in an encrypted conversation, moved in among these as it's picked (mobile#365): a picker's
+  /// copy in the cache folder is the file in the clear, which only the core's database may keep, and here the start
+  /// empties it should the app end before its send settles. One outside the cache folder is the person's own and stays
+  /// where it is, as does one that can't move, which [letGo] deletes.
+  Future<String> takeIn(String path) async {
+    if (!_inCache(path)) return path;
+    try {
+      return (await aside('picked', path.substring(path.lastIndexOf('/') + 1), from: path, move: true)).path;
+    } on FileSystemException catch (error) {
+      debugPrint(
+        "e2e: a picked file didn't move among the decrypted files: ${error.osError?.message ?? error.message}",
+      );
+      return path;
+    }
+  }
+
+  /// The files a conversation's send took, once it settled (sent, or dismissed), or that the person took out of the
+  /// tray: each in the cache folder goes (mobile#365), never the person's own.
+  void letGo(Iterable<String> paths) {
+    for (final path in paths) {
+      if (_inCache(path)) _deleteCopy(path);
+    }
+  }
+
+  bool _inCache(String path) => _cachePaths.any((cache) => path.startsWith('$cache/'));
 
   /// Where the file is: null while nobody asked for it, and unavailable when its message's API row names no URL of
   /// it. Reading it counts as drawing it.
@@ -347,7 +397,7 @@ class DecryptedFiles extends ChangeNotifier {
     } on FileSystemException catch (error) {
       // Gone already (ENOENT): nothing to say.
       if (error.osError?.errorCode != 2) {
-        debugPrint("e2e: a decrypted file's copy couldn't go: ${error.osError?.message}");
+        debugPrint("e2e: a file's copy in the clear couldn't go: ${error.osError?.message}");
       }
     }
   }
