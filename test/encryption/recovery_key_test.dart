@@ -251,6 +251,24 @@ void main() {
       expect(find.byType(Text), findsNothing);
     });
 
+    // M2 of step 4's closing review: another external sender than the one this device pinned is said while it's
+    // served (Ruling 32), under whatever else the strip says.
+    testWidgets('another_server_key_is_said_while_it_is_served', (tester) async {
+      final repository = await gate(tester, EngineState.ready);
+      expect(find.byType(Text), findsNothing);
+      repository.serverKeyChanged.value = true;
+      await tester.pump();
+      expect(find.text(Notice.serverKeyChanged.text), findsOneWidget);
+      repository.encryption.value = EngineState.removed;
+      await tester.pump();
+      expect(find.text(Notice.removedDevice.text), findsOneWidget);
+      repository
+        ..encryption.value = EngineState.ready
+        ..serverKeyChanged.value = false;
+      await tester.pump();
+      expect(find.byType(Text), findsNothing);
+    });
+
     testWidgets('set_up_makes_the_identity_and_shows_its_key_until_it_is_done_with', (tester) async {
       final repository = await gate(tester, const EngineState.firstDevice());
       await tester.tap(find.text('Set up'));

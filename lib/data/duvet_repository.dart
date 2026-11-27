@@ -1342,6 +1342,7 @@ class DuvetRepository implements ChatRepository {
       );
       engine.state.addListener(_showEncryption);
       engine.conversations.addListener(_showConversations);
+      engine.serverKeyChanged.addListener(_showServerKey);
       engine.contacts.addListener(_showContacts);
       _showContacts();
 
@@ -1385,6 +1386,13 @@ class DuvetRepository implements ChatRepository {
     if (_engine case final engine?) conversationStates.value = engine.conversations.value;
   }
 
+  @override
+  final ValueNotifier<bool> serverKeyChanged = ValueNotifier(false);
+
+  void _showServerKey() {
+    if (_engine case final engine?) serverKeyChanged.value = engine.serverKeyChanged.value;
+  }
+
   void _showOffers() {
     if (_engine case final engine?) historyOffers.value = engine.historyOffers.value;
   }
@@ -1404,6 +1412,7 @@ class DuvetRepository implements ChatRepository {
     _identifyDevice = null;
     encryption.value = EngineState.starting;
     conversationStates.value = const {};
+    serverKeyChanged.value = false;
     contacts.value = ContactsShown.none;
 
     historyOffers.value = const {};
@@ -1418,6 +1427,7 @@ class DuvetRepository implements ChatRepository {
     if (engine == null) return;
     engine.state.removeListener(_showEncryption);
     engine.conversations.removeListener(_showConversations);
+    engine.serverKeyChanged.removeListener(_showServerKey);
     engine.contacts.removeListener(_showContacts);
 
     engine.historyOffers.removeListener(_showOffers);

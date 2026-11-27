@@ -473,11 +473,14 @@ void main() {
       () async {
         final t = await _dm();
         final pinned = t.fake.externalSender;
+        expect(t.a.engine.serverKeyChanged.value, isFalse);
         final bos = (await _status(t.b))['device_id']! as String;
         final other = Uint8List.fromList(List.generate(32, (_) => _random.nextInt(256)));
         t.fake.externalSender = base64Encode(ed25519PublicKey(other));
         final again = await restarted(t.fake, t.a);
         expect(again.store.read(externalSender), pinned);
+        // Said to the person, never taken: «una distinta es un aviso» (M2 of step 4's closing review).
+        expect(again.engine.serverKeyChanged.value, isTrue);
         t.fake.proposeRemoval(t.conversation, bos, seed: other);
         await turnEnded(again);
         await turnEnded(t.b);

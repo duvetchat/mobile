@@ -1679,6 +1679,9 @@ class FakeRepository implements ChatRepository {
   final deviceNoticesTold = StreamController<String>.broadcast();
 
   @override
+  final ValueNotifier<bool> serverKeyChanged = ValueNotifier(false);
+
+  @override
   Stream<String> get deviceNotices => deviceNoticesTold.stream;
 
   /// What each encrypted conversation says over its message box; a test sets it.

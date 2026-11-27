@@ -123,6 +123,10 @@ abstract interface class ChatRepository {
   /// What the engine tells of the user's other devices, in the notices' words: one added, one not seen in 45 days.
   Stream<String> get deviceNotices;
 
+  /// Whether the API serves another server key (its external sender) than the one this device first saw: said, never
+  /// taken (Ruling 32). False without an engine.
+  ValueListenable<bool> get serverKeyChanged;
+
   /// What each encrypted conversation says over its message box of its group (lib/e2e/sync.dart), by its ID: none
   /// while its group goes on. A conversation on screen ([chatShown]) gets its group, made where this user may.
   ValueListenable<Map<String, ConversationState>> get conversationStates;

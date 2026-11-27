@@ -191,7 +191,7 @@ class _EncryptionBannerState extends State<EncryptionBanner> {
   Widget build(BuildContext context) {
     final repository = context.repository;
     return ListenableBuilder(
-      listenable: Listenable.merge([repository.encryption, repository.backup]),
+      listenable: Listenable.merge([repository.encryption, repository.backup, repository.serverKeyChanged]),
       builder: (context, _) {
         final state = repository.encryption.value;
         var bar = _bar(state);
@@ -201,6 +201,11 @@ class _EncryptionBannerState extends State<EncryptionBanner> {
         if (bar == null && state.stage == EngineStage.ready && backup.stage == BackupStage.restoring) {
           bar = (text: backupLine(backup), action: null, run: null);
           key = _restoring;
+        }
+        // Another server key than the one this device first saw, while it's served (Ruling 32).
+        if (bar == null && repository.serverKeyChanged.value) {
+          bar = (text: Notice.serverKeyChanged.text, action: null, run: null);
+          key = Notice.serverKeyChanged;
         }
         if (bar == null || _hiddenFor == key) return const SizedBox.shrink();
         final run = bar.run;

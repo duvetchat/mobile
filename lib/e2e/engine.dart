@@ -1812,6 +1812,7 @@ class E2EEngine implements DeviceSetupActions {
     if (recorded == null) {
       await store.write(externalSender, pinned).catchError((Object error) => debugPrint('e2e: the pin: $error'));
     }
+    _serverKeyChanged.value = pinned != served;
     if (pinned != served) {
       debugPrint(
         'e2e: the API serves another external sender than the one this device pinned: it stays the pinned one.',
@@ -1819,6 +1820,11 @@ class E2EEngine implements DeviceSetupActions {
     }
     return _sender = pinned;
   }
+
+  /// Whether the API serves another external sender than the one this device pinned (Ruling 32): said to the person
+  /// (Notice.serverKeyChanged), never taken, as long as it's served (M2 of step 4's closing review).
+  ValueListenable<bool> get serverKeyChanged => _serverKeyChanged;
+  final _serverKeyChanged = ValueNotifier(false);
 
   /// The core didn't open: unsupported for good, a lost key until the person starts over, anything else again later.
   void _closed(Opened opened) {

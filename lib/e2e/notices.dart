@@ -56,6 +56,11 @@ enum Notice {
 
   /// The same on a phone, which has no windows: a push's engine holds the database as the app opens it (Android's).
   lockedPhone('Encrypted conversations are busy on this phone. Duvet tries again on its own.'),
+  // The API serves another external sender than the one this device pinned (Ruling 32).
+  serverKeyChanged(
+    "Duvet's server key isn't the one this device first saw. This device keeps the first one, so a conversation that "
+    "uses the new one won't open here.",
+  ),
   waitOwner('Waiting for {owner} to open this group'),
   waitRejoin("You'll be back in this conversation when another member opens it."),
   membersChanged("This conversation's members changed since you last saw it."),
