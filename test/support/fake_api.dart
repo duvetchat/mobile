@@ -479,6 +479,20 @@ class _Conversation {
 
   /// The removals proposed, by generation, epoch and leaf: one an epoch.
   final proposed = <String>{};
+
+  /// All it holds, copied: what a request does to it afterwards doesn't reach the copy.
+  _Conversation copy() => _Conversation(id, type, ownerId, createdAt, legacy, [for (final m in members) _clone(m)])
+    ..group = group
+    ..seq = seq
+    ..floor = floor
+    ..entries.addAll([for (final e in entries) _clone(e)])
+    ..messages.addAll([for (final m in messages) _clone(m)])
+    ..deleted.addAll(deleted)
+    ..leaves = {...leaves}
+    ..departures.addAll(departures)
+    ..commits.addAll({for (final MapEntry(:key, :value) in commits.entries) key: _clone(value)})
+    ..leavers.addAll(leavers)
+    ..proposed.addAll(proposed);
 }
 
 class _Segment {
@@ -522,6 +536,12 @@ class _Share {
   final uploaded = <int, String>{};
   var completed = false;
   final acked = <String>{};
+
+  /// All it holds, copied: what a request does to it afterwards doesn't reach the copy.
+  _Share copy() => _Share(id, conversationId, fromUser, fromDevice, toUser, kind, range, startsAt, size, parts)
+    ..uploaded.addAll(uploaded)
+    ..completed = completed
+    ..acked.addAll(acked);
 }
 
 class _Connection {
@@ -577,11 +597,12 @@ const _noContent = _Answer(204);
 /// A copy of JSON's values, so what's sent is what was there then.
 T _clone<T>(T value) => jsonDecode(jsonEncode(value)) as T;
 
-// A switch's effects but an answer of its own: the answer lost, the request never reaching the API, or a message's
-// connection cut once its files went up.
+// A switch's effects but an answer of its own: the answer lost, the request never reaching the API, a message's
+// connection cut once its files went up, or the API's answer with nothing it did kept.
 const _lose = #lose;
 const _cut = #cut;
 const _cutAfterFiles = #cutAfterFiles;
+const _forget = #forget;
 
 /// The most bytes one file of a message takes, as Duvet's storage does: past it, a 413.
 const fileMost = 20 << 20;
@@ -694,9 +715,9 @@ class FakeApi {
   /// Events held for [releaseEvents], while holding.
   List<({_Connection connection, GatewayEvent event})>? _held;
 
-  /// What the next request a switch takes gets: an answer of its own, its answer lost ([_lose]), or never reaching the
-  /// API ([_cut]).
-  final _switches = <({RouteMatch match, Object effect})>[];
+  /// What the next request a switch takes gets: an answer of its own, its answer lost ([_lose]), never reaching the
+  /// API ([_cut]), or the API's answer with nothing kept ([_forget]); every one from then on when it's [always].
+  final _switches = <({RouteMatch match, Object effect, bool always})>[];
 
   /// Requests held until as many as each gate counts have come ([gather]).
   final _gates = <({RouteMatch match, int count, List<Completer<void>> waiting})>[];
@@ -949,21 +970,32 @@ class FakeApi {
   }
 
   /// The next request [match] takes never reaches the API: the client fails, and nothing is done.
-  void cutRequest(RouteMatch match) => _switches.add((match: match, effect: _cut));
+  void cutRequest(RouteMatch match) => _switches.add((match: match, effect: _cut, always: false));
 
   /// The requests [match] takes wait until [count] of them have come, then go on in the order they came: once.
   void gather(RouteMatch match, int count) => _gates.add((match: match, count: count, waiting: []));
 
   /// The next request [match] takes does its work, and its answer is lost: the client fails, as with a cut connection.
-  void loseAnswer(RouteMatch match) => _switches.add((match: match, effect: _lose));
+  void loseAnswer(RouteMatch match) => _switches.add((match: match, effect: _lose, always: false));
 
   /// The next message [match] takes has its files go up, then its connection cut: the files stay up, on no message,
   /// and the message isn't taken.
-  void cutAfterFiles(RouteMatch match) => _switches.add((match: match, effect: _cutAfterFiles));
+  void cutAfterFiles(RouteMatch match) => _switches.add((match: match, effect: _cutAfterFiles, always: false));
+
+  /// The next request [match] takes gets the API's own answer, and nothing it did is kept: what it stored goes back as
+  /// it was, and the events it would send go nowhere. A server that says it took what it never took.
+  void forget(RouteMatch match) => _switches.add((match: match, effect: _forget, always: false));
 
   /// The next request [match] takes is refused, and does nothing: 426 and 503 in the API's words (503 with its
-  /// Retry-After), any other with the [body] given.
-  void refuse(RouteMatch match, int status, {Object? body, Map<String, String> headers = const {}}) {
+  /// Retry-After), any other with the [body] given. A 2xx answered so is a server that says it did what it never did.
+  /// Every request [match] takes from now on is answered so when [always].
+  void refuse(
+    RouteMatch match,
+    int status, {
+    Object? body,
+    Map<String, String> headers = const {},
+    bool always = false,
+  }) {
     final own = switch (status) {
       426 => const _Answer(426, body: {'error': 'update Duvet', 'client': null, 'minimum': null}),
       503 => const _Answer(503, body: {'error': 'encrypted conversations are paused'}, headers: {'Retry-After': '60'}),
@@ -972,7 +1004,57 @@ class FakeApi {
     _switches.add((
       match: match,
       effect: _Answer(status, body: body ?? own.body, headers: {...own.headers, ...headers}),
+      always: always,
     ));
+  }
+
+  /// How the API serves a user's identity, by both of its routes: as it is, unless a test has it lie, as a server
+  /// could; null serves none (a 404, or left out of the list).
+  Map<String, Object?>? Function(Map<String, Object?> view) servedAs = (view) => view;
+
+  /// The user's identity as the API serves it now: one a test may have it serve again later ([servedAs]).
+  Map<String, Object?> identityOf(String user) => _clone(_identityView(user));
+
+  /// The server sends an event of its own making to the user's connections (to its [device]'s, when it names one).
+  void tell(String user, GatewayEvent event, {String? device}) => _send([(user: user, device: device, event: event)]);
+
+  /// A proposal to take the device's leaf out of the conversation's group, as the groups' external sender makes one
+  /// but signed with [seed]'s key (the API's own unless a test gives another): queued, and heard by the members as
+  /// the API's proposals are.
+  void proposeRemoval(String conversationId, String deviceId, {Uint8List? seed}) {
+    final conv = _conversation(conversationId);
+    final group = conv.group;
+    final held = group == null ? null : _groupInfoLeaves(base64Decode(group.groupInfo));
+    final leaf = held?.leaves.entries.where((leaf) => leaf.value == deviceId).firstOrNull?.key;
+    if (group == null || held == null || leaf == null) throw StateError('no leaf of $deviceId in $conversationId');
+    final entry = _addEntry(conv, {
+      'kind': 'proposal',
+      'data': _removalProposal(held.groupId, held.epoch, leaf, seed: seed),
+      'generation': group.generation,
+      'epoch': group.epoch,
+    });
+    for (final member in conv.members) {
+      _emit(member['user_id']! as String, 'MLS_PROPOSAL', {
+        'conversation_id': conv.id,
+        'generation': group.generation,
+        'epoch': group.epoch,
+        'entry': _forEvent(entry),
+      });
+    }
+    final events = [..._outbox];
+    _outbox.clear();
+    Timer.run(() => _send(events));
+  }
+
+  /// The API serves the message as deleted (its queue's entry `deleted`, without its bytes, and GET …/messages/deleted
+  /// names it), though its author never deleted it: no tombstone is queued.
+  void markDeleted(String conversationId, String messageId) {
+    final conv = _conversation(conversationId);
+    final message =
+        conv.messages.where((m) => m['id'] == messageId).firstOrNull ??
+        (throw StateError('no message $messageId in $conversationId'));
+    conv.deleted.add(messageId);
+    message['ciphertext'] = null;
   }
 
   /// Events wait from now on, until [releaseEvents].
@@ -1021,16 +1103,54 @@ class FakeApi {
       }
       await held.future;
     }
-    final switched = _switches.indexWhere((s) => _matches(s.match, request.method, path));
-    final effect = switched < 0 ? null : _switches.removeAt(switched).effect;
+    final switched = _switches.where((s) => _matches(s.match, request.method, path)).firstOrNull;
+    if (switched != null && !switched.always) _switches.remove(switched);
+    final effect = switched?.effect;
     if (effect == _cut) throw http.ClientException('the request never reached the API', request.url);
     if (effect case final _Answer answer) return _respond(answer);
+    if (effect == _forget) {
+      final putBack = _kept();
+      final (answer, _) = _answer(request);
+      putBack();
+      return _respond(answer);
+    }
     _cuttingAfterFiles = effect == _cutAfterFiles;
     final (answer, events) = _answer(request);
     // Its events go once its answer is made, lost or not: after the code that awaited it ran on.
     Timer.run(() => _send(events));
     if (effect == _lose) throw http.ClientException('the answer was lost', request.url);
     return _respond(answer);
+  }
+
+  /// What a request can change, copied as it is now: what it gives puts it back, as [forget] does once its answer is
+  /// made.
+  // shortcut: the conversations, the inboxes with what they deliver, and the shares alone, which the routes the tests
+  // forget write (commits, edits, deletions, an inbox's message, a share's completion); add another route's state here
+  // when a test forgets it.
+  void Function() _kept() {
+    final conversations = {for (final MapEntry(:key, :value) in _conversations.entries) key: value.copy()};
+    final inboxes = {
+      for (final MapEntry(:key, :value) in _inboxes.entries) key: [...value],
+    };
+    final (delivered, transfers) = ([..._delivered], {..._transfers});
+    final shares = {for (final MapEntry(:key, :value) in _shares.entries) key: value.copy()};
+    return () {
+      _conversations
+        ..clear()
+        ..addAll(conversations);
+      _inboxes
+        ..clear()
+        ..addAll(inboxes);
+      _delivered
+        ..clear()
+        ..addAll(delivered);
+      _transfers
+        ..clear()
+        ..addAll(transfers);
+      _shares
+        ..clear()
+        ..addAll(shares);
+    };
   }
 
   /// A request's answer, and the events it sends: none for a refusal, as the API's rolled-back work sends none.
@@ -1204,7 +1324,7 @@ class FakeApi {
         if (ids.length > 50 || ids.any((id) => !_uuid.hasMatch(id))) throw _fail(400, 'ids are 50 user IDs at most');
         return _ok([
           for (final id in ids)
-            if (_identities.containsKey(id) && _mayRead(ctx.me.user, id)) _identityView(id),
+            if (_identities.containsKey(id) && _mayRead(ctx.me.user, id)) ?servedAs(_identityView(id)),
         ]);
       }),
       route('GET', '/api/users/(?<user>$_uuidPath)/identity', _Needs.session, (ctx) {
@@ -1212,8 +1332,9 @@ class FakeApi {
         if (!_users.contains(user) || !_mayRead(ctx.me.user, user)) {
           throw _fail(403, "you can't read this user's identity");
         }
-        if (!_identities.containsKey(user)) throw _fail(404, 'no identity');
-        return _ok(_identityView(user));
+        final served = _identities.containsKey(user) ? servedAs(_identityView(user)) : null;
+        if (served == null) throw _fail(404, 'no identity');
+        return _ok(served);
       }),
       route('PUT', '$me/devices/@me/key-packages', _Needs.listed, _uploadKeyPackages),
       route('POST', '/api/users/(?<user>$_uuidPath)/key-packages/claim', _Needs.listed, _claimKeyPackages),
@@ -2124,9 +2245,9 @@ class FakeApi {
   }
 
   /// An external sender's proposal to remove a leaf (RFC 9420, its PublicMessage), as the API's validator makes one
-  /// (OpenMLS's ExternalProposal::new_remove): from the group's first external sender, signed with its key over the
-  /// content alone, as an external sender's signature covers no group context.
-  String _removalProposal(Uint8List groupId, int epoch, int leaf) {
+  /// (OpenMLS's ExternalProposal::new_remove): from the group's first external sender, signed with its key (or
+  /// [seed]'s) over the content alone, as an external sender's signature covers no group context.
+  String _removalProposal(Uint8List groupId, int epoch, int leaf, {Uint8List? seed}) {
     final framed = [
       ..._tlsUint(1, 2), // the protocol's version
       ..._tlsUint(_public, 2),
@@ -2136,7 +2257,7 @@ class FakeApi {
       ..._tlsVector(const []), // no authenticated data
       ...[2, ..._tlsUint(3, 2), ..._tlsUint(leaf, 4)], // a proposal: a Remove of the leaf
     ];
-    final signature = ed25519Sign(_senderSeed, [
+    final signature = ed25519Sign(seed ?? _senderSeed, [
       ..._tlsVector(utf8.encode('MLS 1.0 FramedContentTBS')),
       ..._tlsVector(framed),
     ]);

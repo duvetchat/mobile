@@ -70,6 +70,11 @@ const keptRelisted = 'relisted';
 /// that finds the core's new identity waiting for its upload knows it for a start over, not a first device's.
 const keptReset = 'reset';
 
+/// This installation's device, once its user's list named it on the API (its first list went up, or it was ready):
+/// from then on no list the API serves makes its first list wait again (identity.dart's firstListWaits). Its ID,
+/// nothing secret.
+const listedDevice = 'listed';
+
 /// The shared histories and catch-ups whose keys this device's core took, by package (history.dart): no key, only
 /// what's needed to know a package opens here, kept until it's imported and acknowledged.
 const historyKeys = 'history_keys';
@@ -102,6 +107,7 @@ const deviceRecord = [
   keysAgain,
   keptRelisted,
   keptReset,
+  listedDevice,
   historyKeys,
   backupRestore,
   backupMove,

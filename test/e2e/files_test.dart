@@ -113,18 +113,6 @@ bool _holds(Uint8List bytes, List<int> part) {
   return false;
 }
 
-/// The device's files of a message, once its core holds the message, as a view reads them.
-Future<List<ShownFile>> _filesOn(TestDevice device, String conversation, String id) async {
-  var files = <ShownFile>[];
-  await until(() async {
-    final row = (await device.engine.messages(conversation, [id])).firstOrNull;
-    if (row?.status != MessageStatus.ok) return false;
-    files = [for (final raw in row!.attachments) ?shownFile(raw)];
-    return true;
-  });
-  return files;
-}
-
 /// How a device downloads a file the API keeps at [url]: with none of the app's headers, [most] bytes at most.
 FileDownload _download(TestDevice device, String? url) => (most, progress) async {
   if (url == null) throw StateError('the API names no such file');
@@ -160,55 +148,6 @@ Future<Object> _refused(Future<Object?> future) async {
   fail('it was taken');
 }
 
-/// A file as another client could send it, its envelope written by hand: the core seals it and encrypts what it's
-/// told, and nothing checks what the sender says of it. Sent beside Ana's engine, which is idle.
-Future<duvet.DirectMessage> _sendWritten(
-  TestDevice device,
-  String conversation,
-  List<({Uint8List bytes, Map<String, Object?> said})> files,
-) async {
-  final attachments = <Map<String, Object?>>[];
-  final sealed = <Uint8List>[];
-  for (final (:bytes, :said) in files) {
-    final key = (await device.host.handle<Map<String, Object?>>({'cmd': 'attachment_key'}))['key']! as String;
-    final id = uuidv7();
-    sealed.add(await device.host.sealFile(key, id, bytes));
-    attachments.add({
-      'id': id,
-      'key': key,
-      'sha256': base64Encode(sha256.convert(bytes).bytes),
-      'name': 'file',
-      'type': 'application/octet-stream',
-      'size': bytes.length,
-      ...said,
-    });
-  }
-  final nonce = uuidv4();
-  final made = await device.host.handle<Map<String, Object?>>({
-    'cmd': 'encrypt',
-    'conversation_id': conversation,
-    'nonce': nonce,
-    'envelope': {'attachments': attachments},
-  });
-  final message = await device.api.sendMessage(
-    conversation,
-    duvet.EncryptedMessage(
-      ciphertext: made['ciphertext']! as String,
-      nonce: nonce,
-      attachmentIds: [for (final a in attachments) a['id']! as String],
-    ),
-    files: sealed,
-  );
-  await device.host.handle<Object?>({
-    'cmd': 'sent',
-    'conversation_id': conversation,
-    'nonce': nonce,
-    'message_id': message.id,
-    'seq': message.seq,
-  });
-  return message;
-}
-
 void main() {
   setUpAll(() async {
     if (coreLibrary != null) await loadCore();
@@ -230,7 +169,7 @@ void main() {
         onProgress: (done, total) => progress.add((done, total)),
       ))!;
       // The API took one file, under the ID the envelope names: the sealed bytes, as a file it can't open.
-      final [file] = await _filesOn(b, conversation, sent.id);
+      final [file] = await filesOn(b, conversation, sent.id);
       expect((file.name, file.said, file.size, file.width, file.height), ('cat.png', 'image/png', 70000, 640, 480));
       expect(
         [for (final at in sent.attachments!) (at.id, at.filename, at.contentType, at.sizeBytes)],
@@ -275,7 +214,7 @@ void main() {
           ],
         ),
       ))!;
-      final [first, second] = await _filesOn(b, conversation, sent.id);
+      final [first, second] = await filesOn(b, conversation, sent.id);
       expect((first.thumbnail, first.thumbnailRef), (base64Encode(small), null));
       expect(second.thumbnail, isNull);
       expect(second.thumbnailRef?.size, large.length);
@@ -298,7 +237,7 @@ void main() {
           files: [for (var i = 0; i < 5; i++) FileToSeal(bytes: _png(100), name: '$i.png', thumbnail: _jpeg(7900))],
         ),
       ))!;
-      final files = await _filesOn(b, conversation, many.id);
+      final files = await filesOn(b, conversation, many.id);
       expect(files, hasLength(5));
       final inside = files.where((f) => f.thumbnail != null).toList();
       final apart = files.where((f) => f.thumbnailRef != null).toList();
@@ -324,12 +263,12 @@ void main() {
       final (fake: _, :a, :b, :conversation, seen: _, aClient: _, holdNext: _) = await _dm();
       final page = utf8.encode("<!doctype html><script>parent.postMessage('x', '*')</script>");
       final svg = utf8.encode('<svg xmlns="http://www.w3.org/2000/svg"><script>alert(1)</script></svg>');
-      final sent = await _sendWritten(a, conversation, [
+      final sent = await sendWritten(a, conversation, [
         (bytes: page, said: {'name': 'cat.png', 'type': 'image/png'}),
         (bytes: svg, said: {'name': 'logo.svg', 'type': 'image/svg+xml'}),
         (bytes: _jpeg(3000), said: {'name': 'photo.bin', 'type': 'application/octet-stream'}),
       ]);
-      final [html, vector, photo] = await _filesOn(b, conversation, sent.id);
+      final [html, vector, photo] = await filesOn(b, conversation, sent.id);
       Future<String> typeOf(ShownFile file) async =>
           (await openSealed(file, download: _download(b, _urlOf(sent, file.id)), open: _open(b))).type;
       // An HTML page called a PNG is no picture: its bytes say what it is, and it's only ever saved, as bytes.
@@ -362,7 +301,7 @@ void main() {
     () async {
       final (fake: _, :a, :b, :conversation, seen: _, aClient: _, holdNext: _) = await _dm();
       final bytes = _png(100);
-      final sent = await _sendWritten(a, conversation, [
+      final sent = await sendWritten(a, conversation, [
         (
           bytes: bytes,
           said: {
@@ -378,7 +317,7 @@ void main() {
         // A size no request could carry is never downloaded.
         (bytes: bytes, said: {'name': 'huge.png', 'size': 1 << 40, 'duration_ms': 1 << 60}),
       ]);
-      final [named, small, big, huge] = await _filesOn(b, conversation, sent.id);
+      final [named, small, big, huge] = await filesOn(b, conversation, sent.id);
       // Its name without its path or what hides its kind; a width no picture has left out; its type only a claim.
       expect((named.name, named.said, named.width), ('gnp.exe', 'image/png', null));
       final shownAs = await openSealed(named, download: _download(b, _urlOf(sent, named.id)), open: _open(b));
@@ -416,10 +355,10 @@ void main() {
     () async {
       final (fake: _, :a, :b, :conversation, seen: _, aClient: _, holdNext: _) = await _dm();
       final other = base64Encode(sha256.convert(_png(64)).bytes);
-      final sent = await _sendWritten(a, conversation, [
+      final sent = await sendWritten(a, conversation, [
         (bytes: _png(100), said: {'name': 'a.png', 'sha256': other}),
       ]);
-      final [file] = await _filesOn(b, conversation, sent.id);
+      final [file] = await filesOn(b, conversation, sent.id);
       final error = await _refused(openSealed(file, download: _download(b, _urlOf(sent, file.id)), open: _open(b)));
       expect((error as FileError).reason, FileFailure.hash);
     },
@@ -444,7 +383,7 @@ void main() {
           files: [FileToSeal(bytes: picked!.bytes, name: picked.name)],
         ),
       ))!;
-      final [file] = await _filesOn(b, conversation, sent.id);
+      final [file] = await filesOn(b, conversation, sent.id);
       expect((file.name, file.said, file.size), ('dancing-cat.gif', 'image/gif', bytes.length));
       expect((await b.engine.messages(conversation, [sent.id])).single.text, isNull);
       // The API never saw where it came from.
@@ -583,7 +522,7 @@ void main() {
         ),
       ))!;
       final ids = [for (final attachment in sent.attachments!) attachment.id];
-      await _filesOn(b, conversation, sent.id);
+      await filesOn(b, conversation, sent.id);
       for (final device in [a, b]) {
         final names = await device.engine.fileNames();
         expect([for (final id in ids) names[id]], ['plan.png', 'report.bin']);
@@ -716,7 +655,7 @@ void main() {
       expect(again.values['attachment_ids'], first.values['attachment_ids']);
       expect(partsOf(again), partsOf(first));
       expect(await _posted(a, conversation), [sent.id]);
-      expect([for (final f in await _filesOn(b, conversation, sent.id)) f.name], ['a.png']);
+      expect([for (final f in await filesOn(b, conversation, sent.id)) f.name], ['a.png']);
 
       // Its files went up, and its connection was cut before the message: sent again, the API takes them again.
       final twice = uuidv4();
@@ -728,7 +667,7 @@ void main() {
       expect(taken.values['attachment_ids'], cut.values['attachment_ids']);
       expect([for (final file in resent.attachments!) file.id], cut.values['attachment_ids']);
       expect(await _posted(a, conversation), [sent.id, resent.id]);
-      final [file] = await _filesOn(b, conversation, resent.id);
+      final [file] = await filesOn(b, conversation, resent.id);
       final opened = await openSealed(file, download: _download(b, _urlOf(resent, file.id)), open: _open(b));
       expect(opened.type, 'image/png');
     },
@@ -758,7 +697,7 @@ void main() {
       final [cut, remade] = [_forms(seen, conversation).first, _forms(seen, conversation).last];
       expect(remade.values['attachment_ids'], cut.values['attachment_ids']);
       final bo = await restarted(fake, b);
-      expect([for (final f in await _filesOn(bo, conversation, sent.id)) f.name], ['late.png']);
+      expect([for (final f in await filesOn(bo, conversation, sent.id)) f.name], ['late.png']);
 
       // The API says it's stale (409): made again under another nonce, with the same files.
       final refused = uuidv4();
@@ -769,7 +708,7 @@ void main() {
       expect(posted.nonce, isNot(refused));
       final [before, after] = _forms(seen, conversation).sublist(_forms(seen, conversation).length - 2);
       expect(after.values['attachment_ids'], before.values['attachment_ids']);
-      expect([for (final f in await _filesOn(bo, conversation, posted.id)) f.name], ['again.png']);
+      expect([for (final f in await filesOn(bo, conversation, posted.id)) f.name], ['again.png']);
       await bo.engine.stop();
     },
     skip: noCore,
@@ -819,7 +758,7 @@ void main() {
       final nonce = uuidv4();
       await _refused(a.engine.sendMessage(Outgoing(conversationId: conversation, nonce: nonce, files: note)));
       final sent = (await a.engine.resendMessage(conversation, nonce))!;
-      final [file] = await _filesOn(b, conversation, sent.id);
+      final [file] = await filesOn(b, conversation, sent.id);
       expect((file.said, file.durationMs, file.waveform), ('audio/ogg', 2300, base64Encode(waveform)));
       final row = (await b.engine.messages(conversation, [sent.id])).single;
       expect(drawnAs(text: row.text, attachments: row.attachments, sticker: false), Drawn.voiceNote);
@@ -856,7 +795,7 @@ void main() {
           files: [FileToSeal(bytes: _png(500), name: 'a.png')],
         ),
       ))!;
-      await _filesOn(a, conversation, sent.id);
+      await filesOn(a, conversation, sent.id);
       await b.engine.deleteMessage(conversation, sent.id);
       await until(() => deleted.contains(sent.id));
       // The person's own deletion tells it too.
@@ -891,7 +830,7 @@ void main() {
           ],
         ),
       ))!;
-      final [one, two] = await _filesOn(b, conversation, first.id);
+      final [one, two] = await filesOn(b, conversation, first.id);
       // The same file sent again with other content, as after a Cancel: a message of its own.
       final again = (await a.engine.sendMessage(
         Outgoing(
@@ -900,7 +839,7 @@ void main() {
           files: [FileToSeal(bytes: _png(1000), name: 'a.png')],
         ),
       ))!;
-      final [three] = await _filesOn(b, conversation, again.id);
+      final [three] = await filesOn(b, conversation, again.id);
       expect({one.key, two.key, two.thumbnailRef!.key, three.key}, hasLength(4));
     },
     skip: noCore,
