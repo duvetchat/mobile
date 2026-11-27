@@ -916,6 +916,48 @@ void main() {
     timeout: _slow,
   );
 
+  // mobile#377: the core answers not_found for the device's group (`membership`) while it's out of it, which isn't
+  // its message gone. Bo's edit, unanswered, is kept while Ana takes him out: its next try, and a start, keep it, and
+  // it goes once he's added back.
+  test(
+    'a_change_kept_while_its_device_is_out_of_its_group_waits,_and_goes_once_it_is_back',
+    () async {
+      final fake = FakeApi();
+      final (ana, bo, cy) = (fake.addUser(), fake.addUser(), fake.addUser());
+      final conversation = fake.addConversation(group: true, members: [ana, bo, cy], owner: ana);
+      final a = await firstDevice(fake, ana);
+      final b = await firstDevice(fake, bo);
+      final c = await firstDevice(fake, cy);
+      await a.engine.openConversation(conversation);
+      await sameGroup([a, b, c], conversation);
+      final message =
+          await b.engine.sendMessage(Outgoing(conversationId: conversation, nonce: uuidv4(), text: 'as written')) ??
+          (throw StateError('not sent'));
+      await until(() async => await _textOn(c, conversation, message.id) == 'as written');
+      fake.cutRequest((method: 'PATCH', path: '${_messagesPath(conversation)}/${message.id}'));
+      await b.engine.editMessage(conversation, message.id, 'edited');
+      expect(b.store.read(pendingChanges), hasLength(1));
+
+      final keyPackages = await a.api.claimKeyPackages(bo);
+      await stoppedByHand(a);
+      await removeByHand(a, conversation, bo);
+      await until(() async => await groupOf(b, conversation) == null, what: "Bo's device out of the group");
+      b.clock.advance(const Duration(seconds: 2));
+      await turnEnded(b);
+      expect(b.store.read(pendingChanges), hasLength(1), reason: 'its try while out');
+      final again = await restarted(fake, b);
+      expect(again.store.read(pendingChanges), hasLength(1), reason: 'a start while out');
+
+      await addByHand(a, conversation, bo, keyPackages);
+      await until(() async => await groupOf(again, conversation) != null, what: "Bo's device back in the group");
+      again.connect(again.registered.last);
+      await until(() async => await _textOn(c, conversation, message.id) == 'edited', what: "Bo's edit on Cy's device");
+      await until(() => again.store.read(pendingChanges) == null);
+    },
+    skip: noCore,
+    timeout: _slow,
+  );
+
   // N3 of task 17's re-review: a message made again went, its answer lost and its copy missed, and the record let go
   // of its link once more than 100 newer rows were bound (the bound rows read past it). Its Retry, by the nonce the
   // person sent it with, finds the nonce it went under among this run's remakes, and posts nothing.
