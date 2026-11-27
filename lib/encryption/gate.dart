@@ -16,7 +16,7 @@ import '../widgets/depth.dart';
 import '../widgets/rows.dart';
 import 'approval.dart' show ApprovalPage, shownApproval;
 import 'device_setup.dart' show finishSetupText, leavesOut, openDeviceSetup, resetFinishText, setupAgain, setupFailed;
-import 'devices.dart' show backupLine, deleteThisDevice, finishWithout, keysAgainText, stuckText;
+import 'devices.dart' show backupLine, confirmChangeKeys, deleteThisDevice, finishWithout, keysAgainText, stuckText;
 import 'recovery_key.dart';
 
 /// Where a client too old gets the new one.
@@ -143,12 +143,9 @@ class _EncryptionBannerState extends State<EncryptionBanner> {
       action: Notice.deleteDevice.text,
       run: (context) => deleteThisDevice(context),
     ),
-    // After a change of keys that left devices out: one of them may hold the keys (e2e#49).
-    EngineStage.ready when state.keysAgain => (
-      text: keysAgainText,
-      action: 'Change keys',
-      run: (context) => context.repository.changeKeys(),
-    ),
+    // After a change of keys that left devices out: one of them may hold the keys (e2e#49). Asked as Settings asks it,
+    // naming each device it takes off beside it (N-M6 of step 4's closing re-review).
+    EngineStage.ready when state.keysAgain => (text: keysAgainText, action: 'Change keys', run: _changeKeys),
     // A change of the security keys put off, or cut by the app's close before its upload (Task 25): Finish runs the
     // same change again, whose recovery key's page the state then brings up.
     EngineStage.ready when state.rotating && state.recoveryKey == null => (
@@ -158,6 +155,13 @@ class _EncryptionBannerState extends State<EncryptionBanner> {
     ),
     EngineStage.starting || EngineStage.ready => null,
   };
+
+  // Change security keys on its yes alone, to the question Settings asks.
+  Future<void> _changeKeys(BuildContext context) async {
+    final repository = context.repository;
+    final named = await confirmChangeKeys(context);
+    if (named != null) await repository.changeKeys(named: named);
+  }
 
   // Set up, or Finish: the identity made (or the one the core kept), whose key's page the state brings up.
   Future<void> _setUp(BuildContext context) => context.repository.makeIdentity();

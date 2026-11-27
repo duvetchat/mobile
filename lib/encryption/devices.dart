@@ -6,6 +6,7 @@ import 'package:flutter/foundation.dart' show ValueListenable;
 import 'package:flutter/material.dart';
 import 'package:forui/forui.dart';
 
+import '../data/repository.dart' show ChatRepository;
 import '../data/scope.dart';
 import '../e2e/engine.dart';
 import '../e2e/host.dart' show CoreError;
@@ -140,6 +141,58 @@ Future<void> deleteThisDevice(BuildContext context, [List<duvet.Device>? devices
   }
 }
 
+/// What a removal of [asked] (none: a change of keys) takes along, in the desktop's words, and their IDs, which go
+/// with the yes: the devices an earlier removal of this device's took off that the API didn't take, which the next list
+/// or key change takes off too (review 24's M3), and those the list names that the API no longer lists, as the first
+/// list names them (I2 of step 4's closing review); each by its name in [devices], the user's devices as the API lists
+/// them, or by what's known of one the API's list doesn't have ([knownName]). Of those the API no longer lists it says
+/// what's known, never why the server says they went (N-M7).
+Future<({String text, List<String> named})> devicesAlongWith(
+  ChatRepository repository,
+  String? asked,
+  List<duvet.Device>? devices,
+) async {
+  final along = await repository
+      .devicesAlong(asked)
+      .catchError((Object _) => (unsent: const <String>[], unregistered: const <String>[]));
+  String nameOf(String id) =>
+      devices?.where((d) => d.id == id).firstOrNull?.name ?? knownName(id, repository.knownDevice(id));
+  String listed(List<String> ids) => switch ([for (final id in ids) nameOf(id)]) {
+    [final one] => one,
+    final names => '${names.take(names.length - 1).join(', ')} and ${names.last}',
+  };
+  final (:unsent, :unregistered) = along;
+  return (
+    text: [
+      if (unsent.isNotEmpty) " This also removes ${listed(unsent)}, whose earlier removal didn't finish.",
+      if (unregistered.isNotEmpty)
+        " Duvet no longer lists ${listed(unregistered)}. If you didn't remove "
+            "${unregistered.length == 1 ? 'it' : 'them'} or change your password, cancel.",
+    ].join(),
+    named: [...unsent, ...unregistered],
+  );
+}
+
+/// Change security keys (Task 25), asked first wherever it's offered, Settings or the strip after a change that left
+/// devices out (N-M6 of step 4's closing re-review): one question naming each device it takes off beside it, as the
+/// user's [devices] name them (read here when not given). The devices that go with the yes, or null when cancelled.
+Future<List<String>?> confirmChangeKeys(BuildContext context, [List<duvet.Device>? devices]) async {
+  final repository = context.repository;
+  final listed = devices ?? await repository.devices().then<List<duvet.Device>?>((d) => d, onError: (Object _) => null);
+  final along = await devicesAlongWith(repository, null, listed);
+  if (!context.mounted) return null;
+  final sure = await confirmDestructive(
+    context,
+    title: 'Change security keys?',
+    body:
+        'Make new security keys and a new recovery key for your account? Your contacts will see that your keys '
+        'changed.${along.text}',
+    action: 'Change keys',
+    destructive: false,
+  );
+  return sure ? along.named : null;
+}
+
 /// Sign out (decision 13): it only ends the session, the device and its data staying, unless the person picks
 /// «Remove this device and delete its data» beside it, offered where this device has data of its own.
 Future<void> signOut(BuildContext context) async {
@@ -271,33 +324,8 @@ class _DevicesPageState extends State<DevicesPage> {
     }
   }
 
-  /// What a removal or a change of keys takes along, in the desktop's words, and their IDs, which go with the yes: the
-  /// devices an earlier removal of this device's took off that the API didn't take, which the next list or key change
-  /// takes off too (review 24's M3), and those the list names that the API no longer lists, as the first list names
-  /// them (I2 of step 4's closing review); each by name, or by what's known of one the API's list doesn't have
-  /// ([knownName]). Of those the API no longer lists it says what's known, never why the server says they went (N-M7).
-  Future<({String text, List<String> named})> _alongWith(String? asked) async {
-    final repository = context.repository;
-    final along = await repository
-        .devicesAlong(asked)
-        .catchError((Object _) => (unsent: const <String>[], unregistered: const <String>[]));
-    String nameOf(String id) =>
-        _devices?.where((d) => d.id == id).firstOrNull?.name ?? knownName(id, repository.knownDevice(id));
-    String listed(List<String> ids) => switch ([for (final id in ids) nameOf(id)]) {
-      [final one] => one,
-      final names => '${names.take(names.length - 1).join(', ')} and ${names.last}',
-    };
-    final (:unsent, :unregistered) = along;
-    return (
-      text: [
-        if (unsent.isNotEmpty) " This also removes ${listed(unsent)}, whose earlier removal didn't finish.",
-        if (unregistered.isNotEmpty)
-          " Duvet no longer lists ${listed(unregistered)}. If you didn't remove "
-              "${unregistered.length == 1 ? 'it' : 'them'} or change your password, cancel.",
-      ].join(),
-      named: [...unsent, ...unregistered],
-    );
-  }
+  Future<({String text, List<String> named})> _alongWith(String? asked) =>
+      devicesAlongWith(context.repository, asked, _devices);
 
   // Removing another device, in the desktop's words; for one on the list, what changing the keys too does, for one
   // that was lost or stolen.
@@ -330,19 +358,9 @@ class _DevicesPageState extends State<DevicesPage> {
 
   Future<void> _changeKeys() async {
     final repository = context.repository;
-    final along = await _alongWith(null);
-    if (!mounted) return;
-    final sure = await confirmDestructive(
-      context,
-      title: 'Change security keys?',
-      body:
-          'Make new security keys and a new recovery key for your account? Your contacts will see that your keys '
-          'changed.${along.text}',
-      action: 'Change keys',
-      destructive: false,
-    );
-    if (!sure || !mounted) return;
-    await _act(() => repository.changeKeys(named: along.named));
+    final named = await confirmChangeKeys(context, _devices);
+    if (named == null || !mounted) return;
+    await _act(() => repository.changeKeys(named: named));
   }
 
   @override

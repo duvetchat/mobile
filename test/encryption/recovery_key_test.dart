@@ -342,6 +342,24 @@ void main() {
       expect(repository.encryptionTaps, ['changeKeys']);
     });
 
+    // N-M6 of step 4's closing re-review: the strip's «Change keys», after a change that left devices out, is
+    // Settings' own change of keys: one question naming each device it takes off beside it, and only its yes changes
+    // them.
+    testWidgets('change_keys_on_the_strip_asks_as_settings_does,_naming_the_devices_it_takes_off', (tester) async {
+      final repository = await gate(tester, const EngineState(EngineStage.ready, keysAgain: true));
+      await tester.pumpAndSettle();
+      const unlisted = '0193a4b2-0000-7000-8000-00000000eeee';
+      repository.devicesAlongList = (unsent: const [], unregistered: const [unlisted]);
+      await tester.tap(find.text('Change keys'));
+      await tester.pumpAndSettle();
+      expect(find.text('Change security keys?'), findsOneWidget);
+      expect(find.textContaining('Duvet no longer lists 0193a4b2.'), findsOneWidget);
+      expect(repository.encryptionTaps, isEmpty);
+      await tester.tap(find.text('Change keys').last);
+      await tester.pumpAndSettle();
+      expect(repository.encryptionTaps, ['changeKeys, named $unlisted']);
+    });
+
     // Review 24's I1 and review 25's I1: a key change that can't finish says why, with the one way out this core
     // leaves: no Finish, and this device's data deleted and set up again, as another device's change of keys can't
     // reach it (duvetchat/e2e#49).
