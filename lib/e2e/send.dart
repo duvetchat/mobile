@@ -581,9 +581,13 @@ class Sends {
           change.made = await _make(change);
           await _queueChange(change, noted: true, send: false);
         } catch (error) {
-          if (error is CoreError && error.code == 'not_found') {
+          if (error case CoreError(code: 'not_found', what: 'message')) {
             // Its message isn't on this device any more: nothing to change (M4 of task 17's review).
             await _unnote(conversation, message, kind);
+          } else if (error case CoreError(code: 'not_found')) {
+            // The device is out of its group (`membership`), or holds none: it, and its message's changes after it,
+            // wait in the record for the next start or READY (mobile#377).
+            break;
           } else {
             debugPrint("e2e: a change wasn't made again: $error");
           }
@@ -1038,8 +1042,9 @@ class Sends {
       await _groups.stillAsShown(id);
     } catch (failed) {
       // Its message isn't on this device any more (the person's deletion of it, made at once, behind it): nothing to
-      // change, as a start's resend lets such a change go.
-      if (failed is CoreError && failed.code == 'not_found' && failed.what != 'group') {
+      // change, as a start's resend lets such a change go. Out of its group (`membership`), or with none, it waits
+      // (mobile#377).
+      if (failed case CoreError(code: 'not_found', what: 'message')) {
         await _answered(change);
         _changed(id);
         return;

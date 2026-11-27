@@ -901,13 +901,17 @@ class E2EEngine implements DeviceSetupActions {
   /// have), then this device its group at once, as either member of a DM may. Before this device is ready, its group is
   /// made once it is. The API's conversation.
   Future<duvet.Conversation> createDM(String userId) =>
-      _created(() => api.api.createDM(userId), (owner: null, members: [user, userId]));
+      _created(() => api.api.createDM(userId), (owner: null, members: [user, userId], exact: false));
 
   /// The person's new group, which they own: as [createDM], its group made at once. One past 20 members, its owner
   /// among them, is refused before anything is asked.
   Future<duvet.Conversation> createGroup(String name, List<String> userIds) async {
     checkRoom({user, ...userIds}.length);
-    return _created(() => api.api.createGroup(name, userIds), (owner: user, members: {user, ...userIds}.toList()));
+    return _created(() => api.api.createGroup(name, userIds), (
+      owner: user,
+      members: {user, ...userIds}.toList(),
+      exact: false,
+    ));
   }
 
   /// A conversation the person made with [picked], of the kind they asked for: its group is founded with them alone,

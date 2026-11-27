@@ -1584,14 +1584,12 @@ void main() {
 
     // The API's own answers from here on, with nothing kept and no event sent (forget).
     //
-    // A finding left for an issue (the desktop's desktop-electrobun#553, which the app shares): once the core confirmed
-    // its creation (commit_result accepted), the API listing the conversation with no group makes _dropStale
-    // (sync.dart) tell the core no answer came, which the core answers not_found (nothing waits), so every open and
-    // send there throws before anything is encrypted. And once another member makes the API's group, this device stays
-    // in its own, at the same numbers: its next message goes to the API, which takes it by them, and no one can read
-    // it, nor it theirs, with no notice. What the person typed meanwhile isn't kept.
+    // mobile#369 (the desktop's #553): once the core confirmed its creation, the API listing the conversation with no
+    // group left the device in a group no one else could join, its opens and sends refused, what the person typed
+    // gone. The device forgets it (forget_group) and founds it again, held to the members it had.
     test(
-      'a_group_the_api_answered_for_and_never_kept_leaves_its_makers_message_waiting_and_the_device_goes_on',
+      'a_group_the_api_answered_for_and_never_kept_is_made_again_'
+      'and_what_its_maker_typed_goes_in_the_group_they_end_in',
       () async {
         final fake = FakeApi();
         final (ana, bo) = (fake.addUser(), fake.addUser());
@@ -1600,21 +1598,15 @@ void main() {
         final b = await firstDevice(fake, bo);
         fake.forget((method: 'POST', path: commitsPath(conversation)));
         await a.engine.openConversation(conversation);
-        final nonce = uuidv4();
-        await a.engine
-            .sendMessage(Outgoing(conversationId: conversation, nonce: nonce, text: 'kept here'))
-            .catchError((Object _) => null);
-        await turnEnded(a);
-        expect([for (final one in await a.engine.pendingMessages(conversation)) one.nonce], [nonce]);
-        // Bo's device makes the group the API keeps: Ana's goes into it, and what waited goes.
+        final kept = await _send(a, conversation, 'kept here');
         await b.engine.openConversation(conversation);
-        await until(
-          () async => (await a.engine.pendingMessages(conversation)).isEmpty,
-          what: "Ana's waiting message sent",
-        );
         await sameGroup([a, b], conversation);
+        await until(
+          () async => await _textOn(b, conversation, kept.id) == 'kept here',
+          what: "Ana's message read on Bo's device",
+        );
       },
-      skip: "a group's creation the API answered for and never kept: step 5's finding, left for an issue",
+      skip: noCore,
       timeout: _slow,
     );
 
@@ -1997,6 +1989,54 @@ void main() {
           return (await _madeAt(a, conversation, bo, ['edit'])).isNotEmpty;
         }, what: "Bo's edit");
         expect(await _madeAt(a, conversation, bo, ['edit']), [('edit', after.generation, after.epoch)]);
+      },
+      skip: noCore,
+      timeout: _slow,
+    );
+
+    // The comparison after the bytes (stillAsShown): nothing moves the group between the look and a kept message's
+    // bytes, but what the person sees can. Ana's page stops drawing Cy (his removal on its way, say) once her Retry's
+    // look passed and as its bytes are made: the message waits, and the conversation says why.
+    test(
+      'a_member_the_page_stops_drawing_as_a_messages_bytes_are_made_keeps_it_from_going',
+      () async {
+        final fake = FakeApi();
+        final (ana, bo, cy) = (fake.addUser(), fake.addUser(), fake.addUser());
+        final conversation = fake.addConversation(group: true, members: [ana, bo, cy], owner: ana);
+        var hidden = false;
+        String? retried;
+        final host = WatchedHost(
+          TestHost().gate,
+          [],
+          after: (command) {
+            if (command['cmd'] == 'encrypt' && command['nonce'] == retried) (retried, hidden) = (null, true);
+            return null;
+          },
+        );
+        final posts = <String>[];
+        final a = await firstDevice(
+          fake,
+          ana,
+          host: host,
+          client: watchedClient(fake, seen: (request) => _posts(request, conversation) ? posts.add('post') : null),
+          drawn: (id, {required fresh}) =>
+              (hidden ? _without(fake.drawnTo(ana), cy) : fake.drawnTo(ana))(id, fresh: fresh),
+        );
+        final (b, c) = (await firstDevice(fake, bo), await firstDevice(fake, cy));
+        await a.engine.openConversation(conversation);
+        await sameGroup([a, b, c], conversation);
+        fake.cutRequest((method: 'POST', path: _messagesPath(conversation)));
+        final nonce = uuidv4();
+        await a.engine
+            .sendMessage(Outgoing(conversationId: conversation, nonce: nonce, text: 'for the three of us'))
+            .catchError((Object _) => null);
+        expect(posts, hasLength(1));
+        retried = nonce;
+        await expectLater(a.engine.resendMessage(conversation, nonce), throwsA(isA<StateError>()));
+        expect(hidden, isTrue);
+        expect(posts, hasLength(1));
+        expect(a.engine.conversationState(conversation), ConversationState.groupDiffers([ana, bo, cy]));
+        expect([for (final one in await a.engine.pendingMessages(conversation)) one.nonce], [nonce]);
       },
       skip: noCore,
       timeout: _slow,
