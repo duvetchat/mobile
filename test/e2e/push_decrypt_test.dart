@@ -732,7 +732,7 @@ void main() {
       // Cy's app, next, says the members changed, as it would have had it read that welcome itself.
       final again = await restarted(fake, c);
       addTearDown(again.engine.stop);
-      await until(() => again.engine.conversationState(conversation) == ConversationState.membersChanged);
+      await until(() => again.engine.conversationState(conversation)?.name == ConversationNotice.membersChanged);
     },
     skip: noCore,
     timeout: _slow,
@@ -793,7 +793,7 @@ void main() {
       final seen = <http.Request>[];
       final again = await restarted(fake, c, client: watchedClient(fake, seen: seen.add));
       addTearDown(again.engine.stop);
-      await until(() => again.engine.conversationState(conversation) == ConversationState.membersChanged);
+      await until(() => again.engine.conversationState(conversation)?.name == ConversationNotice.membersChanged);
       await turnEnded(again);
       expect(requestsOf(seen), isNot(contains('POST ${commitsPath(conversation)}')));
       // On Cy's yes it joins, and the record goes.

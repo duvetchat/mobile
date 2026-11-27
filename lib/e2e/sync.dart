@@ -73,10 +73,16 @@ class ConversationState {
       restart = null,
       owner = null;
 
+  /// Its members aren't those this device would go in with ([users]: whom a yes has it go in with, the conversation's
+  /// members as the API lists them; N-M10 of step 4's closing re-review).
+  const ConversationState.membersChanged(this.users)
+    : name = ConversationNotice.membersChanged,
+      restart = null,
+      owner = null;
+
   const ConversationState._(this.name) : restart = null, owner = null, users = const [];
 
   static const waitRejoin = ConversationState._(ConversationNotice.waitRejoin);
-  static const membersChanged = ConversationState._(ConversationNotice.membersChanged);
 
   final ConversationNotice name;
   final Restart? restart;
@@ -388,9 +394,14 @@ class Conversations {
   /// kept in the engine's store across restarts (M4 of the review).
   late final _refused = refusedGenerationsIn(_engine.store);
 
-  /// The person's yes, by conversation: the generation and the members ([membersKey]) it was given for, which a join
-  /// into that generation with them asks no more; it goes with the refusal it answered (M5 of the desktop's review).
-  final _accepted = <String, ({int generation, String members})>{};
+  /// The person's yes, by conversation: the generation it was given for and the members the question named ([_asked]),
+  /// which a founding after it is held to, and a join goes only while the API lists them; it goes with the refusal it
+  /// answered (M5 of the desktop's review; N-M10 of step 4's closing re-review).
+  final _accepted = <String, ({int generation, LegacyRecord record})>{};
+
+  /// Whom each conversation's question of changed members names: the members, and a group's owner, a yes has this
+  /// device go in with, as the API listed the conversation when it asked.
+  final _asked = <String, LegacyRecord>{};
 
   /// The group [_deviceless] was worked out from, by conversation: once the core's members differ, or those of them
   /// with a device in it, it's asked again (I3; #350).
@@ -452,6 +463,7 @@ class Conversations {
     _known.clear();
     _joinsLost.clear();
     _accepted.clear();
+    _asked.clear();
     _deviceless.clear();
     _devicelessFrom.clear();
     _restartRefused.clear();
@@ -625,20 +637,18 @@ class Conversations {
     _set(conv.id, _blocked(conv));
   }
 
-  /// The person's yes to the members of today: the record goes, and this device goes in with none to hold it to, by
-  /// an external commit, or by making the group where there's none (M6 of the desktop's review); the members it said
-  /// yes to are remembered, so a join made again with them asks no more.
+  /// The person's yes to the members the question named ([_asked]): the record goes, and this device goes in with them,
+  /// by an external commit while the API lists them, or by making the group with them alone where there's none (M6 of
+  /// the desktop's review; N-M10 of step 4's closing re-review): a listing with others by then asks again.
   Future<void> accept(String conversationId) async {
-    if (!_refused.containsKey(conversationId)) return;
+    final asked = _asked[conversationId];
+    if (!_refused.containsKey(conversationId) || asked == null) return;
     final conv = await _fresh(conversationId);
     if (conv == null) return _gone(conversationId);
     await _legacy.drop(conversationId);
     final generation = _refused[conversationId] ?? 0;
     await _unrefuse(conversationId);
-    _accepted[conversationId] = (
-      generation: max(generation, conv.group?.generation ?? 0),
-      members: membersKey(conv.api),
-    );
+    _accepted[conversationId] = (generation: max(generation, conv.group?.generation ?? 0), record: asked);
     _set(conversationId, null);
     if (conv.group == null) return open(conversationId);
     await _join(conv);
@@ -847,6 +857,7 @@ class Conversations {
     _welcomeGenerations.remove(id);
     _joinsLost.remove(id);
     _accepted.remove(id);
+    _asked.remove(id);
     _catchUps.forget(id);
     // The record's write logs its own failure: the refusal goes from memory at once.
     unawaited(_unrefuse(id));
@@ -883,12 +894,13 @@ class Conversations {
     return true;
   }
 
-  /// The group made here with the members this device can account for (C1 of step 4's closing reviews): its record (the
-  /// person's picks as they made the conversation here, or one from before the cutover as first seen), else the
-  /// conversation as the person sees it, asked again of a fresh listing. The API gives their order, never the set or
-  /// the kind: a listing that differs founds nothing, and the conversation says so; one the person doesn't see waits.
+  /// The group made here with the members this device can account for (C1 of step 4's closing reviews): those the
+  /// person said yes to, as a question named them (N-M10 of the re-review); its record (the person's picks as they made
+  /// the conversation here, or one from before the cutover as first seen); else the conversation as the person sees
+  /// it, asked again of a fresh listing. The API gives their order, never the set or the kind: a listing that differs
+  /// founds nothing, and the conversation says so; one the person doesn't see waits.
   Future<void> _make(_Conv conv) async {
-    final record = await _record(conv.api);
+    final record = _accepted[conv.id]?.record ?? await _record(conv.api);
     var accounted = record ?? _recordOf(await _shown(conv.id));
     if (record == null && accounted != null && !_isRecord(conv.api, accounted)) {
       accounted = _recordOf(await _shown(conv.id, fresh: true));
@@ -1108,6 +1120,12 @@ class Conversations {
   /// The conversation's record ([LegacyRecords.of]), one made the first time it's seen held to what's drawn.
   Future<LegacyRecord?> _record(duvet.Conversation conv) => _legacy.of(conv, (made) => _drawnAs(conv.id, made));
 
+  /// [conv] as the API lists it, as a record: its users, and a group's owner.
+  static LegacyRecord _listedAs(duvet.Conversation conv) => (
+    owner: conv.type == duvet.ConversationType.group ? conv.ownerId : null,
+    members: [for (final member in conv.members) member.userId],
+  );
+
   /// Whether [record] is the conversation as the person sees it: its kind, a group's owner and its users, whatever
   /// their order (N-M1 of step 4's closing re-review). False while that can't be read.
   Future<bool> _drawnAs(String id, LegacyRecord record) async {
@@ -1229,7 +1247,14 @@ class Conversations {
   /// Its members aren't those this device would go in with: the person says whether to go on ([accept]).
   Future<void> _membersChanged(_Conv conv, [int? generation]) async {
     await _refuse(conv.id, generation ?? conv.group?.generation ?? 0);
-    _set(conv.id, ConversationState.membersChanged);
+    _ask(conv);
+  }
+
+  /// The question of changed members, naming whom a yes has this device go in with: the conversation as the API last
+  /// listed it, which the yes records (N-M10 of step 4's closing re-review).
+  void _ask(_Conv conv) {
+    final asked = _asked[conv.id] = _listedAs(_known[conv.id]?.api ?? conv.api);
+    _set(conv.id, ConversationState.membersChanged(asked.members));
   }
 
   /// Whether this device may join [generation] (the group info's it fetched) by an external commit on its own: not
@@ -1239,7 +1264,7 @@ class Conversations {
   Future<bool> _mayJoin(_Conv conv, int generation) async {
     // The members as the API lists them now: those a join would bring this device in with.
     final now = (await _fresh(conv.id))?.api ?? conv.api;
-    if (_accepted[conv.id] case final yes? when yes.generation == generation && yes.members == membersKey(now)) {
+    if (_accepted[conv.id] case final yes? when yes.generation == generation && _isRecord(now, yes.record)) {
       return true;
     }
     if ((_refused[conv.id] ?? -1) >= generation) return false;
@@ -1289,7 +1314,7 @@ class Conversations {
   Future<void> _join(_Conv conv) async {
     final id = conv.id;
     if (_otherSender.contains(id)) return _set(id, _blocked(conv));
-    if ((_refused[id] ?? -1) >= (conv.group?.generation ?? 0)) return _set(id, ConversationState.membersChanged);
+    if ((_refused[id] ?? -1) >= (conv.group?.generation ?? 0)) return _ask(conv);
     if (_inFlight.containsKey(id)) return;
     if ((_joinsLost[id] ?? 0) >= _joinsLostMost) {
       _joinsLost.remove(id);

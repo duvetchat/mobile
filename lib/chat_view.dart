@@ -3049,7 +3049,6 @@ class _ChatViewState extends State<ChatView> with SingleTickerProviderStateMixin
                               return ConversationStateBar(
                                 state: state,
                                 nameOf: _memberName,
-                                members: [for (final m in _members) m.displayName],
                                 onRestart: () => _restart(conversationId),
                                 onAccept: () => _repository.acceptMembers(conversationId),
                               );

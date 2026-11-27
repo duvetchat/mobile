@@ -590,7 +590,8 @@ void main() {
         final conversation = (await a.engine.createGroup('Plans', [bo])).id;
         await turnEnded(a);
         expect(planted, isTrue);
-        expect(a.engine.conversationState(conversation), ConversationState.membersChanged);
+        // The question names whom a yes would have the device go in with: the conversation as listed.
+        expect(a.engine.conversationState(conversation), ConversationState.membersChanged([ana, bo, eve]));
         expect(await groupOf(a, conversation), isNull);
         expect(commits, isEmpty);
         expect(await groupOf(e, conversation), isNull);
@@ -1016,6 +1017,52 @@ void main() {
         expect(commits, isEmpty);
         expect(await groupOf(a, planted), isNull);
         expect(a.engine.conversationState(planted)?.name, ConversationNotice.membersChanged);
+      },
+      skip: noCore,
+      timeout: _slow,
+    );
+
+    // N-M10 of step 4's closing re-review: the person's yes is to the members its question named, and the group is
+    // founded with them; a listing that differs by then asks again.
+    test(
+      'the_yes_to_changed_members_founds_with_whom_the_question_named,_and_another_listing_asks_again',
+      () async {
+        final fake = FakeApi();
+        final (ana, bo, eve, cy) = (fake.addUser(), fake.addUser(), fake.addUser(), fake.addUser());
+        final commits = <String>[];
+        var planted = false;
+        final client = watchedClient(
+          fake,
+          seen: (request) {
+            if (request.method == 'POST' && request.url.path.endsWith('/mls/commits')) commits.add(request.url.path);
+            if (planted || request.method != 'GET' || request.url.path != '/api/users/@me/conversations') return;
+            if (fake.conversationIds.firstOrNull case final made?) {
+              planted = true;
+              fake.addMembers(made, [eve]);
+            }
+          },
+        );
+        final a = await firstDevice(fake, ana, client: client);
+        for (final user in [bo, eve, cy]) {
+          await firstDevice(fake, user);
+        }
+        final conversation = (await a.engine.createGroup('Plans', [bo])).id;
+        await turnEnded(a);
+        expect(a.engine.conversationState(conversation)?.name, ConversationNotice.membersChanged);
+        expect(a.engine.conversationState(conversation)?.users, unorderedEquals([ana, bo, eve]));
+        // The server adds Cy before the person's yes, which was to Ana, Bo and Eve.
+        fake.addMembers(conversation, [cy]);
+        await a.engine.acceptMembers(conversation);
+        await turnEnded(a);
+        expect(commits, isEmpty);
+        expect(await groupOf(a, conversation), isNull);
+        expect(a.engine.conversationState(conversation)?.users, unorderedEquals([ana, bo, eve, cy]));
+        // A yes to them founds the group with them.
+        await a.engine.acceptMembers(conversation);
+        await turnEnded(a);
+        expect(commits, hasLength(1));
+        final held = await groupOf(a, conversation);
+        expect({for (final device in held?.devices ?? const []) device.user}, {ana, bo, eve, cy});
       },
       skip: noCore,
       timeout: _slow,

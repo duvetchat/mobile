@@ -98,12 +98,6 @@ List<String> leftOut(HeldMembers held, duvet.Conversation conv) => [
 /// Two lists of users, the same whatever their order.
 bool sameUsers(List<String> a, List<String> b) => a.length == b.length && a.every(b.contains);
 
-/// The conversation's members as the API has them, and a group's owner: what the person said yes to (accept).
-String membersKey(duvet.Conversation conv) => [
-  conv.type == duvet.ConversationType.group ? conv.ownerId : '',
-  ...[for (final m in conv.members) m.userId]..sort(),
-].join(',');
-
 /// Whether the API's conversation has the members, and a group the owner, that the core's group holds: only then does
 /// this device join a newer generation it has no welcome for on its own (sync.dart's join).
 bool sameMembers(HeldMembers held, duvet.Conversation conv) =>

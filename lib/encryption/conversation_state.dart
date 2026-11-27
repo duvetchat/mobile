@@ -18,7 +18,6 @@ class ConversationStateBar extends StatefulWidget {
     super.key,
     required this.state,
     required this.nameOf,
-    this.members = const [],
     required this.onRestart,
     required this.onAccept,
   });
@@ -27,9 +26,6 @@ class ConversationStateBar extends StatefulWidget {
 
   /// A member of the conversation, by the name the app shows them.
   final String Function(String userId) nameOf;
-
-  /// The conversation's members as the API lists them now, by name: whom a yes to changed members goes in with (I1).
-  final List<String> members;
   final Future<void> Function() onRestart;
   final Future<void> Function() onAccept;
 
@@ -60,10 +56,14 @@ class _ConversationStateBarState extends State<ConversationStateBar> {
         action: null,
         run: null,
       ),
+      // Whom a yes has this device go in with, which the yes records (N-M10 of step 4's closing re-review).
       ConversationNotice.membersChanged => (
         text: [
           Notice.membersChanged.text,
-          if (widget.members.isNotEmpty) Notice.membersNow.fill({'names': peopleNamed(widget.members)}),
+          if (state!.users.isNotEmpty)
+            Notice.membersNow.fill({
+              'names': peopleNamed([for (final user in state.users) widget.nameOf(user)]),
+            }),
         ].join('\n'),
         action: Notice.membersAccept.text,
         run: widget.onAccept,

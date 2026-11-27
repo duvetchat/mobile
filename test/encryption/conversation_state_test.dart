@@ -26,11 +26,10 @@ Widget _app(Widget child) => MaterialApp(
 void main() {
   final taps = <String>[];
 
-  Widget bar(ConversationState? state, {List<String> members = const []}) => _app(
+  Widget bar(ConversationState? state) => _app(
     ConversationStateBar(
       state: state,
-      nameOf: (user) => const {'ana': 'Ana', 'bo': 'Bo'}[user] ?? 'Someone',
-      members: members,
+      nameOf: (user) => const {'ana': 'Ana', 'bo': 'Bo', 'cy': 'Cy'}[user] ?? 'Someone',
       onRestart: () async => taps.add('restart'),
       onAccept: () async => taps.add('accept'),
     ),
@@ -70,11 +69,12 @@ void main() {
     expect(find.text(Notice.waitRejoin.text), findsOneWidget);
   });
 
-  // I1 of the review: the members a yes goes in with are named, as the API lists them now (the desktop's members_now).
+  // I1 of the review: the members a yes goes in with are named (the desktop's members_now), as the state names them,
+  // which the yes records (N-M10 of step 4's closing re-review).
   testWidgets("members_that_changed_since_the_device_last_saw_them,_whom_they_are_now,_and_the_person's_yes", (
     tester,
   ) async {
-    await tester.pumpWidget(bar(ConversationState.membersChanged, members: ['Ana', 'Bo', 'Cy']));
+    await tester.pumpWidget(bar(const ConversationState.membersChanged(['ana', 'bo', 'cy'])));
     expect(
       find.text('${Notice.membersChanged.text}\n${Notice.membersNow.fill({'names': 'Ana, Bo and Cy'})}'),
       findsOneWidget,
@@ -83,7 +83,7 @@ void main() {
     await tester.pumpAndSettle();
     expect(taps, ['accept']);
     // Before the members load, the notice alone.
-    await tester.pumpWidget(bar(ConversationState.membersChanged));
+    await tester.pumpWidget(bar(const ConversationState.membersChanged([])));
     expect(find.text(Notice.membersChanged.text), findsOneWidget);
   });
 
