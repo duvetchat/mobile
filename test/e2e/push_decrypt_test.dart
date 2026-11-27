@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:io';
 import 'dart:isolate';
 import 'dart:ui' show IsolateNameServer;
 
@@ -10,6 +11,7 @@ import 'package:duvet/e2e/core_gate.dart';
 import 'package:duvet/e2e/engine.dart';
 import 'package:duvet/e2e/notices.dart';
 import 'package:duvet/e2e/push_decrypt.dart';
+import 'package:duvet/e2e/store.dart' show pushRecord;
 import 'package:duvet/e2e/sync.dart' show refusedGenerationsIn;
 import 'package:duvet/e2e/uuid.dart';
 import 'package:duvet/push/background.dart';
@@ -88,8 +90,9 @@ Future<MessagePush?> _open(
   within: within,
 );
 
-/// What Ana's core holds of the message, read by a gate of the app's once the push's let go: null for none.
-Future<String?> _onAna(_Phone phone, String id) async {
+/// What Ana's core holds of the message (of her DM, or of [conversation]), read by a gate of the app's once the push's
+/// let go: null for none.
+Future<String?> _onAna(_Phone phone, String id, {String? conversation}) async {
   final gate = CoreGate(
     serves: true,
     keys: phone.host.keys,
@@ -98,7 +101,7 @@ Future<String?> _onAna(_Phone phone, String id) async {
   );
   expect((await gate.open(phone.ana)).state, HostState.ready, reason: 'the push left the core closed');
   try {
-    final rows = await shownMessages(gate, phone.conversation, [id]);
+    final rows = await shownMessages(gate, conversation ?? phone.conversation, [id]);
     return rows.where((row) => row.status == MessageStatus.ok).firstOrNull?.text;
   } finally {
     await gate.close();
@@ -307,6 +310,146 @@ void main() {
       expect(_queueReads(phone), hasLength(1));
       expect(_renewals(phone), isEmpty);
       expect(await _onAna(phone, sent.id), isNull);
+    },
+    skip: noCore,
+    timeout: _slow,
+  );
+
+  // Step 5's review, Minor 6 (mobile#366): the push's paths no case took.
+  test(
+    'an_expired_session_with_the_entry_in_the_push_opens_its_text_without_the_API',
+    () async {
+      final phone = await _phone();
+      await phone.a.engine.stop();
+      final sent = await _says(phone, 'opened with an ended session');
+      final data = phone.fake.pushOf(phone.conversation, sent.id);
+      expect(data.containsKey('entry'), isTrue);
+      phone.fake.endSession(phone.a.token);
+
+      final opened = (await _open(phone, data))!;
+      expect(opened.text, 'opened with an ended session');
+      // Nothing was asked of the API, which would refuse it, and nothing was renewed.
+      expect(phone.requests, isEmpty);
+      expect(await _onAna(phone, sent.id), 'opened with an ended session');
+    },
+    skip: noCore,
+    timeout: _slow,
+  );
+
+  test(
+    "while_the_app's_device_isn't_ready_its_core_applies_the_push_through_the_core's_port",
+    () async {
+      // Ana's app hears no message of the DM's: only the push's entry brings it.
+      bool deaf(GatewayEvent event) => event.type != 'DM_MESSAGE_CREATE';
+      final phone = await _phone(hears: deaf);
+      // Her app opens its core again, as at a start, and its gate answers on the core's port. Its device not ready yet
+      // (starting, setting up), it answers no push: nothing answers on the push's port.
+      final app = await restarted(phone.fake, phone.a, hears: deaf);
+      addTearDown(app.engine.stop);
+      expect(IsolateNameServer.lookupPortByName(pushPortName), isNull);
+      final sent = await _says(phone, 'applied in the core of the app');
+      final data = phone.fake.pushOf(phone.conversation, sent.id);
+
+      // The app holds the database, which the push's engine couldn't open itself: its text came through the port.
+      final opened = (await _open(phone, data))!;
+      expect(opened.text, 'applied in the core of the app');
+      expect(_queueReads(phone), isEmpty);
+      // The one writer took the entry: the app's engine holds the message.
+      expect(
+        [
+          for (final row in await app.engine.messages(phone.conversation, [sent.id])) row.text,
+        ],
+        ['applied in the core of the app'],
+      );
+    },
+    skip: noCore,
+    timeout: _slow,
+  );
+
+  test(
+    "a_push_for_an_account_whose_database_this_phone_doesn't_hold_shows_a_message_without_text_and_makes_none",
+    () async {
+      final phone = await _phone();
+      await phone.a.engine.stop();
+      final sent = await _says(phone, 'for an account this phone never opened');
+      // Another account's session, kept on the phone, whose app never opened the core here.
+      final other = phone.fake.addUser();
+      final opened = (await openedPush(
+        Push.fromData(phone.fake.pushOf(phone.conversation, sent.id))! as EncryptedMessagePush,
+        earlier: const [],
+        session: (token: phone.a.token, sessionToken: 'session', refreshedAt: null, userId: other),
+        core: (_) => _pushGate(phone),
+        router: fakeRouter,
+        duvetClient: engineClient,
+        client: watchedClient(phone.fake, seen: phone.requests.add),
+        store: (user) => pushRecord(user, folder: () async => phone.host.folder),
+        cache: MemoryChatCacheStore(),
+      ))!;
+      expect(opened.text, Notice.newMessage.text);
+      // Neither a database, nor its key, nor a record.
+      expect(Directory('${phone.host.folder.path}/e2e/$other').existsSync(), isFalse);
+      expect(phone.host.keys.keyOf(other), isNull);
+    },
+    skip: noCore,
+    timeout: _slow,
+  );
+
+  test(
+    'a_push_of_a_conversation_this_device_never_had_shows_a_message_without_text',
+    () async {
+      final phone = await _phone();
+      await phone.a.engine.stop();
+      // Bo and Carl's DM, which Ana's device was never in.
+      final carl = phone.fake.addUser();
+      final c = await firstDevice(phone.fake, carl);
+      addTearDown(c.engine.stop);
+      IsolateNameServer.removePortNameMapping(corePortName);
+      final theirs = phone.fake.addConversation(group: false, members: [phone.bo, carl]);
+      await phone.b.engine.openConversation(theirs);
+      await sameGroup([phone.b, c], theirs);
+      IsolateNameServer.removePortNameMapping(corePortName);
+      final sent = (await phone.b.engine.sendMessage(
+        Outgoing(conversationId: theirs, nonce: uuidv4(), text: 'for Carl alone'),
+      ))!;
+
+      final opened = (await _open(phone, phone.fake.pushOf(theirs, sent.id)))!;
+      // Its entry waits out of any group in Ana's core, and the queue isn't hers to read.
+      expect(opened.text, Notice.newMessage.text);
+      expect(await _onAna(phone, sent.id, conversation: theirs), isNull);
+    },
+    skip: noCore,
+    timeout: _slow,
+  );
+
+  test(
+    "a_push_whose_open_meets_the_app's_with_no_port_yet_lets_go_within_its_time",
+    () async {
+      final phone = await _phone();
+      // Ana's app holds the core as it opens it, before its gate answers on the core's port.
+      expect(IsolateNameServer.lookupPortByName(corePortName), isNull);
+      final sent = await _says(phone, 'while the app opens');
+      final data = phone.fake.pushOf(phone.conversation, sent.id);
+
+      final started = DateTime.now();
+      final opened = (await _open(
+        phone,
+        data,
+        core: (wait) =>
+            CoreGate(serves: false, keys: phone.host.keys, folder: () async => phone.host.folder, lockedWait: wait),
+        within: const Duration(seconds: 1),
+      ))!;
+      final took = DateTime.now().difference(started);
+      expect(opened.text, Notice.newMessage.text);
+      // It waited for the database only the time it had.
+      expect(took, lessThan(const Duration(seconds: 3)));
+      // The app keeps the database it opened: its engine reads what the gateway brought.
+      await until(() async => (await phone.a.engine.messages(phone.conversation, [sent.id])).isNotEmpty);
+      expect(
+        [
+          for (final row in await phone.a.engine.messages(phone.conversation, [sent.id])) row.text,
+        ],
+        ['while the app opens'],
+      );
     },
     skip: noCore,
     timeout: _slow,
