@@ -699,8 +699,11 @@ void main() {
       // A removal of b's whose upload is refused: the core keeps its list without b.
       fake.refuse(_list, 500, body: {'error': 'internal server error'});
       await expectLater(a.engine.removeDevice(_deviceOf(b)), throwsA(isA<duvet.DuvetApiException>()));
-      // A change of keys taking c off, on top of it, cut before its upload; the record kept nothing of it.
-      await a.engine.removeDevice(_deviceOf(c), changeKeys: true);
+      // A change of keys taking c off, on top of it, its question naming b too, cut before its upload; the record kept
+      // nothing of it.
+      final along = await a.engine.devicesAlong(_deviceOf(c));
+      expect(along.unsent, [_deviceOf(b)]);
+      await a.engine.removeDevice(_deviceOf(c), changeKeys: true, named: along.unsent);
       final key = _rotationKey(a.state);
       expect(store.read(rotationRemove), isNull);
       final again = await restarted(fake, a);
@@ -752,6 +755,46 @@ void main() {
       expect(along.unsent, isEmpty);
       expect(along.unregistered, [_deviceOf(c)]);
       await a.engine.removeDevice(_deviceOf(b), named: along.unregistered);
+      expect(listDevices((await a.api.identity(ana)).deviceList), [_deviceOf(a)]);
+      await Future.wait([
+        for (final device in [a, b, c]) device.engine.stop(),
+      ]);
+    },
+    skip: noCore,
+    timeout: _slow,
+  );
+
+  // N-M8 of step 4's closing re-review: a list this device signs on top of one of its own the API never took leaves
+  // out what that one did, an earlier removal's devices: a removal or a change of keys goes only once the person's yes
+  // named them too, as it names those the API took away.
+  test(
+    'a_list_on_top_of_an_unsent_one_goes_only_once_the_devices_it_leaves_out_were_named',
+    () async {
+      final fake = FakeApi();
+      final ana = fake.addUser();
+      final puts = <String>[];
+      final client = watchedClient(
+        fake,
+        seen: (request) {
+          if (_said(request) == 'PUT /api/users/@me/device-list') puts.add('PUT list');
+        },
+      );
+      final a = await firstDevice(fake, ana, client: client);
+      final b = await approvedDevice(fake, a);
+      final c = await approvedDevice(fake, a);
+      // A removal of b's whose upload is refused: the core keeps its list without b, which the API still lists.
+      fake.refuse(_list, 500, body: {'error': 'internal server error'});
+      await expectLater(a.engine.removeDevice(_deviceOf(b)), throwsA(isA<duvet.DuvetApiException>()));
+      final from = puts.length;
+      Matcher refused() => throwsA(isA<CoreError>().having((e) => e.code, 'code', 'devices_changed'));
+      await expectLater(a.engine.removeDevice(_deviceOf(c)), refused());
+      await expectLater(a.engine.removeDevice(_deviceOf(c), changeKeys: true), refused());
+      await expectLater(a.engine.changeKeys(), refused());
+      expect(puts.sublist(from), isEmpty);
+      // What the confirmation names, and the removal on its yes.
+      final along = await a.engine.devicesAlong(_deviceOf(c));
+      expect(along.unsent, [_deviceOf(b)]);
+      await a.engine.removeDevice(_deviceOf(c), named: along.unsent);
       expect(listDevices((await a.api.identity(ana)).deviceList), [_deviceOf(a)]);
       await Future.wait([
         for (final device in [a, b, c]) device.engine.stop(),

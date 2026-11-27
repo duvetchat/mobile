@@ -104,7 +104,8 @@ Future<void> removeDevice(E2EEngine engine, String deviceId, {List<String> named
 /// that the API never took (its upload refused) stays the core's own, newer than the API's (`older_list`), and goes up
 /// again as it is when it leaves the device out: the core signs no list without a device its own doesn't name. [alone]
 /// signs off that device and no other: an approval's way out, which takes nothing off on the API's word (mobile#352).
-/// Otherwise the devices the API took away go only when the person's confirmation [named] them.
+/// Otherwise the devices the API took away, and those the list it's signed on left out, go only when the person's
+/// confirmation [named] them.
 Future<void> unlist(E2EEngine engine, String deviceId, {bool alone = false, List<String> named = const []}) async {
   for (var round = 1; ; round++) {
     final served = await _observedOwn(engine);
@@ -113,7 +114,9 @@ Future<void> unlist(E2EEngine engine, String deviceId, {bool alone = false, List
     // Off both: a list that went up before its answer was lost, or another device's.
     if (!onHeld && !(listDevices(served.deviceList) ?? const <String>[]).contains(deviceId)) return;
     final remove = {if (onHeld) deviceId, if (!alone) ...await takenAway(engine, held)};
-    _onlyNamed(remove, [deviceId], named);
+    // And what the list it's signed on already leaves out, an earlier removal's that the API didn't take (N-M8 of step
+    // 4's closing re-review), as the question named both.
+    if (!alone) _onlyNamed({...remove, ...await unsentRemovals(engine)}, [deviceId], named);
     final list = remove.isEmpty
         ? held
         : (await engine.host.handle<Map<String, Object?>>({
@@ -195,8 +198,8 @@ class Rotation {
 /// rule: never read back from the lists, which name too much once the rotation was signed on a list of this device's
 /// that never went up, e2e#49). The served certificates go as each device uploaded them. Run again with [gone], the
 /// devices it keeps that the API's list no longer names ([goneDevices]), on the person's yes, it signs its list again
-/// without them, the served list its proof (e2e#49). A new one takes the devices the API took away only when the
-/// person's confirmation [named] them.
+/// without them, the served list its proof (e2e#49). A new one takes the devices the API took away, and those the list
+/// it's signed on left out, only when the person's confirmation [named] them.
 Future<Rotation> rotateKeys(
   E2EEngine engine,
   List<String> remove, {
@@ -220,7 +223,8 @@ Future<Rotation> rotateKeys(
     // The core takes off only devices its own list names.
     final listed = listDevices(held) ?? const <String>[];
     off = {...remove.where(listed.contains), ...await takenAway(engine, held)}.toList()..sort();
-    _onlyNamed(off, remove, named);
+    // And what the list it's signed on already leaves out (N-M8 of step 4's closing re-review).
+    _onlyNamed({...off, ...await unsentRemovals(engine)}, remove, named);
     // Kept before the command, so a rotation cut right after it runs again with it.
     await engine.store
         .write(rotationRemove, off)
