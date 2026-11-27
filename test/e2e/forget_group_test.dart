@@ -385,6 +385,55 @@ void main() {
       timeout: _slow,
     );
 
+    // One read brings the welcome to the API's group at the generation Ana's device holds another of (another_group),
+    // then Bo's restart of the API's group and its welcome, which her device takes. The note was of a generation she no
+    // longer holds: nothing is forgotten, and she stays in the generation she joined.
+    test(
+      'a_note_of_another_group_at_a_generation_the_same_read_went_past_forgets_nothing',
+      () async {
+        final t = await _forgottenFounding();
+        await t.b.engine.openConversation(t.conversation);
+        await stoppedByHand(t.b);
+        final made = await byHand(t.b, {
+          'cmd': 'reset_group',
+          'conversation_id': t.conversation,
+          'members': [t.ana, t.bo],
+          'key_packages': {
+            for (final user in [t.ana, t.bo]) user: [for (final kp in await t.b.api.claimKeyPackages(user)) kp.data],
+          },
+        });
+        final taken = await t.b.api.commit(
+          t.conversation,
+          duvet.Commit(
+            generation: made['generation']! as int,
+            epoch: 0,
+            commit: made['commit']! as String,
+            groupInfo: made['group_info']! as String,
+            initialGroupInfo: made['initial_group_info']! as String,
+            welcome: made['welcome'] as String?,
+          ),
+        );
+        await t.b.host.handle<Object?>({
+          'cmd': 'commit_result',
+          'conversation_id': t.conversation,
+          'accepted': true,
+          'seq': taken.seq,
+        });
+
+        final commands = <Map<String, Object?>>[];
+        final again = await restarted(t.fake, t.a, host: WatchedHost(t.a.host, [], commands: commands));
+        final b = await restarted(t.fake, t.b);
+        expect((await sameGroup([again, b], t.conversation)).generation, 1);
+        await turnEnded(again);
+        expect([
+          for (final command in commands)
+            if (const {'forget_group', 'join_external'}.contains(command['cmd'])) command['cmd'],
+        ], isEmpty);
+      },
+      skip: noCore,
+      timeout: _slow,
+    );
+
     // Ana's own renewal loses its epoch to Bo's commit in the API's group (409) and stays staged, for a queue that is
     // another group's and never settles it. The welcome to the API's group is acted on all the same: her commit never
     // entered a group the API holds, so it's let go, and her device comes in.

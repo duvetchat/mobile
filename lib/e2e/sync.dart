@@ -290,9 +290,10 @@ const membersRefusedRules = {'member_list_mismatch', 'members_changed_by_non_own
 
 /// The generations of conversations whose members a welcome or a join was refused for, as [store] keeps them (M4 of the
 /// review): by conversation, kept across restarts, as a push's engine can see the refusal first.
-Map<String, int> refusedGenerationsIn(EngineStore store) => _refusedOf(store.read(refusedGenerations));
+Map<String, int> refusedGenerationsIn(EngineStore store) => _generationsIn(store.read(refusedGenerations));
 
-Map<String, int> _refusedOf(Object? record) => {
+/// A record of generations by conversation, as kept: anything else in it is none.
+Map<String, int> _generationsIn(Object? record) => {
   for (final MapEntry(:key, :value) in switch (record) {
     final Map<String, Object?> kept => kept.entries,
     _ => const <MapEntry<String, Object?>>[],
@@ -306,7 +307,7 @@ Future<void> recordRefusedGeneration(EngineStore store, String conversationId, i
   if (generation == null && !refusedGenerationsIn(store).containsKey(conversationId)) return Future.value();
   return store
       .update(refusedGenerations, (record) {
-        final kept = _refusedOf(record);
+        final kept = _generationsIn(record);
         if (generation == null) {
           kept.remove(conversationId);
         } else {
@@ -317,24 +318,23 @@ Future<void> recordRefusedGeneration(EngineStore store, String conversationId, i
       .catchError((Object error) => debugPrint("e2e: a refused generation wasn't kept: $error"));
 }
 
-/// The conversations an apply found another group of ([anotherGroups]), as [store] keeps them.
-Set<String> anotherGroupsIn(EngineStore store) => _idsIn(store.read(anotherGroups));
+/// The conversations an apply found another group of ([anotherGroups]), each with the generation of the welcome that
+/// said so, as [store] keeps them.
+Map<String, int> anotherGroupsIn(EngineStore store) => _generationsIn(store.read(anotherGroups));
 
-Set<String> _idsIn(Object? kept) => {
-  if (kept case final List<Object?> ids)
-    for (final id in ids)
-      if (id is String) id,
-};
-
-/// Notes in [store] that an apply found another group of the conversation ([another]), or lets the note go, over the
-/// notes the record holds as it's kept: the other engine's stay (mobile#369).
-Future<void> recordAnotherGroup(EngineStore store, String conversationId, {required bool another}) {
-  if (anotherGroupsIn(store).contains(conversationId) == another) return Future.value();
+/// Notes in [store] that an apply found another group of the conversation, at the welcome's [generation], or lets the
+/// note go (null), over the notes the record holds as it's kept: the other engine's stay (mobile#369, mobile#383).
+Future<void> recordAnotherGroup(EngineStore store, String conversationId, int? generation) {
+  if (anotherGroupsIn(store)[conversationId] == generation) return Future.value();
   return store
       .update(anotherGroups, (kept) {
-        final ids = _idsIn(kept);
-        another ? ids.add(conversationId) : ids.remove(conversationId);
-        return ids.isEmpty ? null : [...ids];
+        final notes = _generationsIn(kept);
+        if (generation == null) {
+          notes.remove(conversationId);
+        } else {
+          notes[conversationId] = generation;
+        }
+        return notes.isEmpty ? null : notes;
       })
       .catchError((Object error) => debugPrint("e2e: a conversation's other group wasn't noted: $error"));
 }
@@ -451,9 +451,9 @@ class Conversations {
   /// desktop's review).
   final _removed = <String>{};
 
-  /// Conversations an apply found another group of (apply's another_group), as the record notes them too: here for a
-  /// record that can't keep the note (mobile#369).
-  final _another = <String>{};
+  /// Conversations an apply found another group of (apply's another_group), with the welcome's generation, as the
+  /// record notes them too: here for a record that can't keep the note (mobile#369, mobile#383).
+  final _another = <String, int>{};
 
   /// Conversations whose group this run forgot as the API listed none, until the device holds the API's group: a group
   /// made again and not kept either isn't made again on its own (mobile#369).
@@ -509,7 +509,8 @@ class Conversations {
     _devicelessFrom.clear();
     _restartRefused.clear();
     _refused.clear();
-    for (final kept in [_settling, _otherSender, _removed, _lostJoin, _another, _forgotten]) {
+    _another.clear();
+    for (final kept in [_settling, _otherSender, _removed, _lostJoin, _forgotten]) {
       kept.clear();
     }
   }
@@ -930,7 +931,7 @@ class Conversations {
       kept.remove(id);
     }
     _another.remove(id);
-    unawaited(recordAnotherGroup(_engine.store, id, another: false));
+    unawaited(recordAnotherGroup(_engine.store, id, null));
     _set(id, null);
   }
 
@@ -983,7 +984,8 @@ class Conversations {
   /// conversation's record and passes, as kept, to whatever brings the group back (create_group, a welcome,
   /// join_external). Its messages waiting to be sent there are stale from now on, and go again in the group it ends
   /// in. Nothing to forget (`not_found`: no group, or a row without its group, which waits until the API's group passes
-  /// its epoch) does nothing.
+  /// its epoch) does nothing. A note of another group goes with the group, whatever brought the forget: it was about
+  /// that group (mobile#383).
   Future<void> _forget(String id) async {
     final Map<String, Object?> forgot;
     try {
@@ -998,22 +1000,42 @@ class Conversations {
     for (final kept in [_settling, _removed, _lostJoin]) {
       kept.remove(id);
     }
+    await _noteAnother(id, null);
   }
 
-  /// The API's group at the generation this device holds isn't its own (apply's another_group): its own goes, and the
-  /// note with it. A commit of its own staged there (one another commit beat, or whose word never came) never entered
-  /// the API's group, which isn't this one, and the API's queue never settles it: it's let go first, as the desktop's
-  /// #forget does (mobile#383). None of its commits is in flight here: a turn with one never reaches this.
-  Future<void> _forgetForAnother(String id) async {
-    try {
-      await _forget(id);
-    } on CoreError catch (error) {
-      if (error.code != 'pending_commit') rethrow;
-      await _host.handle<Object?>({'cmd': 'commit_result', 'conversation_id': id, 'accepted': false, 'invalid': true});
-      await _forget(id);
+  /// The API's group at the welcome's [generation], which this device held another of, isn't its own (apply's
+  /// another_group): its own at that generation goes, then the note. A note of a generation the device no longer holds
+  /// (the same read took it into a newer one) goes alone (mobile#383). A commit of its own staged there (one another
+  /// commit beat, or whose word never came) never entered the API's group, which isn't this one, and the API's queue
+  /// never settles it: it's let go first, as the desktop's #forget does. None of its commits is in flight here: a turn
+  /// with one never reaches this.
+  Future<void> _forgetForAnother(String id, int generation) async {
+    if ((await _group(id))?.generation == generation) {
+      try {
+        await _forget(id);
+      } on CoreError catch (error) {
+        if (error.code != 'pending_commit') rethrow;
+        await _host.handle<Object?>({
+          'cmd': 'commit_result',
+          'conversation_id': id,
+          'accepted': false,
+          'invalid': true,
+        });
+        await _forget(id);
+      }
     }
-    _another.remove(id);
-    await recordAnotherGroup(_engine.store, id, another: false);
+    await _noteAnother(id, null);
+  }
+
+  /// Notes that an apply found another group of the conversation at [generation], in memory and in the record, or
+  /// lets the note go (null).
+  Future<void> _noteAnother(String id, int? generation) async {
+    if (generation == null) {
+      _another.remove(id);
+    } else {
+      _another[id] = generation;
+    }
+    await recordAnotherGroup(_engine.store, id, generation);
   }
 
   /// The group made here with the members this device can account for (C1 of step 4's closing reviews): those the
@@ -1153,10 +1175,10 @@ class Conversations {
       if (refused && membersRefusedRules.contains(rule)) {
         await _refuse(conv.id, generations?[seq] ?? conv.group?.generation ?? 0);
       }
-      // The API's group there isn't this device's own: _after forgets its own, which the note outlives a restart for,
-      // as the welcome is spent.
-      if (refused && rule == 'another_group' && _another.add(conv.id)) {
-        await recordAnotherGroup(_engine.store, conv.id, another: true);
+      // The API's group there isn't this device's own: _after forgets its own at the welcome's generation, which the
+      // note outlives a restart for, as the welcome is spent.
+      if (refused && rule == 'another_group') {
+        await _noteAnother(conv.id, generations?[seq] ?? conv.group?.generation ?? 0);
       }
       // A commit of its epoch, its own or another's: a commit of this device's left to settle is settled.
       if (kind == 'commit' && result != 'ignored') _settling.remove(conv.id);
@@ -1322,7 +1344,7 @@ class Conversations {
   Future<void> _after(_Conv conv, _Where at) async {
     final id = conv.id;
     final group = conv.group;
-    if (_another.contains(id) || anotherGroupsIn(_engine.store).contains(id)) await _forgetForAnother(id);
+    if ((_another[id] ?? anotherGroupsIn(_engine.store)[id]) case final noted?) await _forgetForAnother(id, noted);
     final held = await _group(id);
     if (held != null && held.generation >= (group?.generation ?? 0)) {
       for (final kept in [_otherSender, _removed, _lostJoin, _forgotten]) {

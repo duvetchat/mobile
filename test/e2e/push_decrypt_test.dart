@@ -11,7 +11,7 @@ import 'package:duvet/e2e/core_gate.dart';
 import 'package:duvet/e2e/engine.dart';
 import 'package:duvet/e2e/notices.dart';
 import 'package:duvet/e2e/push_decrypt.dart';
-import 'package:duvet/e2e/store.dart' show pushRecord;
+import 'package:duvet/e2e/store.dart' show anotherGroups, pushRecord;
 import 'package:duvet/e2e/sync.dart' show refusedGenerationsIn;
 import 'package:duvet/e2e/uuid.dart';
 import 'package:duvet/push/background.dart';
@@ -144,6 +144,56 @@ void _takesThenEnds(SendPort ready) {
     Isolate.exit();
   });
   ready.send(null);
+}
+
+/// Ana's phone and Bo's device in a DM: Ana's founding answered for and kept nothing of, her app ended before it listed
+/// the conversation again, her core holding her own group; then Bo's group made on the API, with a welcome to her
+/// device. Bo's message there reaches her phone by a push, whose engine notes the welcome as another group's
+/// (another_group) and shows no text. The phone, and Bo's message.
+Future<(_Phone, duvet.DirectMessage)> _anotherGroupByPush() async {
+  final fake = FakeApi();
+  final (ana, bo) = (fake.addUser(), fake.addUser());
+  final conversation = fake.addConversation(group: false, members: [ana, bo]);
+  final host = TestHost();
+  // The listing right after her founding is refused, as an app that ended before it listed again leaves it.
+  var refuse = false;
+  final client = watchedClient(
+    fake,
+    answer: (request) async {
+      if (request.method == 'POST' && request.url.path == commitsPath(conversation)) {
+        refuse = true;
+      } else if (refuse && request.method == 'GET' && request.url.path == '/api/users/@me/conversations') {
+        refuse = false;
+        return http.Response(jsonEncode({'error': 'unavailable'}), 503, headers: {'content-type': 'application/json'});
+      }
+      return null;
+    },
+  );
+  final a = await firstDevice(fake, ana, host: host.gate, client: client);
+  final b = await firstDevice(fake, bo);
+  addTearDown(b.engine.stop);
+  fake.forget((method: 'POST', path: commitsPath(conversation)));
+  await a.engine.openConversation(conversation).catchError((Object _) {});
+  expect(await groupOf(a, conversation), isNotNull);
+  await a.engine.stop();
+  await b.engine.openConversation(conversation);
+  final sent = (await b.engine.sendMessage(
+    Outgoing(conversationId: conversation, nonce: uuidv4(), text: "in the API's group"),
+  ))!;
+  IsolateNameServer.removePortNameMapping(corePortName);
+  final phone = (
+    fake: fake,
+    ana: ana,
+    bo: bo,
+    a: a,
+    b: b,
+    host: host,
+    conversation: conversation,
+    requests: <http.Request>[],
+  );
+  expect((await _open(phone, fake.pushOf(conversation, sent.id)))!.text, Notice.newMessage.text);
+  expect(a.store.read(anotherGroups), isNotNull);
+  return (phone, sent);
 }
 
 /// The group of the conversation Ana's core holds, read by a gate of the app's once the push's let go: null for none.
@@ -800,6 +850,33 @@ void main() {
       await acceptAsShown(again, conversation);
       await until(() async => (await groupOf(again, conversation))?.generation == 1);
       expect(refusedGenerationsIn(again.store), isEmpty);
+    },
+    skip: noCore,
+    timeout: _slow,
+  );
+
+  // mobile#383: the push's engine noted another group's welcome; the server then loses its group, and Ana's app, as it
+  // starts, forgets her own group as none is listed, then makes it again. That forget lets the note go: the group made
+  // again stays, and nothing forgets it to join it back by an external commit.
+  test(
+    "a_forget_lets_another_group's_note_go,_so_the_group_made_again_stays",
+    () async {
+      final (phone, _) = await _anotherGroupByPush();
+      await phone.b.engine.stop();
+      phone.fake.loseGroup(phone.conversation);
+      final commands = <Map<String, Object?>>[];
+      final again = await restarted(phone.fake, phone.a, host: WatchedHost(phone.host.gate, [], commands: commands));
+      await until(() => phone.fake.viewOf(phone.conversation)['mls'] != null, what: "Ana's group made again");
+      await until(() async => await groupOf(again, phone.conversation) != null);
+      await turnEnded(again);
+      expect(
+        [
+          for (final command in commands)
+            if (const {'forget_group', 'join_external'}.contains(command['cmd'])) command['cmd'],
+        ],
+        ['forget_group'],
+      );
+      expect(again.store.read(anotherGroups), isNull);
     },
     skip: noCore,
     timeout: _slow,
