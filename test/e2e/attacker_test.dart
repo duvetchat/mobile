@@ -1033,13 +1033,15 @@ void main() {
       () async {
         final fake = FakeApi();
         final (ana, bo, eve) = (fake.addUser(), fake.addUser(), fake.addUser());
-        // A group of the server's, Eve's and Bo's, founded before Ana's creation.
-        final planted = fake.addConversation(group: true, members: [eve, bo], owner: eve);
+        // A group of the server's, founded before Ana's creation with Eve, Bo and Ana in its list, Ana without a device
+        // yet: the core alone would let her device in by an external commit.
+        final planted = fake.addConversation(group: true, members: [eve, bo, ana], owner: eve);
         final e = await firstDevice(fake, eve);
         await firstDevice(fake, bo);
         await e.engine.openConversation(planted);
         await until(() async => await groupOf(e, planted) != null, what: "the server's group");
-        // Ana's creation is answered with it, Ana in it.
+        // Listed without Ana as her device starts; her creation is answered with it, Ana in it again.
+        fake.dropMembers(planted, [ana]);
         final commits = <String>[];
         final client = watchedClient(
           fake,
