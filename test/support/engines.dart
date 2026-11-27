@@ -27,6 +27,29 @@ import 'fake_api.dart';
 /// What the engines' requests say the app is (X-Duvet-Client): the app on Android, whatever a test's platform.
 final engineClient = duvetClient(platform: TargetPlatform.android);
 
+/// What a device's page draws of a conversation ([E2EEngine.shown]): the fake's honest drawing unless a test gives one.
+typedef PageDrawing = Future<ShownConversation?> Function(String conversationId, {required bool fresh});
+
+/// What the app's chats draw of [me]'s conversations, as its repository keeps it (its _drawnConversation): the last
+/// listing [list] gave, made again for a fresh read or before the first, one that fails after a first leaving it. The
+/// engines on a real stack get it, which a listing at every look would take past the API's rate limit.
+PageDrawing listedDrawing(Future<List<duvet.Conversation>> Function() list, String me) {
+  Map<String, ShownConversation>? kept;
+  return (conversationId, {required fresh}) async {
+    if (fresh || kept == null) {
+      try {
+        kept = {
+          for (final conv in await list())
+            if (conv.deletedAt == null) conv.id: drawnOf(conv, me),
+        };
+      } catch (error) {
+        if (kept == null) rethrow;
+      }
+    }
+    return kept?[conversationId];
+  };
+}
+
 /// The fake API, as the app's router names it.
 const fakeRouter = ApiRouter(api: 'fake-api.test');
 
@@ -212,12 +235,20 @@ class LockedOnce implements CoreHost, ObservingHost {
 }
 
 /// A host that tells what it's asked (each command's name, in order, and the commands themselves), holds a command
-/// until the future [hold] gives for it completes, fails one when [fail] gives an error for it, and answers one itself
-/// when [answer] gives an answer. Its core's observations go to the engine's contacts as the core it wraps tells them:
-/// an observe_user it answers itself isn't the core's, and tells nothing.
+/// until the future [hold] gives for it completes, fails one when [fail] gives an error for it, answers one itself
+/// when [answer] gives an answer, and holds the core's answer to one until the future [after] gives for it completes:
+/// what the server does while the device holds what its core just made. Its core's observations go to the engine's
+/// contacts as the core it wraps tells them: an observe_user it answers itself isn't the core's, and tells nothing.
 class WatchedHost implements CoreHost, ObservingHost {
-  WatchedHost(this._host, this.log, {this.hold, this.fail, this.answer, List<Map<String, Object?>>? commands})
-    : commands = commands ?? [];
+  WatchedHost(
+    this._host,
+    this.log, {
+    this.hold,
+    this.fail,
+    this.answer,
+    this.after,
+    List<Map<String, Object?>>? commands,
+  }) : commands = commands ?? [];
 
   @override
   set onObserved(ObservedListener? listener) {
@@ -230,6 +261,7 @@ class WatchedHost implements CoreHost, ObservingHost {
   final Future<void>? Function(Map<String, Object?> command)? hold;
   final CoreError? Function(Map<String, Object?> command)? fail;
   final Object? Function(Map<String, Object?> command)? answer;
+  final Future<void>? Function(Map<String, Object?> command)? after;
 
   @override
   Future<T> handle<T>(Map<String, Object?> command) async {
@@ -238,7 +270,9 @@ class WatchedHost implements CoreHost, ObservingHost {
     if (hold?.call(command) case final wait?) await wait;
     if (fail?.call(command) case final error?) throw error;
     if (answer?.call(command) case final answered?) return answered as T;
-    return _host.handle<T>(command);
+    final answered = await _host.handle<T>(command);
+    if (after?.call(command) case final wait?) await wait;
+    return answered;
   }
 
   @override
@@ -385,7 +419,7 @@ class TestDevice {
 /// A device of [user]'s on the fake: an engine with its core ([host], a new one unless given), a session of its own (a
 /// sign-in's, whose challenge the engine keeps as the app keeps the login's, unless [token] names one), its record and
 /// its clock. It connects to the gateway with no device, then again with the one the engine registers, as the app's
-/// one reopen does (Ruling 30).
+/// one reopen does (Ruling 30). Its page draws what [drawn] gives, else what the fake lists the user now.
 TestDevice testDevice(
   FakeApi fake,
   String user, {
@@ -396,6 +430,7 @@ TestDevice testDevice(
   bool Function(GatewayEvent event)? hears,
   DateTime? challengedAt,
   double Function()? random,
+  PageDrawing? drawn,
 }) {
   final signedIn = token == null ? fake.signIn(user) : null;
   final session = token ?? signedIn!.token;
@@ -434,6 +469,7 @@ TestDevice testDevice(
     },
     loginChallenge: signedIn == null ? null : (challenge: signedIn.deviceChallenge, at: challengedAt ?? DateTime.now()),
     random: random ?? () => 0.5,
+    shown: drawn ?? fake.drawnTo(user),
   );
   // Stopped, its core closed, before its core's folder is deleted (teardowns run last first): a turn still writing
   // there failed that deletion now and then (ENOTEMPTY on macOS). A stop that hangs fails the test, naming the turn.
@@ -455,8 +491,9 @@ Future<TestDevice> firstDevice(
   EngineStore? store,
   http.Client? client,
   bool Function(GatewayEvent event)? hears,
+  PageDrawing? drawn,
 }) async {
-  final device = testDevice(fake, user, host: host, store: store, client: client, hears: hears);
+  final device = testDevice(fake, user, host: host, store: store, client: client, hears: hears, drawn: drawn);
   await device.engine.start();
   await device.engine.makeIdentity();
   await device.engine.keySaved();
@@ -577,6 +614,10 @@ Future<void> turnEnded(TestDevice device) async {
   await device.engine.uploadLater();
   await device.engine.backupSettled();
 }
+
+/// The person's yes on the device to the members its conversation's question names now: those its bar draws.
+Future<void> acceptAsShown(TestDevice device, String conversation) =>
+    device.engine.acceptMembers(conversation, device.engine.conversationState(conversation)?.users ?? const []);
 
 /// A command run by hand on the device's core, the users it asks for observed first, as the engine does.
 Future<Map<String, Object?>> byHand(TestDevice device, Map<String, Object?> command) async {
@@ -738,6 +779,7 @@ Future<TestDevice> restarted(
   CoreHost? host,
   http.Client? client,
   bool Function(GatewayEvent event)? hears,
+  PageDrawing? drawn,
 }) async {
   await device.engine.stop();
   final again = testDevice(
@@ -748,6 +790,7 @@ Future<TestDevice> restarted(
     token: device.token,
     client: client,
     hears: hears,
+    drawn: drawn,
   );
   await again.engine.start();
   return again;
@@ -762,8 +805,9 @@ Future<TestDevice> approvedDevice(
   CoreHost? host,
   http.Client? client,
   bool Function(GatewayEvent event)? hears,
+  PageDrawing? drawn,
 }) async {
-  final fresh = testDevice(fake, first.user, host: host, client: client);
+  final fresh = testDevice(fake, first.user, host: host, client: client, drawn: drawn);
   await fresh.engine.start();
   if (fresh.state != EngineState.newDevice) throw StateError('the new device is ${fresh.state}');
   await stoppedByHand(fresh);
@@ -779,7 +823,7 @@ Future<TestDevice> approvedDevice(
     ),
   );
   await fresh.host.handle<Object?>({'cmd': 'device_list_uploaded', 'version': version});
-  final again = await restarted(fake, fresh, client: client, hears: hears);
+  final again = await restarted(fake, fresh, client: client, hears: hears, drawn: drawn);
   if (again.state != EngineState.ready) throw StateError('the approved device is ${again.state}');
   return again;
 }

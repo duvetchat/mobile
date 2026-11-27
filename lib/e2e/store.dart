@@ -42,6 +42,10 @@ const rotationRemove = 'rotation_remove';
 /// way out is to sign it off (approval.dart). This device's own word, never the API's (mobile#352).
 const approvedHere = 'approved_here';
 
+/// What this device knows of its user's devices, by ID: each one's name, client and when it was added, as `GET
+/// …/devices` and DEVICE_ADD last gave them (devices.dart), the newest 50. What names one the API no longer lists.
+const knownDevices = 'known_devices';
+
 /// The user's devices the app told of once, as added and as not seen in 45 days (decision 13): it doesn't again.
 const toldAdded = 'told_added';
 const toldInactive = 'told_inactive';
@@ -101,6 +105,7 @@ const deviceRecord = [
   pendingChanges,
   rotationRemove,
   approvedHere,
+  knownDevices,
   refusedGenerations,
   keyChanges,
   verifiedContacts,

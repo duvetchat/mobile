@@ -11,6 +11,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:forui/forui.dart';
 
 import '../support/fake_repository.dart';
+import '../support/fonts.dart';
 
 // What a conversation says over its message box of its encrypted group (PLAN-E2E-CLIENTES.md, «Avisos»): nothing while
 // the group goes on; else why it can't, in the notices' words, and what the person can do about it. The desktop's
@@ -26,16 +27,17 @@ Widget _app(Widget child) => MaterialApp(
 void main() {
   final taps = <String>[];
 
-  Widget bar(ConversationState? state, {List<String> members = const []}) => _app(
+  Widget bar(ConversationState? state) => _app(
     ConversationStateBar(
       state: state,
-      nameOf: (user) => const {'ana': 'Ana', 'bo': 'Bo'}[user] ?? 'Someone',
-      members: members,
+      nameOf: (user) => const {'ana': 'Ana', 'bo': 'Bo', 'cy': 'Cy'}[user] ?? 'Someone',
       onRestart: () async => taps.add('restart'),
       onAccept: () async => taps.add('accept'),
     ),
   );
 
+  // The app's faces, so the bar lays out as on a phone: in the test font's boxes its action overflows the chat.
+  setUpAll(loadAppFonts);
   setUp(taps.clear);
 
   testWidgets('says_nothing_while_its_group_goes_on', (tester) async {
@@ -70,11 +72,12 @@ void main() {
     expect(find.text(Notice.waitRejoin.text), findsOneWidget);
   });
 
-  // I1 of the review: the members a yes goes in with are named, as the API lists them now (the desktop's members_now).
+  // I1 of the review: the members a yes goes in with are named (the desktop's members_now), as the state names them,
+  // which the yes records (N-M10 of step 4's closing re-review).
   testWidgets("members_that_changed_since_the_device_last_saw_them,_whom_they_are_now,_and_the_person's_yes", (
     tester,
   ) async {
-    await tester.pumpWidget(bar(ConversationState.membersChanged, members: ['Ana', 'Bo', 'Cy']));
+    await tester.pumpWidget(bar(const ConversationState.membersChanged(['ana', 'bo', 'cy'])));
     expect(
       find.text('${Notice.membersChanged.text}\n${Notice.membersNow.fill({'names': 'Ana, Bo and Cy'})}'),
       findsOneWidget,
@@ -83,7 +86,7 @@ void main() {
     await tester.pumpAndSettle();
     expect(taps, ['accept']);
     // Before the members load, the notice alone.
-    await tester.pumpWidget(bar(ConversationState.membersChanged));
+    await tester.pumpWidget(bar(const ConversationState.membersChanged([])));
     expect(find.text(Notice.membersChanged.text), findsOneWidget);
   });
 
@@ -121,6 +124,28 @@ void main() {
     repository.conversationStates.value = {};
     await tester.pumpAndSettle();
     expect(find.text(Notice.blocked.text), findsNothing);
+  });
+
+  // R-M2 of step 4's closing re-review: the yes goes with whom the bar names, so the engine takes none to a question
+  // asked again since.
+  testWidgets("the_chat's_yes_goes_to_the_engine_with_whom_its_bar_names", (tester) async {
+    tester.view.physicalSize = const Size(390 * 3, 844 * 3);
+    tester.view.devicePixelRatio = 3;
+    addTearDown(tester.view.reset);
+    final repository = FakeRepository();
+    final appearance = Appearance(MemoryAppearanceStore());
+    await appearance.load();
+    addTearDown(appearance.dispose);
+    await tester.pumpWidget(DuvetApp(repository: repository, appearance: appearance));
+    await tester.pumpAndSettle();
+    repository.conversationStates.value = {
+      'c-maya': ConversationState.membersChanged([FakeRepository.me.id, FakeRepository.maya]),
+    };
+    await tester.tap(find.text('Maya'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text(Notice.membersAccept.text));
+    await tester.pumpAndSettle();
+    expect(repository.encryptionTaps, ['acceptMembers c-maya ${FakeRepository.me.id} ${FakeRepository.maya}']);
   });
 
   // The core's #46: a restart that leaves someone out names them, and goes only on the person's yes.

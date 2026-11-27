@@ -326,18 +326,37 @@ void main() {
     expect(asked.elapsed, lessThan(const Duration(seconds: 10)));
   });
 
-  test('destroy through the port: the app\'s engine deletes the database it has open, and its key', () async {
+  // M1 of step 4's closing review: the app's engine holds what it answers on the port to the same list the asking side
+  // holds (inBackground), whoever sends, and deletes nothing at another engine's request.
+  test("the port answers only what a push sends, and deletes no database for another engine", () async {
     final (app, _) = await appWithDevice();
+    final port = IsolateNameServer.lookupPortByName(corePortName)!;
+    Future<List<Object?>> answer(String op, [List<Object?> args = const []]) async {
+      final replies = ReceivePort();
+      port.send([replies.sendPort, op, ana, args]);
+      final [_, last] = await replies.take(2).toList();
+      replies.close();
+      return last! as List<Object?>;
+    }
+
+    Object? codeOf(List<Object?> reply) => reply.first == 'error' ? jsonDecode(reply[1]! as String)['code'] : reply;
+    expect(
+      codeOf(
+        await answer('handle', [
+          jsonEncode({'cmd': 'status'}),
+        ]),
+      ),
+      'bad_command',
+    );
+    expect(codeOf(await answer('destroy')), 'bad_command');
     final other = gate(app: false);
     expect(await other.open(ana), ready);
-    await other.destroy(ana);
-    expect(File(database(ana)).existsSync(), isFalse);
-    expect(await storage.readAll(), isEmpty);
-    expect(IsolateNameServer.lookupPortByName(corePortName), isNull);
-    await expectLater(
-      app.handle<Object?>({'cmd': 'status'}),
-      throwsA(isA<CoreError>().having((error) => error.code, 'code', 'internal')),
-    );
+    await expectLater(other.destroy(ana), throwsA(isA<CoreError>()));
+    expect(File(database(ana)).existsSync(), isTrue);
+    expect(await storage.readAll(), isNotEmpty);
+    expect((await app.handle<Map<String, Object?>>({'cmd': 'status'}))['device_id'], isNotNull);
+    // What a push sends is answered.
+    expect(await pageOn(other), isEmpty);
   }, skip: noCore);
 
   test("a user's ID is a UUID, as it names a folder", () async {

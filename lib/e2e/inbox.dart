@@ -161,6 +161,13 @@ Future<bool> takeInbox(
       } else if (error.code == 'not_found' && error.what == 'code') {
         await _keep(store, keptTransfers, message);
       } else if (_forLater(error)) {
+        // With the record full, it waits in the inbox: kept past it, the oldest would go, and its copy there is gone
+        // (M3 of step 4's closing review).
+        final kept = _keptUnder(store, keptLater);
+        if (kept.length >= _kept && !kept.any((one) => one is Map && one['id'] == message.id)) {
+          debugPrint('e2e: the messages kept for later are as many as the record keeps: one more waits in the inbox.');
+          return false;
+        }
         await _keep(store, keptLater, message);
         later = true;
       } else if (error.code == 'rule_violation' && error.rule == 'removed_device_listed') {

@@ -451,12 +451,12 @@ void main() {
         'accepted': true,
         'seq': taken.seq,
       });
-      await until(() => c.engine.conversationState(conversation) == ConversationState.membersChanged);
+      await until(() => c.engine.conversationState(conversation)?.name == ConversationNotice.membersChanged);
       // Cy's device didn't come in on its own.
       expect((await c.api.queue(conversation, taken.seq)).entries.where((e) => e.kind == 'commit'), isEmpty);
       expect((await groupOf(c, conversation))!.generation, 0);
 
-      await c.engine.acceptMembers(conversation);
+      await acceptAsShown(c, conversation);
       await until(() async => (await groupOf(c, conversation))?.generation == 1);
       expect(c.engine.conversationState(conversation), isNull);
       await a.engine.stop();
@@ -521,19 +521,19 @@ void main() {
       await turnEnded(c);
       expect(await b.engine.restartGroup(conversation), [ana]);
       expect(await b.engine.restartGroup(conversation, leaving: [ana]), isEmpty);
-      await until(() => c.engine.conversationState(conversation) == ConversationState.membersChanged);
+      await until(() => c.engine.conversationState(conversation)?.name == ConversationNotice.membersChanged);
 
       // The app again, on the same record and core: still the person's to say, and nothing joined.
       c = await restarted(fake, c, client: watchedClient(fake, seen: cySeen.add));
       await turnEnded(c);
-      expect(c.engine.conversationState(conversation), ConversationState.membersChanged);
+      expect(c.engine.conversationState(conversation)?.name, ConversationNotice.membersChanged);
       expect(requestsOf(cySeen), isNot(contains('POST ${commitsPath(conversation)}')));
       await expectLater(
         c.engine.leaveConversation(conversation),
         throwsA(isA<CoreError>().having((e) => e.code, 'code', 'not_in_group')),
       );
 
-      await c.engine.acceptMembers(conversation);
+      await acceptAsShown(c, conversation);
       final after = await sameGroup([b, c], conversation);
       expect((after.generation, after.blocked), (1, false));
       for (final d in [a, b, c]) {

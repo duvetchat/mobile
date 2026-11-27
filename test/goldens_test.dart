@@ -242,7 +242,12 @@ void main() {
     for (final (name, state, restartLeavesOut) in [
       ('no_device', ConversationState.noDevice(const [FakeRepository.maya]), const <String>[]),
       ('restart_confirm', ConversationState.blocked(restart: Restart.mine), const [FakeRepository.leo]),
-      ('members_changed', ConversationState.membersChanged, const <String>[]),
+      // Whom a yes goes in with, as the state names them: Gaby and Maya.
+      (
+        'members_changed',
+        ConversationState.membersChanged([FakeRepository.me.id, FakeRepository.maya]),
+        const <String>[],
+      ),
     ]) {
       testWidgets(
         '$name, ${b.name}',

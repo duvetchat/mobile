@@ -6,7 +6,9 @@ import '../e2e/engine.dart'
         BackupShown,
         ContactsShown,
         DeviceSetupActions,
+        DevicesAlong,
         EngineState,
+        KnownDevice,
         HistoryOffer,
         KeyChange,
         SafetyNumber,
@@ -100,9 +102,10 @@ abstract interface class ChatRepository {
 
   /// The person's acts on them, each only where it can be done: remove another device (lost, with new keys whose
   /// recovery key [encryption] then shows), change the security keys (or finish a change that waits), and remove this
-  /// device and delete its data, which signs out (decision 13).
-  Future<void> removeDevice(String deviceId, {bool changeKeys = false});
-  Future<void> changeKeys();
+  /// device and delete its data, which signs out (decision 13). A removal and a change of keys take off along with them
+  /// only the devices their confirmation [named] ([devicesAlong]), or nothing is signed.
+  Future<void> removeDevice(String deviceId, {bool changeKeys = false, List<String> named = const []});
+  Future<void> changeKeys({List<String> named = const []});
 
   /// A new device's setup, and the approvals this device takes part in (Task 27): the engine's acts, which refuse while
   /// there's no engine.
@@ -113,12 +116,22 @@ abstract interface class ChatRepository {
   Future<void> finishKeysWithout();
   Future<void> removeThisDevice();
 
-  /// The devices an earlier removal of this device's took off that the API didn't take: the next removal or change of
-  /// keys takes them along, which its confirmation names (review 24's M3). None without an engine.
-  Future<List<String>> unsentRemovals();
+  /// What a removal of [asked] (none: a change of keys) takes off the list beside it, which its confirmation names: the
+  /// devices an earlier removal of this device's took off that the API didn't take (review 24's M3), and those the list
+  /// names that the API no longer lists (I2 of step 4's closing review). None without an engine.
+  Future<DevicesAlong> devicesAlong([String? asked]);
+
+  /// What this device knows of one of the user's devices, which names one the API no longer lists: its name, client
+  /// and when it was added, as the API last gave them, or when this device approved it (N-M7 of step 4's closing
+  /// re-review). None without an engine, or when nothing is known.
+  KnownDevice? knownDevice(String deviceId);
 
   /// What the engine tells of the user's other devices, in the notices' words: one added, one not seen in 45 days.
   Stream<String> get deviceNotices;
+
+  /// Whether the API serves another server key (its external sender) than the one this device first saw: said, never
+  /// taken (Ruling 32). False without an engine.
+  ValueListenable<bool> get serverKeyChanged;
 
   /// What each encrypted conversation says over its message box of its group (lib/e2e/sync.dart), by its ID: none
   /// while its group goes on. A conversation on screen ([chatShown]) gets its group, made where this user may.
@@ -130,7 +143,9 @@ abstract interface class ChatRepository {
   /// none are left: none once it restarted.
   Future<List<String>> restartGroup(String conversationId, {List<String> leaving = const []});
 
-  Future<void> acceptMembers(String conversationId);
+  /// The yes, to [users]: the members the question named as the bar drew it to the person. One asked again since,
+  /// naming others, isn't answered by it.
+  Future<void> acceptMembers(String conversationId, List<String> users);
 
   /// The person's contacts as the engine has them (lib/e2e/contacts.dart; Task 29): each one's changed key the person
   /// isn't done with, and whom they verified. None without an engine.

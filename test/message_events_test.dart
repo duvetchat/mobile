@@ -89,12 +89,14 @@ Map<String, dynamic> _answer(String id, String content, {int flags = 64}) => {
   'flags': flags,
 };
 
+// Numbered by its ID, as an encrypted message's row: an honest API serves a conversation nothing else but its notices.
 Map<String, dynamic> _dmMessage(String id, String content, {bool withUser = true}) => {
   'id': id,
   'conversation_id': 'c-1',
   'author_id': _maya,
   'content': content,
   'type': 0,
+  'seq': int.parse(id),
   'created_at': _at,
   'updated_at': _at,
   if (withUser) 'user': {'id': _maya, 'username': 'maya', 'alias': 'Maya'},
@@ -345,7 +347,9 @@ void main() {
       expect(repository.recents.value.single.previewText, 'Sent a message');
       expect(repository.latest.value['c-1']!.content, '');
       expect(repository.latest.value['c-1']!.authorName, 'Maya');
-      expect((events.last as MessageUpdated).message.content, '');
+      // The chat reads what the device holds again, and gets no copy of the API's.
+      expect(events.last, isA<ContentChanged>());
+      expect(events.whereType<MessageUpdated>(), isEmpty);
     });
   });
 
@@ -932,11 +936,14 @@ void main() {
 
     test('a DM shows one (conversations default to every message), but not one at only mentions', () async {
       repository.handleEvent(_event('DM_MESSAGE_CREATE', _dmMessage('8', 'hi there')));
+      // Its notice asks the device for the text first (none here).
+      await pumpEventQueue();
       final notice = repository.mentionNotices.value.single;
       // None of the API's words: what the device holds reaches notices with the notifications' task.
       expect((notice.target, notice.where, notice.text), (_dm, 'in a direct message', 'Sent a message'));
       level('c-1', 2, 1);
       repository.handleEvent(_event('DM_MESSAGE_CREATE', _dmMessage('9', 'not this one')));
+      await pumpEventQueue();
       expect(shown(), ['8']);
     });
 

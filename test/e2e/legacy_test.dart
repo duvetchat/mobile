@@ -40,11 +40,11 @@ void main() {
       expect((await groupOf(a, conversation))!.epoch, 1);
 
       // Cy's device refuses its welcome: the group isn't the one it knew. It says so, and offers to go on.
-      await until(() => c.engine.conversationState(conversation) == ConversationState.membersChanged);
+      await until(() => c.engine.conversationState(conversation)?.name == ConversationNotice.membersChanged);
       expect(await groupOf(c, conversation), isNull);
 
       // Cy says yes: the record goes, and the device joins by an external commit, with no record to hold it to.
-      await c.engine.acceptMembers(conversation);
+      await acceptAsShown(c, conversation);
       await sameGroup([a, c], conversation);
       expect(c.engine.conversationState(conversation), isNull);
       expect(c.store.read(legacyRecords), {conversation: false});
@@ -69,7 +69,7 @@ void main() {
       fake.addMembers(conversation, [dee]);
       final a = await firstDevice(fake, ana);
       await a.engine.openConversation(conversation);
-      await until(() => c.engine.conversationState(conversation) == ConversationState.membersChanged);
+      await until(() => c.engine.conversationState(conversation)?.name == ConversationNotice.membersChanged);
       expect(refusedGenerationsIn(c.store).containsKey(conversation), isTrue);
 
       // Ana takes Cy out; Cy's Leave finds the conversation gone, and lets it go, its refusal with it.
@@ -97,7 +97,7 @@ void main() {
       fake.addMembers(conversation, [dee]);
       final a = await firstDevice(fake, ana);
       await a.engine.openConversation(conversation);
-      await until(() => c.engine.conversationState(conversation) == ConversationState.membersChanged);
+      await until(() => c.engine.conversationState(conversation)?.name == ConversationNotice.membersChanged);
       expect(await groupOf(c, conversation), isNull);
       await a.engine.stop();
       await c.engine.stop();
@@ -121,10 +121,10 @@ void main() {
       final c = await firstDevice(fake, cy);
       // Opened, Bo's device won't make a group with members its record doesn't have.
       await b.engine.openConversation(conversation);
-      expect(b.engine.conversationState(conversation), ConversationState.membersChanged);
+      expect(b.engine.conversationState(conversation)?.name, ConversationNotice.membersChanged);
       expect(await groupOf(b, conversation), isNull);
       // Bo says yes: the group is made with the members of today, and the others come in.
-      await b.engine.acceptMembers(conversation);
+      await acceptAsShown(b, conversation);
       final held = await sameGroup([a, b, c], conversation);
       expect({for (final d in held.devices) d.user}, {ana, bo, cy});
       expect(b.store.read(legacyRecords), {conversation: false});
@@ -172,10 +172,10 @@ void main() {
       fake.addMembers(conversation, [dee]);
       final a = await firstDevice(fake, ana);
       await a.engine.openConversation(conversation);
-      await until(() => c.engine.conversationState(conversation) == ConversationState.membersChanged);
+      await until(() => c.engine.conversationState(conversation)?.name == ConversationNotice.membersChanged);
       final before = seen.length;
       goAfterList = true;
-      await c.engine.acceptMembers(conversation);
+      await acceptAsShown(c, conversation);
       expect(requestsOf(seen.sublist(before)), [
         'GET /api/users/@me/conversations',
         'GET /api/users/@me/conversations/$conversation/mls/group-info',

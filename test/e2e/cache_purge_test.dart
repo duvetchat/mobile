@@ -29,12 +29,14 @@ Map<String, dynamic> _user(String id, String username) => {
   'updated_at': _at,
 };
 
+// Numbered by its ID, as an encrypted message's row: an honest API serves a conversation nothing else but its notices.
 Map<String, dynamic> _dmMessage(String id, String content) => {
   'id': id,
   'conversation_id': 'c-1',
   'author_id': _maya,
   'content': content,
   'type': 0,
+  'seq': int.parse(id),
   'created_at': _at,
   'updated_at': _at,
   'user': {'id': _maya, 'username': 'maya'},
@@ -181,6 +183,39 @@ void main() {
     expect(cache.data.keys.where((key) => key.startsWith('chat_')), ['chat_r-1']);
     expect(cache.data.values.where((value) => value.contains('secret')), isEmpty);
     expect(await repository.cachedMessages(_dm), isNull);
+  });
+
+  // M4 of step 4's closing review: as the app starts on the home it kept, the list of recent chats a version before
+  // this one kept is written again, without a conversation's preview, its text in the clear.
+  test("an_older_version's_conversation_previews_go_from_the_kept_list_as_the_app_starts", () async {
+    final recents = MemoryRecentChatsStore();
+    await recents.write(
+      _me,
+      jsonEncode([
+        {'kind': 'conversation', 'id': 'c-1', 'title': 'maya', 'at': _at, 'previewId': '1', 'previewText': 'a secret'},
+      ]),
+    );
+    cache.data['home'] = jsonEncode({
+      'profile': {'id': _me, 'username': 'gaby'},
+      'conversations': [
+        {'id': 'c-1', 'title': 'maya', 'isGroup': false},
+      ],
+      'spaces': <Object?>[],
+    });
+    await sessions.write((token: 'access-1', sessionToken: 'refresh-1', refreshedAt: DateTime.now(), userId: _me));
+    final repository = DuvetRepository(
+      store: sessions,
+      recentsStore: recents,
+      httpClient: () => client,
+      connectGateway: false,
+      cacheStore: cache,
+    );
+    addTearDown(repository.dispose);
+    expect(await repository.restore(), isTrue);
+    await pumpEventQueue();
+    final kept = await recents.read(_me);
+    expect(kept, contains('c-1'));
+    expect(kept, isNot(contains('secret')));
   });
 
   // Step 5's review, Minor 1 (mobile#366): a version before this one kept a conversation's preview, its text in the

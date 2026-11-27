@@ -409,8 +409,8 @@ class _Device {
     : lastSeenAt = createdAt;
   final String id;
   final String user;
-  final String name;
-  final String? client;
+  String name;
+  String? client;
   final Uint8List signatureKey;
   final Uint8List hpkeKey;
   final String createdAt;
@@ -810,6 +810,26 @@ class FakeApi {
   /// Every conversation's ID.
   Iterable<String> get conversationIds => _conversations.keys;
 
+  /// The conversation as an honest page draws it for [user], from what the fake lists now: a group with its owner and
+  /// members, a DM as the user and the first other member listed, none of them a member [dress]ed in another's profile;
+  /// null for one the user isn't in. What an engine's test gives it as drawn, never the engine's own listing (N-C1 of
+  /// step 4's closing re-review).
+  Future<({bool group, String? owner, List<String> users})?> Function(String conversationId, {required bool fresh})
+  drawnTo(String user) => (conversationId, {required fresh}) async {
+    final conv = _conversations[conversationId];
+    final users = [for (final m in conv?.members ?? const <Map<String, Object?>>[]) m['user_id']! as String];
+    if (conv == null || !users.contains(user)) return null;
+    final group = conv.type == 2;
+    final others = [
+      for (final other in users)
+        if (other != user && (_dressed['$conversationId:$other'] ?? other) == other) other,
+    ];
+    return (group: group, owner: group ? conv.ownerId : null, users: [user, ...group ? others : others.take(1)]);
+  };
+
+  /// The conversation as the API lists it, for a server that answers another route with it.
+  Map<String, Object?> viewOf(String conversationId) => _view(_conversation(conversationId), null);
+
   /// The ID of [user]'s membership of the conversation, which a removal and an addition make anew.
   String membershipOf(String conversationId, String user) =>
       _conversation(conversationId).members.firstWhere((member) => member['user_id'] == user)['id']! as String;
@@ -835,6 +855,14 @@ class FakeApi {
       conv.ownerId = conv.members.first['user_id']! as String;
     }
   }
+
+  /// The conversation's owner, as a server that skips its rules names one: none of its members is told.
+  void setOwner(String conversationId, String user) => _conversation(conversationId).ownerId = user;
+
+  /// The conversation lists [user]'s membership with [as]'s public profile, its ID included, as a server dressing one
+  /// account as another would (R-I1 of step 4's closing re-review).
+  void dress(String conversationId, String user, {required String as}) => _dressed['$conversationId:$user'] = as;
+  final _dressed = <String, String>{};
 
   /// Two users become friends: each may claim the other's key packages and read their identity, as the API lets them.
   void befriend(String a, String b) => _friends.add(([a, b]..sort()).join(':'));
@@ -948,6 +976,36 @@ class FakeApi {
     }
   }
 
+  /// A row of [author]'s in the conversation as a server lists one of its own making: of [type], with no number and no
+  /// ciphertext, and a picture of the server's that a page and its event list. In the conversation's pages when
+  /// [listed]; in no event (a test tells one). Its row.
+  Map<String, Object?> addMadeUpRow(String conversationId, String author, {int type = 0, bool listed = true}) {
+    final conv = _conversation(conversationId);
+    final at = _now();
+    final picture = _id();
+    final row = <String, Object?>{
+      'id': _id(),
+      'conversation_id': conv.id,
+      'author_id': author,
+      'content': null,
+      'type': type,
+      'created_at': at,
+      'updated_at': at,
+      'attachments': [
+        {
+          'id': picture,
+          'filename': 'words.png',
+          'content_type': 'image/png',
+          'size_bytes': 1,
+          'created_at': at,
+          'url': '/attachments/$picture',
+        },
+      ],
+    };
+    if (listed) conv.messages.add(row);
+    return _clone(row);
+  }
+
   /// The conversation is deleted, as the API deletes one: no list has it, and its routes answer 404.
   void deleteConversation(String conversationId) => _conversations.remove(_conversation(conversationId).id);
 
@@ -958,6 +1016,13 @@ class FakeApi {
   /// The device was last seen at [at] (an RFC 3339 time), as the API notes a device's requests.
   void lastSeen(String deviceId, String at) =>
       (_devices[deviceId] ?? (throw StateError('no device $deviceId'))).lastSeenAt = at;
+
+  /// The API lists the device with another name and client from now on, as a server telling its own story of it would
+  /// (R-M3 of step 4's closing re-review).
+  void nameDevice(String deviceId, String name, {required String client}) =>
+      (_devices[deviceId] ?? (throw StateError('no device $deviceId')))
+        ..name = name
+        ..client = client;
 
   /// The device's registration goes, as a new password's remove_devices takes each one: the user's signed list still
   /// names it (step 3's ruling 23), with no certificate the API serves.
@@ -1955,6 +2020,13 @@ class FakeApi {
     return conv;
   }
 
+  /// The public profile the API's listing gives a member, which the app draws them by: their own, or the one they're
+  /// [dress]ed in.
+  Map<String, Object?> _profileOf(_Conversation conv, String user) {
+    final shown = _dressed['${conv.id}:$user'] ?? user;
+    return {'id': shown, 'username': 'u${shown.substring(0, 8)}'};
+  }
+
   /// A conversation as its object shows it: legacy, and its group (mls), with where this device joined it.
   Map<String, Object?> _view(_Conversation conv, _Device? device) {
     final group = conv.group;
@@ -1966,7 +2038,10 @@ class FakeApi {
       'created_at': conv.createdAt,
       'updated_at': conv.createdAt,
       'deleted_at': null,
-      'members': _clone(conv.members),
+      // Each with the public profile the API's listing gives, which the app draws a member by.
+      'members': [
+        for (final member in conv.members) {..._clone(member), 'user': _profileOf(conv, member['user_id']! as String)},
+      ],
       'legacy': conv.legacy,
       'mls': group == null
           ? null

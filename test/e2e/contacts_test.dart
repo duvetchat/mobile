@@ -537,8 +537,10 @@ void main() {
         expect(changes.keys, [bo]);
         expect(changes[bo]?.verified, isTrue);
         final posted = _posts(seen, dm);
-        final held = await _refusal(again.engine.sendMessage(_message(dm, 'still you?')));
-        _expectHeld(held, [bo]);
+        // A group that holds Bo, whom the API lists the DM without, takes nothing from the start, before its hold (C1
+        // of step 4's closing reviews): the conversation says so.
+        await expectLater(again.engine.sendMessage(_message(dm, 'still you?')), throwsA(isA<StateError>()));
+        expect(again.engine.conversationState(dm)?.name, ConversationNotice.groupDiffers);
         expect(_posts(seen, dm), posted);
       },
       skip: noCore,

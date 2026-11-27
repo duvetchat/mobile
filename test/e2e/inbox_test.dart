@@ -353,6 +353,8 @@ void main() {
       user: user,
       deviceName: 'Pixel 8 Pro',
       registered: (_) {},
+      // No conversation is drawn: nothing goes anywhere.
+      shown: (_, {required fresh}) async => null,
     );
     expect(await takeInbox(engine, {}), isFalse);
     // Its first page, then the same page again, past whose last message nothing came: the round ends there.
@@ -360,6 +362,57 @@ void main() {
     expect(cleared, [page.last['id']]);
     expect(_kept(engine.store, keptApprovals), hasLength(20));
   });
+
+  // M3 of step 4's closing review: the record keeps 20 messages the core can't take yet. One more waits in the inbox
+  // rather than push out the oldest, whose copy there is gone: a history's or a catch-up's key would never open.
+  test('a_message_for_later_past_the_records_twenty_waits_in_the_inbox,_and_pushes_none_out', () async {
+    const user = '0193a4b2-0000-7000-8000-0000000000aa';
+    final page = [
+      for (var n = 0; n < 21; n++)
+        {
+          'id': uuidv7(),
+          'from_user_id': '0193a4b2-0000-7000-8000-0000000000bb',
+          'from_device_id': '0193a4b2-0000-7000-8000-0000000000dd',
+          'message': _bytes('a key, $n'),
+          'created_at': '2026-11-26T10:00:00Z',
+        },
+    ];
+    final cleared = <String?>[];
+    final client = MockClient((request) async {
+      if (request.method == 'DELETE') {
+        cleared.add(request.url.queryParameters['through']);
+        return http.Response('', 204);
+      }
+      if (request.url.path.endsWith('/identity')) return http.Response('{"error":"no identity"}', 404);
+      return http.Response(jsonEncode(page), 200);
+    });
+    final engine = E2EEngine(
+      host: _ForLater(),
+      api: duvet.E2eApi(duvet.RestClient(client, router: fakeRouter, token: 'token', duvetClient: engineClient)),
+      events: const Stream.empty(),
+      store: MemoryStore(),
+      clock: TestClock(),
+      user: user,
+      deviceName: 'Pixel 8 Pro',
+      registered: (_) {},
+      // No conversation is drawn: nothing goes anywhere.
+      shown: (_, {required fresh}) async => null,
+    );
+    await takeInbox(engine, {});
+    expect(_kept(engine.store, keptLater), [for (final message in page.take(20)) message['id']]);
+    expect(cleared, [page[19]['id']]);
+  });
+}
+
+/// A core that can't take any message yet: each needs what a later task gives (a history's or a catch-up's key whose
+/// sender's certificate isn't served yet).
+class _ForLater implements CoreHost {
+  @override
+  Future<T> handle<T>(Map<String, Object?> command) async =>
+      throw CoreError('bad_command', message: 'from_certificate is required', field: 'from_certificate');
+
+  @override
+  dynamic noSuchMethod(Invocation invocation) => throw UnimplementedError('${invocation.memberName}');
 }
 
 /// A core no test of this file's own reaches: each command fails.

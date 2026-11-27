@@ -1,4 +1,5 @@
 import 'package:duvet/e2e/engine.dart';
+import 'package:duvet/e2e/push_decrypt.dart' show pushedEntry;
 import 'package:duvet/e2e/sync.dart';
 import 'package:duvet_client/duvet.dart' as duvet;
 import 'package:flutter_test/flutter_test.dart';
@@ -425,6 +426,25 @@ void main() {
     };
     final entry = {'seq': 5, 'kind': 'commit', 'data': 'AAAA', 'sent_at': 1, 'generation': 0, 'epoch': 2};
     final commit = {'conversation_id': ids[1], 'generation': 0, 'epoch': 2, 'entry': entry};
+
+    // The desktop's M1 of step 4's closing review: `expected` is the client's own record, never the API's. Whatever an
+    // event, a queue page or a push writes beside an entry is left out of what the core is given.
+    test('an expected the API writes on an entry never reaches the core', () {
+      const written = {
+        'members': ['0193a4b2-0000-7000-8000-0000000000ee'],
+      };
+      final welcome = {...entry, 'kind': 'welcome', 'expected': written};
+      expect(carriedEntry(event('MLS_WELCOME', {...commit, 'entry': welcome}))!.entry, isNot(contains('expected')));
+      expect(entryOf(duvet.MlsEntry.fromJson(welcome)), isNot(contains('expected')));
+      expect(
+        pushedEntry(
+          {...entry, 'kind': 'message', 'message_id': ids[0], 'expected': written},
+          entry['seq']! as int,
+          ids[0],
+        ),
+        allOf(isNotNull, isNot(contains('expected'))),
+      );
+    });
 
     test("a message's entry has the message's own time, and there's none without one", () {
       expect(carriedEntry(event('DM_MESSAGE_CREATE', message))?.entry['sent_at'], 1763150000123);

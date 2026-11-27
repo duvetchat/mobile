@@ -1451,6 +1451,8 @@ void main() {
         user: user,
         deviceName: 'Pixel 8 Pro',
         registered: (_) {},
+        // No conversation is drawn: nothing goes anywhere.
+        shown: (_, {required fresh}) async => null,
       );
       final given = [...inbox.messages];
       final watch = Stopwatch()..start();

@@ -251,6 +251,24 @@ void main() {
       expect(find.byType(Text), findsNothing);
     });
 
+    // M2 of step 4's closing review: another external sender than the one this device pinned is said while it's
+    // served (Ruling 32), under whatever else the strip says.
+    testWidgets('another_server_key_is_said_while_it_is_served', (tester) async {
+      final repository = await gate(tester, EngineState.ready);
+      expect(find.byType(Text), findsNothing);
+      repository.serverKeyChanged.value = true;
+      await tester.pump();
+      expect(find.text(Notice.serverKeyChanged.text), findsOneWidget);
+      repository.encryption.value = EngineState.removed;
+      await tester.pump();
+      expect(find.text(Notice.removedDevice.text), findsOneWidget);
+      repository
+        ..encryption.value = EngineState.ready
+        ..serverKeyChanged.value = false;
+      await tester.pump();
+      expect(find.byType(Text), findsNothing);
+    });
+
     testWidgets('set_up_makes_the_identity_and_shows_its_key_until_it_is_done_with', (tester) async {
       final repository = await gate(tester, const EngineState.firstDevice());
       await tester.tap(find.text('Set up'));
@@ -322,6 +340,24 @@ void main() {
       await tester.tap(find.text('Finish'));
       await tester.pumpAndSettle();
       expect(repository.encryptionTaps, ['changeKeys']);
+    });
+
+    // N-M6 of step 4's closing re-review: the strip's «Change keys», after a change that left devices out, is
+    // Settings' own change of keys: one question naming each device it takes off beside it, and only its yes changes
+    // them.
+    testWidgets('change_keys_on_the_strip_asks_as_settings_does,_naming_the_devices_it_takes_off', (tester) async {
+      final repository = await gate(tester, const EngineState(EngineStage.ready, keysAgain: true));
+      await tester.pumpAndSettle();
+      const unlisted = '0193a4b2-0000-7000-8000-00000000eeee';
+      repository.devicesAlongList = (unsent: const [], unregistered: const [unlisted]);
+      await tester.tap(find.text('Change keys'));
+      await tester.pumpAndSettle();
+      expect(find.text('Change security keys?'), findsOneWidget);
+      expect(find.textContaining('Duvet no longer lists the device whose ID starts with 0193a4b2.'), findsOneWidget);
+      expect(repository.encryptionTaps, isEmpty);
+      await tester.tap(find.text('Change keys').last);
+      await tester.pumpAndSettle();
+      expect(repository.encryptionTaps, ['changeKeys, named $unlisted']);
     });
 
     // Review 24's I1 and review 25's I1: a key change that can't finish says why, with the one way out this core

@@ -9,10 +9,12 @@ import 'package:duvet/e2e/engine.dart'
         BackupShown,
         ContactsShown,
         DeviceSetupActions,
+        DevicesAlong,
         EngineStage,
         EngineState,
         HistoryOffer,
         KeyChange,
+        KnownDevice,
         SafetyNumber,
         ScannedDevice,
         SharedHistory,
@@ -186,6 +188,9 @@ class FakeRepository implements ChatRepository {
   final lastRead = <String, String>{};
   final _resumed = StreamController<void>.broadcast();
   final edits = <(String, String)>[];
+
+  /// What an edit is refused with, while a test sets it: nothing of it is made.
+  Object? editRefusal;
   final deletes = <String>[];
   final reactions = <(String, String, bool)>[];
 
@@ -1635,11 +1640,15 @@ class FakeRepository implements ChatRepository {
   Future<List<duvet.Device>> devices() async => deviceList ?? (throw Exception("the devices couldn't be read"));
 
   @override
-  Future<void> removeDevice(String deviceId, {bool changeKeys = false}) async =>
-      encryptionTaps.add(changeKeys ? 'removeDevice $deviceId, changeKeys' : 'removeDevice $deviceId');
+  Future<void> removeDevice(String deviceId, {bool changeKeys = false, List<String> named = const []}) async =>
+      encryptionTaps.add(
+        '${changeKeys ? 'removeDevice $deviceId, changeKeys' : 'removeDevice $deviceId'}'
+        '${named.isEmpty ? '' : ', named ${named.join(' ')}'}',
+      );
 
   @override
-  Future<void> changeKeys() async => encryptionTaps.add('changeKeys');
+  Future<void> changeKeys({List<String> named = const []}) async =>
+      encryptionTaps.add(named.isEmpty ? 'changeKeys' : 'changeKeys, named ${named.join(' ')}');
 
   @override
   Future<void> finishKeysWithout() async => encryptionTaps.add('finishKeysWithout');
@@ -1662,13 +1671,25 @@ class FakeRepository implements ChatRepository {
   }
 
   /// The devices an earlier removal of this device's takes along with the next list or key change; a test sets them.
-  List<String> unsentRemovalsList = const [];
+  DevicesAlong devicesAlongList = (unsent: const [], unregistered: const []);
 
   @override
-  Future<List<String>> unsentRemovals() async => unsentRemovalsList;
+  Future<DevicesAlong> devicesAlong([String? asked]) async => (
+    unsent: [...devicesAlongList.unsent.where((id) => id != asked)],
+    unregistered: [...devicesAlongList.unregistered.where((id) => id != asked)],
+  );
+
+  /// What this device knows of devices the API may no longer list, by ID: their name, client and when they were added.
+  final knownDevices = <String, KnownDevice>{};
+
+  @override
+  KnownDevice? knownDevice(String deviceId) => knownDevices[deviceId];
 
   /// What the engine tells of the user's devices, in the notices' words; a test adds to it.
   final deviceNoticesTold = StreamController<String>.broadcast();
+
+  @override
+  final ValueNotifier<bool> serverKeyChanged = ValueNotifier(false);
 
   @override
   Stream<String> get deviceNotices => deviceNoticesTold.stream;
@@ -1691,7 +1712,8 @@ class FakeRepository implements ChatRepository {
   List<String> restartLeavesOut = const [];
 
   @override
-  Future<void> acceptMembers(String conversationId) async => encryptionTaps.add('acceptMembers $conversationId');
+  Future<void> acceptMembers(String conversationId, List<String> users) async =>
+      encryptionTaps.add('acceptMembers $conversationId ${users.join(' ')}');
 
   /// What the engine shows of the person's contacts; a test sets it, and the taps below change it.
   @override
@@ -1859,6 +1881,7 @@ class FakeRepository implements ChatRepository {
   @override
   Future<ChatMessage> edit(ChatTarget target, String messageId, String content) async {
     edits.add((messageId, content));
+    if (editRefusal case final refusal?) throw refusal;
     final list = history[target.id] ?? [];
     final i = list.indexWhere((m) => m.id == messageId);
     final edited = (i >= 0 ? list[i] : message(messageId, author: me.id, name: me.displayName, text: '')).copyWith(

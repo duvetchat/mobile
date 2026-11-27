@@ -121,6 +121,8 @@ class _Live {
           if (named != device) unawaited(connect());
         },
         loginChallenge: login,
+        // What the app's chats draw, kept as the app's repository keeps it.
+        shown: listedDrawing(live.api.api.getConversations, account.id),
       );
     };
     live.engine = live._engineOn();

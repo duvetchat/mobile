@@ -2,14 +2,17 @@ import 'dart:convert';
 import 'dart:math';
 import 'dart:typed_data';
 
+import 'package:duvet/data/models.dart' show ConversationTarget, MessageCreated;
 import 'package:duvet/e2e/conventions.dart' show maxFileName;
 import 'package:duvet/e2e/engine.dart';
+import 'package:duvet/e2e/legacy.dart' show legacyRecords;
 import 'package:duvet/e2e/store.dart' show externalSender;
 import 'package:duvet/e2e/uuid.dart';
 import 'package:duvet_client/duvet.dart' as duvet;
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 
+import '../support/app_repository.dart';
 import '../support/core_lib.dart';
 import '../support/ed25519.dart';
 import '../support/engines.dart';
@@ -49,6 +52,73 @@ Map<String, Object?> _heard(TestDevice device, String id) => [
     if (event.type == 'DM_MESSAGE_CREATE' && (event.data! as Map)['id'] == id)
       (event.data! as Map).cast<String, Object?>(),
 ].first;
+
+/// What [drawn] draws without [hidden]: a page that never showed them.
+PageDrawing _without(PageDrawing drawn, String hidden) =>
+    (id, {required fresh}) async => switch (await drawn(id, fresh: fresh)) {
+      final shown? => (
+        group: shown.group,
+        owner: shown.owner,
+        users: [
+          for (final user in shown.users)
+            if (user != hidden) user,
+        ],
+      ),
+      null => null,
+    };
+
+/// Whether [request] posts a message to the conversation.
+bool _posts(http.Request request, String conversation) =>
+    request.method == 'POST' && request.url.path == _messagesPath(conversation);
+
+/// What [user]'s devices put in the conversation's queue, of [kinds], as the API keeps it: each one's kind, and the
+/// generation and epoch it's of.
+Future<List<(String, int, int)>> _madeAt(
+  TestDevice device,
+  String conversation,
+  String user,
+  List<String> kinds,
+) async => [
+  for (final entry in (await device.api.queue(conversation, 0)).entries)
+    if (kinds.contains(entry.kind) && entry.senderUser == user) (entry.kind, entry.generation, entry.epoch),
+];
+
+/// The users the device's core holds a device of in the conversation's group.
+Future<Set<String>> _heldUsers(TestDevice device, String conversation) async => {
+  for (final held in (await groupOf(device, conversation))?.devices ?? const <({String user, String device})>[])
+    held.user,
+};
+
+/// [leaver] leaves the conversation, and [member]'s device commits their removal as the API proposes it.
+Future<void> _leaves(TestDevice leaver, TestDevice member, String conversation) async {
+  await leaver.engine.leaveConversation(conversation);
+  await until(() async {
+    member.clock.advance(const Duration(seconds: 5));
+    await turnEnded(member);
+    return !(await _heldUsers(member, conversation)).contains(leaver.user);
+  }, what: 'the removal of the one who left');
+}
+
+/// The API's listing [answered], [user]'s membership of [conversation] left out: what a server shows one viewer.
+http.Response _listedWithout(http.Response answered, String conversation, String user) {
+  final listed = (jsonDecode(answered.body) as List).cast<Map<String, Object?>>();
+  for (final conv in listed) {
+    if (conv['id'] != conversation) continue;
+    conv['members'] = [
+      for (final member in (conv['members']! as List).cast<Map<String, Object?>>())
+        if (member['user_id'] != user) member,
+    ];
+  }
+  return http.Response(jsonEncode(listed), answered.statusCode, headers: {'content-type': 'application/json'});
+}
+
+/// The device's work until now, what it set going in its conversations' lanes included (a start's and a READY's
+/// resend), whose requests go outside the turn.
+Future<void> _settled(TestDevice device) async {
+  for (var round = 0; round < 3; round++) {
+    await turnEnded(device);
+  }
+}
 
 /// Ana's and Bo's first devices in their DM, whose group Ana made; Ana's hears what [aHears] lets through.
 Future<({FakeApi fake, String ana, String bo, TestDevice a, TestDevice b, String conversation})> _dm({
@@ -155,6 +225,8 @@ Future<void> _resetFrom(TestDevice device) async {
 String _c(int code) => String.fromCharCode(code);
 
 void main() {
+  // An app's repository on the fake takes path_provider's answer from a mocked channel (support/app_repository.dart).
+  TestWidgetsFlutterBinding.ensureInitialized();
   setUpAll(() async {
     if (coreLibrary != null) await loadCore();
   });
@@ -468,11 +540,14 @@ void main() {
       () async {
         final t = await _dm();
         final pinned = t.fake.externalSender;
+        expect(t.a.engine.serverKeyChanged.value, isFalse);
         final bos = (await _status(t.b))['device_id']! as String;
         final other = Uint8List.fromList(List.generate(32, (_) => _random.nextInt(256)));
         t.fake.externalSender = base64Encode(ed25519PublicKey(other));
         final again = await restarted(t.fake, t.a);
         expect(again.store.read(externalSender), pinned);
+        // Said to the person, never taken: «una distinta es un aviso» (M2 of step 4's closing review).
+        expect(again.engine.serverKeyChanged.value, isTrue);
         t.fake.proposeRemoval(t.conversation, bos, seed: other);
         await turnEnded(again);
         await turnEnded(t.b);
@@ -521,6 +596,885 @@ void main() {
         expect(await t.a.api.deletedMessages(t.conversation), contains(kept.id));
         final again = await restarted(t.fake, t.a);
         expect(await _textOn(again, t.conversation, kept.id), 'kept');
+      },
+      skip: noCore,
+      timeout: _slow,
+    );
+  });
+
+  group('a_group_holds_only_whom_the_device_can_account_for', () {
+    // C1 of step 4's closing reviews: a device founds a group only with the members it can account for, its creator
+    // with the person's picks, whatever the API lists to its engine; and a group that holds someone the conversation
+    // doesn't show is said before anything more is sent there, which protects whoever joins by a welcome.
+    test(
+      'the_api_listing_a_third_member_to_the_creators_engine_founds_no_group_with_them',
+      () async {
+        final fake = FakeApi();
+        final (ana, bo, eve) = (fake.addUser(), fake.addUser(), fake.addUser());
+        // The server plants an account of its own in the group Ana makes, after it answers her creation.
+        final commits = <String>[];
+        var planted = false;
+        final client = watchedClient(
+          fake,
+          seen: (request) {
+            if (request.method == 'POST' && request.url.path.endsWith('/mls/commits')) commits.add(request.url.path);
+            if (planted || request.method != 'GET' || request.url.path != '/api/users/@me/conversations') return;
+            if (fake.conversationIds.firstOrNull case final made?) {
+              planted = true;
+              fake.addMembers(made, [eve]);
+            }
+          },
+        );
+        final a = await firstDevice(fake, ana, client: client);
+        await firstDevice(fake, bo);
+        final e = await firstDevice(fake, eve);
+        final conversation = (await a.engine.createGroup('Plans', [bo])).id;
+        await turnEnded(a);
+        expect(planted, isTrue);
+        // The question names whom a yes would have the device go in with: the conversation as listed.
+        expect(a.engine.conversationState(conversation), ConversationState.membersChanged([ana, bo, eve]));
+        expect(await groupOf(a, conversation), isNull);
+        expect(commits, isEmpty);
+        expect(await groupOf(e, conversation), isNull);
+      },
+      skip: noCore,
+      timeout: _slow,
+    );
+
+    // Kept past its founding, the record would hold a later welcome of this device's to the members it began with.
+    test(
+      'the_creators_picks_found_its_group_and_go_once_the_device_holds_it',
+      () async {
+        final fake = FakeApi();
+        final (ana, bo) = (fake.addUser(), fake.addUser());
+        final a = await firstDevice(fake, ana);
+        final b = await firstDevice(fake, bo);
+        final conversation = (await a.engine.createDM(bo)).id;
+        await sameGroup([a, b], conversation);
+        expect((a.store.read(legacyRecords) as Map?)?.containsKey(conversation) ?? false, isFalse);
+      },
+      skip: noCore,
+      timeout: _slow,
+    );
+
+    test(
+      'a_welcome_whose_group_holds_a_user_the_conversation_doesnt_is_said_and_nothing_is_sent',
+      () async {
+        final fake = FakeApi();
+        final (ana, bo, eve) = (fake.addUser(), fake.addUser(), fake.addUser());
+        final conversation = fake.addConversation(group: true, members: [ana, bo], owner: ana);
+        final a = await firstDevice(fake, ana);
+        final b = await firstDevice(fake, bo);
+        final e = await firstDevice(fake, eve);
+        await stoppedByHand(b);
+        // Ana's device is shown an account of the server's in the group, and founds it with them; Bo's never is.
+        fake.addMembers(conversation, [eve]);
+        await a.engine.openConversation(conversation);
+        await until(() async => await groupOf(e, conversation) != null, what: "the group on the planted device");
+        fake.dropMembers(conversation, [eve]);
+        final posts = <String>[];
+        final again = await restarted(
+          fake,
+          b,
+          client: watchedClient(
+            fake,
+            seen: (request) {
+              if (request.method == 'POST' && request.url.path == _messagesPath(conversation)) posts.add('message');
+            },
+          ),
+        );
+        await until(() async => await groupOf(again, conversation) != null, what: "the welcome on Bo's device");
+        await turnEnded(again);
+        expect(again.engine.conversationState(conversation), ConversationState.groupDiffers([ana, bo, eve]));
+        await expectLater(_send(again, conversation, 'for Ana alone'), throwsA(isA<StateError>()));
+        expect(posts, isEmpty);
+      },
+      skip: noCore,
+      timeout: _slow,
+    );
+
+    // N-C1 of step 4's closing re-review: nothing goes to a conversation the person doesn't see, whoever its group
+    // holds. A listing that leaves it out after the welcome stops what goes there, as one hiding a member does.
+    test(
+      'a_conversation_the_page_draws_no_more_after_the_welcome_takes_nothing',
+      () async {
+        final fake = FakeApi();
+        final (ana, bo, eve) = (fake.addUser(), fake.addUser(), fake.addUser());
+        final conversation = fake.addConversation(group: true, members: [ana, bo], owner: ana);
+        final a = await firstDevice(fake, ana);
+        final b = await firstDevice(fake, bo);
+        final e = await firstDevice(fake, eve);
+        await stoppedByHand(b);
+        fake.addMembers(conversation, [eve]);
+        await a.engine.openConversation(conversation);
+        await until(() async => await groupOf(e, conversation) != null, what: 'the group on the planted device');
+        fake.dropMembers(conversation, [eve]);
+        final posts = <String>[];
+        var listed = true;
+        final honest = fake.drawnTo(bo);
+        final again = await restarted(
+          fake,
+          b,
+          client: watchedClient(
+            fake,
+            seen: (request) {
+              if (_posts(request, conversation)) posts.add('message');
+            },
+          ),
+          drawn: (id, {required fresh}) async => listed ? honest(id, fresh: fresh) : null,
+        );
+        await until(() async => await groupOf(again, conversation) != null, what: "the welcome on Bo's device");
+        await turnEnded(again);
+        expect(again.engine.conversationState(conversation), ConversationState.groupDiffers([ana, bo, eve]));
+        // From now on the server leaves the conversation out of what Bo's page lists: it draws it no more.
+        listed = false;
+        await expectLater(_send(again, conversation, 'for Ana alone'), throwsA(isA<StateError>()));
+        expect(posts, isEmpty);
+      },
+      skip: noCore,
+      timeout: _slow,
+    );
+
+    // N-C1, and a message that waits: each delivery, a start's and a READY's, is held to what the page draws then. Not
+    // while the group holds someone the page doesn't draw, nor while it draws the conversation no more; then it goes.
+    test(
+      'a_message_that_waits_goes_at_a_start_or_a_READY_only_to_a_group_its_page_draws',
+      () async {
+        final fake = FakeApi();
+        final (ana, bo, eve) = (fake.addUser(), fake.addUser(), fake.addUser());
+        final conversation = fake.addConversation(group: true, members: [ana, bo, eve], owner: ana);
+        final a = await firstDevice(fake, ana);
+        final b = await firstDevice(fake, bo);
+        final e = await firstDevice(fake, eve);
+        await a.engine.openConversation(conversation);
+        await sameGroup([a, b, e], conversation);
+        var cut = true;
+        final posts = <String>[];
+        final client = watchedClient(
+          fake,
+          answer: (request) async {
+            if (!_posts(request, conversation)) return null;
+            if (cut) throw http.ClientException('no answer', request.url);
+            posts.add('message');
+            return null;
+          },
+        );
+        // What Bo's page draws: everyone, everyone but Eve, or nothing.
+        final honest = fake.drawnTo(bo);
+        var page = honest;
+        Future<ShownConversation?> drawn(String id, {required bool fresh}) => page(id, fresh: fresh);
+        final b2 = await restarted(fake, b, client: client, drawn: drawn);
+        await expectLater(_send(b2, conversation, 'waits'), throwsA(anything));
+        cut = false;
+        page = _without(honest, eve);
+        final again = await restarted(fake, b2, client: client, drawn: drawn);
+        await _settled(again);
+        expect(posts, isEmpty);
+        Future<void> ready() async {
+          fake.tell(bo, (
+            type: 'READY',
+            data: {
+              'user': {'id': bo},
+            },
+          ));
+          await _settled(again);
+        }
+
+        await ready();
+        expect(posts, isEmpty);
+        page = (_, {required fresh}) async => null;
+        await ready();
+        expect(posts, isEmpty);
+        page = honest;
+        await ready();
+        await until(() => posts.isNotEmpty, what: 'the message that waited, once its group is as drawn');
+        expect(posts, ['message']);
+      },
+      skip: noCore,
+      timeout: _slow,
+    );
+
+    // N-C1, the app's own drawing: what it draws comes from its session's listings, and before the first is in nothing
+    // goes. A send waits for one, then is held to what it draws.
+    test(
+      "a_send_before_the_session's_first_listing_waits_for_one_and_goes_to_no_group_holding_whom_it_doesn't_draw",
+      () async {
+        final fake = FakeApi();
+        final (ana, bo, eve) = (fake.addUser(), fake.addUser(), fake.addUser());
+        final conversation = fake.addConversation(group: true, members: [ana, bo], owner: ana);
+        // The server fails the app's first listing, as it signs in, and holds Bo's welcome from his connection, as
+        // everything else while the group is founded: what his app draws comes from no listing made meanwhile.
+        var listings = 0;
+        var quiet = false;
+        final app = await appOn(
+          fake,
+          bo,
+          hears: (event) => !quiet && event.type != 'MLS_WELCOME',
+          answer: (request) async {
+            if (request.method != 'GET' || request.url.path != '/api/users/@me/conversations') return null;
+            if (++listings > 1) return null;
+            return http.Response(
+              jsonEncode({'error': 'internal server error'}),
+              500,
+              headers: {'content-type': 'application/json'},
+            );
+          },
+        );
+        await app.ready();
+        final a = await firstDevice(fake, ana);
+        final e = await firstDevice(fake, eve);
+        // Ana's device is shown an account of the server's in the group, and founds it with them; Bo's app never is.
+        quiet = true;
+        fake.addMembers(conversation, [eve]);
+        await a.engine.openConversation(conversation);
+        await until(() async => await groupOf(e, conversation) != null, what: 'the group on the planted device');
+        fake.dropMembers(conversation, [eve]);
+        quiet = false;
+        final from = app.seen.length;
+        await expectLater(
+          app.repository.send(ConversationTarget(conversation), 'for Ana alone', nonce: uuidv4()),
+          throwsA(anything),
+        );
+        expect(app.count('POST', _messagesPath(conversation), from: from), 0);
+        expect(app.repository.conversationStates.value[conversation]?.name, ConversationNotice.groupDiffers);
+      },
+      skip: noCore,
+      timeout: _slow,
+    );
+
+    // N-I1 of step 4's closing re-review: a DM is two people, and its view shows one other: drawn with more, it
+    // differs.
+    test(
+      'a_dm_drawn_with_a_third_member_takes_nothing_for_a_group_of_the_person_and_them',
+      () async {
+        final fake = FakeApi();
+        final (ana, bo, eve) = (fake.addUser(), fake.addUser(), fake.addUser());
+        final conversation = fake.addConversation(group: false, members: [ana, bo]);
+        final posts = <String>[];
+        final b = await firstDevice(
+          fake,
+          bo,
+          client: watchedClient(
+            fake,
+            seen: (request) {
+              if (_posts(request, conversation)) posts.add('message');
+            },
+          ),
+          // A page that took the server's addition of Eve to the DM.
+          drawn: (id, {required fresh}) async =>
+              id != conversation ? null : (group: false, owner: null, users: [ana, bo, eve]),
+        );
+        final e = await firstDevice(fake, eve);
+        // Eve's device is shown the DM as hers and Bo's, and founds its group: a DM of the two of them.
+        fake.dropMembers(conversation, [ana]);
+        fake.addMembers(conversation, [eve]);
+        await e.engine.openConversation(conversation);
+        await sameGroup([b, e], conversation);
+        fake.dropMembers(conversation, [eve]);
+        fake.addMembers(conversation, [ana, eve]);
+        await turnEnded(b);
+        await expectLater(_send(b, conversation, 'for Ana'), throwsA(isA<StateError>()));
+        expect(posts, isEmpty);
+        expect(b.engine.conversationState(conversation)?.name, ConversationNotice.groupDiffers);
+        expect(b.engine.conversationState(conversation)?.users, unorderedEquals([bo, eve]));
+      },
+      skip: noCore,
+      timeout: _slow,
+    );
+
+    // N-I1, the app's own drawing: a DM is drawn as the person and the one other its view shows, whatever else its
+    // listing holds, and no addition to it is taken.
+    test(
+      "the_app_draws_a_dm_as_the_person_and_whom_its_view_shows,_whatever_else_its_listing_holds",
+      () async {
+        final fake = FakeApi();
+        final (ana, bo, eve) = (fake.addUser(), fake.addUser(), fake.addUser());
+        final conversation = fake.addConversation(group: false, members: [ana, bo]);
+        final app = await appOn(fake, ana, hears: (event) => event.type != 'MLS_WELCOME');
+        await app.ready();
+        final e = await firstDevice(fake, eve);
+        // Eve's device is shown the DM as hers and Ana's, and founds its group: a DM of the two of them.
+        fake.dropMembers(conversation, [bo]);
+        fake.addMembers(conversation, [eve]);
+        await e.engine.openConversation(conversation);
+        await until(() async => await groupOf(e, conversation) != null, what: "Eve's group");
+        // Then Ana's DM is listed with Bo first, whom its view shows, and Eve after him.
+        fake.dropMembers(conversation, [eve]);
+        fake.addMembers(conversation, [bo, eve]);
+        await app.repository.refreshConversations();
+        expect(app.repository.conversations.value.single.otherUserId, bo);
+        final from = app.seen.length;
+        await expectLater(
+          app.repository.send(ConversationTarget(conversation), 'for Bo', nonce: uuidv4()),
+          throwsA(anything),
+        );
+        expect(app.count('POST', _messagesPath(conversation), from: from), 0);
+      },
+      skip: noCore,
+      timeout: _slow,
+    );
+
+    // R-I1 of step 4's closing re-review: a member is drawn by one ID, the membership's, which the group is held to,
+    // and a listed member whose profile names another ID isn't drawn at all.
+    test(
+      "a_dm_member_listed_in_another's_profile_isn't_drawn,_and_nothing_goes_to_a_group_of_the_person_and_them",
+      () async {
+        final fake = FakeApi();
+        final (ana, bo, eve) = (fake.addUser(), fake.addUser(), fake.addUser());
+        final conversation = fake.addConversation(group: false, members: [ana, bo]);
+        final app = await appOn(fake, bo, hears: (event) => event.type != 'MLS_WELCOME');
+        await app.ready();
+        final e = await firstDevice(fake, eve);
+        // Eve's device is shown the DM as hers and Bo's, and founds its group: a DM of the two of them.
+        fake.dropMembers(conversation, [ana]);
+        fake.addMembers(conversation, [eve]);
+        await e.engine.openConversation(conversation);
+        await until(() async => await groupOf(e, conversation) != null, what: "Eve's group");
+        // Then Bo's DM lists Eve's membership in Ana's profile, her ID included.
+        fake.dress(conversation, eve, as: ana);
+        await app.repository.refreshConversations();
+        final shown = app.repository.conversations.value.single;
+        final members = await app.repository.members(ConversationTarget(conversation));
+        final from = app.seen.length;
+        Object? refused;
+        try {
+          await app.repository.send(ConversationTarget(conversation), 'for Ana', nonce: uuidv4());
+        } catch (error) {
+          refused = error;
+        }
+        expect(
+          (
+            drawn: [for (final member in members) member.userId].join(' '),
+            other: shown.otherUserId,
+            posts: app.count('POST', _messagesPath(conversation), from: from),
+            refused: refused != null,
+          ),
+          (drawn: bo, other: null, posts: 0, refused: true),
+        );
+      },
+      skip: noCore,
+      timeout: _slow,
+    );
+
+    // N-I3 of step 4's closing re-review: an edit or a deletion that waits for its answer goes again only to a group
+    // whose people the page draws. Each try looks, and so does a restart's, before its bytes are made again.
+    test(
+      'an_edit_and_a_deletion_that_wait_go_nowhere_while_the_group_holds_someone_the_page_doesnt_draw',
+      () async {
+        final fake = FakeApi();
+        final (ana, bo, eve) = (fake.addUser(), fake.addUser(), fake.addUser());
+        final changes = <String>[];
+        var cut = false;
+        final client = watchedClient(
+          fake,
+          answer: (request) async {
+            final change =
+                (request.method == 'PATCH' || request.method == 'DELETE') &&
+                RegExp(r'/messages/[^/]+$').hasMatch(request.url.path);
+            if (!change) return null;
+            if (cut) throw http.ClientException('no answer', request.url);
+            changes.add(request.method);
+            return null;
+          },
+        );
+        var hidden = false;
+        final honest = fake.drawnTo(bo);
+        Future<ShownConversation?> drawn(String id, {required bool fresh}) =>
+            (hidden ? _without(honest, eve) : honest)(id, fresh: fresh);
+        final b = await firstDevice(fake, bo, client: client, drawn: drawn);
+        final e = await firstDevice(fake, eve);
+        final id = (await e.engine.createGroup('three', [ana, bo])).id;
+        await b.engine.openConversation(id);
+        await sameGroup([b, e], id);
+        final first = await _send(b, id, 'first');
+        final second = await _send(b, id, 'second');
+        // Made while the page draws Eve, their requests unanswered.
+        cut = true;
+        await b.engine.editMessage(id, first.id, 'edited');
+        await b.engine.deleteMessage(id, second.id);
+        await turnEnded(b);
+        // From now on the page doesn't draw Eve, and the API would answer.
+        hidden = true;
+        cut = false;
+        b.clock.advance(const Duration(minutes: 2));
+        await _settled(b);
+        expect(changes, isEmpty);
+        expect(b.engine.conversationState(id)?.name, ConversationNotice.groupDiffers);
+        // A restart makes them again only once its group is as drawn.
+        final again = await restarted(fake, b, client: client, drawn: drawn);
+        await _settled(again);
+        expect(changes, isEmpty);
+      },
+      skip: noCore,
+      timeout: _slow,
+    );
+
+    // N-M1 of step 4's closing re-review: a record made from a listing the API calls from before the cutover is held to
+    // what the page draws too: such a listing with someone the page never showed founds nothing.
+    test(
+      'a_listing_called_from_before_the_cutover_founds_no_group_with_whom_the_page_never_drew',
+      () async {
+        final fake = FakeApi();
+        final (ana, bo, eve) = (fake.addUser(), fake.addUser(), fake.addUser());
+        final conversation = fake.addConversation(group: true, members: [ana, bo, eve], owner: ana, legacy: true);
+        final commits = <String>[];
+        final b = await firstDevice(
+          fake,
+          bo,
+          client: watchedClient(
+            fake,
+            seen: (request) {
+              if (request.method == 'POST' && request.url.path == commitsPath(conversation)) commits.add('commit');
+            },
+          ),
+          drawn: _without(fake.drawnTo(bo), eve),
+        );
+        await firstDevice(fake, ana);
+        await firstDevice(fake, eve);
+        await b.engine.openConversation(conversation);
+        await turnEnded(b);
+        expect(commits, isEmpty);
+        expect(await groupOf(b, conversation), isNull);
+        expect(b.engine.conversationState(conversation)?.name, ConversationNotice.membersChanged);
+      },
+      skip: noCore,
+      timeout: _slow,
+    );
+
+    // N-M2 of step 4's closing re-review: a creation's record never takes the place of one kept already. «Message»
+    // on a contact answers the DM they have, from before the cutover: its record, as this device first saw it, stays.
+    test(
+      'a_creation_answered_with_a_conversation_that_has_a_record_keeps_that_record',
+      () async {
+        final fake = FakeApi();
+        final (ana, bo) = (fake.addUser(), fake.addUser());
+        final conversation = fake.addConversation(group: false, members: [ana, bo], legacy: true);
+        final a = await firstDevice(fake, ana);
+        final b = await firstDevice(fake, bo);
+        await turnEnded(a);
+        Object? recordOn(TestDevice device) => (device.store.read(legacyRecords) as Map?)?[conversation];
+        final first = recordOn(a);
+        expect(first, {
+          'members': [ana, bo],
+        });
+        expect((await a.engine.createDM(bo)).id, conversation);
+        expect(recordOn(a), first);
+        await sameGroup([a, b], conversation);
+        await turnEnded(a);
+        expect(recordOn(a), first);
+      },
+      skip: noCore,
+      timeout: _slow,
+    );
+
+    // N-M3 of step 4's closing re-review: the creator's picks are kept whatever the API answers its creation with. One
+    // answered with a group of the server's has the creator's device join it held to them: it isn't joined.
+    test(
+      "a_creation_answered_with_another_group_is_held_to_the_creator's_picks",
+      () async {
+        final fake = FakeApi();
+        final (ana, bo, eve) = (fake.addUser(), fake.addUser(), fake.addUser());
+        // A group of the server's, founded before Ana's creation with Eve, Bo and Ana in its list, Ana without a device
+        // yet: the core alone would let her device in by an external commit.
+        final planted = fake.addConversation(group: true, members: [eve, bo, ana], owner: eve);
+        final e = await firstDevice(fake, eve);
+        await firstDevice(fake, bo);
+        await e.engine.openConversation(planted);
+        await until(() async => await groupOf(e, planted) != null, what: "the server's group");
+        // Listed without Ana as her device starts; her creation is answered with it, Ana in it again.
+        fake.dropMembers(planted, [ana]);
+        final commits = <String>[];
+        final client = watchedClient(
+          fake,
+          seen: (request) {
+            if (request.method == 'POST' && request.url.path == commitsPath(planted)) commits.add('commit');
+          },
+          change: (request, answered) async {
+            if (request.method != 'POST' || request.url.path != '/api/users/@me/conversations') return answered;
+            fake.addMembers(planted, [ana]);
+            return http.Response(jsonEncode(fake.viewOf(planted)), 201, headers: {'content-type': 'application/json'});
+          },
+        );
+        final a = await firstDevice(fake, ana, client: client);
+        expect((await a.engine.createGroup('Plans', [bo])).id, planted);
+        await a.engine.openConversation(planted);
+        await turnEnded(a);
+        expect(commits, isEmpty);
+        expect(await groupOf(a, planted), isNull);
+        expect(a.engine.conversationState(planted)?.name, ConversationNotice.membersChanged);
+      },
+      skip: noCore,
+      timeout: _slow,
+    );
+
+    // N-M10 of step 4's closing re-review: the person's yes is to the members its question named, and the group is
+    // founded with them; a listing that differs by then asks again.
+    test(
+      'the_yes_to_changed_members_founds_with_whom_the_question_named,_and_another_listing_asks_again',
+      () async {
+        final fake = FakeApi();
+        final (ana, bo, eve, cy) = (fake.addUser(), fake.addUser(), fake.addUser(), fake.addUser());
+        final commits = <String>[];
+        var planted = false;
+        final client = watchedClient(
+          fake,
+          seen: (request) {
+            if (request.method == 'POST' && request.url.path.endsWith('/mls/commits')) commits.add(request.url.path);
+            if (planted || request.method != 'GET' || request.url.path != '/api/users/@me/conversations') return;
+            if (fake.conversationIds.firstOrNull case final made?) {
+              planted = true;
+              fake.addMembers(made, [eve]);
+            }
+          },
+        );
+        final a = await firstDevice(fake, ana, client: client);
+        for (final user in [bo, eve, cy]) {
+          await firstDevice(fake, user);
+        }
+        final conversation = (await a.engine.createGroup('Plans', [bo])).id;
+        await turnEnded(a);
+        expect(a.engine.conversationState(conversation)?.name, ConversationNotice.membersChanged);
+        expect(a.engine.conversationState(conversation)?.users, unorderedEquals([ana, bo, eve]));
+        // The server adds Cy before the person's yes, which was to Ana, Bo and Eve.
+        fake.addMembers(conversation, [cy]);
+        await acceptAsShown(a, conversation);
+        await turnEnded(a);
+        expect(commits, isEmpty);
+        expect(await groupOf(a, conversation), isNull);
+        expect(a.engine.conversationState(conversation)?.users, unorderedEquals([ana, bo, eve, cy]));
+        // A yes to them founds the group with them.
+        await acceptAsShown(a, conversation);
+        await turnEnded(a);
+        expect(commits, hasLength(1));
+        final held = await groupOf(a, conversation);
+        expect({for (final device in held?.devices ?? const []) device.user}, {ana, bo, eve, cy});
+      },
+      skip: noCore,
+      timeout: _slow,
+    );
+
+    // R-M2 of step 4's closing re-review: the yes is to the people the bar named as the person tapped it, as the
+    // desktop's is; a question asked again meanwhile, naming others, isn't answered by it.
+    test(
+      'a_yes_to_the_people_named_before_the_question_was_asked_again_is_none',
+      () async {
+        final fake = FakeApi();
+        final (ana, bo, eve, cy) = (fake.addUser(), fake.addUser(), fake.addUser(), fake.addUser());
+        final commits = <String>[];
+        var planted = false;
+        final client = watchedClient(
+          fake,
+          seen: (request) {
+            if (request.method == 'POST' && request.url.path.endsWith('/mls/commits')) commits.add(request.url.path);
+            if (planted || request.method != 'GET' || request.url.path != '/api/users/@me/conversations') return;
+            if (fake.conversationIds.firstOrNull case final made?) {
+              planted = true;
+              fake.addMembers(made, [eve]);
+            }
+          },
+        );
+        final a = await firstDevice(fake, ana, client: client);
+        for (final user in [bo, eve, cy]) {
+          await firstDevice(fake, user);
+        }
+        final conversation = (await a.engine.createGroup('Plans', [bo])).id;
+        await turnEnded(a);
+        // What the bar draws: the question naming Ana, Bo and Eve.
+        final drawn = a.engine.conversationState(conversation)!.users;
+        expect(drawn, unorderedEquals([ana, bo, eve]));
+        // The server adds Cy, and the question is asked again as the conversation is opened, before the person's tap.
+        fake.addMembers(conversation, [cy]);
+        await a.engine.openConversation(conversation);
+        await turnEnded(a);
+        expect(a.engine.conversationState(conversation)?.users, unorderedEquals([ana, bo, eve, cy]));
+        await a.engine.acceptMembers(conversation, drawn);
+        await turnEnded(a);
+        expect(
+          (
+            commits: commits.length,
+            group: await groupOf(a, conversation) != null,
+            state: a.engine.conversationState(conversation)?.name,
+          ),
+          (commits: 0, group: false, state: ConversationNotice.membersChanged),
+        );
+      },
+      skip: noCore,
+      timeout: _slow,
+    );
+
+    // R-M2's join (step 4's closing re-review): after the yes, this device goes in while the API lists whom it named,
+    // by an external commit into the group as it is; one holding others than named takes nothing it sends.
+    test(
+      'a_join_after_the_yes_into_a_group_with_others_than_named_takes_nothing_sent_after',
+      () async {
+        final fake = FakeApi();
+        final (ana, bo, cy, dee, eve) = (
+          fake.addUser(),
+          fake.addUser(),
+          fake.addUser(),
+          fake.addUser(),
+          fake.addUser(),
+        );
+        final conversation = fake.addConversation(group: true, members: [ana, bo, cy], owner: ana, legacy: true);
+        final posts = <String>[];
+        var quiet = false;
+        // Cy's device sees the conversation first, with its three members: its record.
+        final c = await firstDevice(
+          fake,
+          cy,
+          hears: (event) => !quiet,
+          client: watchedClient(
+            fake,
+            seen: (request) {
+              if (_posts(request, conversation)) posts.add('message');
+            },
+          ),
+        );
+        // Ana's device is shown Dee and Eve too, and makes the group with them; then the server lists Dee alone of the
+        // two. Cy's device hears none of it.
+        quiet = true;
+        fake.addMembers(conversation, [dee, eve]);
+        final a = await firstDevice(fake, ana);
+        await firstDevice(fake, eve);
+        await a.engine.openConversation(conversation);
+        await until(() async => await groupOf(a, conversation) != null, what: "Ana's group");
+        fake.dropMembers(conversation, [eve]);
+        quiet = false;
+        // Opened, Cy's device refuses the group its record doesn't have, and asks about whom the API lists.
+        await c.engine.openConversation(conversation);
+        await until(() => c.engine.conversationState(conversation)?.name == ConversationNotice.membersChanged);
+        expect(c.engine.conversationState(conversation)?.users, unorderedEquals([ana, bo, cy, dee]));
+        // The yes has it go in by an external commit, into the group as it is, Eve's leaf in it.
+        await acceptAsShown(c, conversation);
+        await until(() async => await groupOf(c, conversation) != null, what: "Cy's join");
+        expect({for (final device in (await groupOf(c, conversation))!.devices) device.user}, contains(eve));
+        // What Cy sends after is held to whom the page draws: nothing goes.
+        await expectLater(_send(c, conversation, 'for the four of us'), throwsA(anything));
+        expect(posts, isEmpty);
+        expect(c.engine.conversationState(conversation)?.name, ConversationNotice.groupDiffers);
+      },
+      skip: noCore,
+      timeout: _slow,
+    );
+
+    // The re-review's untested path (step 4's closing re-review): an external join into a newer generation, the API
+    // listing whom this device's group held, brings the group as it is; one holding someone the page doesn't draw
+    // takes nothing sent after, as a welcome's doesn't.
+    test(
+      "an_external_join_into_a_newer_generation_holding_someone_the_page_doesn't_draw_takes_nothing_sent_after",
+      () async {
+        final fake = FakeApi();
+        final (ana, bo, cy, eve) = (fake.addUser(), fake.addUser(), fake.addUser(), fake.addUser());
+        final conversation = fake.addConversation(group: true, members: [ana, bo, cy], owner: ana);
+        final posts = <String>[];
+        final watched = watchedClient(
+          fake,
+          seen: (request) {
+            if (_posts(request, conversation)) posts.add('message');
+          },
+        );
+        final a = await firstDevice(fake, ana);
+        final b = await firstDevice(fake, bo);
+        final c = await firstDevice(fake, cy, client: watched);
+        fake.befriend(ana, eve);
+        await firstDevice(fake, eve);
+        await a.engine.openConversation(conversation);
+        await sameGroup([a, b, c], conversation);
+        final [owner, _, _] = await blockedByHand(fake, conversation, [a, b, c]);
+        // While no device hears a thing, Ana restarts the group, the server keeping Cy's key packages from her, so his
+        // device gets no welcome; then she adds Eve.
+        fake.holdEvents();
+        fake.refuse(
+          (method: 'POST', path: '/api/users/$cy/key-packages/claim'),
+          200,
+          body: {'key_packages': <Object?>[]},
+        );
+        expect(await owner.engine.restartGroup(conversation), isEmpty);
+        await owner.engine.addMember(conversation, eve);
+        expect((await groupOf(owner, conversation))!.generation, 1);
+        // Then the API lists the three Cy's device holds, and the events go out: it may join the next generation by an
+        // external commit, into the group as it is.
+        fake.dropMembers(conversation, [eve]);
+        fake.releaseEvents();
+        await until(() async => (await groupOf(c, conversation))?.generation == 1, what: "Cy's join");
+        expect({for (final device in (await groupOf(c, conversation))!.devices) device.user}, contains(eve));
+        // By a commit of his own: no welcome brought his device in.
+        final entries = (await c.api.queue(conversation, 0)).entries;
+        expect(
+          [
+            for (final e in entries)
+              if (e.generation == 1 && e.senderUser == cy) e.kind,
+          ],
+          ['commit'],
+        );
+        await expectLater(_send(c, conversation, 'for Ana and Bo'), throwsA(anything));
+        expect(posts, isEmpty);
+        expect(c.engine.conversationState(conversation)?.name, ConversationNotice.groupDiffers);
+      },
+      skip: noCore,
+      timeout: _slow,
+    );
+
+    // A device without a record (a DM's other member, a group's owner on another device) founds the conversation as
+    // its page draws it; listed with someone the page doesn't draw, it founds nothing, and says so.
+    test(
+      'a_device_without_a_record_founds_as_its_page_draws,_and_nothing_with_a_listing_that_differs',
+      () async {
+        final fake = FakeApi();
+        final (ana, bo, eve) = (fake.addUser(), fake.addUser(), fake.addUser());
+        final drawn = fake.addConversation(group: true, members: [ana, bo], owner: ana);
+        final other = fake.addConversation(group: true, members: [ana, bo, eve], owner: ana);
+        final a = await firstDevice(fake, ana, drawn: _without(fake.drawnTo(ana), eve));
+        final b = await firstDevice(fake, bo);
+        await firstDevice(fake, eve);
+        await a.engine.openConversation(drawn);
+        await sameGroup([a, b], drawn);
+        await a.engine.openConversation(other);
+        await turnEnded(a);
+        expect(await groupOf(a, other), isNull);
+        expect(a.engine.conversationState(other)?.name, ConversationNotice.membersChanged);
+      },
+      skip: noCore,
+      timeout: _slow,
+    );
+
+    // The honest leaver: a member who left with a statement, whose removal the API proposed, goes with the due commit
+    // before anything is sent, which then goes without them.
+    test(
+      'a_member_who_left_goes_with_the_due_commit_before_a_send,_which_then_goes',
+      () async {
+        final fake = FakeApi();
+        final (ana, bo, cy) = (fake.addUser(), fake.addUser(), fake.addUser());
+        final conversation = fake.addConversation(group: true, members: [ana, bo, cy], owner: ana);
+        final a = await firstDevice(fake, ana, hears: (event) => event.type != 'MLS_PROPOSAL');
+        final b = await firstDevice(fake, bo, hears: (event) => event.type != 'MLS_PROPOSAL');
+        final c = await firstDevice(fake, cy);
+        await a.engine.openConversation(conversation);
+        await sameGroup([a, b, c], conversation);
+        await c.engine.leaveConversation(conversation);
+        final sent = await _send(a, conversation, 'without Cy');
+        final held = await groupOf(a, conversation);
+        expect({for (final device in held!.devices) device.user}, {ana, bo});
+        await until(() async => await _textOn(b, conversation, sent.id) == 'without Cy', what: "Bo's copy");
+        expect(await _textOn(c, conversation, sent.id), isNull);
+      },
+      skip: noCore,
+      timeout: _slow,
+    );
+
+    // A restart between a creation and its founding reads the person's picks back from the record: the group is founded
+    // with them, and a listing that differs by then founds nothing.
+    test(
+      'a_restart_between_a_creation_and_its_founding_holds_it_to_the_picks_the_record_kept',
+      () async {
+        final fake = FakeApi();
+        final (ana, bo, eve) = (fake.addUser(), fake.addUser(), fake.addUser());
+        var cut = true;
+        final client = watchedClient(
+          fake,
+          answer: (request) async {
+            if (!cut || request.method != 'POST' || !request.url.path.endsWith('/mls/commits')) return null;
+            throw http.ClientException('no answer', request.url);
+          },
+        );
+        final a = await firstDevice(fake, ana, client: client);
+        await firstDevice(fake, bo);
+        await firstDevice(fake, eve);
+        final kept = (await a.engine.createGroup('Plans', [bo])).id;
+        final made = (await a.engine.createGroup('Later', [bo])).id;
+        await turnEnded(a);
+        cut = false;
+        // Before the restart, the server lists Eve in the second.
+        fake.addMembers(made, [eve]);
+        final again = await restarted(fake, a, client: client);
+        await again.engine.openConversation(kept);
+        await again.engine.openConversation(made);
+        await turnEnded(again);
+        final group = await groupOf(again, kept);
+        expect({for (final device in group?.devices ?? const []) device.user}, {ana, bo});
+        expect(await groupOf(again, made), isNull);
+        expect(again.engine.conversationState(made)?.name, ConversationNotice.membersChanged);
+      },
+      skip: noCore,
+      timeout: _slow,
+    );
+
+    // The creator's device, its record kept (its listing differed), given a welcome to its conversation's group with
+    // others in it: refused, as the record holds it, and said.
+    test(
+      "the_creator's_device_takes_no_welcome_with_others_than_its_picks",
+      () async {
+        final fake = FakeApi();
+        final (ana, bo, eve) = (fake.addUser(), fake.addUser(), fake.addUser());
+        var planted = false;
+        final client = watchedClient(
+          fake,
+          seen: (request) {
+            if (planted || request.method != 'GET' || request.url.path != '/api/users/@me/conversations') return;
+            if (fake.conversationIds.firstOrNull case final made?) {
+              planted = true;
+              fake.addMembers(made, [eve]);
+            }
+          },
+        );
+        final a = await firstDevice(fake, ana, client: client);
+        await firstDevice(fake, bo);
+        final e = await firstDevice(fake, eve);
+        final conversation = (await a.engine.createGroup('Plans', [bo])).id;
+        await turnEnded(a);
+        expect(a.engine.conversationState(conversation)?.name, ConversationNotice.membersChanged);
+        // The server makes Eve the group's owner, has her device found it, and Ana's take its welcome.
+        fake.setOwner(conversation, eve);
+        await e.engine.openConversation(conversation);
+        await until(() async => await groupOf(e, conversation) != null, what: "Eve's group");
+        fake.setOwner(conversation, ana);
+        await a.engine.openConversation(conversation);
+        await turnEnded(a);
+        expect(await groupOf(a, conversation), isNull);
+        expect(a.engine.conversationState(conversation)?.name, ConversationNotice.membersChanged);
+      },
+      skip: noCore,
+      timeout: _slow,
+    );
+  });
+
+  group('a_row_the_server_makes_up_shows_nothing', () {
+    // «La vista de una conversación» and I1 of step 4's closing review: an honest API serves a conversation its
+    // numbered messages and its notices (types 2, 3 and 4) alone. Any other row is the server's own making: no
+    // ciphertext, but files the server picks, under a member's name, as a voice note when its type says so. From a
+    // page, a thread, a fetch or its event it shows nothing, in the chat, the Chats tab or Duvet's notices; a notice
+    // shows as the notice it is, without any file the server lists on it.
+    test(
+      'a_conversations_row_neither_numbered_nor_a_notice_shows_nothing_from_a_page_or_an_event',
+      () async {
+        final fake = FakeApi();
+        final (ana, bo) = (fake.addUser(), fake.addUser());
+        final conversation = fake.addConversation(group: false, members: [ana, bo]);
+        final target = ConversationTarget(conversation);
+        final app = await appOn(fake, ana);
+        await app.ready();
+        final created = <String>[];
+        final heard = app.repository.messageEvents(target).listen((event) {
+          if (event case MessageCreated(:final message)) created.add(message.id);
+        });
+        addTearDown(heard.cancel);
+        // Bo's voice note and picture, as the server makes them up, and a pin notice it lists a picture on.
+        final voice = fake.addMadeUpRow(conversation, bo, type: 1);
+        final picture = fake.addMadeUpRow(conversation, bo);
+        final notice = fake.addMadeUpRow(conversation, bo, type: 2);
+        final page = await app.repository.messages(target);
+        expect([for (final m in page) (m.id, m.attachments.length)], [(notice['id'], 0)]);
+        expect(await app.repository.thread(target, picture['id']! as String), isEmpty);
+        await expectLater(app.repository.fetchMessage(target, voice['id']! as String), throwsA(anything));
+        // Live: one made up, then a notice, which the chat hears after it.
+        final live = fake.addMadeUpRow(conversation, bo, listed: false);
+        fake.tell(ana, (type: 'DM_MESSAGE_CREATE', data: live));
+        expect([for (final chat in app.repository.recents.value) chat.previewId], isNot(contains(live['id'])));
+        expect([for (final n in app.repository.mentionNotices.value) n.messageId], isNot(contains(live['id'])));
+        final after = fake.addMadeUpRow(conversation, bo, type: 2, listed: false);
+        fake.tell(ana, (type: 'DM_MESSAGE_CREATE', data: after));
+        await until(() => created.isNotEmpty, what: 'the notice heard after the made-up row');
+        expect(created, [after['id']]);
       },
       skip: noCore,
       timeout: _slow,
@@ -742,6 +1696,307 @@ void main() {
         expect(sent?.id, answered['id']);
         expect(await _textOn(t.a, t.conversation, answered['id']! as String), 'never kept');
         expect([for (final one in await t.a.engine.pendingMessages(t.conversation)) one.nonce], isEmpty);
+      },
+      skip: noCore,
+      timeout: _slow,
+    );
+  });
+
+  group('what_goes_is_made_for_the_group_that_was_compared', () {
+    // T-C1 of step 4's closing re-reviews: bytes go only when they're of the core's group as it is after the look, and
+    // only a comparison that reads nothing runs after them. The core gives a nonce's kept bytes back while the group is
+    // within 5 epochs of them, and the API takes them so, as the fake does: each gap here is one epoch. The desktop's
+    // five tests of R-C1 (`engine/attacker.test.ts`), and the re-review's attack.
+
+    // Attack 1: Ana takes Cy out once Bo's device made his message's bytes, of the epoch that holds Cy. His device hears
+    // none of it, so only his look's read brings her commit: the look passes on the group as it became.
+    test(
+      "a_removal_bo's_device_reads_only_once_its_bytes_are_made:_nothing_of_the_epoch_that_held_cy_goes",
+      () async {
+        final fake = FakeApi();
+        final (ana, bo, cy) = (fake.addUser(), fake.addUser(), fake.addUser());
+        final conversation = fake.addConversation(group: true, members: [ana, bo, cy], owner: ana);
+        final a = await firstDevice(fake, ana);
+        var deaf = false;
+        var made = false;
+        final b = await firstDevice(
+          fake,
+          bo,
+          host: WatchedHost(
+            TestHost().gate,
+            [],
+            after: (command) {
+              if (!deaf || made || command['cmd'] != 'encrypt') return null;
+              made = true;
+              return a.engine.removeMember(conversation, cy);
+            },
+          ),
+          hears: (event) => !(deaf && event.type.startsWith('MLS_')),
+        );
+        final c = await firstDevice(fake, cy);
+        await a.engine.openConversation(conversation);
+        await sameGroup([a, b, c], conversation);
+        deaf = true;
+        final sent = await _send(b, conversation, 'after Cy left');
+        final after = (await groupOf(a, conversation))!;
+        expect(await _heldUsers(a, conversation), isNot(contains(cy)));
+        expect(await _madeAt(a, conversation, bo, ['message']), [('message', after.generation, after.epoch)]);
+        await until(() async => await _textOn(a, conversation, sent.id) == 'after Cy left');
+      },
+      skip: noCore,
+      timeout: _slow,
+    );
+
+    // Attack 2: the server's own account founds the group, and Bo's first device comes in by an external commit, into a
+    // group that holds Eve, whom his page doesn't draw. Here his message is refused at its look, nothing made of it;
+    // once Eve leaves and Ana's device commits her removal, which his device hears nothing of, his next goes, made for
+    // the group the look read.
+    test(
+      'an_external_join_into_a_group_that_holds_eve:_nothing_goes_at_an_epoch_of_hers',
+      () async {
+        final fake = FakeApi();
+        final (ana, bo, eve) = (fake.addUser(), fake.addUser(), fake.addUser());
+        final conversation = fake.addConversation(group: true, members: [eve, ana, bo], owner: eve);
+        final e = await firstDevice(fake, eve);
+        final a = await firstDevice(fake, ana);
+        await e.engine.openConversation(conversation);
+        await sameGroup([e, a], conversation);
+        var deaf = false;
+        final b = await firstDevice(
+          fake,
+          bo,
+          drawn: (id, {required fresh}) async => id == conversation
+              ? (group: true, owner: ana, users: [bo, ana])
+              : await fake.drawnTo(bo)(id, fresh: fresh),
+          hears: (event) => !(deaf && event.type.startsWith('MLS_')),
+        );
+        await until(() async => (await _heldUsers(b, conversation)).contains(eve), what: "Bo's device in Eve's group");
+        expect(await _madeAt(a, conversation, bo, ['commit']), hasLength(1));
+        deaf = true;
+        await expectLater(_send(b, conversation, 'for Ana'), throwsA(anything));
+        await _leaves(e, a, conversation);
+        final after = (await groupOf(a, conversation))!;
+        final sent = await _send(b, conversation, 'for Ana');
+        expect(await _madeAt(a, conversation, bo, ['message']), [('message', after.generation, after.epoch)]);
+        await until(() async => await _textOn(a, conversation, sent.id) == 'for Ana');
+      },
+      skip: noCore,
+      timeout: _slow,
+    );
+
+    // The re-review's attack: the API answers Bo's message 409, and the queue's read takes his device into the next
+    // generation by an external commit, into a group that holds Eve, whom neither his listing nor his page shows. The
+    // message is made again there; Eve leaves once those bytes are made, and Ana's device commits her removal, which
+    // Bo's device hears nothing of until its look reads it. Nothing of her epoch goes.
+    test(
+      'a_message_made_again_after_a_409_in_a_generation_holding_eve_goes_at_no_epoch_of_hers',
+      () async {
+        final fake = FakeApi();
+        final (ana, bo, eve) = (fake.addUser(), fake.addUser(), fake.addUser());
+        fake.befriend(ana, eve);
+        final conversation = fake.addConversation(group: true, members: [ana, bo], owner: ana);
+        final a = await firstDevice(fake, ana);
+        final e = await firstDevice(fake, eve);
+        late TestDevice owner;
+        var deaf = false;
+        var stale = false;
+        final b = await firstDevice(
+          fake,
+          bo,
+          host: WatchedHost(
+            TestHost().gate,
+            [],
+            // The bytes made again after the 409, in the generation that holds Eve: she leaves then.
+            after: (command) {
+              if (!stale || command['cmd'] != 'encrypt') return null;
+              stale = false;
+              return _leaves(e, owner, conversation);
+            },
+          ),
+          client: watchedClient(
+            fake,
+            change: (request, answered) async {
+              if (_posts(request, conversation) && answered.statusCode == 409) stale = true;
+              final listing = request.method == 'GET' && request.url.path == '/api/users/@me/conversations';
+              return listing ? _listedWithout(answered, conversation, eve) : answered;
+            },
+          ),
+          drawn: _without(fake.drawnTo(bo), eve),
+          hears: (event) => !deaf,
+        );
+        await a.engine.openConversation(conversation);
+        await sameGroup([a, b], conversation);
+        // Bo's device hears nothing more. Ana restarts the group by hand, with no key package of his, then adds Eve: the
+        // next generation holds her, and his device knows nothing of it.
+        deaf = true;
+        await stoppedByHand(a);
+        final reset = await byHand(a, {
+          'cmd': 'reset_group',
+          'conversation_id': conversation,
+          'owner': ana,
+          'members': [ana, bo],
+          'key_packages': {ana: <String>[], bo: <String>[]},
+        });
+        final taken = await a.api.commit(
+          conversation,
+          duvet.Commit(
+            generation: reset['generation']! as int,
+            epoch: 0,
+            commit: reset['commit']! as String,
+            groupInfo: reset['group_info']! as String,
+            initialGroupInfo: reset['initial_group_info']! as String,
+            welcome: reset['welcome'] as String?,
+          ),
+        );
+        await a.host.handle<Object?>({
+          'cmd': 'commit_result',
+          'conversation_id': conversation,
+          'accepted': true,
+          'seq': taken.seq,
+        });
+        owner = await restarted(fake, a);
+        await owner.engine.addMember(conversation, eve);
+        await until(() async => (await groupOf(e, conversation))?.generation == 1, what: "Eve's device in it");
+        final out = Outgoing(conversationId: conversation, nonce: uuidv4(), text: 'for Ana');
+        Object? refused;
+        try {
+          await b.engine.sendMessage(out);
+        } catch (error) {
+          refused = error;
+        }
+        // His device went into the next generation by a commit of its own, and nothing of Eve's epoch went.
+        expect(await _madeAt(owner, conversation, bo, ['commit']), hasLength(1));
+        expect(await _madeAt(owner, conversation, bo, ['message']), isEmpty);
+        expect(refused, isNotNull);
+        // His Retry, once the group is as his page draws it, goes with bytes made for it.
+        final after = (await groupOf(owner, conversation))!;
+        final sent = (await b.engine.sendMessage(out))!;
+        expect(await _madeAt(owner, conversation, bo, ['message']), [('message', after.generation, after.epoch)]);
+        await until(() async => await _textOn(owner, conversation, sent.id) == 'for Ana');
+      },
+      skip: noCore,
+      timeout: _slow,
+    );
+
+    // The desktop's: an edit and a deletion asked for while the group holds someone the page doesn't draw are refused,
+    // nothing made of them. Eve's removal comes after, read by the look of whatever Bo's device would try: nothing of
+    // her epoch goes.
+    test(
+      'an_edit_or_a_deletion_asked_for_while_the_group_differs_is_never_sent_as_made',
+      () async {
+        final fake = FakeApi();
+        final (ana, bo, eve) = (fake.addUser(), fake.addUser(), fake.addUser());
+        final conversation = fake.addConversation(group: true, members: [eve, ana, bo], owner: eve);
+        final e = await firstDevice(fake, eve);
+        final a = await firstDevice(fake, ana);
+        await e.engine.openConversation(conversation);
+        await sameGroup([e, a], conversation);
+        // Bo's page draws the group as Ana's, of Ana and him, from [hidden] on.
+        var hidden = false;
+        var deaf = false;
+        final b = await firstDevice(
+          fake,
+          bo,
+          drawn: (id, {required fresh}) async => hidden && id == conversation
+              ? (group: true, owner: ana, users: [bo, ana])
+              : await fake.drawnTo(bo)(id, fresh: fresh),
+          hears: (event) => !(deaf && event.type.startsWith('MLS_')),
+        );
+        await sameGroup([e, a, b], conversation);
+        final (first, second) = (await _send(b, conversation, 'first'), await _send(b, conversation, 'second'));
+        hidden = true;
+        deaf = true;
+        await expectLater(b.engine.editMessage(conversation, first.id, 'edited'), throwsA(isA<StateError>()));
+        await expectLater(b.engine.deleteMessage(conversation, second.id), throwsA(isA<StateError>()));
+        await _leaves(e, a, conversation);
+        for (var round = 0; round < 4; round++) {
+          b.clock.advance(const Duration(minutes: 1));
+          await turnEnded(b);
+        }
+        expect(await _madeAt(a, conversation, bo, ['edit', 'delete']), isEmpty);
+        expect(await _textOn(b, conversation, first.id), 'first');
+        expect(await _textOn(b, conversation, second.id), 'second');
+      },
+      skip: noCore,
+      timeout: _slow,
+    );
+
+    // Bytes kept from an epoch gone by: a message whose request had no answer, and an edit's. The group moves (Cy's
+    // removal, which Bo's device applies as it comes), and what goes after is made again for the group as it is.
+    test(
+      "a_message's_or_an_edit's_bytes_made_before_the_group_moved_are_made_again_before_they_go",
+      () async {
+        final fake = FakeApi();
+        final (ana, bo, cy) = (fake.addUser(), fake.addUser(), fake.addUser());
+        final conversation = fake.addConversation(group: true, members: [ana, bo, cy], owner: ana);
+        final (a, b, c) = (await firstDevice(fake, ana), await firstDevice(fake, bo), await firstDevice(fake, cy));
+        await a.engine.openConversation(conversation);
+        await sameGroup([a, b, c], conversation);
+        final first = await _send(b, conversation, 'first');
+        // His next message and his edit find no answer.
+        fake.refuse((method: 'POST', path: _messagesPath(conversation)), 500);
+        fake.refuse((method: 'PATCH', path: '${_messagesPath(conversation)}/${first.id}'), 500);
+        final second = Outgoing(conversationId: conversation, nonce: uuidv4(), text: 'second');
+        await expectLater(b.engine.sendMessage(second), throwsA(anything));
+        await b.engine.editMessage(conversation, first.id, 'edited');
+        await a.engine.removeMember(conversation, cy);
+        final after = await sameGroup([a, b], conversation);
+        final sent = (await b.engine.sendMessage(second))!;
+        await until(() async {
+          b.clock.advance(const Duration(seconds: 2));
+          await turnEnded(b);
+          return (await _madeAt(a, conversation, bo, ['edit'])).isNotEmpty;
+        }, what: "Bo's edit");
+        final made = [
+          for (final entry in (await a.api.queue(conversation, 0)).entries)
+            if (entry.messageId == sent.id) (entry.kind, entry.generation, entry.epoch),
+        ];
+        expect(made, [('message', after.generation, after.epoch)]);
+        expect(await _madeAt(a, conversation, bo, ['edit']), [('edit', after.generation, after.epoch)]);
+        await until(() async => await _textOn(a, conversation, first.id) == 'edited');
+      },
+      skip: noCore,
+      timeout: _slow,
+    );
+
+    // A change the record kept from an earlier start, made again at the next while the group holds someone the page
+    // doesn't draw: nothing is made then. What goes is made once the look passes, after Eve's removal, which Bo's
+    // device hears nothing of until a look reads it.
+    test(
+      'a_kept_change_made_again_at_a_start_while_the_group_differs_goes_with_bytes_made_after_the_look',
+      () async {
+        final fake = FakeApi();
+        final (ana, bo, eve) = (fake.addUser(), fake.addUser(), fake.addUser());
+        fake.befriend(ana, eve);
+        final conversation = fake.addConversation(group: true, members: [ana, bo], owner: ana);
+        final drawn = _without(fake.drawnTo(bo), eve);
+        final (a, b, e) = (
+          await firstDevice(fake, ana),
+          await firstDevice(fake, bo, drawn: drawn),
+          await firstDevice(fake, eve),
+        );
+        await a.engine.openConversation(conversation);
+        await sameGroup([a, b], conversation);
+        final first = await _send(b, conversation, 'first');
+        // His edit finds no answer, and his app closes; meanwhile Ana adds Eve, whom his page doesn't draw.
+        fake.refuse((method: 'PATCH', path: '${_messagesPath(conversation)}/${first.id}'), 500);
+        await b.engine.editMessage(conversation, first.id, 'edited');
+        await b.engine.stop();
+        await a.engine.addMember(conversation, eve);
+        await sameGroup([a, e], conversation);
+        final again = await restarted(fake, b, hears: (event) => !event.type.startsWith('MLS_'), drawn: drawn);
+        await turnEnded(again);
+        expect(await _heldUsers(again, conversation), contains(eve));
+        await _leaves(e, a, conversation);
+        final after = (await groupOf(a, conversation))!;
+        // A READY: the kept change goes once its look reads Eve's removal.
+        again.connect(again.registered.last);
+        await until(() async {
+          again.clock.advance(const Duration(minutes: 1));
+          await turnEnded(again);
+          return (await _madeAt(a, conversation, bo, ['edit'])).isNotEmpty;
+        }, what: "Bo's edit");
+        expect(await _madeAt(a, conversation, bo, ['edit']), [('edit', after.generation, after.epoch)]);
       },
       skip: noCore,
       timeout: _slow,

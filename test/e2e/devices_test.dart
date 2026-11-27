@@ -7,7 +7,7 @@ import 'package:duvet/e2e/host.dart';
 import 'package:duvet/e2e/legacy.dart' show legacyRecords;
 import 'package:duvet/e2e/notices.dart';
 import 'package:duvet/e2e/store.dart';
-import 'package:duvet/encryption/devices.dart' show rotationRelisted, rotationStuck, stuckText;
+import 'package:duvet/encryption/devices.dart' show knownName, rotationRelisted, rotationStuck, stuckText;
 import 'package:duvet_client/duvet.dart' as duvet;
 import 'package:flutter/foundation.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -699,8 +699,11 @@ void main() {
       // A removal of b's whose upload is refused: the core keeps its list without b.
       fake.refuse(_list, 500, body: {'error': 'internal server error'});
       await expectLater(a.engine.removeDevice(_deviceOf(b)), throwsA(isA<duvet.DuvetApiException>()));
-      // A change of keys taking c off, on top of it, cut before its upload; the record kept nothing of it.
-      await a.engine.removeDevice(_deviceOf(c), changeKeys: true);
+      // A change of keys taking c off, on top of it, its question naming b too, cut before its upload; the record kept
+      // nothing of it.
+      final along = await a.engine.devicesAlong(_deviceOf(c));
+      expect(along.unsent, [_deviceOf(b)]);
+      await a.engine.removeDevice(_deviceOf(c), changeKeys: true, named: along.unsent);
       final key = _rotationKey(a.state);
       expect(store.read(rotationRemove), isNull);
       final again = await restarted(fake, a);
@@ -718,8 +721,143 @@ void main() {
     timeout: _slow,
   );
 
+  // I2 of step 4's closing review: a removal or a change of keys takes off with it every device the list names that
+  // `GET …/devices` doesn't return, which a server that answers a short listing chooses. Its confirmation names each,
+  // and a list goes without them only once they were named: one that would leave out a device the person wasn't told
+  // of isn't signed.
+  test(
+    'a_short_device_listing_changes_no_list_without_naming_the_devices_it_leaves_out',
+    () async {
+      final fake = FakeApi();
+      final ana = fake.addUser();
+      final puts = <String>[];
+      final client = watchedClient(
+        fake,
+        seen: (request) {
+          if (_said(request) == 'PUT /api/users/@me/device-list') puts.add('PUT list');
+        },
+      );
+      final a = await firstDevice(fake, ana, client: client);
+      final b = await approvedDevice(fake, a);
+      final c = await approvedDevice(fake, a);
+      final all = [_deviceOf(a), _deviceOf(b), _deviceOf(c)];
+      // The API lists Ana's devices without c.
+      fake.dropDevice(_deviceOf(c));
+      final from = puts.length;
+      Matcher refused() => throwsA(isA<CoreError>().having((e) => e.code, 'code', 'devices_changed'));
+      await expectLater(a.engine.removeDevice(_deviceOf(b)), refused());
+      await expectLater(a.engine.removeDevice(_deviceOf(b), changeKeys: true), refused());
+      await expectLater(a.engine.changeKeys(), refused());
+      expect(puts.sublist(from), isEmpty);
+      expect(listDevices((await a.api.identity(ana)).deviceList), unorderedEquals(all));
+      // What the confirmation names, and the removal on its yes.
+      final along = await a.engine.devicesAlong(_deviceOf(b));
+      expect(along.unsent, isEmpty);
+      expect(along.unregistered, [_deviceOf(c)]);
+      await a.engine.removeDevice(_deviceOf(b), named: along.unregistered);
+      expect(listDevices((await a.api.identity(ana)).deviceList), [_deviceOf(a)]);
+      await Future.wait([
+        for (final device in [a, b, c]) device.engine.stop(),
+      ]);
+    },
+    skip: noCore,
+    timeout: _slow,
+  );
+
+  // N-M8 of step 4's closing re-review: a list this device signs on top of one of its own the API never took leaves
+  // out what that one did, an earlier removal's devices: a removal or a change of keys goes only once the person's yes
+  // named them too, as it names those the API took away.
+  test(
+    'a_list_on_top_of_an_unsent_one_goes_only_once_the_devices_it_leaves_out_were_named',
+    () async {
+      final fake = FakeApi();
+      final ana = fake.addUser();
+      final puts = <String>[];
+      final client = watchedClient(
+        fake,
+        seen: (request) {
+          if (_said(request) == 'PUT /api/users/@me/device-list') puts.add('PUT list');
+        },
+      );
+      final a = await firstDevice(fake, ana, client: client);
+      final b = await approvedDevice(fake, a);
+      final c = await approvedDevice(fake, a);
+      // A removal of b's whose upload is refused: the core keeps its list without b, which the API still lists.
+      fake.refuse(_list, 500, body: {'error': 'internal server error'});
+      await expectLater(a.engine.removeDevice(_deviceOf(b)), throwsA(isA<duvet.DuvetApiException>()));
+      final from = puts.length;
+      Matcher refused() => throwsA(isA<CoreError>().having((e) => e.code, 'code', 'devices_changed'));
+      await expectLater(a.engine.removeDevice(_deviceOf(c)), refused());
+      await expectLater(a.engine.removeDevice(_deviceOf(c), changeKeys: true), refused());
+      await expectLater(a.engine.changeKeys(), refused());
+      expect(puts.sublist(from), isEmpty);
+      // What the confirmation names, and the removal on its yes.
+      final along = await a.engine.devicesAlong(_deviceOf(c));
+      expect(along.unsent, [_deviceOf(b)]);
+      await a.engine.removeDevice(_deviceOf(c), named: along.unsent);
+      expect(listDevices((await a.api.identity(ana)).deviceList), [_deviceOf(a)]);
+      await Future.wait([
+        for (final device in [a, b, c]) device.engine.stop(),
+      ]);
+    },
+    skip: noCore,
+    timeout: _slow,
+  );
+
+  // N-M7 of step 4's closing re-review: what the API last listed of a device names it once the API lists it no more;
+  // one this device never knew of has nothing.
+  test(
+    'what_the_api_listed_of_a_device_names_it_once_the_api_lists_it_no_more',
+    () async {
+      final fake = FakeApi();
+      final ana = fake.addUser();
+      final a = await firstDevice(fake, ana);
+      final b = await approvedDevice(fake, a);
+      // Read as a question reads what goes along.
+      await a.engine.devicesAlong();
+      fake.dropDevice(_deviceOf(b));
+      expect((await a.engine.devicesAlong()).unregistered, [_deviceOf(b)]);
+      final known = a.engine.knownDevice(_deviceOf(b));
+      expect(known?.last.name, 'Pixel 8 Pro');
+      expect(known?.last.client, startsWith('android/'));
+      expect(known?.last.added, isNotNull);
+      // Named once, so as it was first.
+      expect(known?.first, known?.last);
+      expect(a.engine.knownDevice('0193a4b2-0000-7000-8000-00000000ffff'), isNull);
+      await Future.wait([a.engine.stop(), b.engine.stop()]);
+    },
+    skip: noCore,
+    timeout: _slow,
+  );
+
+  // R-M3 of step 4's closing re-review: the API's last word on a device it no longer lists could be its own story, so
+  // the first this device heard of it goes beside the last; one it knows nothing of is named in the desktop's words.
+  test(
+    'a_device_the_api_names_anew_before_it_stops_listing_it_is_named_as_first_seen_and_as_listed_later',
+    () async {
+      final fake = FakeApi();
+      final ana = fake.addUser();
+      final a = await firstDevice(fake, ana);
+      final b = await approvedDevice(fake, a);
+      await a.engine.devicesAlong();
+      // The server names the phone anew, then stops listing it.
+      fake.nameDevice(_deviceOf(b), 'Old test phone', client: 'web/1.0.0');
+      await a.engine.devicesAlong();
+      fake.dropDevice(_deviceOf(b));
+      expect((await a.engine.devicesAlong()).unregistered, [_deviceOf(b)]);
+      expect(
+        knownName(_deviceOf(b), a.engine.knownDevice(_deviceOf(b))),
+        allOf(startsWith('Pixel 8 Pro (android/'), endsWith(' (listed later as Old test phone)')),
+      );
+      expect(knownName('0193a4b2-0000-7000-8000-00000000ffff', null), 'the device whose ID starts with 0193a4b2');
+      await Future.wait([a.engine.stop(), b.engine.stop()]);
+    },
+    skip: noCore,
+    timeout: _slow,
+  );
+
   // Step 3's closing review: a new password's remove_devices leaves the signed list naming devices the API took away,
-  // which a list naming them again can't go up with (400 `the list names device …`).
+  // which a list naming them again can't go up with (400 `the list names device …`). The person is told of them first.
   test(
     'a_list_this_device_signs_drops_the_devices_the_API_took_away',
     () async {
@@ -731,12 +869,12 @@ void main() {
       final d = await approvedDevice(fake, a);
 
       fake.dropDevice(_deviceOf(c));
-      await a.engine.removeDevice(_deviceOf(b));
+      await a.engine.removeDevice(_deviceOf(b), named: (await a.engine.devicesAlong(_deviceOf(b))).unregistered);
       expect(listDevices((await a.api.identity(ana)).deviceList), unorderedEquals([_deviceOf(a), _deviceOf(d)]));
 
       // A rotation too: the device it would hand the keys to has no certificate the API serves.
       fake.dropDevice(_deviceOf(d));
-      await a.engine.changeKeys();
+      await a.engine.changeKeys(named: (await a.engine.devicesAlong()).unregistered);
       await a.engine.keySaved();
       final after = await a.api.identity(ana);
       expect(after.identityKey, (await _status(a))['identity_key']);

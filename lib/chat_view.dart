@@ -841,7 +841,7 @@ class _ChatViewState extends State<ChatView> with SingleTickerProviderStateMixin
     if (widget.threadOf != null) {
       if (event case MessageCreated(
         :final message,
-      ) when !_entries.any((e) => e.message.id == message.reply?.messageId || e.message.nonce == message.nonce)) {
+      ) when !_entries.any((e) => e.message.id == message.reply?.messageId || _sameSend(e.message, message))) {
         return;
       }
     }
@@ -966,12 +966,19 @@ class _ChatViewState extends State<ChatView> with SingleTickerProviderStateMixin
 
   /// Adds a message, or replaces the one it is: the same ID, or the pending
   /// send with its nonce (the gateway's echo often beats the REST answer).
+  /// Whether [message] is the copy of the person's own [shown] by its nonce: never another's, as the server knows a
+  /// message's nonce (the desktop's M2 of step 4's closing review).
+  bool _sameSend(ChatMessage shown, ChatMessage message) =>
+      message.nonce != null && message.authorId == _me && shown.nonce == message.nonce;
+
   void _upsert(ChatMessage message) {
-    final i = _entries.indexWhere(
-      (e) => e.message.id == message.id || (message.nonce != null && e.message.nonce == message.nonce),
-    );
+    final i = _entries.indexWhere((e) => e.message.id == message.id || _sameSend(e.message, message));
+    // A row of the person's being sent is taken by their own message alone: another's with its ID, which the server
+    // can give it, takes nothing of it (N-M5 of step 4's closing re-review).
+    if (i >= 0 && _entries[i].message.pending && message.authorId != _me) return;
     // An encrypted message's copy that brings no text (the API's) keeps what the chat shows of it: the device's text,
-    // or the person's own as typed, until a read gives the device's (I4 of task 17's review).
+    // or the person's own as typed, which goes only under their own ID, until a read gives the device's (I4 of task
+    // 17's review).
     final keeps = i >= 0 && message.encrypted && message.content.isEmpty && _entries[i].message.content.isNotEmpty;
     final entry = (message: keeps ? message.heldAs(_entries[i].message) : message, delivery: _Delivery.sent);
     if (i >= 0) {
@@ -1554,14 +1561,15 @@ class _ChatViewState extends State<ChatView> with SingleTickerProviderStateMixin
     setState(() => _entries.removeWhere((e) => e.message.id == m.id));
   }
 
-  void _startEditing(ChatMessage m) {
+  /// The box edits [m], holding its text, or what was [typed] for it before.
+  void _startEditing(ChatMessage m, {String? typed}) {
     final directory = _directory;
     setState(() {
       _replyTo = null;
       _editing = m;
     });
     _composer.setEncoded(
-      m.content,
+      typed ?? m.content,
       nameOf: directory.nameOf,
       emojiNameOf: (id) => directory.emojiOf(id)?.name,
       roomNameOf: (id) => directory.roomOf(id)?.name,
@@ -1589,9 +1597,13 @@ class _ChatViewState extends State<ChatView> with SingleTickerProviderStateMixin
       // The API answers the message without its files, reactions or reply.
       final saved = await _repository.edit(widget.target, editing.id, content);
       if (mounted) setState(() => _applyUpdate(saved));
-    } catch (_) {
+    } catch (error) {
       _replace(editing);
-      _toast('Couldn’t save your edit');
+      // Nothing was made of it: what was typed goes back in the box, unless the person went on to something else.
+      if (mounted && _editing == null && _replyTo == null && _composer.encoded.trim().isEmpty) {
+        _startEditing(editing, typed: content);
+      }
+      _toast(error is ActionFailed ? 'Couldn’t save your edit. ${error.message}' : 'Couldn’t save your edit');
     }
   }
 
@@ -3046,9 +3058,9 @@ class _ChatViewState extends State<ChatView> with SingleTickerProviderStateMixin
                               return ConversationStateBar(
                                 state: state,
                                 nameOf: _memberName,
-                                members: [for (final m in _members) m.displayName],
                                 onRestart: () => _restart(conversationId),
-                                onAccept: () => _repository.acceptMembers(conversationId),
+                                // The yes is to whom this bar names (R-M2 of step 4's closing re-review).
+                                onAccept: () => _repository.acceptMembers(conversationId, state?.users ?? const []),
                               );
                             },
                           ),

@@ -24,7 +24,7 @@ import 'contacts.dart';
 import 'content.dart';
 import 'content.dart' as content show heldBefore, sentUnder;
 import 'devices.dart';
-import 'devices.dart' as devices show removeDevice, unsentRemovals;
+import 'devices.dart' as devices show devicesAlong, knownDevice, noteDevices, removeDevice, unsentRemovals;
 import 'host.dart';
 import 'identity.dart';
 import 'inbox.dart';
@@ -32,6 +32,7 @@ import 'failures.dart';
 import 'files.dart' as files show fileNames;
 import 'history.dart';
 import 'key_packages.dart';
+import 'legacy.dart' show LegacyRecord;
 import 'members.dart';
 import 'recover.dart';
 import 'search.dart';
@@ -45,12 +46,12 @@ export 'approval.dart'
 export 'backup.dart' show BackupPause, BackupShown, BackupStage;
 export 'contacts.dart' show ContactsShown, KeyChange, SafetyNumber, ShownChange, changedIn, waitingForYes;
 export 'content.dart' show Authored, MessageStatus, ShownMessage;
-export 'devices.dart' show DeviceNotice, DeviceNoticeKind, inactiveDevice, onlyDevice;
+export 'devices.dart' show DeviceNotice, DeviceNoticeKind, DevicesAlong, KnownDevice, inactiveDevice, onlyDevice;
 export 'files.dart' show FilesGone;
 export 'history.dart' show HistoryOffer, NoDeviceToShareWith, ShareLimit, SharedHistory, quietBeforeImport, shareRanges;
 export 'members.dart' show maxGroupMembers;
 export 'send.dart' show Outgoing, Pending, TooManyWaiting;
-export 'sync.dart' show ConversationNotice, ConversationState, Restart;
+export 'sync.dart' show ConversationNotice, ConversationState, Restart, ShownConversation, drawnMember, drawnOf;
 
 /// What the engine waits with: the system's timers in the app, a test's clock in its tests.
 abstract interface class EngineClock {
@@ -308,6 +309,7 @@ class E2EEngine implements DeviceSetupActions {
     required this.registered,
     ({String challenge, DateTime at})? loginChallenge,
     double Function()? random,
+    required this.shown,
   }) : _challenge = loginChallenge,
        random = random ?? Random().nextDouble {
     // Every observation this device's core answers, whoever asked (a push's engine through the port too), reaches the
@@ -336,6 +338,13 @@ class E2EEngine implements DeviceSetupActions {
 
   /// A number from 0 to 1, at random: how much of its 5 s a due commit waits.
   final double Function() random;
+
+  /// The conversation as the person sees it (its chat's), [fresh] from a listing made now, or none for one not drawn:
+  /// whom a group this device founds without a record of it holds, and whom any group it holds may hold (C1 of step 4's
+  /// closing reviews). Never the engine's own listing, which the server can make another than the chat's: nothing goes
+  /// to a conversation not drawn, and while what's drawn can't be read yet it throws, and nothing goes (N-C1 of the
+  /// re-review).
+  final Future<ShownConversation?> Function(String conversationId, {required bool fresh}) shown;
 
   /// How long a login's challenge is taken for: the API's 10 minutes (its challengeLife), less one for the way there.
   static const challengeLife = Duration(minutes: 9);
@@ -694,9 +703,10 @@ class E2EEngine implements DeviceSetupActions {
   /// Whether this run holds the sealed bytes of the files of the person's message [nonce], which a Retry sends.
   bool holdsFiles(String nonce) => _sends.holdsFiles(nonce);
 
-  /// An edit of the user's message: shown here at once, sent, and its answer's entry applied.
-  Future<void> editMessage(String conversationId, String messageId, String text) =>
-      _act(() => _sends.change(conversationId, messageId, text));
+  /// An edit of the user's message: shown here at once, sent, and its answer's entry applied. [taken] is told once it's
+  /// made and shown here, before its request: what the chat waits for.
+  Future<void> editMessage(String conversationId, String messageId, String text, {void Function()? taken}) =>
+      _act(() => _sends.change(conversationId, messageId, text, taken: taken));
 
   /// A deletion of the user's message, for everyone: done here at once, sent, and its answer's entry applied.
   Future<void> deleteMessage(String conversationId, String messageId) =>
@@ -890,17 +900,22 @@ class E2EEngine implements DeviceSetupActions {
   /// The person's new DM (PLAN-E2E-CLIENTES.md, Task 23): the API makes the conversation (or answers the one they
   /// have), then this device its group at once, as either member of a DM may. Before this device is ready, its group is
   /// made once it is. The API's conversation.
-  Future<duvet.Conversation> createDM(String userId) => _created(() => api.api.createDM(userId));
+  Future<duvet.Conversation> createDM(String userId) =>
+      _created(() => api.api.createDM(userId), (owner: null, members: [user, userId]));
 
   /// The person's new group, which they own: as [createDM], its group made at once. One past 20 members, its owner
   /// among them, is refused before anything is asked.
   Future<duvet.Conversation> createGroup(String name, List<String> userIds) async {
     checkRoom({user, ...userIds}.length);
-    return _created(() => api.api.createGroup(name, userIds));
+    return _created(() => api.api.createGroup(name, userIds), (owner: user, members: {user, ...userIds}.toList()));
   }
 
-  Future<duvet.Conversation> _created(Future<duvet.Conversation> Function() create) async {
+  /// A conversation the person made with [picked], of the kind they asked for: its group is founded with them alone,
+  /// whatever the API lists (C1 of step 4's closing reviews), and joined held to them when the answer has one already
+  /// (N-M3 of the re-review).
+  Future<duvet.Conversation> _created(Future<duvet.Conversation> Function() create, LegacyRecord picked) async {
     final conv = await _updating(create);
+    await _groups.created(conv.id, picked);
     // A DM they had, with its group, goes on as its chat opens it.
     if (conv.mls != null) return conv;
     await openConversation(conv.id).catchError((Object error) {
@@ -931,8 +946,10 @@ class E2EEngine implements DeviceSetupActions {
     return out;
   }
 
-  /// The person's yes to a conversation's members of today, which its record from before the cutover didn't have.
-  Future<void> acceptMembers(String conversationId) => _queue(() => _whenReady(() => _groups.accept(conversationId)));
+  /// The person's yes to a conversation's members of today, which its record from before the cutover didn't have:
+  /// [users], those its question named as the person was shown it.
+  Future<void> acceptMembers(String conversationId, List<String> users) =>
+      _queue(() => _whenReady(() => _groups.accept(conversationId, users)));
 
   void _conversationChanged(String conversationId, ConversationState? state) {
     final next = {..._conversations.value};
@@ -1042,23 +1059,26 @@ class E2EEngine implements DeviceSetupActions {
 
   /// The person's removal of another of their devices (Task 25): one never set up by its registration, a listed one by
   /// a list without it, or, lost ([changeKeys]), with new keys, whose recovery key the state then shows until it's
-  /// saved. Only while this device is ready, with no rotation of its own waiting: that one goes first.
-  Future<void> removeDevice(String deviceId, {bool changeKeys = false}) => _deviceAct(() async {
-    if (deviceId == _device) throw ArgumentError.value(deviceId, 'deviceId', "this device's data goes another way");
-    if (_state.value.rotating) throw StateError('finish changing the security keys first');
-    _holdForApproval();
-    if (!changeKeys) return devices.removeDevice(this, deviceId);
-    await _rotate([deviceId]);
-  });
+  /// saved. Only while this device is ready, with no rotation of its own waiting: that one goes first. The devices the
+  /// API took away go with it only as its confirmation [named] them ([devicesAlong]); another is refused,
+  /// `devices_changed`, and nothing is signed.
+  Future<void> removeDevice(String deviceId, {bool changeKeys = false, List<String> named = const []}) =>
+      _deviceAct(() async {
+        if (deviceId == _device) throw ArgumentError.value(deviceId, 'deviceId', "this device's data goes another way");
+        if (_state.value.rotating) throw StateError('finish changing the security keys first');
+        _holdForApproval();
+        if (!changeKeys) return devices.removeDevice(this, deviceId, named: named);
+        await _rotate([deviceId], named: named);
+      });
 
-  /// The person's Change security keys (Task 25), with no device taken off: or, with a rotation waiting, its Finish,
-  /// the same rotation again, its key shown once more.
-  Future<void> changeKeys() => _deviceAct(() async {
+  /// The person's Change security keys (Task 25), with no device taken off but those its confirmation [named], as
+  /// [removeDevice] has them: or, with a rotation waiting, its Finish, the same rotation again, its key shown again.
+  Future<void> changeKeys({List<String> named = const []}) => _deviceAct(() async {
     _holdForApproval();
     // A new change, not the Finish of one that waits, takes up the offer of one after a gone, once it's made: then its
     // waiting change carries it (review 27's M1). One that fails before stays offered.
     final takesUp = !_state.value.rotating && _keysAgain;
-    await _rotate(const []);
+    await _rotate(const [], named: named);
     if (takesUp) await _offerKeysAgain(false);
   });
 
@@ -1093,10 +1113,20 @@ class E2EEngine implements DeviceSetupActions {
   /// along (review 24's M3): its confirmation names them.
   Future<List<String>> unsentRemovals() => devices.unsentRemovals(this);
 
-  Future<void> _rotate(List<String> remove, {List<String> gone = const []}) async {
+  /// What a removal of [asked] (none: a change of keys) takes off the list beside it, which its confirmation names.
+  Future<DevicesAlong> devicesAlong([String? asked]) => devices.devicesAlong(this, asked);
+
+  /// What this device knows of one of its user's devices (devices.dart's knownDevice), which names one the API no
+  /// longer lists.
+  KnownDevice? knownDevice(String deviceId) => devices.knownDevice(store, deviceId);
+
+  /// The user's devices as the API listed them to the app (Settings), kept beside what's known of others.
+  Future<void> noteDevices(List<duvet.UserDevice> listed) => devices.noteDevices(store, listed);
+
+  Future<void> _rotate(List<String> remove, {List<String> gone = const [], List<String> named = const []}) async {
     final Rotation rotation;
     try {
-      rotation = _rotation = await rotateKeys(this, remove, gone: gone);
+      rotation = _rotation = await rotateKeys(this, remove, gone: gone, named: named);
     } on CoreError catch (error) {
       // Finish of a change that waits, which the core runs again only with a certificate the API serves, of an identity
       // it knows, for every device it keeps (review 24's I1): another device took one off, which the change can go on
@@ -1570,6 +1600,7 @@ class E2EEngine implements DeviceSetupActions {
       // which its database names from the start's first steps, bound or not (review 25's M3).
       case duvet.DeviceAddedEvent(:final data):
         _soon(() async {
+          await devices.noteDevices(store, [data]);
           if (data.id != _self && await addedToTell(store, data)) {
             _tell(DeviceNoticeKind.added, data);
           }
@@ -1795,6 +1826,7 @@ class E2EEngine implements DeviceSetupActions {
     if (recorded == null) {
       await store.write(externalSender, pinned).catchError((Object error) => debugPrint('e2e: the pin: $error'));
     }
+    _serverKeyChanged.value = pinned != served;
     if (pinned != served) {
       debugPrint(
         'e2e: the API serves another external sender than the one this device pinned: it stays the pinned one.',
@@ -1802,6 +1834,11 @@ class E2EEngine implements DeviceSetupActions {
     }
     return _sender = pinned;
   }
+
+  /// Whether the API serves another external sender than the one this device pinned (Ruling 32): said to the person
+  /// (Notice.serverKeyChanged), never taken, as long as it's served (M2 of step 4's closing review).
+  ValueListenable<bool> get serverKeyChanged => _serverKeyChanged;
+  final _serverKeyChanged = ValueNotifier(false);
 
   /// The core didn't open: unsupported for good, a lost key until the person starts over, anything else again later.
   void _closed(Opened opened) {

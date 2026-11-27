@@ -28,15 +28,36 @@ import 'store.dart';
 
 /// What a conversation says over its message box of its group (PLAN-E2E-CLIENTES.md, «Avisos»): blocked; waiting for
 /// its owner to make it; waiting for another member to let this device back in; members other than its record's, or
-/// than those its group holds; or, while it goes on, the members who can't receive what's sent yet (`no_device`).
-enum ConversationNotice { blocked, waitOwner, waitRejoin, membersChanged, noDevice }
+/// than those its group holds; a group that holds a user, a kind or an owner the person doesn't see in the conversation
+/// (C1 of step 4's closing reviews); or, while it goes on, the members who can't receive what's sent yet (`no_device`).
+enum ConversationNotice { blocked, waitOwner, waitRejoin, membersChanged, groupDiffers, noDevice }
+
+/// A conversation as its chat draws it: whether it's a group, a group's owner, and its members' users.
+typedef ShownConversation = ({bool group, String? owner, List<String> users});
+
+/// Whether a chat draws [member] at all: listed with their own profile, so by one ID, the membership's, which the
+/// group is held to. One whose profile names another ID isn't drawn anywhere (R-I1 of step 4's closing re-review).
+bool drawnMember(duvet.ConversationMember member) => member.user?.id == member.userId;
+
+/// [conv] as a chat of [me]'s draws it from the API's listing (N-C1 of step 4's closing re-review): the person, and the
+/// members the chat names ([drawnMember]). A DM is the person and the one other its view shows, the first listed,
+/// whatever else its listing holds: no addition to a DM is drawn (N-I1).
+ShownConversation drawnOf(duvet.Conversation conv, String me) {
+  final group = conv.type == duvet.ConversationType.group;
+  final others = [
+    for (final member in conv.members)
+      if (drawnMember(member) && member.userId != me) member.userId,
+  ];
+  return (group: group, owner: group ? conv.ownerId : null, users: [me, ...group ? others : others.take(1)]);
+}
 
 /// Who may restart a blocked group: this user, its owner, or nobody (a group under an external sender other than the
 /// pinned one, which no restart changes).
 enum Restart { mine, owner, none }
 
 /// What a conversation says of its group ([name]), with who may restart a blocked one, and its owner: a group's, whose
-/// restart or making the others wait for; and its members without a device ([users]).
+/// restart or making the others wait for; and its members without a device, or whom a group that differs from the
+/// conversation holds ([users]).
 @immutable
 class ConversationState {
   const ConversationState.blocked({required Restart this.restart, this.owner})
@@ -50,10 +71,22 @@ class ConversationState {
 
   const ConversationState.noDevice(this.users) : name = ConversationNotice.noDevice, restart = null, owner = null;
 
+  /// The group holds whom the conversation doesn't show ([users]: everyone it holds, whom what's sent would reach).
+  const ConversationState.groupDiffers(this.users)
+    : name = ConversationNotice.groupDiffers,
+      restart = null,
+      owner = null;
+
+  /// Its members aren't those this device would go in with ([users]: whom a yes has it go in with, the conversation's
+  /// members as the API lists them; N-M10 of step 4's closing re-review).
+  const ConversationState.membersChanged(this.users)
+    : name = ConversationNotice.membersChanged,
+      restart = null,
+      owner = null;
+
   const ConversationState._(this.name) : restart = null, owner = null, users = const [];
 
   static const waitRejoin = ConversationState._(ConversationNotice.waitRejoin);
-  static const membersChanged = ConversationState._(ConversationNotice.membersChanged);
 
   final ConversationNotice name;
   final Restart? restart;
@@ -365,9 +398,14 @@ class Conversations {
   /// kept in the engine's store across restarts (M4 of the review).
   late final _refused = refusedGenerationsIn(_engine.store);
 
-  /// The person's yes, by conversation: the generation and the members ([membersKey]) it was given for, which a join
-  /// into that generation with them asks no more; it goes with the refusal it answered (M5 of the desktop's review).
-  final _accepted = <String, ({int generation, String members})>{};
+  /// The person's yes, by conversation: the generation it was given for and the members the question named ([_asked]),
+  /// which a founding after it is held to, and a join goes only while the API lists them; it goes with the refusal it
+  /// answered (M5 of the desktop's review; N-M10 of step 4's closing re-review).
+  final _accepted = <String, ({int generation, LegacyRecord record})>{};
+
+  /// Whom each conversation's question of changed members names: the members, and a group's owner, a yes has this
+  /// device go in with, as the API listed the conversation when it asked.
+  final _asked = <String, LegacyRecord>{};
 
   /// The group [_deviceless] was worked out from, by conversation: once the core's members differ, or those of them
   /// with a device in it, it's asked again (I3; #350).
@@ -429,6 +467,7 @@ class Conversations {
     _known.clear();
     _joinsLost.clear();
     _accepted.clear();
+    _asked.clear();
     _deviceless.clear();
     _devicelessFrom.clear();
     _restartRefused.clear();
@@ -485,12 +524,47 @@ class Conversations {
   }
 
   /// Before this device sends there (PLAN-E2E-CLIENTES.md, «Enviar»): the conversation's group as it is now, its queue
-  /// applied, joined or made where it has none. Without it, or blocked, nothing can be sent: the conversation says why.
+  /// applied, joined or made where it has none. Without it, blocked, or holding someone the person doesn't see there
+  /// ([asShown]), nothing can be sent: the conversation says why.
   Future<void> current(String conversationId) async {
     await open(conversationId);
     final held = await _group(conversationId);
     if (held == null || held.blocked) throw StateError("this device can't send in this conversation now");
+    await asShown(conversationId);
   }
+
+  /// Before anything more goes to the conversation (C1 of step 4's closing reviews): the person sees it, and its group
+  /// holds no user, and no kind or owner, that the person doesn't see in it (N-C1 of the re-review). The queue is read
+  /// whole and a due commit made first, so a member who left, whose removal the API proposed, goes as in any honest
+  /// group; else the conversation says so, and this throws, as it does while what's drawn can't be read yet.
+  Future<void> asShown(String conversationId) async {
+    final held = await _group(conversationId);
+    if (held == null || !await _strays(conversationId, held)) return;
+    await sync(conversationId, read: true);
+    await commitDue(conversationId);
+    final now = await _group(conversationId);
+    if (now != null && !await _strays(conversationId, now)) return;
+    if (now != null && !now.blocked) _set(conversationId, ConversationState.groupDiffers(now.members));
+    throw StateError("this device can't send in this conversation now");
+  }
+
+  /// What [asShown] compares, with no queue read and no move (T-C1 of step 4's closing re-reviews): the last thing
+  /// before what was made for the group goes, so what goes is of the group compared. A difference says so and throws.
+  Future<void> stillAsShown(String conversationId) async {
+    final held = await _group(conversationId);
+    if (held != null && !await _strays(conversationId, held)) return;
+    if (held != null && !held.blocked) _set(conversationId, ConversationState.groupDiffers(held.members));
+    throw StateError("this device can't send in this conversation now");
+  }
+
+  /// Whether the core's group is at [generation] and [epoch] now: what was made for it is of it.
+  Future<bool> isAt(String conversationId, int generation, int epoch) async {
+    final held = await _group(conversationId);
+    return held != null && held.generation == generation && held.epoch == epoch;
+  }
+
+  /// The person made the conversation here with [picked]: its group is founded with them alone.
+  Future<void> created(String conversationId, LegacyRecord picked) => _legacy.created(conversationId, picked);
 
   /// A commit of this device's waits for its word (encrypt's `pending_commit`): the request of one in flight goes
   /// again, which the API answers as it did; one whose bytes went with the app is told no answer came, and the queue
@@ -519,7 +593,7 @@ class Conversations {
     await _list();
     for (final conv in [..._known.values]) {
       try {
-        await _legacy.of(conv.api);
+        await _record(conv.api);
         if (conv.group == null) {
           await _groupless(conv);
         } else {
@@ -582,20 +656,20 @@ class Conversations {
     _set(conv.id, _blocked(conv));
   }
 
-  /// The person's yes to the members of today: the record goes, and this device goes in with none to hold it to, by
-  /// an external commit, or by making the group where there's none (M6 of the desktop's review); the members it said
-  /// yes to are remembered, so a join made again with them asks no more.
-  Future<void> accept(String conversationId) async {
-    if (!_refused.containsKey(conversationId)) return;
+  /// The person's yes to the members the question named ([_asked]): the record goes, and this device goes in with them,
+  /// by an external commit while the API lists them, or by making the group with them alone where there's none (M6 of
+  /// the desktop's review; N-M10 of step 4's closing re-review): a listing with others by then asks again. The yes is
+  /// to [users], those the question named as the person was shown it: once it names others, asked again since, the
+  /// yes is none (R-M2 of the re-review).
+  Future<void> accept(String conversationId, List<String> users) async {
+    final asked = _asked[conversationId];
+    if (!_refused.containsKey(conversationId) || asked == null || !sameUsers(users, asked.members)) return;
     final conv = await _fresh(conversationId);
     if (conv == null) return _gone(conversationId);
     await _legacy.drop(conversationId);
     final generation = _refused[conversationId] ?? 0;
     await _unrefuse(conversationId);
-    _accepted[conversationId] = (
-      generation: max(generation, conv.group?.generation ?? 0),
-      members: membersKey(conv.api),
-    );
+    _accepted[conversationId] = (generation: max(generation, conv.group?.generation ?? 0), record: asked);
     _set(conversationId, null);
     if (conv.group == null) return open(conversationId);
     await _join(conv);
@@ -804,6 +878,7 @@ class Conversations {
     _welcomeGenerations.remove(id);
     _joinsLost.remove(id);
     _accepted.remove(id);
+    _asked.remove(id);
     _catchUps.forget(id);
     // The record's write logs its own failure: the refusal goes from memory at once.
     unawaited(_unrefuse(id));
@@ -840,11 +915,22 @@ class Conversations {
     return true;
   }
 
-  /// The group made here, held to the record of a conversation from before the cutover.
+  /// The group made here with the members this device can account for (C1 of step 4's closing reviews): those the
+  /// person said yes to, as a question named them (N-M10 of the re-review); its record (the person's picks as they made
+  /// the conversation here, or one from before the cutover as first seen); else the conversation as the person sees
+  /// it, asked again of a fresh listing. The API gives their order, never the set or the kind: a listing that differs
+  /// founds nothing, and the conversation says so; one the person doesn't see waits.
   Future<void> _make(_Conv conv) async {
+    final record = _accepted[conv.id]?.record ?? await _record(conv.api);
+    var accounted = record ?? _recordOf(await _shown(conv.id));
+    if (record == null && accounted != null && !_isRecord(conv.api, accounted)) {
+      accounted = _recordOf(await _shown(conv.id, fresh: true));
+    }
+    if (accounted == null) return;
+    if (!_isRecord(conv.api, accounted)) return _membersChanged(conv);
     final duvet.Commit commit;
     try {
-      commit = await makeGroup(_engine, conv.api, _sender, await _legacy.of(conv.api));
+      commit = await makeGroup(_engine, conv.api, _sender, accounted);
     } on CoreError catch (error) {
       if (error.code == 'exists') return debugPrint("e2e: this device holds a group the API doesn't list.");
       if (error.rule == 'member_list_mismatch') return _membersChanged(conv);
@@ -920,7 +1006,7 @@ class Conversations {
   /// One apply, the users it asks for observed first, the welcomes of a conversation from before the cutover held to
   /// its record (their `expected`, which the API never gives); what its results say is noted.
   Future<Map<String, Object?>> _apply(_Conv conv, List<Map<String, Object?>> entries) async {
-    final record = await _legacy.of(conv.api);
+    final record = await _record(conv.api);
     final given = record == null
         ? entries
         : [
@@ -1024,6 +1110,67 @@ class Conversations {
     _settling.remove(id);
   }
 
+  /// The conversation as the person sees it ([E2EEngine.shown]), [fresh] from a listing made now: null for one not
+  /// drawn. Never as this engine lists it (N-C1 of step 4's closing re-review); one that can't be read yet throws.
+  Future<ShownConversation?> _shown(String id, {bool fresh = false}) => _engine.shown(id, fresh: fresh);
+
+  /// Whether the group holds a user, a kind or an owner that the conversation as the person sees it doesn't: asked
+  /// again of a fresh listing, as a member just added may not show yet. A conversation not drawn differs.
+  Future<bool> _strays(String id, _Held held) async =>
+      _differs(held, await _shown(id)) && _differs(held, await _shown(id, fresh: true));
+
+  /// [_strays] for what the conversation says of its group: false while what's drawn can't be read yet (the session's
+  /// first listing not in), when nothing goes there anyway, as [asShown] throws too.
+  Future<bool> _saysStrays(String id, _Held held) async {
+    try {
+      return await _strays(id, held);
+    } catch (error) {
+      debugPrint("e2e: what the conversation draws couldn't be read yet: $error");
+      return false;
+    }
+  }
+
+  /// A DM as drawn is the person and one other, any other count differs (N-I1 of step 4's closing re-review); a group
+  /// as drawn has the group's owner.
+  bool _differs(_Held held, ShownConversation? shown) =>
+      shown == null ||
+      (held.owner != null) != shown.group ||
+      (shown.group ? held.owner != shown.owner : shown.users.length != 2 || !shown.users.contains(_user)) ||
+      held.members.any((user) => !shown.users.contains(user));
+
+  /// The conversation's record ([LegacyRecords.of]), one made the first time it's seen held to what's drawn.
+  Future<LegacyRecord?> _record(duvet.Conversation conv) => _legacy.of(conv, (made) => _drawnAs(conv.id, made));
+
+  /// [conv] as the API lists it, as a record: its users, and a group's owner.
+  static LegacyRecord _listedAs(duvet.Conversation conv) => (
+    owner: conv.type == duvet.ConversationType.group ? conv.ownerId : null,
+    members: [for (final member in conv.members) member.userId],
+  );
+
+  /// Whether [record] is the conversation as the person sees it: its kind, a group's owner and its users, whatever
+  /// their order (N-M1 of step 4's closing re-review). False while that can't be read.
+  Future<bool> _drawnAs(String id, LegacyRecord record) async {
+    try {
+      final shown = await _shown(id);
+      return shown != null &&
+          shown.group == (record.owner != null) &&
+          (!shown.group || shown.owner == record.owner) &&
+          sameUsers(shown.users, record.members);
+    } catch (error) {
+      debugPrint("e2e: what the conversation draws couldn't be read yet: $error");
+      return false;
+    }
+  }
+
+  static LegacyRecord? _recordOf(ShownConversation? shown) =>
+      shown == null ? null : (owner: shown.group ? shown.owner : null, members: shown.users);
+
+  /// Whether the API's conversation is [record], as the core's create_group holds a founding to it: its kind, a group's
+  /// owner, and its users, whatever their order.
+  static bool _isRecord(duvet.Conversation conv, LegacyRecord record) =>
+      (conv.type == duvet.ConversationType.group ? conv.ownerId : null) == record.owner &&
+      sameUsers([for (final m in conv.members) m.userId], record.members);
+
   /// The group as the core holds it, or null without one.
   Future<_Held?> _group(String id) async {
     try {
@@ -1058,6 +1205,8 @@ class Conversations {
       for (final kept in [_otherSender, _removed, _lostJoin]) {
         kept.remove(id);
       }
+      // This device holds the group: the record of the conversation's creation here is done with.
+      await _legacy.heldGroup(id);
       // In the API's generation, at or past any it refused: the refusal and its yes are done with.
       if (held.generation >= (_refused[id] ?? held.generation)) await _unrefuse(id);
       if (_accepted[id] case final yes? when held.generation >= yes.generation) _accepted.remove(id);
@@ -1071,7 +1220,14 @@ class Conversations {
           debugPrint('e2e: who has no device waits for the next change: $error');
         }
       }
-      _set(id, held.blocked ? _blocked(conv) : _goingOn(id));
+      // A group that holds whom the person doesn't see there is said, with the queue read whole, unless a due commit is
+      // on its way (a member who left, whose removal the API proposed, goes with it).
+      final strays = !held.blocked && !at.due && await _saysStrays(id, held);
+      if (strays && !at.whole && at.through != null) {
+        final done = await _readQueue(conv, at.through!);
+        if (done != null) return _after(conv, done);
+      }
+      _set(id, held.blocked ? _blocked(conv) : (strays ? ConversationState.groupDiffers(held.members) : _goingOn(id)));
       if (at.due && !held.blocked) _dueLater(id);
       return;
     }
@@ -1112,7 +1268,14 @@ class Conversations {
   /// Its members aren't those this device would go in with: the person says whether to go on ([accept]).
   Future<void> _membersChanged(_Conv conv, [int? generation]) async {
     await _refuse(conv.id, generation ?? conv.group?.generation ?? 0);
-    _set(conv.id, ConversationState.membersChanged);
+    _ask(conv);
+  }
+
+  /// The question of changed members, naming whom a yes has this device go in with: the conversation as the API last
+  /// listed it, which the yes records (N-M10 of step 4's closing re-review).
+  void _ask(_Conv conv) {
+    final asked = _asked[conv.id] = _listedAs(_known[conv.id]?.api ?? conv.api);
+    _set(conv.id, ConversationState.membersChanged(asked.members));
   }
 
   /// Whether this device may join [generation] (the group info's it fetched) by an external commit on its own: not
@@ -1122,7 +1285,7 @@ class Conversations {
   Future<bool> _mayJoin(_Conv conv, int generation) async {
     // The members as the API lists them now: those a join would bring this device in with.
     final now = (await _fresh(conv.id))?.api ?? conv.api;
-    if (_accepted[conv.id] case final yes? when yes.generation == generation && yes.members == membersKey(now)) {
+    if (_accepted[conv.id] case final yes? when yes.generation == generation && _isRecord(now, yes.record)) {
       return true;
     }
     if ((_refused[conv.id] ?? -1) >= generation) return false;
@@ -1172,7 +1335,7 @@ class Conversations {
   Future<void> _join(_Conv conv) async {
     final id = conv.id;
     if (_otherSender.contains(id)) return _set(id, _blocked(conv));
-    if ((_refused[id] ?? -1) >= (conv.group?.generation ?? 0)) return _set(id, ConversationState.membersChanged);
+    if ((_refused[id] ?? -1) >= (conv.group?.generation ?? 0)) return _ask(conv);
     if (_inFlight.containsKey(id)) return;
     if ((_joinsLost[id] ?? 0) >= _joinsLostMost) {
       _joinsLost.remove(id);
@@ -1188,7 +1351,7 @@ class Conversations {
     }
 
     Future<duvet.Commit?> join() async =>
-        joinGroup(_engine, conv.api, _sender, await _legacy.of(conv.api), mayJoin: mayJoin);
+        joinGroup(_engine, conv.api, _sender, await _record(conv.api), mayJoin: mayJoin);
     duvet.Commit? commit;
     try {
       try {

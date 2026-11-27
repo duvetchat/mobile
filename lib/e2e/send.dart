@@ -1,12 +1,13 @@
 /// What this device sends to a conversation (PLAN-E2E-CLIENTES.md, «Enviar», and «Qué se manda», its message rows): the
 /// person's messages, their edits and their deletions. The core encrypts a message and keeps it as pending, its bytes
 /// with it, until `sent` binds it to the API's ID: the same nonce gives the same bytes again, so one whose answer was
-/// lost goes again as it was, and the API answers it with the message it posted. What waits in a conversation goes
-/// first, in the order it was made, its queue applied before; one whose bytes no member could open any more is dropped
-/// and its text encrypted again, under another nonce. An edit and a deletion the core makes anew each time, so their
-/// bytes are kept here until an answer comes, and the entry that answer gives goes to the core. Only the core keeps
-/// text: the record keeps what goes with each message in the clear, by its nonce, so it goes whole after a restart. The
-/// desktop's send.ts in Dart.
+/// lost goes again as it was while its group stays where they were made, and the API answers it with the message it
+/// posted. What waits in a conversation goes first, in the order it was made, its queue applied before; one whose bytes
+/// aren't of its group as it is now (T-C1 of step 4's closing re-reviews), or no member could open any more, is dropped
+/// and its text encrypted again, under another nonce, after the queue's read. An edit and a deletion the core makes
+/// anew each time, so their bytes are kept here until an answer comes, made again once the group moved, and the entry
+/// that answer gives goes to the core. Only the core keeps text: the record keeps what goes with each message in the
+/// clear, by its nonce, so it goes whole after a restart. The desktop's send.ts in Dart.
 library;
 
 import 'dart:async';
@@ -136,16 +137,25 @@ typedef Pending = ({
   String? stickerAttachmentId,
 });
 
+/// Bytes the core made for a conversation's group, with the generation and epoch of the group they're for.
+typedef _Made = ({String ciphertext, int generation, int epoch});
+
+_Made _madeOf(Map<String, Object?> answer) => (
+  ciphertext: answer['ciphertext']! as String,
+  generation: answer['generation']! as int,
+  epoch: answer['epoch']! as int,
+);
+
 /// An edit (with its text) or a deletion (none) whose request goes on: its bytes, sent again as they are until an
-/// answer comes.
+/// answer comes, or made again once the group moved.
 class _Change {
   _Change(this.conversationId, this.messageId, this.text);
   final String conversationId;
   final String messageId;
 
-  /// An edit's text, made into bytes again when the API says no member could open them any more.
+  /// An edit's text, made into bytes again when the group moved, or the API says no member could open them any more.
   final String? text;
-  var ciphertext = '';
+  _Made? made;
   var remade = false;
   var tries = 0;
   void Function()? cancel;
@@ -214,9 +224,13 @@ bool _unanswered(Object error) => switch (error) {
   _ => false,
 };
 
-/// A message's bytes no member can open any more, the core's word or the API's: it's made again, with each after it.
+/// A message's bytes no member can open any more, the core's word or the API's, or bytes of another epoch than the
+/// group's as it is now (T-C1 of step 4's closing re-reviews): it's made again, with each after it.
 class _Stale implements Exception {
   const _Stale();
+
+  @override
+  String toString() => "_Stale: the message's bytes aren't of the group as it is now; they're made again";
 }
 
 /// The core's word that no member could open the message's bytes any more.
@@ -560,8 +574,11 @@ class Sends {
             await _unnote(conversation, message, kind);
             continue;
           }
+          // Made again only for a group as the person sees it: else it, and its message's changes after it, wait in
+          // the record for the next start or READY (N-I3 of step 4's closing re-review).
+          if (!await _asDrawn(conversation)) break;
           final change = _Change(conversation, message, text);
-          change.ciphertext = await _make(change);
+          change.made = await _make(change);
           await _queueChange(change, noted: true, send: false);
         } catch (error) {
           if (error is CoreError && error.code == 'not_found') {
@@ -584,13 +601,15 @@ class Sends {
   }
 
   /// An edit (with its [text]) or a deletion (none) of the user's message: made by the core, which shows it here at
-  /// once, sent, and the entry its answer gives taken by the core. Without an answer its bytes go again later.
-  Future<void> change(String conversationId, String messageId, String? text) async {
+  /// once ([taken] is told then), sent, and the entry its answer gives taken by the core. Without an answer its bytes
+  /// go again later.
+  Future<void> change(String conversationId, String messageId, String? text, {void Function()? taken}) async {
     await _groups.current(conversationId);
     final change = _Change(conversationId, messageId, text);
-    change.ciphertext = await _make(change);
+    change.made = await _make(change);
     _changed(conversationId);
     if (text == null) _deleted(conversationId, [messageId]);
+    taken?.call();
     await _queueChange(change);
   }
 
@@ -681,6 +700,9 @@ class Sends {
         remade.addAll(firsts);
         done.removeAll(firsts);
         final now = await _turn(() async {
+          // The queue first, whoever said the bytes were stale (the core, their epoch, the API's 409): a copy the API
+          // took binds its message, which isn't made again, and the new bytes are of the epochs the API is at.
+          await _groups.sync(id, read: true);
           // What a Dismiss let go meanwhile isn't made again.
           final waiting = {for (final other in (await _waiting(id)).rows) other.nonce};
           await _remake(id, [
@@ -739,16 +761,25 @@ class Sends {
     final nonce = row.nonce!;
     final made = await _turn(() async {
       if (!(await pendingRows(_host, id)).any((other) => other.nonce == nonce)) return null;
-      final String ciphertext;
+      // Nothing goes to a group that holds someone the person doesn't see there (C1 of step 4's closing reviews): the
+      // look, whose read and due commit are the group's last moves before the bytes.
+      await _groups.asShown(id);
+      final _Made bytes;
       try {
-        ciphertext = await _encrypt(id, nonce, row.text, row.attachments);
+        bytes = await _encrypt(id, nonce, row.text, row.attachments);
       } catch (error) {
         if (_staleBytes(error)) throw const _Stale();
         rethrow;
       }
+      // Only bytes of the group as the core holds it now go (T-C1 of step 4's closing re-reviews): the core gives a
+      // nonce's kept bytes back up to 5 epochs behind, so ones made before the look moved it are made again.
+      if (!await _groups.isAt(id, bytes.generation, bytes.epoch)) throw const _Stale();
       // Whom it reaches whose changed key waits for the person's yes, known by now (its encrypt may have just observed
       // it), read in the same turn.
-      return (ciphertext: ciphertext, holding: await _held(id));
+      final holding = await _held(id);
+      // And after the bytes, a comparison that reads nothing: a difference waits.
+      await _groups.stillAsShown(id);
+      return (ciphertext: bytes.ciphertext, holding: holding);
     });
     if (made == null) return null;
     // Its Cancel, or a Dismiss, came while older messages went: it isn't sent.
@@ -788,8 +819,7 @@ class Sends {
         abortTrigger: upload.aborted,
       );
     } on duvet.DuvetStaleMessageException {
-      // The core learns the epochs the API is at first, so the new bytes are of them.
-      await _turn(() => _groups.sync(id, read: true));
+      // Made again, after the queue's read ([_flush]).
       throw const _Stale();
     } on duvet.DuvetPausedException catch (error) {
       _afterPause(id, error.retryAfter);
@@ -902,7 +932,7 @@ class Sends {
   /// A new message's encrypt, its files' envelope as [sealed] made it: while the core finds the message too large, the
   /// largest thumbnail inside it goes apart, a file of its own, and it's encrypted again under the same nonce (the core
   /// keeps nothing of a too-large encrypt).
-  Future<String> _encryptMade(String id, String nonce, String? text, SealedFiles? sealed) async {
+  Future<_Made> _encryptMade(String id, String nonce, String? text, SealedFiles? sealed) async {
     while (true) {
       try {
         return await _encrypt(id, nonce, text, sealed?.attachments ?? const []);
@@ -912,21 +942,22 @@ class Sends {
     }
   }
 
-  /// The core's encrypt: the message kept as pending, or, for a nonce it has, its bytes again, which takes the same
-  /// envelope back, its files' row as the core keeps it ([attachments]). What keeps this device from sending there is
-  /// dealt with once: users to observe, leaves and removals to commit, a group to join or make.
-  Future<String> _encrypt(String id, String nonce, String? text, List<Map<String, Object?>> attachments) async {
-    Future<String> run() async =>
-        (await withIdentities(
-              _engine,
-              () => _host.handle<Map<String, Object?>>({
-                'cmd': 'encrypt',
-                'conversation_id': id,
-                'nonce': nonce,
-                'envelope': messageEnvelope(text ?? '', attachments),
-              }),
-            ))['ciphertext']!
-            as String;
+  /// The core's encrypt: the message kept as pending, or, for a nonce it has, its bytes again (of the epoch they were
+  /// made at), which takes the same envelope back, its files' row as the core keeps it ([attachments]). What keeps
+  /// this device from sending there is dealt with once: users to observe, leaves and removals to commit, a group to
+  /// join or make.
+  Future<_Made> _encrypt(String id, String nonce, String? text, List<Map<String, Object?>> attachments) async {
+    Future<_Made> run() async => _madeOf(
+      await withIdentities(
+        _engine,
+        () => _host.handle<Map<String, Object?>>({
+          'cmd': 'encrypt',
+          'conversation_id': id,
+          'nonce': nonce,
+          'envelope': messageEnvelope(text ?? '', attachments),
+        }),
+      ),
+    );
     try {
       return await run();
     } on CoreError catch (error) {
@@ -959,21 +990,22 @@ class Sends {
     });
   }
 
-  /// An edit's or a deletion's bytes, as the core makes them now.
-  Future<String> _make(_Change change) async =>
-      (await withIdentities(
-            _engine,
-            () => _host.handle<Map<String, Object?>>({
-              'cmd': change.text == null ? 'delete' : 'edit',
-              'conversation_id': change.conversationId,
-              'message_id': change.messageId,
-              'text': ?change.text,
-            }),
-          ))['ciphertext']!
-          as String;
+  /// An edit's or a deletion's bytes, as the core makes them now, for the group as it is: it moves nothing.
+  Future<_Made> _make(_Change change) async => _madeOf(
+    await withIdentities(
+      _engine,
+      () => _host.handle<Map<String, Object?>>({
+        'cmd': change.text == null ? 'delete' : 'edit',
+        'conversation_id': change.conversationId,
+        'message_id': change.messageId,
+        'text': ?change.text,
+      }),
+    ),
+  );
 
-  /// An edit's or a deletion's request, its bytes as they are: its answer's entry to the core. Without an answer it
-  /// goes again later and at each READY; bytes the API says no member could open now are made again, once. A refusal
+  /// An edit's or a deletion's request, its bytes as they are while its group stays where they were made: its answer's
+  /// entry to the core. Without an answer it goes again later and at each READY; bytes the API says no member could
+  /// open now are made again, once. A refusal
   /// for good resolves (the device shows the change), and the person is told wherever they are (M3 of task 17's
   /// review).
   Future<void> _sendChange(_Change change) async {
@@ -992,23 +1024,47 @@ class Sends {
     // one does, its bytes as the core last made them, each try looking again, and the yes sends it (review 28's I2). A
     // deletion carries no text, and goes.
     if (change.text != null && (await _held(id)).isNotEmpty) return _retryLater(change);
+    // Nor while its group holds someone the person doesn't see there, each try looking as a message's delivery does
+    // (N-I3 of step 4's closing re-review): it waits as an unanswered one does.
+    if (!await _asDrawn(id)) return _retryLater(change);
+    final _Made made;
+    try {
+      // Its bytes of the group as it is after that look, made again once it moved (T-C1 of step 4's closing
+      // re-reviews), and a comparison that reads nothing after them.
+      final kept = change.made;
+      made = change.made = kept != null && await _groups.isAt(id, kept.generation, kept.epoch)
+          ? kept
+          : await _make(change);
+      await _groups.stillAsShown(id);
+    } catch (failed) {
+      // Its message isn't on this device any more (the person's deletion of it, made at once, behind it): nothing to
+      // change, as a start's resend lets such a change go.
+      if (failed is CoreError && failed.code == 'not_found' && failed.what != 'group') {
+        await _answered(change);
+        _changed(id);
+        return;
+      }
+      // What throws past its request waits as no answer does (M4 of task 17's review, the desktop's N6).
+      debugPrint('e2e: a change goes again later: $failed');
+      return _retryLater(change);
+    }
     final duvet.MlsEntry entry;
     try {
       entry = change.text == null
-          ? (await _api.deleteMessage(id, change.messageId, change.ciphertext)).entry
-          : (await _api.editMessage(id, change.messageId, change.ciphertext)).entry;
+          ? (await _api.deleteMessage(id, change.messageId, made.ciphertext)).entry
+          : (await _api.editMessage(id, change.messageId, made.ciphertext)).entry;
     } catch (error) {
       // An update keeps it, for after the update.
       if (error is duvet.DuvetUpdateRequiredException) rethrow;
       if (error is duvet.DuvetStaleMessageException && !change.remade) {
         try {
           await _groups.sync(id, read: true);
-          change.ciphertext = await _make(change);
         } catch (failed) {
-          // What throws past its request waits as no answer does (M4 of task 17's review, the desktop's N6).
           debugPrint('e2e: a change goes again later: $failed');
           return _retryLater(change);
         }
+        // Made again by the next try, after its look, for the epochs the API is at.
+        change.made = null;
         change.remade = true;
         return _trySend(change);
       }
@@ -1038,6 +1094,18 @@ class Sends {
       debugPrint("e2e: a change's entry waits for its conversation's queue: $error");
     }
     _changed(id);
+  }
+
+  /// Whether the conversation's group is as the person sees it ([Conversations.asShown]): false, logged, while it isn't,
+  /// or while that can't be told.
+  Future<bool> _asDrawn(String id) async {
+    try {
+      await _groups.asShown(id);
+      return true;
+    } catch (error) {
+      debugPrint('e2e: a change waits for its group to be as drawn: $error');
+      return false;
+    }
   }
 
   /// A change answered (taken, or refused for good): it leaves its message's queue and the record, and the next goes.

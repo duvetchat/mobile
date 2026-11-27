@@ -257,7 +257,12 @@ final class CoreGate implements CoreHost, ObservingHost {
     if (user != _user || _core == null) throw CoreError('internal', message: 'no core is open for that user');
     switch (op) {
       case 'handle':
-        return jsonEncode(await handle<Object?>(jsonDecode(args[0]! as String) as Map<String, Object?>));
+        final command = jsonDecode(args[0]! as String) as Map<String, Object?>;
+        // Held here too: whoever sends on the port gets what a push's engine runs, and nothing else.
+        if (!inBackground.contains(command['cmd'])) {
+          throw CoreError('bad_command', message: '${command['cmd']} runs only in the app with a screen', field: 'cmd');
+        }
+        return jsonEncode(await handle<Object?>(command));
       case 'sealFile':
         return _transfer(
           await sealFile(args[0]! as String, args[1]! as String, _received(args[2]), progress: progress),
@@ -266,9 +271,6 @@ final class CoreGate implements CoreHost, ObservingHost {
         return _transfer(
           await openFile(args[0]! as String, args[1]! as String, _received(args[2]), progress: progress),
         );
-      case 'destroy':
-        await destroy(user);
-        return null;
     }
     throw CoreError('bad_command', message: 'no such op: $op', field: 'op');
   }
@@ -527,11 +529,12 @@ final class CoreGate implements CoreHost, ObservingHost {
     await core?.close();
   }
 
-  /// Closes, then deletes [userId]'s database and its key: what «Remove this device and delete its data» does. The
-  /// database is taken first, here or by the app's engine, so no engine has it open while it goes: one that's locked
-  /// is refused. One no key opens is deleted all the same, as nothing can read it. The core's own destroy deletes the
-  /// files under its lock (the plugin's, duvetchat/e2e#50), so an open racing it can't hold the database as it goes,
-  /// and its lock file stays, empty; then the key, which the app keeps.
+  /// Closes, then deletes [userId]'s database and its key: what «Remove this device and delete its data» does, in the
+  /// app's engine. The database is taken first, so no engine has it open while it goes: one that's locked, or that the
+  /// app's engine has open for another engine, is refused (M1 of step 4's closing review). One no key opens is deleted
+  /// all the same, as nothing can read it. The core's own destroy deletes the files under its lock (the plugin's,
+  /// duvetchat/e2e#50), so an open racing it can't hold the database as it goes, and its lock file stays, empty; then
+  /// the key, which the app keeps.
   @override
   Future<void> destroy(String userId) async {
     if (!_uuid.hasMatch(userId)) throw CoreError('bad_command', message: "a user's ID is a UUID", field: 'user_id');
@@ -544,16 +547,7 @@ final class CoreGate implements CoreHost, ObservingHost {
         throw CoreError('locked', message: 'another engine has the database open');
       }
     }
-    if (_app case final app? when _core == null) {
-      try {
-        await _ask(app, 'destroy', userId);
-      } on _Gone {
-        throw CoreError('internal', message: "the app's engine went away");
-      } finally {
-        await _close();
-      }
-      return;
-    }
+    if (_app != null && _core == null) throw CoreError('locked', message: "the app's engine has the database open");
     // Closed with the port still answering, so another engine asks, and finds no core, rather than opening it.
     final core = _core;
     _core = null;
