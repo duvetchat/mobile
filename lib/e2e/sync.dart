@@ -429,7 +429,8 @@ class Conversations {
 
   /// The person's yes, by conversation: the generation it was given for and the members the question named ([_asked]),
   /// which a founding after it is held to, and a join goes only while the API lists them; it goes with the refusal it
-  /// answered (M5 of the desktop's review; N-M10 of step 4's closing re-review).
+  /// answered (M5 of the desktop's review; N-M10 of step 4's closing re-review). The record keeps those members too,
+  /// across a restart, until this device holds the group ([LegacyRecords.chosen]).
   final _accepted = <String, ({int generation, LegacyRecord record})>{};
 
   /// Whom each conversation's question of changed members names: the members, and a group's owner, a yes has this
@@ -479,9 +480,9 @@ class Conversations {
   /// the two, or a store that refused the engine's, would otherwise lose. Each is kept as forget_group's answer is
   /// ([LegacyRecords.forgot]), also over a forget's record the engine has, as the core's is always the newest: a forget
   /// needs the group held, and holding it again lets the core's go (M1 of mobile#395's review). Its rules give it its
-  /// place among what the engine kept: the creator's picks go; one from before the cutover, the person's yes, or what an
-  /// older forget's record was kept over, is kept under it. Each is newer than any yes, which lets the core's go first
-  /// ([accept]).
+  /// place among what the engine kept: the creator's picks go; one from before the cutover, or what an older forget's
+  /// record was kept over, is kept under it; the person's yes is let go under it, as the yes lets the core's go first
+  /// ([accept]): a record the core gives is of a forget after the yes's comeback held the group.
   Future<void> takeForgotten() async {
     for (final record in await _coreRecords()) {
       await _legacy.forgot(record['conversation_id']! as String, recordIn(record['expected'])!);
@@ -724,20 +725,21 @@ class Conversations {
     _set(conv.id, _blocked(conv));
   }
 
-  /// The person's yes to the members the question named ([_asked]): the record goes, and this device goes in with them,
-  /// by an external commit while the API lists them, or by making the group with them alone where there's none (M6 of
-  /// the desktop's review; N-M10 of step 4's closing re-review): a listing with others by then asks again. The yes is
-  /// to [users], those the question named as the person was shown it: once it names others, asked again since, the
-  /// yes is none (R-M2 of the re-review).
+  /// The person's yes to the members the question named ([_asked]): they're the record until this device holds the
+  /// group, and it goes in with them, by an external commit while the API lists them, held to them, or by making the
+  /// group with them alone where there's none (M6 of the desktop's review; N-M10 of step 4's closing re-review): a
+  /// listing or a group with others by then asks again. The yes is to [users], those the question named as the person
+  /// was shown it: once it names others, asked again since, the yes is none (R-M2 of the re-review).
   Future<void> accept(String conversationId, List<String> users) async {
     final asked = _asked[conversationId];
     if (!_refused.containsKey(conversationId) || asked == null || !sameUsers(users, asked.members)) return;
     final conv = await _fresh(conversationId);
     if (conv == null) return _gone(conversationId);
     // The core's record of a group this device forgot goes first (drop_forgotten, mobile#392): every record a start
-    // takes back is then newer than this yes, and a close before the engine's own goes asks the person again.
+    // takes back is then newer than this yes, and a close before the engine's own goes asks the person again. Then
+    // the yes's people are the record, which the comeback is held to after a close too (M2 of mobile#395's review).
     await _dropForgotten(conversationId);
-    await _legacy.drop(conversationId);
+    await _legacy.chosen(conversationId, asked);
     final generation = _refused[conversationId] ?? 0;
     await _unrefuse(conversationId);
     _accepted[conversationId] = (generation: max(generation, conv.group?.generation ?? 0), record: asked);

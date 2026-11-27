@@ -1153,15 +1153,71 @@ void main() {
         );
         await sameGroup([t.a, third], t.conversation);
         expect(third.engine.conversationState(t.conversation), isNull);
+        // Held to the people the person said yes to (M2 of mobile#395's review), which the group has.
         expect(
           [
             for (final command in commands)
               if (command['cmd'] == 'join_external') command['expected'],
           ],
-          [null],
+          [
+            {
+              'owner': t.ana,
+              'members': [t.ana, t.cy],
+            },
+          ],
         );
         // The yes let the core's record go before its comeback went.
         expect(keptAfterYes, isEmpty);
+      },
+      skip: noCore,
+      timeout: _slow,
+    );
+
+    // M2 of mobile#395's review: the yes's people stay in the engine's record until the device holds the group, as the
+    // desktop's chosen does, so a comeback a close delays is held to them too. Cy says yes to Ana and Cy, its comeback
+    // doesn't go, and its app ends; meanwhile Ana adds Bo. The next start's join, into a group with Bo, is refused, and
+    // the conversation asks again.
+    test(
+      'a_yes_whose_comeback_a_close_delays_holds_it_to_the_people_the_person_said_yes_to',
+      () async {
+        final t = await _keptByTheCoreAlone();
+        await t.a.engine.removeMember(t.conversation, t.bo);
+        await t.a.engine.removeMember(t.conversation, t.cy);
+        await t.a.engine.addMember(t.conversation, t.cy);
+        var holding = true;
+        final client = _groupInfoHeld(t.fake, t.conversation, () => holding);
+        final again = await restarted(t.fake, t.c, client: client);
+        await until(
+          () => again.engine.conversationState(t.conversation) == ConversationState.membersChanged([t.ana, t.cy]),
+          what: 'the welcome refused for the record the core kept',
+        );
+        await acceptAsShown(again, t.conversation).catchError((Object _) {});
+        expect(await groupOf(again, t.conversation), isNull);
+        await again.engine.stop();
+        t.fake.befriend(t.ana, t.bo);
+        await t.a.engine.addMember(t.conversation, t.bo);
+        holding = false;
+        final commands = <Map<String, Object?>>[];
+        final third = await restarted(
+          t.fake,
+          again,
+          host: WatchedHost(again.host, [], commands: commands),
+          client: client,
+        );
+        await until(
+          () => third.engine.conversationState(t.conversation) == ConversationState.membersChanged([t.ana, t.cy, t.bo]),
+          what: 'the join into the group with Bo refused for the people the person said yes to',
+        );
+        expect(await groupOf(third, t.conversation), isNull);
+        final yes = {
+          'owner': t.ana,
+          'members': [t.ana, t.cy],
+        };
+        expect([
+          for (final command in commands)
+            if (command['cmd'] == 'join_external') command['expected'],
+        ], allOf(isNotEmpty, everyElement(yes)));
+        expect(_recordOn(third, t.conversation), {...yes, 'chosen': true});
       },
       skip: noCore,
       timeout: _slow,

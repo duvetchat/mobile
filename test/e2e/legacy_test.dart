@@ -43,7 +43,8 @@ void main() {
       await until(() => c.engine.conversationState(conversation)?.name == ConversationNotice.membersChanged);
       expect(await groupOf(c, conversation), isNull);
 
-      // Cy says yes: the record goes, and the device joins by an external commit, with no record to hold it to.
+      // Cy says yes: the members the question named are the record, which the device's external commit is held to; once
+      // it holds the group, the record is let go.
       await acceptAsShown(c, conversation);
       await sameGroup([a, c], conversation);
       expect(c.engine.conversationState(conversation), isNull);
@@ -189,9 +190,10 @@ void main() {
     timeout: _slow,
   );
 
-  // What a forget's record is kept over (`before`, mobile#369): a record from before the cutover, or the person's yes
-  // that let one go, comes back once the device holds the group; a creation's goes; an earlier forget's `before` is
-  // carried on. Each as the record keeps it, read back.
+  // What a forget's record is kept over (`before`, mobile#369): a record from before the cutover, or one let go, comes
+  // back once the device holds the group; a creation's goes; an earlier forget's `before` is carried on; the person's
+  // yes (M2 of mobile#395's review), which holding the group lets go, is kept as let go. A yes alone is let go once the
+  // group is held. Each as the record keeps it, read back.
   test('a_forget_keeps_what_its_record_replaces_and_gives_it_back_once_the_group_is_held', () async {
     final store = MemoryStore();
     final records = LegacyRecords(store);
@@ -214,7 +216,20 @@ void main() {
         'created': true,
       },
     });
-    for (final id in ['legacy', 'let_go', 'made']) {
+    const yes = (owner: 'o', members: ['o', 'm', 'y'], exact: false);
+    for (final id in ['chosen', 'yes']) {
+      await records.chosen(id, yes);
+    }
+    expect((store.read(legacyRecords)! as Map)['yes'], {
+      'owner': 'o',
+      'members': ['o', 'm', 'y'],
+      'chosen': true,
+    });
+    // What a push's engine holds its welcomes to, as a record from before the cutover.
+    final kept = records.kept('yes')!;
+    expect((kept.owner, kept.exact), ('o', false));
+    expect(kept.members, yes.members);
+    for (final id in ['legacy', 'let_go', 'made', 'chosen']) {
       await records.forgot(id, forgotten);
     }
     // Forgotten again before the group is held: what the first forget kept over is carried on.
@@ -223,13 +238,19 @@ void main() {
       'legacy': {...exact, 'before': legacy},
       'let_go': {...exact, 'before': false},
       'made': exact,
+      'chosen': {...exact, 'before': false},
+      'yes': {
+        'owner': 'o',
+        'members': ['o', 'm', 'y'],
+        'chosen': true,
+      },
     });
     expect(records.kept('let_go')?.exact, isTrue);
 
-    for (final id in ['legacy', 'let_go', 'made']) {
+    for (final id in ['legacy', 'let_go', 'made', 'chosen', 'yes']) {
       await records.heldGroup(id);
     }
-    expect(store.read(legacyRecords), {'legacy': legacy, 'let_go': false});
+    expect(store.read(legacyRecords), {'legacy': legacy, 'let_go': false, 'chosen': false, 'yes': false});
   });
 
   test('a_record_is_its_owner_and_members_as_the_core_takes_them', () {
