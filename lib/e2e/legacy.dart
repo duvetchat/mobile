@@ -72,8 +72,12 @@ class LegacyRecords {
   LegacyRecord? kept(String conversationId) => recordIn(_kept()[conversationId]);
 
   /// The person's picks as they made the conversation here, this user among them: its group is founded with them alone.
-  Future<void> created(String conversationId, LegacyRecord picked) =>
-      _keep(conversationId, {...expectedOf(picked), 'created': true});
+  /// Kept only where nothing is (N-M2 of step 4's closing re-review): the API's answer can be a conversation with a
+  /// record from before the cutover, or one let go, which stays as it is.
+  Future<void> created(String conversationId, LegacyRecord picked) async {
+    if (_valueOf(conversationId) != null) return;
+    await _keep(conversationId, {...expectedOf(picked), 'created': true});
+  }
 
   /// This device holds the conversation's group: the record of its creation goes. One from before the cutover stays.
   Future<void> heldGroup(String conversationId) async {

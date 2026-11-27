@@ -957,6 +957,32 @@ void main() {
       timeout: _slow,
     );
 
+    // N-M2 of step 4's closing re-review: a creation's record never takes the place of one kept already. «Message»
+    // on a contact answers the DM they have, from before the cutover: its record, as this device first saw it, stays.
+    test(
+      'a_creation_answered_with_a_conversation_that_has_a_record_keeps_that_record',
+      () async {
+        final fake = FakeApi();
+        final (ana, bo) = (fake.addUser(), fake.addUser());
+        final conversation = fake.addConversation(group: false, members: [ana, bo], legacy: true);
+        final a = await firstDevice(fake, ana);
+        final b = await firstDevice(fake, bo);
+        await turnEnded(a);
+        Object? recordOn(TestDevice device) => (device.store.read(legacyRecords) as Map?)?[conversation];
+        final first = recordOn(a);
+        expect(first, {
+          'members': [ana, bo],
+        });
+        expect((await a.engine.createDM(bo)).id, conversation);
+        expect(recordOn(a), first);
+        await sameGroup([a, b], conversation);
+        await turnEnded(a);
+        expect(recordOn(a), first);
+      },
+      skip: noCore,
+      timeout: _slow,
+    );
+
     // A device without a record (a DM's other member, a group's owner on another device) founds the conversation as
     // its page draws it; listed with someone the page doesn't draw, it founds nothing, and says so.
     test(
