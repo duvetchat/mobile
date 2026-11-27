@@ -340,13 +340,13 @@ Future<void> _applyThrough(
     final results = [for (final result in applied['results']! as List<Object?>) entryResult(result! as Map)];
     failed.addAll(failedKinds(results, deleted));
     // A welcome refused for its members leaves its mark for the app's engine, which asks the person (the core's #46),
-    // and one to another group its note, as the welcome is spent.
+    // and one to another group its note, with its generation, as the welcome is spent.
     for (final result in results) {
       if (result.kind != 'welcome' || result.result != 'rejected') continue;
       if (membersRefusedRules.contains(result.rule)) {
         await recordRefusedGeneration(records, conversationId, welcomes[result.seq] ?? 0);
       } else if (result.rule == 'another_group') {
-        await recordAnotherGroup(records, conversationId, another: true);
+        await recordAnotherGroup(records, conversationId, welcomes[result.seq] ?? 0);
       }
     }
     return applied['applied_through'] as int?;

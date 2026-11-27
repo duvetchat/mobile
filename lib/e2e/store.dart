@@ -55,8 +55,9 @@ const toldInactive = 'told_inactive';
 const refusedGenerations = 'refused_generations';
 
 /// The conversations whose welcome an apply refused as another group's (`another_group`, mobile#369): the API's group
-/// at the generation this device holds another one of. Either engine notes one, a push's too, as the welcome that
-/// says so is spent; the app's engine forgets its own group, then lets the note go (sync.dart).
+/// at the generation this device holds another one of, kept by conversation with that welcome's generation
+/// (mobile#383). Either engine notes one, a push's too, as the welcome that says so is spent; the app's engine forgets
+/// its own group at that generation, then lets the note go, as any forget does (sync.dart).
 const anotherGroups = 'another_groups';
 
 /// Contacts' changed keys the person isn't done with (contacts.dart), by user: whether the identity replaced was

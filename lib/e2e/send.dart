@@ -627,6 +627,15 @@ class Sends {
     if (send && queue.length == 1) await _sendChange(change);
   }
 
+  /// The conversation's group was forgotten (forget_group): the bytes kept for its changes go, as a group made again
+  /// can be at the generation and epoch they were made at, which tells them apart no more; the next try makes them
+  /// again (mobile#383). A message needs none of this: the core marks its own as stale.
+  void forgot(String conversationId) {
+    for (final change in _changes.values.expand((queue) => queue)) {
+      if (change.conversationId == conversationId) change.made = null;
+    }
+  }
+
   /// Stops waiting: what waits stays, in the core and in the record, for the next start.
   void stop() {
     for (final change in _changes.values.expand((queue) => queue)) {

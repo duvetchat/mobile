@@ -1013,6 +1013,10 @@ class FakeApi {
   /// expired.
   void expireQueue(String conversationId, int floor) => _conversation(conversationId).floor = floor;
 
+  /// The server loses the conversation's group, as one that lies about holding it would: it lists none from now on, and
+  /// a group is founded there again at generation 0. Its queue, its messages and where each device joined stay.
+  void loseGroup(String conversationId) => _conversation(conversationId).group = null;
+
   /// The device was last seen at [at] (an RFC 3339 time), as the API notes a device's requests.
   void lastSeen(String deviceId, String at) =>
       (_devices[deviceId] ?? (throw StateError('no device $deviceId'))).lastSeenAt = at;

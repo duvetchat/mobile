@@ -1,6 +1,7 @@
 import 'dart:convert';
 
 import 'package:duvet/e2e/engine.dart';
+import 'package:duvet/e2e/host.dart' show CoreError;
 import 'package:duvet/e2e/legacy.dart' show legacyRecords;
 import 'package:duvet/e2e/uuid.dart';
 import 'package:duvet_client/duvet.dart' as duvet;
@@ -119,6 +120,45 @@ http.Client _groupInfoHeld(FakeApi fake, String conversation, bool Function() ho
       : null,
 );
 
+/// Ana's device made a row of the DM's group without the group: Bo's founding, renewed [renewals] times by hand, then
+/// Ana's external commit on its latest group info, refused by the API (the core told `invalid`). Both engines stopped,
+/// their cores open. The group info each epoch had, by epoch.
+Future<Map<int, duvet.MlsGroupInfo>> _refusedJoin(
+  FakeApi fake,
+  TestDevice a,
+  TestDevice b,
+  String conversation, {
+  int renewals = 0,
+}) async {
+  await stoppedByHand(a);
+  await b.engine.openConversation(conversation);
+  await stoppedByHand(b);
+  final infos = {1: await b.api.groupInfo(conversation)};
+  for (var epoch = 2; epoch <= renewals + 1; epoch++) {
+    await commitByHand(b, conversation);
+    infos[epoch] = await b.api.groupInfo(conversation);
+  }
+  final info = infos[renewals + 1]!;
+  await byHand(a, {
+    'cmd': 'join_external',
+    'conversation_id': conversation,
+    'generation': info.generation,
+    'group_info': info.groupInfo,
+    'external_sender': fake.externalSender,
+  });
+  await a.host.handle<Object?>({
+    'cmd': 'commit_result',
+    'conversation_id': conversation,
+    'accepted': false,
+    'invalid': true,
+  });
+  await expectLater(
+    a.host.handle<Object?>({'cmd': 'group', 'conversation_id': conversation}),
+    throwsA(isA<CoreError>().having((error) => error.what, 'what', 'membership')),
+  );
+  return infos;
+}
+
 /// Ana's and Bo's first devices in their DM, Ana's founding answered for and kept nothing of, her core holding it: her
 /// device stopped before it listed the conversation again (her core open).
 Future<({FakeApi fake, String ana, String bo, TestDevice a, TestDevice b, String conversation})>
@@ -204,6 +244,98 @@ void main() {
         await t.b.engine.openConversation(t.conversation);
         final now = await sameGroup([again, t.b], t.conversation);
         expect(now.authenticator, isNot(held.authenticator));
+      },
+      skip: noCore,
+      timeout: _slow,
+    );
+
+    // Ana's edit of one message and her deletion of another find no answer in the group, at generation 0, epoch 1. The
+    // server loses the group: Bo's device lets it go and waits for her; hers lets it go and makes it again, at the same
+    // numbers. Both changes are made again for the group made again, and Bo's device takes them.
+    test(
+      'a_change_waiting_across_a_forget_is_made_again_for_the_group_made_again_at_the_same_numbers',
+      () async {
+        final fake = FakeApi();
+        final (ana, bo) = (fake.addUser(), fake.addUser());
+        final conversation = fake.addConversation(group: true, members: [ana, bo], owner: ana);
+        final a = await firstDevice(fake, ana);
+        final b = await firstDevice(fake, bo);
+        await a.engine.openConversation(conversation);
+        final first = await sameGroup([a, b], conversation);
+        final edited = await _send(a, conversation, 'as written');
+        final deleted = await _send(a, conversation, 'to delete');
+        await until(() async => await _textOn(b, conversation, deleted.id) == 'to delete');
+        fake
+          ..cutRequest((method: 'PATCH', path: '${_messagesPath(conversation)}/${edited.id}'))
+          ..cutRequest((method: 'DELETE', path: '${_messagesPath(conversation)}/${deleted.id}'));
+        await a.engine.editMessage(conversation, edited.id, 'edited');
+        await a.engine.deleteMessage(conversation, deleted.id);
+
+        fake.loseGroup(conversation);
+        b.connect(b.registered.last);
+        await until(() async => await groupOf(b, conversation) == null, what: "Bo's device letting the lost group go");
+        a.connect(a.registered.last);
+        final made = await sameGroup([a, b], conversation);
+        expect(
+          (made.generation, made.epoch, made.authenticator == first.authenticator),
+          (first.generation, first.epoch, false),
+        );
+        await until(
+          () async => await _textOn(b, conversation, edited.id) == 'edited',
+          what: "Ana's edit on Bo's device",
+        );
+        await until(
+          () async => (await b.engine.messages(conversation, [deleted.id])).isEmpty,
+          what: "Ana's deletion on Bo's device",
+        );
+      },
+      skip: noCore,
+      timeout: _slow,
+    );
+
+    // A server that answers every founding and keeps none of it: Ana's device makes the group again once as it lets go
+    // of the first, then once per open of the person's and once per run, never one after another on its own.
+    test(
+      'a_server_that_keeps_no_founding_gets_one_per_act_or_run,_never_one_after_another',
+      () async {
+        final fake = FakeApi();
+        final (ana, bo) = (fake.addUser(), fake.addUser());
+        final conversation = fake.addConversation(group: false, members: [ana, bo]);
+        var (foundings, listings) = (0, 0);
+        final client = watchedClient(
+          fake,
+          seen: (request) {
+            if (request.method == 'GET' && request.url.path == _conversations) listings++;
+          },
+          answer: (request) async {
+            if (request.method != 'POST' || request.url.path != commitsPath(conversation)) return null;
+            foundings++;
+            return _json({'seq': 1, 'generation': 0, 'epoch': 1}, 201);
+          },
+        );
+        final a = await firstDevice(fake, ana, client: client);
+        await firstDevice(fake, bo);
+        await a.engine.openConversation(conversation);
+        await turnEnded(a);
+        expect(foundings, 2);
+        await a.engine.openConversation(conversation);
+        await turnEnded(a);
+        expect(foundings, 3);
+        // A READY, and time passing, make none.
+        final before = listings;
+        a.connect(a.registered.last);
+        await until(() => listings > before, what: "the READY's listing");
+        a.clock.advance(const Duration(minutes: 10));
+        await turnEnded(a);
+        expect(foundings, 3);
+        // Each act's founding was let go in its own turn: a start finds nothing to make again, and its first open makes
+        // the group again once more as it lets go of the first.
+        final again = await restarted(fake, a, client: client);
+        await turnEnded(again);
+        expect(foundings, 3);
+        await again.engine.openConversation(conversation);
+        await turnEnded(again);
+        expect(foundings, 5);
       },
       skip: noCore,
       timeout: _slow,
@@ -296,6 +428,88 @@ void main() {
         final again = await restarted(t.fake, t.a);
         final held = await sameGroup([again, t.b], t.conversation);
         expect(held.devices.length, 2);
+      },
+      skip: noCore,
+      timeout: _slow,
+    );
+
+    // One read brings the welcome to the API's group at the generation Ana's device holds another of (another_group),
+    // then Bo's restart of the API's group and its welcome, which her device takes. The note was of a generation she no
+    // longer holds: nothing is forgotten, and she stays in the generation she joined.
+    test(
+      'a_note_of_another_group_at_a_generation_the_same_read_went_past_forgets_nothing',
+      () async {
+        final t = await _forgottenFounding();
+        await t.b.engine.openConversation(t.conversation);
+        await stoppedByHand(t.b);
+        final made = await byHand(t.b, {
+          'cmd': 'reset_group',
+          'conversation_id': t.conversation,
+          'members': [t.ana, t.bo],
+          'key_packages': {
+            for (final user in [t.ana, t.bo]) user: [for (final kp in await t.b.api.claimKeyPackages(user)) kp.data],
+          },
+        });
+        final taken = await t.b.api.commit(
+          t.conversation,
+          duvet.Commit(
+            generation: made['generation']! as int,
+            epoch: 0,
+            commit: made['commit']! as String,
+            groupInfo: made['group_info']! as String,
+            initialGroupInfo: made['initial_group_info']! as String,
+            welcome: made['welcome'] as String?,
+          ),
+        );
+        await t.b.host.handle<Object?>({
+          'cmd': 'commit_result',
+          'conversation_id': t.conversation,
+          'accepted': true,
+          'seq': taken.seq,
+        });
+
+        final commands = <Map<String, Object?>>[];
+        final again = await restarted(t.fake, t.a, host: WatchedHost(t.a.host, [], commands: commands));
+        final b = await restarted(t.fake, t.b);
+        expect((await sameGroup([again, b], t.conversation)).generation, 1);
+        await turnEnded(again);
+        expect([
+          for (final command in commands)
+            if (const {'forget_group', 'join_external'}.contains(command['cmd'])) command['cmd'],
+        ], isEmpty);
+      },
+      skip: noCore,
+      timeout: _slow,
+    );
+
+    // Ana's own renewal loses its epoch to Bo's commit in the API's group (409) and stays staged, for a queue that is
+    // another group's and never settles it. The welcome to the API's group is acted on all the same: her commit never
+    // entered a group the API holds, so it's let go, and her device comes in.
+    test(
+      "a_commit_of_the_device's_own_another_commit_beat_keeps_no_welcome_to_another_group_from_being_acted_on",
+      () async {
+        final t = await _forgottenFounding();
+        final own = (await groupOf(t.a, t.conversation))!;
+        await t.b.engine.openConversation(t.conversation);
+        await stoppedByHand(t.b);
+        await commitByHand(t.b, t.conversation);
+        final made = await byHand(t.a, {'cmd': 'refresh', 'conversation_id': t.conversation});
+        final renewal = duvet.Commit(
+          generation: own.generation,
+          epoch: own.epoch,
+          commit: made['commit']! as String,
+          groupInfo: made['group_info']! as String,
+        );
+        await expectLater(
+          t.a.api.commit(t.conversation, renewal),
+          throwsA(isA<duvet.DuvetApiException>().having((error) => error.statusCode, 'status', 409)),
+        );
+        await t.a.host.handle<Object?>({'cmd': 'commit_result', 'conversation_id': t.conversation, 'accepted': false});
+
+        final b = await restarted(t.fake, t.b);
+        final again = await restarted(t.fake, t.a);
+        final held = await sameGroup([again, b], t.conversation);
+        expect(held.authenticator, isNot(own.authenticator));
       },
       skip: noCore,
       timeout: _slow,
@@ -494,6 +708,71 @@ void main() {
       timeout: _slow,
     );
 
+    // The one case a forget's exact record changes for a welcome: Cy's device, which forgot the group of Ana, Bo and
+    // Cy, is welcomed back by an addition into the group as it is since, without Bo. Its welcome is held to exactly the
+    // record's users, so it's refused, and the conversation asks the person; held as a record from before the cutover
+    // holds one, it would be taken.
+    test(
+      'a_welcome_after_a_forget_is_held_to_exactly_the_records_users',
+      () async {
+        final fake = FakeApi();
+        final (ana, bo, cy) = (fake.addUser(), fake.addUser(), fake.addUser());
+        final conversation = fake.addConversation(group: true, members: [ana, bo, cy], owner: ana);
+        // Ana may claim Cy's key packages once Cy is out: a friend's.
+        fake.befriend(ana, cy);
+        var noGroup = false;
+        final client = watchedClient(
+          fake,
+          change: (request, answered) async => noGroup && request.method == 'GET' && request.url.path == _conversations
+              ? _listedWith(answered, conversation, null)
+              : answered,
+        );
+        final a = await firstDevice(fake, ana);
+        final b = await firstDevice(fake, bo);
+        final c = await firstDevice(fake, cy, client: client);
+        await a.engine.openConversation(conversation);
+        await sameGroup([a, b, c], conversation);
+        noGroup = true;
+        c.connect(c.registered.last);
+        await until(() async => await groupOf(c, conversation) == null, what: "Cy's device forgetting its group");
+        final record = {
+          'owner': ana,
+          'members': [ana, bo, cy],
+          'exact': true,
+        };
+        expect(_recordOn(c, conversation), record);
+        await c.engine.stop();
+        noGroup = false;
+
+        // Bo goes, then Cy, and Cy is added back: the welcome is to a group of Ana and Cy.
+        await a.engine.removeMember(conversation, bo);
+        await a.engine.removeMember(conversation, cy);
+        await a.engine.addMember(conversation, cy);
+        final commands = <Map<String, Object?>>[];
+        final again = await restarted(
+          fake,
+          c,
+          host: WatchedHost(c.host, [], commands: commands),
+          client: client,
+        );
+        await until(
+          () => again.engine.conversationState(conversation) == ConversationState.membersChanged([ana, cy]),
+          what: 'the welcome refused for the record',
+        );
+        expect(await groupOf(again, conversation), isNull);
+        final held = [
+          for (final command in commands)
+            if (command['cmd'] == 'apply')
+              for (final entry in (command['entries']! as List).cast<Map<String, Object?>>())
+                if (entry['kind'] == 'welcome') entry['expected'],
+        ];
+        expect(held, isNotEmpty);
+        expect(held, everyElement(record));
+      },
+      skip: noCore,
+      timeout: _slow,
+    );
+
     // A blocked group the API doesn't hold is forgotten like any other: Ana's device takes the welcome to the group
     // the server had Bo's device found, Eve in it, then that group's renewal, which blocks her own. The record, Ana and
     // Bo, refuses Eve's group: her device holds none, and says so.
@@ -545,6 +824,114 @@ void main() {
           'members': [t.ana, t.bo],
           'exact': true,
         });
+      },
+      skip: noCore,
+      timeout: _slow,
+    );
+  });
+
+  // A row without its group (a join the API refused) is no group to make: create_group would answer `exists`, once
+  // every member's key packages were claimed. It waits for the API's group to pass the epoch it saw, and says so.
+  group('a_row_without_its_group', () {
+    // The API lists no group of the DM any more: at a start, an open and a send, Ana's device claims no key package,
+    // and the conversation says it waits for another member.
+    test(
+      'where_the_api_lists_no_group,_it_claims_no_key_package_and_waits_to_be_let_back_in',
+      () async {
+        final fake = FakeApi();
+        final (ana, bo) = (fake.addUser(), fake.addUser());
+        final conversation = fake.addConversation(group: false, members: [ana, bo]);
+        var lost = false;
+        final claims = <String>[];
+        final client = watchedClient(
+          fake,
+          seen: (request) {
+            if (request.url.path.endsWith('/key-packages/claim')) claims.add(request.url.path);
+          },
+          change: (request, answered) async => lost && request.method == 'GET' && request.url.path == _conversations
+              ? _listedWith(answered, conversation, null)
+              : answered,
+        );
+        final a = await firstDevice(fake, ana, client: client);
+        final b = await firstDevice(fake, bo);
+        await _refusedJoin(fake, a, b, conversation);
+
+        lost = true;
+        final again = await restarted(fake, a, client: client);
+        await until(
+          () => again.engine.conversationState(conversation) == ConversationState.waitRejoin,
+          what: 'the row waiting, said at the start',
+        );
+        await again.engine.openConversation(conversation).catchError((Object _) {});
+        await again.engine
+            .sendMessage(Outgoing(conversationId: conversation, nonce: uuidv4(), text: 'not now'))
+            .catchError((Object _) => null);
+        await turnEnded(again);
+        expect(claims, isEmpty);
+        expect(again.engine.conversationState(conversation), ConversationState.waitRejoin);
+        expect(await groupOf(again, conversation), isNull);
+      },
+      skip: noCore,
+      timeout: _slow,
+    );
+
+    // The server serves a group info of an epoch Ana's row saw pass (stale_group_info): her device joins nothing, and
+    // the conversation says it waits for another member.
+    test(
+      'a_group_info_behind_the_epoch_it_saw_waits_to_be_let_back_in',
+      () async {
+        final fake = FakeApi();
+        final (ana, bo) = (fake.addUser(), fake.addUser());
+        final conversation = fake.addConversation(group: false, members: [ana, bo]);
+        duvet.MlsGroupInfo? served;
+        final client = watchedClient(
+          fake,
+          change: (request, answered) async {
+            if (served case final old?
+                when request.method == 'GET' && request.url.path == '$_conversations/$conversation/mls/group-info') {
+              return _json({'generation': old.generation, 'epoch': old.epoch, 'group_info': old.groupInfo}, 200);
+            }
+            return answered;
+          },
+        );
+        final a = await firstDevice(fake, ana, client: client);
+        final b = await firstDevice(fake, bo);
+        final infos = await _refusedJoin(fake, a, b, conversation, renewals: 1);
+
+        served = infos[1];
+        final again = await restarted(fake, a, client: client);
+        await until(
+          () => again.engine.conversationState(conversation) == ConversationState.waitRejoin,
+          what: 'the old group info refused, waiting',
+        );
+        expect(await groupOf(again, conversation), isNull);
+      },
+      skip: noCore,
+      timeout: _slow,
+    );
+
+    // The founding's welcome to Ana's device is of an epoch her row saw pass (stale_welcome): an apply's result and
+    // nothing more, reported as no failure to open. Her device comes in by its external commit on the API's group.
+    test(
+      "a_founding's_welcome_of_an_epoch_it_saw_pass_is_passed_by,_and_it_comes_in_by_its_external_commit",
+      () async {
+        final fake = FakeApi();
+        final (ana, bo) = (fake.addUser(), fake.addUser());
+        final conversation = fake.addConversation(group: false, members: [ana, bo]);
+        final a = await firstDevice(fake, ana);
+        final b = await firstDevice(fake, bo);
+        await _refusedJoin(fake, a, b, conversation, renewals: 1);
+
+        final commands = <Map<String, Object?>>[];
+        final again = await restarted(fake, a, host: WatchedHost(a.host, [], commands: commands));
+        await sameGroup([again, await restarted(fake, b)], conversation);
+        expect([
+          for (final command in commands)
+            if (command['cmd'] == 'apply')
+              for (final entry in (command['entries']! as List).cast<Map<String, Object?>>()) entry['kind'],
+        ], contains('welcome'));
+        expect([for (final command in commands) command['cmd']], contains('join_external'));
+        expect(fake.decryptFailures, isEmpty);
       },
       skip: noCore,
       timeout: _slow,
