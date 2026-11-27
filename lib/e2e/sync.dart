@@ -36,18 +36,15 @@ enum ConversationNotice { blocked, waitOwner, waitRejoin, membersChanged, groupD
 typedef ShownConversation = ({bool group, String? owner, List<String> users});
 
 /// [conv] as a chat of [me]'s draws it from the API's listing (N-C1 of step 4's closing re-review): the person, and the
-/// members the chat names, those listed with the profile it draws a member by.
+/// members the chat names, those listed with the profile it draws a member by. A DM is the person and the one other
+/// its view shows, the first listed, whatever else its listing holds: no addition to a DM is drawn (N-I1).
 ShownConversation drawnOf(duvet.Conversation conv, String me) {
   final group = conv.type == duvet.ConversationType.group;
-  return (
-    group: group,
-    owner: group ? conv.ownerId : null,
-    users: [
-      me,
-      for (final member in conv.members)
-        if (member.user != null && member.userId != me) member.userId,
-    ],
-  );
+  final others = [
+    for (final member in conv.members)
+      if (member.user != null && member.userId != me) member.userId,
+  ];
+  return (group: group, owner: group ? conv.ownerId : null, users: [me, ...group ? others : others.take(1)]);
 }
 
 /// Who may restart a blocked group: this user, its owner, or nobody (a group under an external sender other than the
@@ -1100,10 +1097,12 @@ class Conversations {
     }
   }
 
-  static bool _differs(_Held held, ShownConversation? shown) =>
+  /// A DM as drawn is the person and one other, any other count differs (N-I1 of step 4's closing re-review); a group
+  /// as drawn has the group's owner.
+  bool _differs(_Held held, ShownConversation? shown) =>
       shown == null ||
       (held.owner != null) != shown.group ||
-      (shown.group && held.owner != shown.owner) ||
+      (shown.group ? held.owner != shown.owner : shown.users.length != 2 || !shown.users.contains(_user)) ||
       held.members.any((user) => !shown.users.contains(user));
 
   static LegacyRecord? _recordOf(ShownConversation? shown) =>

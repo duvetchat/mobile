@@ -800,6 +800,78 @@ void main() {
       timeout: _slow,
     );
 
+    // N-I1 of step 4's closing re-review: a DM is two people, and its view shows one other: drawn with more, it
+    // differs.
+    test(
+      'a_dm_drawn_with_a_third_member_takes_nothing_for_a_group_of_the_person_and_them',
+      () async {
+        final fake = FakeApi();
+        final (ana, bo, eve) = (fake.addUser(), fake.addUser(), fake.addUser());
+        final conversation = fake.addConversation(group: false, members: [ana, bo]);
+        final posts = <String>[];
+        final b = await firstDevice(
+          fake,
+          bo,
+          client: watchedClient(
+            fake,
+            seen: (request) {
+              if (_posts(request, conversation)) posts.add('message');
+            },
+          ),
+          // A page that took the server's addition of Eve to the DM.
+          drawn: (id, {required fresh}) async =>
+              id != conversation ? null : (group: false, owner: null, users: [ana, bo, eve]),
+        );
+        final e = await firstDevice(fake, eve);
+        // Eve's device is shown the DM as hers and Bo's, and founds its group: a DM of the two of them.
+        fake.dropMembers(conversation, [ana]);
+        fake.addMembers(conversation, [eve]);
+        await e.engine.openConversation(conversation);
+        await sameGroup([b, e], conversation);
+        fake.dropMembers(conversation, [eve]);
+        fake.addMembers(conversation, [ana, eve]);
+        await turnEnded(b);
+        await expectLater(_send(b, conversation, 'for Ana'), throwsA(isA<StateError>()));
+        expect(posts, isEmpty);
+        expect(b.engine.conversationState(conversation)?.name, ConversationNotice.groupDiffers);
+        expect(b.engine.conversationState(conversation)?.users, unorderedEquals([bo, eve]));
+      },
+      skip: noCore,
+      timeout: _slow,
+    );
+
+    // N-I1, the app's own drawing: a DM is drawn as the person and the one other its view shows, whatever else its
+    // listing holds, and no addition to it is taken.
+    test(
+      "the_app_draws_a_dm_as_the_person_and_whom_its_view_shows,_whatever_else_its_listing_holds",
+      () async {
+        final fake = FakeApi();
+        final (ana, bo, eve) = (fake.addUser(), fake.addUser(), fake.addUser());
+        final conversation = fake.addConversation(group: false, members: [ana, bo]);
+        final app = await appOn(fake, ana, hears: (event) => event.type != 'MLS_WELCOME');
+        await app.ready();
+        final e = await firstDevice(fake, eve);
+        // Eve's device is shown the DM as hers and Ana's, and founds its group: a DM of the two of them.
+        fake.dropMembers(conversation, [bo]);
+        fake.addMembers(conversation, [eve]);
+        await e.engine.openConversation(conversation);
+        await until(() async => await groupOf(e, conversation) != null, what: "Eve's group");
+        // Then Ana's DM is listed with Bo first, whom its view shows, and Eve after him.
+        fake.dropMembers(conversation, [eve]);
+        fake.addMembers(conversation, [bo, eve]);
+        await app.repository.refreshConversations();
+        expect(app.repository.conversations.value.single.otherUserId, bo);
+        final from = app.seen.length;
+        await expectLater(
+          app.repository.send(ConversationTarget(conversation), 'for Bo', nonce: uuidv4()),
+          throwsA(anything),
+        );
+        expect(app.count('POST', _messagesPath(conversation), from: from), 0);
+      },
+      skip: noCore,
+      timeout: _slow,
+    );
+
     // A device without a record (a DM's other member, a group's owner on another device) founds the conversation as
     // its page draws it; listed with someone the page doesn't draw, it founds nothing, and says so.
     test(
