@@ -1033,7 +1033,7 @@ class Conversations {
   /// join_external). Its messages waiting to be sent there are stale from now on, and go again in the group it ends
   /// in. Nothing to forget (`not_found`: no group, or a row without its group, which waits until the API's group passes
   /// its epoch) does nothing. A note of another group goes with the group, whatever brought the forget: it was about
-  /// that group (mobile#383).
+  /// that group (mobile#383); and before the record is kept, which the core keeps too (mobile#392).
   Future<void> _forget(String id) async {
     final Map<String, Object?> forgot;
     try {
@@ -1043,12 +1043,15 @@ class Conversations {
       return;
     }
     _forgot(id);
+    // The note before the record (FG2-M2 of the review of forget_group's minors, as the desktop's #forget): a close
+    // between the two leaves no note to forget a group made again at its generation, and the core keeps the record in
+    // the forget's own transaction, which the next start takes back (takeForgotten).
+    await _noteAnother(id, null);
     await _legacy.forgot(id, recordIn(forgot['expected'])!);
     _forgotten.add(id);
     for (final kept in [_settling, _removed, _lostJoin]) {
       kept.remove(id);
     }
-    await _noteAnother(id, null);
   }
 
   /// The API's group at the welcome's [generation], which this device held another of, isn't its own (apply's
