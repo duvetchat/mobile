@@ -1709,7 +1709,8 @@ class FakeRepository implements ChatRepository {
   List<String> restartLeavesOut = const [];
 
   @override
-  Future<void> acceptMembers(String conversationId) async => encryptionTaps.add('acceptMembers $conversationId');
+  Future<void> acceptMembers(String conversationId, List<String> users) async =>
+      encryptionTaps.add('acceptMembers $conversationId ${users.join(' ')}');
 
   /// What the engine shows of the person's contacts; a test sets it, and the taps below change it.
   @override

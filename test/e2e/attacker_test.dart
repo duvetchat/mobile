@@ -1094,17 +1094,121 @@ void main() {
         expect(a.engine.conversationState(conversation)?.users, unorderedEquals([ana, bo, eve]));
         // The server adds Cy before the person's yes, which was to Ana, Bo and Eve.
         fake.addMembers(conversation, [cy]);
-        await a.engine.acceptMembers(conversation);
+        await acceptAsShown(a, conversation);
         await turnEnded(a);
         expect(commits, isEmpty);
         expect(await groupOf(a, conversation), isNull);
         expect(a.engine.conversationState(conversation)?.users, unorderedEquals([ana, bo, eve, cy]));
         // A yes to them founds the group with them.
-        await a.engine.acceptMembers(conversation);
+        await acceptAsShown(a, conversation);
         await turnEnded(a);
         expect(commits, hasLength(1));
         final held = await groupOf(a, conversation);
         expect({for (final device in held?.devices ?? const []) device.user}, {ana, bo, eve, cy});
+      },
+      skip: noCore,
+      timeout: _slow,
+    );
+
+    // R-M2 of step 4's closing re-review: the yes is to the people the bar named as the person tapped it, as the
+    // desktop's is; a question asked again meanwhile, naming others, isn't answered by it.
+    test(
+      'a_yes_to_the_people_named_before_the_question_was_asked_again_is_none',
+      () async {
+        final fake = FakeApi();
+        final (ana, bo, eve, cy) = (fake.addUser(), fake.addUser(), fake.addUser(), fake.addUser());
+        final commits = <String>[];
+        var planted = false;
+        final client = watchedClient(
+          fake,
+          seen: (request) {
+            if (request.method == 'POST' && request.url.path.endsWith('/mls/commits')) commits.add(request.url.path);
+            if (planted || request.method != 'GET' || request.url.path != '/api/users/@me/conversations') return;
+            if (fake.conversationIds.firstOrNull case final made?) {
+              planted = true;
+              fake.addMembers(made, [eve]);
+            }
+          },
+        );
+        final a = await firstDevice(fake, ana, client: client);
+        for (final user in [bo, eve, cy]) {
+          await firstDevice(fake, user);
+        }
+        final conversation = (await a.engine.createGroup('Plans', [bo])).id;
+        await turnEnded(a);
+        // What the bar draws: the question naming Ana, Bo and Eve.
+        final drawn = a.engine.conversationState(conversation)!.users;
+        expect(drawn, unorderedEquals([ana, bo, eve]));
+        // The server adds Cy, and the question is asked again as the conversation is opened, before the person's tap.
+        fake.addMembers(conversation, [cy]);
+        await a.engine.openConversation(conversation);
+        await turnEnded(a);
+        expect(a.engine.conversationState(conversation)?.users, unorderedEquals([ana, bo, eve, cy]));
+        await a.engine.acceptMembers(conversation, drawn);
+        await turnEnded(a);
+        expect(
+          (
+            commits: commits.length,
+            group: await groupOf(a, conversation) != null,
+            state: a.engine.conversationState(conversation)?.name,
+          ),
+          (commits: 0, group: false, state: ConversationNotice.membersChanged),
+        );
+      },
+      skip: noCore,
+      timeout: _slow,
+    );
+
+    // R-M2's join (step 4's closing re-review): after the yes, this device goes in while the API lists whom it named,
+    // by an external commit into the group as it is; one holding others than named takes nothing it sends.
+    test(
+      'a_join_after_the_yes_into_a_group_with_others_than_named_takes_nothing_sent_after',
+      () async {
+        final fake = FakeApi();
+        final (ana, bo, cy, dee, eve) = (
+          fake.addUser(),
+          fake.addUser(),
+          fake.addUser(),
+          fake.addUser(),
+          fake.addUser(),
+        );
+        final conversation = fake.addConversation(group: true, members: [ana, bo, cy], owner: ana, legacy: true);
+        final posts = <String>[];
+        var quiet = false;
+        // Cy's device sees the conversation first, with its three members: its record.
+        final c = await firstDevice(
+          fake,
+          cy,
+          hears: (event) => !quiet,
+          client: watchedClient(
+            fake,
+            seen: (request) {
+              if (_posts(request, conversation)) posts.add('message');
+            },
+          ),
+        );
+        // Ana's device is shown Dee and Eve too, and makes the group with them; then the server lists Dee alone of the
+        // two. Cy's device hears none of it.
+        quiet = true;
+        fake.addMembers(conversation, [dee, eve]);
+        final a = await firstDevice(fake, ana);
+        await firstDevice(fake, eve);
+        await a.engine.openConversation(conversation);
+        await until(() async => await groupOf(a, conversation) != null, what: "Ana's group");
+        fake.dropMembers(conversation, [eve]);
+        quiet = false;
+        // Opened, Cy's device refuses the group its record doesn't have, and asks about whom the API lists.
+        await c.engine.openConversation(conversation);
+        await until(() => c.engine.conversationState(conversation)?.name == ConversationNotice.membersChanged);
+        expect(c.engine.conversationState(conversation)?.users, unorderedEquals([ana, bo, cy, dee]));
+        // The yes has it go in by an external commit, into the group as it is, Eve's leaf in it.
+        await acceptAsShown(c, conversation);
+        await until(() async => await groupOf(c, conversation) != null, what: "Cy's join");
+        expect({for (final device in (await groupOf(c, conversation))!.devices) device.user}, contains(eve));
+        // What Cy sends after is held to whom the page draws: nothing goes.
+        await expectLater(_send(c, conversation, 'for the four of us'), throwsA(anything));
+        expect(posts, isEmpty);
+        expect(c.engine.conversationState(conversation)?.name, ConversationNotice.groupDiffers);
       },
       skip: noCore,
       timeout: _slow,

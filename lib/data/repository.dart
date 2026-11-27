@@ -143,7 +143,9 @@ abstract interface class ChatRepository {
   /// none are left: none once it restarted.
   Future<List<String>> restartGroup(String conversationId, {List<String> leaving = const []});
 
-  Future<void> acceptMembers(String conversationId);
+  /// The yes, to [users]: the members the question named as the bar drew it to the person. One asked again since,
+  /// naming others, isn't answered by it.
+  Future<void> acceptMembers(String conversationId, List<String> users);
 
   /// The person's contacts as the engine has them (lib/e2e/contacts.dart; Task 29): each one's changed key the person
   /// isn't done with, and whom they verified. None without an engine.

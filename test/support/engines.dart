@@ -604,6 +604,10 @@ Future<void> turnEnded(TestDevice device) async {
   await device.engine.backupSettled();
 }
 
+/// The person's yes on the device to the members its conversation's question names now: those its bar draws.
+Future<void> acceptAsShown(TestDevice device, String conversation) =>
+    device.engine.acceptMembers(conversation, device.engine.conversationState(conversation)?.users ?? const []);
+
 /// A command run by hand on the device's core, the users it asks for observed first, as the engine does.
 Future<Map<String, Object?>> byHand(TestDevice device, Map<String, Object?> command) async {
   for (var round = 1; ; round++) {

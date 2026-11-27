@@ -3054,7 +3054,8 @@ class _ChatViewState extends State<ChatView> with SingleTickerProviderStateMixin
                                 state: state,
                                 nameOf: _memberName,
                                 onRestart: () => _restart(conversationId),
-                                onAccept: () => _repository.acceptMembers(conversationId),
+                                // The yes is to whom this bar names (R-M2 of step 4's closing re-review).
+                                onAccept: () => _repository.acceptMembers(conversationId, state?.users ?? const []),
                               );
                             },
                           ),

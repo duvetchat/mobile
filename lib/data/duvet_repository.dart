@@ -1206,7 +1206,8 @@ class DuvetRepository implements ChatRepository {
       _engine?.restartGroup(conversationId, leaving: leaving) ?? Future.value(const []);
 
   @override
-  Future<void> acceptMembers(String conversationId) => _engine?.acceptMembers(conversationId) ?? Future.value();
+  Future<void> acceptMembers(String conversationId, List<String> users) =>
+      _engine?.acceptMembers(conversationId, users) ?? Future.value();
 
   // ---------------------------------------------------------------------------
   // Contacts (lib/e2e/contacts.dart; Task 29)

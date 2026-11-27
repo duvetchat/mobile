@@ -643,10 +643,12 @@ class Conversations {
 
   /// The person's yes to the members the question named ([_asked]): the record goes, and this device goes in with them,
   /// by an external commit while the API lists them, or by making the group with them alone where there's none (M6 of
-  /// the desktop's review; N-M10 of step 4's closing re-review): a listing with others by then asks again.
-  Future<void> accept(String conversationId) async {
+  /// the desktop's review; N-M10 of step 4's closing re-review): a listing with others by then asks again. The yes is
+  /// to [users], those the question named as the person was shown it: once it names others, asked again since, the
+  /// yes is none (R-M2 of the re-review).
+  Future<void> accept(String conversationId, List<String> users) async {
     final asked = _asked[conversationId];
-    if (!_refused.containsKey(conversationId) || asked == null) return;
+    if (!_refused.containsKey(conversationId) || asked == null || !sameUsers(users, asked.members)) return;
     final conv = await _fresh(conversationId);
     if (conv == null) return _gone(conversationId);
     await _legacy.drop(conversationId);

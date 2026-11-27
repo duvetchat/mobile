@@ -456,7 +456,7 @@ void main() {
       expect((await c.api.queue(conversation, taken.seq)).entries.where((e) => e.kind == 'commit'), isEmpty);
       expect((await groupOf(c, conversation))!.generation, 0);
 
-      await c.engine.acceptMembers(conversation);
+      await acceptAsShown(c, conversation);
       await until(() async => (await groupOf(c, conversation))?.generation == 1);
       expect(c.engine.conversationState(conversation), isNull);
       await a.engine.stop();
@@ -533,7 +533,7 @@ void main() {
         throwsA(isA<CoreError>().having((e) => e.code, 'code', 'not_in_group')),
       );
 
-      await c.engine.acceptMembers(conversation);
+      await acceptAsShown(c, conversation);
       final after = await sameGroup([b, c], conversation);
       expect((after.generation, after.blocked), (1, false));
       for (final d in [a, b, c]) {

@@ -945,8 +945,10 @@ class E2EEngine implements DeviceSetupActions {
     return out;
   }
 
-  /// The person's yes to a conversation's members of today, which its record from before the cutover didn't have.
-  Future<void> acceptMembers(String conversationId) => _queue(() => _whenReady(() => _groups.accept(conversationId)));
+  /// The person's yes to a conversation's members of today, which its record from before the cutover didn't have:
+  /// [users], those its question named as the person was shown it.
+  Future<void> acceptMembers(String conversationId, List<String> users) =>
+      _queue(() => _whenReady(() => _groups.accept(conversationId, users)));
 
   void _conversationChanged(String conversationId, ConversationState? state) {
     final next = {..._conversations.value};

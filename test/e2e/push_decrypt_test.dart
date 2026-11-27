@@ -797,7 +797,7 @@ void main() {
       await turnEnded(again);
       expect(requestsOf(seen), isNot(contains('POST ${commitsPath(conversation)}')));
       // On Cy's yes it joins, and the record goes.
-      await again.engine.acceptMembers(conversation);
+      await acceptAsShown(again, conversation);
       await until(() async => (await groupOf(again, conversation))?.generation == 1);
       expect(refusedGenerationsIn(again.store), isEmpty);
     },
