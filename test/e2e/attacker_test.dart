@@ -2001,5 +2001,53 @@ void main() {
       skip: noCore,
       timeout: _slow,
     );
+
+    // The comparison after the bytes (stillAsShown): nothing moves the group between the look and a kept message's
+    // bytes, but what the person sees can. Ana's page stops drawing Cy (his removal on its way, say) once her Retry's
+    // look passed and as its bytes are made: the message waits, and the conversation says why.
+    test(
+      'a_member_the_page_stops_drawing_as_a_messages_bytes_are_made_keeps_it_from_going',
+      () async {
+        final fake = FakeApi();
+        final (ana, bo, cy) = (fake.addUser(), fake.addUser(), fake.addUser());
+        final conversation = fake.addConversation(group: true, members: [ana, bo, cy], owner: ana);
+        var hidden = false;
+        String? retried;
+        final host = WatchedHost(
+          TestHost().gate,
+          [],
+          after: (command) {
+            if (command['cmd'] == 'encrypt' && command['nonce'] == retried) (retried, hidden) = (null, true);
+            return null;
+          },
+        );
+        final posts = <String>[];
+        final a = await firstDevice(
+          fake,
+          ana,
+          host: host,
+          client: watchedClient(fake, seen: (request) => _posts(request, conversation) ? posts.add('post') : null),
+          drawn: (id, {required fresh}) =>
+              (hidden ? _without(fake.drawnTo(ana), cy) : fake.drawnTo(ana))(id, fresh: fresh),
+        );
+        final (b, c) = (await firstDevice(fake, bo), await firstDevice(fake, cy));
+        await a.engine.openConversation(conversation);
+        await sameGroup([a, b, c], conversation);
+        fake.cutRequest((method: 'POST', path: _messagesPath(conversation)));
+        final nonce = uuidv4();
+        await a.engine
+            .sendMessage(Outgoing(conversationId: conversation, nonce: nonce, text: 'for the three of us'))
+            .catchError((Object _) => null);
+        expect(posts, hasLength(1));
+        retried = nonce;
+        await expectLater(a.engine.resendMessage(conversation, nonce), throwsA(isA<StateError>()));
+        expect(hidden, isTrue);
+        expect(posts, hasLength(1));
+        expect(a.engine.conversationState(conversation), ConversationState.groupDiffers([ana, bo, cy]));
+        expect([for (final one in await a.engine.pendingMessages(conversation)) one.nonce], [nonce]);
+      },
+      skip: noCore,
+      timeout: _slow,
+    );
   });
 }
