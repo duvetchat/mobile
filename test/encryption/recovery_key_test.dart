@@ -179,7 +179,8 @@ void main() {
       for (final (state, words) in [
         (const EngineState.firstDevice(), 'Set up end-to-end encryption for your direct messages.'),
         (EngineState.removed, Notice.removedDevice.text),
-        (EngineState.locked, Notice.locked.text),
+        // A phone has no windows: what holds its database is the app's own push, or its engine before (mobile#366).
+        (EngineState.locked, 'Encrypted conversations are busy on this phone. Duvet tries again on its own.'),
         (EngineState.unsupported, Notice.noE2eHere.text),
         (const EngineState.update('1.1.0'), Notice.update.text),
         (const EngineState.update(null), Notice.noE2eHere.text),
