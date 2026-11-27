@@ -1,5 +1,5 @@
-# Analyze, test and build a release APK on every pull request into dev, as api and desktop do, and into e2e,
-# where the end-to-end encryption work waits for its day.
+# Analyze, test and build a release APK, and build the app for the iOS simulator, on every pull request into dev, as
+# api and desktop do, and into e2e, where the end-to-end encryption work waits for its day.
 name: CI
 
 on:
@@ -99,3 +99,52 @@ jobs:
           name: duvet-apk
           path: mobile/build/app/outputs/flutter-apk/app-release.apk
           retention-days: 1
+
+  ios:
+    # The app built for the iOS simulator, which needs no signing (#388). The tests and the goldens are the flutter
+    # job's, on Linux.
+    runs-on: macos-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          path: mobile
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: 3.47.7
+          channel: stable
+          cache: true
+      - name: Dependencies
+        working-directory: mobile
+        run: flutter pub get
+      # The plugins come through Swift Package Manager, Flutter's default: the project has no Podfile.
+      - name: Build
+        working-directory: mobile
+        run: |
+          xcodebuild -version
+          echo "iOS Simulator SDK $(xcrun --sdk iphonesimulator --show-sdk-version)"
+          flutter build ios --simulator --debug
+      # The committed project is the one Flutter builds: a change it still makes to ios/ fails the run (a migration, or
+      # a Podfile for a plugin without a Swift package), and what it wrote is kept below, to commit.
+      - name: The project as Flutter leaves it
+        working-directory: mobile
+        run: |
+          git add --all ios
+          git diff --cached --stat
+          git diff --cached --binary > "$RUNNER_TEMP/ios.patch"
+          test ! -s "$RUNNER_TEMP/ios.patch"
+      - name: What Flutter changed in ios/
+        if: failure()
+        uses: actions/upload-artifact@v5
+        continue-on-error: true
+        with:
+          name: ios-changes
+          path: ${{ runner.temp }}/ios.patch
+          if-no-files-found: ignore
+          retention-days: 1
+      - name: The broadcast extension in the app
+        working-directory: mobile
+        run: |
+          app=build/ios/iphonesimulator/Runner.app
+          ls "$app/PlugIns/Broadcast.appex"
+          echo "Runner.app: $(du -sh "$app" | cut -f1)"
