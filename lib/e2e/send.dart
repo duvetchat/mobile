@@ -560,6 +560,9 @@ class Sends {
             await _unnote(conversation, message, kind);
             continue;
           }
+          // Made again only for a group as the person sees it: else it, and its message's changes after it, wait in
+          // the record for the next start or READY (N-I3 of step 4's closing re-review).
+          if (!await _asDrawn(conversation)) break;
           final change = _Change(conversation, message, text);
           change.ciphertext = await _make(change);
           await _queueChange(change, noted: true, send: false);
@@ -994,6 +997,9 @@ class Sends {
     // one does, its bytes as the core last made them, each try looking again, and the yes sends it (review 28's I2). A
     // deletion carries no text, and goes.
     if (change.text != null && (await _held(id)).isNotEmpty) return _retryLater(change);
+    // Nor while its group holds someone the person doesn't see there, each try looking as a message's delivery does
+    // (N-I3 of step 4's closing re-review): it waits as an unanswered one does.
+    if (!await _asDrawn(id)) return _retryLater(change);
     final duvet.MlsEntry entry;
     try {
       entry = change.text == null
@@ -1005,6 +1011,8 @@ class Sends {
       if (error is duvet.DuvetStaleMessageException && !change.remade) {
         try {
           await _groups.sync(id, read: true);
+          // Made again only for the group as the person sees it, which the sync may have changed (N-I3).
+          await _groups.asShown(id);
           change.ciphertext = await _make(change);
         } catch (failed) {
           // What throws past its request waits as no answer does (M4 of task 17's review, the desktop's N6).
@@ -1040,6 +1048,18 @@ class Sends {
       debugPrint("e2e: a change's entry waits for its conversation's queue: $error");
     }
     _changed(id);
+  }
+
+  /// Whether the conversation's group is as the person sees it ([Conversations.asShown]): false, logged, while it isn't,
+  /// or while that can't be told.
+  Future<bool> _asDrawn(String id) async {
+    try {
+      await _groups.asShown(id);
+      return true;
+    } catch (error) {
+      debugPrint('e2e: a change waits for its group to be as drawn: $error');
+      return false;
+    }
   }
 
   /// A change answered (taken, or refused for good): it leaves its message's queue and the record, and the next goes.

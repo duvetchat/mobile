@@ -872,6 +872,59 @@ void main() {
       timeout: _slow,
     );
 
+    // N-I3 of step 4's closing re-review: an edit or a deletion that waits for its answer goes again only to a group
+    // whose people the page draws. Each try looks, and so does a restart's, before its bytes are made again.
+    test(
+      'an_edit_and_a_deletion_that_wait_go_nowhere_while_the_group_holds_someone_the_page_doesnt_draw',
+      () async {
+        final fake = FakeApi();
+        final (ana, bo, eve) = (fake.addUser(), fake.addUser(), fake.addUser());
+        final changes = <String>[];
+        var cut = false;
+        final client = watchedClient(
+          fake,
+          answer: (request) async {
+            final change =
+                (request.method == 'PATCH' || request.method == 'DELETE') &&
+                RegExp(r'/messages/[^/]+$').hasMatch(request.url.path);
+            if (!change) return null;
+            if (cut) throw http.ClientException('no answer', request.url);
+            changes.add(request.method);
+            return null;
+          },
+        );
+        var hidden = false;
+        final honest = fake.drawnTo(bo);
+        Future<ShownConversation?> drawn(String id, {required bool fresh}) =>
+            (hidden ? _without(honest, eve) : honest)(id, fresh: fresh);
+        final b = await firstDevice(fake, bo, client: client, drawn: drawn);
+        final e = await firstDevice(fake, eve);
+        final id = (await e.engine.createGroup('three', [ana, bo])).id;
+        await b.engine.openConversation(id);
+        await sameGroup([b, e], id);
+        final first = await _send(b, id, 'first');
+        final second = await _send(b, id, 'second');
+        // Made while the page draws Eve, their requests unanswered.
+        cut = true;
+        await b.engine.editMessage(id, first.id, 'edited');
+        await b.engine.deleteMessage(id, second.id);
+        await turnEnded(b);
+        // From now on the page doesn't draw Eve, and the API would answer.
+        hidden = true;
+        cut = false;
+        b.clock.advance(const Duration(minutes: 2));
+        await _settled(b);
+        expect(changes, isEmpty);
+        expect(b.engine.conversationState(id)?.name, ConversationNotice.groupDiffers);
+        // A restart makes them again only once its group is as drawn.
+        final again = await restarted(fake, b, client: client, drawn: drawn);
+        await _settled(again);
+        expect(changes, isEmpty);
+      },
+      skip: noCore,
+      timeout: _slow,
+    );
+
     // A device without a record (a DM's other member, a group's owner on another device) founds the conversation as
     // its page draws it; listed with someone the page doesn't draw, it founds nothing, and says so.
     test(
