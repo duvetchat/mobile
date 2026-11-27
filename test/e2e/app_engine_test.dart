@@ -135,8 +135,16 @@ Map<String, Object?> _conversation(String id, {required bool group}) {
     'updated_at': at,
     'deleted_at': null,
     'members': [
+      // Each with the public profile the API's listing gives, which the chat draws a member by.
       for (final (n, user) in [_me, other].indexed)
-        {'id': '$id-$n', 'conversation_id': id, 'user_id': user, 'created_at': at, 'updated_at': at},
+        {
+          'id': '$id-$n',
+          'conversation_id': id,
+          'user_id': user,
+          'created_at': at,
+          'updated_at': at,
+          'user': {'id': user, 'username': 'user$n'},
+        },
     ],
     'legacy': false,
     'mls': null,

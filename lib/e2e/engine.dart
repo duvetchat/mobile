@@ -51,7 +51,7 @@ export 'files.dart' show FilesGone;
 export 'history.dart' show HistoryOffer, NoDeviceToShareWith, ShareLimit, SharedHistory, quietBeforeImport, shareRanges;
 export 'members.dart' show maxGroupMembers;
 export 'send.dart' show Outgoing, Pending, TooManyWaiting;
-export 'sync.dart' show ConversationNotice, ConversationState, Restart, ShownConversation;
+export 'sync.dart' show ConversationNotice, ConversationState, Restart, ShownConversation, drawnOf;
 
 /// What the engine waits with: the system's timers in the app, a test's clock in its tests.
 abstract interface class EngineClock {
@@ -309,7 +309,7 @@ class E2EEngine implements DeviceSetupActions {
     required this.registered,
     ({String challenge, DateTime at})? loginChallenge,
     double Function()? random,
-    this.shown,
+    required this.shown,
   }) : _challenge = loginChallenge,
        random = random ?? Random().nextDouble {
     // Every observation this device's core answers, whoever asked (a push's engine through the port too), reaches the
@@ -341,8 +341,10 @@ class E2EEngine implements DeviceSetupActions {
 
   /// The conversation as the person sees it (its chat's), [fresh] from a listing made now, or none for one not drawn:
   /// whom a group this device founds without a record of it holds, and whom any group it holds may hold (C1 of step 4's
-  /// closing reviews). Without it, the engine's own listing stands in.
-  final Future<ShownConversation?> Function(String conversationId, {required bool fresh})? shown;
+  /// closing reviews). Never the engine's own listing, which the server can make another than the chat's: nothing goes
+  /// to a conversation not drawn, and while what's drawn can't be read yet it throws, and nothing goes (N-C1 of the
+  /// re-review).
+  final Future<ShownConversation?> Function(String conversationId, {required bool fresh}) shown;
 
   /// How long a login's challenge is taken for: the API's 10 minutes (its challengeLife), less one for the way there.
   static const challengeLife = Duration(minutes: 9);

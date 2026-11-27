@@ -415,14 +415,23 @@ class DuvetRepository implements ChatRepository {
   final _spaceMembers = <String, Future<List<Member>>>{};
   final _conversationMembers = <String, List<Member>>{};
 
-  /// The conversations as their chats draw them, by ID, as last listed.
+  /// The conversations as their chats draw them, by ID, as last listed; and whether a listing came in this session.
   var _drawnConversations = <String, ShownConversation>{};
+  var _conversationsListed = false;
 
   /// A conversation as its chat draws it, [fresh] from a listing made now: what the encryption engine founds a group
-  /// with when it has no record of it, and what a group it holds may hold.
+  /// with when it has no record of it, and what a group it holds may hold. Null for one the app doesn't draw, as a
+  /// listing without it leaves it, and nothing goes there. Before the session's first listing is in, one is made now,
+  /// and while none can be this throws, so nothing goes either: the home a run before left isn't what's drawn (N-C1 of
+  /// step 4's closing re-review). A fresh listing that fails leaves what the app still draws.
   Future<ShownConversation?> _drawnConversation(String conversationId, {required bool fresh}) async {
-    if (fresh) {
-      await refreshConversations().catchError((Object error) => debugPrint('conversations: $error'));
+    if (fresh || !_conversationsListed) {
+      try {
+        await refreshConversations();
+      } catch (error) {
+        if (!_conversationsListed) rethrow;
+        debugPrint('conversations: $error');
+      }
     }
     return _drawnConversations[conversationId];
   }
@@ -834,6 +843,7 @@ class DuvetRepository implements ChatRepository {
     _answeredInvites.clear();
     _conversationMembers.clear();
     _drawnConversations = {};
+    _conversationsListed = false;
     _names.clear();
     _authors.clear();
     _emojiNames.clear();
@@ -3274,16 +3284,15 @@ class DuvetRepository implements ChatRepository {
   Future<void> refreshConversations() async {
     final me = profile.value?.id;
     final list = await _call((api) => api.getConversations());
-    // What the person sees of each, which the encryption engine holds its groups to (C1 of step 4's closing reviews).
-    _drawnConversations = {
-      for (final c in list)
-        if (c.deletedAt == null)
-          c.id: (
-            group: c.type == duvet.ConversationType.group,
-            owner: c.type == duvet.ConversationType.group ? c.ownerId : null,
-            users: [for (final m in c.members) m.userId],
-          ),
-    };
+    // What the person sees of each, which the encryption engine holds its groups to (C1 of step 4's closing reviews):
+    // one this listing leaves out isn't drawn any more, as the Chats tab drops it.
+    if (me != null) {
+      _drawnConversations = {
+        for (final c in list)
+          if (c.deletedAt == null) c.id: drawnOf(c, me),
+      };
+      _conversationsListed = true;
+    }
     conversations.value = [
       for (final c
           in list.where((c) => c.deletedAt == null).toList()..sort((a, b) => b.updatedAt.compareTo(a.updatedAt)))

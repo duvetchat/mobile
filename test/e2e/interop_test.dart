@@ -199,6 +199,8 @@ class _Device {
         if (named != device) unawaited(connect());
       },
       loginChallenge: challenge,
+      // What the app's chats draw, kept as the app's repository keeps it.
+      shown: listedDrawing(live.api.api.getConversations, account.id),
     );
     live.end = () async {
       await live.engine.stop();

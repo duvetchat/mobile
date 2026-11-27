@@ -810,6 +810,25 @@ class FakeApi {
   /// Every conversation's ID.
   Iterable<String> get conversationIds => _conversations.keys;
 
+  /// The conversation as an honest page draws it for [user], from what the fake lists now: a group with its owner and
+  /// members, a DM as the user and the first other member listed; null for one the user isn't in. What an engine's
+  /// test gives it as drawn, never the engine's own listing (N-C1 of step 4's closing re-review).
+  Future<({bool group, String? owner, List<String> users})?> Function(String conversationId, {required bool fresh})
+  drawnTo(String user) => (conversationId, {required fresh}) async {
+    final conv = _conversations[conversationId];
+    final users = [for (final m in conv?.members ?? const <Map<String, Object?>>[]) m['user_id']! as String];
+    if (conv == null || !users.contains(user)) return null;
+    final group = conv.type == 2;
+    final others = [
+      for (final other in users)
+        if (other != user) other,
+    ];
+    return (group: group, owner: group ? conv.ownerId : null, users: [user, ...group ? others : others.take(1)]);
+  };
+
+  /// The conversation as the API lists it, for a server that answers another route with it.
+  Map<String, Object?> viewOf(String conversationId) => _view(_conversation(conversationId), null);
+
   /// The ID of [user]'s membership of the conversation, which a removal and an addition make anew.
   String membershipOf(String conversationId, String user) =>
       _conversation(conversationId).members.firstWhere((member) => member['user_id'] == user)['id']! as String;
@@ -835,6 +854,9 @@ class FakeApi {
       conv.ownerId = conv.members.first['user_id']! as String;
     }
   }
+
+  /// The conversation's owner, as a server that skips its rules names one: none of its members is told.
+  void setOwner(String conversationId, String user) => _conversation(conversationId).ownerId = user;
 
   /// Two users become friends: each may claim the other's key packages and read their identity, as the API lets them.
   void befriend(String a, String b) => _friends.add(([a, b]..sort()).join(':'));
@@ -1996,7 +2018,14 @@ class FakeApi {
       'created_at': conv.createdAt,
       'updated_at': conv.createdAt,
       'deleted_at': null,
-      'members': _clone(conv.members),
+      // Each with the public profile the API's listing gives, which the app draws a member by.
+      'members': [
+        for (final member in conv.members)
+          {
+            ..._clone(member),
+            'user': {'id': member['user_id'], 'username': 'u${(member['user_id']! as String).substring(0, 8)}'},
+          },
+      ],
       'legacy': conv.legacy,
       'mls': group == null
           ? null

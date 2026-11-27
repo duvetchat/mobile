@@ -35,6 +35,21 @@ enum ConversationNotice { blocked, waitOwner, waitRejoin, membersChanged, groupD
 /// A conversation as its chat draws it: whether it's a group, a group's owner, and its members' users.
 typedef ShownConversation = ({bool group, String? owner, List<String> users});
 
+/// [conv] as a chat of [me]'s draws it from the API's listing (N-C1 of step 4's closing re-review): the person, and the
+/// members the chat names, those listed with the profile it draws a member by.
+ShownConversation drawnOf(duvet.Conversation conv, String me) {
+  final group = conv.type == duvet.ConversationType.group;
+  return (
+    group: group,
+    owner: group ? conv.ownerId : null,
+    users: [
+      me,
+      for (final member in conv.members)
+        if (member.user != null && member.userId != me) member.userId,
+    ],
+  );
+}
+
 /// Who may restart a blocked group: this user, its owner, or nobody (a group under an external sender other than the
 /// pinned one, which no restart changes).
 enum Restart { mine, owner, none }
@@ -505,10 +520,10 @@ class Conversations {
     await asShown(conversationId);
   }
 
-  /// Before anything more goes to the conversation (C1 of step 4's closing reviews): its group holds no user, and no
-  /// kind or owner, that the person doesn't see in it. The queue is read whole and a due commit made first, so a member
-  /// who left, whose removal the API proposed, goes as in any honest group; else the conversation says so, and this
-  /// throws.
+  /// Before anything more goes to the conversation (C1 of step 4's closing reviews): the person sees it, and its group
+  /// holds no user, and no kind or owner, that the person doesn't see in it (N-C1 of the re-review). The queue is read
+  /// whole and a due commit made first, so a member who left, whose removal the API proposed, goes as in any honest
+  /// group; else the conversation says so, and this throws, as it does while what's drawn can't be read yet.
   Future<void> asShown(String conversationId) async {
     final held = await _group(conversationId);
     if (held == null || !await _strays(conversationId, held)) return;
@@ -1065,26 +1080,31 @@ class Conversations {
     _settling.remove(id);
   }
 
-  /// The conversation as the person sees it ([E2EEngine.shown]), [fresh] from a listing made now; without that, as this
-  /// engine lists it.
-  Future<ShownConversation?> _shown(String id, {bool fresh = false}) async {
-    if (_engine.shown case final shown?) return shown(id, fresh: fresh);
-    final conv = fresh ? await _fresh(id) : _known[id];
-    if (conv == null) return null;
-    final group = conv.api.type == duvet.ConversationType.group;
-    return (group: group, owner: group ? conv.api.ownerId : null, users: [for (final m in conv.api.members) m.userId]);
-  }
+  /// The conversation as the person sees it ([E2EEngine.shown]), [fresh] from a listing made now: null for one not
+  /// drawn. Never as this engine lists it (N-C1 of step 4's closing re-review); one that can't be read yet throws.
+  Future<ShownConversation?> _shown(String id, {bool fresh = false}) => _engine.shown(id, fresh: fresh);
 
   /// Whether the group holds a user, a kind or an owner that the conversation as the person sees it doesn't: asked
-  /// again of a fresh listing, as a member just added may not show yet.
+  /// again of a fresh listing, as a member just added may not show yet. A conversation not drawn differs.
   Future<bool> _strays(String id, _Held held) async =>
       _differs(held, await _shown(id)) && _differs(held, await _shown(id, fresh: true));
 
+  /// [_strays] for what the conversation says of its group: false while what's drawn can't be read yet (the session's
+  /// first listing not in), when nothing goes there anyway, as [asShown] throws too.
+  Future<bool> _saysStrays(String id, _Held held) async {
+    try {
+      return await _strays(id, held);
+    } catch (error) {
+      debugPrint("e2e: what the conversation draws couldn't be read yet: $error");
+      return false;
+    }
+  }
+
   static bool _differs(_Held held, ShownConversation? shown) =>
-      shown != null &&
-      ((held.owner != null) != shown.group ||
-          (shown.group && held.owner != shown.owner) ||
-          held.members.any((user) => !shown.users.contains(user)));
+      shown == null ||
+      (held.owner != null) != shown.group ||
+      (shown.group && held.owner != shown.owner) ||
+      held.members.any((user) => !shown.users.contains(user));
 
   static LegacyRecord? _recordOf(ShownConversation? shown) =>
       shown == null ? null : (owner: shown.group ? shown.owner : null, members: shown.users);
@@ -1146,7 +1166,7 @@ class Conversations {
       }
       // A group that holds whom the person doesn't see there is said, with the queue read whole, unless a due commit is
       // on its way (a member who left, whose removal the API proposed, goes with it).
-      final strays = !held.blocked && !at.due && await _strays(id, held);
+      final strays = !held.blocked && !at.due && await _saysStrays(id, held);
       if (strays && !at.whole && at.through != null) {
         final done = await _readQueue(conv, at.through!);
         if (done != null) return _after(conv, done);
