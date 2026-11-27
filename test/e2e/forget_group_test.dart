@@ -1167,6 +1167,75 @@ void main() {
       timeout: _slow,
     );
 
+    // M3 of mobile#395's review: a take-back the core refuses fails the start, as any step of it does. The engine isn't
+    // ready, so nothing brings the group back without the record the core kept: no welcome applied, no founding, no
+    // join, while Cy's welcome to the group of Ana and Cy waits in the queue.
+    test(
+      'a_take-back_the_core_refuses_leaves_the_engine_short_of_ready,_and_brings_no_group_back',
+      () async {
+        final t = await _keptByTheCoreAlone();
+        await t.a.engine.removeMember(t.conversation, t.bo);
+        await t.a.engine.removeMember(t.conversation, t.cy);
+        await t.a.engine.addMember(t.conversation, t.cy);
+        final commands = <Map<String, Object?>>[];
+        final again = await restarted(
+          t.fake,
+          t.c,
+          host: WatchedHost(
+            t.c.host,
+            [],
+            commands: commands,
+            fail: (command) => command['cmd'] == 'forgotten' ? CoreError('internal', message: 'refused') : null,
+          ),
+        );
+        await turnEnded(again);
+        expect(again.state.stage, isNot(EngineStage.ready));
+        final names = [for (final command in commands) command['cmd']];
+        expect(names, contains('forgotten'));
+        expect(names.where(const {'apply', 'create_group', 'join_external'}.contains), isEmpty);
+        expect(await groupOf(again, t.conversation), isNull);
+      },
+      skip: noCore,
+      timeout: _slow,
+    );
+
+    // M3 of mobile#395's review: the yes lets the core's record go first, and a drop the core refuses fails the yes
+    // before anything changed: the engine's record stays exact, the core keeps its own, nothing goes in, and the
+    // question stands.
+    test(
+      'a_yes_whose_drop_the_core_refuses_fails,_and_leaves_the_record_and_the_question_as_they_were',
+      () async {
+        final t = await _keptByTheCoreAlone();
+        await t.a.engine.removeMember(t.conversation, t.bo);
+        await t.a.engine.removeMember(t.conversation, t.cy);
+        await t.a.engine.addMember(t.conversation, t.cy);
+        final commands = <Map<String, Object?>>[];
+        final again = await restarted(
+          t.fake,
+          t.c,
+          host: WatchedHost(
+            t.c.host,
+            [],
+            commands: commands,
+            fail: (command) => command['cmd'] == 'drop_forgotten' ? CoreError('internal', message: 'refused') : null,
+          ),
+        );
+        final asked = ConversationState.membersChanged([t.ana, t.cy]);
+        await until(() => again.engine.conversationState(t.conversation) == asked, what: 'the welcome refused');
+        await expectLater(acceptAsShown(again, t.conversation), throwsA(isA<CoreError>()));
+        await turnEnded(again);
+        expect(again.engine.conversationState(t.conversation), asked);
+        expect(_recordOn(again, t.conversation), t.record);
+        expect(await _keptByCore(again), [
+          {'conversation_id': t.conversation, 'expected': t.record},
+        ]);
+        expect(await groupOf(again, t.conversation), isNull);
+        expect([for (final command in commands) command['cmd']], isNot(contains('join_external')));
+      },
+      skip: noCore,
+      timeout: _slow,
+    );
+
     // The engine lets go of a conversation the user is no longer in (Ana takes Cy out while Cy's device waits for her
     // to make the group again) on the server's word alone: the core's record of its forgotten group stays, as the
     // engine's own does, which a later addition is held to (I1 of mobile#395's review). Only the person's yes lets the
