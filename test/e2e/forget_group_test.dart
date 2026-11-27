@@ -341,6 +341,39 @@ void main() {
       timeout: _slow,
     );
 
+    // Ana's own renewal loses its epoch to Bo's commit in the API's group (409) and stays staged, for a queue that is
+    // another group's and never settles it. The welcome to the API's group is acted on all the same: her commit never
+    // entered a group the API holds, so it's let go, and her device comes in.
+    test(
+      "a_commit_of_the_device's_own_another_commit_beat_keeps_no_welcome_to_another_group_from_being_acted_on",
+      () async {
+        final t = await _forgottenFounding();
+        final own = (await groupOf(t.a, t.conversation))!;
+        await t.b.engine.openConversation(t.conversation);
+        await stoppedByHand(t.b);
+        await commitByHand(t.b, t.conversation);
+        final made = await byHand(t.a, {'cmd': 'refresh', 'conversation_id': t.conversation});
+        final renewal = duvet.Commit(
+          generation: own.generation,
+          epoch: own.epoch,
+          commit: made['commit']! as String,
+          groupInfo: made['group_info']! as String,
+        );
+        await expectLater(
+          t.a.api.commit(t.conversation, renewal),
+          throwsA(isA<duvet.DuvetApiException>().having((error) => error.statusCode, 'status', 409)),
+        );
+        await t.a.host.handle<Object?>({'cmd': 'commit_result', 'conversation_id': t.conversation, 'accepted': false});
+
+        final b = await restarted(t.fake, t.b);
+        final again = await restarted(t.fake, t.a);
+        final held = await sameGroup([again, b], t.conversation);
+        expect(held.authenticator, isNot(own.authenticator));
+      },
+      skip: noCore,
+      timeout: _slow,
+    );
+
     // The record outlives a restart between the forget and the join, exact as the core answered it, and the join
     // takes it as it was kept.
     test(

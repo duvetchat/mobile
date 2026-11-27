@@ -996,13 +996,16 @@ class Conversations {
   }
 
   /// The API's group at the generation this device holds isn't its own (apply's another_group): its own goes, and the
-  /// note with it. A commit of its own waiting for its word there keeps both until it settles.
+  /// note with it. A commit of its own staged there (one another commit beat, or whose word never came) never entered
+  /// the API's group, which isn't this one, and the API's queue never settles it: it's let go first, as the desktop's
+  /// #forget does (mobile#383). None of its commits is in flight here: a turn with one never reaches this.
   Future<void> _forgetForAnother(String id) async {
     try {
       await _forget(id);
     } on CoreError catch (error) {
       if (error.code != 'pending_commit') rethrow;
-      return debugPrint("e2e: the conversation's other group waits for this device's own commit to settle.");
+      await _host.handle<Object?>({'cmd': 'commit_result', 'conversation_id': id, 'accepted': false, 'invalid': true});
+      await _forget(id);
     }
     _another.remove(id);
     await recordAnotherGroup(_engine.store, id, another: false);
