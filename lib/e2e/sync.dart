@@ -475,15 +475,16 @@ class Conversations {
   }
 
   /// At the engine's start, before anything can bring a group back (mobile#392): the record of each group this device
-  /// forgot that the core kept in the forget's own transaction (`forgotten`, duvetchat/e2e#65) and the engine holds no
-  /// forget's record of, as a close between the two, or a store that refused the record, leaves it. Each is kept as
-  /// forget_group's answer is ([LegacyRecords.forgot]), whose rules give it its place among what the engine kept: the
-  /// creator's picks go, one from before the cutover or the person's yes is kept under it. Each is newer than any yes,
-  /// which lets the core's go first ([accept]).
+  /// forgot that the core kept in the forget's own transaction (`forgotten`, duvetchat/e2e#65), which a close between
+  /// the two, or a store that refused the engine's, would otherwise lose. Each is kept as forget_group's answer is
+  /// ([LegacyRecords.forgot]), also over a forget's record the engine has, as the core's is always the newest: a forget
+  /// needs the group held, and holding it again lets the core's go (M1 of mobile#395's review). Its rules give it its
+  /// place among what the engine kept: the creator's picks go; one from before the cutover, the person's yes, or what an
+  /// older forget's record was kept over, is kept under it. Each is newer than any yes, which lets the core's go first
+  /// ([accept]).
   Future<void> takeForgotten() async {
     for (final record in await _coreRecords()) {
-      final id = record['conversation_id']! as String;
-      if (!_legacy.keepsForgotten(id)) await _legacy.forgot(id, recordIn(record['expected'])!);
+      await _legacy.forgot(record['conversation_id']! as String, recordIn(record['expected'])!);
     }
   }
 

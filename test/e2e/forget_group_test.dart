@@ -1082,6 +1082,45 @@ void main() {
       timeout: _slow,
     );
 
+    // M1 of mobile#395's review: the core's record is always the newest (a forget needs the group held, holding it again
+    // lets the core's go, and a second forget writes the newer one), so a start takes it over an older forget's record
+    // the engine kept, whose own `before` carries on. Here the engine kept Ana and Cy, from a forget before Bo came,
+    // over a yes that had let a record go; the core keeps Ana, Bo and Cy, from a forget whose own write was lost. The
+    // welcome to the older people exactly is refused.
+    test(
+      "a_start_takes_the_core's_record_over_an_older_one_the_engine_kept,_and_holds_the_comeback_to_it",
+      () async {
+        final t = await _keptByTheCoreAlone();
+        await t.c.store.write(legacyRecords, {
+          t.conversation: {
+            'owner': t.ana,
+            'members': [t.ana, t.cy],
+            'exact': true,
+            'before': false,
+          },
+        });
+        await t.a.engine.removeMember(t.conversation, t.bo);
+        await t.a.engine.removeMember(t.conversation, t.cy);
+        await t.a.engine.addMember(t.conversation, t.cy);
+        final commands = <Map<String, Object?>>[];
+        final again = await restarted(t.fake, t.c, host: WatchedHost(t.c.host, [], commands: commands));
+        await until(
+          () => again.engine.conversationState(t.conversation) == ConversationState.membersChanged([t.ana, t.cy]),
+          what: "the welcome to the older people refused for the core's newer record",
+        );
+        expect(await groupOf(again, t.conversation), isNull);
+        expect(_recordOn(again, t.conversation), {...t.record, 'before': false});
+        expect([
+          for (final command in commands)
+            if (command['cmd'] == 'apply')
+              for (final entry in (command['entries']! as List).cast<Map<String, Object?>>())
+                if (entry['kind'] == 'welcome') entry['expected'],
+        ], allOf(isNotEmpty, everyElement(t.record)));
+      },
+      skip: noCore,
+      timeout: _slow,
+    );
+
     // The person's yes to the members of today lets the core's record go too (drop_forgotten), before its comeback
     // goes: a start before that comeback takes nothing back over the yes, and asks nothing again.
     test(
