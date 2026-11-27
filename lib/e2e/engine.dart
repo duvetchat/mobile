@@ -1714,6 +1714,9 @@ class E2EEngine implements DeviceSetupActions {
       if (opened.state != HostState.ready) return _closed(opened);
       // What a push's engine noted in the record while it held the core (contacts.dart), before anything here writes.
       await _contacts.reload();
+      // The records of forgotten groups the core kept and this engine lost, before anything can bring a group back
+      // (mobile#392): every way back runs after this start opened the core.
+      await _groups.takeForgotten();
       _keysAgain = store.read(keysAgain) == true;
       _relisted = store.read(keptRelisted) == true;
       final (:status, :keys) = await ownDevice(this);

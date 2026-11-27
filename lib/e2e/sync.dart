@@ -474,6 +474,22 @@ class Conversations {
     });
   }
 
+  /// At the engine's start, before anything can bring a group back (mobile#392): the record of each group this device
+  /// forgot that the core kept in the forget's own transaction (`forgotten`, duvetchat/e2e#65) and the engine holds no
+  /// forget's record of, as a close between the two, or a store that refused the record, leaves it. Each is kept as
+  /// forget_group's answer is ([LegacyRecords.forgot]), whose rules give it its place among what the engine kept: the
+  /// creator's picks go, one from before the cutover or the person's yes is kept under it.
+  Future<void> takeForgotten() async {
+    for (final record in await _coreRecords()) {
+      final id = record['conversation_id']! as String;
+      if (!_legacy.keepsForgotten(id)) await _legacy.forgot(id, recordIn(record['expected'])!);
+    }
+  }
+
+  /// The record the core kept of each group this device forgot and doesn't hold again (`forgotten`), by conversation.
+  Future<List<Map<String, Object?>>> _coreRecords() async =>
+      ((await _host.handle<Map<String, Object?>>({'cmd': 'forgotten'}))['records']! as List).cast();
+
   /// Stops waiting for anything: what's in memory goes, the bytes of a commit whose answer didn't come too.
   void stop() {
     _settleTimer?.call();

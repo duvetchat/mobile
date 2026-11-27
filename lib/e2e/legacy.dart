@@ -79,6 +79,12 @@ class LegacyRecords {
   /// device never applied or made, or one let go.
   LegacyRecord? kept(String conversationId) => recordIn(_kept()[conversationId]);
 
+  /// Whether the conversation's record is a forgotten group's ([forgot]: exact), as this session holds it.
+  bool keepsForgotten(String conversationId) => switch (_valueOf(conversationId)) {
+    {'exact': true} => true,
+    _ => false,
+  };
+
   /// The person's picks as they made the conversation here, this user among them: its group is founded with them alone.
   /// Kept only where nothing is (N-M2 of step 4's closing re-review): the API's answer can be a conversation with a
   /// record from before the cutover, or one let go, which stays as it is.

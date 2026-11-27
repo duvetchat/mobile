@@ -159,6 +159,45 @@ Future<Map<int, duvet.MlsGroupInfo>> _refusedJoin(
   return infos;
 }
 
+/// A group of Ana, its owner, Bo and Cy, which every device holds; then Cy's device forgets its own as its engine does
+/// (forget_group), and its app ends before the engine keeps the record the core answered: the core's own copy alone
+/// keeps it (duvetchat/e2e#65). Cy's engine stopped, its core open; the record, as the core answered it.
+Future<
+  ({
+    FakeApi fake,
+    String ana,
+    String bo,
+    String cy,
+    TestDevice a,
+    TestDevice b,
+    TestDevice c,
+    String conversation,
+    Map<String, Object?> record,
+  })
+>
+_keptByTheCoreAlone() async {
+  final fake = FakeApi();
+  final (ana, bo, cy) = (fake.addUser(), fake.addUser(), fake.addUser());
+  final conversation = fake.addConversation(group: true, members: [ana, bo, cy], owner: ana);
+  // Ana may claim Cy's key packages once Cy is out: a friend's.
+  fake.befriend(ana, cy);
+  final a = await firstDevice(fake, ana);
+  final b = await firstDevice(fake, bo);
+  final c = await firstDevice(fake, cy);
+  await a.engine.openConversation(conversation);
+  await sameGroup([a, b, c], conversation);
+  await stoppedByHand(c);
+  final forgot = await c.host.handle<Map<String, Object?>>({'cmd': 'forget_group', 'conversation_id': conversation});
+  final record = (forgot['expected']! as Map).cast<String, Object?>();
+  expect(record, {
+    'owner': ana,
+    'members': [ana, bo, cy],
+    'exact': true,
+  });
+  expect(_recordOn(c, conversation), isNull);
+  return (fake: fake, ana: ana, bo: bo, cy: cy, a: a, b: b, c: c, conversation: conversation, record: record);
+}
+
 /// Ana's and Bo's first devices in their DM, Ana's founding answered for and kept nothing of, her core holding it: her
 /// device stopped before it listed the conversation again (her core open).
 Future<({FakeApi fake, String ana, String bo, TestDevice a, TestDevice b, String conversation})>
@@ -932,6 +971,45 @@ void main() {
         ], contains('welcome'));
         expect([for (final command in commands) command['cmd']], contains('join_external'));
         expect(fake.decryptFailures, isEmpty);
+      },
+      skip: noCore,
+      timeout: _slow,
+    );
+  });
+
+  // The core keeps a forgotten group's record in the forget's own transaction (duvetchat/e2e#65): what the engine loses
+  // of it, a close between the two, it takes back from the core at its next start, before anything brings the group
+  // back (mobile#392).
+  group("the_core's_record", () {
+    // Cy's device forgot the group of Ana, Bo and Cy, and its engine lost the record. Bo goes, then Cy, and Cy is added
+    // back: the welcome is to a group of Ana and Cy. At its start, the engine takes the record back from the core, and
+    // holds the welcome to it: refused, the conversation asks the person.
+    test(
+      'a_record_the_engine_lost_is_taken_back_from_the_core_at_a_start,_and_holds_the_comeback',
+      () async {
+        final t = await _keptByTheCoreAlone();
+        await t.a.engine.removeMember(t.conversation, t.bo);
+        await t.a.engine.removeMember(t.conversation, t.cy);
+        await t.a.engine.addMember(t.conversation, t.cy);
+        final commands = <Map<String, Object?>>[];
+        final again = await restarted(t.fake, t.c, host: WatchedHost(t.c.host, [], commands: commands));
+        await until(
+          () => again.engine.conversationState(t.conversation) == ConversationState.membersChanged([t.ana, t.cy]),
+          what: 'the welcome refused for the record the core kept',
+        );
+        expect(await groupOf(again, t.conversation), isNull);
+        expect(_recordOn(again, t.conversation), t.record);
+        final held = [
+          for (final command in commands)
+            if (command['cmd'] == 'apply')
+              for (final entry in (command['entries']! as List).cast<Map<String, Object?>>())
+                if (entry['kind'] == 'welcome') entry['expected'],
+        ];
+        expect(held, isNotEmpty);
+        expect(held, everyElement(t.record));
+        // Taken back as the engine started, before anything could bring the group back.
+        final names = [for (final command in commands) command['cmd']];
+        expect(names.indexOf('forgotten'), allOf(isNonNegative, lessThan(names.indexOf('apply'))));
       },
       skip: noCore,
       timeout: _slow,
