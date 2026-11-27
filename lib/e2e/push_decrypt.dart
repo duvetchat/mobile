@@ -28,7 +28,7 @@ import 'host.dart';
 import 'identity.dart';
 import 'legacy.dart';
 import 'store.dart';
-import 'sync.dart' show entryOf, membersRefusedRules, recordRefusedGeneration;
+import 'sync.dart' show entryOf, membersRefusedRules, recordAnotherGroup, recordRefusedGeneration;
 
 /// The name the app's engine answers pushes under, while its device is ready.
 const pushPortName = 'duvet-e2e-push';
@@ -301,7 +301,9 @@ Future<PushAnswer> openPushed({
 /// time is up ([late]). The welcomes of a conversation from before the cutover are held to its record ([expected]), as
 /// the app's engine holds them (Ruling 14), and the kinds of what didn't open go in [failed], which the app's engine
 /// would report had it applied them (decision 40). Out of the group (nothing applied there), nothing is read: joining
-/// it waits for the app's engine, as do the commits the entries ask for. No commit is made here.
+/// it waits for the app's engine, as do the commits the entries ask for. No commit is made here, and no group is
+/// forgotten: a welcome to another group than the one this device holds at its generation is noted for the app's
+/// engine, which forgets its own and joins the API's (mobile#369).
 Future<void> _applyThrough(
   CoreHost host,
   duvet.E2eApi api,
@@ -337,10 +339,14 @@ Future<void> _applyThrough(
     };
     final results = [for (final result in applied['results']! as List<Object?>) entryResult(result! as Map)];
     failed.addAll(failedKinds(results, deleted));
-    // A welcome refused for its members leaves its mark for the app's engine, which asks the person (the core's #46).
+    // A welcome refused for its members leaves its mark for the app's engine, which asks the person (the core's #46),
+    // and one to another group its note, as the welcome is spent.
     for (final result in results) {
-      if (result.kind == 'welcome' && result.result == 'rejected' && membersRefusedRules.contains(result.rule)) {
+      if (result.kind != 'welcome' || result.result != 'rejected') continue;
+      if (membersRefusedRules.contains(result.rule)) {
         await recordRefusedGeneration(records, conversationId, welcomes[result.seq] ?? 0);
+      } else if (result.rule == 'another_group') {
+        await recordAnotherGroup(records, conversationId, another: true);
       }
     }
     return applied['applied_through'] as int?;

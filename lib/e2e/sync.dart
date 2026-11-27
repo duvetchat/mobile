@@ -314,6 +314,28 @@ Future<void> recordRefusedGeneration(EngineStore store, String conversationId, i
       .catchError((Object error) => debugPrint("e2e: a refused generation wasn't kept: $error"));
 }
 
+/// The conversations an apply found another group of ([anotherGroups]), as [store] keeps them.
+Set<String> anotherGroupsIn(EngineStore store) => _idsIn(store.read(anotherGroups));
+
+Set<String> _idsIn(Object? kept) => {
+  if (kept case final List<Object?> ids)
+    for (final id in ids)
+      if (id is String) id,
+};
+
+/// Notes in [store] that an apply found another group of the conversation ([another]), or lets the note go, over the
+/// notes the record holds as it's kept: the other engine's stay (mobile#369).
+Future<void> recordAnotherGroup(EngineStore store, String conversationId, {required bool another}) {
+  if (anotherGroupsIn(store).contains(conversationId) == another) return Future.value();
+  return store
+      .update(anotherGroups, (kept) {
+        final ids = _idsIn(kept);
+        another ? ids.add(conversationId) : ids.remove(conversationId);
+        return ids.isEmpty ? null : [...ids];
+      })
+      .catchError((Object error) => debugPrint("e2e: a conversation's other group wasn't noted: $error"));
+}
+
 /// How many times an addition or a removal is made again after another commit took its epoch.
 const _changeTries = 3;
 
@@ -422,6 +444,14 @@ class Conversations {
   /// desktop's review).
   final _removed = <String>{};
 
+  /// Conversations an apply found another group of (apply's another_group), as the record notes them too: here for a
+  /// record that can't keep the note (mobile#369).
+  final _another = <String>{};
+
+  /// Conversations whose group this run forgot as the API listed none, until the device holds the API's group: a group
+  /// made again and not kept either isn't made again on its own (mobile#369).
+  final _forgotten = <String>{};
+
   /// A minute has passed since the start ([_settleAfter]).
   var _settled = false;
   void Function()? _settleTimer;
@@ -472,7 +502,7 @@ class Conversations {
     _devicelessFrom.clear();
     _restartRefused.clear();
     _refused.clear();
-    for (final kept in [_settling, _otherSender, _removed, _lostJoin]) {
+    for (final kept in [_settling, _otherSender, _removed, _lostJoin, _another, _forgotten]) {
       kept.clear();
     }
   }
@@ -590,6 +620,10 @@ class Conversations {
   /// At the start and at each READY: the API's conversations, each one's record made the first time it's seen, the
   /// queue of each with a group, and the commits whose requests had no answer sent again.
   Future<void> all() async {
+    // What a push's engine noted meanwhile, in the record on disk.
+    await _engine.store
+        .refresh([anotherGroups])
+        .catchError((Object error) => debugPrint("e2e: the record's other groups weren't read again: $error"));
     await _list();
     for (final conv in [..._known.values]) {
       try {
@@ -885,9 +919,11 @@ class Conversations {
     _deviceless.remove(id);
     _devicelessFrom.remove(id);
     _restartRefused.remove(id);
-    for (final kept in [_settling, _otherSender, _removed, _lostJoin]) {
+    for (final kept in [_settling, _otherSender, _removed, _lostJoin, _forgotten]) {
       kept.remove(id);
     }
+    _another.remove(id);
+    unawaited(recordAnotherGroup(_engine.store, id, another: false));
     _set(id, null);
   }
 
@@ -895,24 +931,77 @@ class Conversations {
   ConversationState? _waiting(_Conv conv) =>
       mayMake(conv.api, _user) ? null : ConversationState.waitOwner(conv.api.ownerId);
 
-  /// A conversation the API lists without a group. A creation of this device's the API never took, whose bytes went
-  /// with the app, is dropped, as the core drops a creation whole on no answer, and the group made again (C1 of the
-  /// desktop's review); else whoever may make it does so when the person opens it ([make]), and the others wait.
+  /// A conversation the API lists without a group. What this device holds of it goes ([_dropStale]), then whoever may
+  /// make it makes it again, or does so when the person opens it ([make]), and the others wait for its owner.
   Future<void> _groupless(_Conv conv, {bool make = false}) async {
-    if (!mayMake(conv.api, _user)) return _set(conv.id, _waiting(conv));
     if (_inFlight.containsKey(conv.id)) return;
-    if (await _dropStale(conv.id) || make) return _make(conv);
+    final again = await _dropStale(conv.id);
+    if (!mayMake(conv.api, _user)) return _set(conv.id, _waiting(conv));
+    if (again || make) return _make(conv);
     _set(conv.id, null);
   }
 
-  /// Whether the core held a creation of this device's for a conversation the API lists without a group, which it
-  /// drops now: no answer came, and none will. No key package is claimed for it. A group it holds with no commit
-  /// waiting, which create_group won't make again, throws the core's `not_found`, before anything is claimed (M4 of
-  /// the review, as the desktop does).
+  /// What the core holds of a conversation the API lists without a group goes. A creation of this device's (or a
+  /// restart, or an external commit) whose answer never came, and never will, is dropped whole, as the core drops it on
+  /// no answer (C1 of the desktop's review). A group it holds with nothing waiting, which the API answered for and kept
+  /// nothing of (or no longer has), is forgotten (mobile#369), a member's commit the API never took let go first: one
+  /// waiting for its answer, or one staged for the queue after the API refused it, which the queue never settles here.
+  /// Whether the group is to be made again on its own: once a creation is dropped, and the first time this run forgets
+  /// it, so a server that keeps no founding gets one more per act of the person's, not one after another.
   Future<bool> _dropStale(String id) async {
     if (await _group(id) == null) return false;
-    await _host.handle<Object?>({'cmd': 'commit_result', 'conversation_id': id, 'accepted': false});
-    return true;
+    for (final invalid in [false, true]) {
+      try {
+        final answered = await _host.handle<Map<String, Object?>>({
+          'cmd': 'commit_result',
+          'conversation_id': id,
+          'accepted': false,
+          if (invalid) 'invalid': true,
+        });
+        if (!invalid && answered['epoch'] == null && await _group(id) == null) return true;
+      } on CoreError catch (error) {
+        // Nothing waited (the core confirmed the group: a creation the API answered for, a group it joined), or no
+        // commit of its own is staged there.
+        if (error.code != 'not_found') rethrow;
+      }
+    }
+    final again = !_forgotten.contains(id);
+    await _forget(id);
+    return again;
+  }
+
+  /// The group this device holds of the conversation goes (forget_group, mobile#369), as the API holds none, or another
+  /// at its generation: the core answers its users and its owner, exactly, which the engine keeps as the
+  /// conversation's record and passes, as kept, to whatever brings the group back (create_group, a welcome,
+  /// join_external). Its messages waiting to be sent there are stale from now on, and go again in the group it ends
+  /// in. Nothing to forget (`not_found`: no group, or a row without its group, which waits until the API's group passes
+  /// its epoch) does nothing.
+  Future<void> _forget(String id) async {
+    final Map<String, Object?> forgot;
+    try {
+      forgot = await _host.handle<Map<String, Object?>>({'cmd': 'forget_group', 'conversation_id': id});
+    } on CoreError catch (error) {
+      if (error.code != 'not_found') rethrow;
+      return;
+    }
+    await _legacy.forgot(id, recordIn(forgot['expected'])!);
+    _forgotten.add(id);
+    for (final kept in [_settling, _removed, _lostJoin]) {
+      kept.remove(id);
+    }
+  }
+
+  /// The API's group at the generation this device holds isn't its own (apply's another_group): its own goes, and the
+  /// note with it. A commit of its own waiting for its word there keeps both until it settles.
+  Future<void> _forgetForAnother(String id) async {
+    try {
+      await _forget(id);
+    } on CoreError catch (error) {
+      if (error.code != 'pending_commit') rethrow;
+      return debugPrint("e2e: the conversation's other group waits for this device's own commit to settle.");
+    }
+    _another.remove(id);
+    await recordAnotherGroup(_engine.store, id, another: false);
   }
 
   /// The group made here with the members this device can account for (C1 of step 4's closing reviews): those the
@@ -932,7 +1021,8 @@ class Conversations {
     try {
       commit = await makeGroup(_engine, conv.api, _sender, accounted);
     } on CoreError catch (error) {
-      if (error.code == 'exists') return debugPrint("e2e: this device holds a group the API doesn't list.");
+      // A row without its group (left, removed, a join refused): it waits for the API's group to pass its epoch.
+      if (error.code == 'exists') return debugPrint("e2e: this device's row of the group waits for the API's group.");
       if (error.rule == 'member_list_mismatch') return _membersChanged(conv);
       rethrow;
     }
@@ -1049,6 +1139,11 @@ class Conversations {
       if (refused && membersRefusedRules.contains(rule)) {
         await _refuse(conv.id, generations?[seq] ?? conv.group?.generation ?? 0);
       }
+      // The API's group there isn't this device's own: _after forgets its own, which the note outlives a restart for,
+      // as the welcome is spent.
+      if (refused && rule == 'another_group' && _another.add(conv.id)) {
+        await recordAnotherGroup(_engine.store, conv.id, another: true);
+      }
       // A commit of its epoch, its own or another's: a commit of this device's left to settle is settled.
       if (kind == 'commit' && result != 'ignored') _settling.remove(conv.id);
       if (result == 'removed') _removed.add(conv.id);
@@ -1145,6 +1240,7 @@ class Conversations {
   static LegacyRecord _listedAs(duvet.Conversation conv) => (
     owner: conv.type == duvet.ConversationType.group ? conv.ownerId : null,
     members: [for (final member in conv.members) member.userId],
+    exact: false,
   );
 
   /// Whether [record] is the conversation as the person sees it: its kind, a group's owner and its users, whatever
@@ -1163,7 +1259,7 @@ class Conversations {
   }
 
   static LegacyRecord? _recordOf(ShownConversation? shown) =>
-      shown == null ? null : (owner: shown.group ? shown.owner : null, members: shown.users);
+      shown == null ? null : (owner: shown.group ? shown.owner : null, members: shown.users, exact: false);
 
   /// Whether the API's conversation is [record], as the core's create_group holds a founding to it: its kind, a group's
   /// owner, and its users, whatever their order.
@@ -1200,9 +1296,10 @@ class Conversations {
   Future<void> _after(_Conv conv, _Where at) async {
     final id = conv.id;
     final group = conv.group;
+    if (_another.contains(id) || anotherGroupsIn(_engine.store).contains(id)) await _forgetForAnother(id);
     final held = await _group(id);
     if (held != null && held.generation >= (group?.generation ?? 0)) {
-      for (final kept in [_otherSender, _removed, _lostJoin]) {
+      for (final kept in [_otherSender, _removed, _lostJoin, _forgotten]) {
         kept.remove(id);
       }
       // This device holds the group: the record of the conversation's creation here is done with.

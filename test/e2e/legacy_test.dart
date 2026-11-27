@@ -190,12 +190,17 @@ void main() {
   );
 
   test('a_record_is_its_owner_and_members_as_the_core_takes_them', () {
-    expect(expectedOf((owner: 'o', members: ['o', 'm'])), {
+    expect(expectedOf((owner: 'o', members: ['o', 'm'], exact: false)), {
       'owner': 'o',
       'members': ['o', 'm'],
     });
-    expect(expectedOf((owner: null, members: ['a', 'b'])), {
+    expect(expectedOf((owner: null, members: ['a', 'b'], exact: false)), {
       'members': ['a', 'b'],
+    });
+    // A forgotten group's record goes back as the core gave it (mobile#369).
+    expect(expectedOf((owner: null, members: ['a', 'b'], exact: true)), {
+      'members': ['a', 'b'],
+      'exact': true,
     });
     // What the record reads: a record; anything else (a dropped one's false included) is none.
     final read = recordIn({
@@ -204,6 +209,8 @@ void main() {
     })!;
     expect(read.owner, 'a');
     expect(read.members, ['a', 'b']);
+    expect(read.exact, isFalse);
+    expect(recordIn({'members': <String>[], 'exact': true, 'before': false})?.exact, isTrue);
     expect(
       recordIn({
         'members': ['a'],

@@ -14,26 +14,33 @@ import 'store.dart';
 /// The records, by conversation: false for one whose record the person let go.
 const legacyRecords = 'legacy_records';
 
-/// A record as the core's `expected` takes it: a group's with its owner, a DM's without one.
-typedef LegacyRecord = ({String? owner, List<String> members});
+/// A record as the core's `expected` takes it: a group's with its owner, a DM's without one. [exact] for the record the
+/// core answered as it forgot the conversation's group (forget_group, mobile#369): what brings the group back has
+/// exactly its users and owner, where one from before the cutover holds a join to its users alone.
+typedef LegacyRecord = ({String? owner, List<String> members, bool exact});
 
-/// The core's `expected` of [record].
-Map<String, Object?> expectedOf(LegacyRecord record) => {'owner': ?record.owner, 'members': record.members};
+/// The core's `expected` of [record], `exact` as the core gave it.
+Map<String, Object?> expectedOf(LegacyRecord record) => {
+  'owner': ?record.owner,
+  'members': record.members,
+  if (record.exact) 'exact': true,
+};
 
-/// A record as the record kept it, or null for anything else.
+/// A record as the record kept it, or the core answered it, or null for anything else.
 LegacyRecord? recordIn(Object? kept) => switch (kept) {
   {'members': final List<Object?> members} when members.every((member) => member is String) => switch (kept['owner']) {
-    final String owner => (owner: owner, members: members.cast<String>().toList()),
-    null => (owner: null, members: members.cast<String>().toList()),
+    final String owner => (owner: owner, members: members.cast<String>().toList(), exact: kept['exact'] == true),
+    null => (owner: null, members: members.cast<String>().toList(), exact: kept['exact'] == true),
     _ => null,
   },
   _ => null,
 };
 
-/// The records of a user's conversations, in the engine's record: those from before the cutover, and the person's picks
-/// as they made a conversation on this device, until it holds its group (C1 of step 4's closing reviews). One the
-/// record didn't take is kept here for the session, so a conversation stays held to what this device first saw while
-/// the storage refuses (M4 of the desktop's review).
+/// The records of a user's conversations, in the engine's record: those from before the cutover, the person's picks as
+/// they made a conversation on this device (C1 of step 4's closing reviews), and the record of a group this device
+/// forgot (mobile#369), the last two until it holds its group. One the record didn't take is kept here for the
+/// session, so a conversation stays held to what this device first saw while the storage refuses (M4 of the desktop's
+/// review).
 class LegacyRecords {
   LegacyRecords(this._store);
   final EngineStore _store;
@@ -61,6 +68,7 @@ class LegacyRecords {
     final LegacyRecord made = (
       owner: conv.type == duvet.ConversationType.group ? conv.ownerId : null,
       members: members,
+      exact: false,
     );
     if (!await asDrawn(made)) return null;
     await _keep(conv.id, expectedOf(made));
@@ -79,12 +87,30 @@ class LegacyRecords {
     await _keep(conversationId, {...expectedOf(picked), 'created': true});
   }
 
-  /// This device holds the conversation's group: the record of its creation goes. One from before the cutover stays.
-  Future<void> heldGroup(String conversationId) async {
-    if (_valueOf(conversationId) case {'created': true}) await _keep(conversationId, null);
+  /// The group this device forgot ([record], the core's answer, exact) holds what brings it back, in the conversation's
+  /// place, over what was kept there: a record from before the cutover, or the person's yes that let one go, which
+  /// comes back once the device holds the group ([heldGroup]); an earlier forget's record, whose own it carries on; a
+  /// creation's, which goes, as the forgotten group was founded with those picks.
+  Future<void> forgot(String conversationId, LegacyRecord record) {
+    final before = switch (_valueOf(conversationId)) {
+      {'exact': true, 'before': final Object before} => before,
+      {'exact': true} || {'created': true} => null,
+      final kept => kept,
+    };
+    return _keep(conversationId, {...expectedOf(record), 'before': ?before});
   }
 
-  /// The person said yes to the members of today: the record goes, and none is made again.
+  /// This device holds the conversation's group: the record of its creation goes, and a forgotten group's gives way to
+  /// what it was kept over. One from before the cutover stays.
+  Future<void> heldGroup(String conversationId) async {
+    if (_valueOf(conversationId) case final Map<Object?, Object?> kept
+        when kept['created'] == true || kept['exact'] == true) {
+      await _keep(conversationId, kept['before']);
+    }
+  }
+
+  /// The person said yes to the members of today: the record goes, a forgotten group's with what it was kept over, and
+  /// none is made again.
   Future<void> drop(String conversationId) => _keep(conversationId, false);
 
   /// Keeps [value] as the conversation's record, or takes it out for null.

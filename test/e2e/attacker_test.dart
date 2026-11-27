@@ -1584,14 +1584,12 @@ void main() {
 
     // The API's own answers from here on, with nothing kept and no event sent (forget).
     //
-    // A finding left for an issue (the desktop's desktop-electrobun#553, which the app shares): once the core confirmed
-    // its creation (commit_result accepted), the API listing the conversation with no group makes _dropStale
-    // (sync.dart) tell the core no answer came, which the core answers not_found (nothing waits), so every open and
-    // send there throws before anything is encrypted. And once another member makes the API's group, this device stays
-    // in its own, at the same numbers: its next message goes to the API, which takes it by them, and no one can read
-    // it, nor it theirs, with no notice. What the person typed meanwhile isn't kept.
+    // mobile#369 (the desktop's #553): once the core confirmed its creation, the API listing the conversation with no
+    // group left the device in a group no one else could join, its opens and sends refused, what the person typed
+    // gone. The device forgets it (forget_group) and founds it again, held to the members it had.
     test(
-      'a_group_the_api_answered_for_and_never_kept_leaves_its_makers_message_waiting_and_the_device_goes_on',
+      'a_group_the_api_answered_for_and_never_kept_is_made_again_'
+      'and_what_its_maker_typed_goes_in_the_group_they_end_in',
       () async {
         final fake = FakeApi();
         final (ana, bo) = (fake.addUser(), fake.addUser());
@@ -1600,21 +1598,15 @@ void main() {
         final b = await firstDevice(fake, bo);
         fake.forget((method: 'POST', path: commitsPath(conversation)));
         await a.engine.openConversation(conversation);
-        final nonce = uuidv4();
-        await a.engine
-            .sendMessage(Outgoing(conversationId: conversation, nonce: nonce, text: 'kept here'))
-            .catchError((Object _) => null);
-        await turnEnded(a);
-        expect([for (final one in await a.engine.pendingMessages(conversation)) one.nonce], [nonce]);
-        // Bo's device makes the group the API keeps: Ana's goes into it, and what waited goes.
+        final kept = await _send(a, conversation, 'kept here');
         await b.engine.openConversation(conversation);
-        await until(
-          () async => (await a.engine.pendingMessages(conversation)).isEmpty,
-          what: "Ana's waiting message sent",
-        );
         await sameGroup([a, b], conversation);
+        await until(
+          () async => await _textOn(b, conversation, kept.id) == 'kept here',
+          what: "Ana's message read on Bo's device",
+        );
       },
-      skip: "a group's creation the API answered for and never kept: step 5's finding, left for an issue",
+      skip: noCore,
       timeout: _slow,
     );
 

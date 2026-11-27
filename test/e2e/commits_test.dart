@@ -183,7 +183,8 @@ void main() {
 
   // C1 of the desktop's review: a group's creation whose request never got through, and whose bytes went with the app.
   // The API lists the conversation without a group; started again, the device drops the creation its core kept and
-  // makes the group anew, claiming the key packages once more for it, and never again at each open.
+  // makes the group anew, claiming the key packages once more for it, and never again at each open. An unanswered
+  // creation is dropped, never forgotten (forget_group, mobile#369): nothing of it was confirmed.
   test(
     "a_group's_creation_cut_before_its_answer_is_made_again_after_a_restart",
     () async {
@@ -197,7 +198,8 @@ void main() {
           if (request.url.path.endsWith('/key-packages/claim')) claims.add(request.url.path);
         },
       );
-      final a = await firstDevice(fake, ana, client: watch());
+      final commands = <String>[];
+      final a = await firstDevice(fake, ana, host: WatchedHost(TestHost().gate, commands), client: watch());
       final b = await firstDevice(fake, bo);
       // Ana opens the DM: her creation's request is cut, and her app closes before it goes again.
       fake.cutRequest((method: 'POST', path: commitsPath(conversation)));
@@ -218,6 +220,7 @@ void main() {
       // Opened again, it has its group: no key package is claimed.
       await again.engine.openConversation(conversation);
       expect(claims, hasLength(4));
+      expect(commands, isNot(contains('forget_group')));
       await again.engine.stop();
       await b.engine.stop();
     },
@@ -225,10 +228,11 @@ void main() {
     timeout: _slow,
   );
 
-  // M4 of the review: a group the core holds with no commit waiting, which the API doesn't list, is no creation of this
-  // device's to drop: an open claims no key package for a group the core would refuse to make (`exists`).
+  // A group the core holds with no commit waiting, which the API doesn't list, is no creation of this device's to drop
+  // (M4 of the review): the API answered for it and kept nothing, so the device forgets it (forget_group, mobile#369)
+  // and makes it once more, held to the members it had, as it starts; an open after that claims nothing.
   test(
-    "a_group_the_core_holds_and_the_API_doesn't_list_claims_no_key_packages",
+    "a_group_the_core_holds_and_the_API_doesn't_list_is_forgotten_and_made_again_once",
     () async {
       final fake = FakeApi();
       final (ana, bo) = (fake.addUser(), fake.addUser());
@@ -241,7 +245,7 @@ void main() {
         },
       );
       final a = await firstDevice(fake, ana, client: watch());
-      await firstDevice(fake, bo);
+      final b = await firstDevice(fake, bo);
       // Ana's core makes the group and is told it was taken, with nothing sent: the API lists none.
       await stoppedByHand(a);
       await byHand(a, {
@@ -260,8 +264,11 @@ void main() {
         'seq': 1,
       });
       final again = await restarted(fake, a, client: watch());
-      await expectLater(again.engine.openConversation(conversation), throwsA(isA<CoreError>()));
-      expect(claims, isEmpty);
+      await again.engine.openConversation(conversation);
+      await sameGroup([again, b], conversation);
+      expect(claims, hasLength(2));
+      await again.engine.openConversation(conversation);
+      expect(claims, hasLength(2));
       await again.engine.stop();
     },
     skip: noCore,
