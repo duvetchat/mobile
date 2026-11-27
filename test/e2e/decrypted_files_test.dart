@@ -543,7 +543,9 @@ void main() {
     messenger.setMockMethodCallHandler(paths, (_) async => cache.path);
     addTearDown(() => messenger.setMockMethodCallHandler(paths, null));
     final files = DecryptedFiles();
-    final picked = File('${real.path}/file_picker/${uuidv4()}/notes.pdf')..createSync(recursive: true);
+    // As file_picker names it: canonical, every link resolved (macOS's /var leads to /private/var too).
+    final picked = File('${real.resolveSymbolicLinksSync()}/file_picker/${uuidv4()}/notes.pdf')
+      ..createSync(recursive: true);
     final own = File('${root.path}/notes.pdf')..createSync();
     expect(await files.takeIn(picked.path), picked.path);
 
