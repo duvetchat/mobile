@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:io';
 
 import 'package:duvet/e2e/engine.dart';
 import 'package:duvet/e2e/failures.dart';
@@ -128,6 +129,34 @@ void main() {
       expect(again.engine.conversationState(conversation), ConversationState.blocked(restart: Restart.none));
       await again.engine.stop();
       await b.engine.stop();
+    },
+    skip: noCore,
+    timeout: _slow,
+  );
+
+  // duvetchat/client#54: an API without E2E_EXTERNAL_SENDER_KEY serves no external sender, and makes no group. A
+  // device starts no encryption there, as on an API that answers no GET /api/e2e: no database, no device, no pin. Its
+  // start goes again later, and goes on once the API serves one.
+  test(
+    'an_API_that_serves_no_external_sender_starts_no_encryption_until_it_serves_one',
+    () async {
+      final fake = FakeApi();
+      final served = fake.externalSender;
+      fake.externalSender = null;
+      final ana = fake.addUser();
+      final host = TestHost();
+      final a = testDevice(fake, ana, host: host.gate);
+      await a.engine.start();
+      expect(a.state, EngineState.starting);
+      expect(a.store.read(externalSender), isNull);
+      expect(a.registered, isEmpty);
+      expect(File('${host.folder.path}/e2e/$ana/core.db').existsSync(), isFalse);
+
+      fake.externalSender = served;
+      a.clock.advance(const Duration(seconds: 2));
+      await until(() => a.state.stage == EngineStage.firstDevice);
+      expect(a.store.read(externalSender), served);
+      await a.engine.stop();
     },
     skip: noCore,
     timeout: _slow,
