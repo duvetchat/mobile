@@ -17,8 +17,8 @@ concurrency:
 
 jobs:
   flutter:
-    # On the organisation's own runner: the 2,000 free Actions minutes a month ran out.
-    runs-on: [self-hosted, linux, x64, duvet]
+    # On GitHub's runners, free for a public repository: the organisation's own runner takes only its private ones.
+    runs-on: ubuntu-24.04
     # 45: a passing run takes 23 to 27 minutes, and a runner busy with other repositories' runs stretches it past 30 (#351).
     timeout-minutes: 45
     steps:
