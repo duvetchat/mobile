@@ -178,7 +178,7 @@ void main() {
   );
 
   // M2 of the desktop's review: the route takes 60 reports an hour. A refused one (429) stops the round, its count
-  // and the other kinds' kept, and the next round waits an hour: duvet_client gives no Retry-After to wait for.
+  // and the other kinds' kept, and the next round waits an hour when the 429 says no Retry-After.
   test("a_rate_limit_stops_the_round,_and_the_next_report_waits_an_hour", () async {
     final reported = <({String kind, int count})>[];
     var refuse = true;
@@ -209,6 +209,38 @@ void main() {
     clock.advance(const Duration(minutes: 30));
     await pumpEventQueue();
     expect(reported, unorderedEquals([(kind: 'message', count: 2), (kind: 'commit', count: 2)]));
+    failures.stop();
+  });
+
+  // Minor 8 of step 5's engines review: a 429's Retry-After, which duvet_client carries, says when the next round goes,
+  // not a whole hour.
+  test("a_rate_limit's_Retry-After_says_when_the_next_report_goes", () async {
+    final reported = <String>[];
+    var refuse = true;
+    final client = MockClient((request) async {
+      if (refuse) {
+        refuse = false;
+        return http.Response(
+          jsonEncode({'error': 'too many requests, try again later'}),
+          429,
+          headers: {'retry-after': '120'},
+        );
+      }
+      reported.add((jsonDecode(request.body) as Map)['kind']! as String);
+      return http.Response('', 204);
+    });
+    final api = duvet.E2eApi(duvet.RestClient(client, router: fakeRouter, token: 't', duvetClient: engineClient));
+    final clock = TestClock();
+    final failures = Failures(api, clock)..note('message');
+    clock.advance(const Duration(minutes: 1));
+    await pumpEventQueue();
+    expect(reported, isEmpty);
+    clock.advance(const Duration(seconds: 119));
+    await pumpEventQueue();
+    expect(reported, isEmpty);
+    clock.advance(const Duration(seconds: 1));
+    await pumpEventQueue();
+    expect(reported, ['message']);
     failures.stop();
   });
 

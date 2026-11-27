@@ -18,8 +18,9 @@ const keptDevice = 'device';
 /// This installation's device's public keys, with its ID, which each sign-in registers again (bootstrap.dart).
 const deviceKeys = 'device_keys';
 
-/// The inbox's approval frames waiting for their flow (Task 27), the transfers kept for later, and the messages whose
-/// type a later task takes (a history or catch-up key: Tasks 23 and 31), as inbox.dart keeps them.
+/// The inbox's approval frames waiting for their flow (Task 27), the transfers kept for later, and the messages the
+/// core can't take yet (a history or catch-up key: Tasks 23 and 31), which each round gives it again, as inbox.dart
+/// keeps them.
 const keptApprovals = 'approvals';
 const keptTransfers = 'transfers';
 const keptLater = 'later';

@@ -57,6 +57,32 @@ void main() {
     timeout: _slow,
   );
 
+  // Minor 7 of step 5's engines review: a generation the person was asked about goes from the record with its
+  // conversation, so being added into it again later doesn't ask them of a conversation they had left.
+  test(
+    'a_conversation_this_user_is_no_longer_in_lets_its_refused_generation_go',
+    () async {
+      final fake = FakeApi();
+      final (ana, bo, cy, dee) = (fake.addUser(), fake.addUser(), fake.addUser(), fake.addUser());
+      final conversation = fake.addConversation(group: true, members: [ana, bo, cy], owner: ana, legacy: true);
+      final c = await firstDevice(fake, cy);
+      fake.addMembers(conversation, [dee]);
+      final a = await firstDevice(fake, ana);
+      await a.engine.openConversation(conversation);
+      await until(() => c.engine.conversationState(conversation) == ConversationState.membersChanged);
+      expect(refusedGenerationsIn(c.store).containsKey(conversation), isTrue);
+
+      // Ana takes Cy out; Cy's Leave finds the conversation gone, and lets it go, its refusal with it.
+      await a.engine.removeMember(conversation, cy);
+      await c.engine.leaveConversation(conversation);
+      expect(refusedGenerationsIn(c.store).containsKey(conversation), isFalse);
+      await a.engine.stop();
+      await c.engine.stop();
+    },
+    skip: noCore,
+    timeout: _slow,
+  );
+
   // M4 of the desktop's review: a record the storage didn't take is kept for the session, so the conversation is still
   // held to the members this device first saw, not to whatever the next look finds.
   test(

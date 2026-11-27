@@ -8,6 +8,7 @@ import 'package:duvet/e2e/host.dart';
 import 'package:duvet/e2e/store.dart';
 import 'package:duvet/encryption/approval.dart' show deviceUnfinished;
 import 'package:duvet/encryption/devices.dart' show devicesRefusal;
+import 'package:duvet_client/duvet.dart' as duvet;
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 
@@ -1108,6 +1109,87 @@ void main() {
       // Nothing held: this device's changes go on.
       await a.engine.removeDevice(_deviceOf(b));
       await Future.wait([a.engine.stop(), b.engine.stop(), n.engine.stop()]);
+    },
+    skip: noCore,
+    timeout: _slow,
+  );
+
+  // Minor 5 of step 5's engines review: the API's limit refuses a send of the person's act for a moment (a 429 that
+  // asks a second): the act waits it out once, on the engine's clock, and the same frame goes again. The new device's
+  // commitment reaches the approving device, and the yes's offer goes as it was made: never a new approval_offer.
+  test(
+    "an_approval's_send_refused_for_a_moment_goes_once_the_API_lets_it",
+    () async {
+      final fake = FakeApi();
+      final ana = fake.addUser();
+      final log = <String>[];
+      final (commitments, offers) = (<String>[], <String>[]);
+      TestDevice? fresh;
+      final a = await firstDevice(
+        fake,
+        ana,
+        host: WatchedHost(TestHost().gate, log),
+        client: _inboxOf(fake, () => fresh == null ? null : _deviceOf(fresh), offers),
+      );
+      final n = fresh = testDevice(fake, ana, client: _inboxOf(fake, () => _deviceOf(a), commitments));
+      await n.engine.start();
+      await n.engine.beginApproval();
+
+      fake.refuse((method: 'POST', path: '/api/devices/${_deviceOf(a)}/inbox'), 429, headers: {'Retry-After': '1'});
+      final using = n.engine.useCode();
+      await until(() {
+        n.clock.advance(const Duration(seconds: 1));
+        return commitments.length == 2;
+      }, what: 'the commitment sent again');
+      await using;
+      expect(commitments.last, commitments.first);
+      expect(_setupOf(n.state)?.way, SetupWay.code);
+      await until(() => _approvalOf(a.state)?.phase == ApprovalPhase.asked, what: 'the approving device asking');
+
+      fake.refuse((method: 'POST', path: '/api/devices/${_deviceOf(n)}/inbox'), 429, headers: {'Retry-After': '1'});
+      final approving = a.engine.approveDevice(_deviceOf(n), _questionOf(a));
+      await until(() {
+        a.clock.advance(const Duration(seconds: 1));
+        return offers.length == 2;
+      }, what: 'the offer sent again');
+      await approving;
+      expect(offers.last, offers.first);
+      expect(log.where((cmd) => cmd == 'approval_offer'), hasLength(1));
+      await until(() => _offered(n), what: 'the new device taking the offer');
+      await until(() => _approvalOf(a.state)?.phase == ApprovalPhase.code, what: 'the code shown');
+      await Future.wait([a.engine.stop(), n.engine.stop()]);
+    },
+    skip: noCore,
+    timeout: _slow,
+  );
+
+  // Minor 5 too: asked to wait longer than a few seconds, the act doesn't hold the engine's turn for it. It fails as
+  // the rate limit, with its wait: never as no device having got the request, and never by dropping one without a
+  // word.
+  test(
+    "an_approval's_send_the_API_holds_back_longer_fails_as_the_rate_limit",
+    () async {
+      final fake = FakeApi();
+      final ana = fake.addUser();
+      final log = <String>[];
+      final a = await firstDevice(fake, ana, host: WatchedHost(TestHost().gate, log));
+      final n = await _newDevice(fake, ana);
+      await n.engine.beginApproval();
+      final limited = isA<duvet.DuvetApiException>()
+          .having((e) => e.statusCode, 'status', 429)
+          .having((e) => e.retryAfter, 'wait', const Duration(minutes: 1));
+
+      fake.refuse((method: 'POST', path: '/api/devices/${_deviceOf(a)}/inbox'), 429, headers: {'Retry-After': '60'});
+      final first = _qrOf(n);
+      await expectLater(n.engine.useCode(), throwsA(limited));
+      // Its attempt replaced the QR's in the core: a new QR, as the one on screen would open nothing.
+      expect(_qrOf(n), allOf(isA<String>(), isNot(first)));
+
+      await n.engine.useCode();
+      await until(() => _approvalOf(a.state)?.phase == ApprovalPhase.asked);
+      fake.refuse((method: 'POST', path: '/api/devices/${_deviceOf(n)}/inbox'), 429, headers: {'Retry-After': '60'});
+      await expectLater(a.engine.approveDevice(_deviceOf(n), _questionOf(a)), throwsA(limited));
+      await Future.wait([a.engine.stop(), n.engine.stop()]);
     },
     skip: noCore,
     timeout: _slow,

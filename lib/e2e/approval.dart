@@ -164,6 +164,10 @@ const _qrLife = Duration(minutes: 9);
 /// What a later round may get past: a cut call, the database, another engine (inbox.dart's rule).
 const _again = {'internal', 'storage', 'locked'};
 
+/// The longest wait of a 429 that a send of the person's act waits out, once (step 5's engines review, Minor 5): the
+/// engine's turn holds the person's other acts meanwhile.
+const _shortWait = Duration(seconds: 5);
+
 /// The six digits an approving device shows, and nothing else, which the person types into the new one.
 final _sixDigits = RegExp(r'^\d{6}$');
 
@@ -314,6 +318,22 @@ class Approvals {
   void Function() _after(Duration wait, FutureOr<void> Function() run) =>
       _engine.clock.later(wait, () => _soon(() async => run()));
 
+  /// [frame] to [device]'s inbox, from the person's act: a 429 that asks a few seconds at most ([_shortWait], by its
+  /// Retry-After) is waited out once, on the engine's clock, and the same frame goes again. Refused again, or asked to
+  /// wait longer, its 429 is thrown, the rate limit with its wait.
+  Future<void> _send(String device, String frame) async {
+    try {
+      await _engine.api.sendToDevice(device, frame);
+    } on duvet.DuvetApiException catch (error) {
+      final wait = error.retryAfter;
+      if (error.statusCode != 429 || wait == null || wait > _shortWait) rethrow;
+      final waited = Completer<void>();
+      _engine.clock.later(wait, waited.complete);
+      await waited.future;
+      await _engine.api.sendToDevice(device, frame);
+    }
+  }
+
   /// A new attempt, shown as its QR, made again before its ten minutes end: the attempt before is over.
   Future<void> begin() async {
     _attempt?.stop();
@@ -340,7 +360,8 @@ class Approvals {
 
   /// The code's way, an attempt of its own: its commitment, with this device's name, to each listed device of the
   /// user's, and its fingerprint shown, which the approving device's screen shows too. None that can approve, or none
-  /// that got it, is said (`not_found` `approver`): then a new QR, as the code's attempt replaced the QR's in the core.
+  /// that got it, is said (`not_found` `approver`), and so is the API's rate, as its 429, when a moment's wait didn't
+  /// get the commitment through ([_send]): then a new QR, as the code's attempt replaced the QR's in the core.
   Future<void> useCode() async {
     final api = _engine.api;
     final others = [
@@ -354,18 +375,25 @@ class Approvals {
     final commitment = begun['commitment']! as String;
     final frame = approvalFrameMessage((step: ApprovalStep.commitment, data: commitment, name: _engine.deviceName));
     var sent = 0;
+    duvet.DuvetApiException? limited;
     for (final other in others) {
       try {
-        await api.sendToDevice(other.id, frame);
+        await _send(other.id, frame);
         sent++;
       } catch (error) {
+        // The API's rate, still: the act says so, rather than leave a device out without a word, and asks no other.
+        if (error is duvet.DuvetApiException && error.statusCode == 429) {
+          limited = error;
+          break;
+        }
         debugPrint("e2e: a device of the user's wasn't asked to approve this one: $error");
       }
     }
-    if (sent == 0) {
+    if (limited != null || sent == 0) {
       // Its approval_begin replaced the QR's attempt: a new QR, as the one on screen would open nothing (review M3).
       await begin();
-      throw CoreError('not_found', message: "no other device of the user's got this one's request", what: 'approver');
+      throw limited ??
+          CoreError('not_found', message: "no other device of the user's got this one's request", what: 'approver');
     }
     _attempt?.stop();
     final attempt = _Attempt.code(approvalFingerprint(base64Decode(commitment)));
@@ -429,7 +457,8 @@ class Approvals {
       }
       rethrow;
     }
-    await _engine.api.sendToDevice(device, approvalFrameMessage((step: ApprovalStep.offer, data: offer, name: null)));
+    // The offer just made, and no other: a moment's rate limit is waited out with these bytes ([_send]).
+    await _send(device, approvalFrameMessage((step: ApprovalStep.offer, data: offer, name: null)));
     asked
       ..phase = ApprovalPhase.offered
       ..unfinished = false

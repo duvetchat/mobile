@@ -934,5 +934,10 @@
 		"qr": "pmF2AWR1c2VyUAGiF2KTUnBmolwi93sbPQNmZGV2aWNlUAGiF2Kcp3z3hIqiuRMWNhRtc2lnbmF0dXJlX2tleVggpuGLH4CXR+Pw9H5ctygdL0fPc95MCobd6TjNjnZ2mWRoaHBrZV9rZXlYIDUNNKgG6/2FKzh7KxoH239M8PCQARC1fW9FuwqwCNJoY2tleVggYW4XD+cisLmAmdjR1hHNrA916mUzTLSEUaEGMBzm428=",
 		"error_correction": "M",
 		"text": "pmF2AWR1c2VyUAGiF2KTUnBmolwi93sbPQNmZGV2aWNlUAGiF2Kcp3z3hIqiuRMWNhRtc2lnbmF0dXJlX2tleVggpuGLH4CXR+Pw9H5ctygdL0fPc95MCobd6TjNjnZ2mWRoaHBrZV9rZXlYIDUNNKgG6/2FKzh7KxoH239M8PCQARC1fW9FuwqwCNJoY2tleVggYW4XD+cisLmAmdjR1hHNrA916mUzTLSEUaEGMBzm428="
+	},
+	"approval_qr_fingerprint": {
+		"about": "What a phone that scans a new device's QR shows, and the new computer's box beside its commitment's (desktop#557, mobile#363): the approval's fingerprint of the bytes the QR's text holds (standard base64, decoded), through the same function as a commitment's, as the QR holds no commitment.",
+		"qr": "pmF2AWR1c2VyUAGiF2KTUnBmolwi93sbPQNmZGV2aWNlUAGiF2Kcp3z3hIqiuRMWNhRtc2lnbmF0dXJlX2tleVggpuGLH4CXR+Pw9H5ctygdL0fPc95MCobd6TjNjnZ2mWRoaHBrZV9rZXlYIDUNNKgG6/2FKzh7KxoH239M8PCQARC1fW9FuwqwCNJoY2tleVggYW4XD+cisLmAmdjR1hHNrA916mUzTLSEUaEGMBzm428=",
+		"fingerprint": "1efd 7c8f 7d23 fd8f"
 	}
 }

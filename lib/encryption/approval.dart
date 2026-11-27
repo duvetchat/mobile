@@ -6,6 +6,7 @@ import 'package:forui/forui.dart';
 import 'package:mobile_scanner/mobile_scanner.dart';
 
 import '../data/repository.dart';
+import '../e2e/conventions.dart' show qrFingerprint;
 import '../e2e/engine.dart';
 import '../e2e/host.dart' show CoreError;
 import '../e2e/notices.dart';
@@ -22,7 +23,13 @@ const approvalUnfinished =
     "It was approved here before, but didn't finish setting up: it's taken off your device list first, then approved "
     'again.';
 String approvalName(String name) => 'The device calls itself “$name”.';
-const approvalFingerprintLine = "Approve it only if the new device's screen shows the same 16 characters.";
+
+/// What the new device's fingerprint is compared with, the desktop's box's words (its COMPARE_WITH_THE_BOX): a
+/// computer's Duvet shows it in a box of its own, outside its window, as a script in its page could draw another there
+/// (mobile#363, the desktop's #557). A phone draws its own.
+const approvalFingerprintLine =
+    "Approve it only if it's the device you're setting up now, and it shows the same 16 characters. The Duvet app on a "
+    'computer shows them in a box of its own, outside its window.';
 const approvalNo = 'No';
 const approvalYes = "It's mine";
 const approvalTitle = 'Approve your new device';
@@ -284,8 +291,9 @@ class _Page extends StatelessWidget {
 
 /// The scan of a new device's QR from this phone (Ruling 21; review 26's rules for task 27): the camera, opened only by
 /// the person's tap, which is when Android asks for its permission; the device the QR names, asked about by its name
-/// before anything is approved; then, on the person's yes, its approval and its transfer, sent again on Try again after
-/// a send that failed. Without a camera it says to approve by code.
+/// and the fingerprint of the text read, which the new device shows too (mobile#363), before anything is approved;
+/// then, on the person's yes, its approval and its transfer, sent again on Try again after a send that failed. Without
+/// a camera it says to approve by code.
 class ScanDevicePage extends StatefulWidget {
   const ScanDevicePage(this.repository, {this.camera, super.key});
 
@@ -341,6 +349,7 @@ class _ScanDevicePageState extends State<ScanDevicePage> {
     setState(() {
       _busy = false;
       _scanned = scanned;
+      // Never asked about without the fingerprint of the text read, which the person compares (mobile#363).
       _said = unchecked
           ? scanCheckFailed
           : scanned == null
@@ -349,6 +358,8 @@ class _ScanDevicePageState extends State<ScanDevicePage> {
           ? notYours
           : scanned.listed
           ? approvalListed
+          : qrFingerprint(text) == null
+          ? notACode
           : null;
     });
   }
@@ -439,8 +450,16 @@ class _ScanDevicePageState extends State<ScanDevicePage> {
                 const SizedBox(height: 8),
                 Text(approvalUnfinished, style: DuvetType.caption.copyWith(color: colors.mutedForeground)),
               ],
+              // The fingerprint of the very text read, which the yes approves from (mobile#363).
+              const SizedBox(height: 16),
+              Text(
+                fingerprintOf(qrFingerprint(_qr ?? '') ?? ''),
+                style: DuvetType.code.copyWith(fontSize: 16, letterSpacing: 1, color: colors.foreground),
+              ),
+              const SizedBox(height: 4),
+              Text(approvalFingerprintLine, style: DuvetType.caption.copyWith(color: colors.mutedForeground)),
               if (name.isNotEmpty) ...[
-                const SizedBox(height: 8),
+                const SizedBox(height: 4),
                 Text(approvalName(name), style: DuvetType.caption.copyWith(color: colors.mutedForeground)),
               ],
               const SizedBox(height: 24),

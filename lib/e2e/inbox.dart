@@ -35,13 +35,48 @@ bool _forLater(CoreError error) =>
     (error.code == 'bad_command' && error.field != null && error.field != 'message') ||
     error.code == 'needs_identities';
 
+/// What the record keeps under [key], as it's kept.
+List<Object?> _keptUnder(EngineStore store, String key) => switch (store.read(key)) {
+  final List<Object?> list => list,
+  _ => const <Object?>[],
+};
+
+/// The messages the record keeps under [key], as [_keep] kept them: one that doesn't read as one is left out.
+List<duvet.InboxMessage> _keptMessages(EngineStore store, String key) => [
+  for (final one in _keptUnder(store, key))
+    if (one case {
+      'id': final String id,
+      'from_user_id': final String fromUserId,
+      'from_device_id': final String fromDeviceId,
+      'message': final String message,
+      'created_at': final String at,
+    })
+      if (DateTime.tryParse(at) case final createdAt?)
+        duvet.InboxMessage(
+          id: id,
+          fromUserId: fromUserId,
+          fromDeviceId: fromDeviceId,
+          message: message,
+          createdAt: createdAt,
+        ),
+];
+
+/// The message [id] goes from the record's [key]: one whose write fails is given to the core again, which takes it as
+/// before.
+Future<void> _letGo(EngineStore store, String key, String id) {
+  final kept = [
+    for (final one in _keptUnder(store, key))
+      if (one is! Map || one['id'] != id) one,
+  ];
+  return store
+      .write(key, kept.isEmpty ? null : kept)
+      .catchError((Object error) => debugPrint("e2e: a message the core took stays kept: ${error.runtimeType}"));
+}
+
 /// Keeps [message] in the record under [key], once, with the newest of those before it.
 Future<void> _keep(EngineStore store, String key, duvet.InboxMessage message) {
   final kept = [
-    for (final one in switch (store.read(key)) {
-      final List<Object?> list => list,
-      _ => const <Object?>[],
-    })
+    for (final one in _keptUnder(store, key))
       if (one is Map && one['id'] != message.id) one,
     {
       'id': message.id,
@@ -59,8 +94,9 @@ Future<void> _keep(EngineStore store, String key, duvet.InboxMessage message) {
 /// to receive_direct, with the identity the API serves for the user today (what a rotation's transfer is checked
 /// against) and its sender's certificate, from the sender's served identity. A transfer the core keeps for later
 /// (`not_found` `code`: an approval whose code wasn't accepted yet) is kept in the record, as is one a later task takes
-/// ([_forLater]); one no core here can read goes, as does one whose call is cut five rounds running ([tries], by its
-/// ID). One that doesn't open is counted for the API as a failure to decrypt (`direct`, [failures]). A rotation's
+/// ([_forLater]), which each round gives to the core again first, until it's done with (the desktop's rule); one no
+/// core here can read goes, as does one whose call is cut five rounds running ([tries], by its ID). One that doesn't
+/// open is counted for the API as a failure to decrypt (`direct`, [failures]). A rotation's
 /// transfer that keeps a device this device's own waiting change takes off is refused (`removed_device_listed`,
 /// duvetchat/e2e#49), which [relisted] hears: that change can never finish. What the core answered goes to [taken]
 /// before its message leaves the inbox (a shared history's or a catch-up's key, which the record keeps: history.dart);
@@ -87,8 +123,11 @@ Future<bool> takeInbox(
         },
       );
 
-  /// Whether [message] is done with: handled, kept, or one that never will be.
+  /// Whether [message] is done with: handled, kept, or one that never will be. [later]: whether it's one the core can't
+  /// take yet, which the record keeps.
+  var later = false;
   Future<bool> handleOne(duvet.InboxMessage message) async {
+    later = false;
     try {
       if (readApprovalFrame(message.message) != null) {
         // Approvals are between the user's own devices (M3 of the desktop's review).
@@ -123,6 +162,7 @@ Future<bool> takeInbox(
         await _keep(store, keptTransfers, message);
       } else if (_forLater(error)) {
         await _keep(store, keptLater, message);
+        later = true;
       } else if (error.code == 'rule_violation' && error.rule == 'removed_device_listed') {
         debugPrint("e2e: another device's change of keys keeps a device this one takes off, and goes.");
         relisted?.call();
@@ -143,6 +183,13 @@ Future<bool> takeInbox(
       debugPrint('e2e: the inbox waits for its next round: $error');
       return false;
     }
+  }
+
+  // What the core couldn't take before (a key whose sender it didn't know yet), first: one done with leaves the record,
+  // and one it still can't take, or whose call was cut, stays for the next round.
+  for (final message in _keptMessages(store, keptLater)) {
+    if (!await handle(message) || later) continue;
+    await _letGo(store, keptLater, message.id);
   }
 
   String? after;

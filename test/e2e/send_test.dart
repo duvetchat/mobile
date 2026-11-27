@@ -327,6 +327,98 @@ void main() {
     timeout: _slow,
   );
 
+  // Minor 1 of step 5's engines review: a sent the core refuses is a word on its message, which the API took; a cut
+  // call to the core is no word on it at all. Ana's device doesn't hear its own messages' events, which would settle
+  // them through the queue first.
+  test(
+    'a_sent_that_answers_bad_command_keeps_its_message,_and_the_ones_after_it_go',
+    () async {
+      final refused = <String>{};
+      final host = WatchedHost(
+        TestHost().gate,
+        [],
+        fail: (command) => command['cmd'] == 'sent' && refused.contains(command['nonce'])
+            ? CoreError('bad_command', message: 'another message has that ID', field: 'message_id')
+            : null,
+      );
+      final (:fake, ana: _, bo: _, :a, :b, :conversation, :seen, aClient: _) = await _dm(
+        aHost: host,
+        aHears: (event) => event.type != 'DM_MESSAGE_CREATE',
+      );
+      final path = (method: 'POST', path: _messagesPath(conversation));
+      final (first, second, third) = (uuidv4(), uuidv4(), uuidv4());
+      // Two messages that wait, their requests cut (the second's flush sent the first, cut again).
+      fake.cutRequest(path);
+      await _refused(a.engine.sendMessage(Outgoing(conversationId: conversation, nonce: first, text: 'first')));
+      fake.cutRequest(path);
+      await _refused(a.engine.sendMessage(Outgoing(conversationId: conversation, nonce: second, text: 'second')));
+      expect(await _nonces(a, conversation), [first, second]);
+
+      // The API takes the first, and the core won't bind it to the answer: it stays, for the person's Retry or
+      // Dismiss, and the rest go on, the new one too.
+      refused.add(first);
+      final sent = await a.engine.sendMessage(Outgoing(conversationId: conversation, nonce: third, text: 'third'));
+      expect(sent?.nonce, third);
+      expect(await _nonces(a, conversation), [first]);
+      expect([for (final post in _posts(seen, conversation)) post['nonce']], [first, first, first, second, third]);
+      final bob = await restarted(fake, b);
+      final ids = await _queued(bob, conversation);
+      expect(ids, hasLength(3));
+      await until(() async => await _textOn(bob, conversation, ids[2]) == 'third');
+      expect([for (final id in ids) await _textOn(bob, conversation, id)], ['first', 'second', 'third']);
+      await a.engine.stop();
+      await bob.engine.stop();
+    },
+    skip: noCore,
+    timeout: _slow,
+  );
+
+  test(
+    'a_core_call_cut_in_a_flush_stops_it,_so_none_after_it_goes_first',
+    () async {
+      final cut = <String>{};
+      final host = WatchedHost(
+        TestHost().gate,
+        [],
+        fail: (command) => command['cmd'] == 'encrypt' && cut.remove(command['nonce'])
+            ? CoreError('internal', message: 'the call was cut')
+            : null,
+      );
+      final (:fake, ana: _, bo: _, :a, :b, :conversation, :seen, aClient: _) = await _dm(
+        aHost: host,
+        aHears: (event) => event.type != 'DM_MESSAGE_CREATE',
+      );
+      final path = (method: 'POST', path: _messagesPath(conversation));
+      final (first, second, third) = (uuidv4(), uuidv4(), uuidv4());
+      fake.cutRequest(path);
+      await _refused(a.engine.sendMessage(Outgoing(conversationId: conversation, nonce: first, text: 'first')));
+      fake.cutRequest(path);
+      await _refused(a.engine.sendMessage(Outgoing(conversationId: conversation, nonce: second, text: 'second')));
+      expect(await _nonces(a, conversation), [first, second]);
+
+      // The person's next send: the first's call to the core is cut as the flush sends it again. It's no word on
+      // that message, so nothing after it goes before it: the person's send fails, and all three wait, in order.
+      cut.add(first);
+      final before = _posts(seen, conversation).length;
+      await _refused(a.engine.sendMessage(Outgoing(conversationId: conversation, nonce: third, text: 'third')));
+      expect(_posts(seen, conversation).sublist(before), isEmpty);
+      expect(await _nonces(a, conversation), [first, second, third]);
+
+      // The person's Retry sends them in their order.
+      await a.engine.resendMessage(conversation, third);
+      expect(await _nonces(a, conversation), isEmpty);
+      expect([for (final post in _posts(seen, conversation).sublist(before)) post['nonce']], [first, second, third]);
+      final bob = await restarted(fake, b);
+      final ids = await _queued(bob, conversation);
+      await until(() async => await _textOn(bob, conversation, ids.last) == 'third');
+      expect([for (final id in ids) await _textOn(bob, conversation, id)], ['first', 'second', 'third']);
+      await a.engine.stop();
+      await bob.engine.stop();
+    },
+    skip: noCore,
+    timeout: _slow,
+  );
+
   test(
     'an_edit_and_a_deletion_apply_from_the_entry_their_answer_gives',
     () async {

@@ -211,6 +211,44 @@ void main() {
     expect(Push.fromData({..._data(), 'sent_at': '8640000000000000'}), isA<MessagePush>());
   });
 
+  // Step 5's fuzzing, then the controller's batch: the API writes a push's numbers in decimal digits alone
+  // (strconv.FormatInt). int.tryParse took more (`0x10` as 16, ` 5 ` and `+5` as 5, a sign): such a number is the
+  // server's word in no form the API writes, and the push is read as one the app can't read.
+  test("fromData reads a push's numbers only as decimal digits, as the API writes them", () {
+    final encrypted = {
+      'type': 'encrypted_message',
+      'message_id': _message,
+      'author_id': _maya,
+      'conversation_id': _conversation,
+      'sent_at': '1794702917695',
+      'seq': '7',
+    };
+    final call = {
+      'type': 'call',
+      'conversation_id': _conversation,
+      'initiator_id': _maya,
+      'started_at': '1794702917695',
+      'ring_until': '1794702947695',
+    };
+    final end = {'type': 'call_end', 'conversation_id': _conversation, 'started_at': '1794702917695'};
+    expect((Push.fromData(encrypted)! as EncryptedMessagePush).seq, 7);
+    expect(Push.fromData(call), isA<CallPush>());
+    expect((Push.fromData(end)! as CallEndPush).startedAt, 1794702917695);
+    for (final wrong in ['0x10', ' 5 ', '5 ', '+5', '-5', '']) {
+      for (final (data, key) in [
+        (encrypted, 'seq'),
+        (encrypted, 'sent_at'),
+        (_data(), 'sent_at'),
+        (call, 'started_at'),
+        (call, 'ring_until'),
+        (end, 'started_at'),
+      ]) {
+        expect(Push.fromData({...data, key: wrong}), isNull, reason: '${data['type']}\'s $key as "$wrong"');
+      }
+      expect(MessagePush.kept({..._data(), 'sent_at': wrong}), isNull, reason: 'a kept line\'s sent_at as "$wrong"');
+    }
+  });
+
   test("a call's notification has an ID of its own, apart from its conversation's messages", () {
     expect(callNotificationIdOf(_conversation), isNot(notificationIdOf(_conversation)));
     expect(callNotificationIdOf(_conversation), callNotificationIdOf(_conversation));

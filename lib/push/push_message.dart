@@ -27,11 +27,20 @@ String? _field(Map<String, dynamic> data, String key) => switch (data[key]) {
   _ => null,
 };
 
-/// The most milliseconds a DateTime holds either way of 1970: past them, it throws.
+final _digits = RegExp(r'^[0-9]+$');
+
+/// A number of the push's as the API writes it (strconv.FormatInt): decimal digits alone. Null for anything else, a
+/// sign, a space or `0x` among them, which int.tryParse would take, and for one past what an int holds.
+int? _number(Map<String, dynamic> data, String key) => switch (_field(data, key)) {
+  final String digits when _digits.hasMatch(digits) => int.tryParse(digits),
+  _ => null,
+};
+
+/// The most milliseconds a DateTime holds after 1970: past them, it throws.
 const _mostMillis = 8640000000000000;
 
-DateTime? _millis(Map<String, dynamic> data, String key) => switch (int.tryParse(_field(data, key) ?? '')) {
-  final int ms when ms >= -_mostMillis && ms <= _mostMillis => DateTime.fromMillisecondsSinceEpoch(ms, isUtc: true),
+DateTime? _millis(Map<String, dynamic> data, String key) => switch (_number(data, key)) {
+  final int ms when ms <= _mostMillis => DateTime.fromMillisecondsSinceEpoch(ms, isUtc: true),
   _ => null,
 };
 
@@ -86,13 +95,15 @@ final class CallEndPush extends Push {
 
   const CallEndPush({required this.conversationId, this.startedAt = 0});
 
-  static CallEndPush? _fromData(Map<String, dynamic> data) => switch (_field(data, 'conversation_id')) {
-    final String conversation when isDuvetId(conversation) => CallEndPush(
-      conversationId: conversation,
-      startedAt: int.tryParse(_field(data, 'started_at') ?? '') ?? 0,
-    ),
-    _ => null,
-  };
+  /// Without a start, an end is of whatever call of the conversation shows; with one the API wouldn't write, it's none.
+  static CallEndPush? _fromData(Map<String, dynamic> data) =>
+      switch ((_field(data, 'conversation_id'), data.containsKey('started_at') ? _number(data, 'started_at') : 0)) {
+        (final String conversation, final int startedAt) when isDuvetId(conversation) => CallEndPush(
+          conversationId: conversation,
+          startedAt: startedAt,
+        ),
+        _ => null,
+      };
 }
 
 /// A conversation's call's notification ID, apart from its messages' ([notificationIdOf]).
@@ -255,7 +266,7 @@ final class EncryptedMessagePush extends Push {
     final conversation = _field(data, 'conversation_id');
     final author = _field(data, 'author_id');
     final sentAt = _millis(data, 'sent_at');
-    final seq = int.tryParse(_field(data, 'seq') ?? '');
+    final seq = _number(data, 'seq');
     if (message == null || !isDuvetId(message) || conversation == null || !isDuvetId(conversation)) return null;
     if (author == null || sentAt == null || seq == null) return null;
     Map<String, Object?>? entry;

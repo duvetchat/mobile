@@ -369,8 +369,9 @@ class Conversations {
   /// into that generation with them asks no more; it goes with the refusal it answered (M5 of the desktop's review).
   final _accepted = <String, ({int generation, String members})>{};
 
-  /// The members [_deviceless] was worked out from, by conversation: once the core's differ, it's asked again (I3).
-  final _devicelessFrom = <String, List<String>>{};
+  /// The group [_deviceless] was worked out from, by conversation: once the core's members differ, or those of them
+  /// with a device in it, it's asked again (I3; #350).
+  final _devicelessFrom = <String, _Held>{};
 
   /// Restarts the core or the API refused, by conversation: the queue's last number then. Restart stays off until a
   /// new entry comes (M1 of the review).
@@ -693,8 +694,8 @@ class Conversations {
     final held = conv?.group == null ? null : await _group(conversationId);
     if (conv == null || held == null) return;
     if (!held.members.every(conv.hasMember)) conv = await _fresh(conversationId) ?? conv;
-    _devicelessFrom[conv.id] = held.members;
-    _deviceless[conv.id] = await withoutDevices(_engine, conv.api, held.members);
+    _devicelessFrom[conv.id] = held;
+    _deviceless[conv.id] = await withoutDevices(_engine, conv.api, held);
     final now = _states[conv.id];
     if (now == null || now.name == ConversationNotice.noDevice) _set(conv.id, _goingOn(conv.id));
   }
@@ -793,7 +794,8 @@ class Conversations {
     retry.cancel = _engine.clock.later(_backoff(retry.tries++), () => _soon(() => sync(id)));
   }
 
-  /// The conversation is no longer the user's (left, removed, deleted): nothing more is asked of it.
+  /// The conversation is no longer the user's (left, removed, deleted): nothing more is asked of it, its catch-ups and
+  /// a generation its person was asked about let go too, as the desktop's drop does (step 5's engines review, Minor 7).
   void _gone(String id) {
     _retries.remove(id)?.cancel();
     _inFlight.remove(id)?.cancel?.call();
@@ -802,6 +804,9 @@ class Conversations {
     _welcomeGenerations.remove(id);
     _joinsLost.remove(id);
     _accepted.remove(id);
+    _catchUps.forget(id);
+    // The record's write logs its own failure: the refusal goes from memory at once.
+    unawaited(_unrefuse(id));
     _deviceless.remove(id);
     _devicelessFrom.remove(id);
     _restartRefused.remove(id);
@@ -1029,6 +1034,10 @@ class Conversations {
         blocked: held['blocked'] == true,
         owner: held['owner'] as String?,
         members: [for (final m in (held['members']! as List).cast<Map<String, Object?>>()) m['user_id']! as String],
+        joined: {
+          for (final device in held['devices'] as List? ?? const [])
+            if (device case {'user_id': final String user}) user,
+        }.toList(),
       );
     } on CoreError catch (error) {
       if (error.code == 'not_found') return null;
@@ -1052,8 +1061,10 @@ class Conversations {
       // In the API's generation, at or past any it refused: the refusal and its yes are done with.
       if (held.generation >= (_refused[id] ?? held.generation)) await _unrefuse(id);
       if (_accepted[id] case final yes? when held.generation >= yes.generation) _accepted.remove(id);
-      // Its members changed since who has no device was worked out: asked again (I3 of the review).
-      if (_devicelessFrom[id] case final from? when !held.blocked && !sameUsers(from, held.members)) {
+      // Its members changed since who has no device was worked out, or which of them have a device in it (a member's
+      // first device in, or last one out): asked again (I3 of the review; #350).
+      if (_devicelessFrom[id] case final from?
+          when !held.blocked && (!sameUsers(from.members, held.members) || !sameUsers(from.joined, held.joined))) {
         try {
           await checkDevices(id);
         } catch (error) {

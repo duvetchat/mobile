@@ -1308,7 +1308,11 @@ void main() {
     for (var n = 0; n < picked.length + runs(4000); n++) {
       final data = n < picked.length ? picked[n] : _pushOf(rng);
       final push = timed(() => Push.fromData(data), () => data);
-      int? millis(String key) => int.tryParse(_field(data, key) ?? '');
+      // A number as the API writes it: decimal digits alone.
+      int? millis(String key) => switch (_field(data, key)) {
+        final String digits when RegExp(r'^[0-9]+$').hasMatch(digits) => int.tryParse(digits),
+        _ => null,
+      };
       bool aTime(int? ms) => ms != null && ms.abs() <= 8640000000000000;
       switch (push) {
         case null:
