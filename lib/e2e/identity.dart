@@ -153,22 +153,37 @@ Future<void> forgetApproved(EngineStore store, Iterable<String> devices) async {
 
 /// Whether this device took the identity the API serves (recovered, or approved: Tasks 26 and 27) and the API's list
 /// doesn't name it yet: its first list, with its certificate, is what's left of its setup (recover.dart). A list that
-/// doesn't read says nothing of it: the core's observe_user decides.
-bool firstListWaits(duvet.Identity served, CoreStatus status) =>
+/// doesn't read says nothing of it: the core's observe_user decides. Never once the API listed it ([listedDevice]): a
+/// list without it then is older than the one it holds, or a newer one that leaves it out, which the core's observation
+/// tells apart, and a first list put up on top of an older one would lose its race (step 5).
+bool firstListWaits(duvet.Identity served, CoreStatus status, EngineStore store) =>
     status.hasIdentity &&
     status.deviceId != null &&
+    store.read(listedDevice) != status.deviceId &&
     served.identityKey == status.identityKey &&
     listDevices(served.deviceList)?.contains(status.deviceId) == false;
+
+/// What this device is by the list its core holds of its user: removed once that list leaves the device out, else
+/// ready. A list that doesn't read says nothing of it, as in [firstListWaits].
+EngineState _byHeldList(CoreStatus status) =>
+    listDevices(status.deviceList ?? '')?.contains(status.deviceId) == false ? EngineState.removed : EngineState.ready;
 
 /// What the user's identity, as served, makes of this device (step 5): none yet, a first device; one this device
 /// doesn't hold, or holds without being on its list yet (its first list still to go up), a new device; its own,
 /// ready. Served one this device doesn't hold while it holds another, a rotation's transfer for it may wait in the
 /// inbox ([takeInbox]): without one, the user's devices went on without this one, which is off the list (removed; a
-/// rotation off it removes it, and starting over leaves it unlisted).
+/// rotation off it removes it, and starting over leaves it unlisted). Of the identity this device holds, the list its
+/// core keeps once it observed the served one decides: a list the server rolls back changes nothing. And none served
+/// to a device whose core holds the identity the API took (no create_identity waits for its upload) makes no first
+/// device of it: the core makes no second identity, so it goes on with what it holds, as the server only withholds.
 Future<EngineState> identityState(E2EEngine engine, Future<Object?> Function() takeInbox) async {
   var served = await servedIdentity(engine);
-  if (served == null) return const EngineState.firstDevice();
   final status = await coreStatus(engine.host);
+  if (served == null) {
+    if (!status.hasIdentity || status.waitingUpload == 'create_identity') return const EngineState.firstDevice();
+    // A change of keys of its own waits on, as when the API serves the identity it replaces (below).
+    return status.waitingUpload == 'rotate_keys' ? const EngineState.rotation() : _byHeldList(status);
+  }
   if (!status.hasIdentity) return EngineState.newDevice;
   // A rotation of this device's own, cut before its upload's answer (Review Focus 3). The API serving the identity it
   // made took it: confirmed now, nothing shown or sent again, as its key was saved before it went. Else the core holds
@@ -178,11 +193,12 @@ Future<EngineState> identityState(E2EEngine engine, Future<Object?> Function() t
     if (served.identityKey != status.identityKey) return const EngineState.rotation();
     await confirmIdentity(engine, served.deviceList == status.deviceList ? served.deviceListVersion : null);
   }
-  if (firstListWaits(served, status)) return EngineState.newDevice;
-  if (await observeOwn(engine, served) != 'not_own_identity') return EngineState.ready;
+  if (firstListWaits(served, status, engine.store)) return EngineState.newDevice;
+  if (await observeOwn(engine, served) != 'not_own_identity') return _byHeldList(await coreStatus(engine.host));
   await takeInbox();
   served = await servedIdentity(engine) ?? served;
-  return await observeOwn(engine, served) == 'not_own_identity' ? EngineState.removed : EngineState.ready;
+  if (await observeOwn(engine, served) == 'not_own_identity') return EngineState.removed;
+  return _byHeldList(await coreStatus(engine.host));
 }
 
 /// The first device's identity goes up (PUT …/identity) with the list naming this device alone, or a start over's in

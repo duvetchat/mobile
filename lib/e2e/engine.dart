@@ -1355,6 +1355,15 @@ class E2EEngine implements DeviceSetupActions {
   void _set(EngineState state) {
     final was = _state.value.stage;
     _state.value = _withSetup(state);
+    // Ready: the API listed this device, which no list it serves makes a new one again (firstListWaits).
+    final self = _self;
+    if (state.stage == EngineStage.ready && self != null && store.read(listedDevice) != self) {
+      unawaited(
+        store
+            .write(listedDevice, self)
+            .catchError((Object error) => debugPrint("e2e: the record's listing: ${error.runtimeType}")),
+      );
+    }
     if (state.stage != EngineStage.ready) {
       // Nothing heard is kept while the device can't work: the queue keeps it all (M3 of the desktop's review).
       _groups.dropHeard();
@@ -1469,7 +1478,7 @@ class E2EEngine implements DeviceSetupActions {
   /// This device holds the identity the API serves, and the API's list doesn't name it yet.
   Future<bool> _firstListWaits() async {
     final served = await servedIdentity(this);
-    return served != null && firstListWaits(served, await coreStatus(host));
+    return served != null && firstListWaits(served, await coreStatus(host), store);
   }
 
   /// Conversations' work, only while this device is ready: a client too old for it waits for its update.

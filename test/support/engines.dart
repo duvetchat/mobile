@@ -7,11 +7,14 @@ import 'dart:io';
 import 'dart:math';
 import 'dart:typed_data';
 
+import 'package:crypto/crypto.dart';
 import 'package:duvet/e2e/client.dart';
 import 'package:duvet/e2e/core_gate.dart';
 import 'package:duvet/e2e/db_key.dart';
 import 'package:duvet/e2e/engine.dart';
+import 'package:duvet/e2e/files.dart';
 import 'package:duvet/e2e/store.dart';
+import 'package:duvet/e2e/uuid.dart';
 import 'package:duvet_client/duvet.dart' as duvet;
 import 'package:duvet_client/http/router.dart' show ApiRouter;
 import 'package:flutter/foundation.dart' show TargetPlatform;
@@ -823,4 +826,65 @@ Future<List<TestDevice>> blockedByHand(FakeApi fake, String conversation, List<T
     () => [a, b, c].every((d) => d.engine.conversationState(conversation)?.name == ConversationNotice.blocked),
   );
   return [a, b, c];
+}
+
+/// The device's files of a message, once its core holds the message, as a view reads them.
+Future<List<ShownFile>> filesOn(TestDevice device, String conversation, String id) async {
+  var files = <ShownFile>[];
+  await until(() async {
+    final row = (await device.engine.messages(conversation, [id])).firstOrNull;
+    if (row?.status != MessageStatus.ok) return false;
+    files = [for (final raw in row!.attachments) ?shownFile(raw)];
+    return true;
+  });
+  return files;
+}
+
+/// A file as another client could send it, its envelope written by hand: the core seals it and encrypts what it's
+/// told, and nothing checks what the sender says of it. Sent beside Ana's engine, which is idle.
+Future<duvet.DirectMessage> sendWritten(
+  TestDevice device,
+  String conversation,
+  List<({Uint8List bytes, Map<String, Object?> said})> files,
+) async {
+  final attachments = <Map<String, Object?>>[];
+  final sealed = <Uint8List>[];
+  for (final (:bytes, :said) in files) {
+    final key = (await device.host.handle<Map<String, Object?>>({'cmd': 'attachment_key'}))['key']! as String;
+    final id = uuidv7();
+    sealed.add(await device.host.sealFile(key, id, bytes));
+    attachments.add({
+      'id': id,
+      'key': key,
+      'sha256': base64Encode(sha256.convert(bytes).bytes),
+      'name': 'file',
+      'type': 'application/octet-stream',
+      'size': bytes.length,
+      ...said,
+    });
+  }
+  final nonce = uuidv4();
+  final made = await device.host.handle<Map<String, Object?>>({
+    'cmd': 'encrypt',
+    'conversation_id': conversation,
+    'nonce': nonce,
+    'envelope': {'attachments': attachments},
+  });
+  final message = await device.api.sendMessage(
+    conversation,
+    duvet.EncryptedMessage(
+      ciphertext: made['ciphertext']! as String,
+      nonce: nonce,
+      attachmentIds: [for (final a in attachments) a['id']! as String],
+    ),
+    files: sealed,
+  );
+  await device.host.handle<Object?>({
+    'cmd': 'sent',
+    'conversation_id': conversation,
+    'nonce': nonce,
+    'message_id': message.id,
+    'seq': message.seq,
+  });
+  return message;
 }

@@ -6,6 +6,7 @@
 library;
 
 import 'package:duvet_client/duvet.dart' as duvet;
+import 'package:flutter/foundation.dart';
 
 import 'bootstrap.dart';
 import 'cbor.dart';
@@ -13,6 +14,7 @@ import 'devices.dart' show takenAway;
 import 'engine.dart';
 import 'host.dart';
 import 'identity.dart';
+import 'store.dart';
 
 /// The recovery key as the core reads one (decision 22): its 48 characters, spaces and dashes aside, and their check.
 /// The core reads the key before what it opens, so `recover` with nothing to open throws a mistyped key's
@@ -93,6 +95,12 @@ Future<FirstList> putFirstList(E2EEngine engine, {required bool signOff}) async 
     return (lost: true, leavingOut: const <String>[]);
   }
   await listUploaded(engine, version);
+  // Listed: no list the API serves from now on makes this device's first list wait again (firstListWaits).
+  if (status.deviceId case final device?) {
+    await engine.store
+        .write(listedDevice, device)
+        .catchError((Object error) => debugPrint("e2e: the record's listing: ${error.runtimeType}"));
+  }
   await observeOwn(engine, await servedIdentity(engine) ?? served);
   return (lost: false, leavingOut: const <String>[]);
 }
