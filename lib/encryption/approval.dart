@@ -24,12 +24,14 @@ const approvalUnfinished =
     'again.';
 String approvalName(String name) => 'The device calls itself “$name”.';
 
-/// What the new device's fingerprint is compared with, the desktop's box's words (its COMPARE_WITH_THE_BOX): a
-/// computer's Duvet shows it in a box of its own, outside its window, as a script in its page could draw another there
-/// (mobile#363, the desktop's #557). A phone draws its own.
+/// What the new device's fingerprint is compared with, word for word as every approver of the desktop's says it (its
+/// box's COMPARE_WITH_THE_BOX, its page's e2e_approval_fingerprint_line): a computer's Duvet shows it in a box of its
+/// own, outside its window, as a script in its page could draw another there, and one that shows it only in its window
+/// isn't approved; Duvet in a browser shows it on its page (mobile#363, the re-review's RC1). A phone draws its own.
 const approvalFingerprintLine =
     "Approve it only if it's the device you're setting up now, and it shows the same 16 characters. The Duvet app on a "
-    'computer shows them in a box of its own, outside its window.';
+    "computer shows them in a box of its own, outside its window: don't approve it if they're only in its window. "
+    'Duvet in a browser shows them on its page.';
 const approvalNo = 'No';
 const approvalYes = "It's mine";
 const approvalTitle = 'Approve your new device';

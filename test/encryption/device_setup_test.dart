@@ -32,10 +32,13 @@ const _question = '0193a4b2-0000-7000-8000-0000000000c3';
 /// A new device's QR as its core writes it (the conventions' approval_qr).
 final _qr = (_conventions['approval_qr'] as Map)['qr'] as String;
 
-/// What the desktop's box and its words say an approving device compares with (its COMPARE_WITH_THE_BOX, #557).
+/// What every approver says a new device is compared with, word for word as the desktop's box and pages say it (its
+/// COMPARE_WITH_THE_BOX and e2e_approval_fingerprint_line, the re-review's RC1): a computer's box of its own, never
+/// its window alone, and a browser's page.
 const _comparedWithTheBox =
     "Approve it only if it's the device you're setting up now, and it shows the same 16 characters. The Duvet app on a "
-    'computer shows them in a box of its own, outside its window.';
+    "computer shows them in a box of its own, outside its window: don't approve it if they're only in its window. "
+    'Duvet in a browser shows them on its page.';
 
 Widget _app(Widget child, FakeRepository repository) => RepositoryScope(
   repository: repository,
@@ -247,7 +250,8 @@ void main() {
     await tester.pumpWidget(_app(DeviceSetupPage(repository), repository));
     await tester.pump();
     expect(find.text(fingerprintOf(approvalFingerprint(base64Decode(_qr)))), findsOneWidget);
-    expect(find.text(fingerprintLine), findsOneWidget);
+    // Its screen is the app's own, with no page a script draws in: its line stays.
+    expect(find.text('Your other device shows the same 16 characters.'), findsOneWidget);
   });
 
   testWidgets("a scanned code's device is asked about before anything is approved", (tester) async {
