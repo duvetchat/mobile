@@ -9,6 +9,7 @@ import 'package:duvet/e2e/engine.dart'
         BackupShown,
         ContactsShown,
         DeviceSetupActions,
+        DevicesAlong,
         EngineStage,
         EngineState,
         HistoryOffer,
@@ -1635,11 +1636,15 @@ class FakeRepository implements ChatRepository {
   Future<List<duvet.Device>> devices() async => deviceList ?? (throw Exception("the devices couldn't be read"));
 
   @override
-  Future<void> removeDevice(String deviceId, {bool changeKeys = false}) async =>
-      encryptionTaps.add(changeKeys ? 'removeDevice $deviceId, changeKeys' : 'removeDevice $deviceId');
+  Future<void> removeDevice(String deviceId, {bool changeKeys = false, List<String> named = const []}) async =>
+      encryptionTaps.add(
+        '${changeKeys ? 'removeDevice $deviceId, changeKeys' : 'removeDevice $deviceId'}'
+        '${named.isEmpty ? '' : ', named ${named.join(' ')}'}',
+      );
 
   @override
-  Future<void> changeKeys() async => encryptionTaps.add('changeKeys');
+  Future<void> changeKeys({List<String> named = const []}) async =>
+      encryptionTaps.add(named.isEmpty ? 'changeKeys' : 'changeKeys, named ${named.join(' ')}');
 
   @override
   Future<void> finishKeysWithout() async => encryptionTaps.add('finishKeysWithout');
@@ -1662,10 +1667,13 @@ class FakeRepository implements ChatRepository {
   }
 
   /// The devices an earlier removal of this device's takes along with the next list or key change; a test sets them.
-  List<String> unsentRemovalsList = const [];
+  DevicesAlong devicesAlongList = (unsent: const [], unregistered: const []);
 
   @override
-  Future<List<String>> unsentRemovals() async => unsentRemovalsList;
+  Future<DevicesAlong> devicesAlong([String? asked]) async => (
+    unsent: [...devicesAlongList.unsent.where((id) => id != asked)],
+    unregistered: [...devicesAlongList.unregistered.where((id) => id != asked)],
+  );
 
   /// What the engine tells of the user's devices, in the notices' words; a test adds to it.
   final deviceNoticesTold = StreamController<String>.broadcast();

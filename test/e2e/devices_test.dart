@@ -718,8 +718,51 @@ void main() {
     timeout: _slow,
   );
 
+  // I2 of step 4's closing review: a removal or a change of keys takes off with it every device the list names that
+  // `GET …/devices` doesn't return, which a server that answers a short listing chooses. Its confirmation names each,
+  // and a list goes without them only once they were named: one that would leave out a device the person wasn't told
+  // of isn't signed.
+  test(
+    'a_short_device_listing_changes_no_list_without_naming_the_devices_it_leaves_out',
+    () async {
+      final fake = FakeApi();
+      final ana = fake.addUser();
+      final puts = <String>[];
+      final client = watchedClient(
+        fake,
+        seen: (request) {
+          if (_said(request) == 'PUT /api/users/@me/device-list') puts.add('PUT list');
+        },
+      );
+      final a = await firstDevice(fake, ana, client: client);
+      final b = await approvedDevice(fake, a);
+      final c = await approvedDevice(fake, a);
+      final all = [_deviceOf(a), _deviceOf(b), _deviceOf(c)];
+      // The API lists Ana's devices without c.
+      fake.dropDevice(_deviceOf(c));
+      final from = puts.length;
+      Matcher refused() => throwsA(isA<CoreError>().having((e) => e.code, 'code', 'devices_changed'));
+      await expectLater(a.engine.removeDevice(_deviceOf(b)), refused());
+      await expectLater(a.engine.removeDevice(_deviceOf(b), changeKeys: true), refused());
+      await expectLater(a.engine.changeKeys(), refused());
+      expect(puts.sublist(from), isEmpty);
+      expect(listDevices((await a.api.identity(ana)).deviceList), unorderedEquals(all));
+      // What the confirmation names, and the removal on its yes.
+      final along = await a.engine.devicesAlong(_deviceOf(b));
+      expect(along.unsent, isEmpty);
+      expect(along.unregistered, [_deviceOf(c)]);
+      await a.engine.removeDevice(_deviceOf(b), named: along.unregistered);
+      expect(listDevices((await a.api.identity(ana)).deviceList), [_deviceOf(a)]);
+      await Future.wait([
+        for (final device in [a, b, c]) device.engine.stop(),
+      ]);
+    },
+    skip: noCore,
+    timeout: _slow,
+  );
+
   // Step 3's closing review: a new password's remove_devices leaves the signed list naming devices the API took away,
-  // which a list naming them again can't go up with (400 `the list names device …`).
+  // which a list naming them again can't go up with (400 `the list names device …`). The person is told of them first.
   test(
     'a_list_this_device_signs_drops_the_devices_the_API_took_away',
     () async {
@@ -731,12 +774,12 @@ void main() {
       final d = await approvedDevice(fake, a);
 
       fake.dropDevice(_deviceOf(c));
-      await a.engine.removeDevice(_deviceOf(b));
+      await a.engine.removeDevice(_deviceOf(b), named: (await a.engine.devicesAlong(_deviceOf(b))).unregistered);
       expect(listDevices((await a.api.identity(ana)).deviceList), unorderedEquals([_deviceOf(a), _deviceOf(d)]));
 
       // A rotation too: the device it would hand the keys to has no certificate the API serves.
       fake.dropDevice(_deviceOf(d));
-      await a.engine.changeKeys();
+      await a.engine.changeKeys(named: (await a.engine.devicesAlong()).unregistered);
       await a.engine.keySaved();
       final after = await a.api.identity(ana);
       expect(after.identityKey, (await _status(a))['identity_key']);

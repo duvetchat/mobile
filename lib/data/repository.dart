@@ -6,6 +6,7 @@ import '../e2e/engine.dart'
         BackupShown,
         ContactsShown,
         DeviceSetupActions,
+        DevicesAlong,
         EngineState,
         HistoryOffer,
         KeyChange,
@@ -100,9 +101,10 @@ abstract interface class ChatRepository {
 
   /// The person's acts on them, each only where it can be done: remove another device (lost, with new keys whose
   /// recovery key [encryption] then shows), change the security keys (or finish a change that waits), and remove this
-  /// device and delete its data, which signs out (decision 13).
-  Future<void> removeDevice(String deviceId, {bool changeKeys = false});
-  Future<void> changeKeys();
+  /// device and delete its data, which signs out (decision 13). A removal and a change of keys take off along with them
+  /// only the devices their confirmation [named] ([devicesAlong]), or nothing is signed.
+  Future<void> removeDevice(String deviceId, {bool changeKeys = false, List<String> named = const []});
+  Future<void> changeKeys({List<String> named = const []});
 
   /// A new device's setup, and the approvals this device takes part in (Task 27): the engine's acts, which refuse while
   /// there's no engine.
@@ -113,9 +115,10 @@ abstract interface class ChatRepository {
   Future<void> finishKeysWithout();
   Future<void> removeThisDevice();
 
-  /// The devices an earlier removal of this device's took off that the API didn't take: the next removal or change of
-  /// keys takes them along, which its confirmation names (review 24's M3). None without an engine.
-  Future<List<String>> unsentRemovals();
+  /// What a removal of [asked] (none: a change of keys) takes off the list beside it, which its confirmation names: the
+  /// devices an earlier removal of this device's took off that the API didn't take (review 24's M3), and those the list
+  /// names that the API no longer lists (I2 of step 4's closing review). None without an engine.
+  Future<DevicesAlong> devicesAlong([String? asked]);
 
   /// What the engine tells of the user's other devices, in the notices' words: one added, one not seen in 45 days.
   Stream<String> get deviceNotices;

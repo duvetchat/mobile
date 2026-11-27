@@ -490,7 +490,7 @@ void main() {
       expect(find.textContaining('This also removes'), findsNothing);
       await tapLabel(tester, 'Cancel');
 
-      repository.unsentRemovalsList = [browser.id];
+      repository.devicesAlongList = (unsent: [browser.id], unregistered: const []);
       final along = "This also removes ${browser.name}, whose earlier removal didn't finish.";
       await tapLabel(tester, 'Remove ${computer.name}');
       expect(find.textContaining(along), findsOneWidget);
@@ -499,7 +499,10 @@ void main() {
       expect(find.textContaining(along), findsOneWidget);
       await tapLabel(tester, 'Cancel');
       // Two, the second one the API's list no longer has: named by the start of its ID.
-      repository.unsentRemovalsList = [browser.id, '0193a4b2-0000-7000-8000-00000000ffff'];
+      repository.devicesAlongList = (
+        unsent: [browser.id, '0193a4b2-0000-7000-8000-00000000ffff'],
+        unregistered: const [],
+      );
       await tapLabel(tester, 'Change security keys');
       expect(
         find.textContaining("This also removes ${browser.name} and 0193a4b2, whose earlier removal didn't finish."),
@@ -507,6 +510,28 @@ void main() {
       );
       await tapLabel(tester, 'Cancel');
       expect(repository.encryptionTaps, isEmpty);
+      semantics.dispose();
+    });
+
+    // I2 of step 4's closing review: a device the list names that the API no longer lists rides along too, which a
+    // server that answers a short listing chooses: the confirmation names it, and only its yes takes it off.
+    testWidgets('a removal and a change of keys name the devices the API no longer lists, and take them on the yes', (
+      tester,
+    ) async {
+      final repository = await pumpDevices(tester);
+      const unlisted = '0193a4b2-0000-7000-8000-00000000eeee';
+      repository.devicesAlongList = (unsent: const [], unregistered: const [unlisted]);
+      const along = 'Your password change took 0193a4b2 off your account: this takes it off your device list too.';
+      await tapLabel(tester, 'Remove ${computer.name}');
+      expect(find.textContaining(along), findsOneWidget);
+      await tapLabel(tester, 'Remove');
+      await tapLabel(tester, 'Change security keys');
+      expect(find.textContaining(along), findsOneWidget);
+      await tapLabel(tester, 'Change keys');
+      expect(repository.encryptionTaps, [
+        'removeDevice ${computer.id}, named $unlisted',
+        'changeKeys, named $unlisted',
+      ]);
       semantics.dispose();
     });
 

@@ -1126,11 +1126,16 @@ class DuvetRepository implements ChatRepository {
   Future<List<duvet.Device>> devices() => duvet.E2eApi(_SessionRest(this)).devices();
 
   @override
-  Future<void> removeDevice(String deviceId, {bool changeKeys = false}) async =>
-      (_engine ?? (throw ActionFailed(Notice.notReady.text))).removeDevice(deviceId, changeKeys: changeKeys);
+  Future<void> removeDevice(String deviceId, {bool changeKeys = false, List<String> named = const []}) async =>
+      (_engine ?? (throw ActionFailed(Notice.notReady.text))).removeDevice(
+        deviceId,
+        changeKeys: changeKeys,
+        named: named,
+      );
 
   @override
-  Future<void> changeKeys() async => (_engine ?? (throw ActionFailed(Notice.notReady.text))).changeKeys();
+  Future<void> changeKeys({List<String> named = const []}) async =>
+      (_engine ?? (throw ActionFailed(Notice.notReady.text))).changeKeys(named: named);
 
   @override
   DeviceSetupActions get deviceSetup => _engine ?? const _NoSetup();
@@ -1151,7 +1156,8 @@ class DuvetRepository implements ChatRepository {
   }
 
   @override
-  Future<List<String>> unsentRemovals() async => await _engine?.unsentRemovals() ?? const [];
+  Future<DevicesAlong> devicesAlong([String? asked]) async =>
+      await _engine?.devicesAlong(asked) ?? (unsent: const <String>[], unregistered: const <String>[]);
 
   final _deviceNotices = StreamController<String>.broadcast();
 

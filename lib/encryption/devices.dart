@@ -77,6 +77,8 @@ const deleteOnlyDeviceQuestion =
 /// anything else, to try again.
 String devicesRefusal(Object error) => switch (error) {
   CoreError(code: 'approval_waits') => approvalWaits,
+  // More devices would leave the list than the confirmation named: nothing went, and the next one names them.
+  CoreError(code: 'devices_changed') => 'Your devices changed meanwhile. Try again.',
   duvet.DuvetApiException(statusCode: 400, :final body?) when body.contains('has no certificate of this identity') =>
     deviceUnfinished,
   CoreError(code: 'bad_command', field: 'certificates') => deviceUnfinished,
@@ -258,20 +260,30 @@ class _DevicesPageState extends State<DevicesPage> {
     }
   }
 
-  /// What a removal or a change of keys takes along, in the desktop's words: the devices an earlier removal of this
-  /// device's took off that the API didn't take, which the next list or key change takes off too (review 24's M3), by
-  /// name, or by the start of its ID for one the API's list no longer has. Empty for none.
-  Future<String> _alongWith(String? asked) async {
-    final ids = await context.repository.unsentRemovals().catchError((Object _) => const <String>[]);
+  /// What a removal or a change of keys takes along, in the desktop's words, and their IDs, which go with the yes: the
+  /// devices an earlier removal of this device's took off that the API didn't take, which the next list or key change
+  /// takes off too (review 24's M3), and those the list names that the API no longer lists, as the first list names
+  /// them (I2 of step 4's closing review); each by name, or by the start of its ID for one the API's list doesn't have.
+  Future<({String text, List<String> named})> _alongWith(String? asked) async {
+    final along = await context.repository
+        .devicesAlong(asked)
+        .catchError((Object _) => (unsent: const <String>[], unregistered: const <String>[]));
     String nameOf(String id) =>
         _devices?.where((d) => d.id == id).firstOrNull?.name ?? (id.length > 8 ? id.substring(0, 8) : id);
-    final names = [
-      for (final id in ids)
-        if (id != asked) nameOf(id),
-    ];
-    if (names.isEmpty) return '';
-    final listed = names.length == 1 ? names.single : '${names.take(names.length - 1).join(', ')} and ${names.last}';
-    return " This also removes $listed, whose earlier removal didn't finish.";
+    String listed(List<String> ids) => switch ([for (final id in ids) nameOf(id)]) {
+      [final one] => one,
+      final names => '${names.take(names.length - 1).join(', ')} and ${names.last}',
+    };
+    final (:unsent, :unregistered) = along;
+    return (
+      text: [
+        if (unsent.isNotEmpty) " This also removes ${listed(unsent)}, whose earlier removal didn't finish.",
+        if (unregistered.isNotEmpty)
+          ' Your password change took ${listed(unregistered)} off your account: this takes '
+              '${unregistered.length == 1 ? 'it' : 'them'} off your device list too.',
+      ].join(),
+      named: [...unsent, ...unregistered],
+    );
   }
 
   // Removing another device, in the desktop's words; for one on the list, what changing the keys too does, for one
@@ -290,7 +302,7 @@ class _DevicesPageState extends State<DevicesPage> {
                     "account or read what's sent from now on. You'll save a new recovery key, and your contacts see "
                     'that your keys changed.'
               : "It's signed out, and reads none of your encrypted conversations from now on.") +
-          along,
+          along.text,
       choices: [
         ('Remove', _Removal.remove, ButtonVariant.destructive),
         if (device.listed) ('Remove and change keys', _Removal.changeKeys, ButtonVariant.destructive),
@@ -298,7 +310,7 @@ class _DevicesPageState extends State<DevicesPage> {
     );
     if (choice == null || !mounted) return;
     await _act(() async {
-      await repository.removeDevice(device.id, changeKeys: choice == _Removal.changeKeys);
+      await repository.removeDevice(device.id, changeKeys: choice == _Removal.changeKeys, named: along.named);
       await _load();
     });
   }
@@ -312,12 +324,12 @@ class _DevicesPageState extends State<DevicesPage> {
       title: 'Change security keys?',
       body:
           'Make new security keys and a new recovery key for your account? Your contacts will see that your keys '
-          'changed.$along',
+          'changed.${along.text}',
       action: 'Change keys',
       destructive: false,
     );
     if (!sure || !mounted) return;
-    await _act(repository.changeKeys);
+    await _act(() => repository.changeKeys(named: along.named));
   }
 
   @override
