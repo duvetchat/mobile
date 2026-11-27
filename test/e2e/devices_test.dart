@@ -7,7 +7,7 @@ import 'package:duvet/e2e/host.dart';
 import 'package:duvet/e2e/legacy.dart' show legacyRecords;
 import 'package:duvet/e2e/notices.dart';
 import 'package:duvet/e2e/store.dart';
-import 'package:duvet/encryption/devices.dart' show rotationRelisted, rotationStuck, stuckText;
+import 'package:duvet/encryption/devices.dart' show knownName, rotationRelisted, rotationStuck, stuckText;
 import 'package:duvet_client/duvet.dart' as duvet;
 import 'package:flutter/foundation.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -818,10 +818,38 @@ void main() {
       fake.dropDevice(_deviceOf(b));
       expect((await a.engine.devicesAlong()).unregistered, [_deviceOf(b)]);
       final known = a.engine.knownDevice(_deviceOf(b));
-      expect(known?.name, 'Pixel 8 Pro');
-      expect(known?.client, startsWith('android/'));
-      expect(known?.added, isNotNull);
+      expect(known?.last.name, 'Pixel 8 Pro');
+      expect(known?.last.client, startsWith('android/'));
+      expect(known?.last.added, isNotNull);
+      // Named once, so as it was first.
+      expect(known?.first, known?.last);
       expect(a.engine.knownDevice('0193a4b2-0000-7000-8000-00000000ffff'), isNull);
+      await Future.wait([a.engine.stop(), b.engine.stop()]);
+    },
+    skip: noCore,
+    timeout: _slow,
+  );
+
+  // R-M3 of step 4's closing re-review: the API's last word on a device it no longer lists could be its own story, so
+  // the first this device heard of it goes beside the last; one it knows nothing of is named in the desktop's words.
+  test(
+    'a_device_the_api_names_anew_before_it_stops_listing_it_is_named_as_first_seen_and_as_listed_later',
+    () async {
+      final fake = FakeApi();
+      final ana = fake.addUser();
+      final a = await firstDevice(fake, ana);
+      final b = await approvedDevice(fake, a);
+      await a.engine.devicesAlong();
+      // The server names the phone anew, then stops listing it.
+      fake.nameDevice(_deviceOf(b), 'Old test phone', client: 'web/1.0.0');
+      await a.engine.devicesAlong();
+      fake.dropDevice(_deviceOf(b));
+      expect((await a.engine.devicesAlong()).unregistered, [_deviceOf(b)]);
+      expect(
+        knownName(_deviceOf(b), a.engine.knownDevice(_deviceOf(b))),
+        allOf(startsWith('Pixel 8 Pro (android/'), endsWith(' (listed later as Old test phone)')),
+      );
+      expect(knownName('0193a4b2-0000-7000-8000-00000000ffff', null), 'the device whose ID starts with 0193a4b2');
       await Future.wait([a.engine.stop(), b.engine.stop()]);
     },
     skip: noCore,

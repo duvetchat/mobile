@@ -71,10 +71,14 @@ Future<DevicesAlong> devicesAlong(E2EEngine engine, String? asked) async {
   );
 }
 
-/// What this device knows of one of its user's devices: its name and client as `GET …/devices` or DEVICE_ADD last gave
-/// them, and when it was added there, or approved here. What names a device the API no longer lists (N-M7 of step 4's
-/// closing re-review).
-typedef KnownDevice = ({String? name, String? client, DateTime? added});
+/// One of the user's devices as `GET …/devices` or DEVICE_ADD gave it: its name, its client, and when it was added
+/// there.
+typedef DeviceSeen = ({String? name, String? client, DateTime? added});
+
+/// What this device knows of one of its user's devices: as the API first named it to this device, and as it last did;
+/// or, for one it never named, when it was approved here. What names a device the API no longer lists (N-M7 of step
+/// 4's closing re-review), whose last word alone could be the server's story of it (R-M3 of the re-review).
+typedef KnownDevice = ({DeviceSeen first, DeviceSeen last});
 
 /// The most devices the record keeps what it knew of: the newest.
 const _knownKept = 50;
@@ -87,20 +91,28 @@ Map<String, Map<String, Object?>> _knownIn(EngineStore store) => switch (store.r
   _ => {},
 };
 
-/// [devices], as the API gave them, kept in the record beside what it knew of others.
+/// A device's [which] seeing ('first' or 'last') in its record; a record from before the first was kept has one.
+Map<String, Object?> _seenIn(Map<String, Object?> kept, String which) => switch (kept[which]) {
+  final Map<Object?, Object?> seen => seen.cast<String, Object?>(),
+  _ => kept,
+};
+
+/// [devices], as the API gave them, kept in the record beside what it knew of others, each beside what the API first
+/// named it.
 Future<void> noteDevices(EngineStore store, Iterable<duvet.UserDevice> devices) async {
   final kept = _knownIn(store);
   var changed = false;
   for (final device in devices) {
-    final Map<String, Object?> known = {
+    final Map<String, Object?> last = {
       'name': device.name,
       'client': device.client,
       'added': device.createdAt.millisecondsSinceEpoch,
     };
-    if (mapEquals(kept[device.id], known)) continue;
+    final had = kept[device.id];
+    if (had != null && had['first'] is Map && mapEquals(_seenIn(had, 'last'), last)) continue;
     kept
       ..remove(device.id)
-      ..[device.id] = known;
+      ..[device.id] = {'first': had == null ? last : _seenIn(had, 'first'), 'last': last};
     changed = true;
   }
   if (!changed) return;
@@ -113,19 +125,24 @@ Future<void> noteDevices(EngineStore store, Iterable<duvet.UserDevice> devices) 
       .catchError((Object error) => debugPrint("e2e: what's known of the devices: ${error.runtimeType}"));
 }
 
-/// What this device knows of [id]: the API's last word on it, else when this device approved it; null for nothing.
+/// What this device knows of [id]: the API's first and last word on it, else when this device approved it; null for
+/// nothing.
 KnownDevice? knownDevice(EngineStore store, String id) {
+  DeviceSeen seen(Map<String, Object?> kept) => (
+    name: kept['name'] as String?,
+    client: kept['client'] as String?,
+    added: switch (kept['added']) {
+      final int at => DateTime.fromMillisecondsSinceEpoch(at),
+      _ => null,
+    },
+  );
   if (_knownIn(store)[id] case final kept?) {
-    return (
-      name: kept['name'] as String?,
-      client: kept['client'] as String?,
-      added: switch (kept['added']) {
-        final int at => DateTime.fromMillisecondsSinceEpoch(at),
-        _ => null,
-      },
-    );
+    return (first: seen(_seenIn(kept, 'first')), last: seen(_seenIn(kept, 'last')));
   }
-  if (approvedAt(store, id) case final at?) return (name: null, client: null, added: at);
+  if (approvedAt(store, id) case final at?) {
+    final approved = (name: null, client: null, added: at);
+    return (first: approved, last: approved);
+  }
   return null;
 }
 

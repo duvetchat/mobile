@@ -66,15 +66,19 @@ const keysAgainText =
 
 String _idStart(String id) => id.length > 8 ? id.substring(0, 8) : id;
 
-/// A device the API's list doesn't name, by what this device knows of it (N-M7 of step 4's closing re-review): its
-/// name, with its client and when it was added; the start of its ID only when nothing is known.
+/// A device the API's list doesn't name, by what this device knows of it (N-M7 of step 4's closing re-review): as the
+/// API first named it here, its name with its client and when it was added, and the name it gave later beside it when
+/// it named it anew, as a server telling its own story would (R-M3 of the re-review); by the start of its ID, in the
+/// desktop's words, only when nothing is known.
 String knownName(String id, KnownDevice? known) {
-  final about = [?known?.client, if (known?.added case final at?) 'added ${fullDate(at.toLocal())}'];
-  return switch ((known?.name, about)) {
-    (null, []) => _idStart(id),
+  final (first, last) = (known?.first, known?.last.name);
+  final about = [?first?.client, if (first?.added case final at?) 'added ${fullDate(at.toLocal())}'];
+  final named = switch ((first?.name, about)) {
+    (null, []) => 'the device whose ID starts with ${_idStart(id)}',
     (final String name, []) => name,
     (final name, _) => '${name ?? 'a device'} (${about.join(', ')})',
   };
+  return last == null || last == first?.name ? named : '$named (listed later as $last)';
 }
 
 String _listed(List<String> names) =>

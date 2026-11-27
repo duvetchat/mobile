@@ -498,14 +498,17 @@ void main() {
       await tapLabel(tester, 'Change security keys');
       expect(find.textContaining(along), findsOneWidget);
       await tapLabel(tester, 'Cancel');
-      // Two, the second one the API's list no longer has: named by the start of its ID.
+      // Two, the second one the API's list no longer has: named by the start of its ID, in the desktop's words.
       repository.devicesAlongList = (
         unsent: [browser.id, '0193a4b2-0000-7000-8000-00000000ffff'],
         unregistered: const [],
       );
       await tapLabel(tester, 'Change security keys');
       expect(
-        find.textContaining("This also removes ${browser.name} and 0193a4b2, whose earlier removal didn't finish."),
+        find.textContaining(
+          "This also removes ${browser.name} and the device whose ID starts with 0193a4b2, whose earlier removal didn't "
+          'finish.',
+        ),
         findsOneWidget,
       );
       await tapLabel(tester, 'Cancel');
@@ -521,7 +524,9 @@ void main() {
       final repository = await pumpDevices(tester);
       const unlisted = '0193a4b2-0000-7000-8000-00000000eeee';
       repository.devicesAlongList = (unsent: const [], unregistered: const [unlisted]);
-      const along = "Duvet no longer lists 0193a4b2. If you didn't remove it or change your password, cancel.";
+      const along =
+          "Duvet no longer lists the device whose ID starts with 0193a4b2. If you didn't remove it or change your "
+          'password, cancel.';
       await tapLabel(tester, 'Remove ${computer.name}');
       expect(find.textContaining(along), findsOneWidget);
       await tapLabel(tester, 'Remove');
@@ -537,22 +542,39 @@ void main() {
 
     // N-M7 of step 4's closing re-review: a device the API no longer lists is named by what this device knows of it,
     // its name, its client and when it was added, and by the start of its ID only when nothing is known; the question
-    // says what's known, never why the server says it went.
+    // says what's known, never why the server says it went. R-M3: as the API first named it, beside the name it gave
+    // it later.
     testWidgets('a device the API no longer lists is named by what this device knows of it', (tester) async {
       final repository = await pumpDevices(tester);
       const known = '0193a4b2-0000-7000-8000-00000000eeee';
       const unknown = '0193a4b2-0000-7000-8000-00000000dddd';
-      repository.knownDevices[known] = (name: 'Old tablet', client: 'android/1.0.0', added: DateTime(2026, 10, 20));
+      final tablet = (name: 'Old tablet', client: 'android/1.0.0', added: DateTime(2026, 10, 20));
+      repository.knownDevices[known] = (first: tablet, last: tablet);
       repository.devicesAlongList = (unsent: const [], unregistered: const [known, unknown]);
       await tapLabel(tester, 'Remove ${computer.name}');
       expect(
         find.textContaining(
-          'Duvet no longer lists Old tablet (android/1.0.0, added 20 October 2026) and 0193a4b2. '
-          "If you didn't remove them or change your password, cancel.",
+          'Duvet no longer lists Old tablet (android/1.0.0, added 20 October 2026) and the device whose ID starts with '
+          "0193a4b2. If you didn't remove them or change your password, cancel.",
         ),
         findsOneWidget,
       );
       expect(find.textContaining('password change took'), findsNothing);
+      await tapLabel(tester, 'Cancel');
+      // The API named it anew before it stopped listing it: both names.
+      repository.knownDevices[known] = (
+        first: tablet,
+        last: (name: 'Old test phone', client: 'web/1.0.0', added: DateTime(2026, 10, 20)),
+      );
+      repository.devicesAlongList = (unsent: const [], unregistered: const [known]);
+      await tapLabel(tester, 'Remove ${computer.name}');
+      expect(
+        find.textContaining(
+          'Duvet no longer lists Old tablet (android/1.0.0, added 20 October 2026) (listed later as Old test phone). '
+          "If you didn't remove it or change your password, cancel.",
+        ),
+        findsOneWidget,
+      );
       await tapLabel(tester, 'Cancel');
       expect(repository.encryptionTaps, isEmpty);
       semantics.dispose();

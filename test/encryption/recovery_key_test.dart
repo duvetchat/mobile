@@ -353,7 +353,7 @@ void main() {
       await tester.tap(find.text('Change keys'));
       await tester.pumpAndSettle();
       expect(find.text('Change security keys?'), findsOneWidget);
-      expect(find.textContaining('Duvet no longer lists 0193a4b2.'), findsOneWidget);
+      expect(find.textContaining('Duvet no longer lists the device whose ID starts with 0193a4b2.'), findsOneWidget);
       expect(repository.encryptionTaps, isEmpty);
       await tester.tap(find.text('Change keys').last);
       await tester.pumpAndSettle();

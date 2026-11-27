@@ -409,8 +409,8 @@ class _Device {
     : lastSeenAt = createdAt;
   final String id;
   final String user;
-  final String name;
-  final String? client;
+  String name;
+  String? client;
   final Uint8List signatureKey;
   final Uint8List hpkeKey;
   final String createdAt;
@@ -1016,6 +1016,13 @@ class FakeApi {
   /// The device was last seen at [at] (an RFC 3339 time), as the API notes a device's requests.
   void lastSeen(String deviceId, String at) =>
       (_devices[deviceId] ?? (throw StateError('no device $deviceId'))).lastSeenAt = at;
+
+  /// The API lists the device with another name and client from now on, as a server telling its own story of it would
+  /// (R-M3 of step 4's closing re-review).
+  void nameDevice(String deviceId, String name, {required String client}) =>
+      (_devices[deviceId] ?? (throw StateError('no device $deviceId')))
+        ..name = name
+        ..client = client;
 
   /// The device's registration goes, as a new password's remove_devices takes each one: the user's signed list still
   /// names it (step 3's ruling 23), with no certificate the API serves.
