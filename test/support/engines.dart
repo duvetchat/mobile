@@ -235,12 +235,20 @@ class LockedOnce implements CoreHost, ObservingHost {
 }
 
 /// A host that tells what it's asked (each command's name, in order, and the commands themselves), holds a command
-/// until the future [hold] gives for it completes, fails one when [fail] gives an error for it, and answers one itself
-/// when [answer] gives an answer. Its core's observations go to the engine's contacts as the core it wraps tells them:
-/// an observe_user it answers itself isn't the core's, and tells nothing.
+/// until the future [hold] gives for it completes, fails one when [fail] gives an error for it, answers one itself
+/// when [answer] gives an answer, and holds the core's answer to one until the future [after] gives for it completes:
+/// what the server does while the device holds what its core just made. Its core's observations go to the engine's
+/// contacts as the core it wraps tells them: an observe_user it answers itself isn't the core's, and tells nothing.
 class WatchedHost implements CoreHost, ObservingHost {
-  WatchedHost(this._host, this.log, {this.hold, this.fail, this.answer, List<Map<String, Object?>>? commands})
-    : commands = commands ?? [];
+  WatchedHost(
+    this._host,
+    this.log, {
+    this.hold,
+    this.fail,
+    this.answer,
+    this.after,
+    List<Map<String, Object?>>? commands,
+  }) : commands = commands ?? [];
 
   @override
   set onObserved(ObservedListener? listener) {
@@ -253,6 +261,7 @@ class WatchedHost implements CoreHost, ObservingHost {
   final Future<void>? Function(Map<String, Object?> command)? hold;
   final CoreError? Function(Map<String, Object?> command)? fail;
   final Object? Function(Map<String, Object?> command)? answer;
+  final Future<void>? Function(Map<String, Object?> command)? after;
 
   @override
   Future<T> handle<T>(Map<String, Object?> command) async {
@@ -261,7 +270,9 @@ class WatchedHost implements CoreHost, ObservingHost {
     if (hold?.call(command) case final wait?) await wait;
     if (fail?.call(command) case final error?) throw error;
     if (answer?.call(command) case final answered?) return answered as T;
-    return _host.handle<T>(command);
+    final answered = await _host.handle<T>(command);
+    if (after?.call(command) case final wait?) await wait;
+    return answered;
   }
 
   @override

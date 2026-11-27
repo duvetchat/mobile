@@ -231,9 +231,14 @@ void main() {
       expect(sends, hasLength(2));
       expect(sends.first, greaterThan(read));
 
-      // A new message goes after them. (The second's first try went to the first: what waits goes first.)
+      // A new message goes after them. (The second's first try went to the first: what waits goes first.) Bo's leaf
+      // renewal moved the group after their bytes were made, so they went made again, under new nonces, in their order
+      // (T-C1 of step 4's closing re-reviews).
       await again.engine.sendMessage(Outgoing(conversationId: conversation, nonce: third, text: 'third'));
-      expect([for (final post in _posts(seen, conversation)) post['nonce']], [first, first, first, second, third]);
+      final nonces = [for (final post in _posts(seen, conversation)) post['nonce']];
+      expect([...nonces.take(2), nonces.last], [first, first, third]);
+      expect({...nonces.sublist(2, 4)}, hasLength(2));
+      expect({...nonces.sublist(2, 4)}.intersection({first, second, third}), isEmpty);
       final bob = await restarted(fake, b);
       final ids = await _queued(bob, conversation);
       expect(ids, hasLength(3));

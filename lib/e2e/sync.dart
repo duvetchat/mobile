@@ -548,6 +548,21 @@ class Conversations {
     throw StateError("this device can't send in this conversation now");
   }
 
+  /// What [asShown] compares, with no queue read and no move (T-C1 of step 4's closing re-reviews): the last thing
+  /// before what was made for the group goes, so what goes is of the group compared. A difference says so and throws.
+  Future<void> stillAsShown(String conversationId) async {
+    final held = await _group(conversationId);
+    if (held != null && !await _strays(conversationId, held)) return;
+    if (held != null && !held.blocked) _set(conversationId, ConversationState.groupDiffers(held.members));
+    throw StateError("this device can't send in this conversation now");
+  }
+
+  /// Whether the core's group is at [generation] and [epoch] now: what was made for it is of it.
+  Future<bool> isAt(String conversationId, int generation, int epoch) async {
+    final held = await _group(conversationId);
+    return held != null && held.generation == generation && held.epoch == epoch;
+  }
+
   /// The person made the conversation here with [picked]: its group is founded with them alone.
   Future<void> created(String conversationId, LegacyRecord picked) => _legacy.created(conversationId, picked);
 
