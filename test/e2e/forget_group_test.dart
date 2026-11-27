@@ -46,6 +46,10 @@ Future<Set<String>> _heldUsers(TestDevice device, String conversation) async => 
 /// The record the device keeps of the conversation (legacy_records), as it's kept.
 Object? _recordOn(TestDevice device, String conversation) => (device.store.read(legacyRecords) as Map?)?[conversation];
 
+/// The records the device's core keeps of the groups it forgot (forgotten), by conversation.
+Future<List<Object?>> _keptByCore(TestDevice device) async =>
+    (await device.host.handle<Map<String, Object?>>({'cmd': 'forgotten'}))['records']! as List<Object?>;
+
 http.Response _json(Object? body, int status) =>
     http.Response(jsonEncode(body), status, headers: {'content-type': 'application/json'});
 
@@ -1010,6 +1014,107 @@ void main() {
         // Taken back as the engine started, before anything could bring the group back.
         final names = [for (final command in commands) command['cmd']];
         expect(names.indexOf('forgotten'), allOf(isNonNegative, lessThan(names.indexOf('apply'))));
+      },
+      skip: noCore,
+      timeout: _slow,
+    );
+
+    // The person's yes to the members of today lets the core's record go too (drop_forgotten), before its comeback
+    // goes: a start before that comeback takes nothing back over the yes, and asks nothing again.
+    test(
+      "the_person's_yes_lets_the_core's_record_go,_so_a_start_before_its_comeback_asks_nothing_again",
+      () async {
+        final t = await _keptByTheCoreAlone();
+        await t.a.engine.removeMember(t.conversation, t.bo);
+        await t.a.engine.removeMember(t.conversation, t.cy);
+        await t.a.engine.addMember(t.conversation, t.cy);
+        var holding = true;
+        final client = _groupInfoHeld(t.fake, t.conversation, () => holding);
+        final again = await restarted(t.fake, t.c, client: client);
+        await until(
+          () => again.engine.conversationState(t.conversation) == ConversationState.membersChanged([t.ana, t.cy]),
+          what: 'the welcome refused for the record the core kept',
+        );
+        // The yes; its comeback, an external commit, finds no group info and doesn't go.
+        await acceptAsShown(again, t.conversation).catchError((Object _) {});
+        expect(await groupOf(again, t.conversation), isNull);
+        expect(again.engine.conversationState(t.conversation), isNull);
+        final keptAfterYes = await _keptByCore(again);
+        // Its app ends before the comeback; the group info comes once it starts again.
+        holding = false;
+        final commands = <Map<String, Object?>>[];
+        final third = await restarted(
+          t.fake,
+          again,
+          host: WatchedHost(again.host, [], commands: commands),
+          client: client,
+        );
+        await sameGroup([t.a, third], t.conversation);
+        expect(third.engine.conversationState(t.conversation), isNull);
+        expect(
+          [
+            for (final command in commands)
+              if (command['cmd'] == 'join_external') command['expected'],
+          ],
+          [null],
+        );
+        // The yes let the core's record go before its comeback went.
+        expect(keptAfterYes, isEmpty);
+      },
+      skip: noCore,
+      timeout: _slow,
+    );
+
+    // A conversation the user is no longer in won't bring its group back: as the engine lets it go (Ana takes Cy out
+    // while Cy's device waits for her to make the group again), the core's record of it goes too. The engine's own
+    // stays, which a later addition is held to.
+    test(
+      "the_core's_record_of_a_conversation_the_user_was_taken_out_of_goes_as_the_engine_lets_it_go",
+      () async {
+        final fake = FakeApi();
+        final (ana, bo, cy) = (fake.addUser(), fake.addUser(), fake.addUser());
+        final conversation = fake.addConversation(group: true, members: [ana, bo, cy], owner: ana);
+        var noGroup = false;
+        final client = watchedClient(
+          fake,
+          change: (request, answered) async => noGroup && request.method == 'GET' && request.url.path == _conversations
+              ? _listedWith(answered, conversation, null)
+              : answered,
+        );
+        final a = await firstDevice(fake, ana);
+        final b = await firstDevice(fake, bo);
+        final c = await firstDevice(fake, cy, client: client);
+        await a.engine.openConversation(conversation);
+        await sameGroup([a, b, c], conversation);
+        // Listed without its group, Cy's device forgets its own, and waits for Ana to make it again.
+        noGroup = true;
+        c.connect(c.registered.last);
+        await until(() async => await groupOf(c, conversation) == null, what: "Cy's device forgetting its group");
+        final record = _recordOn(c, conversation);
+        expect(record, {
+          'owner': ana,
+          'members': [ana, bo, cy],
+          'exact': true,
+        });
+        expect(await _keptByCore(c), hasLength(1));
+        await a.engine.removeMember(conversation, cy);
+        await until(() async => (await _keptByCore(c)).isEmpty, what: "the core's record let go with the conversation");
+        expect(_recordOn(c, conversation), record);
+      },
+      skip: noCore,
+      timeout: _slow,
+    );
+
+    // Taken out while its app was closed, Cy's device no longer finds the conversation listed as the app starts: the
+    // core's record of its forgotten group goes then. The engine's own, taken back from it first, stays.
+    test(
+      "the_core's_record_of_a_conversation_no_longer_listed_at_a_start_goes",
+      () async {
+        final t = await _keptByTheCoreAlone();
+        await t.a.engine.removeMember(t.conversation, t.cy);
+        final again = await restarted(t.fake, t.c);
+        expect(await _keptByCore(again), isEmpty);
+        expect(_recordOn(again, t.conversation), t.record);
       },
       skip: noCore,
       timeout: _slow,
