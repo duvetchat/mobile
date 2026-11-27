@@ -1214,6 +1214,64 @@ void main() {
       timeout: _slow,
     );
 
+    // The re-review's untested path (step 4's closing re-review): an external join into a newer generation, the API
+    // listing whom this device's group held, brings the group as it is; one holding someone the page doesn't draw
+    // takes nothing sent after, as a welcome's doesn't.
+    test(
+      "an_external_join_into_a_newer_generation_holding_someone_the_page_doesn't_draw_takes_nothing_sent_after",
+      () async {
+        final fake = FakeApi();
+        final (ana, bo, cy, eve) = (fake.addUser(), fake.addUser(), fake.addUser(), fake.addUser());
+        final conversation = fake.addConversation(group: true, members: [ana, bo, cy], owner: ana);
+        final posts = <String>[];
+        final watched = watchedClient(
+          fake,
+          seen: (request) {
+            if (_posts(request, conversation)) posts.add('message');
+          },
+        );
+        final a = await firstDevice(fake, ana);
+        final b = await firstDevice(fake, bo);
+        final c = await firstDevice(fake, cy, client: watched);
+        fake.befriend(ana, eve);
+        await firstDevice(fake, eve);
+        await a.engine.openConversation(conversation);
+        await sameGroup([a, b, c], conversation);
+        final [owner, _, _] = await blockedByHand(fake, conversation, [a, b, c]);
+        // While no device hears a thing, Ana restarts the group, the server keeping Cy's key packages from her, so his
+        // device gets no welcome; then she adds Eve.
+        fake.holdEvents();
+        fake.refuse(
+          (method: 'POST', path: '/api/users/$cy/key-packages/claim'),
+          200,
+          body: {'key_packages': <Object?>[]},
+        );
+        expect(await owner.engine.restartGroup(conversation), isEmpty);
+        await owner.engine.addMember(conversation, eve);
+        expect((await groupOf(owner, conversation))!.generation, 1);
+        // Then the API lists the three Cy's device holds, and the events go out: it may join the next generation by an
+        // external commit, into the group as it is.
+        fake.dropMembers(conversation, [eve]);
+        fake.releaseEvents();
+        await until(() async => (await groupOf(c, conversation))?.generation == 1, what: "Cy's join");
+        expect({for (final device in (await groupOf(c, conversation))!.devices) device.user}, contains(eve));
+        // By a commit of his own: no welcome brought his device in.
+        final entries = (await c.api.queue(conversation, 0)).entries;
+        expect(
+          [
+            for (final e in entries)
+              if (e.generation == 1 && e.senderUser == cy) e.kind,
+          ],
+          ['commit'],
+        );
+        await expectLater(_send(c, conversation, 'for Ana and Bo'), throwsA(anything));
+        expect(posts, isEmpty);
+        expect(c.engine.conversationState(conversation)?.name, ConversationNotice.groupDiffers);
+      },
+      skip: noCore,
+      timeout: _slow,
+    );
+
     // A device without a record (a DM's other member, a group's owner on another device) founds the conversation as
     // its page draws it; listed with someone the page doesn't draw, it founds nothing, and says so.
     test(
