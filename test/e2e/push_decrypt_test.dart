@@ -926,6 +926,43 @@ void main() {
     timeout: _slow,
   );
 
+  // FG2-M1 of the review of forget_group's minors: the push's engine noted another group's welcome; Bo writes again
+  // while Ana's app is closed, and the API's queue no longer goes back to where Ana's core is (a 410). As her app's
+  // engine starts, it reads no queue while the note stands, as the desktop's does: it forgets her own group first, then
+  // joins the API's held to that forget's record, once. The 410 never joins before the note acts.
+  test(
+    "another_group's_note_acts_before_a_queue_that_no_longer_goes_back_that_far",
+    () async {
+      final (phone, _) = await _anotherGroupByPush();
+      await phone.b.engine.sendMessage(
+        Outgoing(conversationId: phone.conversation, nonce: uuidv4(), text: 'while her app is closed'),
+      );
+      await phone.b.engine.stop();
+      Map<Object?, Object?> mls() => phone.fake.viewOf(phone.conversation)['mls']! as Map;
+      final before = mls()['epoch']! as int;
+      phone.fake.expireQueue(phone.conversation, (mls()['last_seq']! as int) + 2);
+      final commands = <Map<String, Object?>>[];
+      final again = await restarted(phone.fake, phone.a, host: WatchedHost(phone.host.gate, [], commands: commands));
+      await until(() async {
+        final epoch = mls()['epoch']! as int;
+        return epoch > before && (await groupOf(again, phone.conversation))?.epoch == epoch;
+      }, what: "Ana's join to the API's group");
+      await turnEnded(again);
+      final changes = [
+        for (final command in commands)
+          if (const {'forget_group', 'join_external'}.contains(command['cmd'])) command,
+      ];
+      expect([for (final command in changes) command['cmd']], ['forget_group', 'join_external']);
+      expect(changes.last['expected'], {
+        'members': [phone.ana, phone.bo],
+        'exact': true,
+      });
+      expect(again.store.read(anotherGroups), isNull);
+    },
+    skip: noCore,
+    timeout: _slow,
+  );
+
   // M4 of the review: what the push's engine can't open is reported by its kind, as the app's engine reports it
   // (decision 40): the app's engine never applies those entries again.
   test(

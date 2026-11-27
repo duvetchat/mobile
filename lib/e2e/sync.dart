@@ -1038,6 +1038,10 @@ class Conversations {
     await recordAnotherGroup(_engine.store, id, generation);
   }
 
+  /// The generation of another group's welcome noted for [id], in memory or in the record (where a push's engine leaves
+  /// one): while it stands, no more of the API's queue goes to the device's own group (FG2-M1, as the desktop's #sync).
+  int? _noted(String id) => _another[id] ?? anotherGroupsIn(_engine.store)[id];
+
   /// The group made here with the members this device can account for (C1 of step 4's closing reviews): those the
   /// person said yes to, as a question named them (N-M10 of the re-review); its record (the person's picks as they made
   /// the conversation here, or one from before the cutover as first seen); else the conversation as the person sees
@@ -1088,8 +1092,9 @@ class Conversations {
         heard.any((entry) => entry['data'] == null) ||
         _settling.contains(id) ||
         group.lastSeq > (at.through ?? 0);
-    // Out of the group (no number to read from), _after reads its welcome or joins.
-    if (behind && from != null) {
+    // Out of the group (no number to read from), _after reads its welcome or joins; so it does once another group's
+    // welcome came (#553), whose own the device lets go first, so a 410 never joins before the note acts.
+    if (behind && from != null && _noted(id) == null) {
       final done = await _readQueue(conv, from);
       // The queue doesn't go back that far (410): this device joins again, its database as it is (13).
       if (done == null) return _join(conv);
@@ -1125,7 +1130,8 @@ class Conversations {
       }
       at = (through: applied['applied_through'] as int?, gap: null, due: applied['commit_due'] == true, whole: false);
       start += _applyMost;
-      if (start >= entries.length) return at;
+      // Another group's welcome (#553): nothing more of the API's goes to the device's own.
+      if (start >= entries.length || _noted(conv.id) != null) return at;
     }
   }
 
@@ -1211,6 +1217,7 @@ class Conversations {
         if (entry.kind == 'welcome') (_welcomeGenerations[conv.id] ??= {})[entry.seq] = entry.generation;
       }
       final at = await _applyAll(conv, [for (final entry in page.entries) entryOf(entry)]);
+      if (_noted(conv.id) != null) return at;
       if (at.gap case final gap?) {
         // The core needs what comes before this page: from there, as long as that's before where this read began.
         if (gap - 1 >= from) throw StateError('the queue of ${conv.id} skips entry $gap');
@@ -1344,7 +1351,7 @@ class Conversations {
   Future<void> _after(_Conv conv, _Where at) async {
     final id = conv.id;
     final group = conv.group;
-    if ((_another[id] ?? anotherGroupsIn(_engine.store)[id]) case final noted?) await _forgetForAnother(id, noted);
+    if (_noted(id) case final noted?) await _forgetForAnother(id, noted);
     final held = await _group(id);
     if (held != null && held.generation >= (group?.generation ?? 0)) {
       for (final kept in [_otherSender, _removed, _lostJoin, _forgotten]) {
