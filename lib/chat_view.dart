@@ -73,6 +73,16 @@ void openChatRoute(BuildContext context, ChatRoute route, {bool reveal = true}) 
   }
 }
 
+/// Shows [route] in place of the chat [context] is in, at once: see [Shell.swap]. Outside the app's shell, in its place
+/// on its navigator.
+void swapChat(BuildContext context, ChatRoute route) {
+  final current = ModalRoute.of(context);
+  if (current == null) return;
+  final shell = Shell.maybeOf(context);
+  if (shell != null) return shell.swap(current, route);
+  if (current.isActive) Navigator.of(context).replace(oldRoute: current, newRoute: route..instant = true);
+}
+
 /// A Chat View's route. Its page keeps its state when the route moves between the pane and the whole screen.
 class ChatRoute extends MaterialPageRoute<void> with PaneRoute<void> {
   final ChatTarget target;
@@ -1852,7 +1862,8 @@ class _ChatViewState extends State<ChatView> with SingleTickerProviderStateMixin
   }
 
   /// The Space's rooms in a glass sheet, this one selected; picking another
-  /// swaps the chat.
+  /// swaps the chat: this one, not one a notice opened over it meanwhile, and
+  /// back to the one under it where that's the room picked.
   Future<void> _openSwitcher() async {
     final target = widget.target;
     if (target is! RoomTarget) return;
@@ -1860,7 +1871,7 @@ class _ChatViewState extends State<ChatView> with SingleTickerProviderStateMixin
     if (space == null) return;
     final room = await showChannelSwitcher(context, space: space, current: target.roomId);
     if (room == null || !mounted || room.id == target.roomId) return;
-    Navigator.of(context).pushReplacement(ChatRoute(target: room.target, title: '# ${room.name}')..instant = true);
+    swapChat(context, ChatRoute(target: room.target, title: '# ${room.name}'));
   }
 
   Future<void> _openPins() async {
