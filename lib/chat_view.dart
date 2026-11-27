@@ -976,7 +976,10 @@ class _ChatViewState extends State<ChatView> with SingleTickerProviderStateMixin
     final entry = (message: keeps ? message.heldAs(_entries[i].message) : message, delivery: _Delivery.sent);
     if (i >= 0) {
       _entries[i] = entry;
-      if (message.nonce != null) _outgoing.remove(message.nonce);
+      // Sent: its files go, unless its delivery is still out, which lets them go as it ends.
+      if (_outgoing.remove(message.nonce) case final sent? when !_cancels.containsKey(message.nonce)) {
+        _letGo(sent.files);
+      }
     } else {
       _entries.add(entry);
     }
@@ -1270,6 +1273,7 @@ class _ChatViewState extends State<ChatView> with SingleTickerProviderStateMixin
       }
       _outgoing.remove(nonce);
       _progress.remove(nonce);
+      _letGo(outgoing.files);
       if (!mounted) return;
       // The server may not echo the nonce back: match the pending entry by ours.
       setState(() {
@@ -1311,14 +1315,16 @@ class _ChatViewState extends State<ChatView> with SingleTickerProviderStateMixin
     final empty = _composer.text.trim().isEmpty && _replyTo == null;
     // A reply whose message was deleted meanwhile can't be sent again.
     final reply = entry.message.reply;
+    final room = maxFiles - _files.length;
     setState(() {
       _entries.remove(entry);
       _progress.remove(nonce);
       if (restore) {
-        _files.addAll(outgoing.files.take(maxFiles - _files.length));
+        _files.addAll(outgoing.files.take(room));
         if (empty && reply != null && !reply.deleted) _replyTo = reply;
       }
     });
+    if (outgoing != null) _letGo(restore ? outgoing.files.skip(room) : outgoing.files);
     if (restore && empty && outgoing.content.isNotEmpty) {
       final directory = _directory;
       _composer.setEncoded(
@@ -1387,10 +1393,9 @@ class _ChatViewState extends State<ChatView> with SingleTickerProviderStateMixin
 
   /// Drops a message that failed to send, and what it carried: a conversation's waits on this device no more.
   void _discard(_Entry entry) {
-    setState(() {
-      _entries.remove(entry);
-      _outgoing.remove(entry.message.nonce);
-    });
+    final dismissed = _outgoing.remove(entry.message.nonce);
+    setState(() => _entries.remove(entry));
+    if (dismissed != null) _letGo(dismissed.files);
     if (entry.message.nonce case final nonce? when widget.target is ConversationTarget) {
       unawaited(_repository.discard(widget.target, nonce).catchError((Object e) => debugPrint('discard: $e')));
     }
@@ -1847,15 +1852,40 @@ class _ChatViewState extends State<ChatView> with SingleTickerProviderStateMixin
       return;
     }
     try {
-      final picked = await (ChatView.debugPickFiles ?? _pickWithFilePicker)();
+      final picked = await _takenIn(await (ChatView.debugPickFiles ?? _pickWithFilePicker)());
       if (!mounted || picked.isEmpty) return;
       final added = picked.take(room).toList();
+      _letGo(picked.skip(room));
       setState(() => _files.addAll(added));
       if (picked.length > room) _toast('Added $room: a message takes up to $maxFiles files');
       _announce(added.length == 1 ? '${added.single.name} attached' : '${added.length} files attached');
     } on PlatformException {
       _toast('Couldn’t open your files');
     }
+  }
+
+  /// The files just picked, as an encrypted conversation keeps them (mobile#365): each a picker copied into the cache
+  /// folder moves in among the decrypted files, which the engine's start empties should the app end before their send
+  /// settles. A room's stay where the picker put them.
+  Future<List<OutgoingFile>> _takenIn(List<OutgoingFile> picked) async {
+    if (widget.target is! ConversationTarget) return picked;
+    return [
+      for (final f in picked)
+        OutgoingFile(
+          path: await DecryptedFiles.instance.takeIn(f.path),
+          name: f.name,
+          contentType: f.contentType,
+          width: f.width,
+          height: f.height,
+          sizeBytes: f.sizeBytes,
+        ),
+    ];
+  }
+
+  /// A conversation's picked files no message needs any more, its send settled (sent, or dismissed) or the person took
+  /// them out of the tray: they go (mobile#365). A room's stay, as before.
+  void _letGo(Iterable<OutgoingFile> files) {
+    if (widget.target is ConversationTarget) DecryptedFiles.instance.letGo([for (final f in files) f.path]);
   }
 
   static Future<List<OutgoingFile>> _pickWithFilePicker() async {
@@ -1879,9 +1909,12 @@ class _ChatViewState extends State<ChatView> with SingleTickerProviderStateMixin
       return;
     }
     try {
-      final picked = await (widget.pickMedia ?? ChatView.debugPickMedia ?? _pickWithImagePicker)(source);
+      final picked = await _takenIn(
+        await (widget.pickMedia ?? ChatView.debugPickMedia ?? _pickWithImagePicker)(source),
+      );
       if (!mounted || picked.isEmpty) return;
       final added = picked.take(room).toList();
+      _letGo(picked.skip(room));
       setState(() => _files.addAll(added));
       if (picked.length > room) _toast('Added $room: a message takes up to $maxFiles files');
       _announce(added.length == 1 ? '${added.single.name} attached' : '${added.length} files attached');
@@ -3055,7 +3088,10 @@ class _ChatViewState extends State<ChatView> with SingleTickerProviderStateMixin
                       if (_files.isNotEmpty && _editing == null)
                         _AttachmentTray(
                           files: _files,
-                          onRemove: (f) => setState(() => _files.remove(f)),
+                          onRemove: (f) {
+                            setState(() => _files.remove(f));
+                            _letGo([f]);
+                          },
                           onToggleSpoiler: (f) => setState(() {
                             final i = _files.indexOf(f);
                             if (i >= 0) _files[i] = f.withSpoiler(!f.isSpoiler);
