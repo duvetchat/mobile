@@ -189,6 +189,49 @@ void main() {
     timeout: _slow,
   );
 
+  // What a forget's record is kept over (`before`, mobile#369): a record from before the cutover, or the person's yes
+  // that let one go, comes back once the device holds the group; a creation's goes; an earlier forget's `before` is
+  // carried on. Each as the record keeps it, read back.
+  test('a_forget_keeps_what_its_record_replaces_and_gives_it_back_once_the_group_is_held', () async {
+    final store = MemoryStore();
+    final records = LegacyRecords(store);
+    const forgotten = (owner: 'o', members: ['o', 'm'], exact: true);
+    final exact = {
+      'owner': 'o',
+      'members': ['o', 'm'],
+      'exact': true,
+    };
+    final legacy = {
+      'owner': 'o',
+      'members': ['o', 'm', 'x'],
+    };
+    await store.write(legacyRecords, {
+      'legacy': legacy,
+      'let_go': false,
+      'made': {
+        'owner': 'o',
+        'members': ['o', 'm'],
+        'created': true,
+      },
+    });
+    for (final id in ['legacy', 'let_go', 'made']) {
+      await records.forgot(id, forgotten);
+    }
+    // Forgotten again before the group is held: what the first forget kept over is carried on.
+    await records.forgot('legacy', forgotten);
+    expect(store.read(legacyRecords), {
+      'legacy': {...exact, 'before': legacy},
+      'let_go': {...exact, 'before': false},
+      'made': exact,
+    });
+    expect(records.kept('let_go')?.exact, isTrue);
+
+    for (final id in ['legacy', 'let_go', 'made']) {
+      await records.heldGroup(id);
+    }
+    expect(store.read(legacyRecords), {'legacy': legacy, 'let_go': false});
+  });
+
   test('a_record_is_its_owner_and_members_as_the_core_takes_them', () {
     expect(expectedOf((owner: 'o', members: ['o', 'm'], exact: false)), {
       'owner': 'o',

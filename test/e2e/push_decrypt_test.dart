@@ -9,6 +9,7 @@ import 'package:duvet/data/models.dart';
 import 'package:duvet/e2e/content.dart';
 import 'package:duvet/e2e/core_gate.dart';
 import 'package:duvet/e2e/engine.dart';
+import 'package:duvet/e2e/legacy.dart' show LegacyRecords;
 import 'package:duvet/e2e/notices.dart';
 import 'package:duvet/e2e/push_decrypt.dart';
 import 'package:duvet/e2e/store.dart' show anotherGroups, pushRecord;
@@ -149,8 +150,12 @@ void _takesThenEnds(SendPort ready) {
 /// Ana's phone and Bo's device in a DM: Ana's founding answered for and kept nothing of, her app ended before it listed
 /// the conversation again, her core holding her own group; then Bo's group made on the API, with a welcome to her
 /// device. Bo's message there reaches her phone by a push, whose engine notes the welcome as another group's
-/// (another_group) and shows no text. The phone, and Bo's message.
-Future<(_Phone, duvet.DirectMessage)> _anotherGroupByPush() async {
+/// (another_group) and shows no text, the commands its core is given kept in [pushed]. With [recordKept], her record
+/// holds the exact record of Ana and Bo before the push, as a forget leaves it. The phone, and Bo's message.
+Future<(_Phone, duvet.DirectMessage)> _anotherGroupByPush({
+  List<Map<String, Object?>>? pushed,
+  bool recordKept = false,
+}) async {
   final fake = FakeApi();
   final (ana, bo) = (fake.addUser(), fake.addUser());
   final conversation = fake.addConversation(group: false, members: [ana, bo]);
@@ -191,7 +196,13 @@ Future<(_Phone, duvet.DirectMessage)> _anotherGroupByPush() async {
     conversation: conversation,
     requests: <http.Request>[],
   );
-  expect((await _open(phone, fake.pushOf(conversation, sent.id)))!.text, Notice.newMessage.text);
+  if (recordKept) await LegacyRecords(a.store).forgot(conversation, (owner: null, members: [ana, bo], exact: true));
+  final opened = await _open(
+    phone,
+    fake.pushOf(conversation, sent.id),
+    core: (_) => WatchedHost(_pushGate(phone), [], commands: pushed),
+  );
+  expect(opened!.text, Notice.newMessage.text);
   expect(a.store.read(anotherGroups), isNotNull);
   return (phone, sent);
 }
@@ -850,6 +861,39 @@ void main() {
       await acceptAsShown(again, conversation);
       await until(() async => (await groupOf(again, conversation))?.generation == 1);
       expect(refusedGenerationsIn(again.store), isEmpty);
+    },
+    skip: noCore,
+    timeout: _slow,
+  );
+
+  // FG-M9 of the review of forget_group: the push's engine holds the welcome it applies to the record kept on the
+  // phone, exact as a forget kept it; notes the welcome, another group's, with its generation; and the app's engine,
+  // as it starts, forgets Ana's own group from that note, read off the record, and joins the API's.
+  test(
+    "the_push's_engine_holds_its_welcomes_to_the_record_kept_and_notes_another_group_for_the_app",
+    () async {
+      final pushed = <Map<String, Object?>>[];
+      final (phone, _) = await _anotherGroupByPush(pushed: pushed, recordKept: true);
+      final held = [
+        for (final command in pushed)
+          if (command['cmd'] == 'apply')
+            for (final entry in (command['entries']! as List).cast<Map<String, Object?>>())
+              if (entry['kind'] == 'welcome') entry['expected'],
+      ];
+      expect(held, isNotEmpty);
+      expect(
+        held,
+        everyElement({
+          'members': [phone.ana, phone.bo],
+          'exact': true,
+        }),
+      );
+      expect(phone.a.store.read(anotherGroups), {phone.conversation: 0});
+
+      final again = await restarted(phone.fake, phone.a);
+      final now = await sameGroup([again, phone.b], phone.conversation);
+      expect(now.devices.length, 2);
+      expect(again.store.read(anotherGroups), isNull);
     },
     skip: noCore,
     timeout: _slow,
