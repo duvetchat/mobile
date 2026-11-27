@@ -219,7 +219,8 @@ void main() {
   );
 
   // The desktop's review, I1: a server may send a conversation's message with text, files, a sticker or components of
-  // its own writing, under a member's name. The notice says who wrote it, and nothing of what the API sent.
+  // its own writing, under a member's name. The notice says who wrote it, and nothing of what the API sent; a row with
+  // no number, which no honest API sends, shows no notice at all (I1 of step 4's closing review).
   test(
     "a_notice_shows_nothing_of_the_api's_message_but_who_wrote_it,_whatever_its_fields",
     () async {
@@ -264,8 +265,8 @@ void main() {
           app.repository.handleEvent(payload);
         }
       }
-      await until(() => ids.every((id) => shown.any((n) => n.messageId == id)), timeout: const Duration(seconds: 10));
-      expect([for (final n in shown) (n.authorName, n.text)], List.filled(3, ('bo', 'Sent a message')));
+      await until(() => shown.any((n) => n.messageId == ids[2]), timeout: const Duration(seconds: 10));
+      expect([for (final n in shown) (n.messageId, n.authorName, n.text)], [(ids[2], 'bo', 'Sent a message')]);
     },
     skip: noCore,
     timeout: _slow,

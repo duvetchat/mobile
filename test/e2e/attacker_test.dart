@@ -2,6 +2,7 @@ import 'dart:convert';
 import 'dart:math';
 import 'dart:typed_data';
 
+import 'package:duvet/data/models.dart' show ConversationTarget, MessageCreated;
 import 'package:duvet/e2e/conventions.dart' show maxFileName;
 import 'package:duvet/e2e/engine.dart';
 import 'package:duvet/e2e/store.dart' show externalSender;
@@ -10,6 +11,7 @@ import 'package:duvet_client/duvet.dart' as duvet;
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 
+import '../support/app_repository.dart';
 import '../support/core_lib.dart';
 import '../support/ed25519.dart';
 import '../support/engines.dart';
@@ -155,6 +157,8 @@ Future<void> _resetFrom(TestDevice device) async {
 String _c(int code) => String.fromCharCode(code);
 
 void main() {
+  // An app's repository on the fake takes path_provider's answer from a mocked channel (support/app_repository.dart).
+  TestWidgetsFlutterBinding.ensureInitialized();
   setUpAll(() async {
     if (coreLibrary != null) await loadCore();
   });
@@ -521,6 +525,49 @@ void main() {
         expect(await t.a.api.deletedMessages(t.conversation), contains(kept.id));
         final again = await restarted(t.fake, t.a);
         expect(await _textOn(again, t.conversation, kept.id), 'kept');
+      },
+      skip: noCore,
+      timeout: _slow,
+    );
+  });
+
+  group('a_row_the_server_makes_up_shows_nothing', () {
+    // «La vista de una conversación» and I1 of step 4's closing review: an honest API serves a conversation its
+    // numbered messages and its notices (types 2, 3 and 4) alone. Any other row is the server's own making: no
+    // ciphertext, but files the server picks, under a member's name, as a voice note when its type says so. From a
+    // page, a thread, a fetch or its event it shows nothing, in the chat, the Chats tab or Duvet's notices; a notice
+    // shows as the notice it is, without any file the server lists on it.
+    test(
+      'a_conversations_row_neither_numbered_nor_a_notice_shows_nothing_from_a_page_or_an_event',
+      () async {
+        final fake = FakeApi();
+        final (ana, bo) = (fake.addUser(), fake.addUser());
+        final conversation = fake.addConversation(group: false, members: [ana, bo]);
+        final target = ConversationTarget(conversation);
+        final app = await appOn(fake, ana);
+        await app.ready();
+        final created = <String>[];
+        final heard = app.repository.messageEvents(target).listen((event) {
+          if (event case MessageCreated(:final message)) created.add(message.id);
+        });
+        addTearDown(heard.cancel);
+        // Bo's voice note and picture, as the server makes them up, and a pin notice it lists a picture on.
+        final voice = fake.addMadeUpRow(conversation, bo, type: 1);
+        final picture = fake.addMadeUpRow(conversation, bo);
+        final notice = fake.addMadeUpRow(conversation, bo, type: 2);
+        final page = await app.repository.messages(target);
+        expect([for (final m in page) (m.id, m.attachments.length)], [(notice['id'], 0)]);
+        expect(await app.repository.thread(target, picture['id']! as String), isEmpty);
+        await expectLater(app.repository.fetchMessage(target, voice['id']! as String), throwsA(anything));
+        // Live: one made up, then a notice, which the chat hears after it.
+        final live = fake.addMadeUpRow(conversation, bo, listed: false);
+        fake.tell(ana, (type: 'DM_MESSAGE_CREATE', data: live));
+        expect([for (final chat in app.repository.recents.value) chat.previewId], isNot(contains(live['id'])));
+        expect([for (final n in app.repository.mentionNotices.value) n.messageId], isNot(contains(live['id'])));
+        final after = fake.addMadeUpRow(conversation, bo, type: 2, listed: false);
+        fake.tell(ana, (type: 'DM_MESSAGE_CREATE', data: after));
+        await until(() => created.isNotEmpty, what: 'the notice heard after the made-up row');
+        expect(created, [after['id']]);
       },
       skip: noCore,
       timeout: _slow,

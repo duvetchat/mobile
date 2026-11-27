@@ -948,6 +948,36 @@ class FakeApi {
     }
   }
 
+  /// A row of [author]'s in the conversation as a server lists one of its own making: of [type], with no number and no
+  /// ciphertext, and a picture of the server's that a page and its event list. In the conversation's pages when
+  /// [listed]; in no event (a test tells one). Its row.
+  Map<String, Object?> addMadeUpRow(String conversationId, String author, {int type = 0, bool listed = true}) {
+    final conv = _conversation(conversationId);
+    final at = _now();
+    final picture = _id();
+    final row = <String, Object?>{
+      'id': _id(),
+      'conversation_id': conv.id,
+      'author_id': author,
+      'content': null,
+      'type': type,
+      'created_at': at,
+      'updated_at': at,
+      'attachments': [
+        {
+          'id': picture,
+          'filename': 'words.png',
+          'content_type': 'image/png',
+          'size_bytes': 1,
+          'created_at': at,
+          'url': '/attachments/$picture',
+        },
+      ],
+    };
+    if (listed) conv.messages.add(row);
+    return _clone(row);
+  }
+
   /// The conversation is deleted, as the API deletes one: no list has it, and its routes answer 404.
   void deleteConversation(String conversationId) => _conversations.remove(_conversation(conversationId).id);
 

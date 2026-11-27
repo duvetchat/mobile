@@ -1484,7 +1484,10 @@ class DuvetRepository implements ChatRepository {
     bool drop = false,
     void Function()? dropped,
   }) async {
-    final listed = [for (final m in raw) _asSent(_directMessage(m))];
+    final listed = [
+      for (final m in raw)
+        if (_directMessage(m) case final drawn?) _asSent(drawn),
+    ];
     final applied = _engine?.appliedThrough(conversationId);
     final held = await _held(conversationId, [
       for (final m in listed)
@@ -2221,6 +2224,7 @@ class DuvetRepository implements ChatRepository {
         final id = data.conversationId;
         if (id == null) break;
         final listed = _directMessage(data);
+        if (listed == null) break;
         // The person's message made again carries its new nonce: the chat knows it by the one they sent it with, so it
         // takes that row's place (I1 of task 17's review).
         final mine = _asSent(listed);
@@ -2243,7 +2247,7 @@ class DuvetRepository implements ChatRepository {
         _emitMessage((id, MessageCreated(message)));
         if (message.waiting) _emitMessage((id, const ContentChanged()));
       case duvet.DMMessageUpdatedEvent(:final data):
-        if (data.conversationId case final id?) _updated(id, _directMessage(data));
+        if ((data.conversationId, _directMessage(data)) case (final id?, final update?)) _updated(id, update);
       case duvet.DMMessageDeletedEvent(:final data):
         _dropMentionNotice(data.id);
         // Its files' decrypted copies go with it (task 18's review, M4).
@@ -6150,15 +6154,24 @@ class DuvetRepository implements ChatRepository {
     reactions: _reactions(m.reactions),
   );
 
-  ChatMessage _directMessage(duvet.DirectMessage m) {
+  /// A conversation's row as its chat draws it: none for a row that is neither numbered (an encrypted message, whose
+  /// text and files this device's database gives) nor one of the server's notices. An honest API serves a conversation
+  /// nothing else: any other row is the server's own making, which would show files it picks under a member's name
+  /// (I1 of step 4's closing review).
+  ChatMessage? _directMessage(duvet.DirectMessage m) {
+    if (m.seq == null && !_isNotice(m)) return null;
     final name = m.user?.alias ?? m.user?.username;
     if (name != null) _names[m.authorId] = name;
     return _directMessageNamed(m, name ?? _names[m.authorId] ?? 'Unknown');
   }
 
-  // A conversation's text, quotes, link previews and an encrypted message's files are never the API's
-  // (PLAN-E2E-CLIENTES.md, «La vista de una conversación»; I1 of the desktop's review): this device's database gives
-  // them ([readFrom]), and the attachments' task the envelope's files.
+  /// A pin's, a call's or a shared history's notice (types 2, 3 and 4).
+  static bool _isNotice(duvet.DirectMessage m) =>
+      m.type == duvet.MessageType.pinNotice || m.call != null || m.type == duvet.MessageType.historyShare;
+
+  // A conversation's text, quotes, link previews and files are never the API's (PLAN-E2E-CLIENTES.md, «La vista de una
+  // conversación»; I1 of the desktop's review): this device's database gives an encrypted message's ([readFrom]), and
+  // the attachments' task the envelope's files; a notice has none.
   ChatMessage _directMessageNamed(duvet.DirectMessage m, String authorName) => ChatMessage(
     id: m.id,
     authorId: m.authorId,
@@ -6168,7 +6181,7 @@ class DuvetRepository implements ChatRepository {
     createdAt: m.createdAt.toLocal(),
     edited: m.updatedAt.difference(m.createdAt) > const Duration(seconds: 1),
     nonce: m.nonce,
-    isNotice: m.type == duvet.MessageType.pinNotice || m.call != null || m.type == duvet.MessageType.historyShare,
+    isNotice: _isNotice(m),
     sharedHistory: switch (m.historyShare) {
       final s? => (
         toUserId: s.toUserId,
@@ -6188,8 +6201,6 @@ class DuvetRepository implements ChatRepository {
     isVoice: m.type == duvet.MessageType.voice,
     pinned: m.pinnedAt != null,
     fromBot: m.user?.isBot ?? false,
-    attachments: m.seq == null ? _attachments(m.attachments) : const [],
-    deletedAttachments: m.seq == null ? _attachments(m.attachments, deleted: true) : const [],
     // An encrypted message's files are sealed: only this device's database says what they are ([withRow]).
     sealedLinks: m.seq == null
         ? const {}

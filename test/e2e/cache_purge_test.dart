@@ -29,12 +29,14 @@ Map<String, dynamic> _user(String id, String username) => {
   'updated_at': _at,
 };
 
+// Numbered by its ID, as an encrypted message's row: an honest API serves a conversation nothing else but its notices.
 Map<String, dynamic> _dmMessage(String id, String content) => {
   'id': id,
   'conversation_id': 'c-1',
   'author_id': _maya,
   'content': content,
   'type': 0,
+  'seq': int.parse(id),
   'created_at': _at,
   'updated_at': _at,
   'user': {'id': _maya, 'username': 'maya'},

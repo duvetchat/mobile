@@ -39,12 +39,14 @@ Map<String, dynamic> _user(String id, String username, {String? alias, String? a
   'updated_at': _at,
 };
 
+// Numbered by its ID, as an encrypted message's row: an honest API serves a conversation nothing else but its notices.
 Map<String, dynamic> _dm(String id, String author, String content, {String? nonce}) => {
   'id': id,
   'conversation_id': 'c-1',
   'author_id': author,
   'content': content,
   'type': 0,
+  'seq': int.parse(id),
   'nonce': nonce,
   'created_at': _at,
   'updated_at': _at,
@@ -1132,6 +1134,7 @@ void main() {
     Map<String, dynamic> notice(String id, List<String> participants) => {
       ..._dm(id, _maya, ''),
       'content': null,
+      'seq': null,
       'type': 3,
       'call': {'participants': participants, 'started_at': '2026-10-23T09:00:00Z', 'ended_at': '2026-10-23T09:05:30Z'},
     };
