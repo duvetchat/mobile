@@ -1,8 +1,10 @@
 import 'dart:convert';
+import 'dart:io';
 
 import 'package:duvet/e2e/engine.dart';
 import 'package:duvet/e2e/host.dart' show CoreError;
 import 'package:duvet/e2e/legacy.dart' show legacyRecords;
+import 'package:duvet/e2e/store.dart';
 import 'package:duvet/e2e/uuid.dart';
 import 'package:duvet_client/duvet.dart' as duvet;
 import 'package:flutter_test/flutter_test.dart';
@@ -61,6 +63,67 @@ http.Response _listedWith(http.Response answered, String conversation, Map<Strin
     if (conv['id'] == conversation) conv['mls'] = mls;
   }
   return _json(listed, answered.statusCode);
+}
+
+/// The API's listing [answered] without [conversation], as a server that hides it from the device answers.
+http.Response _listedWithout(http.Response answered, String conversation) => _json([
+  for (final conv in (jsonDecode(answered.body) as List).cast<Map<String, Object?>>())
+    if (conv['id'] != conversation) conv,
+], answered.statusCode);
+
+/// [_store] whose storage refuses the engine's records (legacy_records), as a full disk's would that write: every
+/// other key is kept as [_store] keeps it.
+class _RecordsRefused implements EngineStore {
+  _RecordsRefused(this._store);
+  final EngineStore _store;
+
+  @override
+  Object? read(String key) => _store.read(key);
+
+  @override
+  Future<void> write(String key, Object? value) async {
+    if (key == legacyRecords) throw const FileSystemException('the disk is full');
+    await _store.write(key, value);
+  }
+
+  @override
+  Future<void> update(String key, Object? Function(Object? kept) change) => write(key, change(read(key)));
+
+  @override
+  Future<void> refresh(List<String> keys) => _store.refresh(keys);
+}
+
+/// The owner's restart of the conversation's group by hand with [members] alone, a key package claimed for each of
+/// their devices but the owner's own, its engine stopped (its core open): a group the server makes up, as the API still
+/// lists everyone else (the real API refuses such a commit).
+Future<void> _restartedByHand(TestDevice owner, String conversation, List<String> members) async {
+  await stoppedByHand(owner);
+  final made = await byHand(owner, {
+    'cmd': 'reset_group',
+    'conversation_id': conversation,
+    'owner': owner.user,
+    'members': members,
+    'key_packages': {
+      for (final user in members) user: [for (final kp in await owner.api.claimKeyPackages(user)) kp.data],
+    },
+  });
+  final taken = await owner.api.commit(
+    conversation,
+    duvet.Commit(
+      generation: made['generation']! as int,
+      epoch: 0,
+      commit: made['commit']! as String,
+      groupInfo: made['group_info']! as String,
+      initialGroupInfo: made['initial_group_info']! as String,
+      welcome: made['welcome'] as String?,
+    ),
+  );
+  await owner.host.handle<Object?>({
+    'cmd': 'commit_result',
+    'conversation_id': conversation,
+    'accepted': true,
+    'seq': taken.seq,
+  });
 }
 
 /// What a lying listing says of a group the API answered for and kept nothing of: kept, its founding the queue's one
@@ -1065,11 +1128,12 @@ void main() {
       timeout: _slow,
     );
 
-    // A conversation the user is no longer in won't bring its group back: as the engine lets it go (Ana takes Cy out
-    // while Cy's device waits for her to make the group again), the core's record of it goes too. The engine's own
-    // stays, which a later addition is held to.
+    // The engine lets go of a conversation the user is no longer in (Ana takes Cy out while Cy's device waits for her
+    // to make the group again) on the server's word alone: the core's record of its forgotten group stays, as the
+    // engine's own does, which a later addition is held to (I1 of mobile#395's review). Only the person's yes lets the
+    // core's go.
     test(
-      "the_core's_record_of_a_conversation_the_user_was_taken_out_of_goes_as_the_engine_lets_it_go",
+      "the_core's_record_of_a_conversation_the_user_was_taken_out_of_stays_as_the_engine_lets_it_go",
       () async {
         final fake = FakeApi();
         final (ana, bo, cy) = (fake.addUser(), fake.addUser(), fake.addUser());
@@ -1086,19 +1150,33 @@ void main() {
         final c = await firstDevice(fake, cy, client: client);
         await a.engine.openConversation(conversation);
         await sameGroup([a, b, c], conversation);
-        // Listed without its group, Cy's device forgets its own, and waits for Ana to make it again.
+        // Listed without its group, Cy's device forgets its own, and waits for Ana to make it again: the record first,
+        // as it waited for her once already, before her founding, and its core may hold the group before it says so.
         noGroup = true;
         c.connect(c.registered.last);
-        await until(() async => await groupOf(c, conversation) == null, what: "Cy's device forgetting its group");
+        await until(
+          () =>
+              _recordOn(c, conversation) != null &&
+              c.engine.conversationState(conversation) == ConversationState.waitOwner(ana),
+          what: "Cy's device forgetting its group, waiting for Ana",
+        );
         final record = _recordOn(c, conversation);
         expect(record, {
           'owner': ana,
           'members': [ana, bo, cy],
           'exact': true,
         });
-        expect(await _keptByCore(c), hasLength(1));
+        final kept = [
+          {'conversation_id': conversation, 'expected': record},
+        ];
+        expect(await _keptByCore(c), kept);
         await a.engine.removeMember(conversation, cy);
-        await until(() async => (await _keptByCore(c)).isEmpty, what: "the core's record let go with the conversation");
+        await until(
+          () => c.engine.conversationState(conversation) == null,
+          what: "Cy's device letting the conversation go",
+        );
+        await turnEnded(c);
+        expect(await _keptByCore(c), kept);
         expect(_recordOn(c, conversation), record);
       },
       skip: noCore,
@@ -1106,14 +1184,54 @@ void main() {
     );
 
     // Taken out while its app was closed, Cy's device no longer finds the conversation listed as the app starts: the
-    // core's record of its forgotten group goes then. The engine's own, taken back from it first, stays.
+    // core's record of its forgotten group stays all the same, a listing being the server's word (I1 of mobile#395's
+    // review); the engine's own, taken back from it first, stays too.
     test(
-      "the_core's_record_of_a_conversation_no_longer_listed_at_a_start_goes",
+      "the_core's_record_of_a_conversation_no_longer_listed_at_a_start_stays",
       () async {
         final t = await _keptByTheCoreAlone();
         await t.a.engine.removeMember(t.conversation, t.cy);
         final again = await restarted(t.fake, t.c);
-        expect(await _keptByCore(again), isEmpty);
+        await turnEnded(again);
+        expect(await _keptByCore(again), [
+          {'conversation_id': t.conversation, 'expected': t.record},
+        ]);
+        expect(_recordOn(again, t.conversation), t.record);
+      },
+      skip: noCore,
+      timeout: _slow,
+    );
+
+    // I1 of mobile#395's review: a server that hides a conversation, then lists it again with a group of its making,
+    // takes nothing away. Cy's record lives in the core alone (a close between the core's forget and the engine's
+    // write), and the session that takes it back has a store that refuses it, and a listing that leaves the
+    // conversation out: nothing lets the core's go. At the next start the core gives it again, and the welcome to the
+    // owner's restart without Bo, while the API still lists Bo, is refused for it.
+    test(
+      "a_listing_without_the_conversation_lets_nothing_go,_so_a_record_the_store_refused_holds_the_next_comeback",
+      () async {
+        final t = await _keptByTheCoreAlone();
+        final hidden = await restarted(
+          t.fake,
+          t.c,
+          store: _RecordsRefused(t.c.store),
+          client: watchedClient(
+            t.fake,
+            change: (request, answered) async => request.method == 'GET' && request.url.path == _conversations
+                ? _listedWithout(answered, t.conversation)
+                : answered,
+          ),
+        );
+        await turnEnded(hidden);
+        // The take-back held the record for that session alone.
+        expect(_recordOn(hidden, t.conversation), isNull);
+        await _restartedByHand(t.a, t.conversation, [t.ana, t.cy]);
+        final again = await restarted(t.fake, hidden, store: t.c.store);
+        await until(
+          () => again.engine.conversationState(t.conversation)?.name == ConversationNotice.membersChanged,
+          what: "the welcome to the group without Bo refused for the record the core kept",
+        );
+        expect(await groupOf(again, t.conversation), isNull);
         expect(_recordOn(again, t.conversation), t.record);
       },
       skip: noCore,

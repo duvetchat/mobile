@@ -492,23 +492,11 @@ class Conversations {
       ((await _host.handle<Map<String, Object?>>({'cmd': 'forgotten'}))['records']! as List).cast();
 
   /// The core lets go of its record of the conversation's forgotten group (drop_forgotten, duvetchat/e2e#65), which no
-  /// start takes back from then on; with none kept, nothing changes.
+  /// start takes back from then on; with none kept, nothing changes. On the person's yes alone ([accept]), never on the
+  /// server's word: a conversation the API no longer lists keeps its record in the core, the one copy a refused or lost
+  /// write of the engine's leaves (I1 of mobile#395's review).
   Future<void> _dropForgotten(String id) async {
     await _host.handle<Object?>({'cmd': 'drop_forgotten', 'conversation_id': id});
-  }
-
-  /// The core's records of groups this device forgot in conversations the listing no longer has for the user (it left,
-  /// was taken out, or the API deleted it) go (mobile#392): none of them comes back. The engine's own stays, which a
-  /// later addition is held to. One that can't go now waits for the next listing.
-  Future<void> _dropUnlisted() async {
-    try {
-      for (final record in await _coreRecords()) {
-        final id = record['conversation_id']! as String;
-        if (!_known.containsKey(id)) await _dropForgotten(id);
-      }
-    } catch (error) {
-      debugPrint("e2e: a forgotten group's record waits for the next listing: $error");
-    }
   }
 
   /// Stops waiting for anything: what's in memory goes, the bytes of a commit whose answer didn't come too.
@@ -670,7 +658,6 @@ class Conversations {
         .refresh([anotherGroups])
         .catchError((Object error) => debugPrint("e2e: the record's other groups weren't read again: $error"));
     await _list();
-    await _dropUnlisted();
     for (final conv in [..._known.values]) {
       try {
         await _record(conv.api);
@@ -840,7 +827,7 @@ class Conversations {
       // Gone already, by another of the user's devices or an earlier try: the list says so (a 403 or a 404).
       if (!const [403, 404].contains(error.statusCode) || await _fresh(conv.id) != null) rethrow;
     }
-    await _gone(conv.id);
+    _gone(conv.id);
   }
 
   /// As the person opens the conversation (PLAN-E2E-CLIENTES.md, «Quien no tenía dispositivo»): its members without a
@@ -952,10 +939,10 @@ class Conversations {
   }
 
   /// The conversation is no longer the user's (left, removed, deleted): nothing more is asked of it, its catch-ups and
-  /// a generation its person was asked about let go too, as the desktop's drop does (step 5's engines review, Minor 7),
-  /// and the core's record of a group this device forgot there, which won't come back (mobile#392). The engine's own
-  /// record stays, which a later addition is held to.
-  Future<void> _gone(String id) async {
+  /// a generation its person was asked about let go too, as the desktop's drop does (step 5's engines review, Minor 7).
+  /// The records of a group this device forgot there stay, the engine's and the core's: a later addition is held to
+  /// them, and a server that hid the conversation and lists it again takes neither away (I1 of mobile#395's review).
+  void _gone(String id) {
     _retries.remove(id)?.cancel();
     _inFlight.remove(id)?.cancel?.call();
     _due.remove(id)?.call();
@@ -976,11 +963,6 @@ class Conversations {
     _another.remove(id);
     unawaited(recordAnotherGroup(_engine.store, id, null));
     _set(id, null);
-    try {
-      await _dropForgotten(id);
-    } catch (error) {
-      debugPrint("e2e: a forgotten group's record waits for the next listing: $error");
-    }
   }
 
   /// A conversation without a group: nothing for whoever may make it, else waiting for its owner.
@@ -1568,7 +1550,7 @@ class Conversations {
       // No group to join yet, or the conversation or its user gone (I2 of the desktop's review), on every way here, the
       // person's yes included: listed again, a conversation gone is let go.
       if (!const [403, 404].contains(error.statusCode)) rethrow;
-      if (await left(id)) await _gone(id);
+      if (await left(id)) _gone(id);
       return;
     } on CoreError catch (error) {
       // A commit of its own still waits for its word.
