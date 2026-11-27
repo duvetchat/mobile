@@ -252,6 +252,9 @@ class _Retry {
 /// The group as the core holds it (its `group`).
 typedef _Held = HeldMembers;
 
+/// What the core holds of a conversation's group: the group, its row alone, or nothing.
+enum _Holding { group, row, none }
+
 /// Entries an apply takes at most.
 const _applyMost = 50;
 
@@ -932,13 +935,14 @@ class Conversations {
       mayMake(conv.api, _user) ? null : ConversationState.waitOwner(conv.api.ownerId);
 
   /// A conversation the API lists without a group. What this device holds of it goes ([_dropStale]), then whoever may
-  /// make it makes it again, or does so when the person opens it ([make]), and the others wait for its owner.
+  /// make it makes it again, or does so when the person opens it ([make]), and the others wait for its owner. Its row
+  /// alone waits to be let back in (mobile#383).
   Future<void> _groupless(_Conv conv, {bool make = false}) async {
     if (_inFlight.containsKey(conv.id)) return;
     final again = await _dropStale(conv.id);
     if (!mayMake(conv.api, _user)) return _set(conv.id, _waiting(conv));
     if (again || make) return _make(conv);
-    _set(conv.id, null);
+    _set(conv.id, await _holding(conv.id) == _Holding.row ? ConversationState.waitRejoin : null);
   }
 
   /// What the core holds of a conversation the API lists without a group goes. A creation of this device's (or a
@@ -1017,12 +1021,14 @@ class Conversations {
     }
     if (accounted == null) return;
     if (!_isRecord(conv.api, accounted)) return _membersChanged(conv);
+    // A row without its group (it left, was taken out, or the API refused its external commit): create_group would
+    // answer `exists` once every member's key packages were claimed. It waits for the API's group to pass the epoch it
+    // saw (mobile#383).
+    if (await _holding(conv.id) == _Holding.row) return _set(conv.id, ConversationState.waitRejoin);
     final duvet.Commit commit;
     try {
       commit = await makeGroup(_engine, conv.api, _sender, accounted);
     } on CoreError catch (error) {
-      // A row without its group (left, removed, a join refused): it waits for the API's group to pass its epoch.
-      if (error.code == 'exists') return debugPrint("e2e: this device's row of the group waits for the API's group.");
       if (error.rule == 'member_list_mismatch') return _membersChanged(conv);
       rethrow;
     }
@@ -1267,6 +1273,18 @@ class Conversations {
       (conv.type == duvet.ConversationType.group ? conv.ownerId : null) == record.owner &&
       sameUsers([for (final m in conv.members) m.userId], record.members);
 
+  /// What the core holds of the conversation's group: the group, its row alone (it left, was taken out, or the API
+  /// refused its external commit: `not_found` `membership`), or nothing.
+  Future<_Holding> _holding(String id) async {
+    try {
+      await _host.handle<Object?>({'cmd': 'group', 'conversation_id': id});
+      return _Holding.group;
+    } on CoreError catch (error) {
+      if (error.code != 'not_found') rethrow;
+      return error.what == 'membership' ? _Holding.row : _Holding.none;
+    }
+  }
+
   /// The group as the core holds it, or null without one.
   Future<_Held?> _group(String id) async {
     try {
@@ -1469,7 +1487,9 @@ class Conversations {
       if (error.code == 'pending_commit') return;
       if (error.code != 'rule_violation') rethrow;
       switch (error.rule) {
+        // A group info behind the epoch its row saw: it waits for another member's commit to pass it (mobile#383).
         case 'stale_group_info':
+          if (await _holding(id) == _Holding.row) _set(id, ConversationState.waitRejoin);
           return;
         case 'member_list_mismatch':
           return _membersChanged(conv, conv.group?.generation);

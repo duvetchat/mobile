@@ -1,6 +1,7 @@
 import 'dart:convert';
 
 import 'package:duvet/e2e/engine.dart';
+import 'package:duvet/e2e/host.dart' show CoreError;
 import 'package:duvet/e2e/legacy.dart' show legacyRecords;
 import 'package:duvet/e2e/uuid.dart';
 import 'package:duvet_client/duvet.dart' as duvet;
@@ -118,6 +119,45 @@ http.Client _groupInfoHeld(FakeApi fake, String conversation, bool Function() ho
       ? _json({'error': 'unavailable'}, 503)
       : null,
 );
+
+/// Ana's device made a row of the DM's group without the group: Bo's founding, renewed [renewals] times by hand, then
+/// Ana's external commit on its latest group info, refused by the API (the core told `invalid`). Both engines stopped,
+/// their cores open. The group info each epoch had, by epoch.
+Future<Map<int, duvet.MlsGroupInfo>> _refusedJoin(
+  FakeApi fake,
+  TestDevice a,
+  TestDevice b,
+  String conversation, {
+  int renewals = 0,
+}) async {
+  await stoppedByHand(a);
+  await b.engine.openConversation(conversation);
+  await stoppedByHand(b);
+  final infos = {1: await b.api.groupInfo(conversation)};
+  for (var epoch = 2; epoch <= renewals + 1; epoch++) {
+    await commitByHand(b, conversation);
+    infos[epoch] = await b.api.groupInfo(conversation);
+  }
+  final info = infos[renewals + 1]!;
+  await byHand(a, {
+    'cmd': 'join_external',
+    'conversation_id': conversation,
+    'generation': info.generation,
+    'group_info': info.groupInfo,
+    'external_sender': fake.externalSender,
+  });
+  await a.host.handle<Object?>({
+    'cmd': 'commit_result',
+    'conversation_id': conversation,
+    'accepted': false,
+    'invalid': true,
+  });
+  await expectLater(
+    a.host.handle<Object?>({'cmd': 'group', 'conversation_id': conversation}),
+    throwsA(isA<CoreError>().having((error) => error.what, 'what', 'membership')),
+  );
+  return infos;
+}
 
 /// Ana's and Bo's first devices in their DM, Ana's founding answered for and kept nothing of, her core holding it: her
 /// device stopped before it listed the conversation again (her core open).
@@ -545,6 +585,87 @@ void main() {
           'members': [t.ana, t.bo],
           'exact': true,
         });
+      },
+      skip: noCore,
+      timeout: _slow,
+    );
+  });
+
+  // A row without its group (a join the API refused) is no group to make: create_group would answer `exists`, once
+  // every member's key packages were claimed. It waits for the API's group to pass the epoch it saw, and says so.
+  group('a_row_without_its_group', () {
+    // The API lists no group of the DM any more: at a start, an open and a send, Ana's device claims no key package,
+    // and the conversation says it waits for another member.
+    test(
+      'where_the_api_lists_no_group,_it_claims_no_key_package_and_waits_to_be_let_back_in',
+      () async {
+        final fake = FakeApi();
+        final (ana, bo) = (fake.addUser(), fake.addUser());
+        final conversation = fake.addConversation(group: false, members: [ana, bo]);
+        var lost = false;
+        final claims = <String>[];
+        final client = watchedClient(
+          fake,
+          seen: (request) {
+            if (request.url.path.endsWith('/key-packages/claim')) claims.add(request.url.path);
+          },
+          change: (request, answered) async => lost && request.method == 'GET' && request.url.path == _conversations
+              ? _listedWith(answered, conversation, null)
+              : answered,
+        );
+        final a = await firstDevice(fake, ana, client: client);
+        final b = await firstDevice(fake, bo);
+        await _refusedJoin(fake, a, b, conversation);
+
+        lost = true;
+        final again = await restarted(fake, a, client: client);
+        await until(
+          () => again.engine.conversationState(conversation) == ConversationState.waitRejoin,
+          what: 'the row waiting, said at the start',
+        );
+        await again.engine.openConversation(conversation).catchError((Object _) {});
+        await again.engine
+            .sendMessage(Outgoing(conversationId: conversation, nonce: uuidv4(), text: 'not now'))
+            .catchError((Object _) => null);
+        await turnEnded(again);
+        expect(claims, isEmpty);
+        expect(again.engine.conversationState(conversation), ConversationState.waitRejoin);
+        expect(await groupOf(again, conversation), isNull);
+      },
+      skip: noCore,
+      timeout: _slow,
+    );
+
+    // The server serves a group info of an epoch Ana's row saw pass (stale_group_info): her device joins nothing, and
+    // the conversation says it waits for another member.
+    test(
+      'a_group_info_behind_the_epoch_it_saw_waits_to_be_let_back_in',
+      () async {
+        final fake = FakeApi();
+        final (ana, bo) = (fake.addUser(), fake.addUser());
+        final conversation = fake.addConversation(group: false, members: [ana, bo]);
+        duvet.MlsGroupInfo? served;
+        final client = watchedClient(
+          fake,
+          change: (request, answered) async {
+            if (served case final old?
+                when request.method == 'GET' && request.url.path == '$_conversations/$conversation/mls/group-info') {
+              return _json({'generation': old.generation, 'epoch': old.epoch, 'group_info': old.groupInfo}, 200);
+            }
+            return answered;
+          },
+        );
+        final a = await firstDevice(fake, ana, client: client);
+        final b = await firstDevice(fake, bo);
+        final infos = await _refusedJoin(fake, a, b, conversation, renewals: 1);
+
+        served = infos[1];
+        final again = await restarted(fake, a, client: client);
+        await until(
+          () => again.engine.conversationState(conversation) == ConversationState.waitRejoin,
+          what: 'the old group info refused, waiting',
+        );
+        expect(await groupOf(again, conversation), isNull);
       },
       skip: noCore,
       timeout: _slow,
