@@ -173,11 +173,17 @@ EngineState _byHeldList(CoreStatus status) =>
 /// ready. Served one this device doesn't hold while it holds another, a rotation's transfer for it may wait in the
 /// inbox ([takeInbox]): without one, the user's devices went on without this one, which is off the list (removed; a
 /// rotation off it removes it, and starting over leaves it unlisted). Of the identity this device holds, the list its
-/// core keeps once it observed the served one decides: a list the server rolls back changes nothing.
+/// core keeps once it observed the served one decides: a list the server rolls back changes nothing. And none served
+/// to a device whose core holds the identity the API took (no create_identity waits for its upload) makes no first
+/// device of it: the core makes no second identity, so it goes on with what it holds, as the server only withholds.
 Future<EngineState> identityState(E2EEngine engine, Future<Object?> Function() takeInbox) async {
   var served = await servedIdentity(engine);
-  if (served == null) return const EngineState.firstDevice();
   final status = await coreStatus(engine.host);
+  if (served == null) {
+    if (!status.hasIdentity || status.waitingUpload == 'create_identity') return const EngineState.firstDevice();
+    // A change of keys of its own waits on, as when the API serves the identity it replaces (below).
+    return status.waitingUpload == 'rotate_keys' ? const EngineState.rotation() : _byHeldList(status);
+  }
   if (!status.hasIdentity) return EngineState.newDevice;
   // A rotation of this device's own, cut before its upload's answer (Review Focus 3). The API serving the identity it
   // made took it: confirmed now, nothing shown or sent again, as its key was saved before it went. Else the core holds

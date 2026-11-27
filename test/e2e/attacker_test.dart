@@ -289,6 +289,27 @@ void main() {
       skip: noCore,
       timeout: _slow,
     );
+
+    // The same with a change of keys of this device's that waits for its upload: the change waits on, to go up as the
+    // same one once the person finishes it, as identity.dart has it whenever the API doesn't serve the one it made.
+    test(
+      'no_identity_served_to_a_device_whose_change_of_keys_waits_leaves_the_change_waiting',
+      () async {
+        final t = await _anaWithTwoDevices();
+        await t.a1.engine.changeKeys();
+        t.fake.cutRequest(_identity);
+        await expectLater(t.a1.engine.keySaved(), throwsA(isA<http.ClientException>()));
+        final own = await _status(t.a1);
+        expect(own['waiting_upload'], 'rotate_keys');
+        _serveAs(t.fake, t.ana, null);
+        final again = await restarted(t.fake, t.a1);
+        expect(again.state, const EngineState.rotation());
+        expect((await _status(again))['identity_key'], own['identity_key']);
+        expect(await _textOn(again, t.conversation, t.message), 'kept');
+      },
+      skip: noCore,
+      timeout: _slow,
+    );
   });
 
   // A case the plan's list implies: «Estados» says a device is removed when another device took it off the list, which
