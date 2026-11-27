@@ -56,6 +56,17 @@ enum Notice {
 
   /// The same on a phone, which has no windows: a push's engine holds the database as the app opens it (Android's).
   lockedPhone('Encrypted conversations are busy on this phone. Duvet tries again on its own.'),
+
+  /// The desktop's, whose key is in the system's keyring: Settings says when Linux has none and the key is in a file
+  /// beside the database (decision 19), and a keyring that didn't open, with its button. This app never shows them.
+  keyInFile(
+    'This computer has no system keyring, so the key to your encrypted conversations is kept in a file that only your '
+    'user can read.',
+  ),
+  keyringFailed(
+    "Duvet couldn't open your encrypted conversations. If your system's keyring is locked, unlock it and try again.",
+  ),
+  tryAgain('Try again'),
   // The API serves another external sender than the one this device pinned (Ruling 32).
   serverKeyChanged(
     "Duvet's server key isn't the one this device first saw. This device keeps the first one, so a conversation that "
