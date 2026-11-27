@@ -521,7 +521,7 @@ void main() {
       final repository = await pumpDevices(tester);
       const unlisted = '0193a4b2-0000-7000-8000-00000000eeee';
       repository.devicesAlongList = (unsent: const [], unregistered: const [unlisted]);
-      const along = 'Your password change took 0193a4b2 off your account: this takes it off your device list too.';
+      const along = "Duvet no longer lists 0193a4b2. If you didn't remove it or change your password, cancel.";
       await tapLabel(tester, 'Remove ${computer.name}');
       expect(find.textContaining(along), findsOneWidget);
       await tapLabel(tester, 'Remove');
@@ -532,6 +532,29 @@ void main() {
         'removeDevice ${computer.id}, named $unlisted',
         'changeKeys, named $unlisted',
       ]);
+      semantics.dispose();
+    });
+
+    // N-M7 of step 4's closing re-review: a device the API no longer lists is named by what this device knows of it,
+    // its name, its client and when it was added, and by the start of its ID only when nothing is known; the question
+    // says what's known, never why the server says it went.
+    testWidgets('a device the API no longer lists is named by what this device knows of it', (tester) async {
+      final repository = await pumpDevices(tester);
+      const known = '0193a4b2-0000-7000-8000-00000000eeee';
+      const unknown = '0193a4b2-0000-7000-8000-00000000dddd';
+      repository.knownDevices[known] = (name: 'Old tablet', client: 'android/1.0.0', added: DateTime(2026, 10, 20));
+      repository.devicesAlongList = (unsent: const [], unregistered: const [known, unknown]);
+      await tapLabel(tester, 'Remove ${computer.name}');
+      expect(
+        find.textContaining(
+          'Duvet no longer lists Old tablet (android/1.0.0, added 20 October 2026) and 0193a4b2. '
+          "If you didn't remove them or change your password, cancel.",
+        ),
+        findsOneWidget,
+      );
+      expect(find.textContaining('password change took'), findsNothing);
+      await tapLabel(tester, 'Cancel');
+      expect(repository.encryptionTaps, isEmpty);
       semantics.dispose();
     });
 

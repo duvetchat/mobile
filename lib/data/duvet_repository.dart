@@ -1133,7 +1133,15 @@ class DuvetRepository implements ChatRepository {
   Future<void> startOver() => _engine?.startOver() ?? Future.value();
 
   @override
-  Future<List<duvet.Device>> devices() => duvet.E2eApi(_SessionRest(this)).devices();
+  Future<List<duvet.Device>> devices() async {
+    final listed = await duvet.E2eApi(_SessionRest(this)).devices();
+    // Kept beside what's known of others, which names one the API no longer lists (N-M7 of step 4's closing re-review).
+    if (_engine case final engine?) unawaited(engine.noteDevices(listed));
+    return listed;
+  }
+
+  @override
+  KnownDevice? knownDevice(String deviceId) => _engine?.knownDevice(deviceId);
 
   @override
   Future<void> removeDevice(String deviceId, {bool changeKeys = false, List<String> named = const []}) async =>

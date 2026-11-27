@@ -65,6 +65,17 @@ const keysAgainText =
 
 String _idStart(String id) => id.length > 8 ? id.substring(0, 8) : id;
 
+/// A device the API's list doesn't name, by what this device knows of it (N-M7 of step 4's closing re-review): its
+/// name, with its client and when it was added; the start of its ID only when nothing is known.
+String knownName(String id, KnownDevice? known) {
+  final about = [?known?.client, if (known?.added case final at?) 'added ${fullDate(at.toLocal())}'];
+  return switch ((known?.name, about)) {
+    (null, []) => _idStart(id),
+    (final String name, []) => name,
+    (final name, _) => '${name ?? 'a device'} (${about.join(', ')})',
+  };
+}
+
 String _listed(List<String> names) =>
     names.length < 2 ? names.join() : '${names.take(names.length - 1).join(', ')} and ${names.last}';
 const deleteOnlyDeviceQuestion =
@@ -263,13 +274,15 @@ class _DevicesPageState extends State<DevicesPage> {
   /// What a removal or a change of keys takes along, in the desktop's words, and their IDs, which go with the yes: the
   /// devices an earlier removal of this device's took off that the API didn't take, which the next list or key change
   /// takes off too (review 24's M3), and those the list names that the API no longer lists, as the first list names
-  /// them (I2 of step 4's closing review); each by name, or by the start of its ID for one the API's list doesn't have.
+  /// them (I2 of step 4's closing review); each by name, or by what's known of one the API's list doesn't have
+  /// ([knownName]). Of those the API no longer lists it says what's known, never why the server says they went (N-M7).
   Future<({String text, List<String> named})> _alongWith(String? asked) async {
-    final along = await context.repository
+    final repository = context.repository;
+    final along = await repository
         .devicesAlong(asked)
         .catchError((Object _) => (unsent: const <String>[], unregistered: const <String>[]));
     String nameOf(String id) =>
-        _devices?.where((d) => d.id == id).firstOrNull?.name ?? (id.length > 8 ? id.substring(0, 8) : id);
+        _devices?.where((d) => d.id == id).firstOrNull?.name ?? knownName(id, repository.knownDevice(id));
     String listed(List<String> ids) => switch ([for (final id in ids) nameOf(id)]) {
       [final one] => one,
       final names => '${names.take(names.length - 1).join(', ')} and ${names.last}',
@@ -279,8 +292,8 @@ class _DevicesPageState extends State<DevicesPage> {
       text: [
         if (unsent.isNotEmpty) " This also removes ${listed(unsent)}, whose earlier removal didn't finish.",
         if (unregistered.isNotEmpty)
-          ' Your password change took ${listed(unregistered)} off your account: this takes '
-              '${unregistered.length == 1 ? 'it' : 'them'} off your device list too.',
+          " Duvet no longer lists ${listed(unregistered)}. If you didn't remove "
+              "${unregistered.length == 1 ? 'it' : 'them'} or change your password, cancel.",
       ].join(),
       named: [...unsent, ...unregistered],
     );

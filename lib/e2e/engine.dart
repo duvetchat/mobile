@@ -24,7 +24,7 @@ import 'contacts.dart';
 import 'content.dart';
 import 'content.dart' as content show heldBefore, sentUnder;
 import 'devices.dart';
-import 'devices.dart' as devices show devicesAlong, removeDevice, unsentRemovals;
+import 'devices.dart' as devices show devicesAlong, knownDevice, noteDevices, removeDevice, unsentRemovals;
 import 'host.dart';
 import 'identity.dart';
 import 'inbox.dart';
@@ -46,7 +46,7 @@ export 'approval.dart'
 export 'backup.dart' show BackupPause, BackupShown, BackupStage;
 export 'contacts.dart' show ContactsShown, KeyChange, SafetyNumber, ShownChange, changedIn, waitingForYes;
 export 'content.dart' show Authored, MessageStatus, ShownMessage;
-export 'devices.dart' show DeviceNotice, DeviceNoticeKind, DevicesAlong, inactiveDevice, onlyDevice;
+export 'devices.dart' show DeviceNotice, DeviceNoticeKind, DevicesAlong, KnownDevice, inactiveDevice, onlyDevice;
 export 'files.dart' show FilesGone;
 export 'history.dart' show HistoryOffer, NoDeviceToShareWith, ShareLimit, SharedHistory, quietBeforeImport, shareRanges;
 export 'members.dart' show maxGroupMembers;
@@ -1113,6 +1113,13 @@ class E2EEngine implements DeviceSetupActions {
   /// What a removal of [asked] (none: a change of keys) takes off the list beside it, which its confirmation names.
   Future<DevicesAlong> devicesAlong([String? asked]) => devices.devicesAlong(this, asked);
 
+  /// What this device knows of one of its user's devices (devices.dart's knownDevice), which names one the API no
+  /// longer lists.
+  KnownDevice? knownDevice(String deviceId) => devices.knownDevice(store, deviceId);
+
+  /// The user's devices as the API listed them to the app (Settings), kept beside what's known of others.
+  Future<void> noteDevices(List<duvet.UserDevice> listed) => devices.noteDevices(store, listed);
+
   Future<void> _rotate(List<String> remove, {List<String> gone = const [], List<String> named = const []}) async {
     final Rotation rotation;
     try {
@@ -1590,6 +1597,7 @@ class E2EEngine implements DeviceSetupActions {
       // which its database names from the start's first steps, bound or not (review 25's M3).
       case duvet.DeviceAddedEvent(:final data):
         _soon(() async {
+          await devices.noteDevices(store, [data]);
           if (data.id != _self && await addedToTell(store, data)) {
             _tell(DeviceNoticeKind.added, data);
           }

@@ -126,6 +126,13 @@ List<Map<String, Object?>> _approvedIn(EngineStore store) => [
 /// finish (mobile#352). This device's word alone: neither the list the API serves nor the devices it registers.
 Set<String> approvedHereIn(EngineStore store) => {for (final one in _approvedIn(store)) one['device']! as String};
 
+/// When this device approved [device], while the record keeps that approval: null for one it doesn't.
+DateTime? approvedAt(EngineStore store, String device) =>
+    switch (_approvedIn(store).where((one) => one['device'] == device).firstOrNull?['at']) {
+      final int at => DateTime.fromMillisecondsSinceEpoch(at),
+      _ => null,
+    };
+
 /// This device approved [device] (approval_confirm, approval_from_qr) [at]: kept until a list the core took names it.
 Future<void> noteApproved(EngineStore store, String device, DateTime at) {
   final kept = [

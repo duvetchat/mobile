@@ -14,6 +14,7 @@ import 'package:duvet/e2e/engine.dart'
         EngineState,
         HistoryOffer,
         KeyChange,
+        KnownDevice,
         SafetyNumber,
         ScannedDevice,
         SharedHistory,
@@ -1674,6 +1675,12 @@ class FakeRepository implements ChatRepository {
     unsent: [...devicesAlongList.unsent.where((id) => id != asked)],
     unregistered: [...devicesAlongList.unregistered.where((id) => id != asked)],
   );
+
+  /// What this device knows of devices the API may no longer list, by ID: their name, client and when they were added.
+  final knownDevices = <String, KnownDevice>{};
+
+  @override
+  KnownDevice? knownDevice(String deviceId) => knownDevices[deviceId];
 
   /// What the engine tells of the user's devices, in the notices' words; a test adds to it.
   final deviceNoticesTold = StreamController<String>.broadcast();

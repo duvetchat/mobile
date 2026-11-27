@@ -8,6 +8,7 @@ import '../e2e/engine.dart'
         DeviceSetupActions,
         DevicesAlong,
         EngineState,
+        KnownDevice,
         HistoryOffer,
         KeyChange,
         SafetyNumber,
@@ -119,6 +120,11 @@ abstract interface class ChatRepository {
   /// devices an earlier removal of this device's took off that the API didn't take (review 24's M3), and those the list
   /// names that the API no longer lists (I2 of step 4's closing review). None without an engine.
   Future<DevicesAlong> devicesAlong([String? asked]);
+
+  /// What this device knows of one of the user's devices, which names one the API no longer lists: its name, client
+  /// and when it was added, as the API last gave them, or when this device approved it (N-M7 of step 4's closing
+  /// re-review). None without an engine, or when nothing is known.
+  KnownDevice? knownDevice(String deviceId);
 
   /// What the engine tells of the user's other devices, in the notices' words: one added, one not seen in 45 days.
   Stream<String> get deviceNotices;

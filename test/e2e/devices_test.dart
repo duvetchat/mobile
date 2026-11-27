@@ -804,6 +804,30 @@ void main() {
     timeout: _slow,
   );
 
+  // N-M7 of step 4's closing re-review: what the API last listed of a device names it once the API lists it no more;
+  // one this device never knew of has nothing.
+  test(
+    'what_the_api_listed_of_a_device_names_it_once_the_api_lists_it_no_more',
+    () async {
+      final fake = FakeApi();
+      final ana = fake.addUser();
+      final a = await firstDevice(fake, ana);
+      final b = await approvedDevice(fake, a);
+      // Read as a question reads what goes along.
+      await a.engine.devicesAlong();
+      fake.dropDevice(_deviceOf(b));
+      expect((await a.engine.devicesAlong()).unregistered, [_deviceOf(b)]);
+      final known = a.engine.knownDevice(_deviceOf(b));
+      expect(known?.name, 'Pixel 8 Pro');
+      expect(known?.client, startsWith('android/'));
+      expect(known?.added, isNotNull);
+      expect(a.engine.knownDevice('0193a4b2-0000-7000-8000-00000000ffff'), isNull);
+      await Future.wait([a.engine.stop(), b.engine.stop()]);
+    },
+    skip: noCore,
+    timeout: _slow,
+  );
+
   // Step 3's closing review: a new password's remove_devices leaves the signed list naming devices the API took away,
   // which a list naming them again can't go up with (400 `the list names device …`). The person is told of them first.
   test(

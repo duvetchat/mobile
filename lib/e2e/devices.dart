@@ -44,7 +44,9 @@ Future<duvet.Identity> _observedOwn(E2EEngine engine) async {
 /// 23): no list or rotation may name them again. A device it still registers stays though it has no certificate yet
 /// (one this device approved, whose own list hasn't gone up: task 24's review, M2).
 Future<List<String>> takenAway(E2EEngine engine, String list) async {
-  final registered = {for (final device in await engine.api.devices()) device.id};
+  final listed = await engine.api.devices();
+  await noteDevices(engine.store, listed);
+  final registered = {for (final device in listed) device.id};
   return [
     for (final id in listDevices(list) ?? const <String>[])
       if (!registered.contains(id)) id,
@@ -67,6 +69,64 @@ Future<DevicesAlong> devicesAlong(E2EEngine engine, String? asked) async {
     unsent: (await unsentRemovals(engine)).where(along).toList(),
     unregistered: held == null ? const <String>[] : (await takenAway(engine, held)).where(along).toList(),
   );
+}
+
+/// What this device knows of one of its user's devices: its name and client as `GET …/devices` or DEVICE_ADD last gave
+/// them, and when it was added there, or approved here. What names a device the API no longer lists (N-M7 of step 4's
+/// closing re-review).
+typedef KnownDevice = ({String? name, String? client, DateTime? added});
+
+/// The most devices the record keeps what it knew of: the newest.
+const _knownKept = 50;
+
+Map<String, Map<String, Object?>> _knownIn(EngineStore store) => switch (store.read(knownDevices)) {
+  final Map<Object?, Object?> kept => {
+    for (final MapEntry(:key, :value) in kept.entries)
+      if (key is String && value is Map) key: value.cast<String, Object?>(),
+  },
+  _ => {},
+};
+
+/// [devices], as the API gave them, kept in the record beside what it knew of others.
+Future<void> noteDevices(EngineStore store, Iterable<duvet.UserDevice> devices) async {
+  final kept = _knownIn(store);
+  var changed = false;
+  for (final device in devices) {
+    final Map<String, Object?> known = {
+      'name': device.name,
+      'client': device.client,
+      'added': device.createdAt.millisecondsSinceEpoch,
+    };
+    if (mapEquals(kept[device.id], known)) continue;
+    kept
+      ..remove(device.id)
+      ..[device.id] = known;
+    changed = true;
+  }
+  if (!changed) return;
+  final old = kept.length - _knownKept;
+  for (final id in [...kept.keys.take(old < 0 ? 0 : old)]) {
+    kept.remove(id);
+  }
+  await store
+      .write(knownDevices, kept)
+      .catchError((Object error) => debugPrint("e2e: what's known of the devices: ${error.runtimeType}"));
+}
+
+/// What this device knows of [id]: the API's last word on it, else when this device approved it; null for nothing.
+KnownDevice? knownDevice(EngineStore store, String id) {
+  if (_knownIn(store)[id] case final kept?) {
+    return (
+      name: kept['name'] as String?,
+      client: kept['client'] as String?,
+      added: switch (kept['added']) {
+        final int at => DateTime.fromMillisecondsSinceEpoch(at),
+        _ => null,
+      },
+    );
+  }
+  if (approvedAt(store, id) case final at?) return (name: null, client: null, added: at);
+  return null;
 }
 
 /// A list that would leave out a device the person wasn't told of ([named]), beside those they asked to take off:
@@ -284,6 +344,7 @@ Future<void> _keepTold(EngineStore store, String key, List<String> ids) =>
 /// devices the API still has (a removed device's ID never comes back), so the record doesn't grow.
 Future<List<duvet.Device>> inactiveToTell(E2EEngine engine) async {
   final devices = await engine.api.devices();
+  await noteDevices(engine.store, devices);
   final told = _told(engine.store, toldInactive);
   final due = [
     for (final device in devices)
