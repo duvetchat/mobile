@@ -243,6 +243,17 @@ void main() {
     expect(beside(), isEmpty);
   });
 
+  // Step 5's review, Minor 3 (mobile#366): a lock a killed write left whose time is ahead of the clock (set back since)
+  // was kept until the clock passed it, every write meanwhile waiting its 30 s and failing.
+  test('a_lock_a_killed_write_left_ahead_of_the_clock_is_taken_too', () async {
+    final store = await open();
+    File('${file.path}.lock')
+      ..createSync(recursive: true)
+      ..setLastModifiedSync(DateTime.now().add(const Duration(hours: 1)));
+    await store.write(keptDevice, 'd-1').timeout(const Duration(seconds: 10));
+    expect(onDisk(), {keptDevice: 'd-1'});
+  });
+
   // What killed writes left beside the record goes as the next record opens, and nothing else of its folder.
   test('what_a_killed_write_left_goes_as_the_record_opens', () async {
     final store = await open();
