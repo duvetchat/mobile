@@ -925,6 +925,38 @@ void main() {
       timeout: _slow,
     );
 
+    // N-M1 of step 4's closing re-review: a record made from a listing the API calls from before the cutover is held to
+    // what the page draws too: such a listing with someone the page never showed founds nothing.
+    test(
+      'a_listing_called_from_before_the_cutover_founds_no_group_with_whom_the_page_never_drew',
+      () async {
+        final fake = FakeApi();
+        final (ana, bo, eve) = (fake.addUser(), fake.addUser(), fake.addUser());
+        final conversation = fake.addConversation(group: true, members: [ana, bo, eve], owner: ana, legacy: true);
+        final commits = <String>[];
+        final b = await firstDevice(
+          fake,
+          bo,
+          client: watchedClient(
+            fake,
+            seen: (request) {
+              if (request.method == 'POST' && request.url.path == commitsPath(conversation)) commits.add('commit');
+            },
+          ),
+          drawn: _without(fake.drawnTo(bo), eve),
+        );
+        await firstDevice(fake, ana);
+        await firstDevice(fake, eve);
+        await b.engine.openConversation(conversation);
+        await turnEnded(b);
+        expect(commits, isEmpty);
+        expect(await groupOf(b, conversation), isNull);
+        expect(b.engine.conversationState(conversation)?.name, ConversationNotice.membersChanged);
+      },
+      skip: noCore,
+      timeout: _slow,
+    );
+
     // A device without a record (a DM's other member, a group's owner on another device) founds the conversation as
     // its page draws it; listed with someone the page doesn't draw, it founds nothing, and says so.
     test(

@@ -50,8 +50,9 @@ class LegacyRecords {
 
   /// The conversation's record: the one kept, whatever the API says of the conversation, none for one whose record the
   /// person let go; else, the first time this device sees a conversation from before the cutover, its owner (a
-  /// group's) and members as listed now.
-  Future<LegacyRecord?> of(duvet.Conversation conv) async {
+  /// group's) and members as listed now, held to what the person sees ([asDrawn]): a listing the chat doesn't draw as
+  /// listed makes no record, as it's the API's word alone (N-M1 of step 4's closing re-review).
+  Future<LegacyRecord?> of(duvet.Conversation conv, Future<bool> Function(LegacyRecord made) asDrawn) async {
     final kept = _valueOf(conv.id);
     if (kept == false) return null;
     if (recordIn(kept) case final record?) return record;
@@ -61,6 +62,7 @@ class LegacyRecords {
       owner: conv.type == duvet.ConversationType.group ? conv.ownerId : null,
       members: members,
     );
+    if (!await asDrawn(made)) return null;
     await _keep(conv.id, expectedOf(made));
     return made;
   }

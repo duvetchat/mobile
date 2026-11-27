@@ -562,7 +562,7 @@ class Conversations {
     await _list();
     for (final conv in [..._known.values]) {
       try {
-        await _legacy.of(conv.api);
+        await _record(conv.api);
         if (conv.group == null) {
           await _groupless(conv);
         } else {
@@ -888,7 +888,7 @@ class Conversations {
   /// conversation as the person sees it, asked again of a fresh listing. The API gives their order, never the set or
   /// the kind: a listing that differs founds nothing, and the conversation says so; one the person doesn't see waits.
   Future<void> _make(_Conv conv) async {
-    final record = await _legacy.of(conv.api);
+    final record = await _record(conv.api);
     var accounted = record ?? _recordOf(await _shown(conv.id));
     if (record == null && accounted != null && !_isRecord(conv.api, accounted)) {
       accounted = _recordOf(await _shown(conv.id, fresh: true));
@@ -973,7 +973,7 @@ class Conversations {
   /// One apply, the users it asks for observed first, the welcomes of a conversation from before the cutover held to
   /// its record (their `expected`, which the API never gives); what its results say is noted.
   Future<Map<String, Object?>> _apply(_Conv conv, List<Map<String, Object?>> entries) async {
-    final record = await _legacy.of(conv.api);
+    final record = await _record(conv.api);
     final given = record == null
         ? entries
         : [
@@ -1104,6 +1104,24 @@ class Conversations {
       (held.owner != null) != shown.group ||
       (shown.group ? held.owner != shown.owner : shown.users.length != 2 || !shown.users.contains(_user)) ||
       held.members.any((user) => !shown.users.contains(user));
+
+  /// The conversation's record ([LegacyRecords.of]), one made the first time it's seen held to what's drawn.
+  Future<LegacyRecord?> _record(duvet.Conversation conv) => _legacy.of(conv, (made) => _drawnAs(conv.id, made));
+
+  /// Whether [record] is the conversation as the person sees it: its kind, a group's owner and its users, whatever
+  /// their order (N-M1 of step 4's closing re-review). False while that can't be read.
+  Future<bool> _drawnAs(String id, LegacyRecord record) async {
+    try {
+      final shown = await _shown(id);
+      return shown != null &&
+          shown.group == (record.owner != null) &&
+          (!shown.group || shown.owner == record.owner) &&
+          sameUsers(shown.users, record.members);
+    } catch (error) {
+      debugPrint("e2e: what the conversation draws couldn't be read yet: $error");
+      return false;
+    }
+  }
 
   static LegacyRecord? _recordOf(ShownConversation? shown) =>
       shown == null ? null : (owner: shown.group ? shown.owner : null, members: shown.users);
@@ -1287,7 +1305,7 @@ class Conversations {
     }
 
     Future<duvet.Commit?> join() async =>
-        joinGroup(_engine, conv.api, _sender, await _legacy.of(conv.api), mayJoin: mayJoin);
+        joinGroup(_engine, conv.api, _sender, await _record(conv.api), mayJoin: mayJoin);
     duvet.Commit? commit;
     try {
       try {
