@@ -35,14 +35,18 @@ enum ConversationNotice { blocked, waitOwner, waitRejoin, membersChanged, groupD
 /// A conversation as its chat draws it: whether it's a group, a group's owner, and its members' users.
 typedef ShownConversation = ({bool group, String? owner, List<String> users});
 
+/// Whether a chat draws [member] at all: listed with their own profile, so by one ID, the membership's, which the
+/// group is held to. One whose profile names another ID isn't drawn anywhere (R-I1 of step 4's closing re-review).
+bool drawnMember(duvet.ConversationMember member) => member.user?.id == member.userId;
+
 /// [conv] as a chat of [me]'s draws it from the API's listing (N-C1 of step 4's closing re-review): the person, and the
-/// members the chat names, those listed with the profile it draws a member by. A DM is the person and the one other
-/// its view shows, the first listed, whatever else its listing holds: no addition to a DM is drawn (N-I1).
+/// members the chat names ([drawnMember]). A DM is the person and the one other its view shows, the first listed,
+/// whatever else its listing holds: no addition to a DM is drawn (N-I1).
 ShownConversation drawnOf(duvet.Conversation conv, String me) {
   final group = conv.type == duvet.ConversationType.group;
   final others = [
     for (final member in conv.members)
-      if (member.user != null && member.userId != me) member.userId,
+      if (drawnMember(member) && member.userId != me) member.userId,
   ];
   return (group: group, owner: group ? conv.ownerId : null, users: [me, ...group ? others : others.take(1)]);
 }

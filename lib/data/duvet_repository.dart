@@ -3334,11 +3334,12 @@ class DuvetRepository implements ChatRepository {
     // Where the user joined it, and whether it's from before the cutover: what its chat's start says.
     if (c.members.where((m) => m.userId == me).firstOrNull case final mine?) _joinedAs[c.id] = mine.id;
     c.legacy ? _legacyConversations.add(c.id) : _legacyConversations.remove(c.id);
+    // Drawn by one ID, the membership's, which the encryption engine holds the group to ([drawnMember]).
     final members = _conversationMembers[c.id] = [
       for (final m in c.members)
-        if (m.user case final u?)
+        if (m.user case final u? when drawnMember(m))
           Member(
-            userId: u.id,
+            userId: m.userId,
             username: u.username,
             alias: u.alias,
             avatarUrl: avatarUrl(u.avatar),
@@ -3355,7 +3356,7 @@ class DuvetRepository implements ChatRepository {
         id: c.id,
         title: '',
         isGroup: c.type == duvet.ConversationType.group,
-        memberCount: c.members.length,
+        memberCount: members.length,
         updatedAt: c.updatedAt.toLocal(),
         ownerId: c.ownerId,
         name: c.name?.isNotEmpty == true ? c.name : null,

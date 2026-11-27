@@ -873,6 +873,48 @@ void main() {
       timeout: _slow,
     );
 
+    // R-I1 of step 4's closing re-review: a member is drawn by one ID, the membership's, which the group is held to,
+    // and a listed member whose profile names another ID isn't drawn at all.
+    test(
+      "a_dm_member_listed_in_another's_profile_isn't_drawn,_and_nothing_goes_to_a_group_of_the_person_and_them",
+      () async {
+        final fake = FakeApi();
+        final (ana, bo, eve) = (fake.addUser(), fake.addUser(), fake.addUser());
+        final conversation = fake.addConversation(group: false, members: [ana, bo]);
+        final app = await appOn(fake, bo, hears: (event) => event.type != 'MLS_WELCOME');
+        await app.ready();
+        final e = await firstDevice(fake, eve);
+        // Eve's device is shown the DM as hers and Bo's, and founds its group: a DM of the two of them.
+        fake.dropMembers(conversation, [ana]);
+        fake.addMembers(conversation, [eve]);
+        await e.engine.openConversation(conversation);
+        await until(() async => await groupOf(e, conversation) != null, what: "Eve's group");
+        // Then Bo's DM lists Eve's membership in Ana's profile, her ID included.
+        fake.dress(conversation, eve, as: ana);
+        await app.repository.refreshConversations();
+        final shown = app.repository.conversations.value.single;
+        final members = await app.repository.members(ConversationTarget(conversation));
+        final from = app.seen.length;
+        Object? refused;
+        try {
+          await app.repository.send(ConversationTarget(conversation), 'for Ana', nonce: uuidv4());
+        } catch (error) {
+          refused = error;
+        }
+        expect(
+          (
+            drawn: [for (final member in members) member.userId].join(' '),
+            other: shown.otherUserId,
+            posts: app.count('POST', _messagesPath(conversation), from: from),
+            refused: refused != null,
+          ),
+          (drawn: bo, other: null, posts: 0, refused: true),
+        );
+      },
+      skip: noCore,
+      timeout: _slow,
+    );
+
     // N-I3 of step 4's closing re-review: an edit or a deletion that waits for its answer goes again only to a group
     // whose people the page draws. Each try looks, and so does a restart's, before its bytes are made again.
     test(

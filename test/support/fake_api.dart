@@ -811,8 +811,9 @@ class FakeApi {
   Iterable<String> get conversationIds => _conversations.keys;
 
   /// The conversation as an honest page draws it for [user], from what the fake lists now: a group with its owner and
-  /// members, a DM as the user and the first other member listed; null for one the user isn't in. What an engine's
-  /// test gives it as drawn, never the engine's own listing (N-C1 of step 4's closing re-review).
+  /// members, a DM as the user and the first other member listed, none of them a member [dress]ed in another's profile;
+  /// null for one the user isn't in. What an engine's test gives it as drawn, never the engine's own listing (N-C1 of
+  /// step 4's closing re-review).
   Future<({bool group, String? owner, List<String> users})?> Function(String conversationId, {required bool fresh})
   drawnTo(String user) => (conversationId, {required fresh}) async {
     final conv = _conversations[conversationId];
@@ -821,7 +822,7 @@ class FakeApi {
     final group = conv.type == 2;
     final others = [
       for (final other in users)
-        if (other != user) other,
+        if (other != user && (_dressed['$conversationId:$other'] ?? other) == other) other,
     ];
     return (group: group, owner: group ? conv.ownerId : null, users: [user, ...group ? others : others.take(1)]);
   };
@@ -857,6 +858,11 @@ class FakeApi {
 
   /// The conversation's owner, as a server that skips its rules names one: none of its members is told.
   void setOwner(String conversationId, String user) => _conversation(conversationId).ownerId = user;
+
+  /// The conversation lists [user]'s membership with [as]'s public profile, its ID included, as a server dressing one
+  /// account as another would (R-I1 of step 4's closing re-review).
+  void dress(String conversationId, String user, {required String as}) => _dressed['$conversationId:$user'] = as;
+  final _dressed = <String, String>{};
 
   /// Two users become friends: each may claim the other's key packages and read their identity, as the API lets them.
   void befriend(String a, String b) => _friends.add(([a, b]..sort()).join(':'));
@@ -2007,6 +2013,13 @@ class FakeApi {
     return conv;
   }
 
+  /// The public profile the API's listing gives a member, which the app draws them by: their own, or the one they're
+  /// [dress]ed in.
+  Map<String, Object?> _profileOf(_Conversation conv, String user) {
+    final shown = _dressed['${conv.id}:$user'] ?? user;
+    return {'id': shown, 'username': 'u${shown.substring(0, 8)}'};
+  }
+
   /// A conversation as its object shows it: legacy, and its group (mls), with where this device joined it.
   Map<String, Object?> _view(_Conversation conv, _Device? device) {
     final group = conv.group;
@@ -2020,11 +2033,7 @@ class FakeApi {
       'deleted_at': null,
       // Each with the public profile the API's listing gives, which the app draws a member by.
       'members': [
-        for (final member in conv.members)
-          {
-            ..._clone(member),
-            'user': {'id': member['user_id'], 'username': 'u${(member['user_id']! as String).substring(0, 8)}'},
-          },
+        for (final member in conv.members) {..._clone(member), 'user': _profileOf(conv, member['user_id']! as String)},
       ],
       'legacy': conv.legacy,
       'mls': group == null

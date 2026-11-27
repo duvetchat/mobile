@@ -51,7 +51,7 @@ export 'files.dart' show FilesGone;
 export 'history.dart' show HistoryOffer, NoDeviceToShareWith, ShareLimit, SharedHistory, quietBeforeImport, shareRanges;
 export 'members.dart' show maxGroupMembers;
 export 'send.dart' show Outgoing, Pending, TooManyWaiting;
-export 'sync.dart' show ConversationNotice, ConversationState, Restart, ShownConversation, drawnOf;
+export 'sync.dart' show ConversationNotice, ConversationState, Restart, ShownConversation, drawnMember, drawnOf;
 
 /// What the engine waits with: the system's timers in the app, a test's clock in its tests.
 abstract interface class EngineClock {
