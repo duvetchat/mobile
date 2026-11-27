@@ -5,6 +5,7 @@ import 'dart:typed_data';
 import 'package:duvet/data/models.dart' show ConversationTarget, MessageCreated;
 import 'package:duvet/e2e/conventions.dart' show maxFileName;
 import 'package:duvet/e2e/engine.dart';
+import 'package:duvet/e2e/legacy.dart' show legacyRecords;
 import 'package:duvet/e2e/store.dart' show externalSender;
 import 'package:duvet/e2e/uuid.dart';
 import 'package:duvet_client/duvet.dart' as duvet;
@@ -525,6 +526,97 @@ void main() {
         expect(await t.a.api.deletedMessages(t.conversation), contains(kept.id));
         final again = await restarted(t.fake, t.a);
         expect(await _textOn(again, t.conversation, kept.id), 'kept');
+      },
+      skip: noCore,
+      timeout: _slow,
+    );
+  });
+
+  group('a_group_holds_only_whom_the_device_can_account_for', () {
+    // C1 of step 4's closing reviews: a device founds a group only with the members it can account for, its creator
+    // with the person's picks, whatever the API lists to its engine; and a group that holds someone the conversation
+    // doesn't show is said before anything more is sent there, which protects whoever joins by a welcome.
+    test(
+      'the_api_listing_a_third_member_to_the_creators_engine_founds_no_group_with_them',
+      () async {
+        final fake = FakeApi();
+        final (ana, bo, eve) = (fake.addUser(), fake.addUser(), fake.addUser());
+        // The server plants an account of its own in the group Ana makes, after it answers her creation.
+        final commits = <String>[];
+        var planted = false;
+        final client = watchedClient(
+          fake,
+          seen: (request) {
+            if (request.method == 'POST' && request.url.path.endsWith('/mls/commits')) commits.add(request.url.path);
+            if (planted || request.method != 'GET' || request.url.path != '/api/users/@me/conversations') return;
+            if (fake.conversationIds.firstOrNull case final made?) {
+              planted = true;
+              fake.addMembers(made, [eve]);
+            }
+          },
+        );
+        final a = await firstDevice(fake, ana, client: client);
+        await firstDevice(fake, bo);
+        final e = await firstDevice(fake, eve);
+        final conversation = (await a.engine.createGroup('Plans', [bo])).id;
+        await turnEnded(a);
+        expect(planted, isTrue);
+        expect(a.engine.conversationState(conversation), ConversationState.membersChanged);
+        expect(await groupOf(a, conversation), isNull);
+        expect(commits, isEmpty);
+        expect(await groupOf(e, conversation), isNull);
+      },
+      skip: noCore,
+      timeout: _slow,
+    );
+
+    // Kept past its founding, the record would hold a later welcome of this device's to the members it began with.
+    test(
+      'the_creators_picks_found_its_group_and_go_once_the_device_holds_it',
+      () async {
+        final fake = FakeApi();
+        final (ana, bo) = (fake.addUser(), fake.addUser());
+        final a = await firstDevice(fake, ana);
+        final b = await firstDevice(fake, bo);
+        final conversation = (await a.engine.createDM(bo)).id;
+        await sameGroup([a, b], conversation);
+        expect((a.store.read(legacyRecords) as Map?)?.containsKey(conversation) ?? false, isFalse);
+      },
+      skip: noCore,
+      timeout: _slow,
+    );
+
+    test(
+      'a_welcome_whose_group_holds_a_user_the_conversation_doesnt_is_said_and_nothing_is_sent',
+      () async {
+        final fake = FakeApi();
+        final (ana, bo, eve) = (fake.addUser(), fake.addUser(), fake.addUser());
+        final conversation = fake.addConversation(group: true, members: [ana, bo], owner: ana);
+        final a = await firstDevice(fake, ana);
+        final b = await firstDevice(fake, bo);
+        final e = await firstDevice(fake, eve);
+        await stoppedByHand(b);
+        // Ana's device is shown an account of the server's in the group, and founds it with them; Bo's never is.
+        fake.addMembers(conversation, [eve]);
+        await a.engine.openConversation(conversation);
+        await until(() async => await groupOf(e, conversation) != null, what: "the group on the planted device");
+        fake.dropMembers(conversation, [eve]);
+        final posts = <String>[];
+        final again = await restarted(
+          fake,
+          b,
+          client: watchedClient(
+            fake,
+            seen: (request) {
+              if (request.method == 'POST' && request.url.path == _messagesPath(conversation)) posts.add('message');
+            },
+          ),
+        );
+        await until(() async => await groupOf(again, conversation) != null, what: "the welcome on Bo's device");
+        await turnEnded(again);
+        expect(again.engine.conversationState(conversation), ConversationState.groupDiffers([ana, bo, eve]));
+        await expectLater(_send(again, conversation, 'for Ana alone'), throwsA(isA<StateError>()));
+        expect(posts, isEmpty);
       },
       skip: noCore,
       timeout: _slow,

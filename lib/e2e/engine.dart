@@ -32,6 +32,7 @@ import 'failures.dart';
 import 'files.dart' as files show fileNames;
 import 'history.dart';
 import 'key_packages.dart';
+import 'legacy.dart' show LegacyRecord;
 import 'members.dart';
 import 'recover.dart';
 import 'search.dart';
@@ -50,7 +51,7 @@ export 'files.dart' show FilesGone;
 export 'history.dart' show HistoryOffer, NoDeviceToShareWith, ShareLimit, SharedHistory, quietBeforeImport, shareRanges;
 export 'members.dart' show maxGroupMembers;
 export 'send.dart' show Outgoing, Pending, TooManyWaiting;
-export 'sync.dart' show ConversationNotice, ConversationState, Restart;
+export 'sync.dart' show ConversationNotice, ConversationState, Restart, ShownConversation;
 
 /// What the engine waits with: the system's timers in the app, a test's clock in its tests.
 abstract interface class EngineClock {
@@ -308,6 +309,7 @@ class E2EEngine implements DeviceSetupActions {
     required this.registered,
     ({String challenge, DateTime at})? loginChallenge,
     double Function()? random,
+    this.shown,
   }) : _challenge = loginChallenge,
        random = random ?? Random().nextDouble {
     // Every observation this device's core answers, whoever asked (a push's engine through the port too), reaches the
@@ -336,6 +338,11 @@ class E2EEngine implements DeviceSetupActions {
 
   /// A number from 0 to 1, at random: how much of its 5 s a due commit waits.
   final double Function() random;
+
+  /// The conversation as the person sees it (its chat's), [fresh] from a listing made now, or none for one not drawn:
+  /// whom a group this device founds without a record of it holds, and whom any group it holds may hold (C1 of step 4's
+  /// closing reviews). Without it, the engine's own listing stands in.
+  final Future<ShownConversation?> Function(String conversationId, {required bool fresh})? shown;
 
   /// How long a login's challenge is taken for: the API's 10 minutes (its challengeLife), less one for the way there.
   static const challengeLife = Duration(minutes: 9);
@@ -890,19 +897,23 @@ class E2EEngine implements DeviceSetupActions {
   /// The person's new DM (PLAN-E2E-CLIENTES.md, Task 23): the API makes the conversation (or answers the one they
   /// have), then this device its group at once, as either member of a DM may. Before this device is ready, its group is
   /// made once it is. The API's conversation.
-  Future<duvet.Conversation> createDM(String userId) => _created(() => api.api.createDM(userId));
+  Future<duvet.Conversation> createDM(String userId) =>
+      _created(() => api.api.createDM(userId), (owner: null, members: [user, userId]));
 
   /// The person's new group, which they own: as [createDM], its group made at once. One past 20 members, its owner
   /// among them, is refused before anything is asked.
   Future<duvet.Conversation> createGroup(String name, List<String> userIds) async {
     checkRoom({user, ...userIds}.length);
-    return _created(() => api.api.createGroup(name, userIds));
+    return _created(() => api.api.createGroup(name, userIds), (owner: user, members: {user, ...userIds}.toList()));
   }
 
-  Future<duvet.Conversation> _created(Future<duvet.Conversation> Function() create) async {
+  /// A conversation the person made with [picked], of the kind they asked for: its group is founded with them alone,
+  /// whatever the API lists (C1 of step 4's closing reviews).
+  Future<duvet.Conversation> _created(Future<duvet.Conversation> Function() create, LegacyRecord picked) async {
     final conv = await _updating(create);
     // A DM they had, with its group, goes on as its chat opens it.
     if (conv.mls != null) return conv;
+    await _groups.created(conv.id, picked);
     await openConversation(conv.id).catchError((Object error) {
       debugPrint("e2e: the new conversation's group waits for its next open: $error");
     });

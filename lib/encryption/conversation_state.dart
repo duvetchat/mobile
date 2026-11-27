@@ -68,6 +68,17 @@ class _ConversationStateBarState extends State<ConversationStateBar> {
         action: Notice.membersAccept.text,
         run: widget.onAccept,
       ),
+      // Whom the group holds, whom what's sent would reach: no yes makes it the conversation's.
+      ConversationNotice.groupDiffers => (
+        text: [
+          Notice.membersChanged.text,
+          Notice.membersNow.fill({
+            'names': peopleNamed([for (final user in state!.users) widget.nameOf(user)]),
+          }),
+        ].join('\n'),
+        action: null,
+        run: null,
+      ),
     };
   }
 

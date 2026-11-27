@@ -415,6 +415,18 @@ class DuvetRepository implements ChatRepository {
   final _spaceMembers = <String, Future<List<Member>>>{};
   final _conversationMembers = <String, List<Member>>{};
 
+  /// The conversations as their chats draw them, by ID, as last listed.
+  var _drawnConversations = <String, ShownConversation>{};
+
+  /// A conversation as its chat draws it, [fresh] from a listing made now: what the encryption engine founds a group
+  /// with when it has no record of it, and what a group it holds may hold.
+  Future<ShownConversation?> _drawnConversation(String conversationId, {required bool fresh}) async {
+    if (fresh) {
+      await refreshConversations().catchError((Object error) => debugPrint('conversations: $error'));
+    }
+    return _drawnConversations[conversationId];
+  }
+
   // The user's Spaces' emojis and stickers, all of them; fetched again once any change.
   Future<List<CustomEmoji>>? _emojis;
   Future<List<Sticker>>? _stickers;
@@ -821,6 +833,7 @@ class DuvetRepository implements ChatRepository {
     teamInvites.value = const [];
     _answeredInvites.clear();
     _conversationMembers.clear();
+    _drawnConversations = {};
     _names.clear();
     _authors.clear();
     _emojiNames.clear();
@@ -1319,6 +1332,7 @@ class DuvetRepository implements ChatRepository {
         deviceName: name,
         registered: _deviceRegistered,
         loginChallenge: challenge,
+        shown: _drawnConversation,
       );
       engine.state.addListener(_showEncryption);
       engine.conversations.addListener(_showConversations);
@@ -1638,7 +1652,7 @@ class DuvetRepository implements ChatRepository {
       ConversationNotice.blocked => Notice.blocked.text,
       ConversationNotice.waitOwner => Notice.waitOwner.fill(owner),
       ConversationNotice.waitRejoin => Notice.waitRejoin.text,
-      ConversationNotice.membersChanged => Notice.membersChanged.text,
+      ConversationNotice.membersChanged || ConversationNotice.groupDiffers => Notice.membersChanged.text,
       ConversationNotice.noDevice || null => Notice.notReady.text,
     };
   }
@@ -3244,6 +3258,16 @@ class DuvetRepository implements ChatRepository {
   Future<void> refreshConversations() async {
     final me = profile.value?.id;
     final list = await _call((api) => api.getConversations());
+    // What the person sees of each, which the encryption engine holds its groups to (C1 of step 4's closing reviews).
+    _drawnConversations = {
+      for (final c in list)
+        if (c.deletedAt == null)
+          c.id: (
+            group: c.type == duvet.ConversationType.group,
+            owner: c.type == duvet.ConversationType.group ? c.ownerId : null,
+            users: [for (final m in c.members) m.userId],
+          ),
+    };
     conversations.value = [
       for (final c
           in list.where((c) => c.deletedAt == null).toList()..sort((a, b) => b.updatedAt.compareTo(a.updatedAt)))

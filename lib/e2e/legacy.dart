@@ -30,49 +30,61 @@ LegacyRecord? recordIn(Object? kept) => switch (kept) {
   _ => null,
 };
 
-/// The records of a user's conversations, in the engine's record. One the record didn't take is kept here for the
-/// session, so a conversation stays held to what this device first saw while the storage refuses (M4 of the desktop's
-/// review).
+/// The records of a user's conversations, in the engine's record: those from before the cutover, and the person's picks
+/// as they made a conversation on this device, until it holds its group (C1 of step 4's closing reviews). One the
+/// record didn't take is kept here for the session, so a conversation stays held to what this device first saw while
+/// the storage refuses (M4 of the desktop's review).
 class LegacyRecords {
   LegacyRecords(this._store);
   final EngineStore _store;
 
-  /// What the record didn't take, by conversation: a record, or null for one let go.
-  final _unsaved = <String, LegacyRecord?>{};
+  /// What the record didn't take, by conversation: a record's value, or false for one let go or gone.
+  final _unsaved = <String, Object>{};
 
   Map<String, Object?> _kept() => switch (_store.read(legacyRecords)) {
     final Map<Object?, Object?> kept => kept.cast<String, Object?>(),
     _ => {},
   };
 
-  /// The conversation's record: none for one from after the cutover, or one whose record the person let go; else the
-  /// one kept, or, the first time this device sees the conversation, its owner (a group's) and members as listed now.
+  Object? _valueOf(String id) => _unsaved.containsKey(id) ? _unsaved[id] : _kept()[id];
+
+  /// The conversation's record: the one kept, whatever the API says of the conversation, none for one whose record the
+  /// person let go; else, the first time this device sees a conversation from before the cutover, its owner (a
+  /// group's) and members as listed now.
   Future<LegacyRecord?> of(duvet.Conversation conv) async {
-    if (!conv.legacy) return null;
-    if (_unsaved.containsKey(conv.id)) return _unsaved[conv.id];
-    final kept = _kept()[conv.id];
+    final kept = _valueOf(conv.id);
     if (kept == false) return null;
     if (recordIn(kept) case final record?) return record;
+    if (!conv.legacy) return null;
     final members = [for (final member in conv.members) member.userId];
     final LegacyRecord made = (
       owner: conv.type == duvet.ConversationType.group ? conv.ownerId : null,
       members: members,
     );
-    await _keep(conv.id, made);
+    await _keep(conv.id, expectedOf(made));
     return made;
   }
 
-  /// The record kept for the conversation, as a push's engine reads it without the API's list: none for one from after
-  /// the cutover, one this device never applied, or one let go.
+  /// The record kept for the conversation, as a push's engine reads it without the API's list: none for one this
+  /// device never applied or made, or one let go.
   LegacyRecord? kept(String conversationId) => recordIn(_kept()[conversationId]);
 
-  /// The person said yes to the members of today: the record goes, and none is made again.
-  Future<void> drop(String conversationId) => _keep(conversationId, null);
+  /// The person's picks as they made the conversation here, this user among them: its group is founded with them alone.
+  Future<void> created(String conversationId, LegacyRecord picked) =>
+      _keep(conversationId, {...expectedOf(picked), 'created': true});
 
-  Future<void> _keep(String id, LegacyRecord? record) async {
-    final value = record == null ? false : expectedOf(record);
+  /// This device holds the conversation's group: the record of its creation goes. One from before the cutover stays.
+  Future<void> heldGroup(String conversationId) async {
+    if (_valueOf(conversationId) case {'created': true}) await _keep(conversationId, null);
+  }
+
+  /// The person said yes to the members of today: the record goes, and none is made again.
+  Future<void> drop(String conversationId) => _keep(conversationId, false);
+
+  /// Keeps [value] as the conversation's record, or takes it out for null.
+  Future<void> _keep(String id, Object? value) async {
     try {
-      await _store.write(legacyRecords, {..._kept(), id: value});
+      await _store.write(legacyRecords, value == null ? ({..._kept()}..remove(id)) : {..._kept(), id: value});
     } catch (error) {
       debugPrint("e2e: a conversation's record wasn't kept: ${error.runtimeType}");
     }
@@ -80,7 +92,7 @@ class LegacyRecords {
     if (jsonEncode(_kept()[id]) == jsonEncode(value)) {
       _unsaved.remove(id);
     } else {
-      _unsaved[id] = record;
+      _unsaved[id] = value ?? false;
     }
   }
 }

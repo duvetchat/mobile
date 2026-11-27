@@ -739,6 +739,8 @@ class Sends {
     final nonce = row.nonce!;
     final made = await _turn(() async {
       if (!(await pendingRows(_host, id)).any((other) => other.nonce == nonce)) return null;
+      // Nothing goes to a group that holds someone the person doesn't see there (C1 of step 4's closing reviews).
+      await _groups.asShown(id);
       final String ciphertext;
       try {
         ciphertext = await _encrypt(id, nonce, row.text, row.attachments);
