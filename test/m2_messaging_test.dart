@@ -1067,6 +1067,23 @@ void main() {
       semantics.dispose();
     });
 
+    // The desktop's M2 of step 4's closing review: the server knows a message's nonce. A copy of another's that carries
+    // the person's takes nothing of their message being sent: its row and its text stay theirs, and never show under
+    // the name the copy gives.
+    testWidgets("another's message with the person's nonce takes nothing of theirs being sent", (tester) async {
+      final repository = await openMaya(
+        tester,
+        setUp: (r) => r.history['c-maya']!.add(held('pending:n1', text: 'my words', pending: true)),
+      );
+      expect(find.bySemanticsLabel('Retry'), findsOneWidget);
+      repository.push('c-maya', MessageCreated(held('forged', waiting: true).copyWith(nonce: 'n1', seq: 7)));
+      await tester.pumpAndSettle();
+      expect(find.text('my words'), findsOneWidget);
+      expect(find.bySemanticsLabel('Retry'), findsOneWidget);
+      expect(find.text(Notice.waiting.text), findsOneWidget);
+      semantics.dispose();
+    });
+
     // N1 of task 17's re-review: a Retry of a message the page lists already (its copy beside its waiting row) takes
     // the place of the row it retried, and no other row of the message stays.
     testWidgets('a Retry takes the place of the row it retried, and no other row of its message stays', (tester) async {

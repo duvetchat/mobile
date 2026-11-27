@@ -841,7 +841,7 @@ class _ChatViewState extends State<ChatView> with SingleTickerProviderStateMixin
     if (widget.threadOf != null) {
       if (event case MessageCreated(
         :final message,
-      ) when !_entries.any((e) => e.message.id == message.reply?.messageId || e.message.nonce == message.nonce)) {
+      ) when !_entries.any((e) => e.message.id == message.reply?.messageId || _sameSend(e.message, message))) {
         return;
       }
     }
@@ -966,10 +966,13 @@ class _ChatViewState extends State<ChatView> with SingleTickerProviderStateMixin
 
   /// Adds a message, or replaces the one it is: the same ID, or the pending
   /// send with its nonce (the gateway's echo often beats the REST answer).
+  /// Whether [message] is the copy of the person's own [shown] by its nonce: never another's, as the server knows a
+  /// message's nonce (the desktop's M2 of step 4's closing review).
+  bool _sameSend(ChatMessage shown, ChatMessage message) =>
+      message.nonce != null && message.authorId == _me && shown.nonce == message.nonce;
+
   void _upsert(ChatMessage message) {
-    final i = _entries.indexWhere(
-      (e) => e.message.id == message.id || (message.nonce != null && e.message.nonce == message.nonce),
-    );
+    final i = _entries.indexWhere((e) => e.message.id == message.id || _sameSend(e.message, message));
     // An encrypted message's copy that brings no text (the API's) keeps what the chat shows of it: the device's text,
     // or the person's own as typed, until a read gives the device's (I4 of task 17's review).
     final keeps = i >= 0 && message.encrypted && message.content.isEmpty && _entries[i].message.content.isNotEmpty;
