@@ -1084,6 +1084,22 @@ void main() {
       semantics.dispose();
     });
 
+    // N-M5 of step 4's closing re-review: a copy of another's with the ID of the person's row being sent, which the
+    // server can give it, takes nothing of theirs either: the typed text shows only under the person's own ID.
+    testWidgets("another's message with the ID of the person's row being sent takes nothing of it", (tester) async {
+      final repository = await openMaya(
+        tester,
+        setUp: (r) => r.history['c-maya']!.add(held('pending:n1', text: 'my words', pending: true)),
+      );
+      expect(find.bySemanticsLabel('Retry'), findsOneWidget);
+      repository.push('c-maya', MessageCreated(held('pending:n1', waiting: true).copyWith(seq: 7)));
+      await tester.pumpAndSettle();
+      expect(find.text('my words'), findsOneWidget);
+      expect(find.bySemanticsLabel('Retry'), findsOneWidget);
+      expect(find.text(Notice.waiting.text), findsNothing);
+      semantics.dispose();
+    });
+
     // N1 of task 17's re-review: a Retry of a message the page lists already (its copy beside its waiting row) takes
     // the place of the row it retried, and no other row of the message stays.
     testWidgets('a Retry takes the place of the row it retried, and no other row of its message stays', (tester) async {

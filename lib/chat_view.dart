@@ -973,8 +973,12 @@ class _ChatViewState extends State<ChatView> with SingleTickerProviderStateMixin
 
   void _upsert(ChatMessage message) {
     final i = _entries.indexWhere((e) => e.message.id == message.id || _sameSend(e.message, message));
+    // A row of the person's being sent is taken by their own message alone: another's with its ID, which the server
+    // can give it, takes nothing of it (N-M5 of step 4's closing re-review).
+    if (i >= 0 && _entries[i].message.pending && message.authorId != _me) return;
     // An encrypted message's copy that brings no text (the API's) keeps what the chat shows of it: the device's text,
-    // or the person's own as typed, until a read gives the device's (I4 of task 17's review).
+    // or the person's own as typed, which goes only under their own ID, until a read gives the device's (I4 of task
+    // 17's review).
     final keeps = i >= 0 && message.encrypted && message.content.isEmpty && _entries[i].message.content.isNotEmpty;
     final entry = (message: keeps ? message.heldAs(_entries[i].message) : message, delivery: _Delivery.sent);
     if (i >= 0) {
