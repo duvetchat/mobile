@@ -249,6 +249,50 @@ void main() {
       timeout: _slow,
     );
 
+    // Ana's edit of one message and her deletion of another find no answer in the group, at generation 0, epoch 1. The
+    // server loses the group: Bo's device lets it go and waits for her; hers lets it go and makes it again, at the same
+    // numbers. Both changes are made again for the group made again, and Bo's device takes them.
+    test(
+      'a_change_waiting_across_a_forget_is_made_again_for_the_group_made_again_at_the_same_numbers',
+      () async {
+        final fake = FakeApi();
+        final (ana, bo) = (fake.addUser(), fake.addUser());
+        final conversation = fake.addConversation(group: true, members: [ana, bo], owner: ana);
+        final a = await firstDevice(fake, ana);
+        final b = await firstDevice(fake, bo);
+        await a.engine.openConversation(conversation);
+        final first = await sameGroup([a, b], conversation);
+        final edited = await _send(a, conversation, 'as written');
+        final deleted = await _send(a, conversation, 'to delete');
+        await until(() async => await _textOn(b, conversation, deleted.id) == 'to delete');
+        fake
+          ..cutRequest((method: 'PATCH', path: '${_messagesPath(conversation)}/${edited.id}'))
+          ..cutRequest((method: 'DELETE', path: '${_messagesPath(conversation)}/${deleted.id}'));
+        await a.engine.editMessage(conversation, edited.id, 'edited');
+        await a.engine.deleteMessage(conversation, deleted.id);
+
+        fake.loseGroup(conversation);
+        b.connect(b.registered.last);
+        await until(() async => await groupOf(b, conversation) == null, what: "Bo's device letting the lost group go");
+        a.connect(a.registered.last);
+        final made = await sameGroup([a, b], conversation);
+        expect(
+          (made.generation, made.epoch, made.authenticator == first.authenticator),
+          (first.generation, first.epoch, false),
+        );
+        await until(
+          () async => await _textOn(b, conversation, edited.id) == 'edited',
+          what: "Ana's edit on Bo's device",
+        );
+        await until(
+          () async => (await b.engine.messages(conversation, [deleted.id])).isEmpty,
+          what: "Ana's deletion on Bo's device",
+        );
+      },
+      skip: noCore,
+      timeout: _slow,
+    );
+
     // A member never makes a group: its device forgets the one the API doesn't hold, waits for the owner, and comes in
     // by the welcome of the owner's founding made again, held to the record.
     test(

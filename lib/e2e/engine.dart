@@ -409,13 +409,14 @@ class E2EEngine implements DeviceSetupActions {
   late final _failures = Failures(api, clock);
 
   /// The conversations' queues and groups.
-  late final _groups = Conversations(
+  late final Conversations _groups = Conversations(
     this,
     (work) => _soon(() => _whenReady(work)),
     _failures,
     _conversationChanged,
     _messageChanged,
     _messagesGone,
+    (conversationId) => _sends.forgot(conversationId),
   );
 
   /// The person's shares of a conversation's history, and the packages this device receives (history.dart).

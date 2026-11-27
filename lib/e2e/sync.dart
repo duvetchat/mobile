@@ -350,7 +350,7 @@ const _messageKinds = {'message', 'edit', 'delete'};
 const _shownChanges = {'applied', 'own', 'undecryptable'};
 
 class Conversations {
-  Conversations(this._engine, this._soon, this._failures, this._changed, this._messages, this._deleted)
+  Conversations(this._engine, this._soon, this._failures, this._changed, this._messages, this._deleted, this._forgot)
     : _legacy = LegacyRecords(_engine.store),
       _catchUps = CatchUps(_engine, _soon);
 
@@ -367,6 +367,10 @@ class Conversations {
   /// Messages an apply learned were deleted (a tombstone it took, one the queue serves as deleted): their files go
   /// (task 18's review, M4).
   final void Function(String conversationId, List<String> messageIds) _deleted;
+
+  /// This device forgot the conversation's group: what was made for it and kept outside the core goes (send.dart), as
+  /// a group made again can be at its generation and epoch (mobile#383).
+  final void Function(String conversationId) _forgot;
   final LegacyRecords _legacy;
   final CatchUps _catchUps;
 
@@ -988,6 +992,7 @@ class Conversations {
       if (error.code != 'not_found') rethrow;
       return;
     }
+    _forgot(id);
     await _legacy.forgot(id, recordIn(forgot['expected'])!);
     _forgotten.add(id);
     for (final kept in [_settling, _removed, _lostJoin]) {
