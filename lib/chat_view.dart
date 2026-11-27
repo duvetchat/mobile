@@ -1561,14 +1561,15 @@ class _ChatViewState extends State<ChatView> with SingleTickerProviderStateMixin
     setState(() => _entries.removeWhere((e) => e.message.id == m.id));
   }
 
-  void _startEditing(ChatMessage m) {
+  /// The box edits [m], holding its text, or what was [typed] for it before.
+  void _startEditing(ChatMessage m, {String? typed}) {
     final directory = _directory;
     setState(() {
       _replyTo = null;
       _editing = m;
     });
     _composer.setEncoded(
-      m.content,
+      typed ?? m.content,
       nameOf: directory.nameOf,
       emojiNameOf: (id) => directory.emojiOf(id)?.name,
       roomNameOf: (id) => directory.roomOf(id)?.name,
@@ -1596,9 +1597,13 @@ class _ChatViewState extends State<ChatView> with SingleTickerProviderStateMixin
       // The API answers the message without its files, reactions or reply.
       final saved = await _repository.edit(widget.target, editing.id, content);
       if (mounted) setState(() => _applyUpdate(saved));
-    } catch (_) {
+    } catch (error) {
       _replace(editing);
-      _toast('Couldn’t save your edit');
+      // Nothing was made of it: what was typed goes back in the box, unless the person went on to something else.
+      if (mounted && _editing == null && _replyTo == null && _composer.encoded.trim().isEmpty) {
+        _startEditing(editing, typed: content);
+      }
+      _toast(error is ActionFailed ? 'Couldn’t save your edit. ${error.message}' : 'Couldn’t save your edit');
     }
   }
 

@@ -664,6 +664,26 @@ void main() {
     semantics.dispose();
   });
 
+  // The first question of step 4's third closing re-review: an edit refused (here as the conversation's group holds
+  // someone the chat doesn't draw) is said at the message, in the conversation's own words, and what was typed goes
+  // back in the box, as nothing was made of it.
+  testWidgets('an edit refused says why, and what was typed goes back in the box', (tester) async {
+    final repository = await openMaya(tester);
+    repository.editRefusal = ActionFailed(Notice.membersChanged.text);
+    await longPress(tester, 'Yes, way better than the side panels.');
+    await tapLabel(tester, 'Edit');
+    await tester.enterText(find.byType(EditableText), 'Yes, much better.');
+    await tester.pump();
+    await tapLabel(tester, 'Save edit');
+    await tester.pumpAndSettle();
+    expect(find.text('Couldn’t save your edit. ${Notice.membersChanged.text}'), findsOneWidget);
+    expect(find.text('Yes, way better than the side panels.'), findsOneWidget);
+    expect(find.textContaining('edited'), findsNothing);
+    expect(find.text('Editing message'), findsOneWidget);
+    expect(tester.widget<EditableText>(find.byType(EditableText)).controller.text, 'Yes, much better.');
+    semantics.dispose();
+  });
+
   testWidgets('return starts a new line; only Send sends, every line in one message', (tester) async {
     final repository = await openMaya(tester);
     final field = tester.widget<TextField>(find.byType(TextField));

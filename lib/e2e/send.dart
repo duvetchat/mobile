@@ -601,13 +601,15 @@ class Sends {
   }
 
   /// An edit (with its [text]) or a deletion (none) of the user's message: made by the core, which shows it here at
-  /// once, sent, and the entry its answer gives taken by the core. Without an answer its bytes go again later.
-  Future<void> change(String conversationId, String messageId, String? text) async {
+  /// once ([taken] is told then), sent, and the entry its answer gives taken by the core. Without an answer its bytes
+  /// go again later.
+  Future<void> change(String conversationId, String messageId, String? text, {void Function()? taken}) async {
     await _groups.current(conversationId);
     final change = _Change(conversationId, messageId, text);
     change.made = await _make(change);
     _changed(conversationId);
     if (text == null) _deleted(conversationId, [messageId]);
+    taken?.call();
     await _queueChange(change);
   }
 

@@ -188,6 +188,9 @@ class FakeRepository implements ChatRepository {
   final lastRead = <String, String>{};
   final _resumed = StreamController<void>.broadcast();
   final edits = <(String, String)>[];
+
+  /// What an edit is refused with, while a test sets it: nothing of it is made.
+  Object? editRefusal;
   final deletes = <String>[];
   final reactions = <(String, String, bool)>[];
 
@@ -1878,6 +1881,7 @@ class FakeRepository implements ChatRepository {
   @override
   Future<ChatMessage> edit(ChatTarget target, String messageId, String content) async {
     edits.add((messageId, content));
+    if (editRefusal case final refusal?) throw refusal;
     final list = history[target.id] ?? [];
     final i = list.indexWhere((m) => m.id == messageId);
     final edited = (i >= 0 ? list[i] : message(messageId, author: me.id, name: me.displayName, text: '')).copyWith(

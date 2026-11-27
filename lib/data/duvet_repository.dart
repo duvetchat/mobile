@@ -1751,10 +1751,20 @@ class DuvetRepository implements ChatRepository {
     );
   }
 
-  /// An edit of the user's message: this device's database shows it at once, and the engine sends it.
+  /// An edit of the user's message: this device's database shows it at once, and the engine sends it. The chat waits
+  /// for the engine to take it (made and shown here) or refuse it, never for its request's answer; refused while the
+  /// group can't take it, it says why in the words the conversation's bar uses, as a send does.
   Future<ChatMessage> _editEncrypted(String conversationId, String messageId, String content) async {
     final engine = _engine ?? (throw ActionFailed(Notice.notReady.text));
-    await engine.editMessage(conversationId, messageId, content);
+    final taken = Completer<void>();
+    final sent = engine.editMessage(conversationId, messageId, content, taken: taken.complete);
+    try {
+      await Future.any([taken.future, sent]);
+    } on StateError {
+      throw ActionFailed(_cannotSendIn(conversationId));
+    }
+    // Its request's end: a refusal for good reaches the person through changesRefused.
+    unawaited(sent.then<void>((_) {}, onError: (Object error) => debugPrint("e2e: an edit's request ended: $error")));
     final me = profile.value;
     return ChatMessage(
       id: messageId,

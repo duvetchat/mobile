@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:duvet/data/models.dart';
 import 'package:duvet/e2e/engine.dart';
 import 'package:duvet/e2e/notices.dart';
@@ -270,6 +272,74 @@ void main() {
       await until(() => events.whereType<MessageCreated>().isNotEmpty);
       final copy = events.whereType<MessageCreated>().single.message;
       expect((copy.nonce, copy.content), (nonce, 'it went'));
+      await b.engine.stop();
+    },
+    skip: noCore,
+    timeout: _slow,
+  );
+
+  // The first question of step 4's third closing re-review: the chat waits for the engine to take an edit, made and
+  // shown here, or to refuse it, never for its request's answer.
+  test(
+    'an_edit_is_taken_before_its_request_is_answered',
+    () async {
+      final fake = FakeApi();
+      final (ana, bo) = (fake.addUser(), fake.addUser());
+      final conversation = fake.addConversation(group: true, members: [bo, ana], owner: bo);
+      final answered = Completer<void>();
+      var holding = false;
+      final app = await appOn(
+        fake,
+        ana,
+        answer: (request) async {
+          if (holding && request.method == 'PATCH') await answered.future;
+          return null;
+        },
+      );
+      await app.ready();
+      final b = await firstDevice(fake, bo);
+      final target = ConversationTarget(conversation);
+      await b.engine.openConversation(conversation);
+      await until(() async => await _epoch(app, conversation) != null, what: "the group on Ana's app");
+      final sent = await app.repository.send(target, 'one', nonce: uuidv4());
+      holding = true;
+      final edited = await app.repository.edit(target, sent.id, 'two').timeout(const Duration(seconds: 20));
+      expect(edited.content, 'two');
+      answered.complete();
+      await until(() async => (await b.engine.messages(conversation, [sent.id])).firstOrNull?.text == 'two');
+      await b.engine.stop();
+    },
+    skip: noCore,
+    timeout: _slow,
+  );
+
+  // The same question: an edit refused as the conversation's group holds someone the chat doesn't draw says so in the
+  // conversation's own words, nothing made of it.
+  test(
+    "an_edit_refused_as_the_group_holds_someone_the_chat_doesn't_draw_says_so_in_its_words",
+    () async {
+      final fake = FakeApi();
+      final (ana, bo, eve) = (fake.addUser(), fake.addUser(), fake.addUser());
+      fake.befriend(bo, eve);
+      final conversation = fake.addConversation(group: true, members: [bo, ana], owner: bo);
+      final app = await appOn(fake, ana);
+      await app.ready();
+      final b = await firstDevice(fake, bo);
+      await firstDevice(fake, eve);
+      final target = ConversationTarget(conversation);
+      await b.engine.openConversation(conversation);
+      await until(() async => await _epoch(app, conversation) != null, what: "the group on Ana's app");
+      final sent = await app.repository.send(target, 'one', nonce: uuidv4());
+      // Bo adds Eve, whom the server lists to Ana's app in his profile: the chat doesn't draw her (R-I1).
+      final before = (await _epoch(app, conversation))!;
+      fake.dress(conversation, eve, as: bo);
+      await b.engine.addMember(conversation, eve);
+      await until(() async => (await _epoch(app, conversation) ?? 0) > before, what: "Eve's addition on Ana's app");
+      await app.repository.refreshConversations();
+      await expectLater(
+        app.repository.edit(target, sent.id, 'two'),
+        throwsA(isA<ActionFailed>().having((failed) => failed.message, 'message', Notice.membersChanged.text)),
+      );
       await b.engine.stop();
     },
     skip: noCore,

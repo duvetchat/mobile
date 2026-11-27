@@ -703,9 +703,10 @@ class E2EEngine implements DeviceSetupActions {
   /// Whether this run holds the sealed bytes of the files of the person's message [nonce], which a Retry sends.
   bool holdsFiles(String nonce) => _sends.holdsFiles(nonce);
 
-  /// An edit of the user's message: shown here at once, sent, and its answer's entry applied.
-  Future<void> editMessage(String conversationId, String messageId, String text) =>
-      _act(() => _sends.change(conversationId, messageId, text));
+  /// An edit of the user's message: shown here at once, sent, and its answer's entry applied. [taken] is told once it's
+  /// made and shown here, before its request: what the chat waits for.
+  Future<void> editMessage(String conversationId, String messageId, String text, {void Function()? taken}) =>
+      _act(() => _sends.change(conversationId, messageId, text, taken: taken));
 
   /// A deletion of the user's message, for everyone: done here at once, sent, and its answer's entry applied.
   Future<void> deleteMessage(String conversationId, String messageId) =>
