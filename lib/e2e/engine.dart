@@ -910,12 +910,13 @@ class E2EEngine implements DeviceSetupActions {
   }
 
   /// A conversation the person made with [picked], of the kind they asked for: its group is founded with them alone,
-  /// whatever the API lists (C1 of step 4's closing reviews).
+  /// whatever the API lists (C1 of step 4's closing reviews), and joined held to them when the answer has one already
+  /// (N-M3 of the re-review).
   Future<duvet.Conversation> _created(Future<duvet.Conversation> Function() create, LegacyRecord picked) async {
     final conv = await _updating(create);
+    await _groups.created(conv.id, picked);
     // A DM they had, with its group, goes on as its chat opens it.
     if (conv.mls != null) return conv;
-    await _groups.created(conv.id, picked);
     await openConversation(conv.id).catchError((Object error) {
       debugPrint("e2e: the new conversation's group waits for its next open: $error");
     });

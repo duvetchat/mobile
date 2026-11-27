@@ -983,6 +983,44 @@ void main() {
       timeout: _slow,
     );
 
+    // N-M3 of step 4's closing re-review: the creator's picks are kept whatever the API answers its creation with. One
+    // answered with a group of the server's has the creator's device join it held to them: it isn't joined.
+    test(
+      "a_creation_answered_with_another_group_is_held_to_the_creator's_picks",
+      () async {
+        final fake = FakeApi();
+        final (ana, bo, eve) = (fake.addUser(), fake.addUser(), fake.addUser());
+        // A group of the server's, Eve's and Bo's, founded before Ana's creation.
+        final planted = fake.addConversation(group: true, members: [eve, bo], owner: eve);
+        final e = await firstDevice(fake, eve);
+        await firstDevice(fake, bo);
+        await e.engine.openConversation(planted);
+        await until(() async => await groupOf(e, planted) != null, what: "the server's group");
+        // Ana's creation is answered with it, Ana in it.
+        final commits = <String>[];
+        final client = watchedClient(
+          fake,
+          seen: (request) {
+            if (request.method == 'POST' && request.url.path == commitsPath(planted)) commits.add('commit');
+          },
+          change: (request, answered) async {
+            if (request.method != 'POST' || request.url.path != '/api/users/@me/conversations') return answered;
+            fake.addMembers(planted, [ana]);
+            return http.Response(jsonEncode(fake.viewOf(planted)), 201, headers: {'content-type': 'application/json'});
+          },
+        );
+        final a = await firstDevice(fake, ana, client: client);
+        expect((await a.engine.createGroup('Plans', [bo])).id, planted);
+        await a.engine.openConversation(planted);
+        await turnEnded(a);
+        expect(commits, isEmpty);
+        expect(await groupOf(a, planted), isNull);
+        expect(a.engine.conversationState(planted)?.name, ConversationNotice.membersChanged);
+      },
+      skip: noCore,
+      timeout: _slow,
+    );
+
     // A device without a record (a DM's other member, a group's owner on another device) founds the conversation as
     // its page draws it; listed with someone the page doesn't draw, it founds nothing, and says so.
     test(
@@ -1025,6 +1063,81 @@ void main() {
         expect({for (final device in held!.devices) device.user}, {ana, bo});
         await until(() async => await _textOn(b, conversation, sent.id) == 'without Cy', what: "Bo's copy");
         expect(await _textOn(c, conversation, sent.id), isNull);
+      },
+      skip: noCore,
+      timeout: _slow,
+    );
+
+    // A restart between a creation and its founding reads the person's picks back from the record: the group is founded
+    // with them, and a listing that differs by then founds nothing.
+    test(
+      'a_restart_between_a_creation_and_its_founding_holds_it_to_the_picks_the_record_kept',
+      () async {
+        final fake = FakeApi();
+        final (ana, bo, eve) = (fake.addUser(), fake.addUser(), fake.addUser());
+        var cut = true;
+        final client = watchedClient(
+          fake,
+          answer: (request) async {
+            if (!cut || request.method != 'POST' || !request.url.path.endsWith('/mls/commits')) return null;
+            throw http.ClientException('no answer', request.url);
+          },
+        );
+        final a = await firstDevice(fake, ana, client: client);
+        await firstDevice(fake, bo);
+        await firstDevice(fake, eve);
+        final kept = (await a.engine.createGroup('Plans', [bo])).id;
+        final made = (await a.engine.createGroup('Later', [bo])).id;
+        await turnEnded(a);
+        cut = false;
+        // Before the restart, the server lists Eve in the second.
+        fake.addMembers(made, [eve]);
+        final again = await restarted(fake, a, client: client);
+        await again.engine.openConversation(kept);
+        await again.engine.openConversation(made);
+        await turnEnded(again);
+        final group = await groupOf(again, kept);
+        expect({for (final device in group?.devices ?? const []) device.user}, {ana, bo});
+        expect(await groupOf(again, made), isNull);
+        expect(again.engine.conversationState(made)?.name, ConversationNotice.membersChanged);
+      },
+      skip: noCore,
+      timeout: _slow,
+    );
+
+    // The creator's device, its record kept (its listing differed), given a welcome to its conversation's group with
+    // others in it: refused, as the record holds it, and said.
+    test(
+      "the_creator's_device_takes_no_welcome_with_others_than_its_picks",
+      () async {
+        final fake = FakeApi();
+        final (ana, bo, eve) = (fake.addUser(), fake.addUser(), fake.addUser());
+        var planted = false;
+        final client = watchedClient(
+          fake,
+          seen: (request) {
+            if (planted || request.method != 'GET' || request.url.path != '/api/users/@me/conversations') return;
+            if (fake.conversationIds.firstOrNull case final made?) {
+              planted = true;
+              fake.addMembers(made, [eve]);
+            }
+          },
+        );
+        final a = await firstDevice(fake, ana, client: client);
+        await firstDevice(fake, bo);
+        final e = await firstDevice(fake, eve);
+        final conversation = (await a.engine.createGroup('Plans', [bo])).id;
+        await turnEnded(a);
+        expect(a.engine.conversationState(conversation)?.name, ConversationNotice.membersChanged);
+        // The server makes Eve the group's owner, has her device found it, and Ana's take its welcome.
+        fake.setOwner(conversation, eve);
+        await e.engine.openConversation(conversation);
+        await until(() async => await groupOf(e, conversation) != null, what: "Eve's group");
+        fake.setOwner(conversation, ana);
+        await a.engine.openConversation(conversation);
+        await turnEnded(a);
+        expect(await groupOf(a, conversation), isNull);
+        expect(a.engine.conversationState(conversation)?.name, ConversationNotice.membersChanged);
       },
       skip: noCore,
       timeout: _slow,
