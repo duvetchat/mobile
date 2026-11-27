@@ -182,4 +182,26 @@ void main() {
     expect(cache.data.values.where((value) => value.contains('secret')), isEmpty);
     expect(await repository.cachedMessages(_dm), isNull);
   });
+
+  // Step 5's review, Minor 1 (mobile#366): a version before this one kept a conversation's preview, its text in the
+  // clear, in the keystore's list of recent chats, which a load read past and left there.
+  test("an_older_version's_conversation_previews_go_from_the_kept_list_as_it_loads", () async {
+    final store = MemoryRecentChatsStore();
+    await store.write(
+      _me,
+      jsonEncode([
+        {'kind': 'conversation', 'id': 'c-1', 'title': 'maya', 'at': _at, 'previewId': '1', 'previewText': 'a secret'},
+        {'kind': 'room', 'id': 'r-1', 'spaceId': 's-1', 'title': 'general', 'at': _at, 'previewText': 'seven'},
+      ]),
+    );
+    final recents = RecentChats(store);
+    addTearDown(recents.dispose);
+    await recents.load(_me);
+    await pumpEventQueue();
+    final kept = await store.read(_me);
+    expect(kept, isNot(contains('secret')));
+    // The room's preview stays, as rooms' pages do.
+    expect(kept, contains('seven'));
+    expect([for (final chat in recents.chats.value) chat.target.id], ['c-1', 'r-1']);
+  });
 }
