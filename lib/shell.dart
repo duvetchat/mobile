@@ -146,6 +146,34 @@ class Shell extends ChangeNotifier {
     paneNav.pushAndRemoveUntil(route..instant = true, (_) => false);
   }
 
+  /// Shows [route] in place of [current], the chat it's asked from, at once: the Channel Switcher's pick. Where the
+  /// chat under [current] already shows what [route] does ([PaneRoute.same]), as when a notice opened [current] over
+  /// it, [current] closes onto it, which [PaneRoute.reopen]s as [route]: a second one of that chat over it would take
+  /// a Back that stays in it.
+  ///
+  /// Only [current], wherever it is: not a chat a notice put over it meanwhile.
+  void swap(ModalRoute<Object?> current, PaneRoute<void> route) {
+    final navigator = current.navigator;
+    if (navigator == null || !current.isActive) return;
+    route.instant = true;
+    final routes = navigator == root.currentState
+        ? rootObserver.routes
+        : navigator == pane.currentState
+        ? paneObserver.routes
+        : const <Route<Object?>>[];
+    final i = routes.indexOf(current);
+    final under = i > 0 ? routes[i - 1] : null;
+    if (under is PaneRoute<Object?> && under.same(route)) {
+      navigator.removeRoute(current);
+      if (!under.reopen(route)) navigator.replace(oldRoute: under, newRoute: route);
+    } else if (current.isCurrent && !(current.animation?.isCompleted ?? true)) {
+      // Still coming in: it gives way as it comes, as in [open].
+      navigator.pushReplacement(route);
+    } else {
+      navigator.replace(oldRoute: current, newRoute: route);
+    }
+  }
+
   /// Empties the pane: its chat is gone (a conversation left, a room deleted).
   void close() {
     if (_paneOpen) pane.currentState?.pushAndRemoveUntil(emptyRoute(), (_) => false);
