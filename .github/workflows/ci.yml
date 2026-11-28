@@ -154,6 +154,8 @@ jobs:
       # simulator of the newest iOS the runner has.
       - name: The core on a simulator
         working-directory: mobile
+        # About 10 minutes: an app that never reports fails here, with its log below, not at the job's limit.
+        timeout-minutes: 30
         run: |
           pick=$(xcrun simctl list devices available --json | jq -r '[.devices | to_entries | sort_by(.key)[] |
             select(.key | contains(".iOS-")) | .key as $runtime | .value[] | select(.name | startswith("iPhone")) |
@@ -161,7 +163,19 @@ jobs:
           if [ -z "$pick" ]; then xcrun simctl list devices available; echo "no iPhone simulator"; exit 1; fi
           echo "Simulator: $pick"
           device=${pick%% *}
+          echo "SIMULATOR=$device" >> "$GITHUB_ENV"
           xcrun simctl bootstatus "$device" -b
           flutter test integration_test -d "$device"
           framework=build/ios/iphonesimulator/Runner.app/Frameworks/duvet_e2e.framework
           echo "duvet_e2e.framework: $(du -sh "$framework" | cut -f1)"
+      # What the app logged on the simulator, and how it ended, when its tests fail or don't finish.
+      - name: The app on the simulator
+        if: failure() && env.SIMULATOR != ''
+        run: |
+          xcrun simctl spawn "$SIMULATOR" log show --last 40m --style compact --predicate 'process == "Runner"' |
+            tail -400
+          ls -lt ~/Library/Logs/DiagnosticReports 2>/dev/null | head -20
+          for report in $(ls -t ~/Library/Logs/DiagnosticReports/Runner* 2>/dev/null | head -2); do
+            echo "== $report"
+            head -150 "$report"
+          done
