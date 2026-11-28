@@ -1,7 +1,9 @@
 // The repository's gateway session against a fake gateway on 127.0.0.1 that
 // keeps sessions as the real one does: a dropped socket resumes the session
 // (no READY, nothing fetched again), one the gateway can't resume gets READY,
-// and a 4004 asks the API about the session.
+// a 4004 asks the API about the session, and a device registered after the
+// first identify opens a new session that names it (Ruling 30).
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
@@ -13,13 +15,19 @@ import 'package:duvet/data/models.dart';
 import 'package:duvet/data/recent_chats.dart';
 import 'package:duvet/data/session_store.dart';
 import 'package:duvet/data/voice.dart';
+import 'package:duvet/e2e/engine.dart';
+import 'package:duvet/e2e/host.dart';
 import 'package:duvet_client/duvet.dart' as duvet;
 import 'package:duvet_client/http/router.dart';
 import 'package:flutter/foundation.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
 
+import 'support/core_lib.dart';
+import 'support/engines.dart';
+import 'support/fake_api.dart';
 import 'support/fake_voice.dart';
 
 const _me = '00000000-0000-4000-8000-000000000001';
@@ -58,6 +66,15 @@ class _Gateway {
   int _seq = 0;
   int _sessions = 0;
 
+  /// Whose READY it sends.
+  String me = _me;
+
+  /// Done at the first identify it gets.
+  final firstIdentify = Completer<void>();
+
+  /// The sockets that closed, by their number.
+  final closedSockets = <int>[];
+
   /// Whether it takes up the sessions it's asked to resume.
   bool resumes = true;
 
@@ -79,6 +96,9 @@ class _Gateway {
   final identified = <Map<String, dynamic>>[];
   final received = <(int, String)>[];
   int _sockets = 0;
+
+  /// How many sockets it took.
+  int get sockets => _sockets;
 
   /// A Space the user owns, with a voice room, that each READY is followed by.
   bool sendsSpace = false;
@@ -105,18 +125,19 @@ class _Gateway {
     }
     final socket = _socket = await WebSocketTransformer.upgrade(request);
     final number = ++_sockets;
-    socket.listen((raw) {
+    socket.listen(onDone: () => closedSockets.add(number), (raw) {
       final message = jsonDecode(raw as String) as Map<String, dynamic>;
       received.add((number, message['type'] as String));
       switch (message['type']) {
         case 'identify':
           final data = message['data'] as Map<String, dynamic>;
           identified.add(data);
+          if (!firstIdentify.isCompleted) firstIdentify.complete();
           final resumed = resumes && data['session_token'] == 'gw-$_sessions' && data['last_seq'] == _seq;
           if (!resumed) {
             _seq = 0;
             _send('READY', {
-              'user': {'id': _me, 'username': 'gaby', 'created_at': _at, 'updated_at': _at},
+              'user': {'id': me, 'username': 'gaby', 'created_at': _at, 'updated_at': _at},
               'sessionToken': 'gw-${++_sessions}',
             });
             if (sendsSpace) _send('SPACE_CREATE', _space);
@@ -152,6 +173,49 @@ class _Gateway {
   Future<void> close() => _server.close(force: true);
 }
 
+/// A core that opens once [until] is done: here, once the gateway has the session's first identify, so the engine
+/// registers its device after it.
+class _OpensAfter implements CoreHost {
+  _OpensAfter(this._core, this._until);
+  final CoreHost _core;
+  final Future<void> _until;
+
+  @override
+  Future<Opened> open(String userId) async {
+    await _until;
+    return _core.open(userId);
+  }
+
+  @override
+  Future<T> handle<T>(Map<String, Object?> command) => _core.handle<T>(command);
+
+  @override
+  Future<Uint8List> sealFile(String key, String attachmentId, Uint8List plain, {void Function(int)? progress}) =>
+      _core.sealFile(key, attachmentId, plain, progress: progress);
+
+  @override
+  Future<Uint8List> openFile(String key, String attachmentId, Uint8List sealed, {void Function(int)? progress}) =>
+      _core.openFile(key, attachmentId, sealed, progress: progress);
+
+  @override
+  Future<Map<String, Object?>> share(Map<String, Object?> command) => _core.share(command);
+
+  @override
+  Future<Uint8List> sharePart(String shareId, int n) => _core.sharePart(shareId, n);
+
+  @override
+  Future<void> dropShare(String shareId) => _core.dropShare(shareId);
+
+  @override
+  Future<Map<String, Object?>> importShare(String shareId, List<Uint8List> parts) => _core.importShare(shareId, parts);
+
+  @override
+  Future<void> close() => _core.close();
+
+  @override
+  Future<void> destroy(String userId) => _core.destroy(userId);
+}
+
 /// Waits for [done], on the real clock, [within] at most: sockets take their
 /// time.
 Future<void> _until(bool Function() done, {Duration within = const Duration(seconds: 5)}) async {
@@ -163,6 +227,11 @@ Future<void> _until(bool Function() done, {Duration within = const Duration(seco
 }
 
 void main() {
+  // The binding answers path_provider's channel, where the engine keeps its record; its HTTP override goes, as the
+  // fake gateway is a real socket.
+  TestWidgetsFlutterBinding.ensureInitialized();
+  HttpOverrides.global = null;
+
   late _Gateway gateway;
   late DuvetRepository repository;
   late List<String> requests;
@@ -438,4 +507,67 @@ void main() {
       expect(placed(), 3);
     },
   );
+
+  // Ruling 30 in the repository's own wiring (M2 of the review): an engine that registers its device after the
+  // gateway's first identify has the gateway open once more, as a new session whose identify names the device. The
+  // old socket closes, and the engine goes on through the new client.
+  test('a device registered after the first identify opens one new gateway session, which names it', () async {
+    await loadCore();
+    final fake = FakeApi();
+    final user = gateway.me = fake.addUser();
+    final session = fake.signIn(user);
+    final support = Directory.systemTemp.createTempSync('duvet-reopen-');
+    const paths = MethodChannel('plugins.flutter.io/path_provider');
+    final messenger = TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
+    messenger.setMockMethodCallHandler(paths, (_) async => support.path);
+    addTearDown(() {
+      messenger.setMockMethodCallHandler(paths, null);
+      support.deleteSync(recursive: true);
+    });
+    final api = MockClient((request) async {
+      final json = switch (request.url.path) {
+        '/api/auth/login' => {
+          'token': session.token,
+          'session_token': 'refresh-1',
+          'device_challenge': session.deviceChallenge,
+        },
+        '/api/users/@me' => {'id': user, 'username': 'gaby', 'custom': '', 'created_at': _at, 'updated_at': _at},
+        '/api/users/@me/conversations' || '/api/users/@me/friends' => <Object>[],
+        '/api/users/@me/friends/requests' || '/api/users/@me/friends/requests/sent' => <Object>[],
+        '/api/users/@me/notification-settings' || '/api/users/@me/team-invites' => <Object>[],
+        '/api/users/@me/mentions/counts' => <String, Object>{},
+        _ => null,
+      };
+      if (json != null) return http.Response(jsonEncode(json), 200, headers: {'content-type': 'application/json'});
+      // The rest is the API's encryption, as the fake has it.
+      final copy = http.Request(request.method, request.url)
+        ..headers.addAll(request.headers)
+        ..bodyBytes = request.bodyBytes;
+      return http.Response.fromStream(await fake.client.send(copy));
+    });
+    final core = TestHost();
+    final app = DuvetRepository(
+      store: MemorySessionStore(),
+      recentsStore: MemoryRecentChatsStore(),
+      router: gateway.router,
+      httpClient: () => api,
+      cacheStore: MemoryChatCacheStore(),
+      encryptionHost: () => _OpensAfter(core.gate, gateway.firstIdentify.future),
+      onScreen: () => true,
+    );
+    addTearDown(app.dispose);
+
+    await app.logIn('gaby@duvet.chat', 'secret');
+    await _until(() => gateway.identified.length == 2, within: const Duration(seconds: 15));
+    final device = (await core.gate.handle<Map<String, Object?>>({'cmd': 'status'}))['device_id'];
+    expect(device, isA<String>());
+    expect(gateway.identified.first['device_id'], isNull);
+    expect(gateway.identified.last, containsPair('device_id', device));
+    // A new session's identify, not a resume of the first.
+    expect(gateway.identified.last.containsKey('session_token'), isFalse);
+    await _until(() => gateway.closedSockets.contains(1));
+    // The engine goes on through the new client: the user's first device, and still the one new socket.
+    await _until(() => app.encryption.value == const EngineState.firstDevice(), within: const Duration(seconds: 15));
+    expect(gateway.sockets, 2);
+  }, skip: noCore);
 }

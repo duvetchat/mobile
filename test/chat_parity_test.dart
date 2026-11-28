@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:typed_data';
 
 import 'package:clock/clock.dart';
 import 'package:duvet/data/emoji_catalog.dart';
@@ -1201,6 +1202,9 @@ class _Gifs implements GifSource {
 
   @override
   String get attribution => 'GIFs from Tenor';
+
+  @override
+  Future<Uint8List?> bytes(String url) async => null;
 
   @override
   Future<List<Gif>> trending() async => const [party];

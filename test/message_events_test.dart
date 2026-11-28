@@ -89,12 +89,14 @@ Map<String, dynamic> _answer(String id, String content, {int flags = 64}) => {
   'flags': flags,
 };
 
+// Numbered by its ID, as an encrypted message's row: an honest API serves a conversation nothing else but its notices.
 Map<String, dynamic> _dmMessage(String id, String content, {bool withUser = true}) => {
   'id': id,
   'conversation_id': 'c-1',
   'author_id': _maya,
   'content': content,
   'type': 0,
+  'seq': int.parse(id),
   'created_at': _at,
   'updated_at': _at,
   if (withUser) 'user': {'id': _maya, 'username': 'maya', 'alias': 'Maya'},
@@ -340,11 +342,14 @@ void main() {
       repository.handleEvent(_event('DM_MESSAGE_UPDATE', _dmMessage('9', 'see https://duvet.chat', withUser: false)));
       await pumpEventQueue();
 
+      // Its text is what this device's own database holds of it (none here), never the API's words.
       expect(repository.recents.value.single.previewAuthor, 'Maya');
-      expect(repository.recents.value.single.previewText, 'see https://duvet.chat');
-      expect(repository.latest.value['c-1']!.content, 'see https://duvet.chat');
+      expect(repository.recents.value.single.previewText, 'Sent a message');
+      expect(repository.latest.value['c-1']!.content, '');
       expect(repository.latest.value['c-1']!.authorName, 'Maya');
-      expect((events.last as MessageUpdated).message.content, 'see https://duvet.chat');
+      // The chat reads what the device holds again, and gets no copy of the API's.
+      expect(events.last, isA<ContentChanged>());
+      expect(events.whereType<MessageUpdated>(), isEmpty);
     });
   });
 
@@ -477,9 +482,20 @@ void main() {
     test('the pages kept for offline show it too, written or not yet; a room\'s by their nickname there', () async {
       await listen(_room);
       repository.handleEvent(_event('SPACE_CREATE', _space()));
-      // The DM's history, written: her message, and the user's reply to it.
-      await repository.messages(_dm);
-      await eventually(() => expect(cache.data.keys, contains('chat_c-1')));
+      // A room's page kept from before, written: her message, and the user's reply to it. A room of no Space known
+      // here, which names her as she's named everywhere.
+      ChatCache(cache).savePage('r-2', [
+        _keptMessage('5', _maya, 'Maya'),
+        ChatMessage(
+          id: '6',
+          authorId: _me,
+          authorName: 'Gaby',
+          content: 'yes',
+          createdAt: DateTime(2026, 10, 23),
+          reply: const MessageReply(messageId: '5', authorId: _maya, authorName: 'Maya', content: '5'),
+        ),
+      ]);
+      await eventually(() => expect(cache.data.keys, contains('chat_r-2')));
       // The room's, where the history names her Nick: not written yet.
       await repository.messages(_room);
 
@@ -488,9 +504,9 @@ void main() {
 
       // The room's page once written, a moment after.
       await eventually(() async {
-        final dm = (await ChatCache(cache).loadPage('c-1'))!;
+        final before = (await ChatCache(cache).loadPage('r-2'))!;
         expect(
-          [for (final m in dm) (m.authorName, m.authorAvatarUrl, m.reply?.authorName)],
+          [for (final m in before) (m.authorName, m.authorAvatarUrl, m.reply?.authorName)],
           [('Maya O.', avatarUrl, null), ('Gaby', null, 'Maya O.')],
         );
         final room = (await ChatCache(cache).loadPage('r-1'))!.single;
@@ -532,10 +548,10 @@ void main() {
     });
 
     test('the same name and avatar again, from another Space or with a new bio, read no page again', () async {
-      await listen(_dm);
+      await listen(_room);
       // A page kept that names her.
-      await repository.messages(_dm);
-      await eventually(() => expect(cache.data.keys, contains('chat_c-1')));
+      await repository.messages(_room);
+      await eventually(() => expect(cache.data.keys, contains('chat_r-1')));
       for (final update in [
         renamed(),
         // The API sends it once per Space she shares with the user.
@@ -548,7 +564,7 @@ void main() {
         await pumpEventQueue();
       }
       expect(cache.listed, 1);
-      expect((await ChatCache(cache).loadPage('c-1'))!.first.authorName, 'Maya O.');
+      expect((await ChatCache(cache).loadPage('r-1'))!.first.authorName, 'Maya O.');
     });
 
     test('changes queued while the pages change wait for one pass, which makes the latest of each', () async {
@@ -787,9 +803,10 @@ void main() {
       );
       await pumpEventQueue();
       final notice = repository.mentionNotices.value.single;
+      // None of the API's words: what the device holds reaches notices with the notifications' task.
       expect(
         (notice.target, notice.where, notice.authorName, notice.text),
-        (_dm, 'in a direct message', 'Maya', 'fetched in the DM'),
+        (_dm, 'in a direct message', 'Maya', 'Sent a message'),
       );
     });
   });
@@ -919,10 +936,14 @@ void main() {
 
     test('a DM shows one (conversations default to every message), but not one at only mentions', () async {
       repository.handleEvent(_event('DM_MESSAGE_CREATE', _dmMessage('8', 'hi there')));
+      // Its notice asks the device for the text first (none here).
+      await pumpEventQueue();
       final notice = repository.mentionNotices.value.single;
-      expect((notice.target, notice.where, notice.text), (_dm, 'in a direct message', 'hi there'));
+      // None of the API's words: what the device holds reaches notices with the notifications' task.
+      expect((notice.target, notice.where, notice.text), (_dm, 'in a direct message', 'Sent a message'));
       level('c-1', 2, 1);
       repository.handleEvent(_event('DM_MESSAGE_CREATE', _dmMessage('9', 'not this one')));
+      await pumpEventQueue();
       expect(shown(), ['8']);
     });
 
@@ -1091,6 +1112,21 @@ void main() {
     expect((unpin.messageId, unpin.pinned), ('9', false));
     expect([for (final t in roomTyping) (t.name, t.recording)], [('Maya', true)]);
     expect([for (final t in dmTyping) (t.name, t.recording)], [('maya', true)]);
+  });
+
+  test("a chat's event after the repository is disposed is dropped, not thrown", () {
+    // Work begun before dispose (a message's content read, a send's answer) can end after it.
+    final gone = DuvetRepository(
+      store: MemorySessionStore(),
+      recentsStore: MemoryRecentChatsStore(),
+      httpClient: () => MockClient((_) async => http.Response('not found', 404)),
+      connectGateway: false,
+      cacheStore: MemoryChatCacheStore(),
+    )..dispose();
+    expect(
+      () => gone.handleEvent(_event('MESSAGE_PIN_UPDATE', {'id': '7', 'room_id': 'r-1', 'pinned_at': _at})),
+      returnsNormally,
+    );
   });
 
   test('a reply says whether it mentions the author it answers, and a v2 message its text displays', () async {

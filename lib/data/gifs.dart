@@ -1,6 +1,33 @@
 import 'dart:convert';
+import 'dart:typed_data';
 
 import 'package:http/http.dart' as http;
+
+/// The most bytes of a GIF the picker found that the app takes to send sealed (Ruling 12): what Duvet's storage takes
+/// of one file.
+const _gifMost = 20 << 20;
+
+/// A GIF's bytes from where the picker found it, as an encrypted conversation sends it: a file sealed as any picture,
+/// never its link (Ruling 12). Null when they don't come, or pass [_gifMost].
+Future<Uint8List?> gifBytes(String url, {http.Client? client}) async {
+  final uri = Uri.tryParse(url);
+  if (uri == null || (uri.scheme != 'https' && uri.scheme != 'http')) return null;
+  final own = client ?? http.Client();
+  try {
+    final response = await own.send(http.Request('GET', uri)).timeout(const Duration(seconds: 15));
+    if (response.statusCode != 200) return null;
+    final bytes = BytesBuilder(copy: false);
+    await for (final chunk in response.stream.timeout(const Duration(seconds: 15))) {
+      bytes.add(chunk);
+      if (bytes.length > _gifMost) return null;
+    }
+    return bytes.takeBytes();
+  } catch (_) {
+    return null;
+  } finally {
+    if (client == null) own.close();
+  }
+}
 
 /// A GIF to send: its full [url] goes out as the message, as on desktop.
 class Gif {
@@ -31,6 +58,10 @@ abstract interface class GifSource {
   /// Who to credit under the grid.
   String get attribution;
 
+  /// A GIF's bytes, for an encrypted conversation, which sends it as a sealed file (Ruling 12): null when they don't
+  /// come.
+  Future<Uint8List?> bytes(String url);
+
   /// The app's; tests swap in their own.
   static GifSource instance = KlipyGifs();
 }
@@ -43,6 +74,9 @@ class KlipyGifs implements GifSource {
 
   @override
   String get attribution => 'GIFs from KLIPY';
+
+  @override
+  Future<Uint8List?> bytes(String url) => gifBytes(url);
 
   @override
   Future<List<Gif>> trending() => _get('trending', {'per_page': '$_limit'});

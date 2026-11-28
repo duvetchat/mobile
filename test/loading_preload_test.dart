@@ -30,12 +30,14 @@ Map<String, dynamic> _user(String id, String username) => {
   'updated_at': _at,
 };
 
+// Numbered by its ID, as an encrypted message's row: an honest API serves a conversation nothing else but its notices.
 Map<String, dynamic> _dmMessage(String id, String content, {String author = _maya}) => {
   'id': id,
   'conversation_id': 'c-1',
   'author_id': author,
   'content': content,
   'type': 0,
+  'seq': int.parse(id),
   'created_at': _at,
   'updated_at': _at,
   'user': {'id': author, 'username': author == _me ? 'gaby' : 'maya'},
@@ -97,8 +99,9 @@ void main() {
   /// What `GET /api/rooms/<id>/messages` answers, by room; 404 for the rest.
   late Map<String, http.Response Function()> roomAnswers;
 
-  /// While set, the DM's history waits for it.
+  /// While set, the DM's history waits for it, and the rooms' theirs.
   Completer<void>? holdDm;
+  Completer<void>? holdRoom;
 
   /// Whose session the API answers `GET /api/users/@me` for.
   late String me;
@@ -128,6 +131,7 @@ void main() {
     sessions = MemorySessionStore();
     cache = MemoryChatCacheStore();
     holdDm = null;
+    holdRoom = null;
     me = _me;
     roomAnswers = {
       'r-1': () => json([_roomMessage('7', 'seven'), _roomMessage('6', 'six')]),
@@ -136,6 +140,7 @@ void main() {
       requests.add(request);
       final path = request.url.path;
       if (request.method == 'GET' && path.startsWith('/api/rooms/') && path.endsWith('/messages')) {
+        await holdRoom?.future;
         return (roomAnswers[path.split('/')[3]] ?? () => http.Response('not found', 404))();
       }
       if (path == '/api/users/@me/conversations/c-1/messages') {
@@ -174,18 +179,20 @@ void main() {
 
   tearDown(() => repository.dispose());
 
-  test('READY fetches the newest chats\' pages ahead: they open on them, and the list previews them', () async {
+  test('READY fetches the newest chats\' pages ahead, and the list previews them', () async {
     await repository.logIn('gaby@duvet.chat', 'secret');
     repository.handleEvent(_event('READY', _ready()));
     await pumpEventQueue();
 
-    // The conversation, never opened here: its whole page, kept.
+    // The conversation, never opened here: its whole page, which isn't kept, as it's end-to-end encrypted (a room's
+    // is, the next test's).
     expect(fetched('/api/users/@me/conversations/c-1/messages'), ['${ChatCache.pageSize}']);
-    expect([for (final m in (await repository.cachedMessages(_dm))!) m.content], ['first', 'second']);
-    // Its preview, here and in the Chats tab, where it shows from now on.
-    expect(repository.latest.value['c-1']?.content, 'second');
+    expect(await repository.cachedMessages(_dm), isNull);
+    // Its preview, here and in the Chats tab, where it shows from now on: its newest message, whose text only this
+    // device's own database holds (none here), never the API's.
+    expect(repository.latest.value['c-1']?.content, '');
     expect(repository.recents.value.single.target, _dm);
-    expect(repository.recents.value.single.previewText, 'second');
+    expect(repository.recents.value.single.previewText, 'Sent a message');
   });
 
   test('a Space\'s busiest rooms get their pages, the rest their newest message', () async {
@@ -259,11 +266,12 @@ void main() {
     });
   });
 
-  test('a conversation\'s page kept from before is fetched again: nothing names its newest message', () async {
+  test('a conversation\'s page is fetched again at each launch: none is kept', () async {
     await repository.logIn('gaby@duvet.chat', 'secret');
     repository.handleEvent(_event('READY', _ready()));
     await pumpEventQueue();
-    await eventually(() => expect(cache.data.keys, contains('chat_c-1')));
+    expect(fetched('/api/users/@me/conversations/c-1/messages'), ['${ChatCache.pageSize}']);
+    expect(cache.data.keys, isNot(contains('chat_c-1')));
 
     final next = make();
     addTearDown(next.dispose);
@@ -276,65 +284,66 @@ void main() {
 
   test('a page a message came during the fetch of isn\'t kept, as it may lack it; the next one is', () async {
     await repository.logIn('gaby@duvet.chat', 'secret');
-    final held = holdDm = Completer<void>();
-    final loading = repository.messages(_dm);
+    final held = holdRoom = Completer<void>();
+    final loading = repository.messages(_room);
     await pumpEventQueue();
-    repository.handleEvent(_event('DM_MESSAGE_CREATE', _dmMessage('3', 'third')));
+    repository.handleEvent(_event('MESSAGE_CREATE', _roomMessage('8', 'eight')));
     held.complete();
     await loading;
     await pumpEventQueue();
-    expect(await repository.cachedMessages(_dm), isNull);
+    expect(await repository.cachedMessages(_room), isNull);
 
-    await repository.messages(_dm);
-    repository.handleEvent(_event('DM_MESSAGE_CREATE', _dmMessage('4', 'fourth')));
+    await repository.messages(_room);
+    repository.handleEvent(_event('MESSAGE_CREATE', _roomMessage('9', 'nine')));
     await eventually(
-      () async => expect([for (final m in (await repository.cachedMessages(_dm))!) m.id], ['1', '2', '4']),
+      () async => expect([for (final m in (await repository.cachedMessages(_room))!) m.id], ['6', '7', '9']),
     );
   });
 
   test('the page kept follows new, edited, deleted and pinned messages, and reactions', () async {
     await repository.logIn('gaby@duvet.chat', 'secret');
-    await repository.messages(_dm);
-    repository.handleEvent(_event('DM_MESSAGE_CREATE', _dmMessage('3', 'third')));
-    repository.handleEvent(_event('DM_MESSAGE_UPDATE', {..._dmMessage('1', 'first, edited'), 'edited_at': _at}));
+    roomAnswers['r-1'] = () => json([_roomMessage('2', 'second'), _roomMessage('1', 'first')]);
+    await repository.messages(_room);
+    repository.handleEvent(_event('MESSAGE_CREATE', _roomMessage('3', 'third')));
+    repository.handleEvent(_event('MESSAGE_UPDATE', {..._roomMessage('1', 'first, edited'), 'edited_at': _at}));
     repository.handleEvent(
-      _event('DM_MESSAGE_CREATE', {
-        ..._dmMessage('4', 'about the second'),
-        'referenced_message': {'message_id': '2', 'author_id': _me, 'author_name': 'gaby', 'content': 'second'},
+      _event('MESSAGE_CREATE', {
+        ..._roomMessage('4', 'about the second'),
+        'referenced_message': {'message_id': '2', 'author_id': _maya, 'author_name': 'maya', 'content': 'second'},
       }),
     );
-    repository.handleEvent(_event('DM_MESSAGE_DELETE', {'id': '2', 'conversation_id': 'c-1'}));
-    repository.handleEvent(_event('DM_MESSAGE_PIN_UPDATE', {'id': '1', 'conversation_id': 'c-1', 'pinned_at': _at}));
+    repository.handleEvent(_event('MESSAGE_DELETE', {'id': '2', 'room_id': 'r-1'}));
+    repository.handleEvent(_event('MESSAGE_PIN_UPDATE', {'id': '1', 'room_id': 'r-1', 'pinned_at': _at}));
     // Two reactions to one message, at once: both count.
-    repository.handleEvent(_event('DM_REACTION_ADD', {'message_id': '3', 'user_id': _maya, 'emoji_name': '👍'}));
-    repository.handleEvent(_event('DM_REACTION_ADD', {'message_id': '3', 'user_id': _leo, 'emoji_name': '👍'}));
+    repository.handleEvent(_event('REACTION_ADD', {'message_id': '3', 'user_id': _maya, 'emoji_name': '👍'}));
+    repository.handleEvent(_event('REACTION_ADD', {'message_id': '3', 'user_id': _leo, 'emoji_name': '👍'}));
 
     await eventually(() async {
-      final page = (await repository.cachedMessages(_dm))!;
+      final page = (await repository.cachedMessages(_room))!;
       expect([for (final m in page) m.id], ['1', '3', '4']);
       expect((page[0].content, page[0].pinned), ('first, edited', true));
       expect(page[1].reactions.single.users, {_maya, _leo});
       expect(page[2].reply?.deleted, isTrue);
     });
     // The deleted one isn't the preview any more.
-    expect(repository.latest.value['c-1']?.id, '4');
+    expect(repository.latest.value['r-1']?.id, '4');
   });
 
   test('a page kept from before isn\'t added to, which would skip what came between: it\'s fetched again', () async {
     // Kept by an earlier session, days behind.
-    ChatCache(cache).savePage(_dm.id, [
+    ChatCache(cache).savePage(_room.id, [
       ChatMessage(id: '0', authorId: _maya, authorName: 'maya', content: 'old', createdAt: DateTime.utc(2026, 10, 20)),
     ]);
-    await eventually(() => expect(cache.data.keys, contains('chat_c-1')));
+    await eventually(() => expect(cache.data.keys, contains('chat_r-1')));
     await repository.logIn('gaby@duvet.chat', 'secret');
-    repository.handleEvent(_event('DM_MESSAGE_CREATE', _dmMessage('3', 'third')));
+    repository.handleEvent(_event('MESSAGE_CREATE', _roomMessage('8', 'eight')));
     await pumpEventQueue();
-    expect([for (final m in (await repository.cachedMessages(_dm))!) m.id], ['0']);
+    expect([for (final m in (await repository.cachedMessages(_room))!) m.id], ['0']);
 
     repository.handleEvent(_event('READY', _ready()));
-    await pumpEventQueue();
-    expect(fetched('/api/users/@me/conversations/c-1/messages'), ['${ChatCache.pageSize}']);
-    expect([for (final m in (await repository.cachedMessages(_dm))!) m.content], ['first', 'second']);
+    await repository.loadLatest([_room]);
+    expect(fetched('/api/rooms/r-1/messages'), ['${ChatCache.pageSize}']);
+    expect([for (final m in (await repository.cachedMessages(_room))!) m.content], ['six', 'seven']);
   });
 
   test('a 429 stops fetching ahead for a while', () async {
@@ -353,14 +362,14 @@ void main() {
 
   test('signing out drops the page on its way: nothing is kept after', () async {
     await repository.logIn('gaby@duvet.chat', 'secret');
-    final held = holdDm = Completer<void>();
-    final loading = repository.loadLatest([_dm]);
+    final held = holdRoom = Completer<void>();
+    final loading = repository.loadLatest([_room]);
     await pumpEventQueue();
     await repository.logOut();
     held.complete();
     await loading;
     await pumpEventQueue();
-    expect(await repository.cachedMessages(_dm), isNull);
+    expect(await repository.cachedMessages(_room), isNull);
     expect(repository.latest.value, isEmpty);
   });
 
@@ -397,10 +406,10 @@ void main() {
     await repository.logIn('gaby@duvet.chat', 'secret');
     repository.handleEvent(_event('READY', _ready(guilds: ['s-1'])));
     repository.handleEvent(_event('SPACE_CREATE', _space('s-1', 'Design Guild')));
-    await pumpEventQueue();
+    await repository.loadLatest([_room]);
     await eventually(() {
       expect((jsonDecode(cache.data['home'] ?? '{}') as Map)['spaces'], hasLength(1));
-      expect(cache.data.keys, contains('chat_c-1'));
+      expect(cache.data.keys, contains('chat_r-1'));
     });
 
     // The session saved is Maya's now, and says so: the home kept waits for the API, and never shows.

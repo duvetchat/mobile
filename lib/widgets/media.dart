@@ -17,6 +17,7 @@ import '../data/images.dart';
 import '../data/models.dart';
 import '../data/ogg.dart';
 import '../data/appearance.dart' show ownBubble;
+import '../e2e/notices.dart';
 import '../theme.dart';
 import 'attachment_link.dart';
 import 'depth.dart';
@@ -55,6 +56,10 @@ class PlaybackState {
 /// last. Tests swap in their own [instance].
 abstract class AudioPlayback {
   ValueListenable<PlaybackState> get state;
+
+  /// The last file that wouldn't load or play, by its ID: a decrypted one is then a card to save (task 19's review,
+  /// M3).
+  ValueListenable<String?> get failed;
 
   /// Plays [url] as [id], from where it was paused if it's the same.
   /// [title] and [artist] name it in the playback bar and the system's media
@@ -160,6 +165,10 @@ class JustAudioPlayback implements AudioPlayback {
   VoiceNoteHandler? _handler;
   final _state = ValueNotifier(PlaybackState.idle);
   final _speeds = ValueNotifier(const <String, double>{});
+  final _failed = ValueNotifier<String?>(null);
+
+  @override
+  ValueListenable<String?> get failed => _failed;
 
   @override
   ValueListenable<Map<String, double>> get speeds => _speeds;
@@ -185,6 +194,8 @@ class JustAudioPlayback implements AudioPlayback {
       }
     };
     final player = handler.player;
+    // Not Android's abort (10000000): that's one load giving way to the next.
+    player.errorStream.where((e) => e.code != 10000000).listen((_) => _failed.value = _last?.id);
     player.positionStream.listen((p) => _update(position: p));
     player.durationStream.listen((d) => _update(duration: d));
     player.playerStateStream.listen((s) {
@@ -248,6 +259,7 @@ class JustAudioPlayback implements AudioPlayback {
           }
           // A note that won't load mustn't stay in the bar and the notification.
           debugPrint('Voice note $id failed to load: $e');
+          _failed.value = id;
           await handler.stop();
           return;
         }
@@ -381,8 +393,12 @@ class VoiceNotePlayer extends StatelessWidget {
     required this.mine,
     required this.authorName,
     this.authorAvatarUrl,
+    this.bars,
     super.key,
   });
+
+  /// Its bars, when its message carries its waveform (an encrypted voice note's): else ones seeded by the file.
+  final List<double>? bars;
 
   @override
   Widget build(BuildContext context) {
@@ -391,7 +407,7 @@ class VoiceNotePlayer extends StatelessWidget {
     final playback = AudioPlayback.instance;
     final bubble = ownBubble;
     final ink = mine ? bubble.ink : colors.foreground;
-    final bars = fallbackBars(attachment.id, 30);
+    final bars = this.bars ?? fallbackBars(attachment.id, 30);
     return ValueListenableBuilder(
       valueListenable: playback.state,
       builder: (context, state, _) {
@@ -529,7 +545,10 @@ class _SpeedButton extends StatelessWidget {
 /// An audio file: play, its name, a scrub bar and "1:12 / 4:30".
 class AudioFileTile extends StatelessWidget {
   final MessageAttachment attachment;
-  const AudioFileTile({required this.attachment, super.key});
+
+  /// What follows its name: a decrypted file's Save and Share.
+  final Widget? trailing;
+  const AudioFileTile({required this.attachment, this.trailing, super.key});
 
   @override
   Widget build(BuildContext context) {
@@ -568,7 +587,9 @@ class AudioFileTile extends StatelessWidget {
                       : playback.play(
                           attachment.id,
                           attachment.url,
-                          title: attachment.displayName,
+                          // The media session's title leaves the app (the lock screen, a car's display): an encrypted
+                          // conversation's file goes under the app's own word, never its name (mobile#356).
+                          title: attachment.sealed == null ? attachment.displayName : 'Audio file',
                           link: linkSource(context, attachment),
                         ),
                 ),
@@ -598,6 +619,7 @@ class AudioFileTile extends StatelessWidget {
                     ],
                   ),
                 ),
+                ?trailing,
               ],
             ),
           ),
@@ -679,7 +701,10 @@ const videoBackdrop = Color(0xFF2B2D33);
 
 /// The play mark over a video's poster.
 class PlayMark extends StatelessWidget {
-  const PlayMark({super.key});
+  const PlayMark({this.icon = FLucideIcons.play, super.key});
+
+  /// What a tap does: plays, or shows a picture.
+  final IconData icon;
 
   @override
   Widget build(BuildContext context) => Container(
@@ -690,7 +715,7 @@ class PlayMark extends StatelessWidget {
       borderRadius: BorderRadius.circular(DuvetTokens.radiusButton),
       border: Border.all(color: DuvetTokens.mediaScrimEdge),
     ),
-    child: const Icon(FLucideIcons.play, color: DuvetTokens.mediaInk, size: 24),
+    child: Icon(icon, color: DuvetTokens.mediaInk, size: 24),
   );
 }
 
@@ -920,24 +945,25 @@ class _VideoTileState extends State<VideoTile> {
   }
 }
 
-/// Plays [attachment] full screen ([VideoPage]).
-void openVideo(BuildContext context, MessageAttachment attachment) => Navigator.of(context, rootNavigator: true).push(
-  PageRouteBuilder<void>(
-    opaque: false,
-    barrierColor: Colors.black,
-    transitionDuration: DuvetTokens.panelIn,
-    reverseTransitionDuration: DuvetTokens.panelOut,
-    // On near-black, as the image viewer: light icons in the system bars.
-    pageBuilder: (_, _, _) => AnnotatedRegion<SystemUiOverlayStyle>(
-      value: Duvet.systemBarsOver(Brightness.dark),
-      child: VideoPage(attachment: attachment),
-    ),
-    transitionsBuilder: (_, animation, _, child) => FadeTransition(
-      opacity: CurvedAnimation(parent: animation, curve: DuvetTokens.decelerate),
-      child: child,
-    ),
-  ),
-);
+/// Plays [attachment] full screen ([VideoPage]); one that won't play offers [onSave], when given.
+void openVideo(BuildContext context, MessageAttachment attachment, {VoidCallback? onSave}) =>
+    Navigator.of(context, rootNavigator: true).push(
+      PageRouteBuilder<void>(
+        opaque: false,
+        barrierColor: Colors.black,
+        transitionDuration: DuvetTokens.panelIn,
+        reverseTransitionDuration: DuvetTokens.panelOut,
+        // On near-black, as the image viewer: light icons in the system bars.
+        pageBuilder: (_, _, _) => AnnotatedRegion<SystemUiOverlayStyle>(
+          value: Duvet.systemBarsOver(Brightness.dark),
+          child: VideoPage(attachment: attachment, onSave: onSave),
+        ),
+        transitionsBuilder: (_, animation, _, child) => FadeTransition(
+          opacity: CurvedAnimation(parent: animation, curve: DuvetTokens.decelerate),
+          child: child,
+        ),
+      ),
+    );
 
 /// The controls over a full-screen picture or video: a tap hides them, and the
 /// system bars with them, to leave it the whole screen; another brings them
@@ -1018,11 +1044,18 @@ class FadingControls extends StatelessWidget {
 /// which a tap hides and brings back; swipe down or Close to leave.
 class VideoPage extends StatefulWidget {
   final MessageAttachment attachment;
-  const VideoPage({required this.attachment, super.key});
+
+  /// A decrypted video's Save, offered when it won't play here (an HEVC this phone doesn't decode, say).
+  final VoidCallback? onSave;
+  const VideoPage({required this.attachment, this.onSave, super.key});
 
   /// Builds the controller; tests swap in their own.
   @visibleForTesting
-  static VideoPlayerController Function(Uri url) controllerFor = VideoPlayerController.networkUrl;
+  static VideoPlayerController Function(Uri url) controllerFor = defaultController;
+
+  /// A video at [url]: a file of this device's (a decrypted video's copy) from where it is, any other from its host.
+  static VideoPlayerController defaultController(Uri url) =>
+      url.isScheme('file') ? VideoPlayerController.file(File.fromUri(url)) : VideoPlayerController.networkUrl(url);
 
   static final _playing = <Object>{};
 
@@ -1126,7 +1159,17 @@ class _VideoPageState extends State<VideoPage> with HidingControls {
                   offset: Offset(0, _drag),
                   child: Center(
                     child: _error != null
-                        ? Text('Couldn’t play this video', style: DuvetType.body.copyWith(color: ink))
+                        ? Column(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Text('Couldn’t play this video', style: DuvetType.body.copyWith(color: ink)),
+                              if (widget.onSave case final save?)
+                                TextButton(
+                                  onPressed: save,
+                                  child: Text(Notice.fileSave.text, style: DuvetType.body.copyWith(color: ink)),
+                                ),
+                            ],
+                          )
                         : value.isInitialized && controller != null
                         ? AspectRatio(aspectRatio: value.aspectRatio, child: VideoPlayer(controller))
                         : const CircularProgressIndicator(color: ink),

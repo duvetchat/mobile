@@ -2,6 +2,8 @@ import 'dart:convert';
 
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 
+import '../e2e/db_key.dart' show phoneKeychain;
+
 /// The tokens that resume a session, the access token and the session
 /// (refresh) token, and when the API issued them: at the login or the last
 /// renewal. Null when that isn't known (saved by an older version of the
@@ -18,7 +20,8 @@ abstract interface class SessionStore {
 /// Keeps the tokens in the platform's keychain / keystore, whole under one key
 /// (JSON): two isolates write them, the app's and the background renewal's
 /// (lib/push/renewal.dart), and a read must never find half of one session and
-/// half of another.
+/// half of another. On iOS the renewal reads them with the phone locked, and
+/// they stay on this phone ([phoneKeychain]).
 class SecureSessionStore implements SessionStore {
   static const _key = 'duvet_session';
 
@@ -34,7 +37,7 @@ class SecureSessionStore implements SessionStore {
   static bool _oldKeysGone = false;
 
   final FlutterSecureStorage _storage;
-  const SecureSessionStore([this._storage = const FlutterSecureStorage()]);
+  const SecureSessionStore([this._storage = phoneKeychain]);
 
   @override
   Future<StoredSession?> read() async {

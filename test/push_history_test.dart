@@ -1,5 +1,6 @@
 import 'dart:io';
 
+import 'package:duvet/data/models.dart';
 import 'package:duvet/push/push_history.dart';
 import 'package:duvet/push/push_message.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -21,6 +22,18 @@ MessagePush _push(int n, {int room = 100}) =>
           'room_id': _id(room),
         })
         as MessagePush;
+
+/// Message [n] of Bo's in conversation [conversation], with [text] as this device's core opened it.
+MessagePush _said(int n, {int conversation = 300, String text = 'a secret'}) => MessagePush(
+  messageId: _id(n),
+  authorId: _id(901),
+  authorName: 'Bo',
+  authorAvatar: '',
+  place: '',
+  text: text,
+  target: ConversationTarget(_id(conversation)),
+  sentAt: DateTime.fromMillisecondsSinceEpoch(1794702917695 + n, isUtc: true),
+);
 
 List<String> _texts(List<MessagePush> pushes) => [for (final p in pushes) p.text];
 
@@ -81,5 +94,35 @@ void main() {
     final file = File('${dir.path}/push/${_id(100)}.json');
     await file.writeAsString('not json');
     expect(_texts(await history.add(_push(2))), ['number 2']);
+  });
+
+  // PLAN-E2E-CLIENTES.md, Task 21: a conversation's lines are the device's to read; the history keeps who and when.
+  test('the_notification_history_keeps_no_conversation_text', () async {
+    final history = PushHistory(dir);
+    final kept = await history.addAll([_said(1, text: 'the bluebird flies at noon'), _said(2, text: 'at dawn')]);
+    expect([for (final p in kept) (p.messageId, p.authorName, p.text)], [(_id(1), 'Bo', ''), (_id(2), 'Bo', '')]);
+    expect(_texts(await history.read(_id(300))), ['', '']);
+    final file = File('${dir.path}/push/${_id(300)}.json').readAsStringSync();
+    expect(file, allOf(isNot(contains('bluebird')), isNot(contains('dawn')), contains(_id(1))));
+    // A room's lines keep their text, as the API wrote it.
+    expect(_texts(await history.add(_push(3))), ['number 3']);
+  });
+
+  test("the version before's histories of conversations, with their text, are deleted at the first start", () async {
+    final history = PushHistory(dir);
+    await history.add(_push(1));
+    // As a version before this one wrote a conversation's: its text in the clear.
+    final old = File('${dir.path}/push/${_id(300)}.json')..createSync(recursive: true);
+    old.writeAsStringSync(
+      '[{"type":"message","message_id":"${_id(2)}","author_id":"${_id(901)}","author_name":"Bo","author_avatar":"",'
+      '"place":"","text":"the bluebird flies at noon","sent_at":"1794702917697","conversation_id":"${_id(300)}"}]',
+    );
+    await history.forgetConversationTexts();
+    expect(old.existsSync(), isFalse);
+    expect(_texts(await history.read(_id(100))), ['number 1']);
+    // This version's are kept: they hold no text.
+    await history.add(_said(4));
+    await history.forgetConversationTexts();
+    expect([for (final p in await history.read(_id(300))) p.messageId], [_id(4)]);
   });
 }

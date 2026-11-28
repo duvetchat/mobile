@@ -42,8 +42,25 @@ int opusSamples(List<int> packet) {
   return frames * tenths * 48 ~/ 10;
 }
 
-/// The bytes of a recording to upload: an Ogg one repaired ([repairOggOpus]) when it can be, any other as it is.
-Uint8List recordingToUpload(Uint8List bytes, String format) => format == 'ogg' ? repairOggOpus(bytes) ?? bytes : bytes;
+/// The bytes of a recording to upload: an Ogg one repaired ([repairOggOpus]) when it can be, an m4a one told as audio
+/// ([asAudio]), any other as it is.
+Uint8List recordingToUpload(Uint8List bytes, String format) => switch (format) {
+  'ogg' => repairOggOpus(bytes) ?? bytes,
+  'm4a' => asAudio(bytes),
+  _ => bytes,
+};
+
+/// An MPEG-4 recording with `M4A ` as its major brand, which both apps read as audio: before Android 10 the recorder
+/// writes AAC in a file whose brand AOSP's writer makes `mp42`, a video's (task 19's review, I4). Bytes 8 to 11 of its
+/// first box, `ftyp`; anything else stays as it is.
+Uint8List asAudio(Uint8List bytes) {
+  if (bytes.length < 12 ||
+      String.fromCharCodes(bytes, 4, 8) != 'ftyp' ||
+      String.fromCharCodes(bytes, 8, 12) == 'M4A ') {
+    return bytes;
+  }
+  return Uint8List.fromList(bytes)..setAll(8, 'M4A '.codeUnits);
+}
 
 /// The recording with each page's granule position at the end of the last packet it completes (pre-skip included, -1
 /// on a page that completes none), the last page ending the stream, and the CRCs computed again; null when it isn't

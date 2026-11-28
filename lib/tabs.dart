@@ -9,6 +9,7 @@ import 'data/recent_chats.dart';
 import 'data/repository.dart';
 import 'data/scope.dart';
 import 'data/voice.dart';
+import 'encryption/gate.dart';
 import 'members_sheet.dart';
 import 'people.dart';
 import 'search.dart';
@@ -112,6 +113,8 @@ class ChatsTab extends StatelessWidget {
                     padding: EdgeInsets.fromLTRB(16, 12, 16, 0),
                     child: ConnectionBanner(text: 'Offline', detail: '· showing saved messages'),
                   ),
+                // Where this device's encrypted conversations stand, while they need the person.
+                const EncryptionBanner(),
                 // Calls going on in the user's conversations, as their chat's
                 // CallBanner has them; not the user's own still ringing the
                 // others from another device: nothing to join yet.

@@ -1,6 +1,7 @@
 /// What the UI shows, independent of the Duvet client's wire models.
 library;
 
+import '../e2e/files.dart' show ShownFile;
 import 'admin.dart' show RoleColors;
 import 'bots.dart';
 
@@ -123,6 +124,10 @@ class ChatMessage {
   /// conversation ends); null on any other message.
   final CallNotice? call;
 
+  /// A history share's notice (an [isNotice] the API posts once a member shared an encrypted conversation's history
+  /// with another, its type 4): with whom, and how far back; null on any other message.
+  final SharedHistoryNotice? sharedHistory;
+
   final List<MessageAttachment> attachments;
 
   /// Its files deleted since it was sent: placeholders, apart from
@@ -177,6 +182,36 @@ class ChatMessage {
   /// A bot's answer to a command or a component: who used which.
   final MessageInteraction? interaction;
 
+  /// An encrypted conversation's message this device's own database doesn't hold opened (PLAN-E2E-CLIENTES.md, «La
+  /// vista de una conversación»): it shows as waiting for it, with no text.
+  final bool waiting;
+
+  /// The user's own message this device still sends, from before the app started again: a failed send, with Retry
+  /// and Dismiss.
+  final bool pending;
+
+  /// A [pending] message with files whose sealed bytes went with the app (it started again): it can only be dismissed,
+  /// which its row says at once.
+  final bool filesGone;
+
+  /// An encrypted conversation's message's files as the API lists them, by ID: the signed URL of each one's sealed
+  /// bytes, which [attachments] draws from once this device's database says what they are (lib/e2e/files.dart).
+  final Map<String, String> sealedLinks;
+
+  /// Who shared it with this device, by name, when a shared history brought it.
+  final String? sharedBy;
+
+  /// An encrypted conversation's message's number in its conversation's queue: its text and files are what this
+  /// device's own database holds of it.
+  final int? seq;
+
+  /// An encrypted conversation's message, whose text and files are what this device's own database holds of it.
+  bool get encrypted => seq != null;
+
+  /// An encrypted conversation's message this device hasn't applied yet (numbered past what it applied): it loads,
+  /// neither empty nor waiting (M2 of the desktop's task 16 review).
+  final bool loading;
+
   const ChatMessage({
     required this.id,
     required this.authorId,
@@ -188,6 +223,7 @@ class ChatMessage {
     this.nonce,
     this.isNotice = false,
     this.call,
+    this.sharedHistory,
     this.attachments = const [],
     this.deletedAttachments = const [],
     this.stickerUrl,
@@ -205,6 +241,13 @@ class ChatMessage {
     this.isLoading = false,
     this.isComponentsV2 = false,
     this.interaction,
+    this.waiting = false,
+    this.pending = false,
+    this.filesGone = false,
+    this.sealedLinks = const {},
+    this.sharedBy,
+    this.seq,
+    this.loading = false,
   });
 
   int get attachmentCount => attachments.length;
@@ -227,6 +270,12 @@ class ChatMessage {
     List<Reaction>? reactions,
     bool? pinned,
     MessageReply? reply,
+    bool? waiting,
+    String? sharedBy,
+    int? seq,
+    bool? loading,
+    List<MessageAttachment>? attachments,
+    bool? isVoice,
   }) => ChatMessage(
     id: id ?? this.id,
     authorId: authorId,
@@ -238,13 +287,14 @@ class ChatMessage {
     nonce: nonce ?? this.nonce,
     isNotice: isNotice,
     call: call,
-    attachments: attachments,
+    sharedHistory: sharedHistory,
+    attachments: attachments ?? this.attachments,
     deletedAttachments: deletedAttachments,
     stickerUrl: stickerUrl,
     embeds: embeds,
     reply: reply ?? this.reply,
     reactions: reactions ?? this.reactions,
-    isVoice: isVoice,
+    isVoice: isVoice ?? this.isVoice,
     pinned: pinned ?? this.pinned,
     components: components,
     rawComponents: rawComponents,
@@ -255,6 +305,13 @@ class ChatMessage {
     isLoading: isLoading,
     isComponentsV2: isComponentsV2,
     interaction: interaction,
+    waiting: waiting ?? this.waiting,
+    pending: pending,
+    filesGone: filesGone,
+    sealedLinks: sealedLinks,
+    sharedBy: sharedBy ?? this.sharedBy,
+    seq: seq ?? this.seq,
+    loading: loading ?? this.loading,
   );
 
   /// This message as an edit, or a link preview that came late, leaves it.
@@ -263,35 +320,48 @@ class ChatMessage {
   /// has none of the files, reactions, reply or pin, which stay, and it can't
   /// change who wrote it, whom the event names without their Space nickname,
   /// if at all.
-  ChatMessage updatedBy(ChatMessage update) => ChatMessage(
-    id: id,
-    authorId: authorId,
-    authorName: authorName,
-    authorAvatarUrl: authorAvatarUrl,
-    content: update.content,
-    createdAt: createdAt,
-    edited: update.edited,
-    nonce: nonce,
-    isNotice: isNotice,
-    call: call,
-    attachments: attachments,
-    deletedAttachments: deletedAttachments,
-    stickerUrl: update.stickerUrl,
-    embeds: update.embeds,
-    reply: reply,
-    reactions: reactions,
-    isVoice: isVoice,
-    pinned: pinned,
-    components: update.components,
-    rawComponents: update.rawComponents,
-    fromBot: fromBot,
-    fromWebhook: fromWebhook,
-    webhookId: webhookId,
-    isEphemeral: isEphemeral,
-    isLoading: update.isLoading,
-    isComponentsV2: update.isComponentsV2,
-    interaction: update.interaction ?? interaction,
-  );
+  ///
+  /// An encrypted conversation's message takes none of it: its text, edit and quote are what this device's own
+  /// database holds, which the chat reads again (I4 of task 17's review).
+  ChatMessage updatedBy(ChatMessage update) => encrypted
+      ? this
+      : ChatMessage(
+          id: id,
+          authorId: authorId,
+          authorName: authorName,
+          authorAvatarUrl: authorAvatarUrl,
+          content: update.content,
+          createdAt: createdAt,
+          edited: update.edited,
+          nonce: nonce,
+          isNotice: isNotice,
+          call: call,
+          sharedHistory: sharedHistory,
+          attachments: attachments,
+          deletedAttachments: deletedAttachments,
+          stickerUrl: update.stickerUrl,
+          embeds: update.embeds,
+          reply: reply,
+          reactions: reactions,
+          isVoice: isVoice,
+          pinned: pinned,
+          components: update.components,
+          rawComponents: update.rawComponents,
+          fromBot: fromBot,
+          fromWebhook: fromWebhook,
+          webhookId: webhookId,
+          isEphemeral: isEphemeral,
+          isLoading: update.isLoading,
+          isComponentsV2: update.isComponentsV2,
+          interaction: update.interaction ?? interaction,
+          waiting: update.waiting,
+          pending: pending,
+          filesGone: filesGone,
+          sealedLinks: sealedLinks,
+          sharedBy: sharedBy,
+          seq: seq,
+          loading: update.loading,
+        );
 
   /// This message once [change] took place: the name and avatar of its
   /// author, if they're the one who changed (a webhook's message keeps the
@@ -316,6 +386,7 @@ class ChatMessage {
       nonce: nonce,
       isNotice: isNotice,
       call: call,
+      sharedHistory: sharedHistory,
       attachments: attachments,
       deletedAttachments: deletedAttachments,
       stickerUrl: stickerUrl,
@@ -333,6 +404,13 @@ class ChatMessage {
       isLoading: isLoading,
       isComponentsV2: isComponentsV2,
       interaction: interaction,
+      waiting: waiting,
+      pending: pending,
+      filesGone: filesGone,
+      sealedLinks: sealedLinks,
+      sharedBy: sharedBy,
+      seq: seq,
+      loading: loading,
     );
   }
 
@@ -351,6 +429,7 @@ class ChatMessage {
       nonce: nonce,
       isNotice: isNotice,
       call: call,
+      sharedHistory: sharedHistory,
       attachments: [for (final a in attachments) a.id == attachmentId ? a.withUrl(url) : a],
       deletedAttachments: deletedAttachments,
       stickerUrl: stickerUrl,
@@ -368,6 +447,13 @@ class ChatMessage {
       isLoading: isLoading,
       isComponentsV2: isComponentsV2,
       interaction: interaction,
+      waiting: waiting,
+      pending: pending,
+      filesGone: filesGone,
+      sealedLinks: sealedLinks,
+      sharedBy: sharedBy,
+      seq: seq,
+      loading: loading,
     );
   }
 
@@ -395,7 +481,59 @@ class ChatMessage {
 
   /// Whether [userId] reacted with the emoji [key] ([Reaction.key]).
   bool reactedWith(String userId, String key) => reactions.any((r) => r.key == key && r.users.contains(userId));
+
+  /// This message with what this device's own database holds of it now, as [held] has it (an encrypted conversation's,
+  /// read again): its text, whether it was edited, waits or was shared, and its reply's quote; what else it shows
+  /// (reactions, a pin) stays. Itself when that's what it has.
+  ChatMessage heldAs(ChatMessage held) {
+    final quote = switch ((reply, held.reply)) {
+      (final shown?, final now?) when shown.content != now.content && !shown.deleted => shown.withContent(now.content),
+      _ => reply,
+    };
+    final files = _filesOf(held);
+    if (content == held.content &&
+        edited == held.edited &&
+        waiting == held.waiting &&
+        loading == held.loading &&
+        sharedBy == held.sharedBy &&
+        identical(quote, reply) &&
+        identical(files, attachments) &&
+        isVoice == held.isVoice) {
+      return this;
+    }
+    return copyWith(
+      content: held.content,
+      edited: held.edited,
+      waiting: held.waiting,
+      loading: held.loading,
+      sharedBy: held.sharedBy,
+      reply: quote,
+      attachments: files,
+      isVoice: held.isVoice,
+    );
+  }
+
+  /// The files [held] says the message has: this message's own while they're the same ones with their links, as a link
+  /// renewed here ([withAttachmentLink]) is newer than the one [held] was made with; otherwise [held]'s, each this
+  /// message already shows at a link keeping it. A message that came live before the device held its row shows none
+  /// until its row is read (mobile#404).
+  List<MessageAttachment> _filesOf(ChatMessage held) {
+    final shown = {for (final a in attachments) a.id: a};
+    MessageAttachment kept(MessageAttachment file) => switch (shown[file.id]) {
+      final mine? when mine.url.isNotEmpty || file.url.isEmpty => mine,
+      _ => file,
+    };
+    if (shown.length == held.attachments.length && held.attachments.every((a) => identical(kept(a), shown[a.id]))) {
+      return attachments;
+    }
+    return [for (final a in held.attachments) kept(a)];
+  }
 }
+
+/// What a history share's notice says (PLAN-E2E-CLIENTES.md, «La vista de una conversación»): the member its author
+/// shared the conversation's history with ([toUserId], named [toName] as the app knew them then, "you" for the
+/// reader), and how far back it went ([range]: day, week, month or all).
+typedef SharedHistoryNotice = ({String toUserId, String toName, String range});
 
 /// What a call notice says about its call: who was in it, by user ID, its
 /// caller first, then each member who joined its voice; and when it started
@@ -504,6 +642,15 @@ class MessageAttachment {
   /// Still on this device: the message carrying it is being sent.
   final bool local;
 
+  /// An encrypted conversation's file, as its message's envelope says it on this device (lib/e2e/files.dart's
+  /// shownFile): drawn only from its decrypted copy, its [url] the API's signed one of its sealed bytes, or empty when
+  /// the message's API row doesn't list it. Its [filename] is its cleaned name and its [contentType] only its sender's
+  /// word, for the layout.
+  final ShownFile? sealed;
+
+  /// A [sealed] file's thumbnail of its own: the API's signed URL of its sealed bytes.
+  final String? thumbnailUrl;
+
   const MessageAttachment({
     required this.id,
     required this.filename,
@@ -513,6 +660,8 @@ class MessageAttachment {
     this.height,
     this.sizeBytes = 0,
     this.local = false,
+    this.sealed,
+    this.thumbnailUrl,
   });
 
   /// When its link stops working: the `exp` of a link the API signed (for 24
@@ -547,6 +696,8 @@ class MessageAttachment {
     height: height,
     sizeBytes: sizeBytes,
     local: local,
+    sealed: sealed,
+    thumbnailUrl: thumbnailUrl,
   );
 
   bool get isImage => contentType.startsWith('image/');
@@ -898,6 +1049,10 @@ class SearchQuery {
 
   /// The last message of the page before: the next page starts after it.
   final String? cursor;
+
+  /// A search of this device's database (a conversation's, or every conversation's): the rows of the pages before,
+  /// which the next page starts past.
+  final int offset;
   const SearchQuery(
     this.text, {
     this.spaceId,
@@ -910,6 +1065,7 @@ class SearchQuery {
     this.before,
     this.after,
     this.cursor,
+    this.offset = 0,
   });
 
   /// Nothing to look for: the API refuses it.
@@ -923,8 +1079,8 @@ class SearchQuery {
       before == null &&
       after == null;
 
-  /// The same search, from the page after [cursor].
-  SearchQuery from(String cursor) => SearchQuery(
+  /// The same search, from the page after [cursor], or past [offset] rows of this device's.
+  SearchQuery from({String? cursor, int offset = 0}) => SearchQuery(
     text,
     spaceId: spaceId,
     conversationId: conversationId,
@@ -936,11 +1092,12 @@ class SearchQuery {
     before: before,
     after: after,
     cursor: cursor,
+    offset: offset,
   );
 }
 
-/// A page of a message search, and how many it found in all (up to 1000).
-typedef SearchPage = ({List<SearchHit> hits, int total});
+/// A page of a message search, how many it found in all (up to 1000), and where the next page starts: null at the end.
+typedef SearchPage = ({List<SearchHit> hits, int total, SearchQuery? next});
 
 /// A file the server refused as too large (HTTP 413).
 class UploadTooLarge implements Exception {
@@ -998,6 +1155,37 @@ final class MessageDeleted extends MessageEvent {
   const MessageDeleted(this.messageId);
 }
 
+/// What this device's own database holds of the chat's messages changed (an encrypted conversation's, after an apply,
+/// a send, an edit, a deletion or an import): what shows of them is read again ([ChatRepository.withContent]).
+final class ContentChanged extends MessageEvent {
+  const ContentChanged({this.imported = false});
+
+  /// A shared history, a catch-up or a day of the backup came in: rows from before the user joined that a page left out
+  /// may show now, so its pages are read again (Ruling 15; I3 of task 31's review).
+  final bool imported;
+}
+
+/// An edit or a deletion of the user's in an encrypted conversation the server refused for good: shown done on this
+/// device, it never reached the others, which the app says wherever the person is (M3 of task 17's review). A share
+/// of the conversation's history that ended for good after the person was told it went ([share]) is said the same way.
+final class ChangeRefused {
+  const ChangeRefused(this.conversationId, this.messageId, {required this.deletion, this.share = false});
+  final String conversationId;
+  final String messageId;
+  final bool deletion;
+
+  /// A share of the conversation's history the person was told went, which ended for good ([messageId]: its package).
+  final bool share;
+}
+
+/// What the start of a chat says (PLAN-E2E-CLIENTES.md, «La vista de una conversación»): a conversation from before
+/// end-to-end encryption ([legacy]) says when its older messages went ([cutoverAt], as the server gives it), and one
+/// whose rows from before the user joined it gave way says so, once ([beforeJoining]).
+typedef ChatStart = ({bool legacy, DateTime? cutoverAt, bool beforeJoining});
+
+/// A chat's start that says nothing: a room's, or a conversation's from after the cutover.
+const ChatStart quietStart = (legacy: false, cutoverAt: null, beforeJoining: false);
+
 /// Someone pinned a message, or unpinned it, here or on another device.
 final class MessagePinned extends MessageEvent {
   final String messageId;
@@ -1040,6 +1228,11 @@ final class ReactionChanged extends MessageEvent {
     this.emojiId,
   });
 }
+
+/// A conversation's message whose notice the app couldn't show, gone to the back while it waited for the message's text
+/// (DuvetRepository): for the phone's notifications, with its group's name as [place] (empty for a DM) and this
+/// device's text of it, readable ([text], null without one).
+typedef AwayNotice = ({ConversationTarget target, ChatMessage message, String place, String? text});
 
 /// A notice at the top of the app that someone mentioned the user in a chat
 /// that isn't on screen: who, where, and what they wrote. Tapping it opens

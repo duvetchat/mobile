@@ -1,6 +1,20 @@
-import 'package:duvet_client/duvet.dart' show Activity;
+import 'package:duvet_client/duvet.dart' show Activity, Device;
 import 'package:flutter/foundation.dart';
 
+import '../e2e/engine.dart'
+    show
+        BackupShown,
+        ContactsShown,
+        DeviceSetupActions,
+        DevicesAlong,
+        EngineState,
+        KnownDevice,
+        HistoryOffer,
+        KeyChange,
+        SafetyNumber,
+        SharedHistory,
+        ShownChange;
+import '../e2e/sync.dart' show ConversationState;
 import 'models.dart';
 import 'recent_chats.dart';
 import 'voice_signaling.dart';
@@ -68,6 +82,124 @@ abstract interface class ChatRepository {
   /// tell of what comes (lib/push).
   void wentToBack();
 
+  /// End-to-end encryption on this device, as its engine has it (lib/e2e/engine.dart): what the app shows of it.
+  ValueListenable<EngineState> get encryption;
+
+  /// The encrypted backup of this device's conversations, as its engine has it (lib/e2e/backup.dart): Settings →
+  /// Devices says how it is, and a new device's restore shows as it goes.
+  ValueListenable<BackupShown> get backup;
+
+  /// The person's taps on it: make a first device's identity (Set up, or Finish an upload that was cut), say its
+  /// recovery key is saved (its upload), put that upload off after it failed (Later), and set this installation up
+  /// again as a new device (a removed device, or one whose database's key is lost). Each does nothing in another state.
+  Future<void> makeIdentity();
+  Future<void> keySaved();
+  Future<void> uploadLater();
+  Future<void> startOver();
+
+  /// The user's devices, as the API lists them, this one [Device.current] (Settings → Devices, Task 25).
+  Future<List<Device>> devices();
+
+  /// The person's acts on them, each only where it can be done: remove another device (lost, with new keys whose
+  /// recovery key [encryption] then shows), change the security keys (or finish a change that waits), and remove this
+  /// device and delete its data, which signs out (decision 13). A removal and a change of keys take off along with them
+  /// only the devices their confirmation [named] ([devicesAlong]), or nothing is signed.
+  Future<void> removeDevice(String deviceId, {bool changeKeys = false, List<String> named = const []});
+  Future<void> changeKeys({List<String> named = const []});
+
+  /// A new device's setup, and the approvals this device takes part in (Task 27): the engine's acts, which refuse while
+  /// there's no engine.
+  DeviceSetupActions get deviceSetup;
+
+  /// A change of keys that waits, finished without the devices another device took off meanwhile, on the person's yes
+  /// ([EngineState.gone]; duvetchat/e2e#49).
+  Future<void> finishKeysWithout();
+  Future<void> removeThisDevice();
+
+  /// What a removal of [asked] (none: a change of keys) takes off the list beside it, which its confirmation names: the
+  /// devices an earlier removal of this device's took off that the API didn't take (review 24's M3), and those the list
+  /// names that the API no longer lists (I2 of step 4's closing review). None without an engine.
+  Future<DevicesAlong> devicesAlong([String? asked]);
+
+  /// What this device knows of one of the user's devices, which names one the API no longer lists: its name, client
+  /// and when it was added, as the API last gave them, or when this device approved it (N-M7 of step 4's closing
+  /// re-review). None without an engine, or when nothing is known.
+  KnownDevice? knownDevice(String deviceId);
+
+  /// What the engine tells of the user's other devices, in the notices' words: one added, one not seen in 45 days.
+  Stream<String> get deviceNotices;
+
+  /// Whether the API serves another server key (its external sender) than the one this device first saw: said, never
+  /// taken (Ruling 32). False without an engine.
+  ValueListenable<bool> get serverKeyChanged;
+
+  /// What each encrypted conversation says over its message box of its group (lib/e2e/sync.dart), by its ID: none
+  /// while its group goes on. A conversation on screen ([chatShown]) gets its group, made where this user may.
+  ValueListenable<Map<String, ConversationState>> get conversationStates;
+
+  /// The person's taps on it: Restart encryption, over a blocked group they may restart, and Open with these members,
+  /// over a conversation whose members aren't those this device first saw. Each does nothing in another state. A
+  /// restart answers whom it would leave out that the person hasn't said yes to ([leaving]), and restarts only when
+  /// none are left: none once it restarted.
+  Future<List<String>> restartGroup(String conversationId, {List<String> leaving = const []});
+
+  /// The yes, to [users]: the members the question named as the bar drew it to the person. One asked again since,
+  /// naming others, isn't answered by it.
+  Future<void> acceptMembers(String conversationId, List<String> users);
+
+  /// The person's contacts as the engine has them (lib/e2e/contacts.dart; Task 29): each one's changed key the person
+  /// isn't done with, and whom they verified. None without an engine.
+  ValueListenable<ContactsShown> get contacts;
+
+  /// Whether the person can compare their security number with [userId]: someone else, not a bot, whose identity the
+  /// API lets them read (a friend, or someone they share a conversation with), while encryption is ready here.
+  bool canVerify(String userId);
+
+  /// Whether the person verified [userId], once the engine looked at them as the API serves them now: a changed key
+  /// leaves its notice. False before the engine can say.
+  Future<bool> contactVerified(String userId);
+
+  /// The security number with [userId] (decision 25): its 60 digits and its QR's text. Throws the core's
+  /// `needs_identities` for someone with no identity to compare, or why it couldn't be read.
+  Future<SafetyNumber> safetyNumber(String userId);
+
+  /// The person's Mark as verified, having compared [digits]: true once the core verified [userId], false when their
+  /// number isn't those digits any more (it changed meanwhile).
+  Future<bool> verifyContact(String userId, String digits);
+
+  /// The person scanned [userId]'s code from their phone (Ruling 21): its text, as read, handed to the core, which
+  /// verifies them only if it holds the identities the code names; false when it doesn't. Throws the core's
+  /// `bad_command` for a text that isn't a security number's code.
+  Future<bool> verifyScanned(String userId, String qr);
+
+  /// The changed keys of the conversation's people, as the engine holds them: whom its group holds on this device with
+  /// those the API lists. None without an engine.
+  Future<Map<String, KeyChange>> keyChangesIn(String conversationId);
+
+  /// The person closed the notice of [userId]'s [change]: it shows no more, wherever it showed.
+  Future<void> closeKeyChange(String userId, String change);
+
+  /// The person's yes to sending, these changes known (decision 25): what waited for it goes.
+  Future<void> confirmKeyChanges(List<ShownChange> changes);
+
+  /// The shares of an encrypted conversation's history whose keys this device holds, waiting for the person's yes, by
+  /// conversation (lib/e2e/history.dart): who shared them and how far back.
+  ValueListenable<Map<String, List<HistoryOffer>>> get historyOffers;
+
+  /// The person's share of [conversationId]'s history from [range]'s start (day, week, month or all) with [userId], one
+  /// of its other members: whether it was cut to its newest messages, and from when it holds them, once the server took
+  /// it; the rest goes by itself, and a share that then ends for good is said on [changesRefused]. Refused in the app's
+  /// words ([ActionFailed]): the API's ten an hour, a member with no device to receive it.
+  Future<SharedHistory> shareHistory(String conversationId, String userId, String range);
+
+  /// The person's yes to a share of [conversationId]'s history ([historyOffers]): its messages imported into this
+  /// device. Refused in the app's words.
+  Future<void> takeHistoryOffer(String conversationId, String shareId);
+
+  /// The person's Dismiss of a share of [conversationId]'s history ([historyOffers]): it shows no more, and the server
+  /// is told this device is done with it.
+  Future<void> dismissHistoryOffer(String conversationId, String shareId);
+
   Future<void> logIn(String email, String password);
 
   Future<void> logOut();
@@ -130,7 +262,16 @@ abstract interface class ChatRepository {
 
   /// Sends a voice note: [audio] in [format] (`ogg` for Ogg/Opus). A refusal
   /// the API explains throws an [ActionFailed] with its reason.
-  Future<ChatMessage> sendVoiceNote(ChatTarget target, List<int> audio, {required String nonce, String format});
+  /// In an encrypted conversation it goes by its convention: its [waveform] (64 peaks, a byte each) and its [length]
+  /// with it, sealed as any file.
+  Future<ChatMessage> sendVoiceNote(
+    ChatTarget target,
+    List<int> audio, {
+    required String nonce,
+    String format,
+    List<int>? waveform,
+    Duration? length,
+  });
 
   /// Tells the chat the user is recording a voice note.
   Future<void> sendRecording(ChatTarget target);
@@ -454,6 +595,30 @@ abstract interface class ChatRepository {
 
   /// Joins the Space an invite leads to; answers its ID.
   Future<String> joinInvite(String code);
+
+  /// [messages] of the chat with what this device's own database holds of each now ([ChatMessage.heldAs]): an
+  /// encrypted conversation's text, edits, waiting rows and quotes (PLAN-E2E-CLIENTES.md, «La vista de una
+  /// conversación»), read again on [ContentChanged]; a room's as they are. Those it can't read now stay as they are.
+  Future<List<ChatMessage>> withContent(ChatTarget target, List<ChatMessage> messages);
+
+  /// Sends again the user's message [nonce] that waits on this device ([ChatMessage.pending]), with what the device
+  /// kept of it: the message as sent.
+  Future<ChatMessage> resend(ChatTarget target, String nonce);
+
+  /// Drops the user's message [nonce] that wasn't sent: it waits on this device no more.
+  Future<void> discard(ChatTarget target, String nonce);
+
+  /// What the chat's start says: [quietStart] for a room.
+  ChatStart chatStart(ChatTarget target);
+
+  /// Whether [target] has messages older than [oldestId], its oldest shown, though its last page came back short: a
+  /// conversation's, whose rows from before the user joined gave way while this device holds older ones, and which
+  /// reads a few of the API's pages at a time (M7 of task 17's review).
+  bool olderBeyond(ChatTarget target, String oldestId);
+
+  /// Each edit or deletion of the user's in an encrypted conversation that the server refused for good: shown done on
+  /// this device, it never reached the others, which the app says wherever the person is.
+  Stream<ChangeRefused> get changesRefused;
 
   /// Replaces the text of the user's own message.
   Future<ChatMessage> edit(ChatTarget target, String messageId, String content);

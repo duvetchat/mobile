@@ -14,6 +14,7 @@ import 'package:workmanager/workmanager.dart';
 
 import '../data/duvet_repository.dart' show DuvetRepository, duvetRouter;
 import '../data/session_store.dart';
+import '../e2e/client.dart';
 
 /// The background task's name, which registering again keeps.
 const renewalTask = 'renew-session';
@@ -35,7 +36,13 @@ bool renewalDue(DateTime? refreshedAt, DateTime now) =>
 Future<void> renewStoredSession(SessionStore store, http.Client client, ApiRouter router, DateTime now) async {
   final saved = await store.read();
   if (saved == null || saved.sessionToken.isEmpty || !renewalDue(saved.refreshedAt, now)) return;
-  final api = duvet.RestClient(client, router: router, token: saved.token, sessionToken: saved.sessionToken);
+  final api = duvet.RestClient(
+    client,
+    router: router,
+    duvetClient: duvetClient(),
+    token: saved.token,
+    sessionToken: saved.sessionToken,
+  );
   try {
     try {
       await api.refreshSession();

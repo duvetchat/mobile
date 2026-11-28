@@ -8,6 +8,19 @@ import 'package:duvet_client/http/router.dart' show ApiRouter;
 import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 
+import '../e2e/bootstrap.dart' show phoneName;
+import '../e2e/client.dart';
+import '../e2e/content.dart' show drawnRows;
+import '../e2e/conventions.dart' show Drawn, drawnAs, sniffType;
+import '../e2e/decrypted_files.dart';
+import '../e2e/engine.dart';
+import '../e2e/files.dart';
+import '../e2e/host.dart';
+import '../e2e/notices.dart';
+import '../e2e/search.dart';
+import '../e2e/send.dart' show UploadCancelled;
+import '../e2e/store.dart';
+import '../e2e/thumbnails.dart';
 import 'links.dart' show duvetDomain;
 import 'cache.dart';
 import 'call_notices.dart';
@@ -31,6 +44,107 @@ const duvetRouter = ApiRouter(
 );
 
 final _uuid = RegExp(r'^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$', caseSensitive: false);
+
+/// [messages] of an encrypted conversation's chat with what this device's own database holds of each ([held], by
+/// ID): an encrypted one as [withRow] has it, waiting for it when the database holds none; the server's notices and
+/// the user's messages still being sent as they are.
+List<ChatMessage> readFrom(
+  List<ChatMessage> messages,
+  Map<String, ShownMessage> held, {
+  required String Function(String userId) nameOf,
+  ({int? through})? applied,
+}) => [
+  for (final m in messages)
+    m.encrypted && !m.pending
+        ? withRow(m, held[m.id], nameOf: nameOf, quoted: held[m.reply?.messageId], applied: applied)
+        : m,
+];
+
+/// [messages] of an encrypted conversation's chat as the API lists them, while this device can't be read (its engine
+/// starting, waiting for an update, or locked; the read failing): each encrypted one loads, neither an empty bubble
+/// nor waiting (M1 of task 17's review).
+List<ChatMessage> notYetRead(List<ChatMessage> messages) => [
+  for (final m in messages) m.encrypted && !m.pending ? m.copyWith(content: '', waiting: false, loading: true) : m,
+];
+
+/// Whether the message numbered [seq] isn't applied on this device yet: before its conversation's first apply this
+/// run, or numbered past how far that applied. Out of the conversation's group (`through` null) it's not coming, and
+/// waits (M1 of task 17's review, the desktop's N4).
+bool notApplied(int? seq, ({int? through})? applied) => switch (applied) {
+  null => true,
+  (through: final through?) => seq != null && seq > through,
+  (through: null) => false,
+};
+
+/// [message], an encrypted conversation's as the API lists it, as this device's own database holds it ([row], null when
+/// it holds none; PLAN-E2E-CLIENTES.md, «La vista de una conversación»): its text, whether it was edited, and who
+/// shared it ([nameOf] names them); and its reply's quote, by what the database holds of that message ([quoted]). A
+/// row the database holds as waiting, or none, waits for it, with no text; one it doesn't hold that isn't applied yet
+/// ([notApplied], by how far the device [applied] the conversation's queue, read before [row]) loads instead (M2 of the
+/// desktop's task 16 review, M1 of task 17's). A row, and a quote, show only under the author the API names.
+ChatMessage withRow(
+  ChatMessage message,
+  ShownMessage? row, {
+  required String Function(String userId) nameOf,
+  ShownMessage? quoted,
+  ({int? through})? applied,
+}) {
+  // A quote's text only under the author the API names for the message it quotes (M2 of task 17's review).
+  final reply = switch ((message.reply, quoted)) {
+    (final shown?, final quote?) when quote.status == MessageStatus.ok && quote.userId == shown.authorId =>
+      shown.withContent(quote.text ?? ''),
+    _ => message.reply,
+  };
+  // A row whose author isn't the one the API names is another's message: it waits (M4 of the desktop's review).
+  if (row == null || row.status != MessageStatus.ok || row.userId != message.authorId) {
+    final loading = row == null && notApplied(message.seq, applied);
+    return message.copyWith(
+      content: '',
+      waiting: !loading,
+      loading: loading,
+      reply: reply,
+      attachments: const [],
+      isVoice: false,
+    );
+  }
+  return message.copyWith(
+    content: row.text ?? '',
+    edited: row.editedAt != null,
+    waiting: false,
+    loading: false,
+    sharedBy: switch (row.sharedBy) {
+      final user? => nameOf(user),
+      null => null,
+    },
+    reply: reply,
+    attachments: sealedAttachments(row, message.sealedLinks),
+    // A voice note by its convention (Ruling 11): no text, one audio file with its waveform and duration.
+    isVoice: drawnAs(text: row.text, attachments: row.attachments, sticker: false) == Drawn.voiceNote,
+  );
+}
+
+/// The files of an encrypted conversation's message as this device's own database holds them ([row]): each as its
+/// envelope says it, checked (shownFile), at the API's signed URL of its sealed bytes by its ID ([links], its message's
+/// API row's), or at none when that row doesn't list it, which leaves it unavailable for this message alone (task 18's
+/// review, I1).
+List<MessageAttachment> sealedAttachments(ShownMessage row, Map<String, String> links) => [
+  for (final raw in row.attachments)
+    if (shownFile(raw) case final file?)
+      MessageAttachment(
+        id: file.id,
+        filename: file.name,
+        contentType: file.said,
+        url: links[file.id] ?? '',
+        width: file.width,
+        height: file.height,
+        sizeBytes: file.size,
+        sealed: file,
+        thumbnailUrl: switch (file.thumbnailRef) {
+          final ref? => links[ref.id],
+          null => null,
+        },
+      ),
+];
 
 /// An avatar's or icon's URL on [router]'s API: the API names an attachment by its ID, served outside `/api`, as the
 /// desktop app's `getAvatarURL` does, and a webhook's avatar may be a URL. Null for none, or for anything else.
@@ -109,6 +223,10 @@ class DuvetRepository implements ChatRepository {
   // Takes a chat's phone notification away as the chat shows (lib/push); none in tests that don't ask.
   final Future<void> Function(String chatId)? _forgetNotifications;
 
+  // Shows as the phone's notification (lib/push) a conversation's notice the app couldn't show, gone to the back during
+  // its wait: its push came while the app was in front, which leaves it alone.
+  final void Function(AwayNotice notice)? _notifyAway;
+
   DuvetRepository({
     SessionStore? store,
     RecentChatsStore? recentsStore,
@@ -118,6 +236,9 @@ class DuvetRepository implements ChatRepository {
     @visibleForTesting bool? preload,
     ChatCacheStore? cacheStore,
     Future<void> Function(String chatId)? forgetNotifications,
+    void Function(AwayNotice notice)? notifyAway,
+    CoreHost Function()? encryptionHost,
+    bool Function()? onScreen,
   }) : _cache = ChatCache(cacheStore ?? FileChatCacheStore()),
        _store = store ?? const SecureSessionStore(),
        _recentsStore = recentsStore ?? const SecureRecentChatsStore(),
@@ -125,7 +246,10 @@ class DuvetRepository implements ChatRepository {
        _httpClient = httpClient ?? http.Client.new,
        _connectsGateway = connectGateway,
        _preloads = preload ?? connectGateway,
-       _forgetNotifications = forgetNotifications {
+       _forgetNotifications = forgetNotifications,
+       _notifyAway = notifyAway,
+       _encryptionHost = encryptionHost,
+       _appShown = onScreen ?? _always {
     _typing.stream.listen((e) => _setTyping(e.$1, e.$2.userId, e.$2));
     _messageEvents.stream.listen((e) {
       if (e.$2 case MessageCreated(message: ChatMessage(:final authorId?))) _setTyping(e.$1, authorId);
@@ -259,6 +383,13 @@ class DuvetRepository implements ChatRepository {
   String? lastReadOf(ChatTarget target) => _lastRead[target.id];
 
   final _messageEvents = StreamController<(String, MessageEvent)>.broadcast();
+
+  /// A chat's event, unless the repository was disposed: work begun before [dispose] (a message's content read, a
+  /// send's answer) can end after it, and a closed controller throws on add.
+  void _emitMessage((String, MessageEvent) event) {
+    if (!_messageEvents.isClosed) _messageEvents.add(event);
+  }
+
   final _typing = StreamController<(String, TypingUser)>.broadcast();
 
   // A session's client: logging out (destroying the gateway) closes its HTTP
@@ -267,6 +398,9 @@ class DuvetRepository implements ChatRepository {
   duvet.GatewayManager? _gateway;
   StreamSubscription<duvet.GatewayEventPayload>? _events;
   StoredSession? _saved;
+
+  /// What the app is, which every request and identify says (X-Duvet-Client, lib/e2e/client.dart).
+  final _client = duvetClient();
 
   @override
   final ValueNotifier<Map<String, Presence>> presence = ValueNotifier(const {});
@@ -280,6 +414,27 @@ class DuvetRepository implements ChatRepository {
   // Fetched once per session, by space or conversation ID.
   final _spaceMembers = <String, Future<List<Member>>>{};
   final _conversationMembers = <String, List<Member>>{};
+
+  /// The conversations as their chats draw them, by ID, as last listed; and whether a listing came in this session.
+  var _drawnConversations = <String, ShownConversation>{};
+  var _conversationsListed = false;
+
+  /// A conversation as its chat draws it, [fresh] from a listing made now: what the encryption engine founds a group
+  /// with when it has no record of it, and what a group it holds may hold. Null for one the app doesn't draw, as a
+  /// listing without it leaves it, and nothing goes there. Before the session's first listing is in, one is made now,
+  /// and while none can be this throws, so nothing goes either: the home a run before left isn't what's drawn (N-C1 of
+  /// step 4's closing re-review). A fresh listing that fails leaves what the app still draws.
+  Future<ShownConversation?> _drawnConversation(String conversationId, {required bool fresh}) async {
+    if (fresh || !_conversationsListed) {
+      try {
+        await refreshConversations();
+      } catch (error) {
+        if (!_conversationsListed) rethrow;
+        debugPrint('conversations: $error');
+      }
+    }
+    return _drawnConversations[conversationId];
+  }
 
   // The user's Spaces' emojis and stickers, all of them; fetched again once any change.
   Future<List<CustomEmoji>>? _emojis;
@@ -347,18 +502,30 @@ class DuvetRepository implements ChatRepository {
     // read for nothing; a read that fails gives none, and throws nothing.
     final homeLoading = _cache.loadHome();
     final saved = await _store.read();
+    final home = await homeLoading;
+    // The pages of conversations a version before this one kept, their text
+    // in the clear, go before anything shows: only rooms' are kept now.
+    await _cache.keepRoomPages({
+      for (final space in home?.spaces ?? const <Space>[])
+        for (final room in space.rooms) room.id,
+    });
     if (saved == null) return false;
     // What was kept draws the lists at once, until the API and the gateway
     // answer ([_publishSpaces] keeps the Spaces READY names until each comes).
     // Before [_start], whose profile saves the home with them, not empty.
-    final home = await homeLoading;
     if (home != null) {
       conversations.value = home.conversations;
       spaces.value = home.spaces;
       // Theirs until READY names them: a list published before it keeps them.
       _spaceOrder = [for (final s in home.spaces) s.id];
     }
-    _api = duvet.RestClient(_httpClient(), router: _router, token: saved.token, sessionToken: saved.sessionToken);
+    _api = duvet.RestClient(
+      _httpClient(),
+      router: _router,
+      duvetClient: _client,
+      token: saved.token,
+      sessionToken: saved.sessionToken,
+    );
     _saved = saved;
     if (home != null && saved.userId == home.profile.id) {
       // The session's own home: it shows now, and the session starts behind
@@ -390,7 +557,13 @@ class DuvetRepository implements ChatRepository {
       _closeSession();
       if (home == null) rethrow;
       final tokens = _saved ?? saved;
-      _api = duvet.RestClient(_httpClient(), router: _router, token: tokens.token, sessionToken: tokens.sessionToken);
+      _api = duvet.RestClient(
+        _httpClient(),
+        router: _router,
+        duvetClient: _client,
+        token: tokens.token,
+        sessionToken: tokens.sessionToken,
+      );
       profile.value = home.profile;
       conversations.value = home.conversations;
       spaces.value = home.spaces;
@@ -488,9 +661,9 @@ class DuvetRepository implements ChatRepository {
     _closeSession();
     // Another session's, if a start left one: whose it was isn't whose this is.
     _saved = null;
-    final api = _api = duvet.RestClient(_httpClient(), router: _router);
+    final api = _api = duvet.RestClient(_httpClient(), router: _router, duvetClient: _client);
     try {
-      await api.logIn(email, password);
+      _keepChallenge(await api.logIn(email, password));
       await _start();
     } catch (_) {
       _closeSession();
@@ -514,6 +687,7 @@ class DuvetRepository implements ChatRepository {
       final renewed = duvet.RestClient(
         _httpClient(),
         router: _router,
+        duvetClient: _client,
         token: stored.token,
         sessionToken: stored.sessionToken,
       );
@@ -559,6 +733,9 @@ class DuvetRepository implements ChatRepository {
     unawaited(_conversationsLoaded = refreshConversations().catchError((Object e) => debugPrint('conversations: $e')));
     _renewals?.cancel();
     _renewals = Timer.periodic(renewalCheck, (_) => _renewQuietly(renewAfter));
+    // Before the gateway connects: its identify names the device this installation registered for the user.
+    await _prepareEncryption(me.id);
+    if (closed != _sessionsClosed) return;
     if (_connectsGateway) _connectGateway();
     await _noteOwner(me.id);
   }
@@ -600,10 +777,15 @@ class DuvetRepository implements ChatRepository {
     _closeSession();
     _saved = null;
     await _store.clear();
+    // Nor a decrypted file, its engine stopped: the copies set aside to share, and share_plus's of them (mobile#354).
+    await DecryptedFiles.instance.emptyAtStart().catchError(
+      (Object error) => debugPrint("e2e: the decrypted files weren't emptied at a sign-out: $error"),
+    );
   }
 
   void _closeSession() {
     _sessionsClosed++;
+    _stopEncryption();
     _profileKept = false;
     _shownBeforeReady = false;
     _keptLoadedFor = null;
@@ -660,6 +842,8 @@ class DuvetRepository implements ChatRepository {
     teamInvites.value = const [];
     _answeredInvites.clear();
     _conversationMembers.clear();
+    _drawnConversations = {};
+    _conversationsListed = false;
     _names.clear();
     _authors.clear();
     _emojiNames.clear();
@@ -742,20 +926,14 @@ class DuvetRepository implements ChatRepository {
     final adopted = _api = duvet.RestClient(
       _httpClient(),
       router: _router,
+      duvetClient: _client,
       token: stored.token,
       sessionToken: stored.sessionToken,
     );
     _adoptedFrom = failed;
     _adoptedInto = adopted;
     if (_gateway case final gateway?) {
-      for (final sub in [_events, _states, _resumes, _closes, _failures]) {
-        unawaited(sub?.cancel());
-      }
-      _voiceSignaling.detach();
-      // Destroying it closes the old client's HTTP client too.
-      gateway.destroy();
-      _gateway = null;
-      _connectGateway();
+      _replaceGateway(gateway);
     } else {
       failed.client.close();
     }
@@ -872,6 +1050,11 @@ class DuvetRepository implements ChatRepository {
   @override
   void cameToFront() {
     _inFront = true;
+    // What was told of the user's devices out of sight shows now: no push tells of it (review 25's M1).
+    final away = [..._devicesToldAway];
+    _devicesToldAway.clear();
+    away.forEach(_showDeviceNotice);
+    unawaited(_startEncryption());
     final renewing = _renewQuietly(renewInFrontAfter);
     if (status.value == LiveStatus.online) return;
     // Cut off while away. Connecting goes again now, not at the end of its
@@ -887,6 +1070,832 @@ class DuvetRepository implements ChatRepository {
       // gateway would refuse, and the wait after it grow.
       unawaited(renewing.whenComplete(() => _gateway?.retryNow()));
     }
+  }
+
+  // ---------------------------------------------------------------------------
+  // End-to-end encryption (lib/e2e)
+  // ---------------------------------------------------------------------------
+
+  /// Makes the core's host of each session's engine (main's: a gate of the app's), so an engine stopping late closes
+  /// no other's core; none in tests, which run no engine.
+  final CoreHost Function()? _encryptionHost;
+
+  /// Whether the app is on a screen. The engine runs only in the engine with one (PLAN-E2E-CLIENTES.md, Android: the
+  /// engine that has the core): main() runs on audio_service's engine too, which may start with none, and the engine
+  /// then waits for the app to come to the front.
+  final bool Function() _appShown;
+  static bool _always() => true;
+
+  @override
+  final ValueNotifier<EngineState> encryption = ValueNotifier(EngineState.starting);
+
+  @override
+  final ValueNotifier<BackupShown> backup = ValueNotifier(BackupShown.uploading);
+
+  /// The gateway's events for the engine, across the session's gateways.
+  final _gatewayEvents = StreamController<duvet.GatewayEventPayload>.broadcast();
+
+  E2EEngine? _engine;
+  var _engineComing = false;
+
+  // The engine before this one letting go of the app's gate: the next opens it once it has, 3 s at most.
+  Future<void> _engineStopped = Future.value();
+
+  // Whose session the engine is for, and their record, once read: an engine waiting for the screen starts from it.
+  ({String user, EngineStore store})? _encryptionFor;
+
+  // The login's device_challenge and when it came, kept in memory for the session's first binding
+  // (PLAN-E2E-CLIENTES.md, Task 13).
+  ({String challenge, DateTime at})? _loginChallenge;
+
+  void _keepChallenge(duvet.SignIn signIn) => _loginChallenge = switch (signIn.deviceChallenge) {
+    final challenge? => (challenge: challenge, at: clock.now()),
+    null => null,
+  };
+
+  // Ruling 30: the device each identify names (the record's, then the one the engine registers), whether this
+  // gateway identified yet, the device the latest identify named, and the one its session was identified with.
+  String? _identifyDevice;
+  var _identified = false;
+  String? _sentDevice;
+  String? _sessionDevice;
+
+  @override
+  Future<void> makeIdentity() => _engine?.makeIdentity() ?? Future.value();
+
+  @override
+  Future<void> keySaved() => _engine?.keySaved() ?? Future.value();
+
+  @override
+  Future<void> uploadLater() => _engine?.uploadLater() ?? Future.value();
+
+  @override
+  Future<void> startOver() => _engine?.startOver() ?? Future.value();
+
+  @override
+  Future<List<duvet.Device>> devices() async {
+    final listed = await duvet.E2eApi(_SessionRest(this)).devices();
+    // Kept beside what's known of others, which names one the API no longer lists (N-M7 of step 4's closing re-review).
+    if (_engine case final engine?) unawaited(engine.noteDevices(listed));
+    return listed;
+  }
+
+  @override
+  KnownDevice? knownDevice(String deviceId) => _engine?.knownDevice(deviceId);
+
+  @override
+  Future<void> removeDevice(String deviceId, {bool changeKeys = false, List<String> named = const []}) async =>
+      (_engine ?? (throw ActionFailed(Notice.notReady.text))).removeDevice(
+        deviceId,
+        changeKeys: changeKeys,
+        named: named,
+      );
+
+  @override
+  Future<void> changeKeys({List<String> named = const []}) async =>
+      (_engine ?? (throw ActionFailed(Notice.notReady.text))).changeKeys(named: named);
+
+  @override
+  DeviceSetupActions get deviceSetup => _engine ?? const _NoSetup();
+
+  @override
+  Future<void> finishKeysWithout() async => (_engine ?? (throw ActionFailed(Notice.notReady.text))).finishKeysWithout();
+
+  /// The engine deletes this device's data, then the session ends as a sign-out ends it (decision 13), and the folder
+  /// of files it decrypted is emptied whole, the copies set aside to share and share_plus's of them too
+  /// (lib/e2e/decrypted_files.dart).
+  @override
+  Future<void> removeThisDevice() async {
+    await (_engine ?? (throw ActionFailed(Notice.notReady.text))).removeThisDevice();
+    await logOut();
+    await DecryptedFiles.instance.emptyAtStart().catchError(
+      (Object error) => debugPrint("e2e: this device's decrypted files weren't emptied: $error"),
+    );
+  }
+
+  @override
+  Future<DevicesAlong> devicesAlong([String? asked]) async =>
+      await _engine?.devicesAlong(asked) ?? (unsent: const <String>[], unregistered: const <String>[]);
+
+  final _deviceNotices = StreamController<String>.broadcast();
+
+  @override
+  Stream<String> get deviceNotices => _deviceNotices.stream;
+
+  // The device notices told while the app was out of sight, each once, for its return to the front.
+  final _devicesToldAway = <String>{};
+
+  void _toldOfDevice(DeviceNotice notice) {
+    final text = switch (notice.kind) {
+      DeviceNoticeKind.added => Notice.deviceAdded.fill({'name': notice.device.name}),
+      DeviceNoticeKind.inactive => Notice.inactiveWarning.fill({'device': notice.device.name}),
+    };
+    if (_inFront) return _showDeviceNotice(text);
+    _devicesToldAway.add(text);
+  }
+
+  void _showDeviceNotice(String text) {
+    if (!_deviceNotices.isClosed) _deviceNotices.add(text);
+  }
+
+  @override
+  final ValueNotifier<Map<String, ConversationState>> conversationStates = ValueNotifier(const {});
+
+  @override
+  Future<List<String>> restartGroup(String conversationId, {List<String> leaving = const []}) =>
+      _engine?.restartGroup(conversationId, leaving: leaving) ?? Future.value(const []);
+
+  @override
+  Future<void> acceptMembers(String conversationId, List<String> users) =>
+      _engine?.acceptMembers(conversationId, users) ?? Future.value();
+
+  // ---------------------------------------------------------------------------
+  // Contacts (lib/e2e/contacts.dart; Task 29)
+  // ---------------------------------------------------------------------------
+
+  @override
+  final ValueNotifier<ContactsShown> contacts = ValueNotifier(ContactsShown.none);
+
+  void _showContacts() {
+    if (_engine case final engine?) contacts.value = engine.contacts.value;
+  }
+
+  @override
+  bool canVerify(String userId) =>
+      userId != profile.value?.id &&
+      encryption.value.stage == EngineStage.ready &&
+      (friends.value.friends.any((friend) => friend.userId == userId) ||
+          _conversationMembers.values.any((members) => members.any((m) => m.userId == userId && !m.isBot)));
+
+  @override
+  Future<bool> contactVerified(String userId) async => await _engine?.contact(userId) ?? false;
+
+  @override
+  Future<SafetyNumber> safetyNumber(String userId) =>
+      (_engine ?? (throw ActionFailed(Notice.notReady.text))).safetyNumber(userId);
+
+  @override
+  Future<bool> verifyContact(String userId, String digits) =>
+      (_engine ?? (throw ActionFailed(Notice.notReady.text))).verifyContact(userId, digits);
+
+  @override
+  Future<bool> verifyScanned(String userId, String qr) =>
+      (_engine ?? (throw ActionFailed(Notice.notReady.text))).verifyScanned(userId, qr);
+
+  @override
+  Future<Map<String, KeyChange>> keyChangesIn(String conversationId) async =>
+      await _engine?.keyChangesIn(conversationId) ?? const {};
+
+  @override
+  Future<void> closeKeyChange(String userId, String change) async => _engine?.closeKeyChange(userId, change);
+
+  @override
+  Future<void> confirmKeyChanges(List<ShownChange> changes) async => _engine?.confirmKeyChanges(changes);
+
+  @override
+  final ValueNotifier<Map<String, List<HistoryOffer>>> historyOffers = ValueNotifier(const {});
+
+  // Shares and imports are the session's engine's, the app's on a screen (Review Focus 2): without one, nothing goes.
+  @override
+  Future<SharedHistory> shareHistory(String conversationId, String userId, String range) async {
+    final engine = _engine;
+    if (engine == null || engine.state.value.stage != EngineStage.ready) throw ActionFailed(Notice.notReady.text);
+    try {
+      return await engine.shareHistory(conversationId, userId, range);
+    } on NoDeviceToShareWith {
+      throw ActionFailed(Notice.shareHistoryNoDevice.fill({'name': nameOf(userId) ?? 'Someone'}));
+    } on ShareLimit catch (e) {
+      // The API's ten an hour, and when one frees: its Retry-After, a minute at least, in whole minutes, as the
+      // desktop says it.
+      final minutes = (e.wait.inSeconds + 59) ~/ 60;
+      throw ActionFailed(Notice.shareHistoryLimit.fill({'when': minutes == 1 ? 'in 1 minute' : 'in $minutes minutes'}));
+    } on duvet.DuvetApiException catch (e) {
+      debugPrint("e2e: a conversation's history wasn't shared: ${e.statusCode}");
+      throw ActionFailed(Notice.shareHistoryFailed.text);
+    } catch (e) {
+      if (e is ActionFailed) rethrow;
+      debugPrint("e2e: a conversation's history wasn't shared: ${e.runtimeType}");
+      throw ActionFailed(Notice.shareHistoryFailed.text);
+    }
+  }
+
+  @override
+  Future<void> takeHistoryOffer(String conversationId, String shareId) async {
+    final engine = _engine;
+    if (engine == null) throw ActionFailed(Notice.notReady.text);
+    try {
+      await engine.takeHistoryOffer(shareId);
+    } catch (e) {
+      debugPrint("e2e: a shared history wasn't added: ${e.runtimeType}");
+      throw ActionFailed(Notice.sharedAddFailed.text);
+    }
+  }
+
+  @override
+  Future<void> dismissHistoryOffer(String conversationId, String shareId) async =>
+      _engine?.dismissHistoryOffer(shareId);
+
+  /// The conversation on screen, whose group the engine opens: at once, or once it's made and ready.
+  String? _conversationOnScreen;
+
+  /// The user's membership of each conversation, by its ID (a UUIDv7, as a message's), and those from before the
+  /// cutover, as the conversations' list gives them; and the conversations whose rows from before the user joined
+  /// gave way: what each chat's start says ([chatStart]).
+  final _joinedAs = <String, String>{};
+  final _legacyConversations = <String>{};
+  final _beforeJoining = <String>{};
+
+  /// What the session's engine tells of its conversations' messages.
+  final _engineHeard = <StreamSubscription<Object?>>[];
+
+  final _changesRefused = StreamController<ChangeRefused>.broadcast();
+
+  @override
+  Stream<ChangeRefused> get changesRefused => _changesRefused.stream;
+
+  // The user's record, and the device it kept, which the gateway's identify names; then the engine, once on a screen.
+  Future<void> _prepareEncryption(String userId) async {
+    if (_encryptionHost == null || _encryptionFor?.user == userId) return;
+    try {
+      final store = await FileEngineStore.open(userId);
+      _identifyDevice = switch (store.read(keptDevice)) {
+        final String device => device,
+        _ => null,
+      };
+      _encryptionFor = (user: userId, store: store);
+    } catch (error) {
+      debugPrint("e2e: the engine's record: $error");
+      return;
+    }
+    unawaited(_startEncryption());
+  }
+
+  Future<void> _startEncryption() async {
+    final makeHost = _encryptionHost;
+    final session = _encryptionFor;
+    if (makeHost == null || session == null || _engine != null || _engineComing || !_appShown()) return;
+    _engineComing = true;
+    try {
+      final name = await phoneName();
+      await _engineStopped.timeout(const Duration(seconds: 3), onTimeout: () {});
+      // Signed out, or another account, meanwhile.
+      if (!identical(session, _encryptionFor)) return;
+      // What a run before this one decrypted goes, as this engine with a screen starts (Ruling 19).
+      await DecryptedFiles.instance.emptyAtStart().catchError(
+        (Object error) => debugPrint("e2e: the decrypted files of before weren't emptied: $error"),
+      );
+      if (!identical(session, _encryptionFor)) return;
+      final challenge = _loginChallenge;
+      _loginChallenge = null;
+      final engine = _engine = E2EEngine(
+        host: makeHost(),
+        api: duvet.E2eApi(_SessionRest(this)),
+        events: _gatewayEvents.stream,
+        store: session.store,
+        clock: const SystemClock(),
+        user: session.user,
+        deviceName: name,
+        registered: _deviceRegistered,
+        loginChallenge: challenge,
+        shown: _drawnConversation,
+      );
+      engine.state.addListener(_showEncryption);
+      engine.conversations.addListener(_showConversations);
+      engine.serverKeyChanged.addListener(_showServerKey);
+      engine.contacts.addListener(_showContacts);
+      _showContacts();
+
+      engine.historyOffers.addListener(_showOffers);
+      engine.backup.addListener(_showBackup);
+      // Only this engine, the app's with a screen, opens a conversation's files (Review Focus 2).
+      DecryptedFiles.instance.useOpener(_FileOpener(this, engine));
+      _engineHeard.addAll([
+        engine.deviceNotices.listen(_toldOfDevice),
+        engine.messagesChanged.listen(_contentChanged),
+        engine.messagesDeleted.listen((deleted) => deleted.ids.forEach(DecryptedFiles.instance.forgetMessage)),
+        engine.sent.listen(_sentElsewhere),
+        engine.changesRefused.listen(
+          (refused) => _changesRefused.add(
+            ChangeRefused(
+              refused.conversationId,
+              refused.messageId,
+              deletion: refused.kind == 'delete',
+              share: refused.kind == 'share',
+            ),
+          ),
+        ),
+        engine.historiesImported.listen((id) => _emitMessage((id, const ContentChanged(imported: true)))),
+      ]);
+      unawaited(engine.start());
+      if (_conversationOnScreen case final id?) unawaited(engine.openConversation(id).catchError(_groupFailed));
+    } finally {
+      _engineComing = false;
+    }
+  }
+
+  void _showEncryption() {
+    if (_engine case final engine?) {
+      final was = encryption.value.stage;
+      encryption.value = engine.state.value;
+      if (engine.state.value.stage == EngineStage.ready && was != EngineStage.ready) _deviceReady();
+    }
+  }
+
+  void _showConversations() {
+    if (_engine case final engine?) conversationStates.value = engine.conversations.value;
+  }
+
+  @override
+  final ValueNotifier<bool> serverKeyChanged = ValueNotifier(false);
+
+  void _showServerKey() {
+    if (_engine case final engine?) serverKeyChanged.value = engine.serverKeyChanged.value;
+  }
+
+  void _showOffers() {
+    if (_engine case final engine?) historyOffers.value = engine.historyOffers.value;
+  }
+
+  void _showBackup() {
+    if (_engine case final engine?) backup.value = engine.backup.value;
+  }
+
+  void _groupFailed(Object error) => debugPrint("e2e: the conversation's group didn't open: $error");
+
+  // The session ended: its engine closes the core, whose database stays (decision 13).
+  void _stopEncryption() {
+    final engine = _engine;
+    _engine = null;
+    _encryptionFor = null;
+    _loginChallenge = null;
+    _identifyDevice = null;
+    encryption.value = EngineState.starting;
+    conversationStates.value = const {};
+    serverKeyChanged.value = false;
+    contacts.value = ContactsShown.none;
+
+    historyOffers.value = const {};
+    backup.value = BackupShown.uploading;
+    for (final heard in _engineHeard) {
+      unawaited(heard.cancel());
+    }
+    _engineHeard.clear();
+    _beforeJoining.clear();
+    // Every decrypted file goes with the session's engine.
+    DecryptedFiles.instance.useOpener(null);
+    if (engine == null) return;
+    engine.state.removeListener(_showEncryption);
+    engine.conversations.removeListener(_showConversations);
+    engine.serverKeyChanged.removeListener(_showServerKey);
+    engine.contacts.removeListener(_showContacts);
+
+    engine.historyOffers.removeListener(_showOffers);
+    engine.backup.removeListener(_showBackup);
+    _engineStopped = engine.stop().catchError((Object error) => debugPrint("e2e: the engine's stop: $error"));
+  }
+
+  /// Whether a gateway session must start again so its identify names [device] (Ruling 30): not when its session was
+  /// identified with it, nor when an identify naming it is on its way (a new one, whose READY says so), nor before
+  /// the gateway's first identify, which reads it.
+  @visibleForTesting
+  static bool reopensFor(String device, {required bool identified, String? sent, String? session}) =>
+      identified && device != session && device != sent;
+
+  // The engine registered this installation's device for the user, or bound this session to it.
+  void _deviceRegistered(String device) {
+    _identifyDevice = device;
+    if (reopensFor(device, identified: _identified, sent: _sentDevice, session: _sessionDevice)) _reopenGateway();
+  }
+
+  // Ruling 30: a gateway session identified without the device starts again, once, as a new one, which names it: a
+  // resumed session keeps the device its first identify named. The manager can't drop its socket, and destroying it
+  // closes the client's HTTP client, so a client with the session's tokens takes its place first, as taking up a
+  // stored session does (_adoptStoredSession), and a request the old one had on its way goes once more.
+  void _reopenGateway() {
+    final (api, gateway) = (_api, _gateway);
+    if (api == null || gateway == null) return;
+    final next = _api = duvet.RestClient(
+      _httpClient(),
+      router: _router,
+      duvetClient: _client,
+      token: api.token,
+      sessionToken: api.sessionToken,
+    );
+    _adoptedFrom = api;
+    _adoptedInto = next;
+    _replaceGateway(gateway);
+  }
+
+  // A new gateway in the place of [gateway], on the session's client as it is now.
+  void _replaceGateway(duvet.GatewayManager gateway) {
+    for (final sub in [_events, _states, _resumes, _closes, _failures]) {
+      unawaited(sub?.cancel());
+    }
+    _voiceSignaling.detach();
+    // Destroying it closes the old client's HTTP client too.
+    gateway.destroy();
+    _gateway = null;
+    _connectGateway();
+  }
+
+  // ---------------------------------------------------------------------------
+  // Encrypted conversations' messages (PLAN-E2E-CLIENTES.md, «Enviar», «La vista de una conversación»)
+  // ---------------------------------------------------------------------------
+
+  /// What this device's own database holds of these messages of the conversation, by ID: null while it can't be read
+  /// (no engine on a screen, or one not ready), and then nothing is said of them. Only the engine of the app on a
+  /// screen reads them (Review Focus 2).
+  Future<Map<String, ShownMessage>?> _held(String conversationId, Iterable<String> ids) async {
+    final engine = _engine;
+    if (engine == null || engine.state.value.stage != EngineStage.ready) return null;
+    final wanted = {
+      for (final id in ids)
+        if (_uuid.hasMatch(id)) id,
+    };
+    if (wanted.isEmpty) return const {};
+    try {
+      return {
+        for (final row in await engine.messages(conversationId, [...wanted])) ?row.messageId: row,
+      };
+    } catch (error) {
+      debugPrint("e2e: a conversation's messages weren't read from this device: $error");
+      return null;
+    }
+  }
+
+  /// The conversation's messages as the API lists them ([raw]), each encrypted one as this device's own database
+  /// holds it ([withRow]), the server's notices as they are. [drop]: a chat's page, whose encrypted rows from before
+  /// the user joined that the device doesn't hold give way to the notice at its start (Ruling 15). With the database
+  /// unread, they're as the API lists them, and the chats read them again once it can be ([ContentChanged]).
+  Future<List<ChatMessage>> _contentOf(
+    String conversationId,
+    List<duvet.DirectMessage> raw, {
+    bool drop = false,
+    void Function()? dropped,
+  }) async {
+    final listed = [
+      for (final m in raw)
+        if (_directMessage(m) case final drawn?) _asSent(drawn),
+    ];
+    final applied = _engine?.appliedThrough(conversationId);
+    final held = await _held(conversationId, [
+      for (final m in listed)
+        if (m.encrypted) ...[m.id, ?m.reply?.messageId],
+    ]);
+    // Unread, they load: the chat reads them again once the device can be read ([ContentChanged]), and Ruling 15 then
+    // drops what it doesn't hold from before the user joined (I5 of task 17's review).
+    if (held == null) return notYetRead(listed);
+    var rows = listed;
+    if (drop) {
+      final drawn = drawnRows(
+        listed,
+        _joinedAs[conversationId],
+        idOf: (m) => m.id,
+        encrypted: (m) => m.encrypted,
+        held: held.containsKey,
+      );
+      if (drawn.beforeJoining) {
+        _beforeJoining.add(conversationId);
+        dropped?.call();
+      }
+      rows = drawn.rows;
+    }
+    return readFrom(rows, held, nameOf: _sharerName, applied: applied);
+  }
+
+  String _sharerName(String userId) => nameOf(userId) ?? 'Someone';
+
+  /// [message], a conversation's as the API has it, under the nonce the person sent it with when it's theirs and was
+  /// made again under another: the chat knows it by that one, live, on a page, a catch-up or a fetch (I1 of task 17's
+  /// review, N1 of its re-review).
+  ChatMessage _asSent(ChatMessage message) => switch (message.nonce) {
+    final nonce? => message.copyWith(nonce: _engine?.firstNonceOf(nonce) ?? nonce),
+    null => message,
+  };
+
+  /// The user's messages this device still sends in the conversation, for its chat's end as failed sends with Retry
+  /// and Dismiss: their text as the device keeps it, their reply's quote from [page] when it has that message.
+  Future<List<ChatMessage>> _pendingIn(String conversationId, List<ChatMessage> page) async {
+    final engine = _engine;
+    if (engine == null || engine.state.value.stage != EngineStage.ready) return const [];
+    final List<Pending> waiting;
+    try {
+      waiting = await engine.pendingMessages(conversationId);
+    } catch (error) {
+      debugPrint("e2e: the messages waiting to be sent weren't read from this device: $error");
+      return const [];
+    }
+    final me = profile.value;
+    // One the page lists already went, its copy there under the person's nonce (N1 of task 17's re-review).
+    final listed = {for (final m in page) ?m.nonce};
+    return [
+      for (final (:nonce, :row, :replyTo, :mentionReplied, :stickerAttachmentId) in waiting)
+        if (nonce != null && !listed.contains(nonce))
+          ChatMessage(
+            id: 'pending:$nonce',
+            authorId: me?.id,
+            authorName: me?.displayName ?? '',
+            authorAvatarUrl: me?.avatarUrl,
+            content: row.text ?? '',
+            createdAt: DateTime.fromMillisecondsSinceEpoch(row.sentAt),
+            nonce: nonce,
+            // Its files by their names only: they're on their way, or (the app started again) gone for good, which
+            // its row says at once, with Dismiss alone (task 18's review, M5).
+            attachments: [
+              for (final (i, raw) in row.attachments.indexed)
+                if (shownFile(raw) case final file?)
+                  MessageAttachment(
+                    id: 'pending:$nonce:$i',
+                    filename: file.name,
+                    contentType: 'application/octet-stream',
+                    url: '',
+                    sizeBytes: file.size,
+                    local: true,
+                  ),
+            ],
+            filesGone: row.attachments.isNotEmpty && !engine.holdsFiles(nonce),
+            stickerUrl: stickerAttachmentId == null ? null : attachmentUrl(stickerAttachmentId),
+            reply: switch (replyTo) {
+              final id? => switch (page.where((m) => m.id == id).firstOrNull) {
+                final original? => MessageReply(
+                  messageId: id,
+                  authorId: original.authorId,
+                  authorName: original.authorName,
+                  content: original.content,
+                  mentionAuthor: mentionReplied ?? false,
+                ),
+                null => MessageReply(messageId: id, authorName: 'Someone', content: ''),
+              },
+              null => null,
+            },
+            pending: true,
+          ),
+    ];
+  }
+
+  /// The user's message to an encrypted conversation, through the engine: encrypted, its [files] sealed, sent after
+  /// what waits there, and drawn from this device's database. A file past its cap once sealed, or files past the
+  /// request's 32 MiB together, aren't sent ([UploadTooLarge]); [onProgress] follows the upload, and completing
+  /// [cancel] stops it and lets the message go («Cancelar una subida es discard»).
+  Future<ChatMessage> _sendEncrypted(
+    String conversationId,
+    String content,
+    String nonce, {
+    required Sticker? sticker,
+    required String? replyTo,
+    required bool? mentionReplied,
+    List<FileToSeal> files = const [],
+    void Function(int sent, int total)? onProgress,
+    Future<void>? cancel,
+  }) async {
+    final engine = _engine ?? (throw ActionFailed(Notice.notReady.text));
+    if (files.isNotEmpty) {
+      final sizes = [for (final f in files) f.bytes.length];
+      if (tooLargeToSend(sizes, fileLimit: await _sealedLimit())) throw const UploadTooLarge();
+    }
+    cancel?.then((_) async {
+      try {
+        await engine.discardMessage(conversationId, nonce);
+      } catch (error) {
+        debugPrint("e2e: a cancelled upload's message wasn't let go: $error");
+      }
+    });
+    return _sentMessage(
+      conversationId,
+      nonce,
+      () => engine.sendMessage(
+        Outgoing(
+          conversationId: conversationId,
+          nonce: nonce,
+          text: content.isEmpty ? null : content,
+          replyTo: replyTo,
+          mentionReplied: mentionReplied,
+          stickerAttachmentId: sticker?.attachmentId,
+          files: files,
+        ),
+        onProgress: onProgress,
+        cancel: cancel,
+      ),
+    );
+  }
+
+  /// Why nothing can be sent in the conversation now, as its state bar says it; else the device isn't ready.
+  String _cannotSendIn(String conversationId) {
+    final state = _engine?.conversationState(conversationId);
+    final owner = {'owner': nameOf(state?.owner ?? '') ?? ''};
+    return switch (state?.name) {
+      ConversationNotice.blocked => Notice.blocked.text,
+      ConversationNotice.waitOwner => Notice.waitOwner.fill(owner),
+      ConversationNotice.waitRejoin => Notice.waitRejoin.text,
+      ConversationNotice.membersChanged || ConversationNotice.groupDiffers => Notice.membersChanged.text,
+      ConversationNotice.noDevice || null => Notice.notReady.text,
+    };
+  }
+
+  /// A message of the user's the engine sends ([send]), as the chat shows it once the API took it; the pause, an
+  /// update and a text too long for one message say so in their own words (PLAN-E2E-CLIENTES.md, «Avisos»).
+  Future<ChatMessage> _sentMessage(
+    String conversationId,
+    String nonce,
+    Future<duvet.DirectMessage?> Function() send,
+  ) async {
+    final duvet.DirectMessage? sent;
+    try {
+      sent = await send();
+    } on duvet.DuvetPausedException {
+      throw ActionFailed(Notice.paused.text);
+    } on duvet.DuvetUpdateRequiredException {
+      throw ActionFailed(Notice.update.text);
+    } on CoreError catch (error) {
+      if (error.code == 'too_large') throw ActionFailed(Notice.tooLong.text);
+      // A verified contact's changed key (`key_changed`, with whom) goes on as it is: the chat says it in their names.
+      rethrow;
+    } on TooManyWaiting {
+      throw ActionFailed(Notice.tooManyWaiting.text);
+    } on FilesGone {
+      throw ActionFailed(Notice.filesGone.text);
+    } on UploadCancelled {
+      rethrow;
+    } on StateError {
+      // The engine isn't ready here, or the conversation's group can't take a message now: nothing was kept, and the
+      // words are the state bar's (M8 of task 17's review).
+      throw ActionFailed(_cannotSendIn(conversationId));
+    }
+    if (sent != null) return (await _contentOf(conversationId, [sent])).single;
+    // Its copy came back from the queue before any answer did: it went, as the device holds it under its nonce.
+    final mine = await _engine?.sentUnder(conversationId, nonce);
+    final id = mine?.messageId;
+    if (mine == null || id == null) throw StateError('the message went, and this device holds none under its nonce');
+    // The API's copy of it, by the ID it went under, as a Dismiss shows it: its number, so the device's reads keep it,
+    // and the message it answers (N4 of task 17's re-review). Offline, the device's row, with both.
+    try {
+      return (await fetchMessage(ConversationTarget(conversationId), id)).copyWith(nonce: nonce);
+    } catch (error) {
+      debugPrint("e2e: the API's copy of a message that went wasn't read: $error");
+    }
+    final me = profile.value;
+    return ChatMessage(
+      id: id,
+      authorId: me?.id,
+      authorName: me?.displayName ?? '',
+      authorAvatarUrl: me?.avatarUrl,
+      content: mine.text ?? '',
+      createdAt: DateTime.fromMillisecondsSinceEpoch(mine.sentAt),
+      edited: mine.editedAt != null,
+      nonce: nonce,
+      seq: mine.seq,
+      reply: switch (mine.replyTo) {
+        final quoted? => MessageReply(messageId: quoted, authorName: '', content: ''),
+        null => null,
+      },
+    );
+  }
+
+  /// An edit of the user's message: this device's database shows it at once, and the engine sends it. The chat waits
+  /// for the engine to take it (made and shown here) or refuse it, never for its request's answer; refused while the
+  /// group can't take it, it says why in the words the conversation's bar uses, as a send does.
+  Future<ChatMessage> _editEncrypted(String conversationId, String messageId, String content) async {
+    final engine = _engine ?? (throw ActionFailed(Notice.notReady.text));
+    final taken = Completer<void>();
+    final sent = engine.editMessage(conversationId, messageId, content, taken: taken.complete);
+    try {
+      await Future.any([taken.future, sent]);
+    } on StateError {
+      throw ActionFailed(_cannotSendIn(conversationId));
+    }
+    // Its request's end: a refusal for good reaches the person through changesRefused.
+    unawaited(sent.then<void>((_) {}, onError: (Object error) => debugPrint("e2e: an edit's request ended: $error")));
+    final me = profile.value;
+    return ChatMessage(
+      id: messageId,
+      authorId: me?.id,
+      authorName: me?.displayName ?? '',
+      content: content,
+      createdAt: clock.now(),
+      edited: true,
+    );
+  }
+
+  /// A conversation's message the user deletes: their encrypted one with its tombstone, which this device's database
+  /// takes at once; a notice of the server's (a pin's, a call's), which the device doesn't hold, as before.
+  Future<void> _deleteInConversation(String conversationId, String messageId) async {
+    final engine = _engine;
+    final held = await _held(conversationId, [messageId]);
+    if (engine != null && held != null && held.containsKey(messageId)) {
+      return engine.deleteMessage(conversationId, messageId);
+    }
+    await _call((api) => api.deleteDirectMessage(conversationId, messageId));
+  }
+
+  @override
+  Future<List<ChatMessage>> withContent(ChatTarget target, List<ChatMessage> messages) async {
+    if (target is! ConversationTarget) return messages;
+    final conversationId = target.conversationId;
+    final applied = _engine?.appliedThrough(conversationId);
+    final held = await _held(conversationId, [
+      for (final m in messages)
+        if (m.encrypted && !m.pending) ...[m.id, ?m.reply?.messageId],
+    ]);
+    // Unread, what shows stays: what loads goes on loading.
+    if (held == null) return messages;
+    // Rows from before the user joined that the device doesn't hold give way at every read, those of a page read
+    // before the device could be read too (Ruling 15; I5 of task 17's review).
+    final drawn = drawnRows(
+      messages,
+      _joinedAs[conversationId],
+      idOf: (m) => m.id,
+      encrypted: (m) => m.encrypted && !m.pending,
+      held: held.containsKey,
+    );
+    if (drawn.beforeJoining) _beforeJoining.add(conversationId);
+    return readFrom(drawn.rows, held, nameOf: _sharerName, applied: applied);
+  }
+
+  @override
+  Future<ChatMessage> resend(ChatTarget target, String nonce) async {
+    // Only a conversation's messages wait on this device.
+    if (target is! ConversationTarget) {
+      throw ArgumentError.value(target, 'target', 'only a conversation has messages waiting');
+    }
+    final engine = _engine ?? (throw ActionFailed(Notice.notReady.text));
+    return _sentMessage(target.conversationId, nonce, () => engine.resendMessage(target.conversationId, nonce));
+  }
+
+  @override
+  Future<void> discard(ChatTarget target, String nonce) async {
+    if (target is! ConversationTarget) return;
+    final went = await _engine?.discardMessage(target.conversationId, nonce);
+    if (went == null) return;
+    // It went after all, its answer and its event lost: the API's copy shows in its place, under the nonce the person
+    // sent it with (M5 of task 17's review).
+    final copy = await fetchMessage(target, went);
+    _emitMessage((target.conversationId, MessageCreated(copy.copyWith(nonce: nonce))));
+  }
+
+  @override
+  ChatStart chatStart(ChatTarget target) => switch (target) {
+    ConversationTarget(:final conversationId) => (
+      legacy: _legacyConversations.contains(conversationId),
+      cutoverAt: _engine?.cutoverAt,
+      beforeJoining: _beforeJoining.contains(conversationId),
+    ),
+    RoomTarget() => quietStart,
+  };
+
+  /// This device's database changed what it holds of the conversation's messages: its chat reads what it shows again,
+  /// and its preview follows.
+  void _contentChanged(String conversationId) {
+    _emitMessage((conversationId, const ContentChanged()));
+    unawaited(_previewFromDevice(conversationId));
+  }
+
+  /// The device is ready: what the conversations' chats and previews show is read from its database now.
+  void _deviceReady() {
+    _emitMessage((_anyChat, const ContentChanged()));
+    for (final chat in _recents.chats.value) {
+      if (chat.target case ConversationTarget(:final conversationId)) unawaited(_previewFromDevice(conversationId));
+    }
+  }
+
+  /// The conversation's preview, its newest message as this device's database holds it: shown here and in the Chats
+  /// tab, kept nowhere ([RecentChat.toJson]).
+  Future<void> _previewFromDevice(String conversationId) async {
+    final newest = latest.value[conversationId];
+    final recent = _recents.chats.value.where((c) => c.target.id == conversationId).firstOrNull;
+    final listed = recent?.previewId;
+    final held = await _held(conversationId, [?newest?.id, ?listed]);
+    if (held == null) return;
+    if (newest != null && newest.encrypted && held[newest.id] != null) {
+      final filled = withRow(newest, held[newest.id], nameOf: _sharerName);
+      if (latest.value[conversationId]?.id == newest.id) latest.value = {...latest.value, conversationId: filled};
+    }
+    if (listed == null) return;
+    if (held[listed] case final row?) {
+      final message = newest?.id == listed
+          ? newest!
+          // Under the author the server names for it, as any row (M2 of task 17's review).
+          : ChatMessage(
+              id: listed,
+              authorId: recent?.previewAuthorId,
+              authorName: '',
+              content: '',
+              createdAt: clock.now(),
+              seq: row.seq,
+            );
+      _recents.previewed(conversationId, listed, previewOf(withRow(message, row, nameOf: _sharerName)));
+    }
+  }
+
+  /// A message of the user's the engine sent under another nonce than its first (its first bytes stale): its chat's row
+  /// of it, under that first nonce, is the API's message now. One sent under its first takes its row by its own echo.
+  void _sentElsewhere(({String conversationId, String nonce, duvet.DirectMessage message}) sent) {
+    if (sent.message.nonce == sent.nonce) return;
+    unawaited(
+      _contentOf(sent.conversationId, [sent.message]).then(
+        (shown) => _emitMessage((sent.conversationId, MessageCreated(shown.single.copyWith(nonce: sent.nonce)))),
+        onError: (Object error) => debugPrint('e2e: a message sent again: $error'),
+      ),
+    );
   }
 
   // ---------------------------------------------------------------------------
@@ -907,6 +1916,9 @@ class DuvetRepository implements ChatRepository {
   }
 
   void _connectGateway() {
+    _identified = false;
+    _sentDevice = null;
+    _sessionDevice = null;
     final gateway = _gateway = duvet.GatewayManager(
       _rest,
       router: _router,
@@ -917,6 +1929,11 @@ class DuvetRepository implements ChatRepository {
       // no READY (see [handleResume]), when it still keeps the session.
       resume: true,
       platform: platformOf(),
+      // Read as each identify goes out (Ruling 30).
+      identifyDevice: () {
+        _identified = true;
+        return _sentDevice = _identifyDevice;
+      },
     );
     _voiceSignaling.attach(gateway);
     // Listen before connecting: READY comes right after IDENTIFY, on a
@@ -983,8 +2000,12 @@ class DuvetRepository implements ChatRepository {
   void handleEvent(duvet.GatewayEventPayload event) {
     final me = profile.value?.id;
     final reconnected = event is duvet.ReadyEvent && _wasReady;
+    // The encryption engine's, after this handler: its own work goes in its own turn.
+    if (!_gatewayEvents.isClosed) _gatewayEvents.add(event);
     switch (event) {
       case duvet.ReadyEvent(:final data):
+        // A new session, with the device its identify named (a resume keeps the one before).
+        _sessionDevice = _sentDevice;
         status.value = LiveStatus.online;
         // The Spaces' order, as the desktop lists them: the gateway's.
         _spaceOrder = data.guildIds;
@@ -1067,7 +2088,7 @@ class DuvetRepository implements ChatRepository {
         _mentionNotice(ConversationTarget(data.conversationId), data.messageId);
 
       case duvet.ReactionAddedEvent(:final data) || duvet.DMReactionAddedEvent(:final data):
-        _messageEvents.add((
+        _emitMessage((
           _anyChat,
           ReactionChanged(
             messageId: data.messageId,
@@ -1078,7 +2099,7 @@ class DuvetRepository implements ChatRepository {
           ),
         ));
       case duvet.ReactionRemovedEvent(:final data) || duvet.DMReactionRemovedEvent(:final data):
-        _messageEvents.add((
+        _emitMessage((
           _anyChat,
           ReactionChanged(
             messageId: data.messageId,
@@ -1232,14 +2253,14 @@ class DuvetRepository implements ChatRepository {
             _noticeEveryMessage(RoomTarget(spaceId: spaceId, roomId: data.roomId), message);
           }
         }
-        _messageEvents.add((data.roomId, MessageCreated(message)));
+        _emitMessage((data.roomId, MessageCreated(message)));
       case duvet.MessageUpdateEvent(:final data):
         if (data.deletedAt != null) {
           _dropEphemeral(data.roomId, data.id);
           _dropMentionNotice(data.id);
           _recents.deleted(data.roomId, data.id);
           _latestDeleted(data.roomId, data.id);
-          _messageEvents.add((data.roomId, MessageDeleted(data.id)));
+          _emitMessage((data.roomId, MessageDeleted(data.id)));
         } else {
           final update = _roomMessage(data);
           final kept = _ephemeral[data.roomId];
@@ -1248,7 +2269,7 @@ class DuvetRepository implements ChatRepository {
           } else if (kept?.indexWhere((m) => m.id == data.id) case final i? when i >= 0) {
             // Only while it's shown: one dismissed stays gone, as on the desktop.
             kept![i] = kept[i].updatedBy(update);
-            _messageEvents.add((data.roomId, MessageUpdated(update)));
+            _emitMessage((data.roomId, MessageUpdated(update)));
           }
         }
       case duvet.MessageDeletedEvent(:final data):
@@ -1256,12 +2277,21 @@ class DuvetRepository implements ChatRepository {
         _dropMentionNotice(data.id);
         _recents.deleted(data.roomId, data.id);
         _latestDeleted(data.roomId, data.id);
-        _messageEvents.add((data.roomId, MessageDeleted(data.id)));
+        _emitMessage((data.roomId, MessageDeleted(data.id)));
 
       case duvet.DMMessageCreatedEvent(:final data):
         final id = data.conversationId;
         if (id == null) break;
-        final message = _directMessage(data);
+        final listed = _directMessage(data);
+        if (listed == null) break;
+        // The person's message made again carries its new nonce: the chat knows it by the one they sent it with, so it
+        // takes that row's place (I1 of task 17's review).
+        final mine = _asSent(listed);
+        // Its text is what this device holds of it: it loads until its conversation's turn applies it, which reads it
+        // again; one the device may hold already is read again now (M1 and I4 of task 17's review).
+        final message = mine.encrypted
+            ? withRow(mine, null, nameOf: _sharerName, applied: _engine?.appliedThrough(id))
+            : mine;
         if (message.call case final call?) {
           _readCallNotice(id, message.id, call, me);
         } else if (data.authorId != me) {
@@ -1273,14 +2303,17 @@ class DuvetRepository implements ChatRepository {
         _setLatest(id, message);
         _arrivedForNotice(message);
         _noticeEveryMessage(ConversationTarget(id), message);
-        _messageEvents.add((id, MessageCreated(message)));
+        _emitMessage((id, MessageCreated(message)));
+        if (message.waiting) _emitMessage((id, const ContentChanged()));
       case duvet.DMMessageUpdatedEvent(:final data):
-        if (data.conversationId case final id?) _updated(id, _directMessage(data));
+        if ((data.conversationId, _directMessage(data)) case (final id?, final update?)) _updated(id, update);
       case duvet.DMMessageDeletedEvent(:final data):
         _dropMentionNotice(data.id);
+        // Its files' decrypted copies go with it (task 18's review, M4).
+        DecryptedFiles.instance.forgetMessage(data.id);
         _recents.deleted(data.conversationId, data.id);
         _latestDeleted(data.conversationId, data.id);
-        _messageEvents.add((data.conversationId, MessageDeleted(data.id)));
+        _emitMessage((data.conversationId, MessageDeleted(data.id)));
 
       // The calls the user answered from one of their devices, whose notices
       // leave the conversation read for them, as the API does. A new call
@@ -1291,9 +2324,9 @@ class DuvetRepository implements ChatRepository {
         _callAnswers.remove(data.conversationId);
 
       case duvet.MessagePinUpdatedEvent(:final data):
-        _messageEvents.add((data.roomId, MessagePinned(data.id, pinned: data.pinnedAt != null)));
+        _emitMessage((data.roomId, MessagePinned(data.id, pinned: data.pinnedAt != null)));
       case duvet.DMMessagePinUpdatedEvent(:final data):
-        _messageEvents.add((data.conversationId, MessagePinned(data.id, pinned: data.pinnedAt != null)));
+        _emitMessage((data.conversationId, MessagePinned(data.id, pinned: data.pinnedAt != null)));
 
       case duvet.TypingStartedEvent(:final data) when data.userId != me:
         _typing.add((data.roomId, TypingUser(userId: data.userId, name: data.alias ?? data.username)));
@@ -1580,6 +2613,11 @@ class DuvetRepository implements ChatRepository {
   @override
   void chatShown(ChatTarget target, {String? threadOf, bool opened = true}) {
     _onScreen = (chatId: target.id, threadOf: threadOf);
+    // A conversation's group goes on as it shows, or is made here where it has none and this user may.
+    if (target case ConversationTarget(:final conversationId)) {
+      _conversationOnScreen = conversationId;
+      unawaited(_engine?.openConversation(conversationId).catchError(_groupFailed));
+    }
     // Its phone notification tells of nothing the chat doesn't show.
     if (threadOf == null) {
       unawaited(_forgetNotifications?.call(target.id).catchError((Object e) => debugPrint('push: $e')));
@@ -1594,7 +2632,13 @@ class DuvetRepository implements ChatRepository {
 
   @override
   void chatHidden(ChatTarget target, {String? threadOf}) {
-    if (_onScreen == (chatId: target.id, threadOf: threadOf)) _onScreen = null;
+    // Another view on screen by now (a thread over its chat, whose own hide comes after) keeps what it showed.
+    if (_onScreen != (chatId: target.id, threadOf: threadOf)) return;
+    _onScreen = null;
+    if (target case ConversationTarget(:final conversationId) when _conversationOnScreen == conversationId) {
+      _conversationOnScreen = null;
+      _engine?.closeConversation(conversationId);
+    }
   }
 
   // [messageId] mentions the user in [target]: its notice shows once the
@@ -1637,16 +2681,66 @@ class DuvetRepository implements ChatRepository {
   void _showNotice(ChatTarget target, ChatMessage message) {
     // In the background the phone's notification tells of it (lib/push): this one, settled, never shows.
     if (!_inFront) return _settle(message.id);
-    // Nor for a chat at nothing ([quiet]): no notice, so no sound either.
-    if (_settled.contains(message.id) || profile.value?.status == Presence.doNotDisturb || quiet(target.id)) return;
-    // The chat on screen shows it already; a thread of it, its replies.
+    if (_settled.contains(message.id)) return;
+    final place = _noticePlace(target, message);
+    if (place == null) return;
+    _settle(message.id);
+    if (target is ConversationTarget) return unawaited(_noticeOnceRead(target, message));
+    _postNotice(target, message, place, previewOf(message));
+  }
+
+  /// How long a conversation's notice waits for its message's text on this device (as the desktop's NOTICE_WAIT_MS).
+  static const noticeWait = Duration(seconds: 2);
+
+  // The conversations' messages whose notice waits for this device's text: a deletion takes one away.
+  final _noticesReading = <String>{};
+
+  // A conversation's notice says what this device's database holds of its message once its engine applied it
+  // ([noticeWait] at most), and nothing of the API's message, which a server could write under a member's name: without
+  // the text in time, who wrote and that a message came. It's decided again after the wait, and a text that comes later
+  // notifies nothing (rules 6 and 11 of the desktop's task 20 review). Gone to the back meanwhile, the app hands it to
+  // the phone's notifications.
+  Future<void> _noticeOnceRead(ConversationTarget target, ChatMessage message) async {
+    _noticesReading.add(message.id);
+    final author = message.authorId;
+    final text = message.encrypted && author != null
+        ? await _engine?.textOf(target.conversationId, message.id, author, noticeWait).catchError((Object _) => null)
+        : null;
+    if (!_noticesReading.remove(message.id)) return;
+    final place = _noticePlace(target, message);
+    if (place == null) return;
+    if (!_inFront) {
+      final conversation = conversations.value.where((c) => c.id == target.conversationId).firstOrNull;
+      return _notifyAway?.call((
+        target: target,
+        message: message,
+        place: conversation?.name ?? '',
+        text: text == null
+            ? null
+            : readableContent(text, nameOf: nameOf, emojiNameOf: emojiNameOf, roomNameOf: (_) => null),
+      ));
+    }
+    final said = ChatMessage(
+      id: message.id,
+      authorId: author,
+      authorName: message.authorName,
+      content: text ?? '',
+      createdAt: message.createdAt,
+    );
+    _postNotice(target, message, place, previewOf(said));
+  }
+
+  // Where [message]'s notice shows, or null for none now: in do not disturb, in a chat at nothing ([quiet]: no notice,
+  // so no sound either), or with its chat on screen, which shows it already (a thread of it, its replies).
+  ({String title, String where})? _noticePlace(ChatTarget target, ChatMessage message) {
+    if (profile.value?.status == Presence.doNotDisturb || quiet(target.id)) return null;
     if (_onScreen case (
       :final chatId,
       :final threadOf,
     ) when chatId == target.id && (threadOf == null || message.reply?.messageId == threadOf)) {
-      return;
+      return null;
     }
-    final ({String title, String where})? place = switch (target) {
+    return switch (target) {
       RoomTarget(:final spaceId, :final roomId) => () {
         final space = spaces.value.where((s) => s.id == spaceId).firstOrNull;
         final room = space?.rooms.where((r) => r.id == roomId).firstOrNull;
@@ -1660,8 +2754,9 @@ class DuvetRepository implements ChatRepository {
         );
       }(),
     };
-    if (place == null) return;
-    _settle(message.id);
+  }
+
+  void _postNotice(ChatTarget target, ChatMessage message, ({String title, String where}) place, String text) {
     final notice = MentionNotice(
       messageId: message.id,
       target: target,
@@ -1669,7 +2764,7 @@ class DuvetRepository implements ChatRepository {
       authorName: message.authorName,
       authorAvatarUrl: message.authorAvatarUrl,
       where: place.where,
-      text: previewOf(message),
+      text: text,
     );
     final shown = [notice, ...mentionNotices.value];
     for (final gone in shown.skip(noticesShown)) {
@@ -1697,6 +2792,7 @@ class DuvetRepository implements ChatRepository {
   // A message was deleted: its notice goes, and one on its way never shows.
   void _dropMentionNotice(String messageId) {
     _settle(messageId);
+    _noticesReading.remove(messageId);
     _arrived.remove(messageId);
     _awaited.remove(messageId);
     dismissMentionNotice(messageId);
@@ -1710,6 +2806,7 @@ class DuvetRepository implements ChatRepository {
     _arrived.clear();
     _awaited.clear();
     _settled.clear();
+    _noticesReading.clear();
     _onScreen = null;
     mentionNotices.value = const [];
   }
@@ -1855,11 +2952,18 @@ class DuvetRepository implements ChatRepository {
   // and the Chats tab previews it as merged (a picture's stays "Sent a
   // photo"), or as the event has it when the newest message isn't known.
   void _updated(String chatId, ChatMessage update) {
+    // An encrypted message's copy brings none of its text: the chat and the preview read what the device holds, once
+    // its conversation's turn applied the change (I4 of task 17's review).
+    if (update.encrypted) {
+      _emitMessage((chatId, const ContentChanged()));
+      unawaited(_previewFromDevice(chatId));
+      return;
+    }
     final known = latest.value[chatId];
     final merged = known != null && known.id == update.id ? known.updatedBy(update) : null;
     if (merged != null) latest.value = {...latest.value, chatId: merged};
     _recents.edited(chatId, merged ?? update);
-    _messageEvents.add((chatId, MessageUpdated(update)));
+    _emitMessage((chatId, MessageUpdated(update)));
   }
 
   // The one before it isn't known here: fetched again when next shown.
@@ -2075,7 +3179,7 @@ class DuvetRepository implements ChatRepository {
       // has that already, and this one may not.
       if (whole && current()) {
         _ahead.add(t.id);
-        _cache.savePage(t.id, page);
+        _keepPage(t, page);
         _warm({for (final m in page) m.authorAvatarUrl});
       }
       if (page.lastOrNull case final newest?) _newest(t, newest);
@@ -2199,6 +3303,15 @@ class DuvetRepository implements ChatRepository {
   Future<void> refreshConversations() async {
     final me = profile.value?.id;
     final list = await _call((api) => api.getConversations());
+    // What the person sees of each, which the encryption engine holds its groups to (C1 of step 4's closing reviews):
+    // one this listing leaves out isn't drawn any more, as the Chats tab drops it.
+    if (me != null) {
+      _drawnConversations = {
+        for (final c in list)
+          if (c.deletedAt == null) c.id: drawnOf(c, me),
+      };
+      _conversationsListed = true;
+    }
     conversations.value = [
       for (final c
           in list.where((c) => c.deletedAt == null).toList()..sort((a, b) => b.updatedAt.compareTo(a.updatedAt)))
@@ -2229,11 +3342,15 @@ class DuvetRepository implements ChatRepository {
   }
 
   ConversationSummary _summary(duvet.Conversation c, String? me) {
+    // Where the user joined it, and whether it's from before the cutover: what its chat's start says.
+    if (c.members.where((m) => m.userId == me).firstOrNull case final mine?) _joinedAs[c.id] = mine.id;
+    c.legacy ? _legacyConversations.add(c.id) : _legacyConversations.remove(c.id);
+    // Drawn by one ID, the membership's, which the encryption engine holds the group to ([drawnMember]).
     final members = _conversationMembers[c.id] = [
       for (final m in c.members)
-        if (m.user case final u?)
+        if (m.user case final u? when drawnMember(m))
           Member(
-            userId: u.id,
+            userId: m.userId,
             username: u.username,
             alias: u.alias,
             avatarUrl: avatarUrl(u.avatar),
@@ -2250,7 +3367,7 @@ class DuvetRepository implements ChatRepository {
         id: c.id,
         title: '',
         isGroup: c.type == duvet.ConversationType.group,
-        memberCount: c.members.length,
+        memberCount: members.length,
         updatedAt: c.updatedAt.toLocal(),
         ownerId: c.ownerId,
         name: c.name?.isNotEmpty == true ? c.name : null,
@@ -2363,7 +3480,7 @@ class DuvetRepository implements ChatRepository {
     AuthorChanged changeIn(String chatId) =>
         AuthorChanged(userId, name: _nameIn(chatId, userId, name), avatarUrl: avatar);
     // [messageEvents] names them as each chat does.
-    _messageEvents.add((_anyChat, AuthorChanged(userId, name: name, avatarUrl: avatar)));
+    _emitMessage((_anyChat, AuthorChanged(userId, name: name, avatarUrl: avatar)));
     final renamed = {for (final MapEntry(key: id, value: m) in latest.value.entries) id: m.changedBy(changeIn(id))};
     if (renamed.entries.any((e) => !identical(e.value, latest.value[e.key]))) latest.value = renamed;
     for (final MapEntry(key: roomId, value: kept) in _ephemeral.entries) {
@@ -2385,11 +3502,15 @@ class DuvetRepository implements ChatRepository {
     final api = _api;
     final current = _undisturbed(target.id);
     try {
-      final page = await _fetchPage(target, before);
+      var page = await _fetchPage(target, before);
+      // The user's messages this device still sends there, at the chat's end.
+      if (target case ConversationTarget(:final conversationId) when before == null) {
+        page = [...page, ...await _pendingIn(conversationId, page)];
+      }
       // Not once signed out: nothing is kept after. Nor one something
       // happened to on its way ([_undisturbed]).
       if (before == null && identical(api, _api) && current()) {
-        _cache.savePage(target.id, page);
+        _keepPage(target, page);
         _ahead.add(target.id);
       }
       return page;
@@ -2407,6 +3528,12 @@ class DuvetRepository implements ChatRepository {
   @override
   Future<List<ChatMessage>?> cachedMessages(ChatTarget target) => _cache.loadPage(target.id);
 
+  // A room's newest page is kept for offline; a conversation's never is: it's
+  // end-to-end encrypted, and what it says stays in the core's database alone.
+  void _keepPage(ChatTarget target, List<ChatMessage> page) {
+    if (target is RoomTarget) _cache.savePage(target.id, page);
+  }
+
   // [count] is the client's default.
   Future<List<ChatMessage>> _fetchPage(ChatTarget target, String? before, {int count = 100}) async {
     // The API answers the newest first.
@@ -2415,13 +3542,66 @@ class DuvetRepository implements ChatRepository {
         for (final m in await _call((api) => api.getMessages(roomId, before: before, count: count)))
           if (m.deletedAt == null) _roomMessage(m),
       ],
-      ConversationTarget(:final conversationId) => [
-        for (final m in await _call((api) => api.getDirectMessages(conversationId, before: before, count: count)))
-          _directMessage(m),
-      ],
+      ConversationTarget(:final conversationId) => await _conversationPage(conversationId, before, count),
     };
     return page.reversed.toList();
   }
+
+  /// A conversation's page as its chat draws it, the newest first: its encrypted rows from before the user joined that
+  /// this device doesn't hold give way (Ruling 15), and the API's pages behind them are read on while the device holds
+  /// anything older, so a short page means the history, or what the device holds of it, ended (I4 of the desktop's
+  /// task 16 review: a member who left and came back keeps their first membership's messages).
+  Future<List<ChatMessage>> _conversationPage(String conversationId, String? before, int count) async {
+    var dropped = false;
+    final page = await _conversationRows(conversationId, before, count, () => dropped = true);
+    // A newest page read whole that left out no row from before the user joined: none is missing any more, as an
+    // import brought them in (I3 of task 31's review).
+    if (before == null && count > 1 && !dropped) _beforeJoining.remove(conversationId);
+    return page;
+  }
+
+  Future<List<ChatMessage>> _conversationRows(
+    String conversationId,
+    String? before,
+    int count,
+    void Function() dropped,
+  ) async {
+    final drawn = <ChatMessage>[];
+    // The chat's next page past where the last stopped goes on from there, not over the rows it read already.
+    var cursor = switch (_pagesOn.remove(conversationId)) {
+      (:final after, :final cursor) when before != null && after == before => cursor,
+      _ => before,
+    };
+    for (var reads = 1; ; reads++) {
+      final raw = await _call((api) => api.getDirectMessages(conversationId, before: cursor, count: count));
+      drawn.addAll(await _contentOf(conversationId, raw, drop: true, dropped: dropped));
+      if (raw.length < count || drawn.length >= count || count == 1) return drawn;
+      final oldest = raw.map((m) => m.seq).nonNulls.fold<int?>(null, (a, b) => a == null || b < a ? b : a);
+      final engine = _engine;
+      if (oldest != null && engine != null && !await engine.heldBefore(conversationId, oldest)) return drawn;
+      cursor = raw.last.id;
+      // A few of the API's pages a read, once it drew something: the chat shows it, and its next page goes on from
+      // here (M7 of task 17's review).
+      if (reads >= _readsAPage && drawn.isNotEmpty) {
+        _pagesOn[conversationId] = (after: drawn.last.id, cursor: raw.last.id);
+        return drawn;
+      }
+    }
+  }
+
+  /// The most of the API's pages one page of a conversation reads past rows from before the user joined, once it drew
+  /// something.
+  static const _readsAPage = 3;
+
+  /// Where a conversation's page stopped in the API's pages, by conversation: the oldest row it drew, which the chat's
+  /// next page asks before, and the API's cursor that page goes on from.
+  final _pagesOn = <String, ({String after, String cursor})>{};
+
+  @override
+  bool olderBeyond(ChatTarget target, String oldestId) => switch (target) {
+    ConversationTarget(:final conversationId) => _pagesOn[conversationId]?.after == oldestId,
+    RoomTarget() => false,
+  };
 
   @override
   Stream<MessageEvent> messageEvents(ChatTarget target) => _messageEvents.stream
@@ -2445,9 +3625,10 @@ class DuvetRepository implements ChatRepository {
         for (final m in await _call((api) => api.getMessagesAfter(roomId, messageId)))
           if (m.deletedAt == null) _roomMessage(m),
       ],
-      ConversationTarget(:final conversationId) => [
-        for (final m in await _call((api) => api.getDirectMessagesAfter(conversationId, messageId))) _directMessage(m),
-      ],
+      ConversationTarget(:final conversationId) => await _contentOf(
+        conversationId,
+        await _call((api) => api.getDirectMessagesAfter(conversationId, messageId)),
+      ),
     };
     // Whichever order the server answers in, oldest first.
     return page..sort((a, b) => a.createdAt.compareTo(b.createdAt));
@@ -2458,7 +3639,7 @@ class DuvetRepository implements ChatRepository {
     RoomTarget(:final roomId) => _call((api) => api.getMessageById(roomId, messageId)).then(_roomMessage),
     ConversationTarget(:final conversationId) => _call(
       (api) => api.getDirectMessageById(conversationId, messageId),
-    ).then(_directMessage),
+    ).then((m) async => (await _contentOf(conversationId, [m])).single),
   };
 
   // The links the API signed again this session, by attachment ID, when it
@@ -2475,6 +3656,24 @@ class DuvetRepository implements ChatRepository {
   /// link that fails for another reason (a file that won't decode, a
   /// storage's own refusal) mustn't spend the API's 64 a minute.
   static const resignCooldown = Duration(minutes: 1);
+
+  /// The client a conversation's sealed files come down with: none of the session's headers ([downloadSigned]).
+  http.Client? _downloads;
+
+  /// A sealed file's bytes, [most] of them at most, from its signed URL: renewed first when it's about to expire, and
+  /// once more when the API refuses it as expired (403), as a picture's is.
+  Future<Uint8List> _downloadSealed(String id, String url, int most, void Function(int received)? progress) async {
+    final file = MessageAttachment(id: id, filename: '', contentType: '', url: url);
+    var link = await attachmentLink(file);
+    for (var renewed = false; ; renewed = true) {
+      try {
+        return await downloadSigned(_downloads ??= _httpClient(), Uri.parse(link), most, progress: progress);
+      } on duvet.DuvetApiException catch (error) {
+        if (error.statusCode != 403 || renewed) rethrow;
+        link = await attachmentLink(file.withUrl(link), refused: true);
+      }
+    }
+  }
 
   @override
   Future<String> attachmentLink(MessageAttachment attachment, {bool refused = false}) async {
@@ -2520,7 +3719,7 @@ class DuvetRepository implements ChatRepository {
     if (session != _linksSession) return url;
     _links[attachmentId] = url;
     _signedAt[attachmentId] = clock.now();
-    _messageEvents.add((_anyChat, AttachmentRenewed(attachmentId, url)));
+    _emitMessage((_anyChat, AttachmentRenewed(attachmentId, url)));
     unawaited(_cache.changeMessages(attachmentId, (_, m) => m.withAttachmentLink(attachmentId, url)));
     return url;
   }
@@ -2528,15 +3727,13 @@ class DuvetRepository implements ChatRepository {
   @override
   Future<ChatMessage> edit(ChatTarget target, String messageId, String content) => switch (target) {
     RoomTarget(:final roomId) => _call((api) => api.updateMessage(messageId, content, roomId)).then(_roomMessage),
-    ConversationTarget(:final conversationId) => _call(
-      (api) => api.updateDirectMessage(conversationId, messageId, content),
-    ).then(_directMessage),
+    ConversationTarget(:final conversationId) => _editEncrypted(conversationId, messageId, content),
   };
 
   @override
   Future<void> delete(ChatTarget target, String messageId) => switch (target) {
     RoomTarget(:final roomId) => _call((api) => api.deleteMessage(messageId, roomId)),
-    ConversationTarget(:final conversationId) => _call((api) => api.deleteDirectMessage(conversationId, messageId)),
+    ConversationTarget(:final conversationId) => _deleteInConversation(conversationId, messageId),
   };
 
   @override
@@ -2576,6 +3773,20 @@ class DuvetRepository implements ChatRepository {
     final links = <Directory>[];
     void progress(int sent, int total) => onProgress?.call(total == 0 ? 0 : sent / total);
     try {
+      // An encrypted conversation's files go sealed, through the engine («Adjuntos»).
+      if (target case ConversationTarget(:final conversationId)) {
+        return await _sendEncrypted(
+          conversationId,
+          content,
+          nonce,
+          sticker: sticker,
+          replyTo: replyTo,
+          mentionReplied: mentionRepliedUser,
+          files: [for (final f in files) await _toSeal(f)],
+          onProgress: files.isEmpty ? null : progress,
+          cancel: files.isEmpty ? null : cancel,
+        );
+      }
       final upload = files.isEmpty ? null : [for (final f in files) await _named(f, links)];
       return await _sendTo(target, content, nonce, upload, sticker, replyTo, mentionRepliedUser, progress, cancel);
     } on duvet.DuvetApiException catch (e) {
@@ -2641,22 +3852,45 @@ class DuvetRepository implements ChatRepository {
           abortTrigger: upload == null ? null : cancel,
         ),
       ).then(_roomMessage),
-      ConversationTarget(:final conversationId) => _call(
-        (api) => api.sendDirectMessage(
-          conversationId,
-          content,
-          nonce: nonce,
-          files: upload,
-          stickerAttachmentId: sticker?.attachmentId,
-          messageReference: replyTo == null
-              ? null
-              : duvet.MessageReference(type: duvet.MessageReferenceType.reply, messageId: replyTo),
-          allowedMentions: allowedMentions,
-          onProgress: upload == null ? null : progress,
-          abortTrigger: upload == null ? null : cancel,
-        ),
-      ).then(_directMessage),
+      ConversationTarget(:final conversationId) => _sendEncrypted(
+        conversationId,
+        content,
+        nonce,
+        sticker: sticker,
+        replyTo: replyTo,
+        mentionReplied: mentionRepliedUser,
+      ),
     };
+  }
+
+  /// A file picked to send in an encrypted conversation, as the engine seals it: its bytes, its name as picked (a
+  /// spoiler's prefix with it), and what the app can tell of a picture (its size and thumbnail, thumbnails.dart).
+  static Future<FileToSeal> _toSeal(OutgoingFile f) async {
+    final bytes = await File(f.path).readAsBytes();
+    final type = sniffType(bytes);
+    final picture = type.startsWith('image/') ? await pictureFacts(bytes) : null;
+    // A video's size and length go too, as the desktop's do (task 19's review, M11).
+    final video = type.startsWith('video/') ? await videoFactsOf(f.path) : null;
+    return FileToSeal(
+      bytes: bytes,
+      name: f.name,
+      width: picture?.width ?? video?.width ?? f.width,
+      height: picture?.height ?? video?.height ?? f.height,
+      durationMs: video?.durationMs,
+      thumbnail: picture?.thumbnail,
+    );
+  }
+
+  /// The per-file cap of where an encrypted conversation's files go: the active bucket's, else the storage status'
+  /// (task 18's review, Missing 1); null when neither is known, and the API's 413 decides.
+  Future<int?> _sealedLimit() async {
+    try {
+      final buckets = await _call((api) => api.getMyBuckets());
+      if (buckets.where((b) => b.isActive).firstOrNull?.uploadLimitBytes case final limit? when limit > 0) return limit;
+    } catch (error) {
+      debugPrint("e2e: the active bucket's limit wasn't read: $error");
+    }
+    return uploadLimit();
   }
 
   @override
@@ -2665,17 +3899,35 @@ class DuvetRepository implements ChatRepository {
     List<int> audio, {
     required String nonce,
     String format = 'ogg',
+    List<int>? waveform,
+    Duration? length,
   }) async {
     try {
       return await switch (target) {
         RoomTarget(:final roomId) => _call(
           (api) => api.sendVoiceNote(roomId, audio, nonce: nonce, format: format),
         ).then(_roomMessage),
-        ConversationTarget(:final conversationId) => _call(
-          (api) => api.sendDMVoiceNote(conversationId, audio, nonce: nonce, format: format),
-        ).then(_directMessage),
+        // An encrypted conversation's voice note, by its convention (Ruling 11): no text, one audio file sealed with
+        // its waveform and its duration.
+        ConversationTarget(:final conversationId) => _sendEncrypted(
+          conversationId,
+          '',
+          nonce,
+          sticker: null,
+          replyTo: null,
+          mentionReplied: null,
+          files: [
+            FileToSeal(
+              bytes: Uint8List.fromList(audio),
+              name: 'voice-note.$format',
+              durationMs: length?.inMilliseconds,
+              waveform: waveform == null ? null : Uint8List.fromList(waveform),
+            ),
+          ],
+        ),
       };
     } on duvet.DuvetApiException catch (e) {
+      if (e.statusCode == 413) throw const UploadTooLarge();
       if (_refusal(e) case final reason?) throw ActionFailed(reason);
       rethrow;
     }
@@ -2706,6 +3958,8 @@ class DuvetRepository implements ChatRepository {
 
   @override
   Future<SearchPage> search(SearchQuery q) async {
+    final spaceId = q.spaceId;
+    if (spaceId == null) return _searchConversations(q);
     final params = duvet.MessageSearch(
       query: q.text,
       roomIds: q.roomIds,
@@ -2717,34 +3971,157 @@ class DuvetRepository implements ChatRepository {
       after: q.after,
       cursor: q.cursor,
     );
-    if (q.conversationId case final id?) {
-      final page = await _call((api) => api.searchConversationMessages(id, params));
-      return (
-        hits: [for (final m in page.messages) SearchHit(target: ConversationTarget(id), message: _directMessage(m))],
-        total: page.totalResults,
-      );
-    }
-    final spaceId = q.spaceId;
-    if (spaceId == null) return (hits: const <SearchHit>[], total: 0);
     final page = await _call((api) => api.searchSpaceMessages(spaceId, params));
+    final hits = [
+      for (final m in page.messages)
+        SearchHit(
+          target: RoomTarget(spaceId: spaceId, roomId: m.roomId),
+          message: _roomMessage(m),
+        ),
+    ];
+    return (hits: hits, total: page.totalResults, next: hits.isEmpty ? null : q.from(cursor: hits.last.message.id));
+  }
+
+  // ---------------------------------------------------------------------------
+  // Encrypted conversations' searches and pushes (PLAN-E2E-CLIENTES.md, Task 21; decision 42)
+  // ---------------------------------------------------------------------------
+
+  /// How many results a page of a conversation's search has, as a page of the API's search has; how many of the
+  /// device's the search everywhere shows.
+  static const conversationResults = 25;
+  static const everywhereResults = 20;
+
+  /// A conversation's search ([SearchQuery.conversationId]), or every conversation's, without one. Its words, from:,
+  /// mentions:, dates and has: go to this device, which holds its messages' text, a page at a time; pinned: and
+  /// has:sticker, which the API keeps in the clear, to the API's search, without words, each message's text the
+  /// device's. What needs both can go to neither: it's refused, saying so (search_split). Every conversation's is the
+  /// device's alone, as Search everywhere takes no filters.
+  Future<SearchPage> _searchConversations(SearchQuery q) async {
+    final id = q.conversationId;
+    final onDevice = deviceSearchOf(
+      text: q.text,
+      authors: q.authorIds,
+      mentions: q.mentionIds,
+      has: q.has,
+      pinned: q.pinned,
+      after: q.after,
+      before: q.before,
+    );
+    if (id == null) {
+      if (onDevice == null) return (hits: const <SearchHit>[], total: 0, next: null);
+      return _foundOnDevice(q, onDevice.page(limit: devicePage), most: everywhereResults);
+    }
+    if (onDevice != null) {
+      final request = onDevice.page(conversationId: id, limit: conversationResults, offset: q.offset);
+      return _foundOnDevice(q, request, most: conversationResults);
+    }
+    if (!apiTakes(text: q.text, has: q.has)) throw ActionFailed(Notice.searchSplit.text);
+    if (_engine?.state.value.stage != EngineStage.ready) throw ActionFailed(Notice.notReady.text);
+    // It takes no words: a text of punctuation alone goes no further than here.
+    final params = duvet.MessageSearch(
+      authorIds: q.authorIds,
+      mentions: q.mentionIds,
+      has: q.has,
+      pinned: q.pinned,
+      before: q.before,
+      after: q.after,
+      cursor: q.cursor,
+    );
+    final page = await _call((api) => api.searchConversationMessages(id, params));
+    final hits = [
+      for (final m in await _contentOf(id, page.messages)) SearchHit(target: ConversationTarget(id), message: m),
+    ];
+    final full = hits.length == conversationResults;
+    return (hits: hits, total: page.totalResults, next: full ? q.from(cursor: hits.last.message.id) : null);
+  }
+
+  /// [most] of what this device's search of [request] finds that a result draws ([_deviceHit]), and where the next page
+  /// starts. A device that isn't ready says so, as does its core failing; the core's refusal of the search itself (its
+  /// limits: 200 characters, 10 users) says what it refused.
+  Future<SearchPage> _foundOnDevice(SearchQuery q, DeviceSearch request, {required int most}) async {
+    final engine = _engine;
+    if (engine == null || engine.state.value.stage != EngineStage.ready) throw ActionFailed(Notice.notReady.text);
+    final ({List<SearchHit> found, int total, int? next}) page;
+    try {
+      page = await deviceFinds(engine.search, request, most: most, keep: _deviceHit);
+    } on CoreError catch (error) {
+      throw ActionFailed(error.code == 'internal' ? Notice.notReady.text : error.message);
+    }
+    final next = page.next;
+    return (hits: page.found, total: page.total, next: next == null ? null : q.from(offset: next));
+  }
+
+  /// A row of this device's as a result draws it: the message, its text and its files the row's (each as its envelope
+  /// says it, at no URL, as the result says only what they are and its chat loads them), nothing asked of the API (M8
+  /// of the desktop's review). None for one it can't open (the person's own still being sent has no ID yet), one of a
+  /// conversation the app doesn't list (a group the person left), or a sticker's empty envelope whose sticker only the
+  /// API's row says: drawn as that sticker when the app holds the row (it came live), left out otherwise (M5).
+  SearchHit? _deviceHit(ShownMessage row) {
+    final id = row.messageId;
+    final conversation = conversations.value.where((c) => c.id == row.conversationId).firstOrNull;
+    if (row.status != MessageStatus.ok || id == null || conversation == null) return null;
+    final empty = (row.text ?? '').isEmpty && row.attachments.isEmpty;
+    final held = _arrived[id] ?? latest.value[row.conversationId];
+    final sticker = empty && held?.id == id ? held?.stickerUrl : null;
+    if (empty && sticker == null) return null;
+    final me = profile.value;
+    return SearchHit(
+      target: ConversationTarget(row.conversationId),
+      message: ChatMessage(
+        id: id,
+        authorId: row.userId,
+        authorName: nameOf(row.userId) ?? (row.userId == me?.id ? me!.displayName : 'Someone'),
+        authorAvatarUrl: row.userId == conversation.otherUserId
+            ? conversation.avatarUrl
+            : (row.userId == me?.id ? me?.avatarUrl : null),
+        content: row.text ?? '',
+        createdAt: DateTime.fromMillisecondsSinceEpoch(row.sentAt).toLocal(),
+        edited: row.editedAt != null,
+        stickerUrl: sticker,
+        attachments: sealedAttachments(row, const {}),
+        // A voice note by its convention (Ruling 11), as the chat draws it.
+        isVoice: drawnAs(text: row.text, attachments: row.attachments, sticker: false) == Drawn.voiceNote,
+        seq: row.seq,
+        sharedBy: switch (row.sharedBy) {
+          final user? => _sharerName(user),
+          null => null,
+        },
+      ),
+    );
+  }
+
+  /// What a push's engine asks this one while its device is ready (lib/e2e/push_decrypt.dart): the texts this
+  /// device's database holds of a conversation's push's [lines], its [entry] taken in its conversation's turn first,
+  /// the first waited for [wait] at most; and whether the chat is on screen by then, which shows its messages itself
+  /// (rule 11 of the desktop's task 20 review). Null while this device isn't ready, which has the push's engine read
+  /// them.
+  Future<({Map<String, String> texts, bool onScreen})?> pushTexts(
+    String conversationId,
+    Map<String, Object?>? entry,
+    List<Authored> lines,
+    Duration wait,
+  ) async {
+    final engine = _engine;
+    if (engine == null || engine.state.value.stage != EngineStage.ready) return null;
+    final texts = await engine.pushTexts(conversationId, entry, lines, wait);
+    final shown = _onScreen;
     return (
-      hits: [
-        for (final m in page.messages)
-          SearchHit(
-            target: RoomTarget(spaceId: spaceId, roomId: m.roomId),
-            message: _roomMessage(m),
-          ),
-      ],
-      total: page.totalResults,
+      // The people and emojis they name, by the names this app knows: a push's engine knows only the chat's authors.
+      texts: {
+        for (final MapEntry(:key, :value) in texts.entries)
+          key: readableContent(value, nameOf: nameOf, emojiNameOf: emojiNameOf, roomNameOf: (_) => null),
+      },
+      onScreen: _inFront && shown?.chatId == conversationId && shown?.threadOf == null,
     );
   }
 
   @override
   Future<List<ChatMessage>> pins(ChatTarget target) async => switch (target) {
     RoomTarget(:final roomId) => [for (final m in await _call((api) => api.getRoomPins(roomId))) _roomMessage(m)],
-    ConversationTarget(:final conversationId) => [
-      for (final m in await _call((api) => api.getConversationPins(conversationId))) _directMessage(m),
-    ],
+    ConversationTarget(:final conversationId) => await _contentOf(
+      conversationId,
+      await _call((api) => api.getConversationPins(conversationId)),
+    ),
   };
 
   @override
@@ -2772,10 +4149,10 @@ class DuvetRepository implements ChatRepository {
       for (final m in await _call((api) => api.getMessageThread(roomId, messageId)))
         if (m.deletedAt == null) _roomMessage(m),
     ],
-    ConversationTarget(:final conversationId) => [
-      for (final m in await _call((api) => api.getConversationMessageThread(conversationId, messageId)))
-        _directMessage(m),
-    ],
+    ConversationTarget(:final conversationId) => await _contentOf(
+      conversationId,
+      await _call((api) => api.getConversationMessageThread(conversationId, messageId)),
+    ),
   };
 
   // The member lists loaded so far, by Space.
@@ -3128,9 +4505,15 @@ class DuvetRepository implements ChatRepository {
     await _reloadFriends();
   }
 
+  /// A new group, its group made at once by the session's engine (PLAN-E2E-CLIENTES.md, Task 23); without one, as
+  /// the API makes it alone. One past 20 members, its owner among them, is refused before anything is asked.
   @override
   Future<ConversationSummary> createGroup(String name, List<String> userIds) async {
-    final group = await _attempt((api) => api.createGroup(name, userIds));
+    if ({...userIds, ?profile.value?.id}.length > maxGroupMembers) throw ActionFailed(Notice.groupFull.text);
+    final engine = _engine;
+    final group = engine == null
+        ? await _attempt((api) => api.createGroup(name, userIds))
+        : await _changeMembers(null, () => engine.createGroup(name, userIds));
     await refreshConversations();
     return conversations.value.where((c) => c.id == group.id).firstOrNull ?? _summary(group, profile.value?.id);
   }
@@ -3141,22 +4524,64 @@ class DuvetRepository implements ChatRepository {
     await refreshConversations();
   }
 
+  // A conversation's members change only by the session's engine, the app's on a screen (Review Focus 2): each one
+  // commit of the group's, or a leave's statement. Without one, nothing is asked.
   @override
   Future<void> addToConversation(String conversationId, String userId) async {
-    await _attempt((api) => api.addConversationMember(conversationId, userId));
+    await _changeMembers(conversationId, () => _engine!.addMember(conversationId, userId));
     await refreshConversations();
   }
 
   @override
   Future<void> removeFromConversation(String conversationId, String userId) async {
-    await _attempt((api) => api.removeConversationMember(conversationId, userId));
+    await _changeMembers(conversationId, () => _engine!.removeMember(conversationId, userId));
     await refreshConversations();
   }
 
+  /// Leaving, by the engine; without one, a conversation that has no group yet is left over REST, as it needs no
+  /// statement (the desktop's way).
   @override
   Future<void> leaveConversation(String conversationId) async {
-    await _attempt((api) => api.leaveConversation(conversationId));
+    if (_engine == null) {
+      final listed = (await _call((api) => api.getConversations())).where((c) => c.id == conversationId).firstOrNull;
+      // A group with no group yet takes no statement, as the desktop leaves one; a DM can't be left.
+      if (listed != null && listed.mls == null && listed.type == duvet.ConversationType.group) {
+        await _attempt((api) => api.leaveConversation(conversationId));
+        return refreshConversations();
+      }
+    }
+    await _changeMembers(conversationId, () => _engine!.leaveConversation(conversationId));
     await refreshConversations();
+  }
+
+  /// What the engine does to a conversation's members ([change]), refused in the app's words: the API's reason, the
+  /// cap, a change still on its way (its bytes go again on their own), the engine's and the core's own refusals, or
+  /// why the conversation takes none now.
+  Future<T> _changeMembers<T>(String? conversationId, Future<T> Function() change) async {
+    if (_engine == null) throw ActionFailed(Notice.notReady.text);
+    try {
+      return await change();
+    } on duvet.DuvetApiException catch (e) {
+      if (_refusal(e) case final reason?) throw ActionFailed(reason);
+      rethrow;
+    } on CoreError catch (error) {
+      throw ActionFailed(switch (error) {
+        CoreError(code: 'too_many_members') => Notice.groupFull.text,
+        CoreError(code: 'unanswered' || 'pending_commit') => Notice.changeUnanswered.text,
+        CoreError(code: 'rule_violation') => Notice.restartRefused.text,
+        CoreError(code: 'not_in_group') || CoreError(code: 'not_found', what: 'group') =>
+          "This device isn't in this conversation's group yet. Leave it from another of your devices.",
+        CoreError(code: 'not_found', what: 'conversation') => 'You aren’t in this conversation any more.',
+        CoreError(code: 'not_found', what: 'member') => 'They aren’t in this group any more.',
+        CoreError(code: 'exists') ||
+        CoreError(code: 'bad_command', field: 'user_id') => 'They’re in this group already.',
+        CoreError(code: 'bad_command', field: 'conversation_id') => 'A direct message’s members don’t change.',
+        CoreError(code: 'bad_command') => 'Only the group’s owner changes its members.',
+        _ => Notice.notReady.text,
+      });
+    } on StateError {
+      throw ActionFailed(conversationId == null ? Notice.notReady.text : _cannotSendIn(conversationId));
+    }
   }
 
   // [_call], for what the API may refuse: its reason, as it says it, is the
@@ -3210,10 +4635,10 @@ class DuvetRepository implements ChatRepository {
     String? alias,
   }) async {
     _closeSession();
-    final api = _api = duvet.RestClient(_httpClient(), router: _router);
+    final api = _api = duvet.RestClient(_httpClient(), router: _router, duvetClient: _client);
     try {
       await api.signIn(username: username, alias: alias, password: password, email: email);
-      await api.logIn(email, password);
+      _keepChallenge(await api.logIn(email, password));
       await _start();
     } on duvet.DuvetApiException catch (e) {
       _closeSession();
@@ -3230,7 +4655,7 @@ class DuvetRepository implements ChatRepository {
   Future<T> _anonymous<T>(Future<T> Function(duvet.RestClient api) request) async {
     final api = _api;
     if (api != null) return _call(request);
-    final client = duvet.RestClient(_httpClient(), router: _router);
+    final client = duvet.RestClient(_httpClient(), router: _router, duvetClient: _client);
     try {
       return await request(client);
     } finally {
@@ -3331,18 +4756,45 @@ class DuvetRepository implements ChatRepository {
   }
 
   @override
-  Future<List<MyFile>> myFiles() async => [
-    for (final a in await _call((api) => api.getMyAttachments()))
-      if (a.deletedAt == null && a.deleted != true)
-        MyFile(
-          id: a.id,
-          name: a.filename,
-          contentType: a.contentType,
-          sizeBytes: a.sizeBytes,
-          createdAt: a.createdAt.toLocal(),
-          url: attachmentUrl(a.id),
-        ),
-  ];
+  Future<List<MyFile>> myFiles() async {
+    final listed = [
+      for (final a in await _call((api) => api.getMyAttachments()))
+        if (a.deletedAt == null && a.deleted != true) a,
+    ];
+    // An encrypted file's name is only in its message, which this device may hold (Ruling 31): one pass of its
+    // database's search, else «Encrypted file». Nothing previews or downloads its sealed bytes.
+    var names = const <String, String>{};
+    final engine = _engine;
+    if (engine != null &&
+        engine.state.value.stage == EngineStage.ready &&
+        listed.any((a) => a.kind != duvet.AttachmentKind.file)) {
+      try {
+        names = await engine.fileNames();
+      } catch (error) {
+        debugPrint("e2e: the encrypted files' names weren't read from this device: $error");
+      }
+    }
+    return [
+      for (final a in listed)
+        a.kind == duvet.AttachmentKind.file
+            ? MyFile(
+                id: a.id,
+                name: a.filename,
+                contentType: a.contentType,
+                sizeBytes: a.sizeBytes,
+                createdAt: a.createdAt.toLocal(),
+                url: attachmentUrl(a.id),
+              )
+            : MyFile(
+                id: a.id,
+                name: names[a.id] ?? Notice.fileEncrypted.text,
+                contentType: 'application/octet-stream',
+                sizeBytes: a.sizeBytes,
+                createdAt: a.createdAt.toLocal(),
+                url: '',
+              ),
+    ];
+  }
 
   @override
   Future<void> deleteMyFile(String id) => _call((api) => api.deleteMyAttachment(id));
@@ -4577,7 +6029,8 @@ class DuvetRepository implements ChatRepository {
   Future<ConversationSummary> directMessage(String userId) async {
     final duvet.Conversation conversation;
     try {
-      conversation = await _call((api) => api.createDM(userId));
+      // The session's engine makes its group at once (Task 23); without one, the API makes the DM alone.
+      conversation = await (_engine?.createDM(userId) ?? _call((api) => api.createDM(userId)));
     } on duvet.DuvetApiException catch (e) {
       // The server only opens DMs between friends.
       if (e.statusCode == 403) {
@@ -4770,22 +6223,42 @@ class DuvetRepository implements ChatRepository {
     reactions: _reactions(m.reactions),
   );
 
-  ChatMessage _directMessage(duvet.DirectMessage m) {
+  /// A conversation's row as its chat draws it: none for a row that is neither numbered (an encrypted message, whose
+  /// text and files this device's database gives) nor one of the server's notices. An honest API serves a conversation
+  /// nothing else: any other row is the server's own making, which would show files it picks under a member's name
+  /// (I1 of step 4's closing review).
+  ChatMessage? _directMessage(duvet.DirectMessage m) {
+    if (m.seq == null && !_isNotice(m)) return null;
     final name = m.user?.alias ?? m.user?.username;
     if (name != null) _names[m.authorId] = name;
     return _directMessageNamed(m, name ?? _names[m.authorId] ?? 'Unknown');
   }
 
+  /// A pin's, a call's or a shared history's notice (types 2, 3 and 4).
+  static bool _isNotice(duvet.DirectMessage m) =>
+      m.type == duvet.MessageType.pinNotice || m.call != null || m.type == duvet.MessageType.historyShare;
+
+  // A conversation's text, quotes, link previews and files are never the API's (PLAN-E2E-CLIENTES.md, «La vista de una
+  // conversación»; I1 of the desktop's review): this device's database gives an encrypted message's ([readFrom]), and
+  // the attachments' task the envelope's files; a notice has none.
   ChatMessage _directMessageNamed(duvet.DirectMessage m, String authorName) => ChatMessage(
     id: m.id,
     authorId: m.authorId,
     authorName: authorName,
     authorAvatarUrl: avatarUrl(m.user?.avatar),
-    content: m.content ?? '',
+    content: '',
     createdAt: m.createdAt.toLocal(),
     edited: m.updatedAt.difference(m.createdAt) > const Duration(seconds: 1),
     nonce: m.nonce,
-    isNotice: m.type == duvet.MessageType.pinNotice || m.call != null,
+    isNotice: _isNotice(m),
+    sharedHistory: switch (m.historyShare) {
+      final s? => (
+        toUserId: s.toUserId,
+        toName: s.toUserId == profile.value?.id ? 'you' : nameOf(s.toUserId) ?? 'Someone',
+        range: s.range,
+      ),
+      null => null,
+    },
     call: switch (m.call) {
       final c? => CallNotice(
         participants: c.participants,
@@ -4797,12 +6270,17 @@ class DuvetRepository implements ChatRepository {
     isVoice: m.type == duvet.MessageType.voice,
     pinned: m.pinnedAt != null,
     fromBot: m.user?.isBot ?? false,
-    attachments: _attachments(m.attachments),
-    deletedAttachments: _attachments(m.attachments, deleted: true),
+    // An encrypted message's files are sealed: only this device's database says what they are ([withRow]).
+    sealedLinks: m.seq == null
+        ? const {}
+        : {
+            for (final a in m.attachments ?? const <duvet.Attachment>[])
+              if (a.deletedAt == null && a.deleted != true) a.id: _absolute(a.url, a.id),
+          },
     stickerUrl: m.stickerAttachmentId == null ? null : attachmentUrl(m.stickerAttachmentId!),
-    embeds: _embeds(m.embeds),
-    reply: _reply(m.referencedMessage, null),
+    reply: _reply(m.referencedMessage, null)?.withContent(''),
     reactions: _reactions(m.reactions),
+    seq: m.seq,
   );
 
   MessageReply? _reply(duvet.ReferencedMessage? ref, String? id) {
@@ -4911,7 +6389,15 @@ class DuvetRepository implements ChatRepository {
   @override
   void dispose() {
     _renewalRetry?.cancel();
+    _downloads?.close();
+    unawaited(_changesRefused.close());
+    unawaited(_deviceNotices.close());
     _closeSession();
+    unawaited(_gatewayEvents.close());
+    encryption.dispose();
+    conversationStates.dispose();
+    historyOffers.dispose();
+    backup.dispose();
     _voiceSignaling.dispose();
     _signedOut.close();
     _resumed.close();
@@ -4936,7 +6422,135 @@ class DuvetRepository implements ChatRepository {
   }
 }
 
+/// How the app's engine opens a conversation's files for the folder of decrypted files (lib/e2e/decrypted_files.dart):
+/// each downloaded from its signed URL by the repository, opened by the engine's core, a file that didn't open counted
+/// (decision 40).
+class _FileOpener implements FileOpener {
+  _FileOpener(this._repository, this._engine);
+  final DuvetRepository _repository;
+  final E2EEngine _engine;
+
+  @override
+  Future<Uint8List> download(String id, String url, int most, void Function(int received)? progress) =>
+      _repository._downloadSealed(id, url, most, progress);
+
+  @override
+  Future<Uint8List> open(String key, String id, Uint8List sealed, void Function(int done)? progress) =>
+      _engine.openFile(key, id, sealed, progress: progress);
+
+  @override
+  void failed() => _engine.fileFailed();
+}
+
 /// [onProgress] as duvet_client's uploads report it: the bytes sent so far, and
 /// their total.
 void Function(int sent, int total)? _bytesSent(void Function(double progress)? onProgress) =>
     onProgress == null ? null : (sent, total) => onProgress(total == 0 ? 0 : sent / total);
+
+/// The session's REST client as the encryption engine's routes see it (duvet_client's E2eApi): each request through the
+/// repository's [DuvetRepository._call], so a renewal on the way is saved, a session found ended signs out, and a
+/// client that took another's place (a stored session taken up, Ruling 30's reopen) is followed. Only while the session
+/// it was made for goes on: an engine still running after its session closed asks nothing more, of the next session's
+/// client least of all (M5 of the review). Neither the session taken up nor the reopen closes it.
+class _SessionRest with duvet.RestMethods {
+  _SessionRest(this._repository) : _session = _repository._sessionsClosed;
+  final DuvetRepository _repository;
+
+  /// How many sessions had closed when it was made: its session's place.
+  final int _session;
+
+  duvet.RestClient get _rest {
+    _ensureOpen();
+    return _repository._rest;
+  }
+
+  void _ensureOpen() {
+    if (_repository._sessionsClosed != _session) throw StateError('the session the engine was for ended');
+  }
+
+  @override
+  http.Client get client => _rest.client;
+
+  @override
+  ApiRouter get router => _rest.router;
+
+  @override
+  Map<String, String> get authHeaders => _rest.authHeaders;
+
+  @override
+  String? get duvetClient => _rest.duvetClient;
+
+  @override
+  Duration get requestTimeout => _rest.requestTimeout;
+
+  @override
+  Future<http.Response> request(
+    String method,
+    String path,
+    String action, {
+    Map<String, dynamic>? query,
+    bool root = false,
+    Object? json,
+    List<int>? bytes,
+    Map<String, Object>? fields,
+    List<duvet.FilePart>? files,
+    bool renew = true,
+    Duration? timeout,
+    void Function(int sent, int total)? onProgress,
+    Future<void>? abortTrigger,
+  }) async {
+    _ensureOpen();
+    return _repository._call(
+      (api) => api.request(
+        method,
+        path,
+        action,
+        query: query,
+        root: root,
+        json: json,
+        bytes: bytes,
+        fields: fields,
+        files: files,
+        renew: renew,
+        timeout: timeout,
+        onProgress: onProgress,
+        abortTrigger: abortTrigger,
+      ),
+    );
+  }
+}
+
+/// A new device's setup and approvals while no engine runs (none yet, or signed out): each act refuses, as the others
+/// do without an engine, and a scanned QR names no device.
+class _NoSetup implements DeviceSetupActions {
+  const _NoSetup();
+
+  Never _none() => throw ActionFailed(Notice.notReady.text);
+
+  @override
+  Future<void> recover(String recoveryKey) async => _none();
+  @override
+  Future<void> beginApproval() async => _none();
+  @override
+  Future<void> useCode() async => _none();
+  @override
+  Future<void> acceptCode(String code) async => _none();
+  @override
+  Future<void> endApproval() async {}
+  @override
+  Future<void> resetIdentity() async => _none();
+  @override
+  Future<void> finishSetup() async => _none();
+  @override
+  Future<void> approveDevice(String deviceId, String question) async => _none();
+  @override
+  Future<void> declineDevice(String deviceId) async => _none();
+  @override
+  Future<void> confirmApproval(String deviceId) async => _none();
+  @override
+  Future<ScannedDevice?> scannedDevice(String qr) async => null;
+  @override
+  Future<bool> approveScanned(String qr, ScannedDevice device) async => _none();
+  @override
+  Future<void> sendScanned(String deviceId) async => _none();
+}

@@ -14,6 +14,9 @@ import 'data/images.dart';
 import 'data/links.dart' show isDuvetId;
 import 'data/models.dart';
 import 'data/scope.dart';
+import 'e2e/members.dart' show maxGroupMembers;
+import 'e2e/notices.dart';
+import 'encryption/safety_number.dart' show VerifiedMark, openSafetyNumber;
 import 'members_sheet.dart' show MemberAction, PresenceAvatar;
 import 'space_admin.dart' show RoleSwatch, adminTry, confirmDestructive, managesRoleAt, mayRemove;
 import 'shell.dart';
@@ -193,26 +196,41 @@ Future<String?> _askBanReason(BuildContext context, {required String title}) {
 }
 
 /// Someone's profile, in a glass sheet: banner, avatar, presence, name, what
-/// they wrote, their roles in the Space; Message, Mention, Add friend.
-/// Answers Mention or Message when the caller handles them.
+/// they wrote, their roles in the Space; Message, Mention, Add friend, and in
+/// an encrypted conversation Share history ([canShareHistory]). Answers
+/// Mention, Message or Share history when the caller handles them.
 Future<MemberAction?> showProfileSheet(
   BuildContext context, {
   required Member member,
   String? spaceId,
   bool canMention = false,
+  bool canShareHistory = false,
 }) => showGlassSheet<MemberAction>(
   context,
   label: '${member.displayName}’s profile',
   initialSize: 0.72,
-  builder: (context, scroll) => _Profile(member: member, spaceId: spaceId, canMention: canMention, scroll: scroll),
+  builder: (context, scroll) => _Profile(
+    member: member,
+    spaceId: spaceId,
+    canMention: canMention,
+    canShareHistory: canShareHistory,
+    scroll: scroll,
+  ),
 );
 
 class _Profile extends StatefulWidget {
   final Member member;
   final String? spaceId;
   final bool canMention;
+  final bool canShareHistory;
   final ScrollController scroll;
-  const _Profile({required this.member, required this.spaceId, required this.canMention, required this.scroll});
+  const _Profile({
+    required this.member,
+    required this.spaceId,
+    required this.canMention,
+    required this.scroll,
+    this.canShareHistory = false,
+  });
 
   @override
   State<_Profile> createState() => _ProfileState();
@@ -233,6 +251,12 @@ class _ProfileState extends State<_Profile> {
     final repository = context.repository;
     repository.loadFriends().catchError((Object e) => debugPrint('friends: $e'));
     if (_bansChanged == null) {
+      // Looked at as the API serves them now, as the profile opens: their mark is the core's, and a changed key leaves
+      // its notice (Task 29).
+      final userId = widget.member.userId;
+      if (!widget.member.isBot && repository.canVerify(userId)) {
+        unawaited(repository.contactVerified(userId).catchError((Object _) => false));
+      }
       _bansChanged = repository.bansChanged.listen((id) {
         if (id == widget.spaceId) _checkBan();
       });
@@ -353,9 +377,11 @@ class _ProfileState extends State<_Profile> {
         repository.friends,
         repository.spaces,
         repository.activities,
+        repository.contacts,
       ]),
       builder: (context, _) {
         final spaceId = widget.spaceId;
+        final verified = repository.contacts.value.verified[m.userId] == true;
         final roles = spaceId == null ? const <RoleTag>[] : repository.rolesOf(spaceId, m.userId);
         // As MemberAdminPage; on their own profile only if a role is theirs to change.
         final assignsRoles =
@@ -462,12 +488,20 @@ class _ProfileState extends State<_Profile> {
                       ],
                     ),
                     const SizedBox(height: 16),
-                    Semantics(
-                      header: true,
-                      child: switch (nameColorsOf(roles)) {
-                        final c? => RoleName(m.displayName, colors: c, style: DuvetType.title),
-                        null => Text(m.displayName, style: DuvetType.title.copyWith(color: colors.foreground)),
-                      },
+                    Row(
+                      children: [
+                        Flexible(
+                          child: Semantics(
+                            header: true,
+                            child: switch (nameColorsOf(roles)) {
+                              final c? => RoleName(m.displayName, colors: c, style: DuvetType.title),
+                              null => Text(m.displayName, style: DuvetType.title.copyWith(color: colors.foreground)),
+                            },
+                          ),
+                        ),
+                        // A contact the person verified on this device (Task 29).
+                        if (verified) ...[const SizedBox(width: 8), const VerifiedMark(size: 20)],
+                      ],
                     ),
                     // No handle where only their name is known (a mention of
                     // someone the app hasn't met).
@@ -501,6 +535,15 @@ class _ProfileState extends State<_Profile> {
                               onPressed: () => Navigator.of(context).pop(MemberAction.mention),
                             ),
                           ],
+                          // Their security number, for someone whose identity the person can read (Task 29).
+                          if (!m.isBot && repository.canVerify(m.userId)) ...[
+                            const SizedBox(width: 8),
+                            _SquareButton(
+                              label: Notice.verifyNumber.text,
+                              icon: FLucideIcons.shield,
+                              onPressed: () => openSafetyNumber(context, repository, m.userId, m.displayName),
+                            ),
+                          ],
                           if (!m.isBot) ...[
                             const SizedBox(width: 8),
                             _SquareButton(
@@ -527,6 +570,15 @@ class _ProfileState extends State<_Profile> {
                           ],
                         ],
                       ),
+                      if (widget.canShareHistory && !m.isBot) ...[
+                        const SizedBox(height: 8),
+                        DuvetButton(
+                          label: Notice.shareHistory.text,
+                          icon: FLucideIcons.history,
+                          expand: true,
+                          onPressed: () => Navigator.of(context).pop(MemberAction.shareHistory),
+                        ),
+                      ],
                     ],
                     const SizedBox(height: 16),
                     Container(
@@ -1771,6 +1823,8 @@ class _GroupInfoPageState extends State<GroupInfoPage> {
   Future<void> _addPeople() async {
     final repository = context.repository;
     final here = {for (final m in _members) m.userId};
+    // A full group says so as the sheet opens, and its rows take no tap (the desktop's way).
+    final full = here.length >= maxGroupMembers;
     final picked = await showGlassSheet<Member>(
       context,
       label: 'Add people',
@@ -1787,6 +1841,7 @@ class _GroupInfoPageState extends State<GroupInfoPage> {
             controller: scroll,
             children: [
               const SheetTitle(title: 'Add people'),
+              if (full) ListNote(Notice.groupFull.text),
               for (final m in candidates)
                 ListRow(
                   leading: UserAvatar(name: m.displayName, url: m.avatarUrl, size: 48),
@@ -1794,7 +1849,7 @@ class _GroupInfoPageState extends State<GroupInfoPage> {
                   snippet: '@${m.username}',
                   banner: m.bannerUrl,
                   bannerOffline: isOffline(context.repository.presence.value[m.userId]),
-                  onTap: () => Navigator.of(context).pop(m),
+                  onTap: full ? null : () => Navigator.of(context).pop(m),
                 ),
               if (candidates.isEmpty) const ListNote('No friends available to add'),
             ],

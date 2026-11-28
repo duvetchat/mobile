@@ -5,6 +5,7 @@ import 'dart:convert';
 
 import '../data/links.dart';
 import '../data/models.dart';
+import '../e2e/notices.dart';
 
 /// A push: a message that notifies the user, or the end of their session on this phone.
 sealed class Push {
@@ -13,6 +14,7 @@ sealed class Push {
   /// The push [data] holds, or null for one the app doesn't know or can't read.
   static Push? fromData(Map<String, dynamic> data) => switch (data['type']) {
     'message' => MessagePush._fromData(data),
+    'encrypted_message' => EncryptedMessagePush._fromData(data),
     'signed_out' => const SignedOutPush(),
     'call' => CallPush._fromData(data),
     'call_end' => CallEndPush._fromData(data),
@@ -25,9 +27,21 @@ String? _field(Map<String, dynamic> data, String key) => switch (data[key]) {
   _ => null,
 };
 
-DateTime? _millis(Map<String, dynamic> data, String key) => switch (int.tryParse(_field(data, key) ?? '')) {
-  final int ms => DateTime.fromMillisecondsSinceEpoch(ms, isUtc: true),
-  null => null,
+final _digits = RegExp(r'^[0-9]+$');
+
+/// A number of the push's as the API writes it (strconv.FormatInt): decimal digits alone. Null for anything else, a
+/// sign, a space or `0x` among them, which int.tryParse would take, and for one past what an int holds.
+int? _number(Map<String, dynamic> data, String key) => switch (_field(data, key)) {
+  final String digits when _digits.hasMatch(digits) => int.tryParse(digits),
+  _ => null,
+};
+
+/// The most milliseconds a DateTime holds after 1970: past them, it throws.
+const _mostMillis = 8640000000000000;
+
+DateTime? _millis(Map<String, dynamic> data, String key) => switch (_number(data, key)) {
+  final int ms when ms <= _mostMillis => DateTime.fromMillisecondsSinceEpoch(ms, isUtc: true),
+  _ => null,
 };
 
 /// A call that rings the user (duvetchat/api#276): who calls, from where (a group's name, or nothing in a direct
@@ -81,20 +95,22 @@ final class CallEndPush extends Push {
 
   const CallEndPush({required this.conversationId, this.startedAt = 0});
 
-  static CallEndPush? _fromData(Map<String, dynamic> data) => switch (_field(data, 'conversation_id')) {
-    final String conversation when isDuvetId(conversation) => CallEndPush(
-      conversationId: conversation,
-      startedAt: int.tryParse(_field(data, 'started_at') ?? '') ?? 0,
-    ),
-    _ => null,
-  };
+  /// Without a start, an end is of whatever call of the conversation shows; with one the API wouldn't write, it's none.
+  static CallEndPush? _fromData(Map<String, dynamic> data) =>
+      switch ((_field(data, 'conversation_id'), data.containsKey('started_at') ? _number(data, 'started_at') : 0)) {
+        (final String conversation, final int startedAt) when isDuvetId(conversation) => CallEndPush(
+          conversationId: conversation,
+          startedAt: startedAt,
+        ),
+        _ => null,
+      };
 }
 
 /// A conversation's call's notification ID, apart from its messages' ([notificationIdOf]).
 int callNotificationIdOf(String conversationId) => notificationIdOf('call:$conversationId');
 
-/// A message that notifies the user: who wrote it, where, and its text as the API words it (names, not IDs; each
-/// spoiler hidden).
+/// A message that notifies the user: who wrote it, where, and its text: a room's as the API words it (names, not IDs;
+/// each spoiler hidden), a conversation's as this device's core opened it ([EncryptedMessagePush.shown]).
 final class MessagePush extends Push {
   final String messageId;
   final String authorId;
@@ -109,6 +125,10 @@ final class MessagePush extends Push {
   final ChatTarget target;
   final DateTime sentAt;
 
+  /// A conversation's: the texts this device's database holds of its chat's earlier lines, by message ID, which its
+  /// notification shows as the history keeps none. In memory alone.
+  final Map<String, String> earlier;
+
   const MessagePush({
     required this.messageId,
     required this.authorId,
@@ -118,20 +138,41 @@ final class MessagePush extends Push {
     required this.text,
     required this.target,
     required this.sentAt,
+    this.earlier = const {},
   });
 
-  // Its IDs are UUIDs, as the API's are: the chat's names a file (push_history.dart) and the link a path.
-  static MessagePush? _fromData(Map<String, dynamic> data) {
+  /// A line a chat's history kept (push_history.dart): a conversation's without its text, which it never keeps.
+  static MessagePush? kept(Map<String, dynamic> data) => _fromData(data, kept: true);
+
+  /// A conversation's message the app couldn't tell in front, gone to the back while its notice waited (the
+  /// repository's notifyAway): worded as its push is ([pushText]), or «New message» without its text.
+  factory MessagePush.away(AwayNotice notice) => MessagePush(
+    messageId: notice.message.id,
+    authorId: notice.message.authorId ?? '',
+    authorName: notice.message.authorName,
+    authorAvatar: notice.message.authorAvatarUrl ?? '',
+    place: notice.place,
+    text: pushText(notice.text ?? '') ?? Notice.newMessage.text,
+    target: notice.target,
+    sentAt: notice.message.createdAt,
+  );
+
+  // Its IDs are UUIDs, as the API's are: the chat's names a file (push_history.dart) and the link a path. A
+  // conversation's message of this type the API never pushes, being end-to-end encrypted: one would show words the
+  // server wrote, under a member's name (rule 6 of the desktop's task 20 review), and is read as nothing. A history
+  // keeps a conversation's lines so, without their text.
+  static MessagePush? _fromData(Map<String, dynamic> data, {bool kept = false}) {
     String? field(String key) => switch (data[key]) {
       final String value => value,
       _ => null,
     };
     final messageId = field('message_id');
     final authorId = field('author_id');
-    final sentAt = int.tryParse(field('sent_at') ?? '');
+    final sentAt = _millis(data, 'sent_at');
     if (messageId == null || !isDuvetId(messageId) || authorId == null || sentAt == null) return null;
     final ChatTarget target;
     if (field('conversation_id') case final conversation? when isDuvetId(conversation)) {
+      if (!kept) return null;
       target = ConversationTarget(conversation);
     } else if ((field('space_id'), field('room_id')) case (
       final space?,
@@ -147,11 +188,23 @@ final class MessagePush extends Push {
       authorName: field('author_name') ?? '',
       authorAvatar: field('author_avatar') ?? '',
       place: field('place') ?? '',
-      text: field('text') ?? '',
+      text: target is ConversationTarget ? '' : field('text') ?? '',
       target: target,
-      sentAt: DateTime.fromMillisecondsSinceEpoch(sentAt, isUtc: true),
+      sentAt: sentAt,
     );
   }
+
+  /// The same message with [text]: a conversation's line as this device's database holds it.
+  MessagePush withText(String text) => MessagePush(
+    messageId: messageId,
+    authorId: authorId,
+    authorName: authorName,
+    authorAvatar: authorAvatar,
+    place: place,
+    text: text,
+    target: target,
+    sentAt: sentAt,
+  );
 
   /// Its chat: the room's ID, or the conversation's.
   String get chatId => target.id;
@@ -159,7 +212,7 @@ final class MessagePush extends Push {
   /// The message's link, which opens it in the app.
   Uri get link => Uri.parse(messageLink(target, messageId));
 
-  /// Its data again, as the API sent it.
+  /// Its data again, as the API sent it: a conversation's without its text, which nothing keeps.
   Map<String, String> toData() => {
     'type': 'message',
     'message_id': messageId,
@@ -167,13 +220,116 @@ final class MessagePush extends Push {
     'author_name': authorName,
     'author_avatar': authorAvatar,
     'place': place,
-    'text': text,
+    if (target is RoomTarget) 'text': text,
     'sent_at': '${sentAt.millisecondsSinceEpoch}',
     ...switch (target) {
       RoomTarget(:final spaceId, :final roomId) => {'space_id': spaceId, 'room_id': roomId},
       ConversationTarget(:final conversationId) => {'conversation_id': conversationId},
     },
   };
+}
+
+/// A conversation's message (decision 29; PLAN-E2E-API.md, its section on pushes): who wrote it, where and when, its
+/// number in the conversation's queue, and its queue entry while the push's data fit FCM's 4096 bytes, which this
+/// device's core opens. Never its text: the API has none.
+final class EncryptedMessagePush extends Push {
+  final String messageId;
+  final String conversationId;
+  final String authorId;
+  final String authorName;
+
+  /// The author's avatar as the API gives it: an attachment's ID, a URL, or empty.
+  final String authorAvatar;
+
+  /// A group's name, or empty in a direct message.
+  final String place;
+  final DateTime sentAt;
+  final int seq;
+
+  /// Its queue entry as the queue gives it; null without one (a long message's), or for one that isn't JSON.
+  final Map<String, Object?>? entry;
+
+  const EncryptedMessagePush({
+    required this.messageId,
+    required this.conversationId,
+    required this.authorId,
+    required this.authorName,
+    required this.authorAvatar,
+    required this.place,
+    required this.sentAt,
+    required this.seq,
+    this.entry,
+  });
+
+  static EncryptedMessagePush? _fromData(Map<String, dynamic> data) {
+    final message = _field(data, 'message_id');
+    final conversation = _field(data, 'conversation_id');
+    final author = _field(data, 'author_id');
+    final sentAt = _millis(data, 'sent_at');
+    final seq = _number(data, 'seq');
+    if (message == null || !isDuvetId(message) || conversation == null || !isDuvetId(conversation)) return null;
+    if (author == null || sentAt == null || seq == null) return null;
+    Map<String, Object?>? entry;
+    try {
+      entry = switch (jsonDecode(_field(data, 'entry') ?? 'null')) {
+        final Map<String, dynamic> read => read,
+        _ => null,
+      };
+    } on FormatException {
+      entry = null;
+    }
+    return EncryptedMessagePush(
+      messageId: message,
+      conversationId: conversation,
+      authorId: author,
+      authorName: _field(data, 'author_name') ?? '',
+      authorAvatar: _field(data, 'author_avatar') ?? '',
+      place: _field(data, 'place') ?? '',
+      sentAt: sentAt,
+      seq: seq,
+      entry: entry,
+    );
+  }
+
+  /// What its notification shows: its text as this device's core opened it ([texts], by message ID), worded as the
+  /// API words a room's ([pushText], the people it names by [names]), or «New message» with who wrote it (Ruling 18);
+  /// and its chat's earlier lines' texts, which the core holds.
+  MessagePush shown(Map<String, String> texts, {Map<String, String> names = const {}}) {
+    final worded = {for (final MapEntry(:key, :value) in texts.entries) key: ?pushText(value, names: names)};
+    return MessagePush(
+      messageId: messageId,
+      authorId: authorId,
+      authorName: authorName,
+      authorAvatar: authorAvatar,
+      place: place,
+      text: worded[messageId] ?? Notice.newMessage.text,
+      target: ConversationTarget(conversationId),
+      sentAt: sentAt,
+      earlier: {...worded}..remove(messageId),
+    );
+  }
+}
+
+final _spoiler = RegExp(r'\|\|.+?\|\|', dotAll: true);
+final _mention = RegExp(r'<@([0-9a-fA-F-]+)>');
+final _room = RegExp(r'<#[0-9a-fA-F-]+>');
+final _emoji = RegExp(r'<:([0-9a-fA-F-]+):>');
+
+/// A conversation's message's text as its notification shows it, as the API's push words a room's (push.Text): the
+/// people it names by [names] (@unknown for another), rooms as #unknown (a conversation names none it may show),
+/// custom emojis as :emoji:, each spoiler as ▮▮▮ with all it holds, as anyone near the screen reads a notification,
+/// its spaces run together, cut at 2000 characters. Null when nothing is left.
+String? pushText(String text, {Map<String, String> names = const {}}) {
+  final worded = text
+      .replaceAll(_spoiler, '▮▮▮')
+      .replaceAllMapped(_mention, (m) => '@${names[m[1]!.toLowerCase()] ?? 'unknown'}')
+      .replaceAll(_room, '#unknown')
+      .replaceAll(_emoji, ':emoji:')
+      .replaceAll(RegExp(r'\s+'), ' ')
+      .trim();
+  if (worded.isEmpty) return null;
+  final runes = worded.runes;
+  return runes.length <= 2000 ? worded : '${String.fromCharCodes(runes.take(1999))}…';
 }
 
 /// The user's session on this phone ended otherwise than by signing out: they sign in again to get notifications.

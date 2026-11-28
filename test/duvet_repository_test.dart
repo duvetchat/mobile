@@ -10,6 +10,7 @@ import 'package:duvet/data/models.dart';
 import 'package:duvet/data/recent_chats.dart';
 import 'package:duvet/data/session_store.dart';
 import 'package:duvet/data/voice.dart';
+import 'package:duvet/e2e/notices.dart';
 import 'package:duvet_client/duvet.dart' as duvet;
 import 'package:duvet_client/http/router.dart' show ApiRouter;
 import 'package:fake_async/fake_async.dart';
@@ -38,12 +39,14 @@ Map<String, dynamic> _user(String id, String username, {String? alias, String? a
   'updated_at': _at,
 };
 
+// Numbered by its ID, as an encrypted message's row: an honest API serves a conversation nothing else but its notices.
 Map<String, dynamic> _dm(String id, String author, String content, {String? nonce}) => {
   'id': id,
   'conversation_id': 'c-1',
   'author_id': author,
   'content': content,
   'type': 0,
+  'seq': int.parse(id),
   'nonce': nonce,
   'created_at': _at,
   'updated_at': _at,
@@ -219,8 +222,12 @@ void main() {
   /// Holds a room's move until the test answers it.
   late Completer<http.Response> moveReply;
 
+  /// The API also lists the group c-2, from before the cutover: it has no group yet.
+  late bool groupWithoutMls;
+
   setUp(() {
     requests = [];
+    groupWithoutMls = false;
     store = MemorySessionStore();
     recentsStore = MemoryRecentChatsStore();
     cache = MemoryChatCacheStore();
@@ -325,11 +332,32 @@ void main() {
           jsonEncode({'error': 'you must be friends with $_leo'}),
           403,
         ),
+        ('DELETE', '/api/users/@me/conversations/c-2/members/@me') => http.Response('', 204),
         ('POST', '/api/users/@me/conversations/c-1/members') => http.Response(
           jsonEncode({'error': 'internal server error'}),
           500,
         ),
         ('GET', '/api/users/@me/conversations') => [
+          if (groupWithoutMls)
+            {
+              'id': 'c-2',
+              'type': 2,
+              'name': 'Crew',
+              'owner_id': _maya,
+              'created_at': _at,
+              'updated_at': _at,
+              'members': [
+                for (final (id, name) in [(_me, 'gaby'), (_maya, 'maya')])
+                  {
+                    'id': 'm2-$id',
+                    'conversation_id': 'c-2',
+                    'user_id': id,
+                    'created_at': _at,
+                    'updated_at': _at,
+                    'user': {'id': id, 'username': name},
+                  },
+              ],
+            },
           {
             'id': 'c-1',
             'type': 1,
@@ -360,9 +388,9 @@ void main() {
         ],
         // The API answers the newest first.
         ('GET', '/api/users/@me/conversations/c-1/messages') => [_dm('2', _me, 'second'), _dm('1', _maya, 'first')],
-        ('GET', '/api/users/@me/conversations/c-1/messages/search') => {
+        ('GET', '/api/spaces/s-1/messages/search') => {
           'total_results': 40,
-          'messages': [_dm('2', _me, 'second')],
+          'messages': [_roomMessage('2', 'second')],
         },
         ('POST', '/api/users/@me/conversations/c-1/messages')
             when (request.headers['content-type'] ?? '').startsWith('multipart/') =>
@@ -409,6 +437,7 @@ void main() {
           {..._command, ...jsonDecode(request.body) as Map<String, dynamic>, 'id': 'cmd-1'},
         ('DELETE', '/api/users/@me/teams/t-1/applications/a-1/commands/cmd-1') => http.Response('', 204),
         ('GET', '/api/rooms/r-general/messages') => [roomNewest],
+        ('POST', '/api/rooms/r-general/messages') => roomNewest,
         ('GET', '/api/spaces/s-1/commands') => {
           'applications': [
             {
@@ -590,16 +619,49 @@ void main() {
     expect(repository.conversations.value.single.title, 'Maya');
   });
 
-  test('a group the API refuses to make or change says why, as the API says it', () async {
+  test('a group the API refuses to make says why, as the API says it', () async {
     await repository.logIn('gaby@duvet.chat', 'secret');
     await expectLater(
       repository.createGroup('Crew', [_maya, _leo]),
       throwsA(isA<ActionFailed>().having((e) => e.message, 'message', 'You must be friends with $_leo')),
     );
-    // A server error says the API's words too, as the desktop shows them.
-    await expectLater(
-      repository.addToConversation('c-1', _leo),
-      throwsA(isA<ActionFailed>().having((e) => e.message, 'message', 'Internal server error')),
+  });
+
+  // Review Focus 2: a conversation's members change only by the engine of the app on a screen, as a commit of its
+  // group or a leave's statement. A repository without one (here, none at all) asks nothing.
+  test("without its engine, the app changes no conversation's members", () async {
+    await repository.logIn('gaby@duvet.chat', 'secret');
+    final from = requests.length;
+    for (final change in [
+      () => repository.addToConversation('c-1', _leo),
+      () => repository.removeFromConversation('c-1', _leo),
+      () => repository.leaveConversation('c-1'),
+    ]) {
+      await expectLater(
+        change(),
+        throwsA(isA<ActionFailed>().having((e) => e.message, 'message', Notice.notReady.text)),
+      );
+    }
+    expect([
+      for (final r in requests.skip(from))
+        if (r.url.path.contains('/members')) r.url.path,
+    ], isEmpty);
+  });
+
+  // The comparison's C4, as the desktop does: a group that has no group yet takes no statement, so the app without its
+  // engine leaves it over REST, as the API takes it; a DM still can't be left, nor one with a group, by any but the
+  // engine.
+  test('without its engine, the app leaves a group that has no group yet over REST', () async {
+    groupWithoutMls = true;
+    await repository.logIn('gaby@duvet.chat', 'secret');
+    final from = requests.length;
+    await repository.leaveConversation('c-2');
+    expect(
+      [
+        for (final r in requests.skip(from))
+          if (r.url.path.contains('/members')) '${r.method} ${r.url.path} ${r.body}',
+      ],
+      ['DELETE /api/users/@me/conversations/c-2/members/@me '],
     );
   });
 
@@ -887,11 +949,37 @@ void main() {
     expect(await store.read(), isNull);
   });
 
-  test('offline, a saved session opens from the cache, history too', () async {
+  test("offline, a saved session opens from the cache, a room's history too; a conversation's isn't kept", () async {
+    const general = RoomTarget(spaceId: 's-1', roomId: 'r-general');
     await repository.logIn('gaby@duvet.chat', 'secret');
+    repository.handleEvent(_event('READY', {'user': _user(_me, 'gaby'), 'sessionToken': 'ws'}));
+    repository.handleEvent(
+      _event('SPACE_CREATE', {
+        'space': {'id': 's-1', 'name': 'Design Guild', 'owner_id': _me, 'created_at': _at, 'updated_at': _at},
+        'rooms': {
+          'r-general': {
+            'id': 'r-general',
+            'space_id': 's-1',
+            'type': 1,
+            'name': 'general',
+            'position': 0,
+            'created_at': _at,
+            'updated_at': _at,
+          },
+        },
+        'roles_permissions': <String, dynamic>{},
+        'owner_id': _me,
+      }),
+    );
+    await repository.messages(general);
+    // End-to-end encrypted: what it says stays in the core's database alone.
     await repository.messages(const ConversationTarget('c-1'));
     // The cache writes a moment after the changes.
-    await eventually(() => expect(cache.data.keys, containsAll(['home', 'chat_c-1'])));
+    await eventually(() {
+      expect(cache.data.keys, containsAll(['home', 'chat_r-general']));
+      expect((jsonDecode(cache.data['home']!) as Map)['spaces'], hasLength(1));
+    });
+    expect(cache.data.keys, isNot(contains('chat_c-1')));
 
     final offline = DuvetRepository(
       store: store,
@@ -907,22 +995,29 @@ void main() {
     await eventually(() => expect(offline.status.value, LiveStatus.offline));
     expect(offline.profile.value?.username, 'gaby');
     expect(offline.conversations.value.single.title, 'Maya');
-    final page = await offline.messages(const ConversationTarget('c-1'));
-    expect(page.map((m) => m.content), ['first', 'second']);
+    final page = await offline.messages(general);
+    expect(page.map((m) => m.content), ['newest']);
+    await expectLater(offline.messages(const ConversationTarget('c-1')), throwsA(anything));
   });
 
-  test('history comes oldest first, and sending passes the nonce', () async {
-    await repository.logIn('gaby@duvet.chat', 'secret');
-    const target = ConversationTarget('c-1');
+  // An encrypted conversation's text is only ever its devices' (PLAN-E2E-CLIENTES.md; I1 of the desktop's task 16
+  // review): what the API lists of it shows none of what it says, and nothing goes to it in the clear.
+  test(
+    "a conversation's history comes oldest first with no text from the API, and nothing goes in the clear",
+    () async {
+      await repository.logIn('gaby@duvet.chat', 'secret');
+      const target = ConversationTarget('c-1');
 
-    final history = await repository.messages(target);
-    expect(history.map((m) => m.content), ['first', 'second']);
-    expect(history.first.authorName, 'maya');
+      final history = await repository.messages(target);
+      expect(history.map((m) => m.id), ['1', '2']);
+      expect(history.map((m) => m.content), ['', '']);
+      expect(history.first.authorName, 'maya');
 
-    final sent = await repository.send(target, 'hello', nonce: 'n-1');
-    expect(sent.content, 'hello');
-    expect(sent.nonce, 'n-1');
-  });
+      // Without an engine on a screen, a conversation's message isn't sent at all.
+      await expectLater(repository.send(target, 'hello', nonce: 'n-1'), throwsA(isA<ActionFailed>()));
+      expect(requests.where((r) => r.method == 'POST' && r.url.path.endsWith('/conversations/c-1/messages')), isEmpty);
+    },
+  );
 
   test('a file marked as a spoiler uploads under its SPOILER_ name, and the picked file stays', () async {
     await repository.logIn('gaby@duvet.chat', 'secret');
@@ -931,7 +1026,7 @@ void main() {
     final picked = await File('${dir.path}/scaled_1.jpg').writeAsBytes([1, 2, 3]);
 
     await repository.send(
-      const ConversationTarget('c-1'),
+      const RoomTarget(spaceId: 's-1', roomId: 'r-general'),
       '',
       nonce: 'n-1',
       files: [OutgoingFile(path: picked.path, name: 'SPOILER_cat.jpg', contentType: 'image/jpeg')],
@@ -994,11 +1089,41 @@ void main() {
     addTearDown(sub.cancel);
     repository.handleEvent(_event('DM_MESSAGE_CREATE', _dm('9', _maya, 'live')));
     await pumpEventQueue();
-    expect((events.single as MessageCreated).message.content, 'live');
+    // A conversation's text is what this device's own database holds: none of the API's words (PLAN-E2E-CLIENTES.md).
+    final live = (events.single as MessageCreated).message;
+    expect((live.id, live.content), ('9', ''));
     expect(repository.unread.value, contains('c-1'));
 
     repository.markRead(const ConversationTarget('c-1'), '9');
     expect(repository.unread.value, isNot(contains('c-1')));
+  });
+
+  // I4 of task 17's review, its repository half: an encrypted message's update from the API brings none of its text:
+  // the chat reads what the device holds again, and no copy of the API's reaches it.
+  test("an encrypted message's update reads the device again, never the API's copy", () async {
+    await repository.logIn('gaby@duvet.chat', 'secret');
+    repository.handleEvent(_event('READY', {'user': _user(_me, 'gaby'), 'sessionToken': 'ws'}));
+    final events = <MessageEvent>[];
+    final sub = repository.messageEvents(const ConversationTarget('c-1')).listen(events.add);
+    addTearDown(sub.cancel);
+    repository.handleEvent(_event('DM_MESSAGE_UPDATE', {..._dm('9', _maya, ''), 'seq': 3}));
+    await pumpEventQueue();
+    expect(events.whereType<MessageUpdated>(), isEmpty);
+    expect(events.whereType<ContentChanged>(), hasLength(1));
+  });
+
+  // M1 of task 17's review: a live encrypted message this device can't read yet (no engine here) draws as loading,
+  // neither an empty bubble nor waiting.
+  test('a live encrypted message the device cannot read yet loads', () async {
+    await repository.logIn('gaby@duvet.chat', 'secret');
+    repository.handleEvent(_event('READY', {'user': _user(_me, 'gaby'), 'sessionToken': 'ws'}));
+    final events = <MessageEvent>[];
+    final sub = repository.messageEvents(const ConversationTarget('c-1')).listen(events.add);
+    addTearDown(sub.cancel);
+    repository.handleEvent(_event('DM_MESSAGE_CREATE', {..._dm('9', _maya, ''), 'seq': 3}));
+    await pumpEventQueue();
+    final live = (events.single as MessageCreated).message;
+    expect((live.loading, live.waiting), (true, false));
   });
 
   test('a call notice leaves the conversation read for whoever saw the call, unread for the rest (#158)', () async {
@@ -1009,6 +1134,7 @@ void main() {
     Map<String, dynamic> notice(String id, List<String> participants) => {
       ..._dm(id, _maya, ''),
       'content': null,
+      'seq': null,
       'type': 3,
       'call': {'participants': participants, 'started_at': '2026-10-23T09:00:00Z', 'ended_at': '2026-10-23T09:05:30Z'},
     };
@@ -2696,46 +2822,53 @@ void main() {
       );
       await pumpEventQueue();
       final m = (events.single as MessageCreated).message;
-      expect((m.reply?.messageId, m.reply?.authorName, m.reply?.content), ('1', 'Gaby', 'ship it?'));
+      // A conversation's quote has no text but what this device holds of the message it quotes.
+      expect((m.reply?.messageId, m.reply?.authorName, m.reply?.content), ('1', 'Gaby', ''));
       expect((m.reactions.single.emoji, m.reactions.single.count), ('🎉', 2));
 
-      await repository.send(const ConversationTarget('c-1'), 'yes', nonce: 'n1', replyTo: '9');
+      // A room's reply goes out as a reference (a conversation's goes through its engine: test/e2e/send_test.dart).
+      const room = RoomTarget(spaceId: 's-1', roomId: 'r-general');
+      await repository.send(room, 'yes', nonce: 'n1', replyTo: '9');
       final send = requests.lastWhere((r) => r.method == 'POST');
       final body = jsonDecode(send.body) as Map;
       expect((body['message_reference'] as Map)['message_id'], '9');
       expect(body.containsKey('allowed_mentions'), isFalse);
 
-      await repository.send(
-        const ConversationTarget('c-1'),
-        'quietly',
-        nonce: 'n2',
-        replyTo: '9',
-        mentionRepliedUser: false,
-      );
+      await repository.send(room, 'quietly', nonce: 'n2', replyTo: '9', mentionRepliedUser: false);
       final quiet = jsonDecode(requests.lastWhere((r) => r.method == 'POST').body) as Map;
       expect(quiet['allowed_mentions'], {'replied_user': false});
     });
 
     test('a search sends the desktop\'s filters and a cursor, and answers the total', () async {
       await repository.logIn('gaby@duvet.chat', 'secret');
-      final page = await repository.search(
-        SearchQuery(
-          'second',
-          conversationId: 'c-1',
-          authorIds: const [_me],
-          has: const ['image', 'link'],
-          pinned: false,
-          after: DateTime.utc(2026, 11, 8),
-          cursor: '9',
-        ),
+      final query = SearchQuery(
+        'second',
+        spaceId: 's-1',
+        authorIds: const [_me],
+        has: const ['image', 'link'],
+        pinned: false,
+        after: DateTime.utc(2026, 11, 8),
+        cursor: '9',
       );
+      final page = await repository.search(query);
       expect((page.total, page.hits.single.message.content), (40, 'second'));
       final url = requests.lastWhere((r) => r.url.path.endsWith('/messages/search')).url;
+      expect(url.queryParameters['query'], 'second');
       expect(url.queryParametersAll['has'], ['image', 'link']);
       expect(url.queryParameters['author_id'], _me);
       expect(url.queryParameters['pinned'], 'false');
       expect(url.queryParameters['after'], startsWith('2026-11-08T00:00:00'));
       expect(url.queryParameters['cursor'], '9');
+      // The next page starts after this one's last.
+      expect(page.next?.cursor, '2');
+      // A conversation's search goes to this device's database (test/e2e/search_test.dart): without an engine here,
+      // none is ready, and the API isn't asked.
+      final asked = requests.length;
+      await expectLater(
+        repository.search(const SearchQuery('', conversationId: 'c-1', pinned: true)),
+        throwsA(isA<ActionFailed>().having((e) => e.message, 'message', Notice.notReady.text)),
+      );
+      expect(requests.length, asked);
     });
 
     test('the newest message of a room is fetched alone, and kept live', () async {
@@ -2773,10 +2906,11 @@ void main() {
       int fetches() => requests.where((r) => r.method == 'GET' && r.url.path.endsWith('/messages')).length;
       String? preview(String id) => repository.recents.value.firstWhere((c) => c.target.id == id).previewText;
 
-      // The list of conversations dates the DM after its preview.
+      // The list of conversations dates the DM after its preview: its newest message, whose text only this device's own
+      // database holds, none here.
       await repository.logIn('gaby@duvet.chat', 'secret');
       await pumpEventQueue();
-      expect(preview('c-1'), 'second');
+      expect(preview('c-1'), 'Sent a message');
 
       // READY names a newer message than the room's preview.
       repository.handleEvent(_event('READY', ready('last')));

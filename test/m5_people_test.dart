@@ -721,10 +721,15 @@ void main() {
   });
 
   // A group of the user's friends Maya and Leo; its members Gaby and Maya.
-  Future<FakeRepository> openGroupInfo(WidgetTester tester, {required String owner}) async {
+  Future<FakeRepository> openGroupInfo(
+    WidgetTester tester, {
+    required String owner,
+    List<Member> more = const [],
+  }) async {
     final repository = await pumpApp(
       tester,
       setUp: (r) {
+        r.extraConversationMembers.addAll(more);
         r.conversations.value = [
           ConversationSummary(
             id: 'c-team',
@@ -772,6 +777,24 @@ void main() {
       'add c-team $_leo',
       'leave c-team',
     ]);
+    semantics.dispose();
+  });
+
+  // A full group's Add people says so as it opens, and its friends take no tap: nothing goes to the API (the desktop's
+  // way, the comparison's C2).
+  testWidgets("a full group's Add people says so, and its friends take no tap", (tester) async {
+    final here = FakeRepository.everyone.where((m) => m.userId != _leo).length;
+    final repository = await openGroupInfo(
+      tester,
+      owner: FakeRepository.me.id,
+      more: [for (var i = here; i < 20; i++) Member(userId: 'u-crew-$i', username: 'crew$i')],
+    );
+    await tapLabel(tester, 'Add people');
+    expect(find.text('A group can have 20 members at most.'), findsOneWidget);
+    await tester.tap(find.widgetWithText(ListRow, 'leo'));
+    await tester.pumpAndSettle();
+    expect(find.text('Add people'), findsWidgets);
+    expect(repository.conversationCalls, isEmpty);
     semantics.dispose();
   });
 

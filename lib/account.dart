@@ -18,6 +18,7 @@ import 'data/links.dart';
 import 'data/models.dart';
 import 'data/scope.dart';
 import 'developer.dart' show DeveloperPage;
+import 'encryption/devices.dart' show DevicesPage, signOut;
 import 'login.dart';
 import 'people.dart';
 import 'sounds_settings.dart';
@@ -1826,9 +1827,10 @@ class BucketMeter extends StatelessWidget {
 
 /// You: the profile card (Edit), friends and status, then the settings in
 /// the desktop's sections (#284, SettingsScreen.svelte), each a page of its
-/// own: My account, Attachments, Security, Audio, Appearance, then Developer
-/// apart, and Sign out. The desktop's Activity privacy (its app's alone) and
-/// S3 buckets (added and edited there) have nothing here to hold.
+/// own: My account, Attachments, Security, Devices, Audio, Appearance, then
+/// Developer and Licenses (#401) apart, and Sign out. The desktop's Activity
+/// privacy (its app's alone) and S3 buckets (added and edited there) have
+/// nothing here to hold.
 class YouTab extends StatefulWidget {
   const YouTab({super.key});
 
@@ -1963,6 +1965,8 @@ class _YouTabState extends State<YouTab> {
                         const SecurityPage(),
                         detail: profile.emailVerified ? null : 'Email not verified',
                       ),
+                      // The account's devices, after its security (Task 25).
+                      section('Devices', FLucideIcons.monitorSmartphone, const Color(0xFF7A5AF8), const DevicesPage()),
                       if (sounds != null || voicePrefs != null)
                         section(
                           'Audio',
@@ -1986,9 +1990,23 @@ class _YouTabState extends State<YouTab> {
                           final n => '$n invites',
                         },
                       ),
+                      // Flutter's page of what the app ships under others' licences, with the notices its build
+                      // leaves out (lib/licenses.dart, #401).
+                      GlassRow(
+                        label: 'Licenses',
+                        leading: const _SectionTile(icon: FLucideIcons.scale, color: Color(0xFF6B7280)),
+                        onPressed: () => showLicensePage(
+                          context: context,
+                          applicationName: 'Duvet',
+                          applicationVersion: appBuildName,
+                          applicationIcon: const AppIcon(size: 48),
+                          useRootNavigator: true,
+                        ),
+                      ),
                     ]),
                     const SizedBox(height: 16),
-                    panel([GlassRow(label: 'Sign out', destructive: true, onPressed: repository.logOut)]),
+                    // Asks first: signing out keeps this device's data, which deleting is beside it (decision 13).
+                    panel([GlassRow(label: 'Sign out', destructive: true, onPressed: () => signOut(context))]),
                   ],
                 ),
               ),
