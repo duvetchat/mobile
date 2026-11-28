@@ -14,9 +14,14 @@
 	<string>group.chat.duvet</string>
 	<key>RTCScreenSharingExtension</key>
 	<string>chat.duvet.broadcast</string>
+	<key>BGTaskSchedulerPermittedIdentifiers</key>
+	<array>
+		<string>renew-session</string>
+	</array>
 	<key>UIBackgroundModes</key>
 	<array>
 		<string>audio</string>
+		<string>fetch</string>
 	</array>
 	<key>CFBundleURLTypes</key>
 	<array>

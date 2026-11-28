@@ -167,11 +167,12 @@ Future<void> main() async {
       readLaunch: () => unawaited(_readLaunch(onTap: openTapped, onCall: openCall)),
     ),
   );
-  if (!onAndroid) return;
-  // The channels after the first frame, which they'd hold back; a notification that shows before waits for them
-  // itself, as does one on an engine with no screen, where no frame comes.
-  binding.addPostFrameCallback((_) => unawaited(ensureChannels()));
-  unawaited(_renewInBackground());
+  if (onAndroid) {
+    // The channels after the first frame, which they'd hold back; a notification that shows before waits for them
+    // itself, as does one on an engine with no screen, where no frame comes.
+    binding.addPostFrameCallback((_) => unawaited(ensureChannels()));
+  }
+  if (onAndroid || (!kIsWeb && Platform.isIOS)) unawaited(_renewInBackground());
 }
 
 // Does what the notification that started the app asks, if one did. Nothing of it fails the app's start.
@@ -195,8 +196,9 @@ bool shownAtStart(AppLifecycleState? state, Size viewSize) => state == null ? !v
 // Resumed, or inactive (a dialog or the notification shade over it): on screen.
 bool _shows(AppLifecycleState state) => state == AppLifecycleState.resumed || state == AppLifecycleState.inactive;
 
-// The session renews every few hours while the app sits closed, so the pushes keep coming (lib/push/renewal.dart).
-// On Android only: iOS runs no such task for the app.
+// The session renews every few hours while the app sits closed, so the pushes keep coming (lib/push/renewal.dart):
+// Android's WorkManager runs it every renewalEvery with a network; iOS's BGTaskScheduler runs it when it chooses, no
+// sooner than that after the last run (its launch handler: ios/Runner/AppDelegate.swift).
 Future<void> _renewInBackground() async {
   try {
     await Workmanager().initialize(callbackDispatcher);
