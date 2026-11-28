@@ -26,12 +26,34 @@ void main() {
     }
   });
 
-  test("it's built for Android alone, from the core's library, with nothing that compiles Rust", () {
-    expect(files.keys, containsAll(['$package/android/src/main/jniLibs/arm64-v8a/libduvet_e2e.so']));
-    // Neither cargokit nor the crate (flutter_rust_bridge's Dart is in lib/src/rust).
-    expect(files.keys.where((path) => path.contains('cargokit') || path.startsWith('$package/rust/')), isEmpty);
+  test("it's built for Android and iOS, from the core's libraries, with nothing that compiles Rust", () {
+    const framework = '$package/ios/duvet_e2e/Frameworks/duvet_e2e.xcframework';
+    expect(
+      files.keys,
+      containsAll([
+        '$package/android/src/main/jniLibs/arm64-v8a/libduvet_e2e.so',
+        // A phone's framework and a simulator's, which flutter_rust_bridge opens by their name.
+        '$framework/Info.plist',
+        '$framework/ios-arm64/duvet_e2e.framework/duvet_e2e',
+        '$framework/ios-arm64-simulator/duvet_e2e.framework/duvet_e2e',
+        '$package/ios/duvet_e2e/Package.swift',
+      ]),
+    );
+    // Neither cargokit, nor the crate (flutter_rust_bridge's Dart is in lib/src/rust), nor a podspec that builds it.
+    expect(
+      files.keys.where(
+        (path) => path.contains('cargokit') || path.startsWith('$package/rust/') || path.endsWith('.podspec'),
+      ),
+      isEmpty,
+    );
     expect(File('$package/android/build.gradle').readAsStringSync(), isNot(contains('cargokit')));
+    // The Swift package Flutter adds to the app: the framework as a binary target, under the product name Flutter
+    // looks for, and no target Xcode would compile.
+    final manifest = File('$package/ios/duvet_e2e/Package.swift').readAsStringSync();
+    expect(manifest, contains('.library(name: "duvet-e2e", targets: ["duvet_e2e"])'));
+    expect(manifest, contains('.binaryTarget(name: "duvet_e2e", path: "Frameworks/duvet_e2e.xcframework")'));
+    expect(manifest, isNot(contains('.target(')));
     final platforms = File('$package/pubspec.yaml').readAsStringSync().split('platforms:\n').last;
-    expect(platforms.trim(), 'android:\n        ffiPlugin: true');
+    expect(platforms.trim(), 'android:\n        ffiPlugin: true\n      ios:\n        ffiPlugin: true');
   });
 }

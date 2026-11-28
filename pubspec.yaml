@@ -48,8 +48,8 @@ dependencies:
     git:
       url: https://github.com/duvetchat/client.git
       ref: e2e
-  # The end-to-end encryption core's plugin, vendored with its prebuilt libraries (tool/vendor_core.sh): the core's
-  # repository is private, and nothing in the app's build compiles Rust.
+  # The end-to-end encryption core's plugin, vendored with its prebuilt libraries for Android and iOS
+  # (tool/vendor_core.sh), checksummed: nothing in the app's builds compiles Rust.
   duvet_e2e:
     path: packages/duvet_e2e
   # SHA-256: an approval's fingerprint (lib/e2e/conventions.dart).
