@@ -150,7 +150,8 @@ jobs:
           ls "$app/PlugIns/Broadcast.appex"
           echo "Runner.app: $(du -sh "$app" | cut -f1)"
       # The end-to-end encryption core in the app (#389): its plugin's framework, which the app opens with no library
-      # handed to it, on an iPhone simulator of the newest iOS the runner has.
+      # handed to it, and its database, its key and the device's name as the app keeps them (#390), on an iPhone
+      # simulator of the newest iOS the runner has.
       - name: The core on a simulator
         working-directory: mobile
         run: |
@@ -161,6 +162,6 @@ jobs:
           echo "Simulator: $pick"
           device=${pick%% *}
           xcrun simctl bootstatus "$device" -b
-          flutter test integration_test/core_test.dart -d "$device"
+          flutter test integration_test -d "$device"
           framework=build/ios/iphonesimulator/Runner.app/Frameworks/duvet_e2e.framework
           echo "duvet_e2e.framework: $(du -sh "$framework" | cut -f1)"
