@@ -838,6 +838,10 @@ class E2EEngine implements DeviceSetupActions {
   /// it's out of the conversation's group. A message numbered past it isn't applied yet, and loads.
   ({int? through})? appliedThrough(String conversationId) => _groups.applied(conversationId);
 
+  /// The number from which this device has had a leaf in the conversation's group: null without one, or while that
+  /// isn't known here. A message numbered before it that the device doesn't hold was never sealed for it (mobile#409).
+  int? joinedSeq(String conversationId) => _groups.joinedSeq(conversationId);
+
   /// The person's message this device sent under [nonce] (the nonce they sent it with: made again, it went under
   /// another), as its database holds it once the API has it.
   Future<ShownMessage?> sentUnder(String conversationId, String nonce) =>

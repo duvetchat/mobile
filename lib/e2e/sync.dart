@@ -206,8 +206,10 @@ class _Group {
   int generation;
   int lastSeq;
 
-  /// The number from which this device has had a leaf in it (REST's alone), null without one.
-  final int? joinedSeq;
+  /// The number from which this device has had a leaf in it (REST's alone), null without one: as the API listed it,
+  /// or the number of an external commit of this device's the API took since, which is where the API has it from then
+  /// on (its RenewMlsLeaf).
+  int? joinedSeq;
 }
 
 /// Where the core is after applying: the entry it has through (null out of the group), the first one missing (a
@@ -409,6 +411,11 @@ class Conversations {
   /// this device is out of its group.
   ({int? through})? applied(String conversationId) =>
       _through.containsKey(conversationId) ? (through: _through[conversationId]) : null;
+
+  /// The number from which this device has had a leaf in the conversation's group ([_Group.joinedSeq]): null without
+  /// one, or before the conversations are listed. A row numbered before it that the device doesn't hold was never
+  /// sealed for it, and draws as not on this device (mobile#409).
+  int? joinedSeq(String conversationId) => _known[conversationId]?.group?.joinedSeq;
 
   /// Due commits' waits, and failed turns' retries, by conversation.
   final _due = <String, void Function()>{};
@@ -1632,9 +1639,15 @@ class Conversations {
   ]) async {
     final id = conv.id;
     final flight = _inFlight[id] ??= _InFlight(purpose, commit, send, user);
+    // The number the API took it at: an external commit's is where this device's leaf begins.
+    int? takenAt;
     final Sent sent;
     try {
-      sent = await sendCommit(_host, id, () => flight.send?.call(flight.commit) ?? _api.commit(id, flight.commit));
+      sent = await sendCommit(_host, id, () async {
+        final taken = await (flight.send?.call(flight.commit) ?? _api.commit(id, flight.commit));
+        takenAt = taken.seq;
+        return taken;
+      });
     } catch (error) {
       _resendLater(id, flight);
       rethrow;
@@ -1654,6 +1667,8 @@ class Conversations {
     if (flight.purpose == _Purpose.join) {
       if (sent == Sent.accepted) {
         _joinsLost.remove(id);
+        // Where the API has this device's leaf from now on, before the turn below reads the chat again (mobile#409).
+        _known[id]?.group?.joinedSeq = takenAt;
       } else {
         _joinsLost[id] = (_joinsLost[id] ?? 0) + 1;
         _lostJoin.add(id);

@@ -164,8 +164,8 @@ class _Bubble extends StatelessWidget {
     Widget bodyAt(BuildContext? anchor) {
       final parts = <Widget>[
         if (m.isLoading) _Thinking(name: m.authorName, since: m.createdAt),
-        // An encrypted conversation's message this device doesn't hold opened yet.
-        if (m.waiting) _WaitingRow(maxWidth: maxWidth),
+        // An encrypted conversation's message this device doesn't hold opened yet, or from before it joined.
+        if (m.waiting) _WaitingRow(maxWidth: maxWidth, beforeDevice: m.beforeDevice),
         // One this device hasn't applied yet: it loads, neither empty nor waiting.
         if (m.loading) _LoadingRow(maxWidth: maxWidth),
         if (m.stickerUrl != null)
@@ -1635,13 +1635,18 @@ class _LoadingRow extends StatelessWidget {
 }
 
 /// An encrypted conversation's message this device doesn't hold opened yet (PLAN-E2E-CLIENTES.md, «La vista de una
-/// conversación», its notices): what it is, and that it shows once the sender's device delivers it.
+/// conversación», its notices): what it is, and that it shows once the sender's device delivers it. One from before
+/// this device joined ([beforeDevice]), which nothing will deliver, says so instead, with the same look (mobile#409).
 class _WaitingRow extends StatelessWidget {
-  const _WaitingRow({required this.maxWidth});
+  const _WaitingRow({required this.maxWidth, required this.beforeDevice});
   final double maxWidth;
+  final bool beforeDevice;
 
   @override
   Widget build(BuildContext context) {
+    final (said, detail) = beforeDevice
+        ? (Notice.beforeDevice, Notice.beforeDeviceDetail)
+        : (Notice.waiting, Notice.waitingDetail);
     final colors = context.theme.colors;
     final quiet = DuvetType.snippet.copyWith(color: colors.mutedForeground);
     return Container(
@@ -1661,12 +1666,12 @@ class _WaitingRow extends StatelessWidget {
               Icon(FLucideIcons.clock, size: 14, color: colors.mutedForeground),
               const SizedBox(width: 6),
               Flexible(
-                child: Text(Notice.waiting.text, style: quiet.copyWith(fontStyle: FontStyle.italic)),
+                child: Text(said.text, style: quiet.copyWith(fontStyle: FontStyle.italic)),
               ),
             ],
           ),
           const SizedBox(height: 2),
-          Text(Notice.waitingDetail.text, style: DuvetType.caption.copyWith(color: colors.mutedForeground)),
+          Text(detail.text, style: DuvetType.caption.copyWith(color: colors.mutedForeground)),
         ],
       ),
     );

@@ -6,6 +6,9 @@ enum Notice {
   recoverySaved('I saved it'),
   waiting('Waiting for this message'),
   waitingDetail("It will show up when the sender's device delivers it."),
+  // A message from before this device joined the conversation's group, which nothing will deliver (mobile#409).
+  beforeDevice('Not on this device'),
+  beforeDeviceDetail('It was sent before this device joined. Anyone who has it can share it with you.'),
   noDevice("{name} can't receive encrypted messages yet. Your device will pass them on when they can."),
   keyChanged("{name}'s security key changed."),
   keyChangedVerified('You had verified {name}. Check their security number before you send.'),

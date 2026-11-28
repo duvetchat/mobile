@@ -6,6 +6,8 @@
 		"recovery_saved": "I saved it",
 		"waiting": "Waiting for this message",
 		"waiting_detail": "It will show up when the sender's device delivers it.",
+		"before_device": "Not on this device",
+		"before_device_detail": "It was sent before this device joined. Anyone who has it can share it with you.",
 		"no_device": "{name} can't receive encrypted messages yet. Your device will pass them on when they can.",
 		"key_changed": "{name}'s security key changed.",
 		"key_changed_verified": "You had verified {name}. Check their security number before you send.",

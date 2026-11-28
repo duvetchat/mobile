@@ -1030,18 +1030,52 @@ void main() {
   // Encrypted conversations (PLAN-E2E-CLIENTES.md, Task 17, «La vista de una conversación»): what this device's own
   // database holds of each row.
   group('a conversation drawn from the device', () {
-    ChatMessage held(String id, {String text = '', bool waiting = false, String? sharedBy, bool pending = false}) =>
-        ChatMessage(
-          id: id,
-          authorId: pending ? _me : _maya,
-          authorName: pending ? 'Gaby' : 'Maya',
-          content: text,
-          createdAt: DateTime(2026, 10, 23, 9, 10),
-          nonce: pending ? id.substring('pending:'.length) : null,
-          waiting: waiting,
-          sharedBy: sharedBy,
-          pending: pending,
-        );
+    ChatMessage held(
+      String id, {
+      String text = '',
+      bool waiting = false,
+      bool beforeDevice = false,
+      String? sharedBy,
+      bool pending = false,
+    }) => ChatMessage(
+      id: id,
+      authorId: pending ? _me : _maya,
+      authorName: pending ? 'Gaby' : 'Maya',
+      content: text,
+      createdAt: DateTime(2026, 10, 23, 9, 10),
+      nonce: pending ? id.substring('pending:'.length) : null,
+      waiting: waiting,
+      beforeDevice: beforeDevice,
+      sharedBy: sharedBy,
+      pending: pending,
+    );
+
+    // mobile#409: a message from before this device joined, which nothing will deliver, says it's not on this device
+    // where the waiting row would be; a read again that finds it so takes the waiting row's place.
+    testWidgets("a message from before this device joined says it's not on this device", (tester) async {
+      final repository = await openMaya(tester, setUp: (r) => r.history['c-maya']!.add(held('w1', waiting: true)));
+      expect(find.text(Notice.waiting.text), findsOneWidget);
+      expect(find.text(Notice.beforeDevice.text), findsNothing);
+
+      repository.contents['w1'] = held('w1', waiting: true, beforeDevice: true);
+      repository.push('c-maya', const ContentChanged());
+      await tester.pumpAndSettle();
+      expect(find.text(Notice.beforeDevice.text), findsOneWidget);
+      expect(find.text(Notice.beforeDeviceDetail.text), findsOneWidget);
+      expect(find.text(Notice.waiting.text), findsNothing);
+      expect(find.text(Notice.waitingDetail.text), findsNothing);
+      semantics.dispose();
+    });
+
+    testWidgets("the Chats tab's line says a message from before this device joined isn't on it", (tester) async {
+      final repository = await openMaya(tester);
+      await tapLabel(tester, 'Back');
+      repository.push('c-maya', MessageCreated(held('w2', waiting: true, beforeDevice: true).copyWith(seq: 3)));
+      await tester.pumpAndSettle();
+      expect(find.text(Notice.beforeDevice.text), findsOneWidget);
+      expect(find.text(Notice.waiting.text), findsNothing);
+      semantics.dispose();
+    });
 
     testWidgets("a message the device doesn't hold waits, and shows once it's read again", (tester) async {
       final repository = await openMaya(tester, setUp: (r) => r.history['c-maya']!.add(held('w1', waiting: true)));
