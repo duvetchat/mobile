@@ -1,5 +1,6 @@
-# Analyze, test and build a release APK, and build the app for the iOS simulator, on every pull request into dev, as
-# api and desktop do, and into e2e, where the end-to-end encryption work waits for its day.
+# Analyze, test and build a release APK, and build the app for the iOS simulator and run the core's test on one, on
+# every pull request into dev, as api and desktop do, and into e2e, where the end-to-end encryption work waits for its
+# day.
 name: CI
 
 on:
@@ -101,8 +102,8 @@ jobs:
           retention-days: 1
 
   ios:
-    # The app built for the iOS simulator, which needs no signing (#388). The tests and the goldens are the flutter
-    # job's, on Linux.
+    # The app built for the iOS simulator, which needs no signing (#388), and the core's test run in it (#389). The
+    # other tests and the goldens are the flutter job's, on Linux.
     runs-on: macos-latest
     timeout-minutes: 60
     steps:
@@ -148,3 +149,18 @@ jobs:
           app=build/ios/iphonesimulator/Runner.app
           ls "$app/PlugIns/Broadcast.appex"
           echo "Runner.app: $(du -sh "$app" | cut -f1)"
+      # The end-to-end encryption core in the app (#389): its plugin's framework, which the app opens with no library
+      # handed to it, on an iPhone simulator of the newest iOS the runner has.
+      - name: The core on a simulator
+        working-directory: mobile
+        run: |
+          pick=$(xcrun simctl list devices available --json | jq -r '[.devices | to_entries | sort_by(.key)[] |
+            select(.key | contains(".iOS-")) | .key as $runtime | .value[] | select(.name | startswith("iPhone")) |
+            "\(.udid) \($runtime | sub(".*SimRuntime."; "")) \(.name)"] | last // empty')
+          if [ -z "$pick" ]; then xcrun simctl list devices available; echo "no iPhone simulator"; exit 1; fi
+          echo "Simulator: $pick"
+          device=${pick%% *}
+          xcrun simctl bootstatus "$device" -b
+          flutter test integration_test/core_test.dart -d "$device"
+          framework=build/ios/iphonesimulator/Runner.app/Frameworks/duvet_e2e.framework
+          echo "duvet_e2e.framework: $(du -sh "$framework" | cut -f1)"
