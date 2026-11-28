@@ -24,5 +24,17 @@ import UIKit
     if let registrar = engineBridge.pluginRegistry.registrar(forPlugin: "Storage") {
       Storage.answer(on: registrar.messenger())
     }
+    // The phone's model, «iPhone» or «iPad», which names this installation's device among the user's
+    // (lib/e2e/bootstrap.dart), as MainActivity.kt answers Android's.
+    if let registrar = engineBridge.pluginRegistry.registrar(forPlugin: "Device") {
+      FlutterMethodChannel(name: "chat.duvet/device", binaryMessenger: registrar.messenger()).setMethodCallHandler {
+        call, result in
+        if call.method == "model" {
+          result(UIDevice.current.model)
+        } else {
+          result(FlutterMethodNotImplemented)
+        }
+      }
+    }
   }
 }
