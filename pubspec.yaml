@@ -163,6 +163,10 @@ flutter:
     - assets/fonts/FiraMono-OFL.txt
     - assets/fonts/Twemoji-LICENSE.md
     - assets/licenses/
+    # And of what Gradle brings into the Android app (#403): the texts of the licences its build accepts, and
+    # libwebrtc's notices.
+    - path: assets/licenses/android/
+      platforms: [android]
     # The desktop's .ogg for Android; iOS doesn't decode Vorbis and takes the same sounds as AAC (#228).
     - path: assets/sounds/
       platforms: [android]

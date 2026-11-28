@@ -23,6 +23,9 @@ plugins {
     id("org.jetbrains.kotlin.android") version "2.2.20" apply false
     // Reads android/app/google-services.json, the Firebase project's, for push (lib/push).
     id("com.google.gms.google-services") version "4.6.0" apply false
+    // Checks the licences of what Gradle brings into the APK (app/build.gradle.kts). 1.14.1 is its last release for
+    // Gradle 8.
+    id("app.cash.licensee") version "1.14.1" apply false
 }
 
 include(":app")
