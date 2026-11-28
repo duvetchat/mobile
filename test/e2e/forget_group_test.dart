@@ -1255,6 +1255,52 @@ void main() {
       timeout: _slow,
     );
 
+    // desktop-electrobun#596's twin: while a start whose take-back failed waits to go again, a rotation's transfer
+    // another device of the user sends doesn't make the device ready: the engine knows its device only past the
+    // take-back, so it doesn't act on that device's messages, and the start that goes again sets the state.
+    test(
+      "a_rotation's_transfer_doesn't_make_ready_a_start_whose_take-back_failed",
+      () async {
+        final fake = FakeApi();
+        final bo = fake.addUser();
+        final first = await firstDevice(fake, bo);
+        final device = first.registered.last;
+        final second = await approvedDevice(fake, first);
+        final commands = <Map<String, Object?>>[];
+        var refusing = true;
+        final again = await restarted(
+          fake,
+          first,
+          host: WatchedHost(
+            first.host,
+            [],
+            commands: commands,
+            fail: (command) =>
+                refusing && command['cmd'] == 'forgotten' ? CoreError('internal', message: 'refused') : null,
+          ),
+        );
+        // The app's connection names the device its record keeps (Ruling 30), which hears the device's messages.
+        again.connect(device);
+        await turnEnded(again);
+        expect(again.state.stage, isNot(EngineStage.ready));
+        // The second device's change of keys: its transfer goes to the first device's inbox once the key is saved.
+        await second.engine.changeKeys();
+        await second.engine.keySaved();
+        await until(
+          () => again.heard.any((event) => event.type == 'DEVICE_MESSAGE'),
+          what: "Bo's first device hearing the rotation's transfer",
+        );
+        await turnEnded(again);
+        expect([for (final state in again.states) state.stage], isNot(contains(EngineStage.ready)));
+        // The start goes again at the next READY, takes the records back, and only then is the device ready.
+        refusing = false;
+        again.connect(device);
+        await until(() => again.state.stage == EngineStage.ready, what: "Bo's first device ready after its start");
+      },
+      skip: noCore,
+      timeout: _slow,
+    );
+
     // M3 of mobile#395's review: the yes lets the core's record go first, and a drop the core refuses fails the yes
     // before anything changed: the engine's record stays exact, the core keeps its own, nothing goes in, and the
     // question stands.
