@@ -84,6 +84,8 @@ class _OpeningHost extends _Host {
   Future<T> handle<T>(Map<String, Object?> command) async {
     asked.add(command['cmd']! as String);
     if (command['cmd'] == 'status') return {'device_id': '01936d4e-8f00-7000-8000-000000000001'} as T;
+    // No group forgotten: what a start takes back first (mobile#392).
+    if (command['cmd'] == 'forgotten') return {'records': <Object?>[]} as T;
     throw CoreError('internal', message: 'no core');
   }
 }
@@ -109,6 +111,7 @@ class _ReadyHost extends _Host {
       'observe_user' => {'state': 'same', 'verified': false},
       'key_packages' => {'key_packages': <Object?>[]},
       'refresh_due' => {'conversations': <Object?>[]},
+      'forgotten' => {'records': <Object?>[]},
       'group' => throw CoreError('not_found', what: 'group'),
       _ => throw CoreError('internal', message: 'not in this core'),
     };

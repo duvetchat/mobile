@@ -772,11 +772,13 @@ Future<duvet.MemberAdded> addByHand(
   return added;
 }
 
-/// The device again after its app restarted: a new engine on the same core, record and session, started.
+/// The device again after its app restarted: a new engine on the same core, record and session, started; on [store]
+/// when given, as a record whose storage changed.
 Future<TestDevice> restarted(
   FakeApi fake,
   TestDevice device, {
   CoreHost? host,
+  EngineStore? store,
   http.Client? client,
   bool Function(GatewayEvent event)? hears,
   PageDrawing? drawn,
@@ -786,7 +788,7 @@ Future<TestDevice> restarted(
     fake,
     device.user,
     host: host ?? device.host,
-    store: device.store,
+    store: store ?? device.store,
     token: device.token,
     client: client,
     hears: hears,

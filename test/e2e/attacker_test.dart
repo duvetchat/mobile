@@ -1203,9 +1203,10 @@ void main() {
     );
 
     // R-M2's join (step 4's closing re-review): after the yes, this device goes in while the API lists whom it named,
-    // by an external commit into the group as it is; one holding others than named takes nothing it sends.
+    // by an external commit held to them (M2 of mobile#395's review, as the desktop's chosen): the group as it is, a
+    // leaf of someone else's in it, takes it nowhere, the conversation asks again, and nothing it sends goes.
     test(
-      'a_join_after_the_yes_into_a_group_with_others_than_named_takes_nothing_sent_after',
+      'a_join_after_the_yes_into_a_group_with_others_than_named_is_refused,_and_nothing_sent_goes',
       () async {
         final fake = FakeApi();
         final (ana, bo, cy, dee, eve) = (
@@ -1244,14 +1245,16 @@ void main() {
         await c.engine.openConversation(conversation);
         await until(() => c.engine.conversationState(conversation)?.name == ConversationNotice.membersChanged);
         expect(c.engine.conversationState(conversation)?.users, unorderedEquals([ana, bo, cy, dee]));
-        // The yes has it go in by an external commit, into the group as it is, Eve's leaf in it.
+        // The yes has it go in by an external commit held to whom it named: the group as it is, Eve's leaf in it,
+        // refuses it, and the conversation asks again.
         await acceptAsShown(c, conversation);
-        await until(() async => await groupOf(c, conversation) != null, what: "Cy's join");
-        expect({for (final device in (await groupOf(c, conversation))!.devices) device.user}, contains(eve));
-        // What Cy sends after is held to whom the page draws: nothing goes.
+        await turnEnded(c);
+        expect(await groupOf(c, conversation), isNull);
+        expect(c.engine.conversationState(conversation)?.name, ConversationNotice.membersChanged);
+        // Nothing Cy sends goes.
         await expectLater(_send(c, conversation, 'for the four of us'), throwsA(anything));
         expect(posts, isEmpty);
-        expect(c.engine.conversationState(conversation)?.name, ConversationNotice.groupDiffers);
+        expect(await groupOf(c, conversation), isNull);
       },
       skip: noCore,
       timeout: _slow,

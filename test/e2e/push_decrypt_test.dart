@@ -9,10 +9,10 @@ import 'package:duvet/data/models.dart';
 import 'package:duvet/e2e/content.dart';
 import 'package:duvet/e2e/core_gate.dart';
 import 'package:duvet/e2e/engine.dart';
-import 'package:duvet/e2e/legacy.dart' show LegacyRecords;
+import 'package:duvet/e2e/legacy.dart' show LegacyRecords, legacyRecords;
 import 'package:duvet/e2e/notices.dart';
 import 'package:duvet/e2e/push_decrypt.dart';
-import 'package:duvet/e2e/store.dart' show anotherGroups, pushRecord;
+import 'package:duvet/e2e/store.dart' show EngineStore, anotherGroups, pushRecord;
 import 'package:duvet/e2e/sync.dart' show refusedGenerationsIn;
 import 'package:duvet/e2e/uuid.dart';
 import 'package:duvet/push/background.dart';
@@ -205,6 +205,39 @@ Future<(_Phone, duvet.DirectMessage)> _anotherGroupByPush({
   expect(opened!.text, Notice.newMessage.text);
   expect(a.store.read(anotherGroups), isNotNull);
   return (phone, sent);
+}
+
+/// A record as an app that ends at its first write of [key] leaves it: that write, and every one after it, never lands;
+/// what landed before stays in the record it wraps. [ended] once that write came; [release] lets the writes held end,
+/// landing nowhere, so the engine that made them can stop.
+class _EndsAt implements EngineStore {
+  _EndsAt(this._store, this._key);
+  final EngineStore _store;
+  final String _key;
+  final _held = Completer<void>();
+  var ended = false;
+
+  @override
+  Object? read(String key) => _store.read(key);
+
+  @override
+  Future<void> write(String key, Object? value) {
+    if (key == _key) ended = true;
+    return ended ? _held.future : _store.write(key, value);
+  }
+
+  @override
+  Future<void> update(String key, Object? Function(Object? kept) change) {
+    if (key == _key) ended = true;
+    return ended ? _held.future : _store.update(key, change);
+  }
+
+  @override
+  Future<void> refresh(List<String> keys) => _store.refresh(keys);
+
+  void release() {
+    if (!_held.isCompleted) _held.complete();
+  }
 }
 
 /// The group of the conversation Ana's core holds, read by a gate of the app's once the push's let go: null for none.
@@ -957,6 +990,59 @@ void main() {
         'members': [phone.ana, phone.bo],
         'exact': true,
       });
+      expect(again.store.read(anotherGroups), isNull);
+    },
+    skip: noCore,
+    timeout: _slow,
+  );
+
+  // FG2-M2 of the review of forget_group's minors (mobile#392): the push's engine noted another group's welcome; the
+  // server then loses its group, and Ana's app, as it starts, forgets her own and ends as it writes that forget's
+  // record. The note went before that write, so the group she makes again at generation 0 stays: nothing forgets it.
+  // The record the write lost the core kept in the forget's own transaction, and her next start takes it back.
+  test(
+    "an_app_that_ends_at_the_forget's_record_leaves_no_note_of_another_group,_so_the_group_made_again_stays",
+    () async {
+      final (phone, _) = await _anotherGroupByPush();
+      await phone.b.engine.stop();
+      phone.fake.loseGroup(phone.conversation);
+      final ending = _EndsAt(phone.a.store, legacyRecords);
+      final first = testDevice(phone.fake, phone.ana, host: phone.host.gate, store: ending, token: phone.a.token);
+      // Teardowns run last first: what it holds ends once the next start's engine stopped, before its own stops.
+      addTearDown(ending.release);
+      unawaited(first.engine.start());
+      await until(() => ending.ended, what: "the forget's record being written");
+      await phone.host.gate.close();
+
+      // The next start, on the record as it was kept and the same core.
+      final commands = <Map<String, Object?>>[];
+      final gate = CoreGate(
+        serves: true,
+        keys: phone.host.keys,
+        folder: () async => phone.host.folder,
+        lockedWait: _locked,
+      );
+      final again = testDevice(
+        phone.fake,
+        phone.ana,
+        host: WatchedHost(gate, [], commands: commands),
+        store: phone.a.store,
+        token: phone.a.token,
+      );
+      await again.engine.start();
+      await again.engine.openConversation(phone.conversation);
+      await until(() => phone.fake.viewOf(phone.conversation)['mls'] != null, what: "Ana's group made again");
+      await turnEnded(again);
+      final changes = [
+        for (final command in commands)
+          if (const {'create_group', 'forget_group', 'join_external'}.contains(command['cmd'])) command,
+      ];
+      expect([for (final command in changes) command['cmd']], ['create_group']);
+      expect(changes.single['expected'], {
+        'members': [phone.ana, phone.bo],
+        'exact': true,
+      });
+      expect((await groupOf(again, phone.conversation))?.generation, 0);
       expect(again.store.read(anotherGroups), isNull);
     },
     skip: noCore,

@@ -11,7 +11,7 @@ import 'package:flutter/foundation.dart';
 
 import 'store.dart';
 
-/// The records, by conversation: false for one whose record the person let go.
+/// The records, by conversation: false for one whose record the person let go once its group was held.
 const legacyRecords = 'legacy_records';
 
 /// A record as the core's `expected` takes it: a group's with its owner, a DM's without one. [exact] for the record the
@@ -37,10 +37,10 @@ LegacyRecord? recordIn(Object? kept) => switch (kept) {
 };
 
 /// The records of a user's conversations, in the engine's record: those from before the cutover, the person's picks as
-/// they made a conversation on this device (C1 of step 4's closing reviews), and the record of a group this device
-/// forgot (mobile#369), the last two until it holds its group. One the record didn't take is kept here for the
-/// session, so a conversation stays held to what this device first saw while the storage refuses (M4 of the desktop's
-/// review).
+/// they made a conversation on this device (C1 of step 4's closing reviews), the person's yes to the people a question
+/// named (M2 of mobile#395's review), and the record of a group this device forgot (mobile#369), the last three until
+/// it holds its group. One the record didn't take is kept here for the session, so a conversation stays held to what
+/// this device first saw while the storage refuses (M4 of the desktop's review).
 class LegacyRecords {
   LegacyRecords(this._store);
   final EngineStore _store;
@@ -88,30 +88,35 @@ class LegacyRecords {
   }
 
   /// The group this device forgot ([record], the core's answer, exact) holds what brings it back, in the conversation's
-  /// place, over what was kept there: a record from before the cutover, or the person's yes that let one go, which
-  /// comes back once the device holds the group ([heldGroup]); an earlier forget's record, whose own it carries on; a
-  /// creation's, which goes, as the forgotten group was founded with those picks.
+  /// place, over what was kept there: a record from before the cutover, or one the person let go, which comes back
+  /// once the device holds the group ([heldGroup]); an earlier forget's record, whose own it carries on; a creation's,
+  /// which goes, as the forgotten group was founded with those picks; the person's yes, let go as holding its group
+  /// lets it go: a forget needs the group held, which the yes's comeback brought.
   Future<void> forgot(String conversationId, LegacyRecord record) {
     final before = switch (_valueOf(conversationId)) {
       {'exact': true, 'before': final Object before} => before,
       {'exact': true} || {'created': true} => null,
+      {'chosen': true} => false,
       final kept => kept,
     };
     return _keep(conversationId, {...expectedOf(record), 'before': ?before});
   }
 
-  /// This device holds the conversation's group: the record of its creation goes, and a forgotten group's gives way to
-  /// what it was kept over. One from before the cutover stays.
+  /// This device holds the conversation's group: the record of its creation goes, a forgotten group's gives way to what
+  /// it was kept over, and the person's yes is let go, none made again. One from before the cutover stays.
   Future<void> heldGroup(String conversationId) async {
-    if (_valueOf(conversationId) case final Map<Object?, Object?> kept
-        when kept['created'] == true || kept['exact'] == true) {
-      await _keep(conversationId, kept['before']);
+    if (_valueOf(conversationId) case final Map<Object?, Object?> kept) {
+      if (kept['chosen'] == true) return _keep(conversationId, false);
+      if (kept['created'] == true || kept['exact'] == true) return _keep(conversationId, kept['before']);
     }
   }
 
-  /// The person said yes to the members of today: the record goes, a forgotten group's with what it was kept over, and
-  /// none is made again.
-  Future<void> drop(String conversationId) => _keep(conversationId, false);
+  /// The person's yes to the people its question named ([people], whatever was kept: a forgotten group's record goes,
+  /// and what it was kept over, as the yes is to the members of today): the record from now on, which the founding and
+  /// every welcome and join are held to, also after the app closes, until this device holds the group ([heldGroup]),
+  /// as the desktop's keepChosen keeps it (M2 of mobile#395's review).
+  Future<void> chosen(String conversationId, LegacyRecord people) =>
+      _keep(conversationId, {'owner': ?people.owner, 'members': people.members, 'chosen': true});
 
   /// Keeps [value] as the conversation's record, or takes it out for null.
   Future<void> _keep(String id, Object? value) async {

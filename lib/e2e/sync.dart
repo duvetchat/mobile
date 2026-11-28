@@ -429,7 +429,8 @@ class Conversations {
 
   /// The person's yes, by conversation: the generation it was given for and the members the question named ([_asked]),
   /// which a founding after it is held to, and a join goes only while the API lists them; it goes with the refusal it
-  /// answered (M5 of the desktop's review; N-M10 of step 4's closing re-review).
+  /// answered (M5 of the desktop's review; N-M10 of step 4's closing re-review). The record keeps those members too,
+  /// across a restart, until this device holds the group ([LegacyRecords.chosen]).
   final _accepted = <String, ({int generation, LegacyRecord record})>{};
 
   /// Whom each conversation's question of changed members names: the members, and a group's owner, a yes has this
@@ -472,6 +473,32 @@ class Conversations {
         _soon(() => sync(id));
       }
     });
+  }
+
+  /// At the engine's start, before anything can bring a group back (mobile#392): the record of each group this device
+  /// forgot that the core kept in the forget's own transaction (`forgotten`, duvetchat/e2e#65), which a close between
+  /// the two, or a store that refused the engine's, would otherwise lose. Each is kept as forget_group's answer is
+  /// ([LegacyRecords.forgot]), also over a forget's record the engine has, as the core's is always the newest: a forget
+  /// needs the group held, and holding it again lets the core's go (M1 of mobile#395's review). Its rules give it its
+  /// place among what the engine kept: the creator's picks go; one from before the cutover, or what an older forget's
+  /// record was kept over, is kept under it; the person's yes is let go under it, as the yes lets the core's go first
+  /// ([accept]): a record the core gives is of a forget after the yes's comeback held the group.
+  Future<void> takeForgotten() async {
+    for (final record in await _coreRecords()) {
+      await _legacy.forgot(record['conversation_id']! as String, recordIn(record['expected'])!);
+    }
+  }
+
+  /// The record the core kept of each group this device forgot and doesn't hold again (`forgotten`), by conversation.
+  Future<List<Map<String, Object?>>> _coreRecords() async =>
+      ((await _host.handle<Map<String, Object?>>({'cmd': 'forgotten'}))['records']! as List).cast();
+
+  /// The core lets go of its record of the conversation's forgotten group (drop_forgotten, duvetchat/e2e#65), which no
+  /// start takes back from then on; with none kept, nothing changes. On the person's yes alone ([accept]), never on the
+  /// server's word: a conversation the API no longer lists keeps its record in the core, the one copy a refused or lost
+  /// write of the engine's leaves (I1 of mobile#395's review).
+  Future<void> _dropForgotten(String id) async {
+    await _host.handle<Object?>({'cmd': 'drop_forgotten', 'conversation_id': id});
   }
 
   /// Stops waiting for anything: what's in memory goes, the bytes of a commit whose answer didn't come too.
@@ -698,17 +725,21 @@ class Conversations {
     _set(conv.id, _blocked(conv));
   }
 
-  /// The person's yes to the members the question named ([_asked]): the record goes, and this device goes in with them,
-  /// by an external commit while the API lists them, or by making the group with them alone where there's none (M6 of
-  /// the desktop's review; N-M10 of step 4's closing re-review): a listing with others by then asks again. The yes is
-  /// to [users], those the question named as the person was shown it: once it names others, asked again since, the
-  /// yes is none (R-M2 of the re-review).
+  /// The person's yes to the members the question named ([_asked]): they're the record until this device holds the
+  /// group, and it goes in with them, by an external commit while the API lists them, held to them, or by making the
+  /// group with them alone where there's none (M6 of the desktop's review; N-M10 of step 4's closing re-review): a
+  /// listing or a group with others by then asks again. The yes is to [users], those the question named as the person
+  /// was shown it: once it names others, asked again since, the yes is none (R-M2 of the re-review).
   Future<void> accept(String conversationId, List<String> users) async {
     final asked = _asked[conversationId];
     if (!_refused.containsKey(conversationId) || asked == null || !sameUsers(users, asked.members)) return;
     final conv = await _fresh(conversationId);
     if (conv == null) return _gone(conversationId);
-    await _legacy.drop(conversationId);
+    // The core's record of a group this device forgot goes first (drop_forgotten, mobile#392): every record a start
+    // takes back is then newer than this yes, and a close before the engine's own goes asks the person again. Then
+    // the yes's people are the record, which the comeback is held to after a close too (M2 of mobile#395's review).
+    await _dropForgotten(conversationId);
+    await _legacy.chosen(conversationId, asked);
     final generation = _refused[conversationId] ?? 0;
     await _unrefuse(conversationId);
     _accepted[conversationId] = (generation: max(generation, conv.group?.generation ?? 0), record: asked);
@@ -912,6 +943,8 @@ class Conversations {
 
   /// The conversation is no longer the user's (left, removed, deleted): nothing more is asked of it, its catch-ups and
   /// a generation its person was asked about let go too, as the desktop's drop does (step 5's engines review, Minor 7).
+  /// The records of a group this device forgot there stay, the engine's and the core's: a later addition is held to
+  /// them, and a server that hid the conversation and lists it again takes neither away (I1 of mobile#395's review).
   void _gone(String id) {
     _retries.remove(id)?.cancel();
     _inFlight.remove(id)?.cancel?.call();
@@ -985,7 +1018,7 @@ class Conversations {
   /// join_external). Its messages waiting to be sent there are stale from now on, and go again in the group it ends
   /// in. Nothing to forget (`not_found`: no group, or a row without its group, which waits until the API's group passes
   /// its epoch) does nothing. A note of another group goes with the group, whatever brought the forget: it was about
-  /// that group (mobile#383).
+  /// that group (mobile#383); and before the record is kept, which the core keeps too (mobile#392).
   Future<void> _forget(String id) async {
     final Map<String, Object?> forgot;
     try {
@@ -995,12 +1028,15 @@ class Conversations {
       return;
     }
     _forgot(id);
+    // The note before the record (FG2-M2 of the review of forget_group's minors, as the desktop's #forget): a close
+    // between the two leaves no note to forget a group made again at its generation, and the core keeps the record in
+    // the forget's own transaction, which the next start takes back (takeForgotten).
+    await _noteAnother(id, null);
     await _legacy.forgot(id, recordIn(forgot['expected'])!);
     _forgotten.add(id);
     for (final kept in [_settling, _removed, _lostJoin]) {
       kept.remove(id);
     }
-    await _noteAnother(id, null);
   }
 
   /// The API's group at the welcome's [generation], which this device held another of, isn't its own (apply's
