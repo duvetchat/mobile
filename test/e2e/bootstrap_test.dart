@@ -5,6 +5,7 @@ import 'package:duvet/e2e/core_gate.dart';
 import 'package:duvet/e2e/engine.dart';
 import 'package:duvet/e2e/store.dart';
 import 'package:duvet_client/duvet.dart' as duvet;
+import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
@@ -472,6 +473,17 @@ void main() {
       expect(await phoneName(), unknownPhone);
       messenger.setMockMethodCallHandler(deviceChannel, (call) async => throw PlatformException(code: 'gone'));
       expect(await phoneName(), unknownPhone);
+    });
+
+    // ios/Runner answers the channel with the phone's model, «iPhone» or «iPad» (PLAN-E2E-PLATAFORMAS.md, Task 13).
+    test('on iOS, without the channel or with no model, is the app on iOS', () async {
+      addTearDown(() => debugDefaultTargetPlatformOverride = null);
+      debugDefaultTargetPlatformOverride = TargetPlatform.iOS;
+      expect(await phoneName(), unknownIPhone);
+      messenger.setMockMethodCallHandler(deviceChannel, (call) async => '');
+      expect(await phoneName(), unknownIPhone);
+      messenger.setMockMethodCallHandler(deviceChannel, (call) async => 'iPhone');
+      expect(await phoneName(), 'iPhone');
     });
   });
 }

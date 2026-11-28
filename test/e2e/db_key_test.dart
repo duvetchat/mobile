@@ -1,8 +1,11 @@
 import 'dart:convert';
 
 import 'package:duvet/e2e/db_key.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:flutter_test/flutter_test.dart';
+
+import '../support/keychain.dart';
 
 // The key of a user's encryption database on this phone (PLAN-E2E-CLIENTES.md, where the database and its key live):
 // 32 random bytes in flutter_secure_storage, which the Keystore encrypts, under duvet_e2e_db_key.<user_id>.
@@ -46,5 +49,30 @@ void main() {
   test('a user ID that is no UUID names no key', () async {
     await expectLater(keys.readOrMake('../$ana'), throwsArgumentError);
     expect(await storage.readAll(), isEmpty);
+  });
+
+  // PLAN-E2E-PLATAFORMAS.md, where the database and its key live (Review Focus 8): an engine with no screen reads the
+  // key with the phone locked, once it was unlocked after starting, and the key stays on this phone, in neither
+  // iCloud's Keychain nor a backup restored to another one. Android's Keystore is asked as before.
+  test('on iOS the key is kept for this device only, readable after the first unlock', () async {
+    final keychain = KeychainCalls.install();
+    addTearDown(() => debugDefaultTargetPlatformOverride = null);
+    debugDefaultTargetPlatformOverride = TargetPlatform.iOS;
+    final made = await keys.readOrMake(ana);
+    expect(await keys.read(ana), made);
+    await keys.delete(ana);
+    expect(keychain.options, isNotEmpty);
+    expect(
+      keychain.options,
+      everyElement(
+        allOf(containsPair('accessibility', 'first_unlock_this_device'), containsPair('synchronizable', 'false')),
+      ),
+    );
+
+    keychain.options.clear();
+    debugDefaultTargetPlatformOverride = TargetPlatform.android;
+    await keys.readOrMake(bo);
+    expect(keychain.options, isNotEmpty);
+    expect(keychain.options, everyElement(AndroidOptions.defaultOptions.params));
   });
 }

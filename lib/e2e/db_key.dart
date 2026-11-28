@@ -7,12 +7,21 @@ import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 final _random = Random.secure();
 final _uuid = RegExp(r'^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$');
 
+/// Where the phone keeps the database's key and the session (PLAN-E2E-PLATAFORMAS.md, where the database and its key
+/// live; Review Focus 8). On iOS, a Keychain item that reads once the phone was unlocked after starting, as an engine
+/// with no screen reads it with the phone locked, and that stays on this phone: neither iCloud's Keychain nor a backup
+/// restored to another iPhone takes it. Android's Keystore is asked as before.
+const phoneKeychain = FlutterSecureStorage(
+  iOptions: IOSOptions(accessibility: KeychainAccessibility.first_unlock_this_device, synchronizable: false),
+);
+
 /// The key of each user's encryption database on this phone (PLAN-E2E-CLIENTES.md, where the database and its key
-/// live): 32 random bytes in flutter_secure_storage, which the Keystore encrypts, under `duvet_e2e_db_key.<user_id>`.
-/// Nothing else keeps it: the core gets it as it opens the database, and it never goes to a log, a file or the API.
-/// flutter_secure_storage reads it in any of the app's engines, the one a push starts included, as it does the session.
+/// live): 32 random bytes in flutter_secure_storage, which the Keystore or the Keychain encrypts ([phoneKeychain]),
+/// under `duvet_e2e_db_key.<user_id>`. Nothing else keeps it: the core gets it as it opens the database, and it never
+/// goes to a log, a file or the API. flutter_secure_storage reads it in any of the app's engines, the one a push starts
+/// included, as it does the session.
 class DbKeys {
-  const DbKeys([this._storage = const FlutterSecureStorage()]);
+  const DbKeys([this._storage = phoneKeychain]);
 
   final FlutterSecureStorage _storage;
 

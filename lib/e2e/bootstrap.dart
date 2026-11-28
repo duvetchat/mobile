@@ -117,14 +117,16 @@ Future<bool> bindSession(E2EEngine engine, String deviceId, DeviceKeys? keys) as
   return true;
 }
 
-/// The channel MainActivity.kt answers the phone's model on.
+/// The channel MainActivity.kt and ios/Runner/AppDelegate.swift answer the phone's model on.
 const deviceChannel = MethodChannel('chat.duvet/device');
 
-/// What a phone whose model can't be read is called.
+/// What a phone whose model can't be read is called: an Android phone, and an iPhone.
 const unknownPhone = 'Duvet for Android';
+const unknownIPhone = 'Duvet for iOS';
 
 /// The name this installation registers its device with, which the user's other devices show (PLAN-E2E-CLIENTES.md,
-/// its conventions; Ruling 27): the phone's model, as Android has it (Build.MODEL), cut to the API's 64 characters.
+/// its conventions; Ruling 27): the phone's model, as Android has it (Build.MODEL) or as iOS does (UIDevice's model:
+/// «iPhone», «iPad»), cut to the API's 64 characters.
 Future<String> phoneName([MethodChannel channel = deviceChannel]) async {
   String? model;
   try {
@@ -132,6 +134,6 @@ Future<String> phoneName([MethodChannel channel = deviceChannel]) async {
   } catch (error) {
     debugPrint("e2e: the phone's model: ${error.runtimeType}");
   }
-  if (model == null || model.isEmpty) return unknownPhone;
+  if (model == null || model.isEmpty) return defaultTargetPlatform == TargetPlatform.iOS ? unknownIPhone : unknownPhone;
   return String.fromCharCodes(model.runes.take(maxDeviceName)).trim();
 }
