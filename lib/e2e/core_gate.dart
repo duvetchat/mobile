@@ -19,6 +19,7 @@ import 'dart:ui' show IsolateNameServer;
 
 import 'package:duvet_e2e/duvet_e2e.dart';
 import 'package:flutter/foundation.dart';
+import 'package:flutter/services.dart';
 import 'package:path_provider/path_provider.dart';
 
 import 'db_key.dart';
@@ -28,6 +29,10 @@ export 'host.dart';
 
 /// The name the app's engine answers the others under.
 const corePortName = 'duvet-e2e-core';
+
+/// What ios/Runner/Storage.swift answers on: `exclude` takes a folder out of the phone's backups, and `excluded` says
+/// whether it is.
+const storageChannel = MethodChannel('chat.duvet/storage');
 
 const _ready = (state: HostState.ready, keyStorage: 'provided', reason: null);
 const _failed = (state: HostState.failed, keyStorage: null, reason: null);
@@ -181,6 +186,15 @@ final class CoreGate implements CoreHost, ObservingHost {
     final Uint8List? key;
     try {
       path = await _path(userId);
+      // iOS backs up the app's support folder, and a database restored from a backup is a cloned device, or one behind
+      // its groups (PLAN-E2E-PLATAFORMAS.md, Review Focus 8): the app's engine takes e2e/ (each user's database, its
+      // files and the engine's record) out of the phone's backups before anything of the database is made there, and
+      // again at every start. One that can't go out makes no database. Android's manifest keeps the app's files out of
+      // its backups and device transfers.
+      if (serves && defaultTargetPlatform == TargetPlatform.iOS) {
+        final e2e = await File(path).parent.parent.create(recursive: true);
+        await storageChannel.invokeMethod<void>('exclude', e2e.path);
+      }
       final made = await File(path).exists();
       // The app's engine makes the key, and only for a database that isn't there yet: one whose key is gone opens
       // with no other. Another engine opens only a database there is.

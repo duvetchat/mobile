@@ -1,13 +1,14 @@
 import 'dart:convert';
 import 'dart:io';
 import 'dart:isolate';
-import 'dart:typed_data';
 import 'dart:ui' show IsolateNameServer;
 
 import 'package:duvet/e2e/core_gate.dart';
 import 'package:duvet/e2e/db_key.dart';
 import 'package:duvet/e2e/uuid.dart';
 import 'package:duvet_e2e/duvet_e2e.dart';
+import 'package:flutter/foundation.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:flutter_test/flutter_test.dart';
 
@@ -17,9 +18,11 @@ import '../support/core_lib.dart';
 // database with the key the phone keeps and answers the other engines through the duvet-e2e-core port; another engine
 // asks through it, and opens the database itself only when no engine answers there.
 const ana = '0193a4b2-0000-7000-8000-000000000001';
+const bo = '0193a4b2-0000-7000-8000-000000000002';
 const storage = FlutterSecureStorage();
 
 void main() {
+  TestWidgetsFlutterBinding.ensureInitialized();
   late Directory support;
   setUpAll(() async {
     if (coreLibrary != null) await loadCore();
@@ -267,6 +270,56 @@ void main() {
     expect(await deviceOf(app), isNull);
     expect(await storage.read(key: DbKeys.nameOf(ana)), isNot(key));
     await app.close();
+  }, skip: noCore);
+
+  // PLAN-E2E-PLATAFORMAS.md, where the database and its key live (Review Focus 8): iOS backs up the app's support
+  // folder, and a database restored from a backup is a cloned device, or one behind its groups. The app's engine takes
+  // e2e/ out of the phone's backups before the core makes anything there, and again at every start. Android's manifest
+  // keeps the app's files out of its backups, and nothing is asked there.
+  test('the folder leaves the backups before the database is made', () async {
+    final messenger = TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
+    final asked = <(String, {bool folder, bool database})>[];
+    Future<Object?> exclude(MethodCall call) async {
+      final path = call.arguments as String;
+      if (call.method == 'exclude') {
+        asked.add((path, folder: Directory(path).existsSync(), database: File(database(ana)).existsSync()));
+      }
+      return null;
+    }
+
+    messenger.setMockMethodCallHandler(storageChannel, exclude);
+    addTearDown(() {
+      messenger.setMockMethodCallHandler(storageChannel, null);
+      debugDefaultTargetPlatformOverride = null;
+    });
+    final e2e = '${support.path}/e2e';
+    debugDefaultTargetPlatformOverride = TargetPlatform.iOS;
+    final app = gate(app: true);
+    expect(await app.open(ana), ready);
+    expect(asked, [(e2e, folder: true, database: false)]);
+    await app.close();
+    expect(await app.open(ana), ready);
+    expect(asked, [(e2e, folder: true, database: false), (e2e, folder: true, database: true)]);
+    await app.close();
+    // Another engine opens only a database there is, in the folder the app's engine took out.
+    final other = gate(app: false);
+    expect(await other.open(ana), ready);
+    await other.close();
+    expect(asked, hasLength(2));
+
+    // A folder that can't leave the backups gets no database, nor a key, and the next start tries again.
+    messenger.setMockMethodCallHandler(storageChannel, (call) async => throw PlatformException(code: 'storage'));
+    expect(await gate(app: true).open(bo), (state: HostState.failed, keyStorage: null, reason: null));
+    expect(File(database(bo)).existsSync(), isFalse);
+    expect(await storage.read(key: DbKeys.nameOf(bo)), isNull);
+
+    messenger.setMockMethodCallHandler(storageChannel, exclude);
+    debugDefaultTargetPlatformOverride = TargetPlatform.android;
+    asked.clear();
+    final android = gate(app: true);
+    expect(await android.open(bo), ready);
+    await android.close();
+    expect(asked, isEmpty);
   }, skip: noCore);
 
   test('two opens at once make one key, the one the database opens with again', () async {

@@ -21,5 +21,8 @@ import UIKit
     if let registrar = engineBridge.pluginRegistry.registrar(forPlugin: "Sounds") {
       sounds = Sounds(messenger: registrar.messenger())
     }
+    if let registrar = engineBridge.pluginRegistry.registrar(forPlugin: "Storage") {
+      Storage.answer(on: registrar.messenger())
+    }
   }
 }
