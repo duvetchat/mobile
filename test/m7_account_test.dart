@@ -20,6 +20,7 @@ import 'package:http/testing.dart';
 import 'package:image/image.dart' as img;
 
 import 'support/fake_repository.dart';
+import 'support/pubspec.dart';
 
 // A dark VS Code theme, comments and trailing commas and all.
 const _codeTheme = '''{
@@ -380,6 +381,18 @@ void main() {
     expect(find.text('YOUR BUBBLES'), findsNothing);
     expect(find.text('Looks good to me'), findsNothing);
     expect(find.byType(ColorPick), findsNothing);
+    semantics.dispose();
+  });
+
+  // #401: Licenses, a section apart, opens Flutter's licence page, under the app's name and version.
+  testWidgets('You: Licenses opens the licence page', (tester) async {
+    // With no notice in its registry, as a test's binding leaves it: test/licenses_test.dart reads them.
+    await pumpApp(tester);
+    await openYou(tester);
+    await openSection(tester, 'Licenses');
+    expect(find.byType(LicensePage), findsOneWidget);
+    expect(find.descendant(of: find.byType(LicensePage), matching: find.text('Duvet')), findsOneWidget);
+    expect(find.descendant(of: find.byType(LicensePage), matching: find.text(pubspecVersion())), findsOneWidget);
     semantics.dispose();
   });
 

@@ -26,6 +26,9 @@ Flutter/flutter_assets/
 Flutter/flutter_export_environment.sh
 ServiceDefinitions.json
 Runner/GeneratedPluginRegistrant.*
+# The Swift packages' pins, which Xcode writes as it resolves the plugins' packages: not kept, as pubspec.lock
+# isn't, so a plugin's new native version doesn't change the project.
+**/xcshareddata/swiftpm/Package.resolved
 
 # Exceptions to above rules.
 !default.mode1v3

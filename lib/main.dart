@@ -29,6 +29,12 @@ import 'data/voice.dart';
 import 'data/webrtc_engine.dart';
 import 'calls.dart';
 import 'deep_links.dart';
+import 'licenses.dart';
+// The core's gate needs dart:io and isolates, which the web build lacks.
+import 'e2e/app_host_web.dart' if (dart.library.io) 'e2e/app_host.dart';
+import 'e2e/push_decrypt.dart';
+import 'encryption/change_refusals.dart';
+import 'encryption/devices.dart' show DeviceNotices;
 import 'mention_notices.dart';
 import 'push/background.dart';
 import 'push/notifications.dart';
@@ -51,6 +57,8 @@ import 'widgets/youtube_dock.dart';
 
 Future<void> main() async {
   final binding = DuvetBinding();
+  // The notices the build leaves out of the licence page, read only as it opens.
+  addBundledLicenses();
   // Asked once, and not of dart:io in a browser, where asking throws.
   final onAndroid = !kIsWeb && Platform.isAndroid;
   // The theme's mode is the first thing read: the first frame draws by it. The rest of it loads behind.
@@ -76,10 +84,34 @@ Future<void> main() async {
       cacheManager: pictureStore,
     ).then((_) {}, onError: (Object e) => debugPrint('AudioService.init failed: $e')),
   );
-  final repository = DuvetRepository(forgetNotifications: forgetChat);
+  final repository = DuvetRepository(
+    forgetNotifications: forgetChat,
+    // A conversation's notice the app couldn't show, gone to the back while it waited, shows as the phone's
+    // notification (Android's alone are set up).
+    notifyAway: onAndroid
+        ? (notice) => unawaited(showPush(MessagePush.away(notice)).catchError((Object e) => debugPrint('push: $e')))
+        : null,
+    // The encryption engine runs here, the app's engine, on its gate (lib/e2e), once the app is on a screen: main()
+    // runs on audio_service's engine too, which may start with none (shownAtStart).
+    encryptionHost: appCoreHost,
+    onScreen: () =>
+        shownAtStart(binding.lifecycleState, binding.platformDispatcher.implicitView?.physicalSize ?? Size.zero),
+  );
   // The background renewal asks this isolate first: the session keeps one owner while the app runs
   // (lib/push/renewal.dart).
   answerRenewals(() => repository.renewForBackground(renewalEvery));
+  // A push of a conversation's message asks this engine for its text while its device is ready, as it holds the core
+  // then (lib/e2e/push_decrypt.dart). The notifications' histories of conversations a version before this one kept,
+  // with their text in the clear, go as the app starts.
+  answerPushesWhileReady(
+    repository.encryption,
+    (ask) => repository.pushTexts(ask.conversationId, ask.entry, ask.lines, ask.wait),
+  );
+  unawaited(
+    pushHistory()
+        .then((history) => history.forgetConversationTexts())
+        .catchError((Object e) => debugPrint('push: the histories before: $e')),
+  );
   // Signing out leaves none of the account's notifications on the phone. Before the session starts: one found
   // ended tells of it at once.
   repository.signedOut.listen(
@@ -138,11 +170,12 @@ Future<void> main() async {
       readLaunch: () => unawaited(_readLaunch(onTap: openTapped, onCall: openCall)),
     ),
   );
-  if (!onAndroid) return;
-  // The channels after the first frame, which they'd hold back; a notification that shows before waits for them
-  // itself, as does one on an engine with no screen, where no frame comes.
-  binding.addPostFrameCallback((_) => unawaited(ensureChannels()));
-  unawaited(_renewInBackground());
+  if (onAndroid) {
+    // The channels after the first frame, which they'd hold back; a notification that shows before waits for them
+    // itself, as does one on an engine with no screen, where no frame comes.
+    binding.addPostFrameCallback((_) => unawaited(ensureChannels()));
+  }
+  if (onAndroid || (!kIsWeb && Platform.isIOS)) unawaited(_renewInBackground());
 }
 
 // Does what the notification that started the app asks, if one did. Nothing of it fails the app's start.
@@ -166,8 +199,9 @@ bool shownAtStart(AppLifecycleState? state, Size viewSize) => state == null ? !v
 // Resumed, or inactive (a dialog or the notification shade over it): on screen.
 bool _shows(AppLifecycleState state) => state == AppLifecycleState.resumed || state == AppLifecycleState.inactive;
 
-// The session renews every few hours while the app sits closed, so the pushes keep coming (lib/push/renewal.dart).
-// On Android only: iOS runs no such task for the app.
+// The session renews every few hours while the app sits closed, so the pushes keep coming (lib/push/renewal.dart):
+// Android's WorkManager runs it every renewalEvery with a network; iOS's BGTaskScheduler runs it when it chooses, no
+// sooner than that after the last run (its launch handler: ios/Runner/AppDelegate.swift).
 Future<void> _renewInBackground() async {
   try {
     await Workmanager().initialize(callbackDispatcher);
@@ -429,12 +463,20 @@ class _DuvetAppState extends State<DuvetApp> {
                   child: ShellScope(
                     shell: _shell,
                     child: FToaster(
-                      child: Stack(
-                        children: [
-                          child!,
-                          // Over every screen, the chats opened from Chats and Spaces too.
-                          MentionNotices(navigator: _navigator),
-                        ],
+                      // An encrypted conversation's change the server refused, and what the engine tells of the
+                      // user's other devices, told over every screen.
+                      child: ChangeRefusals(
+                        refusals: widget.repository.changesRefused,
+                        child: DeviceNotices(
+                          notices: widget.repository.deviceNotices,
+                          child: Stack(
+                            children: [
+                              child!,
+                              // Over every screen, the chats opened from Chats and Spaces too.
+                              MentionNotices(navigator: _navigator),
+                            ],
+                          ),
+                        ),
                       ),
                     ),
                   ),

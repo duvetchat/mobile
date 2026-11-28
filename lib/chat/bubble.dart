@@ -164,6 +164,10 @@ class _Bubble extends StatelessWidget {
     Widget bodyAt(BuildContext? anchor) {
       final parts = <Widget>[
         if (m.isLoading) _Thinking(name: m.authorName, since: m.createdAt),
+        // An encrypted conversation's message this device doesn't hold opened yet.
+        if (m.waiting) _WaitingRow(maxWidth: maxWidth),
+        // One this device hasn't applied yet: it loads, neither empty nor waiting.
+        if (m.loading) _LoadingRow(maxWidth: maxWidth),
         if (m.stickerUrl != null)
           GestureDetector(
             onDoubleTap: onDoubleTap,
@@ -239,7 +243,16 @@ class _Bubble extends StatelessWidget {
                 );
               },
             ),
-        if (m.isVoice && m.attachments.isNotEmpty)
+        if (m.isVoice && m.attachments.isNotEmpty && m.attachments.first.sealed != null)
+          SealedFileView(
+            attachment: m.attachments.first,
+            messageId: m.id,
+            voice: true,
+            mine: own,
+            authorName: m.authorName,
+            authorAvatarUrl: m.authorAvatarUrl,
+          )
+        else if (m.isVoice && m.attachments.isNotEmpty)
           VoiceNotePlayer(
             attachment: m.attachments.first,
             mine: own,
@@ -247,7 +260,12 @@ class _Bubble extends StatelessWidget {
             authorAvatarUrl: m.authorAvatarUrl,
           )
         else if (m.attachments.isNotEmpty)
-          MessageAttachments(attachments: m.attachments, uploadProgress: progress, onDoubleTap: onDoubleTap),
+          MessageAttachments(
+            attachments: m.attachments,
+            uploadProgress: progress,
+            onDoubleTap: onDoubleTap,
+            messageId: m.id,
+          ),
         for (final a in m.deletedAttachments) DeletedAttachment(attachment: a, voice: m.isVoice, maxWidth: maxWidth),
         // Duvet's own links, as cards: a quoted message, an invite.
         if (!lifted)
@@ -259,12 +277,15 @@ class _Bubble extends StatelessWidget {
             else if (parseInviteCode(url) case final code?)
               InviteCard(code: code, onOpenSpace: onOpenSpace),
         for (final e in m.embeds) EmbedCard(embed: e),
+        // Brought to this device by someone's shared history.
+        if (m.sharedBy case final name?) _Caption(text: Notice.sharedBy.fill({'name': name}), style: secondary),
         if (m.components.isNotEmpty && !lifted)
           BotComponents(
             components: m.components,
             directory: directory,
             choices: selectChoices,
             onUse: entry.delivery == _Delivery.sent ? onUseComponent : (_, _) async {},
+            messageId: m.id,
           ),
       ];
 
@@ -306,7 +327,12 @@ class _Bubble extends StatelessWidget {
     final meta = [if (lastOfRun && !flat) _time(m.createdAt), if (m.edited) 'edited'].join(' · ');
     final status = switch (entry.delivery) {
       _ when editing => _Caption(icon: FLucideIcons.pencil, text: 'Editing', style: secondary),
-      _Delivery.failed => _FailedActions(onRetry: tooLarge ? null : onRetry, onDiscard: onDiscard, tooLarge: tooLarge),
+      _Delivery.failed => _FailedActions(
+        onRetry: tooLarge || m.filesGone ? null : onRetry,
+        onDiscard: onDiscard,
+        tooLarge: tooLarge,
+        filesGone: m.filesGone,
+      ),
       _Delivery.sending when waiting => _Caption(
         icon: FLucideIcons.clock,
         text: 'Waiting for connection',
@@ -931,7 +957,10 @@ class _FailedActions extends StatelessWidget {
 
   /// Refused as too large: retrying wouldn't help.
   final bool tooLarge;
-  const _FailedActions({this.onRetry, this.onDiscard, this.tooLarge = false});
+
+  /// Its files' sealed bytes went with the app: it can only be dismissed.
+  final bool filesGone;
+  const _FailedActions({this.onRetry, this.onDiscard, this.tooLarge = false, this.filesGone = false});
 
   @override
   Widget build(BuildContext context) {
@@ -963,7 +992,11 @@ class _FailedActions extends StatelessWidget {
     );
     return Semantics(
       container: true,
-      label: tooLarge ? 'Message not sent: too large' : 'Message not sent',
+      label: filesGone
+          ? 'Message not sent: ${Notice.filesGone.text}'
+          : tooLarge
+          ? 'Message not sent: too large'
+          : 'Message not sent',
       child: Padding(
         padding: const EdgeInsets.symmetric(horizontal: 4),
         child: Row(
@@ -971,10 +1004,16 @@ class _FailedActions extends StatelessWidget {
           children: [
             ExcludeSemantics(child: Icon(FLucideIcons.circleAlert, size: 14, color: colors.destructive)),
             const SizedBox(width: 4),
-            ExcludeSemantics(
-              child: Text(
-                tooLarge ? 'Too large to send' : 'Not sent',
-                style: DuvetType.caption.copyWith(color: colors.destructive),
+            Flexible(
+              child: ExcludeSemantics(
+                child: Text(
+                  filesGone
+                      ? Notice.filesGone.text
+                      : tooLarge
+                      ? 'Too large to send'
+                      : 'Not sent',
+                  style: DuvetType.caption.copyWith(color: colors.destructive),
+                ),
               ),
             ),
             if (onRetry != null) ...[
@@ -1491,6 +1530,56 @@ class _CallNoticeRow extends StatelessWidget {
   }
 }
 
+/// A history share's notice (the API's type 4), as the desktop's: who shared how far back of the conversation with
+/// whom, their names apart ([parts]). A notice like the others: no edit, pin or reply, and held, its options ([onHold];
+/// null for those who may not delete it).
+class _SharedNoticeRow extends StatelessWidget {
+  final List<({String text, String? name})> parts;
+  final ValueChanged<BuildContext>? onHold;
+  const _SharedNoticeRow({required this.parts, this.onHold});
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = context.theme.colors;
+    final named = TextStyle(color: colors.foreground, fontWeight: FontWeight.w500);
+    return Builder(
+      builder: (anchor) => Semantics(
+        container: true,
+        label: parts.map((part) => part.text).join(),
+        excludeSemantics: true,
+        customSemanticsActions: {
+          if (onHold case final onHold?) const CustomSemanticsAction(label: 'Options'): () => onHold(anchor),
+        },
+        child: GestureDetector(
+          onLongPress: onHold == null ? null : () => onHold!(anchor),
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(16, 12, 16, 0),
+            child: Row(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                Icon(FLucideIcons.history, size: 14, color: colors.mutedForeground),
+                const SizedBox(width: 6),
+                Flexible(
+                  child: Text.rich(
+                    TextSpan(
+                      children: [
+                        for (final part in parts)
+                          TextSpan(text: part.text, style: part.name == 'a' || part.name == 'b' ? named : null),
+                      ],
+                    ),
+                    textAlign: TextAlign.center,
+                    style: DuvetType.caption.copyWith(color: colors.mutedForeground),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
 /// Above the composer: the ghost and its typing dots, then who's typing and
 /// who's recording a voice message, as the desktop's typing indicator says it.
 class _TypingLine extends StatelessWidget {
@@ -1527,6 +1616,58 @@ class _TypingLine extends StatelessWidget {
             ],
           ),
         ),
+      ),
+    );
+  }
+}
+
+/// An encrypted conversation's message this device hasn't read or applied yet: a line of the skeleton, as text loads,
+/// which a screen reader reads as loading.
+class _LoadingRow extends StatelessWidget {
+  const _LoadingRow({required this.maxWidth});
+  final double maxWidth;
+
+  @override
+  Widget build(BuildContext context) => Semantics(
+    label: Notice.loadingMessage.text,
+    child: SkeletonBox(width: min(maxWidth, 160), height: 14, borderRadius: BorderRadius.circular(4)),
+  );
+}
+
+/// An encrypted conversation's message this device doesn't hold opened yet (PLAN-E2E-CLIENTES.md, «La vista de una
+/// conversación», its notices): what it is, and that it shows once the sender's device delivers it.
+class _WaitingRow extends StatelessWidget {
+  const _WaitingRow({required this.maxWidth});
+  final double maxWidth;
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = context.theme.colors;
+    final quiet = DuvetType.snippet.copyWith(color: colors.mutedForeground);
+    return Container(
+      constraints: BoxConstraints(maxWidth: maxWidth),
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+      decoration: BoxDecoration(
+        border: Border.all(color: colors.border),
+        borderRadius: BorderRadius.circular(DuvetTokens.radiusButton),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(FLucideIcons.clock, size: 14, color: colors.mutedForeground),
+              const SizedBox(width: 6),
+              Flexible(
+                child: Text(Notice.waiting.text, style: quiet.copyWith(fontStyle: FontStyle.italic)),
+              ),
+            ],
+          ),
+          const SizedBox(height: 2),
+          Text(Notice.waitingDetail.text, style: DuvetType.caption.copyWith(color: colors.mutedForeground)),
+        ],
       ),
     );
   }

@@ -1,9 +1,11 @@
-# Analyze, test and build a release APK on every pull request into dev, as api and desktop do.
+# Analyze, test and build a release APK, and build the app for the iOS simulator and run the core's test on one, on
+# every pull request into dev, as api and desktop do, and into e2e, where the end-to-end encryption work waits for its
+# day.
 name: CI
 
 on:
   pull_request:
-    branches: [dev]
+    branches: [dev, e2e]
   workflow_dispatch:
 
 permissions:
@@ -18,7 +20,8 @@ jobs:
   flutter:
     # On GitHub's runners, free for a public repository: the organisation's own runner takes only its private ones.
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    # 45: a passing run takes 23 to 27 minutes, and a runner busy with other repositories' runs stretches it past 30 (#351).
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v7
         with:
@@ -43,8 +46,11 @@ jobs:
       - name: Analyze
         working-directory: mobile
         run: flutter analyze
+      # The end-to-end encryption core's tests load its Linux build, vendored with its plugin: nothing compiles Rust.
       - name: Test
         working-directory: mobile
+        env:
+          DUVET_E2E_LIB: ${{ github.workspace }}/mobile/packages/duvet_e2e/linux-x64/libduvet_e2e.so
         run: flutter test
       # What the failed goldens drew, to look at or to commit as the new ones: they are recorded on Linux,
       # which this runner is.
@@ -57,26 +63,42 @@ jobs:
           path: mobile/test/failures
           if-no-files-found: ignore
       # Signed with the release key when the repository has it (base64 keystore and its
-      # passwords as secrets); with the debug key otherwise, so forks still build.
+      # passwords as secrets), as release.yml signs; with the debug key otherwise, so forks still build.
       - name: Release key
         env:
           KEYSTORE: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
           STORE_PASSWORD: ${{ secrets.ANDROID_STORE_PASSWORD }}
           KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
         if: env.KEYSTORE != ''
-        working-directory: mobile/android
-        run: |
-          echo "$KEYSTORE" | base64 --decode > "$RUNNER_TEMP/release.jks"
-          # A properties file reads \ as an escape: each one doubled stays itself.
-          {
-            echo "storeFile=$RUNNER_TEMP/release.jks"
-            echo "storePassword=${STORE_PASSWORD//\\/\\\\}"
-            echo "keyAlias=duvet"
-            echo "keyPassword=${KEY_PASSWORD//\\/\\\\}"
-          } > key.properties
+        run: mobile/tool/release_key.sh
       - name: Build
         working-directory: mobile
         run: flutter build apk --release --target-platform android-arm64
+      # The core's plugin comes with its library prebuilt (packages/duvet_e2e): the APK carries it, every LOAD segment
+      # aligned to 16 KiB, as Android's 16 KB pages need, and the log keeps the APK's size.
+      - name: The core in the APK
+        working-directory: mobile
+        run: |
+          apk=build/app/outputs/flutter-apk/app-release.apk
+          echo "APK: $(stat -c %s "$apk") bytes"
+          unzip -lv "$apk" lib/arm64-v8a/libduvet_e2e.so
+          unzip -o -q "$apk" lib/arm64-v8a/libduvet_e2e.so -d "$RUNNER_TEMP/apk"
+          readelf=$(command -v llvm-readelf || command -v readelf ||
+            ls "${ANDROID_HOME:-/opt/android-sdk}"/ndk/*/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-readelf | tail -1)
+          "$readelf" -lW "$RUNNER_TEMP/apk/lib/arm64-v8a/libduvet_e2e.so" | tee "$RUNNER_TEMP/segments.txt"
+          aligns=$(awk '$1 == "LOAD" { print $NF }' "$RUNNER_TEMP/segments.txt")
+          test -n "$aligns"
+          for align in $aligns; do
+            if (( align % 16384 != 0 )); then echo "a LOAD segment is aligned to $align, not 16 KiB"; exit 1; fi
+          done
+          echo "Every LOAD segment is aligned to 16 KiB: $(echo $aligns)"
+      # What Gradle brought into the APK, whose licences the build checked, and the notices Google's AARs embed: the
+      # build writes both into its assets, which the licence page reads (#403).
+      - name: The licences in the APK
+        working-directory: mobile
+        run: |
+          unzip -l build/app/outputs/flutter-apk/app-release.apk assets/licenses/artifacts.json \
+            assets/licenses/google.json
       # Storage is billed in GB-hours: 1-day APKs fit the monthly allowance (372), and once it is
       # used up the upload fails, which shouldn't fail a run whose build and tests passed (#196).
       - uses: actions/upload-artifact@v5
@@ -85,3 +107,93 @@ jobs:
           name: duvet-apk
           path: mobile/build/app/outputs/flutter-apk/app-release.apk
           retention-days: 1
+
+  ios:
+    # The app built for the iOS simulator, which needs no signing (#388), and the core's test run in it (#389). The
+    # other tests and the goldens are the flutter job's, on Linux.
+    runs-on: macos-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          path: mobile
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: 3.47.7
+          channel: stable
+          cache: true
+      - name: Dependencies
+        working-directory: mobile
+        run: flutter pub get
+      # The plugins come through Swift Package Manager, Flutter's default: the project has no Podfile.
+      - name: Build
+        working-directory: mobile
+        run: |
+          xcodebuild -version
+          echo "iOS Simulator SDK $(xcrun --sdk iphonesimulator --show-sdk-version)"
+          flutter build ios --simulator --debug
+      # The committed project is the one Flutter builds: a change it still makes to ios/ fails the run (a migration, or
+      # a Podfile for a plugin without a Swift package), and what it wrote is kept below, to commit.
+      - name: The project as Flutter leaves it
+        working-directory: mobile
+        run: |
+          git add --all ios
+          git diff --cached --stat
+          git diff --cached --binary > "$RUNNER_TEMP/ios.patch"
+          test ! -s "$RUNNER_TEMP/ios.patch"
+      - name: What Flutter changed in ios/
+        if: failure()
+        uses: actions/upload-artifact@v5
+        continue-on-error: true
+        with:
+          name: ios-changes
+          path: ${{ runner.temp }}/ios.patch
+          if-no-files-found: ignore
+          retention-days: 1
+      - name: The broadcast extension in the app
+        working-directory: mobile
+        run: |
+          app=build/ios/iphonesimulator/Runner.app
+          ls "$app/PlugIns/Broadcast.appex"
+          echo "Runner.app: $(du -sh "$app" | cut -f1)"
+      # The end-to-end encryption core in the app (#389): its plugin's framework, which the app opens with no library
+      # handed to it, and its database, its key and the device's name as the app keeps them (#390), on an iPhone
+      # simulator of the newest iOS the runner has.
+      - name: The core on a simulator
+        working-directory: mobile
+        # Each test file's app gets 10 minutes and one more try (#406): a launch now and then never reports, where its
+        # tests take seconds. A second try that fails or doesn't report fails here, with its log below, not at the
+        # job's limit.
+        timeout-minutes: 45
+        run: |
+          pick=$(xcrun simctl list devices available --json | jq -r '[.devices | to_entries | sort_by(.key)[] |
+            select(.key | contains(".iOS-")) | .key as $runtime | .value[] | select(.name | startswith("iPhone")) |
+            "\(.udid) \($runtime | sub(".*SimRuntime."; "")) \(.name)"] | last // empty')
+          if [ -z "$pick" ]; then xcrun simctl list devices available; echo "no iPhone simulator"; exit 1; fi
+          echo "Simulator: $pick"
+          device=${pick%% *}
+          echo "SIMULATOR=$device" >> "$GITHUB_ENV"
+          xcrun simctl bootstatus "$device" -b
+          # A file's run, ended after 10 minutes by perl's alarm, as macOS has no timeout(1).
+          run_file() { perl -e 'alarm shift @ARGV; exec @ARGV' 600 flutter test "$1" -d "$device"; }
+          for file in integration_test/*_test.dart; do
+            run_file "$file" && continue
+            echo "::warning::$file didn't pass, or didn't report within 10 minutes: its app's log, then one more try"
+            xcrun simctl spawn "$device" log show --last 12m --style compact --predicate 'process == "Runner"' |
+              tail -200
+            xcrun simctl terminate "$device" chat.duvet || true
+            run_file "$file"
+          done
+          framework=build/ios/iphonesimulator/Runner.app/Frameworks/duvet_e2e.framework
+          echo "duvet_e2e.framework: $(du -sh "$framework" | cut -f1)"
+      # What the app logged on the simulator, and how it ended, when its tests fail or don't finish.
+      - name: The app on the simulator
+        if: failure() && env.SIMULATOR != ''
+        run: |
+          xcrun simctl spawn "$SIMULATOR" log show --last 40m --style compact --predicate 'process == "Runner"' |
+            tail -400
+          ls -lt ~/Library/Logs/DiagnosticReports 2>/dev/null | head -20
+          for report in $(ls -t ~/Library/Logs/DiagnosticReports/Runner* 2>/dev/null | head -2); do
+            echo "== $report"
+            head -150 "$report"
+          done

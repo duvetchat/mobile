@@ -6,6 +6,7 @@ import 'dart:ui' show ImageFilter;
 
 import 'package:clock/clock.dart' as time show clock;
 import 'package:flutter/gestures.dart' show TapGestureRecognizer;
+import 'package:flutter/foundation.dart' show mapEquals;
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
@@ -26,6 +27,18 @@ import 'data/models.dart';
 import 'data/repository.dart';
 import 'data/scope.dart';
 import 'data/voice.dart' show VoiceController;
+import 'data/gifs.dart' show GifSource;
+import 'e2e/conventions.dart' show waveformSamples;
+import 'e2e/decrypted_files.dart';
+import 'e2e/files.dart' show gifFile, sealedSize, tooLargeToSend;
+import 'e2e/host.dart' show CoreError;
+import 'e2e/notices.dart';
+import 'e2e/uuid.dart';
+import 'e2e/engine.dart' show KeyChange, changedIn, waitingForYes;
+import 'encryption/conversation_start.dart';
+import 'encryption/conversation_state.dart';
+import 'encryption/safety_number.dart';
+import 'encryption/share_history.dart';
 import 'members_sheet.dart';
 import 'people.dart';
 import 'search.dart';
@@ -46,6 +59,7 @@ import 'widgets/emoji_picker.dart';
 import 'widgets/glass.dart';
 import 'widgets/link_embeds.dart';
 import 'widgets/media.dart';
+import 'widgets/sealed_file.dart';
 import 'widgets/message_content.dart';
 import 'widgets/prism.dart';
 import 'widgets/role_name.dart';
@@ -123,6 +137,8 @@ typedef _Outgoing = ({
   String? replyTo,
   bool? mentionReplied,
   Recording? voice,
+  // A voice note's 64 peaks, an encrypted conversation's voice note's convention: kept for its Retry too.
+  List<int>? waveform,
 });
 
 /// How many files one message takes.
@@ -200,6 +216,10 @@ class _ChatViewState extends State<ChatView> with SingleTickerProviderStateMixin
 
   // Who can be mentioned, the space's emoji and stickers, the Unicode set.
   List<Member> _members = const [];
+
+  /// The changed keys of this conversation's people, as the engine says them (Task 29): its group's people on this
+  /// device with those the API lists. Asked again as the contacts or the members change.
+  Map<String, KeyChange> _keyChanges = const {};
   List<CustomEmoji> _customEmojis = const [];
   late final Future<List<Sticker>> _stickers;
   List<Sticker> _stickerList = const [];
@@ -310,6 +330,8 @@ class _ChatViewState extends State<ChatView> with SingleTickerProviderStateMixin
     _voice = context.voice..addListener(_onVoice);
     _load();
     _loadDirectory();
+    _repository.contacts.addListener(_keyChangesAgain);
+    _keyChangesAgain();
   }
 
   // On top with the app in front, the chat is on screen: its mentions show no
@@ -336,6 +358,7 @@ class _ChatViewState extends State<ChatView> with SingleTickerProviderStateMixin
       if (!c.isCompleted) c.complete();
     }
     _lifecycle.dispose();
+    if (_events != null) _repository.contacts.removeListener(_keyChangesAgain);
     _events?.cancel();
     _typingSub?.cancel();
     _resumedSub?.cancel();
@@ -365,23 +388,51 @@ class _ChatViewState extends State<ChatView> with SingleTickerProviderStateMixin
     _replyTo = draft.replyTo;
   }
 
-  void _saveDraft() {
-    // An edit isn't a draft: leaving drops it.
-    final text = _editing == null ? _composer.text : '';
+  /// What the box holds, as a draft keeps it. An edit isn't a draft: leaving drops it.
+  ChatDraft get _inBox {
     final picked = _composer.picked;
-    final draft = ChatDraft(
-      text: text,
+    return ChatDraft(
+      text: _editing == null ? _composer.text : '',
       mentions: picked.mentions,
       emojis: picked.emojis,
       rooms: picked.rooms,
       files: [..._files],
       replyTo: _replyTo,
     );
+  }
+
+  void _saveDraft() {
+    final draft = _inBox;
     if (draft.isEmpty) {
       _repository.drafts.remove(_draftKey);
     } else {
       _repository.drafts[_draftKey] = draft;
     }
+  }
+
+  /// What a send took out of the box, given back on the person's no (review 28's rule 8), or into the chat's draft
+  /// once the view is gone: its files after those there now, its text and reply only while there's neither, as the
+  /// desktop's putBack.
+  void _putBack(ChatDraft taken) {
+    if (!mounted) {
+      final now = _repository.drafts[_draftKey] ?? const ChatDraft();
+      final kept = now.text.trim().isEmpty && now.replyTo == null ? taken : now;
+      _repository.drafts[_draftKey] = ChatDraft(
+        text: kept.text,
+        mentions: kept.mentions,
+        emojis: kept.emojis,
+        rooms: kept.rooms,
+        files: [...now.files, ...taken.files],
+        replyTo: kept.replyTo,
+      );
+      return;
+    }
+    final whole = _composer.text.trim().isEmpty && _replyTo == null;
+    if (whole) _composer.restore(taken.text, mentions: taken.mentions, emojis: taken.emojis, rooms: taken.rooms);
+    setState(() {
+      _files.addAll(taken.files);
+      if (whole) _replyTo = taken.replyTo;
+    });
   }
 
   // ---------------------------------------------------------------------------
@@ -393,6 +444,7 @@ class _ChatViewState extends State<ChatView> with SingleTickerProviderStateMixin
   void _loadDirectory() {
     _repository.members(widget.target).then((m) {
       if (mounted) setState(() => _members = m);
+      _keyChangesAgain();
     }, onError: (Object e) => debugPrint('members: $e'));
     _repository.customEmojis().then((e) {
       if (mounted) setState(() => _customEmojis = e);
@@ -423,6 +475,14 @@ class _ChatViewState extends State<ChatView> with SingleTickerProviderStateMixin
         ConversationTarget() => (_) => null,
       },
     );
+  }
+
+  /// What an encrypted conversation's start says (PLAN-E2E-CLIENTES.md, «La vista de una conversación»): null when it
+  /// says nothing, a room's always.
+  Widget? get _start {
+    final start = _repository.chatStart(widget.target);
+    if (!(start.legacy && start.cutoverAt != null) && !start.beforeJoining) return null;
+    return ConversationStart(legacy: start.legacy, cutoverAt: start.cutoverAt, beforeJoining: start.beforeJoining);
   }
 
   /// The chat's Space; none in a DM or a group.
@@ -487,8 +547,12 @@ class _ChatViewState extends State<ChatView> with SingleTickerProviderStateMixin
           if (!shown.contains(m.id)) m,
       ];
       setState(() {
-        _entries = [for (final m in _byTime(page, ephemeral)) (message: m, delivery: _Delivery.sent), ...pushed];
-        _hasOlder = thread == null && page.length >= _pageSize;
+        _entries = [
+          for (final m in _byTime(page, ephemeral))
+            (message: m, delivery: m.pending ? _Delivery.failed : _Delivery.sent),
+          ...pushed,
+        ];
+        _hasOlder = thread == null && (page.length >= _pageSize || _olderBeyond(page));
         _loading = false;
         _kept = null;
         // shortcut: this page's only, an unread mention further back doesn't
@@ -599,6 +663,10 @@ class _ChatViewState extends State<ChatView> with SingleTickerProviderStateMixin
 
   Future<void> _loadOlder() => _olderPage ??= _fetchOlder().whenComplete(() => _olderPage = null);
 
+  /// A short page with more behind it: a conversation's, whose rows from before the user joined gave way, read a few of
+  /// the API's pages at a time (M7 of task 17's review).
+  bool _olderBeyond(List<ChatMessage> page) => page.isNotEmpty && _repository.olderBeyond(widget.target, page.first.id);
+
   Future<void> _fetchOlder() async {
     final oldest = _history.firstOrNull;
     if (_loadingOlder || !_hasOlder || oldest == null) return;
@@ -613,12 +681,59 @@ class _ChatViewState extends State<ChatView> with SingleTickerProviderStateMixin
             if (!known.contains(m.id)) (message: m, delivery: _Delivery.sent),
           ..._entries,
         ];
-        _hasOlder = page.length >= _pageSize;
+        _hasOlder = page.length >= _pageSize || _olderBeyond(page);
       });
     } catch (_) {
       // Scrolling up again retries.
     } finally {
       if (mounted) setState(() => _loadingOlder = false);
+    }
+  }
+
+  /// A member of the chat, by the name the app shows them.
+  String _memberName(String userId) =>
+      _members.where((m) => m.userId == userId).firstOrNull?.displayName ?? _repository.nameOf(userId) ?? 'Someone';
+
+  /// A history share's notice in parts, its names apart: who shared how far back with whom, «You» and «you» for the
+  /// reader.
+  List<({String text, String? name})> _sharedParts(ChatMessage m, SharedHistoryNotice shared) {
+    final a = m.authorId != null && m.authorId == _me ? 'You' : m.authorName;
+    final range = rangeText(shared.range);
+    if (shared.toUserId == _me) return Notice.sharedWithYou.parts({'a': a, 'range': range});
+    return Notice.shared.parts({'a': a, 'range': range, 'b': _memberName(shared.toUserId)});
+  }
+
+  /// Whom a restart leaves out, by name: those the API no longer lists, so not among the chat's members. A name the
+  /// app doesn't know comes from their profile, else it's their ID, never «Someone» (I2 of the review).
+  Future<String> _leftOutName(String userId) async {
+    if (_members.where((m) => m.userId == userId).firstOrNull?.displayName ?? _repository.nameOf(userId)
+        case final known?) {
+      return known;
+    }
+    try {
+      return (await _repository.user(userId)).displayName;
+    } catch (_) {
+      return userId;
+    }
+  }
+
+  /// The person's Restart encryption: whom it leaves out, they say yes to first (the core's #46), asked again when
+  /// those changed meanwhile. A restart the core or the API refuses says so (M1).
+  Future<void> _restart(String conversationId) async {
+    var leaving = const <String>[];
+    while (true) {
+      final List<String> out;
+      try {
+        out = await _repository.restartGroup(conversationId, leaving: leaving);
+      } on CoreError catch (error) {
+        if (error.code != 'rule_violation') rethrow;
+        if (mounted) _toast(Notice.restartRefused.text);
+        return;
+      }
+      if (out.isEmpty || !mounted) return;
+      final names = [for (final user in out) await _leftOutName(user)];
+      if (!mounted || !await confirmRestart(context, peopleNamed(names))) return;
+      leaving = out;
     }
   }
 
@@ -701,6 +816,18 @@ class _ChatViewState extends State<ChatView> with SingleTickerProviderStateMixin
   };
 
   void _onEvent(MessageEvent event) {
+    if (event is ContentChanged) {
+      if (widget.target is ConversationTarget) {
+        // A share came in where rows from before the user joined gave way: its pages are read again, which draws what
+        // it brought (Ruling 15; I3 of task 31's review). Otherwise the rows shown are read again.
+        if (event.imported && widget.threadOf == null && _repository.chatStart(widget.target).beforeJoining) {
+          unawaited(_load());
+        } else {
+          unawaited(_readAgain());
+        }
+      }
+      return;
+    }
     if (event case ReactionChanged(:final messageId) when !_entries.any((e) => e.message.id == messageId)) return;
     // A profile change that shows nothing new on the messages here.
     if (event is AuthorChanged && _entries.every((e) => identical(e.message.changedBy(event), e.message))) return;
@@ -714,7 +841,7 @@ class _ChatViewState extends State<ChatView> with SingleTickerProviderStateMixin
     if (widget.threadOf != null) {
       if (event case MessageCreated(
         :final message,
-      ) when !_entries.any((e) => e.message.id == message.reply?.messageId || e.message.nonce == message.nonce)) {
+      ) when !_entries.any((e) => e.message.id == message.reply?.messageId || _sameSend(e.message, message))) {
         return;
       }
     }
@@ -763,6 +890,8 @@ class _ChatViewState extends State<ChatView> with SingleTickerProviderStateMixin
             final changed = m.changedBy(event);
             if (!identical(changed, m)) _entries[i] = (message: changed, delivery: _entries[i].delivery);
           }
+        case ContentChanged():
+          break;
         // A file's new link, once its old one expired.
         case AttachmentRenewed(:final attachmentId, :final url):
           for (var i = 0; i < _entries.length; i++) {
@@ -789,6 +918,38 @@ class _ChatViewState extends State<ChatView> with SingleTickerProviderStateMixin
     if (_atBottom) _showDividerOnReturn = true;
   }
 
+  /// What this device's own database holds of the messages shown changed (an encrypted conversation's): each takes
+  /// what it holds of it now, as it is when the answer comes ([ChatMessage.heldAs]).
+  Future<void> _readAgain() async {
+    final shown = [..._entries];
+    final List<ChatMessage> held;
+    try {
+      held = await _repository.withContent(widget.target, [for (final e in shown) e.message]);
+    } catch (e) {
+      debugPrint('read again: $e');
+      return;
+    }
+    if (!mounted) return;
+    final byId = {for (final m in held) m.id: m};
+    final read = {for (final e in shown) e.message.id};
+    var dropped = false;
+    setState(() {
+      // A row the reading dropped goes: one from before the user joined that the device doesn't hold (Ruling 15).
+      final count = _entries.length;
+      _entries.removeWhere((e) => read.contains(e.message.id) && !byId.containsKey(e.message.id));
+      dropped = _entries.length < count;
+      for (var i = 0; i < _entries.length; i++) {
+        final (:message, :delivery) = _entries[i];
+        if (byId[message.id] case final now? when !identical(now, message)) {
+          _entries[i] = (message: message.heldAs(now), delivery: delivery);
+        }
+      }
+    });
+    // Every row of a page read before the device could be read gave way: the page is read again, which reads on past
+    // them to what the device holds (N5 of task 17's re-review).
+    if (dropped && _history.isEmpty) unawaited(_load());
+  }
+
   /// An edit, or a link preview that came late, merged into the message (see
   /// [ChatMessage.updatedBy]); the replies quoting it follow its text, as on
   /// the desktop.
@@ -797,7 +958,7 @@ class _ChatViewState extends State<ChatView> with SingleTickerProviderStateMixin
       final m = _entries[i].message;
       if (m.id == update.id) {
         _entries[i] = (message: m.updatedBy(update), delivery: _Delivery.sent);
-      } else if (m.reply case final reply? when reply.messageId == update.id) {
+      } else if (m.reply case final reply? when reply.messageId == update.id && !update.encrypted) {
         _entries[i] = (message: m.copyWith(reply: reply.withContent(update.content)), delivery: _entries[i].delivery);
       }
     }
@@ -805,14 +966,27 @@ class _ChatViewState extends State<ChatView> with SingleTickerProviderStateMixin
 
   /// Adds a message, or replaces the one it is: the same ID, or the pending
   /// send with its nonce (the gateway's echo often beats the REST answer).
+  /// Whether [message] is the copy of the person's own [shown] by its nonce: never another's, as the server knows a
+  /// message's nonce (the desktop's M2 of step 4's closing review).
+  bool _sameSend(ChatMessage shown, ChatMessage message) =>
+      message.nonce != null && message.authorId == _me && shown.nonce == message.nonce;
+
   void _upsert(ChatMessage message) {
-    final i = _entries.indexWhere(
-      (e) => e.message.id == message.id || (message.nonce != null && e.message.nonce == message.nonce),
-    );
-    final entry = (message: message, delivery: _Delivery.sent);
+    final i = _entries.indexWhere((e) => e.message.id == message.id || _sameSend(e.message, message));
+    // A row of the person's being sent is taken by their own message alone: another's with its ID, which the server
+    // can give it, takes nothing of it (N-M5 of step 4's closing re-review).
+    if (i >= 0 && _entries[i].message.pending && message.authorId != _me) return;
+    // An encrypted message's copy that brings no text (the API's) keeps what the chat shows of it: the device's text,
+    // or the person's own as typed, which goes only under their own ID, until a read gives the device's (I4 of task
+    // 17's review).
+    final keeps = i >= 0 && message.encrypted && message.content.isEmpty && _entries[i].message.content.isNotEmpty;
+    final entry = (message: keeps ? message.heldAs(_entries[i].message) : message, delivery: _Delivery.sent);
     if (i >= 0) {
       _entries[i] = entry;
-      if (message.nonce != null) _outgoing.remove(message.nonce);
+      // Sent: its files go, unless its delivery is still out, which lets them go as it ends.
+      if (_outgoing.remove(message.nonce) case final sent? when !_cancels.containsKey(message.nonce)) {
+        _letGo(sent.files);
+      }
     } else {
       _entries.add(entry);
     }
@@ -864,7 +1038,10 @@ class _ChatViewState extends State<ChatView> with SingleTickerProviderStateMixin
     _repository.sendTyping(widget.target);
   }
 
-  String _nonce() => '${DateTime.now().microsecondsSinceEpoch}${_random.nextInt(1 << 20)}';
+  // A conversation's is a UUIDv4, as the conventions between clients have it (PLAN-E2E-CLIENTES.md).
+  String _nonce() => widget.target is ConversationTarget
+      ? uuidv4()
+      : '${DateTime.now().microsecondsSinceEpoch}${_random.nextInt(1 << 20)}';
 
   // ---------------------------------------------------------------------------
   // Sending
@@ -882,13 +1059,20 @@ class _ChatViewState extends State<ChatView> with SingleTickerProviderStateMixin
       final command = _commands.where((c) => '/${c.path}' == content).firstOrNull;
       if (command != null) return _runCommand(command);
     }
-    // Files over the upload limit stay in the tray, with the reason.
+    // Files over the upload limit stay in the tray, with the reason: an encrypted conversation's by their sealed size,
+    // and the request's 32 MiB with them all (task 18's review, Missing 1).
     if (_files.isNotEmpty) {
       final limit = await _repository.uploadLimit();
       if (!mounted) return;
+      final sealed = widget.target is ConversationTarget;
+      // The request's 32 MiB, which no room's words name: a message too large to send, as the rooms' failure says.
+      if (sealed && tooLargeToSend([for (final f in _files) f.sizeBytes ?? 0])) {
+        _toast('Too large to send');
+        return;
+      }
       final over = [
         for (final f in _files)
-          if (limit != null && (f.sizeBytes ?? 0) > limit) f,
+          if (limit != null && (sealed ? sealedSize(f.sizeBytes ?? 0) : (f.sizeBytes ?? 0)) > limit) f,
       ];
       if (over.isNotEmpty) {
         _toast(
@@ -899,23 +1083,30 @@ class _ChatViewState extends State<ChatView> with SingleTickerProviderStateMixin
         return;
       }
     }
-    final files = [..._files];
-    final replyTo = _replyTo;
+    // Out of the box before the ask, which waits for the engine's turn: a Send or an Enter meanwhile finds it empty and
+    // sends nothing twice (review 29's I2), as one that waited for the upload limit finds it taken. A no gives it back
+    // (review 28's rule 8).
+    final taken = _inBox;
+    final text = _composer.encoded.trim();
+    if (text.isEmpty && taken.files.isEmpty) return;
     _composer.clear();
     setState(() {
       _files.clear();
       _replyTo = null;
     });
+    if (!await _mayGo() || !mounted) return _putBack(taken);
     _lastTypingSent = DateTime.fromMillisecondsSinceEpoch(0);
+    final replyTo = taken.replyTo;
     // In a thread, a message with no other target replies to the thread's root.
     final to = replyTo?.messageId ?? widget.threadOf;
     _queue((
-      content: content,
-      files: files,
+      content: text,
+      files: taken.files,
       sticker: null,
       replyTo: to,
       mentionReplied: replyTo?.mentionAuthor,
       voice: null,
+      waveform: null,
     ), reply: replyTo);
   }
 
@@ -942,13 +1133,40 @@ class _ChatViewState extends State<ChatView> with SingleTickerProviderStateMixin
 
   static String _megabytes(int bytes) => '${(bytes / (1024 * 1024)).round()} MB';
 
-  void _sendSticker(Sticker sticker) => _sendPicked(sticker: sticker);
+  void _sendSticker(Sticker sticker) => unawaited(_sendPicked(sticker: sticker));
 
-  void _sendGif(String url) => _sendPicked(content: url);
+  void _sendGif(String url) =>
+      unawaited(widget.target is ConversationTarget ? _sendSealedGif(url) : _sendPicked(content: url));
+
+  /// A GIF picked in an encrypted conversation goes as a sealed file of its bytes, never its link (Ruling 12).
+  Future<void> _sendSealedGif(String url) async {
+    if (!await _mayGo() || !mounted) return;
+    final picked = await gifFile(url, GifSource.instance.bytes);
+    if (!mounted) return;
+    if (picked == null) return _toast(Notice.gifFailed.text);
+    // Beside the decrypted files, which the engine's start empties: the engine keeps its sealed bytes for a Retry
+    // (task 19's review, M5).
+    final copy = await DecryptedFiles.instance.aside('gif', picked.name, bytes: picked.bytes);
+    if (!mounted) return;
+    final reply = _replyTo;
+    if (reply != null) setState(() => _replyTo = null);
+    _queue((
+      content: '',
+      files: [
+        OutgoingFile(path: copy.path, name: picked.name, contentType: 'image/gif', sizeBytes: picked.bytes.length),
+      ],
+      sticker: null,
+      replyTo: reply?.messageId ?? widget.threadOf,
+      mentionReplied: reply?.mentionAuthor,
+      voice: null,
+      waveform: null,
+    ), reply: reply);
+  }
 
   // A sticker or a GIF answers the message being replied to, as a text does
   // (on the desktop they all go out the same way), and the strip closes.
-  void _sendPicked({String content = '', Sticker? sticker}) {
+  Future<void> _sendPicked({String content = '', Sticker? sticker}) async {
+    if (!await _mayGo() || !mounted) return;
     final reply = _replyTo;
     if (reply != null) setState(() => _replyTo = null);
     final to = reply?.messageId ?? widget.threadOf;
@@ -959,13 +1177,30 @@ class _ChatViewState extends State<ChatView> with SingleTickerProviderStateMixin
       replyTo: to,
       mentionReplied: reply?.mentionAuthor,
       voice: null,
+      waveform: null,
     ), reply: reply);
   }
 
-  void _sendVoice(Recording recording) =>
-      _queue((content: '', files: const [], sticker: null, replyTo: null, mentionReplied: null, voice: recording));
+  Future<void> _sendVoice(Recording recording) async {
+    final _Outgoing note = (
+      content: '',
+      files: const [],
+      sticker: null,
+      replyTo: null,
+      mentionReplied: null,
+      voice: recording,
+      // The loudest of each stretch of the take, worked out before the send reads it (task 19's review, Missing 1).
+      waveform: _take.isEmpty ? null : peaksOf(_take),
+    );
+    // A no keeps the note, waiting with Retry and Dismiss.
+    final go = await _mayGo();
+    if (mounted) _queue(note, deliver: go);
+  }
 
-  void _queue(_Outgoing outgoing, {MessageReply? reply}) {
+  /// A take's every level, a tenth of a second each, for its waveform.
+  final _take = <double>[];
+
+  void _queue(_Outgoing outgoing, {MessageReply? reply, bool deliver = true}) {
     final nonce = _nonce();
     final profile = _repository.profile.value;
     final pending = ChatMessage(
@@ -1002,8 +1237,8 @@ class _ChatViewState extends State<ChatView> with SingleTickerProviderStateMixin
       ],
     );
     _outgoing[nonce] = outgoing;
-    setState(() => _entries.add((message: pending, delivery: _Delivery.sending)));
-    _deliver(nonce);
+    setState(() => _entries.add((message: pending, delivery: deliver ? _Delivery.sending : _Delivery.failed)));
+    if (deliver) _deliver(nonce);
   }
 
   Future<void> _deliver(String nonce) async {
@@ -1014,7 +1249,14 @@ class _ChatViewState extends State<ChatView> with SingleTickerProviderStateMixin
     try {
       final ChatMessage sent;
       if (outgoing.voice case final voice?) {
-        sent = await _repository.sendVoiceNote(widget.target, voice.bytes, nonce: nonce, format: voice.format);
+        sent = await _repository.sendVoiceNote(
+          widget.target,
+          voice.bytes,
+          nonce: nonce,
+          format: voice.format,
+          waveform: outgoing.waveform,
+          length: voice.length,
+        );
       } else {
         sent = await _repository.send(
           widget.target,
@@ -1038,6 +1280,7 @@ class _ChatViewState extends State<ChatView> with SingleTickerProviderStateMixin
       }
       _outgoing.remove(nonce);
       _progress.remove(nonce);
+      _letGo(outgoing.files);
       if (!mounted) return;
       // The server may not echo the nonce back: match the pending entry by ours.
       setState(() {
@@ -1061,7 +1304,7 @@ class _ChatViewState extends State<ChatView> with SingleTickerProviderStateMixin
       });
       _announce(e is UploadTooLarge ? 'Too large to send' : 'Message not sent');
       // Why the API refused it, as the desktop shows it.
-      if (e is ActionFailed) _toast(e.message);
+      _toastWhy(e);
     } finally {
       _cancels.remove(nonce);
     }
@@ -1079,14 +1322,16 @@ class _ChatViewState extends State<ChatView> with SingleTickerProviderStateMixin
     final empty = _composer.text.trim().isEmpty && _replyTo == null;
     // A reply whose message was deleted meanwhile can't be sent again.
     final reply = entry.message.reply;
+    final room = maxFiles - _files.length;
     setState(() {
       _entries.remove(entry);
       _progress.remove(nonce);
       if (restore) {
-        _files.addAll(outgoing.files.take(maxFiles - _files.length));
+        _files.addAll(outgoing.files.take(room));
         if (empty && reply != null && !reply.deleted) _replyTo = reply;
       }
     });
+    if (outgoing != null) _letGo(restore ? outgoing.files.skip(room) : outgoing.files);
     if (restore && empty && outgoing.content.isNotEmpty) {
       final directory = _directory;
       _composer.setEncoded(
@@ -1099,8 +1344,13 @@ class _ChatViewState extends State<ChatView> with SingleTickerProviderStateMixin
     _announce('Upload cancelled');
   }
 
-  void _retry(_Entry entry) {
+  Future<void> _retry(_Entry entry) async {
+    if (!await _mayGo() || !mounted) return;
     final nonce = entry.message.nonce;
+    if (nonce != null && !_outgoing.containsKey(nonce) && entry.message.pending) {
+      unawaited(_resend(entry, nonce));
+      return;
+    }
     if (nonce == null || !_outgoing.containsKey(nonce)) return;
     setState(() {
       final i = _entries.indexOf(entry);
@@ -1109,12 +1359,53 @@ class _ChatViewState extends State<ChatView> with SingleTickerProviderStateMixin
     _deliver(nonce);
   }
 
-  /// Drops a message that failed to send, and what it carried.
-  void _discard(_Entry entry) {
+  /// The user's message this device kept from before the app started again, sent again as the device keeps it.
+  Future<void> _resend(_Entry entry, String nonce) async {
     setState(() {
-      _entries.remove(entry);
-      _outgoing.remove(entry.message.nonce);
+      final i = _entries.indexOf(entry);
+      if (i >= 0) _entries[i] = (message: entry.message, delivery: _Delivery.sending);
     });
+    // The row retried, by its own ID: a copy of the message a page or the gateway brought has its nonce too.
+    final retried = entry.message.id;
+    try {
+      final sent = await _repository.resend(widget.target, nonce);
+      if (!mounted) return;
+      setState(() {
+        // It takes the message, and any other row of it goes (N1 of task 17's re-review). One a copy replaced
+        // meanwhile is that copy already.
+        final i = _entries.indexWhere((e) => e.message.id == retried);
+        if (i < 0) return;
+        final kept = (message: sent, delivery: _Delivery.sent);
+        _entries[i] = kept;
+        _entries.removeWhere((e) => e.message.id == sent.id && !identical(e, kept));
+      });
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        final i = _entries.indexWhere((e) => e.message.id == retried);
+        if (i >= 0) _entries[i] = (message: _entries[i].message, delivery: _Delivery.failed);
+      });
+      _announce('Message not sent');
+      _toastWhy(e);
+    }
+  }
+
+  /// Why a send didn't go, when it says: the API's refusal, or a verified contact's changed key in the strong words.
+  void _toastWhy(Object error) {
+    if (error is ActionFailed) return _toast(error.message);
+    if (error case CoreError(code: 'key_changed', :final users)) {
+      _toast(heldFor([for (final user in users ?? const <String>[]) _memberName(user)]));
+    }
+  }
+
+  /// Drops a message that failed to send, and what it carried: a conversation's waits on this device no more.
+  void _discard(_Entry entry) {
+    final dismissed = _outgoing.remove(entry.message.nonce);
+    setState(() => _entries.remove(entry));
+    if (dismissed != null) _letGo(dismissed.files);
+    if (entry.message.nonce case final nonce? when widget.target is ConversationTarget) {
+      unawaited(_repository.discard(widget.target, nonce).catchError((Object e) => debugPrint('discard: $e')));
+    }
     _announce('Message deleted');
   }
 
@@ -1169,8 +1460,10 @@ class _ChatViewState extends State<ChatView> with SingleTickerProviderStateMixin
     }
     HapticFeedback.mediumImpact();
     _recordedFor = Duration.zero;
+    _take.clear();
     _levelsSub = recorder.levels.listen((l) {
       if (!mounted) return;
+      _take.add(l);
       setState(() {
         _levels.add(l);
         if (_levels.length > 48) _levels.removeAt(0);
@@ -1268,14 +1561,15 @@ class _ChatViewState extends State<ChatView> with SingleTickerProviderStateMixin
     setState(() => _entries.removeWhere((e) => e.message.id == m.id));
   }
 
-  void _startEditing(ChatMessage m) {
+  /// The box edits [m], holding its text, or what was [typed] for it before.
+  void _startEditing(ChatMessage m, {String? typed}) {
     final directory = _directory;
     setState(() {
       _replyTo = null;
       _editing = m;
     });
     _composer.setEncoded(
-      m.content,
+      typed ?? m.content,
       nameOf: directory.nameOf,
       emojiNameOf: (id) => directory.emojiOf(id)?.name,
       roomNameOf: (id) => directory.roomOf(id)?.name,
@@ -1293,6 +1587,8 @@ class _ChatViewState extends State<ChatView> with SingleTickerProviderStateMixin
     if (editing == null) return;
     final content = _composer.encoded.trim();
     if (content.isEmpty) return;
+    // A no keeps the box, and what was typed in it (review 28's rule 8).
+    if (content != editing.content && (!await _mayGo() || !mounted || !identical(_editing, editing))) return;
     setState(_stopEditing);
     if (content == editing.content) return;
     // Shown at once; put back if the server says no.
@@ -1301,9 +1597,13 @@ class _ChatViewState extends State<ChatView> with SingleTickerProviderStateMixin
       // The API answers the message without its files, reactions or reply.
       final saved = await _repository.edit(widget.target, editing.id, content);
       if (mounted) setState(() => _applyUpdate(saved));
-    } catch (_) {
+    } catch (error) {
       _replace(editing);
-      _toast('Couldn’t save your edit');
+      // Nothing was made of it: what was typed goes back in the box, unless the person went on to something else.
+      if (mounted && _editing == null && _replyTo == null && _composer.encoded.trim().isEmpty) {
+        _startEditing(editing, typed: content);
+      }
+      _toast(error is ActionFailed ? 'Couldn’t save your edit. ${error.message}' : 'Couldn’t save your edit');
     }
   }
 
@@ -1564,15 +1864,40 @@ class _ChatViewState extends State<ChatView> with SingleTickerProviderStateMixin
       return;
     }
     try {
-      final picked = await (ChatView.debugPickFiles ?? _pickWithFilePicker)();
+      final picked = await _takenIn(await (ChatView.debugPickFiles ?? _pickWithFilePicker)());
       if (!mounted || picked.isEmpty) return;
       final added = picked.take(room).toList();
+      _letGo(picked.skip(room));
       setState(() => _files.addAll(added));
       if (picked.length > room) _toast('Added $room: a message takes up to $maxFiles files');
       _announce(added.length == 1 ? '${added.single.name} attached' : '${added.length} files attached');
     } on PlatformException {
       _toast('Couldn’t open your files');
     }
+  }
+
+  /// The files just picked, as an encrypted conversation keeps them (mobile#365): each a picker copied into the cache
+  /// folder moves in among the decrypted files, which the engine's start empties should the app end before their send
+  /// settles. A room's stay where the picker put them.
+  Future<List<OutgoingFile>> _takenIn(List<OutgoingFile> picked) async {
+    if (widget.target is! ConversationTarget) return picked;
+    return [
+      for (final f in picked)
+        OutgoingFile(
+          path: await DecryptedFiles.instance.takeIn(f.path),
+          name: f.name,
+          contentType: f.contentType,
+          width: f.width,
+          height: f.height,
+          sizeBytes: f.sizeBytes,
+        ),
+    ];
+  }
+
+  /// A conversation's picked files no message needs any more, its send settled (sent, or dismissed) or the person took
+  /// them out of the tray: they go (mobile#365). A room's stay, as before.
+  void _letGo(Iterable<OutgoingFile> files) {
+    if (widget.target is ConversationTarget) DecryptedFiles.instance.letGo([for (final f in files) f.path]);
   }
 
   static Future<List<OutgoingFile>> _pickWithFilePicker() async {
@@ -1596,9 +1921,12 @@ class _ChatViewState extends State<ChatView> with SingleTickerProviderStateMixin
       return;
     }
     try {
-      final picked = await (widget.pickMedia ?? ChatView.debugPickMedia ?? _pickWithImagePicker)(source);
+      final picked = await _takenIn(
+        await (widget.pickMedia ?? ChatView.debugPickMedia ?? _pickWithImagePicker)(source),
+      );
       if (!mounted || picked.isEmpty) return;
       final added = picked.take(room).toList();
+      _letGo(picked.skip(room));
       setState(() => _files.addAll(added));
       if (picked.length > room) _toast('Added $room: a message takes up to $maxFiles files');
       _announce(added.length == 1 ? '${added.single.name} attached' : '${added.length} files attached');
@@ -1700,6 +2028,56 @@ class _ChatViewState extends State<ChatView> with SingleTickerProviderStateMixin
     );
     if (video == null || !mounted || !_canCall) return;
     await callConversation(context, widget.target.id, video: video);
+  }
+
+  /// A DM's other person: none in a group, a room or a thread.
+  String? get _dmPartner {
+    if (widget.target is! ConversationTarget || widget.threadOf != null) return null;
+    return _repository.conversations.value.where((c) => c.id == widget.target.id).firstOrNull?.otherUserId;
+  }
+
+  /// A DM's title, with its contact's mark once the person verified them (Task 29).
+  Widget _withMark(Widget title) {
+    final partner = _dmPartner;
+    if (partner == null || _repository.contacts.value.verified[partner] != true) return title;
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Flexible(child: title),
+        const SizedBox(width: 6),
+        const VerifiedMark(),
+      ],
+    );
+  }
+
+  void _keyChangesAgain() {
+    if (widget.target case ConversationTarget(:final conversationId)) {
+      _repository.keyChangesIn(conversationId).then((changes) {
+        if (mounted && !mapEquals(changes, _keyChanges)) setState(() => _keyChanges = changes);
+      }, onError: (Object e) => debugPrint("e2e: a conversation's changed keys: ${e.runtimeType}"));
+    }
+  }
+
+  /// A verified contact's changed key (decision 25): before what goes here next, the person is asked, naming them,
+  /// the engine asked afresh; their yes, to the changes they were shown, lets it go, and what waited with it. True when
+  /// nothing waits. The engine's own hold stands behind this question, for a change it didn't know of yet.
+  Future<bool> _mayGo() async {
+    if (widget.target case ConversationTarget(:final conversationId)) {
+      final Map<String, KeyChange> changes;
+      try {
+        changes = await _repository.keyChangesIn(conversationId);
+      } catch (e) {
+        debugPrint("e2e: a conversation's changed keys: ${e.runtimeType}");
+        return true;
+      }
+      final waiting = waitingForYes(changes, changes.keys);
+      if (waiting.isEmpty) return true;
+      if (!mounted || !await confirmSendAnyway(context, [for (final user in waiting) _memberName(user)])) {
+        return false;
+      }
+      await _repository.confirmKeyChanges([for (final user in waiting) (user: user, change: changes[user]!.change)]);
+    }
+    return true;
   }
 
   /// A DM's other person's presence, under its name: none in a group, a room
@@ -1930,6 +2308,16 @@ class _ChatViewState extends State<ChatView> with SingleTickerProviderStateMixin
           if (mounted) openChat(context, dm.target, dm.title);
         } catch (e) {
           _toast(e is ActionFailed ? e.message : 'Couldn’t open a conversation with ${member.displayName}');
+        }
+      case MemberAction.shareHistory:
+        if (widget.target case ConversationTarget(:final conversationId)) {
+          final said = await showShareHistorySheet(
+            context,
+            repository: _repository,
+            conversationId: conversationId,
+            member: member,
+          );
+          if (said != null) _toast(said);
         }
     }
   }
@@ -2165,7 +2553,9 @@ class _ChatViewState extends State<ChatView> with SingleTickerProviderStateMixin
     final sure = await confirmDestructive(
       context,
       title: 'Delete this notice?',
-      body: m.call != null ? 'It goes for everyone in the conversation.' : 'The message stays pinned.',
+      body: m.call != null || m.sharedHistory != null
+          ? 'It goes for everyone in the conversation.'
+          : 'The message stays pinned.',
       action: 'Delete',
     );
     if (!sure || !mounted) return;
@@ -2533,6 +2923,8 @@ class _ChatViewState extends State<ChatView> with SingleTickerProviderStateMixin
                   _repository.presence,
                   // The room's name and description, as they change.
                   _repository.spaces,
+                  // A DM's contact's mark (Task 29).
+                  _repository.contacts,
                 ]),
                 builder: (context, _) => GlassTopBar(
                   hairline: _underTop,
@@ -2555,7 +2947,7 @@ class _ChatViewState extends State<ChatView> with SingleTickerProviderStateMixin
                           final presence? => Column(
                             mainAxisSize: MainAxisSize.min,
                             children: [
-                              Text(widget.title, maxLines: 1, overflow: TextOverflow.ellipsis),
+                              _withMark(Text(widget.title, maxLines: 1, overflow: TextOverflow.ellipsis)),
                               Text(
                                 presenceText(presence),
                                 style: DuvetType.caption.copyWith(color: colors.mutedForeground),
@@ -2579,7 +2971,7 @@ class _ChatViewState extends State<ChatView> with SingleTickerProviderStateMixin
                             );
                             // What the room is for, under its name: one line.
                             final description = isRoom ? _room?.description : null;
-                            if (description == null) return name;
+                            if (description == null) return _withMark(name);
                             return Column(
                               mainAxisSize: MainAxisSize.min,
                               children: [
@@ -2644,6 +3036,58 @@ class _ChatViewState extends State<ChatView> with SingleTickerProviderStateMixin
                   child: Column(
                     mainAxisSize: MainAxisSize.min,
                     children: [
+                      // A contact's changed key, in each conversation with them until it's closed (Task 29).
+                      for (final user in changedIn(_keyChanges, _keyChanges.keys))
+                        Padding(
+                          padding: const EdgeInsets.symmetric(horizontal: 16),
+                          child: _KeyChangeNotice(
+                            name: _memberName(user),
+                            verified: _keyChanges[user]!.verified,
+                            onVerify: () => openSafetyNumber(context, _repository, user, _memberName(user)),
+                            onClose: () => unawaited(_repository.closeKeyChange(user, _keyChanges[user]!.change)),
+                          ),
+                        ),
+                      // What a conversation says of its encrypted group, over its message box.
+                      if (widget.target case ConversationTarget(:final conversationId))
+                        Padding(
+                          padding: const EdgeInsets.symmetric(horizontal: 16),
+                          child: ValueListenableBuilder(
+                            valueListenable: _repository.conversationStates,
+                            builder: (context, states, _) {
+                              final state = states[conversationId];
+                              return ConversationStateBar(
+                                state: state,
+                                nameOf: _memberName,
+                                onRestart: () => _restart(conversationId),
+                                // The yes is to whom this bar names (R-M2 of step 4's closing re-review).
+                                onAccept: () => _repository.acceptMembers(conversationId, state?.users ?? const []),
+                              );
+                            },
+                          ),
+                        ),
+                      // What other members shared of the conversation's history, the newest three, until the person
+                      // adds or dismisses each.
+                      if (widget.target case ConversationTarget(:final conversationId))
+                        Padding(
+                          padding: const EdgeInsets.symmetric(horizontal: 16),
+                          child: ValueListenableBuilder(
+                            valueListenable: _repository.historyOffers,
+                            builder: (context, offers, _) => Column(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                for (final offer in offers[conversationId] ?? const [])
+                                  SharedHistoryOfferBar(
+                                    key: ValueKey(offer.shareId),
+                                    offer: offer,
+                                    nameOf: _memberName,
+                                    onAdd: (offer) => _repository.takeHistoryOffer(conversationId, offer.shareId),
+                                    onDismiss: (offer) =>
+                                        _repository.dismissHistoryOffer(conversationId, offer.shareId),
+                                  ),
+                              ],
+                            ),
+                          ),
+                        ),
                       Padding(
                         padding: const EdgeInsets.symmetric(horizontal: 16),
                         child: _TypingLine(
@@ -2656,7 +3100,10 @@ class _ChatViewState extends State<ChatView> with SingleTickerProviderStateMixin
                       if (_files.isNotEmpty && _editing == null)
                         _AttachmentTray(
                           files: _files,
-                          onRemove: (f) => setState(() => _files.remove(f)),
+                          onRemove: (f) {
+                            setState(() => _files.remove(f));
+                            _letGo([f]);
+                          },
                           onToggleSpoiler: (f) => setState(() {
                             final i = _files.indexOf(f);
                             if (i >= 0) _files[i] = f.withSpoiler(!f.isSpoiler);
@@ -2838,7 +3285,8 @@ class _ChatViewState extends State<ChatView> with SingleTickerProviderStateMixin
     if (_entries.isEmpty) {
       // A new DM: the ghost tucked in, and a first line to start with.
       if (widget.target is ConversationTarget && widget.threadOf == null) {
-        return EmptyState(
+        final start = _start;
+        final empty = EmptyState(
           mascot: MascotState.underDuvet,
           text: 'Just you and ${widget.title}',
           action: Wrap(
@@ -2851,6 +3299,15 @@ class _ChatViewState extends State<ChatView> with SingleTickerProviderStateMixin
             ],
           ),
         );
+        return start == null
+            ? empty
+            : Column(
+                children: [
+                  SizedBox(height: _topHeight == 0 ? GlassTopBar.heightOf(context) : _topHeight),
+                  start,
+                  Expanded(child: empty),
+                ],
+              );
       }
       return const EmptyState(mascot: MascotState.empty, text: 'No messages yet. Say hi!');
     }
@@ -2885,6 +3342,7 @@ class _ChatViewState extends State<ChatView> with SingleTickerProviderStateMixin
               );
             }
             return switch (items[items.length - 1 - index]) {
+              _Start() => _start ?? const SizedBox.shrink(),
               _Day(:final day) => _DaySeparator(day: day),
               _NewMessages(:final count) => _NewMessagesDivider(
                 key: _dividerKey,
@@ -2896,12 +3354,16 @@ class _ChatViewState extends State<ChatView> with SingleTickerProviderStateMixin
               ),
               _Message(:final entry, :final first, :final last) =>
                 entry.message.isNotice
-                    ? switch (callNoticeLine(entry.message, _me)) {
-                        final line? => _CallNoticeRow(
+                    ? switch ((callNoticeLine(entry.message, _me), entry.message.sharedHistory)) {
+                        (final line?, _) => _CallNoticeRow(
                           line: line,
                           onHold: _canDeleteNotices ? (anchor) => _noticeActions(anchor, entry.message) : null,
                         ),
-                        null => _Notice(
+                        (_, final shared?) => _SharedNoticeRow(
+                          parts: _sharedParts(entry.message, shared),
+                          onHold: _canDeleteNotices ? (anchor) => _noticeActions(anchor, entry.message) : null,
+                        ),
+                        _ => _Notice(
                           who: entry.message.authorName,
                           where: widget.target is RoomTarget ? 'room' : 'conversation',
                           onJump: switch (entry.message.reply?.messageId) {
@@ -2949,7 +3411,8 @@ class _ChatViewState extends State<ChatView> with SingleTickerProviderStateMixin
   /// names them by their Space nickname, which live messages may not know.
   /// In [flat] rows a reply starts a run too (see [_sameRun]).
   List<_Item> _items({required bool flat}) {
-    final items = <_Item>[];
+    // Over the oldest message, once no older page is left: what an encrypted conversation's start says.
+    final items = <_Item>[if (!_hasOlder && widget.threadOf == null && _start != null) const _Start()];
     for (var i = 0; i < _entries.length; i++) {
       final m = _entries[i].message;
       final previous = i > 0 ? _entries[i - 1].message : null;
@@ -3021,6 +3484,11 @@ sealed class _Item {
   const _Item();
 }
 
+/// The chat's start, over its oldest message: what an encrypted conversation says there ([ConversationStart]).
+class _Start extends _Item {
+  const _Start();
+}
+
 class _Day extends _Item {
   final DateTime day;
   const _Day(this.day);
@@ -3071,4 +3539,19 @@ class _RenderMeasureHeight extends RenderProxyBox {
     _last = height;
     WidgetsBinding.instance.addPostFrameCallback((_) => onChange(height));
   }
+}
+
+/// A take's waveform from its levels (0 to 1, a tenth of a second each): [waveformSamples] peaks, each the loudest of
+/// its stretch of the take, a byte each.
+List<int> peaksOf(List<double> levels) {
+  final n = levels.length;
+  return [
+    for (var i = 0; i < waveformSamples; i++)
+      (levels
+                  .sublist(i * n ~/ waveformSamples, max(i * n ~/ waveformSamples + 1, (i + 1) * n ~/ waveformSamples))
+                  .fold(0.0, max) *
+              255)
+          .round()
+          .clamp(0, 255),
+  ];
 }

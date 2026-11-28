@@ -5,6 +5,7 @@ import 'package:duvet/data/emoji_catalog.dart';
 import 'package:duvet/data/markdown.dart';
 import 'package:duvet/data/models.dart';
 import 'package:duvet/data/appearance.dart';
+import 'package:duvet/e2e/notices.dart';
 import 'package:duvet/main.dart';
 import 'package:duvet/theme.dart' show Duvet;
 import 'package:duvet/widgets/disintegrate.dart' show dustOf;
@@ -663,6 +664,26 @@ void main() {
     semantics.dispose();
   });
 
+  // The first question of step 4's third closing re-review: an edit refused (here as the conversation's group holds
+  // someone the chat doesn't draw) is said at the message, in the conversation's own words, and what was typed goes
+  // back in the box, as nothing was made of it.
+  testWidgets('an edit refused says why, and what was typed goes back in the box', (tester) async {
+    final repository = await openMaya(tester);
+    repository.editRefusal = ActionFailed(Notice.membersChanged.text);
+    await longPress(tester, 'Yes, way better than the side panels.');
+    await tapLabel(tester, 'Edit');
+    await tester.enterText(find.byType(EditableText), 'Yes, much better.');
+    await tester.pump();
+    await tapLabel(tester, 'Save edit');
+    await tester.pumpAndSettle();
+    expect(find.text('Couldn’t save your edit. ${Notice.membersChanged.text}'), findsOneWidget);
+    expect(find.text('Yes, way better than the side panels.'), findsOneWidget);
+    expect(find.textContaining('edited'), findsNothing);
+    expect(find.text('Editing message'), findsOneWidget);
+    expect(tester.widget<EditableText>(find.byType(EditableText)).controller.text, 'Yes, much better.');
+    semantics.dispose();
+  });
+
   testWidgets('return starts a new line; only Send sends, every line in one message', (tester) async {
     final repository = await openMaya(tester);
     final field = tester.widget<TextField>(find.byType(TextField));
@@ -1004,5 +1025,268 @@ void main() {
     await tapLabel(tester, 'Delete');
     expect(find.text('into the void'), findsNothing);
     semantics.dispose();
+  });
+
+  // Encrypted conversations (PLAN-E2E-CLIENTES.md, Task 17, «La vista de una conversación»): what this device's own
+  // database holds of each row.
+  group('a conversation drawn from the device', () {
+    ChatMessage held(String id, {String text = '', bool waiting = false, String? sharedBy, bool pending = false}) =>
+        ChatMessage(
+          id: id,
+          authorId: pending ? _me : _maya,
+          authorName: pending ? 'Gaby' : 'Maya',
+          content: text,
+          createdAt: DateTime(2026, 10, 23, 9, 10),
+          nonce: pending ? id.substring('pending:'.length) : null,
+          waiting: waiting,
+          sharedBy: sharedBy,
+          pending: pending,
+        );
+
+    testWidgets("a message the device doesn't hold waits, and shows once it's read again", (tester) async {
+      final repository = await openMaya(tester, setUp: (r) => r.history['c-maya']!.add(held('w1', waiting: true)));
+      expect(find.text(Notice.waiting.text), findsOneWidget);
+      expect(find.text(Notice.waitingDetail.text), findsOneWidget);
+
+      // The device's database changed (an import filled it): the chat reads what it shows again.
+      repository.contents['w1'] = held('w1', text: 'here now', sharedBy: 'Leo');
+      repository.push('c-maya', const ContentChanged());
+      await tester.pumpAndSettle();
+      expect(find.text('here now'), findsOneWidget);
+      expect(find.text(Notice.waiting.text), findsNothing);
+      expect(find.text(Notice.sharedBy.fill({'name': 'Leo'})), findsOneWidget);
+      semantics.dispose();
+    });
+
+    // I4 of task 17's review: an encrypted message's copy from the API (an edit's echo, a create's) brings none of its
+    // text: the chat keeps what the device gave it, and the quotes of it too.
+    testWidgets("an encrypted message's copy from the API leaves the text the device gave", (tester) async {
+      final repository = await openMaya(
+        tester,
+        setUp: (r) => r.history['c-maya']!.addAll([
+          held('e1', text: 'from the device').copyWith(seq: 4),
+          held('e2', text: 'an answer').copyWith(
+            seq: 5,
+            reply: const MessageReply(messageId: 'e1', authorId: _maya, authorName: 'Maya', content: 'from the device'),
+          ),
+        ]),
+      );
+      void shown() {
+        expect(find.text('from the device'), findsWidgets);
+        expect(find.bySemanticsLabel(RegExp('Replying to Maya: from the device')), findsOneWidget);
+      }
+
+      shown();
+      final copy = held('e1').copyWith(seq: 4);
+      repository.push('c-maya', MessageUpdated(copy));
+      await tester.pumpAndSettle();
+      shown();
+      repository.push('c-maya', MessageCreated(copy));
+      await tester.pumpAndSettle();
+      shown();
+      semantics.dispose();
+    });
+
+    // The desktop's M2 of step 4's closing review: the server knows a message's nonce. A copy of another's that carries
+    // the person's takes nothing of their message being sent: its row and its text stay theirs, and never show under
+    // the name the copy gives.
+    testWidgets("another's message with the person's nonce takes nothing of theirs being sent", (tester) async {
+      final repository = await openMaya(
+        tester,
+        setUp: (r) => r.history['c-maya']!.add(held('pending:n1', text: 'my words', pending: true)),
+      );
+      expect(find.bySemanticsLabel('Retry'), findsOneWidget);
+      repository.push('c-maya', MessageCreated(held('forged', waiting: true).copyWith(nonce: 'n1', seq: 7)));
+      await tester.pumpAndSettle();
+      expect(find.text('my words'), findsOneWidget);
+      expect(find.bySemanticsLabel('Retry'), findsOneWidget);
+      expect(find.text(Notice.waiting.text), findsOneWidget);
+      semantics.dispose();
+    });
+
+    // N-M5 of step 4's closing re-review: a copy of another's with the ID of the person's row being sent, which the
+    // server can give it, takes nothing of theirs either: the typed text shows only under the person's own ID.
+    testWidgets("another's message with the ID of the person's row being sent takes nothing of it", (tester) async {
+      final repository = await openMaya(
+        tester,
+        setUp: (r) => r.history['c-maya']!.add(held('pending:n1', text: 'my words', pending: true)),
+      );
+      expect(find.bySemanticsLabel('Retry'), findsOneWidget);
+      repository.push('c-maya', MessageCreated(held('pending:n1', waiting: true).copyWith(seq: 7)));
+      await tester.pumpAndSettle();
+      expect(find.text('my words'), findsOneWidget);
+      expect(find.bySemanticsLabel('Retry'), findsOneWidget);
+      expect(find.text(Notice.waiting.text), findsNothing);
+      semantics.dispose();
+    });
+
+    // N1 of task 17's re-review: a Retry of a message the page lists already (its copy beside its waiting row) takes
+    // the place of the row it retried, and no other row of the message stays.
+    testWidgets('a Retry takes the place of the row it retried, and no other row of its message stays', (tester) async {
+      final repository = await openMaya(
+        tester,
+        setUp: (r) => r.history['c-maya']!.addAll([
+          ChatMessage(
+            id: 'sent-n1',
+            authorId: _me,
+            authorName: 'Gaby',
+            content: 'went',
+            createdAt: DateTime(2026, 10, 23, 9, 10),
+            nonce: 'n1',
+            seq: 9,
+          ),
+          held('pending:n1', text: 'went', pending: true),
+        ]),
+      );
+      expect(find.text('went'), findsNWidgets(2));
+      await tester.tap(find.bySemanticsLabel('Retry'));
+      await tester.pumpAndSettle();
+      expect(repository.resent, ['n1']);
+      expect(find.text('went'), findsOneWidget);
+      expect(find.bySemanticsLabel('Retry'), findsNothing);
+      semantics.dispose();
+    });
+
+    // I5 of task 17's review, its chat half: a read again that drops a row (one from before the user joined that the
+    // device doesn't hold) takes it out of the chat.
+    testWidgets('a read again that drops a row takes it out of the chat', (tester) async {
+      final repository = await openMaya(
+        tester,
+        setUp: (r) => r.history['c-maya']!.addAll([
+          held('e1').copyWith(seq: 1, loading: true),
+          held('e2', text: 'since joining').copyWith(seq: 2),
+        ]),
+      );
+      expect(find.bySemanticsLabel(RegExp('Loading message')), findsOneWidget);
+      repository.dropped.add('e1');
+      repository.push('c-maya', const ContentChanged());
+      await tester.pumpAndSettle();
+      expect(find.bySemanticsLabel(RegExp('Loading message')), findsNothing);
+      expect(find.text('since joining'), findsOneWidget);
+      semantics.dispose();
+    });
+
+    // N5 of task 17's re-review: a read again that drops every row of a page read before the device could be read
+    // loads the page again, which reads on to what the device holds.
+    testWidgets('a read again that drops every row of a page loads the page again', (tester) async {
+      final repository = await openMaya(
+        tester,
+        setUp: (r) => r.history['c-maya'] = [
+          held('e1').copyWith(seq: 5, loading: true),
+          held('e2').copyWith(seq: 6, loading: true),
+        ],
+      );
+      repository.dropped.addAll(['e1', 'e2']);
+      repository.history['c-maya'] = [held('e0', text: 'from my first membership').copyWith(seq: 1)];
+      repository.push('c-maya', const ContentChanged());
+      await tester.pumpAndSettle();
+      expect(find.text('from my first membership'), findsOneWidget);
+      semantics.dispose();
+    });
+
+    // I3 of task 31's review: a share that came in where rows from before the user joined gave way has the chat read
+    // its pages again: what it brought shows, shared by its sender, and the notice at the start goes.
+    testWidgets('an import reads the pages again where rows from before joining gave way', (tester) async {
+      final repository = await openMaya(
+        tester,
+        setUp: (r) {
+          r.history['c-maya'] = [held('e2', text: 'since joining').copyWith(seq: 2)];
+          r.chatStarts['c-maya'] = (legacy: false, cutoverAt: null, beforeJoining: true);
+        },
+      );
+      expect(find.text(Notice.beforeJoining.text), findsOneWidget);
+      // The share brought the one from before: the device holds it now, and none gives way any more.
+      repository.history['c-maya'] = [
+        held('e1', text: 'from before you joined', sharedBy: 'Maya').copyWith(seq: 1),
+        held('e2', text: 'since joining').copyWith(seq: 2),
+      ];
+      repository.push('c-maya', const ContentChanged(imported: true));
+      // Heard while rows still give way; the page read again leaves none out.
+      await tester.pump();
+      repository.chatStarts['c-maya'] = quietStart;
+      await tester.pumpAndSettle();
+      expect(find.text('from before you joined'), findsOneWidget);
+      expect(find.text(Notice.sharedBy.fill({'name': 'Maya'})), findsOneWidget);
+      expect(find.text(Notice.beforeJoining.text), findsNothing);
+      semantics.dispose();
+    });
+
+    testWidgets("a message the device hasn't applied yet loads, neither empty nor waiting", (tester) async {
+      final repository = await openMaya(
+        tester,
+        setUp: (r) => r.history['c-maya']!.add(held('l1').copyWith(loading: true)),
+      );
+      // Read as one stop with its author and time.
+      expect(find.bySemanticsLabel(RegExp('Loading message')), findsOneWidget);
+      expect(find.text(Notice.waiting.text), findsNothing);
+      // Applied: the chat reads it again, and it shows.
+      repository.contents['l1'] = held('l1', text: 'applied now');
+      repository.push('c-maya', const ContentChanged());
+      await tester.pumpAndSettle();
+      expect(find.text('applied now'), findsOneWidget);
+      expect(find.bySemanticsLabel(RegExp('Loading message')), findsNothing);
+      semantics.dispose();
+    });
+
+    testWidgets('a message the device turns out not to hold, read again, waits', (tester) async {
+      // Listed before the device could be read: neither its text nor waiting. Read again, the device holds none of it.
+      final repository = await openMaya(
+        tester,
+        setUp: (r) => r.history['c-maya']!.add(held('w2').copyWith(content: '')),
+      );
+      expect(find.text(Notice.waiting.text), findsNothing);
+      repository.contents['w2'] = held('w2', waiting: true);
+      repository.push('c-maya', const ContentChanged());
+      await tester.pumpAndSettle();
+      expect(find.text(Notice.waiting.text), findsOneWidget);
+      semantics.dispose();
+    });
+
+    testWidgets('a message that waits on the device to be sent offers Retry and Dismiss', (tester) async {
+      final repository = await openMaya(
+        tester,
+        setUp: (r) => r.history['c-maya']!.addAll([
+          held('pending:n1', text: 'stuck once', pending: true),
+          held('pending:n2', text: 'stuck twice', pending: true),
+        ]),
+      );
+      expect(find.bySemanticsLabel('Retry'), findsNWidgets(2));
+      // Retry sends one again as the device keeps it, by its nonce.
+      await tester.tap(find.bySemanticsLabel('Retry').first);
+      await tester.pumpAndSettle();
+      expect(repository.resent, hasLength(1));
+      expect(find.bySemanticsLabel('Retry'), findsOneWidget);
+      // Dismiss drops the other on the device.
+      await tapLabel(tester, 'Delete');
+      expect({...repository.resent, ...repository.discarded}, {'n1', 'n2'});
+      final dismissed = repository.discarded.single;
+      expect(find.text(dismissed == 'n1' ? 'stuck once' : 'stuck twice'), findsNothing);
+      semantics.dispose();
+    });
+
+    testWidgets('a conversation from before the cutover says when its messages went, and who joined late is told', (
+      tester,
+    ) async {
+      await openMaya(
+        tester,
+        setUp: (r) =>
+            r.chatStarts['c-maya'] = (legacy: true, cutoverAt: DateTime.utc(2026, 12, 1, 9, 30), beforeJoining: true),
+      );
+      expect(find.text(Notice.cutover.fill({'date': '1 December 2026'})), findsOneWidget);
+      expect(find.text(Notice.beforeJoining.text), findsOneWidget);
+      semantics.dispose();
+    });
+
+    testWidgets("a conversation's message goes with a UUID as its nonce", (tester) async {
+      final repository = await openMaya(tester);
+      await tester.enterText(find.byType(EditableText), 'with a nonce');
+      await tester.pump();
+      await tapLabel(tester, 'Send');
+      expect(
+        repository.sent.last.nonce,
+        matches(RegExp(r'^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$')),
+      );
+      semantics.dispose();
+    });
   });
 }

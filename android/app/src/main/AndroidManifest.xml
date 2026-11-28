@@ -34,10 +34,15 @@
     <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" tools:node="remove"/>
     <!-- Saving a photo to the gallery on Android 9 and older. -->
     <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" android:maxSdkVersion="29"/>
+    <!-- Nothing of the app goes to Android's backups or to a new phone: its encryption database restored elsewhere
+         would be a cloned device. allowBackup="false" is enough before Android 12; from it, a device-to-device
+         transfer ignores it, and only the data extraction rules keep the app's files out. -->
     <application
         android:label="duvet"
         android:name="${applicationName}"
-        android:icon="@mipmap/ic_launcher_violet">
+        android:icon="@mipmap/ic_launcher_violet"
+        android:allowBackup="false"
+        android:dataExtractionRules="@xml/data_extraction_rules">
         <activity
             android:name=".MainActivity"
             android:exported="true"

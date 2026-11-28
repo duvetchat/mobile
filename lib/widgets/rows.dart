@@ -747,6 +747,9 @@ String dayLabel(DateTime day, [DateTime? now]) {
   return '${_weekdays[day.weekday - 1]}, $date';
 }
 
+/// A day in full, with its year: "1 December 2026".
+String fullDate(DateTime day) => '${day.day} ${_months[day.month - 1]} ${day.year}';
+
 /// A quiet line for a list's state: loading, empty.
 class ListNote extends StatelessWidget {
   final String text;
@@ -848,6 +851,13 @@ class DuvetTextField extends StatelessWidget {
   /// typed.
   final int? maxLength;
 
+  /// What the keyboard may keep of what's typed: nothing when false (no
+  /// suggestions, corrections, learning or autofill), for a recovery key.
+  final bool kept;
+
+  /// What it takes, beside [maxLength]: digits only, say.
+  final List<TextInputFormatter> inputFormatters;
+
   const DuvetTextField({
     required this.label,
     this.controller,
@@ -865,6 +875,8 @@ class DuvetTextField extends StatelessWidget {
     this.onSubmitted,
     this.trailing,
     this.maxLength,
+    this.kept = true,
+    this.inputFormatters = const [],
     super.key,
   });
 
@@ -913,10 +925,13 @@ class DuvetTextField extends StatelessWidget {
                           minLines: 1,
                           keyboardType: keyboardType,
                           textInputAction: textInputAction,
-                          autofillHints: autofillHints,
+                          autofillHints: kept ? autofillHints : null,
+                          autocorrect: kept,
+                          enableSuggestions: kept,
+                          enableIMEPersonalizedLearning: kept,
                           onChanged: onChanged,
                           onSubmitted: onSubmitted,
-                          inputFormatters: [if (maxLength case final max?) CodePointLimit(max)],
+                          inputFormatters: [...inputFormatters, if (maxLength case final max?) CodePointLimit(max)],
                           cursorColor: tokens.accentText,
                           style: DuvetType.body.copyWith(color: colors.foreground),
                           decoration: InputDecoration.collapsed(

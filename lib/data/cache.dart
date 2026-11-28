@@ -20,6 +20,9 @@ abstract interface class ChatCacheStore {
   /// The keys of what's kept.
   Future<List<String>> keys();
 
+  /// Deletes what's kept under [key].
+  Future<void> delete(String key);
+
   /// Deletes the keys starting with [prefix] but the [keep] written last.
   Future<void> trim(String prefix, int keep);
 }
@@ -59,6 +62,12 @@ class FileChatCacheStore implements ChatCacheStore {
   ];
 
   @override
+  Future<void> delete(String key) async {
+    final file = File('${(await _dir()).path}/${_name(key)}.json');
+    if (await file.exists()) await file.delete();
+  }
+
+  @override
   Future<void> trim(String prefix, int keep) async {
     final files = [
       await for (final file in (await _dir()).list())
@@ -85,6 +94,8 @@ class MemoryChatCacheStore implements ChatCacheStore {
   Future<void> clear() async => data.clear();
   @override
   Future<List<String>> keys() async => [...data.keys];
+  @override
+  Future<void> delete(String key) async => data.remove(key);
   @override
   Future<void> trim(String prefix, int keep) async {
     final pages = [
@@ -227,6 +238,20 @@ class ChatCache {
 
   // The pages saved and not written yet, by chat ID.
   final _pages = <String, List<ChatMessage>>{};
+
+  /// Deletes every chat's page but [roomIds]'s. A version before this one kept conversations' pages too, their text
+  /// in the clear, and conversations are end-to-end encrypted now: no page of theirs is kept (DuvetRepository). A
+  /// room's page that [roomIds] doesn't name goes too, as nothing else tells it from a conversation's: its room
+  /// fetches it again.
+  Future<void> keepRoomPages(Set<String> roomIds) async {
+    try {
+      for (final key in await _store.keys()) {
+        if (key.startsWith(_page) && !roomIds.contains(key.substring(_page.length))) await _store.delete(key);
+      }
+    } catch (e) {
+      debugPrint('cache: $e');
+    }
+  }
 
   static Map<String, Object?> _pageToJson(List<ChatMessage> page) => {
     'messages': [for (final m in page) messageToJson(m)],

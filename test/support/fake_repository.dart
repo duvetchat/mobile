@@ -4,6 +4,24 @@ import 'package:duvet/data/models.dart';
 import 'package:duvet/data/recent_chats.dart';
 import 'package:duvet/data/recent_chats.dart' as recent show previewOf;
 import 'package:duvet/data/repository.dart';
+import 'package:duvet/e2e/engine.dart'
+    show
+        BackupShown,
+        ContactsShown,
+        DeviceSetupActions,
+        DevicesAlong,
+        EngineStage,
+        EngineState,
+        HistoryOffer,
+        KeyChange,
+        KnownDevice,
+        SafetyNumber,
+        ScannedDevice,
+        SharedHistory,
+        ShownChange;
+import 'package:duvet/e2e/members.dart' show sameUsers;
+import 'package:duvet/e2e/sync.dart' show ConversationState;
+import 'package:duvet_client/duvet.dart' as duvet show Device;
 import 'package:duvet_client/duvet.dart' show Activity;
 import 'package:flutter/foundation.dart';
 
@@ -170,6 +188,9 @@ class FakeRepository implements ChatRepository {
   final lastRead = <String, String>{};
   final _resumed = StreamController<void>.broadcast();
   final edits = <(String, String)>[];
+
+  /// What an edit is refused with, while a test sets it: nothing of it is made.
+  Object? editRefusal;
   final deletes = <String>[];
   final reactions = <(String, String, bool)>[];
 
@@ -186,6 +207,10 @@ class FakeRepository implements ChatRepository {
   /// Reports the last upload's progress, as the client would.
   void Function(double progress)? lastUpload;
   final voiceNotes = <(List<int>, String)>[];
+
+  /// Each voice note's waveform and length as they were sent (an encrypted conversation's convention).
+  final voiceWaveforms = <List<int>?>[];
+  final voiceLengths = <Duration?>[];
   final recordings = <ChatTarget>[];
   final joined = <String>[];
   final invites = <String, InvitePreview>{};
@@ -196,8 +221,12 @@ class FakeRepository implements ChatRepository {
     List<int> audio, {
     required String nonce,
     String format = 'ogg',
+    List<int>? waveform,
+    Duration? length,
   }) async {
     voiceNotes.add((audio, format));
+    voiceWaveforms.add(waveform);
+    voiceLengths.add(length);
     return ChatMessage(
       id: 'voice-${voiceNotes.length}',
       authorId: me.id,
@@ -220,8 +249,14 @@ class FakeRepository implements ChatRepository {
   @override
   Future<void> sendRecording(ChatTarget target) async => recordings.add(target);
 
+  /// Set, [uploadLimit] answers once it completes.
+  Completer<void>? holdUploadLimit;
+
   @override
-  Future<int?> uploadLimit() async => limit;
+  Future<int?> uploadLimit() async {
+    await holdUploadLimit?.future;
+    return limit;
+  }
 
   final searches = <SearchQuery>[];
   final pinned = <String, List<ChatMessage>>{};
@@ -251,7 +286,8 @@ class FakeRepository implements ChatRepository {
               ),
     ];
     final from = query.cursor == null ? 0 : all.indexWhere((h) => h.message.id == query.cursor) + 1;
-    return (hits: all.skip(from).take(searchPageSize).toList(), total: all.length);
+    final hits = all.skip(from).take(searchPageSize).toList();
+    return (hits: hits, total: all.length, next: hits.isEmpty ? null : query.from(cursor: hits.last.message.id));
   }
 
   @override
@@ -1574,6 +1610,250 @@ class FakeRepository implements ChatRepository {
   @override
   void wentToBack() => wentToBackTimes++;
 
+  /// What the encryption engine shows; a test sets it. Starting, as an app with no engine shows nothing of it.
+  @override
+  final ValueNotifier<EngineState> encryption = ValueNotifier(EngineState.starting);
+
+  /// What the encrypted backup shows; a test sets it. Days going up, as an engine shows before its first pass.
+  @override
+  final ValueNotifier<BackupShown> backup = ValueNotifier(BackupShown.uploading);
+
+  /// The person's taps on it, by name, in order.
+  final encryptionTaps = <String>[];
+
+  @override
+  Future<void> makeIdentity() async => encryptionTaps.add('makeIdentity');
+
+  @override
+  Future<void> keySaved() async => encryptionTaps.add('keySaved');
+
+  @override
+  Future<void> uploadLater() async => encryptionTaps.add('uploadLater');
+
+  @override
+  Future<void> startOver() async => encryptionTaps.add('startOver');
+
+  /// The user's devices the Devices page lists; a test sets them. Null fails the read, as an API out of reach would.
+  List<duvet.Device>? deviceList = const [];
+
+  @override
+  Future<List<duvet.Device>> devices() async => deviceList ?? (throw Exception("the devices couldn't be read"));
+
+  @override
+  Future<void> removeDevice(String deviceId, {bool changeKeys = false, List<String> named = const []}) async =>
+      encryptionTaps.add(
+        '${changeKeys ? 'removeDevice $deviceId, changeKeys' : 'removeDevice $deviceId'}'
+        '${named.isEmpty ? '' : ', named ${named.join(' ')}'}',
+      );
+
+  @override
+  Future<void> changeKeys({List<String> named = const []}) async =>
+      encryptionTaps.add(named.isEmpty ? 'changeKeys' : 'changeKeys, named ${named.join(' ')}');
+
+  @override
+  Future<void> finishKeysWithout() async => encryptionTaps.add('finishKeysWithout');
+
+  /// A new device's setup and approvals: each tap recorded in [encryptionTaps], with what it was given; a scanned QR
+  /// names [scanned] (none unless a test sets it), and [setupFails] makes the next act throw it.
+  @override
+  late final DeviceSetupActions deviceSetup = _SetupTaps(this);
+
+  ScannedDevice? scanned;
+
+  /// Whether a scanned device's approval sends its transfer (false: its send failed, and the transfer waits).
+  var scanSends = true;
+  Object? setupFails;
+
+  @override
+  Future<void> removeThisDevice() async {
+    encryptionTaps.add('removeThisDevice');
+    await endSession();
+  }
+
+  /// The devices an earlier removal of this device's takes along with the next list or key change; a test sets them.
+  DevicesAlong devicesAlongList = (unsent: const [], unregistered: const []);
+
+  @override
+  Future<DevicesAlong> devicesAlong([String? asked]) async => (
+    unsent: [...devicesAlongList.unsent.where((id) => id != asked)],
+    unregistered: [...devicesAlongList.unregistered.where((id) => id != asked)],
+  );
+
+  /// What this device knows of devices the API may no longer list, by ID: their name, client and when they were added.
+  final knownDevices = <String, KnownDevice>{};
+
+  @override
+  KnownDevice? knownDevice(String deviceId) => knownDevices[deviceId];
+
+  /// What the engine tells of the user's devices, in the notices' words; a test adds to it.
+  final deviceNoticesTold = StreamController<String>.broadcast();
+
+  @override
+  final ValueNotifier<bool> serverKeyChanged = ValueNotifier(false);
+
+  @override
+  Stream<String> get deviceNotices => deviceNoticesTold.stream;
+
+  /// What each encrypted conversation says over its message box; a test sets it.
+  @override
+  final ValueNotifier<Map<String, ConversationState>> conversationStates = ValueNotifier(const {});
+
+  @override
+  Future<List<String>> restartGroup(String conversationId, {List<String> leaving = const []}) async {
+    encryptionTaps.add('restartGroup $conversationId${leaving.isEmpty ? '' : ' $leaving'}');
+    if (restartRefusal case final refusal?) throw refusal;
+    return sameUsers(leaving, restartLeavesOut) ? const [] : restartLeavesOut;
+  }
+
+  /// What a restart is refused with, as the engine throws the core's or the API's refusal; none goes through.
+  Object? restartRefusal;
+
+  /// Whom a restart leaves out, which the person is asked about first.
+  List<String> restartLeavesOut = const [];
+
+  @override
+  Future<void> acceptMembers(String conversationId, List<String> users) async =>
+      encryptionTaps.add('acceptMembers $conversationId ${users.join(' ')}');
+
+  /// What the engine shows of the person's contacts; a test sets it, and the taps below change it.
+  @override
+  final ValueNotifier<ContactsShown> contacts = ValueNotifier(ContactsShown.none);
+
+  /// The security number with each user, as the core would give it; a test sets them.
+  final safetyNumbers = <String, SafetyNumber>{};
+
+  /// What reading a security number throws, when a test says.
+  Object? safetyNumberError;
+
+  /// What Mark as verified and a scan answer, and what a scan throws when a test says.
+  bool verifyAnswer = true;
+  Object? verifyScannedError;
+
+  /// Each conversation's changed keys, as the engine holds them; a test sets them.
+  final keyChanges = <String, Map<String, KeyChange>>{};
+
+  @override
+  bool canVerify(String userId) => userId != me.id && encryption.value.stage == EngineStage.ready;
+
+  /// Whom the app looked at as their profile opened ([contactVerified]), in order: none of the person's taps.
+  final contactLooks = <String>[];
+
+  @override
+  Future<bool> contactVerified(String userId) async {
+    contactLooks.add(userId);
+    return contacts.value.verified[userId] ?? false;
+  }
+
+  @override
+  Future<SafetyNumber> safetyNumber(String userId) async {
+    if (safetyNumberError case final error?) throw error;
+    return safetyNumbers[userId] ?? (throw StateError('no number for $userId'));
+  }
+
+  @override
+  Future<bool> verifyContact(String userId, String digits) async {
+    encryptionTaps.add('verifyContact $userId $digits');
+    return _verified(userId, verifyAnswer);
+  }
+
+  @override
+  Future<bool> verifyScanned(String userId, String qr) async {
+    encryptionTaps.add('verifyScanned $userId $qr');
+    if (verifyScannedError case final error?) throw error;
+    return _verified(userId, verifyAnswer);
+  }
+
+  bool _verified(String userId, bool verified) {
+    if (verified) {
+      contacts.value = ContactsShown(
+        changes: {...contacts.value.changes}..remove(userId),
+        verified: {...contacts.value.verified, userId: true},
+      );
+    }
+    return verified;
+  }
+
+  /// Set, [keyChangesIn] answers once it completes, as the engine's turn answers after the work ahead of it: the
+  /// chat's ask before a send waits with it.
+  Completer<void>? holdKeyChanges;
+
+  @override
+  Future<Map<String, KeyChange>> keyChangesIn(String conversationId) async {
+    await holdKeyChanges?.future;
+    return {...?keyChanges[conversationId]};
+  }
+
+  @override
+  Future<void> closeKeyChange(String userId, String change) async {
+    encryptionTaps.add('closeKeyChange $userId $change');
+    _keyChangeDone(userId, change, (now) => now.verified && !now.confirmed ? now.copyWith(closed: true) : null);
+  }
+
+  @override
+  Future<void> confirmKeyChanges(List<ShownChange> changes) async {
+    encryptionTaps.add('confirmKeyChanges ${[for (final c in changes) '${c.user}:${c.change}'].join(' ')}');
+    for (final (:user, :change) in changes) {
+      _keyChangeDone(user, change, (now) => now.closed ? null : now.copyWith(confirmed: true));
+    }
+  }
+
+  // As the engine's contacts: [then] gives what's left of the change, or null once it's done with.
+  void _keyChangeDone(String userId, String change, KeyChange? Function(KeyChange now) then) {
+    for (final changes in keyChanges.values) {
+      final now = changes[userId];
+      if (now == null || now.change != change) continue;
+      final next = then(now);
+      if (next == null) {
+        changes.remove(userId);
+      } else {
+        changes[userId] = next;
+      }
+    }
+    contacts.value = ContactsShown(
+      changes: {...contacts.value.changes}..remove(userId),
+      verified: contacts.value.verified,
+    );
+  }
+
+  /// The shares of a conversation's history waiting for the person's yes; a test sets them.
+  @override
+  final ValueNotifier<Map<String, List<HistoryOffer>>> historyOffers = ValueNotifier(const {});
+
+  /// What a share comes to, or what it's refused with; a share is told in [encryptionTaps].
+  SharedHistory shareAnswer = (truncated: false, start: DateTime.utc(2026, 11, 19));
+  Object? shareRefusal;
+
+  @override
+  Future<SharedHistory> shareHistory(String conversationId, String userId, String range) async {
+    encryptionTaps.add('shareHistory $conversationId $userId $range');
+    if (shareRefusal case final refusal?) throw refusal;
+    return shareAnswer;
+  }
+
+  /// What a yes to an offer is refused with; one that goes takes its offer away.
+  Object? offerRefusal;
+
+  @override
+  Future<void> takeHistoryOffer(String conversationId, String shareId) async {
+    encryptionTaps.add('takeHistoryOffer $conversationId $shareId');
+    if (offerRefusal case final refusal?) throw refusal;
+    _dropOffer(shareId);
+  }
+
+  @override
+  Future<void> dismissHistoryOffer(String conversationId, String shareId) async {
+    encryptionTaps.add('dismissHistoryOffer $conversationId $shareId');
+    _dropOffer(shareId);
+  }
+
+  void _dropOffer(String shareId) => historyOffers.value = {
+    for (final MapEntry(:key, :value) in historyOffers.value.entries)
+      key: [
+        for (final offer in value)
+          if (offer.shareId != shareId) offer,
+      ],
+  };
+
   @override
   Future<void> logIn(String email, String password) async {
     if (password != this.password) throw Exception('rejected');
@@ -1601,6 +1881,7 @@ class FakeRepository implements ChatRepository {
   @override
   Future<ChatMessage> edit(ChatTarget target, String messageId, String content) async {
     edits.add((messageId, content));
+    if (editRefusal case final refusal?) throw refusal;
     final list = history[target.id] ?? [];
     final i = list.indexWhere((m) => m.id == messageId);
     final edited = (i >= 0 ? list[i] : message(messageId, author: me.id, name: me.displayName, text: '')).copyWith(
@@ -1616,6 +1897,55 @@ class FakeRepository implements ChatRepository {
     deletes.add(messageId);
     history[target.id]?.removeWhere((m) => m.id == messageId);
   }
+
+  /// What the device's database holds of a message now, by its ID, which [withContent] gives in its place.
+  final contents = <String, ChatMessage>{};
+
+  @override
+  Future<List<ChatMessage>> withContent(ChatTarget target, List<ChatMessage> messages) async => [
+    for (final m in messages)
+      if (!dropped.contains(m.id)) contents[m.id] ?? m,
+  ];
+
+  /// Messages a read of the device leaves out, as Ruling 15 drops rows from before the user joined.
+  final dropped = <String>{};
+
+  /// The nonces of the messages waiting on the device that the user sent again, and those they dismissed.
+  final resent = <String>[];
+  final discarded = <String>[];
+
+  @override
+  Future<ChatMessage> resend(ChatTarget target, String nonce) async {
+    resent.add(nonce);
+    if (failSends) throw Exception('offline');
+    final waiting = history[target.id]?.where((m) => m.nonce == nonce).firstOrNull;
+    return ChatMessage(
+      id: 'sent-$nonce',
+      authorId: me.id,
+      authorName: me.displayName,
+      content: waiting?.content ?? '',
+      createdAt: DateTime(2026, 10, 23, 9, 30),
+      nonce: nonce,
+    );
+  }
+
+  @override
+  Future<void> discard(ChatTarget target, String nonce) async => discarded.add(nonce);
+
+  /// What [changesRefused] tells, as a test hands it.
+  final changeRefusals = StreamController<ChangeRefused>.broadcast();
+
+  @override
+  Stream<ChangeRefused> get changesRefused => changeRefusals.stream;
+
+  @override
+  bool olderBeyond(ChatTarget target, String oldestId) => false;
+
+  /// What each chat's start says, by chat ID.
+  final chatStarts = <String, ChatStart>{};
+
+  @override
+  ChatStart chatStart(ChatTarget target) => chatStarts[target.id] ?? quietStart;
 
   @override
   Future<void> react(ChatTarget target, String messageId, String emoji, {required bool add, String? emojiId}) async {
@@ -1762,9 +2092,12 @@ class FakeRepository implements ChatRepository {
   /// More members of the rooms, after [everyone].
   final extraRoomMembers = <Member>[];
 
+  /// More members of the conversations, after [everyone] but Leo.
+  final extraConversationMembers = <Member>[];
+
   @override
   Future<List<Member>> members(ChatTarget target, {bool refresh = false}) async {
-    if (target is! RoomTarget) return everyone.where((m) => m.userId != leo).toList();
+    if (target is! RoomTarget) return [...everyone.where((m) => m.userId != leo), ...extraConversationMembers];
     final list = [...everyone, ...extraRoomMembers];
     // As the real one: a list loaded tells who's in the Space.
     (spaceMembers[target.spaceId] ??= {}).addAll(list.map((m) => m.userId));
@@ -1833,4 +2166,53 @@ class FakeRepository implements ChatRepository {
     mobileOnly.dispose();
     activities.dispose();
   }
+}
+
+class _SetupTaps implements DeviceSetupActions {
+  _SetupTaps(this._repository);
+
+  final FakeRepository _repository;
+
+  Future<void> _tap(String tap) async {
+    _repository.encryptionTaps.add(tap);
+    if (_repository.setupFails case final error?) {
+      _repository.setupFails = null;
+      throw error;
+    }
+  }
+
+  @override
+  Future<void> recover(String recoveryKey) => _tap('recover $recoveryKey');
+  @override
+  Future<void> beginApproval() => _tap('beginApproval');
+  @override
+  Future<void> useCode() => _tap('useCode');
+  @override
+  Future<void> acceptCode(String code) => _tap('acceptCode $code');
+  @override
+  Future<void> endApproval() => _tap('endApproval');
+  @override
+  Future<void> resetIdentity() => _tap('resetIdentity');
+  @override
+  Future<void> finishSetup() => _tap('finishSetup');
+  @override
+  Future<void> approveDevice(String deviceId, String question) => _tap('approveDevice $deviceId $question');
+  @override
+  Future<void> declineDevice(String deviceId) => _tap('declineDevice $deviceId');
+  @override
+  Future<void> confirmApproval(String deviceId) => _tap('confirmApproval $deviceId');
+  @override
+  Future<ScannedDevice?> scannedDevice(String qr) async {
+    await _tap('scannedDevice $qr');
+    return _repository.scanned;
+  }
+
+  @override
+  Future<bool> approveScanned(String qr, ScannedDevice device) async {
+    await _tap('approveScanned $qr ${device.id}');
+    return _repository.scanSends;
+  }
+
+  @override
+  Future<void> sendScanned(String deviceId) => _tap('sendScanned $deviceId');
 }

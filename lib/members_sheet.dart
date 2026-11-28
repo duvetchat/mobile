@@ -3,6 +3,7 @@ import 'package:forui/forui.dart';
 
 import 'data/models.dart';
 import 'data/repository.dart';
+import 'e2e/engine.dart' show EngineStage;
 import 'people.dart' show showProfileSheet;
 import 'theme.dart';
 import 'widgets/avatar.dart';
@@ -11,8 +12,8 @@ import 'widgets/rows.dart';
 import 'widgets/sheets.dart' show LoadingSkeleton, placeholderLines, placeholderNames;
 import 'widgets/skeleton.dart' show Bone;
 
-/// What a member's row can do.
-enum MemberAction { mention, message }
+/// What a member's row can do: in an encrypted conversation, share its history with them too (Task 31).
+enum MemberAction { mention, message, shareHistory }
 
 /// The chat's members in a glass sheet, by presence, with search. Answers the
 /// member and what to do with them, picked from their profile, or null.
@@ -291,6 +292,10 @@ class _MembersSheetState extends State<_MembersSheet> {
                           me: widget.repository.profile.value?.id == members[i].userId,
                           owner: ownerId != null && ownerId == members[i].userId,
                           spaceId: spaceId,
+                          // A conversation's history goes from this device's own, once it's ready.
+                          canShareHistory:
+                              widget.target is ConversationTarget &&
+                              widget.repository.encryption.value.stage == EngineStage.ready,
                           onPicked: widget.onPicked,
                           roleColors: switch (widget.target) {
                             RoomTarget(:final spaceId) => nameColorsOf(
@@ -324,6 +329,9 @@ class _MemberRow extends StatelessWidget {
   final bool owner;
   final String? spaceId;
 
+  /// Their profile offers to share the conversation's history with them: an encrypted conversation's.
+  final bool canShareHistory;
+
   /// Their highest colored role's colors: they tint the name, or run across it as a gradient.
   final RoleColors? roleColors;
   final void Function(Member member, MemberAction action) onPicked;
@@ -335,6 +343,7 @@ class _MemberRow extends StatelessWidget {
     required this.onPicked,
     this.owner = false,
     this.spaceId,
+    this.canShareHistory = false,
     this.roleColors,
   });
 
@@ -366,7 +375,13 @@ class _MemberRow extends StatelessWidget {
         bannerOffline: isOffline(presence),
         // Their profile over this sheet; it closes only for what's picked there.
         onPressed: () async {
-          final action = await showProfileSheet(context, member: member, spaceId: spaceId, canMention: true);
+          final action = await showProfileSheet(
+            context,
+            member: member,
+            spaceId: spaceId,
+            canMention: true,
+            canShareHistory: canShareHistory,
+          );
           if (action != null && context.mounted) onPicked(member, action);
         },
       ),

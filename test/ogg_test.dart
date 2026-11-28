@@ -2,6 +2,7 @@ import 'dart:convert';
 import 'dart:typed_data';
 
 import 'package:duvet/data/ogg.dart';
+import 'package:duvet/e2e/conventions.dart' show sniffType;
 import 'package:flutter_test/flutter_test.dart';
 
 const _serial = 0x4244293a;
@@ -155,6 +156,26 @@ void main() {
     expect(recordingToUpload(android, 'm4a'), same(android));
     final wav = Uint8List.fromList(ascii.encode('RIFF....WAVEfmt '));
     expect(recordingToUpload(wav, 'ogg'), same(wav));
+  });
+
+  // Task 19's review, I4: before Android 10 the recorder writes AAC in an MPEG-4 file whose major brand, as AOSP's
+  // writer has it, is mp42, which both apps read as a video's; the recording says it's audio.
+  test("an m4a recording goes as audio: its major brand M4A, the rest of it as it was", () {
+    final m4a = Uint8List.fromList([
+      ...[0, 0, 0, 0x18],
+      ...ascii.encode('ftypmp42'),
+      ...[0, 0, 0, 0],
+      ...ascii.encode('isommp42'),
+      ...[0, 0, 0, 8],
+      ...ascii.encode('mdat'),
+    ]);
+    expect(sniffType(m4a), 'video/mp4');
+    final up = recordingToUpload(m4a, 'm4a');
+    expect(sniffType(up), 'audio/mp4');
+    expect(ascii.decode(up.sublist(8, 12)), 'M4A ');
+    expect(up.sublist(12), m4a.sublist(12));
+    // An Ogg named m4a, or a file too short for its brand, is as it was.
+    expect(recordingToUpload(Uint8List.fromList(ascii.encode('OggS')), 'm4a'), [...ascii.encode('OggS')]);
   });
 
   test('a packet\'s samples at 48 kHz come from its TOC byte', () {
