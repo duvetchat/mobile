@@ -98,7 +98,7 @@ String previewOf(ChatMessage m, String Function(String content) readable) {
     return Notice.shared.fill({'a': '', 'range': rangeText(shared.range), 'b': shared.toName}).trimLeft();
   }
   if (m.isNotice) return 'pinned a message';
-  if (m.waiting) return (m.notOnDevice ? Notice.notOnDevice : Notice.waiting).text;
+  if (m.waiting) return (m.beforeDevice ? Notice.beforeDevice : Notice.waiting).text;
   if (m.stickerUrl != null) return 'Sticker';
   if (m.content.isNotEmpty) return readable(m.content).replaceAll('\n', ' ');
   if (m.attachments.isNotEmpty) {

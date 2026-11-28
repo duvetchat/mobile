@@ -247,16 +247,16 @@ void main() {
       joined: joined,
     );
     final before = drawn(4, joined: 5);
-    expect((before.waiting, before.notOnDevice, before.loading, before.content), (true, true, false, ''));
+    expect((before.waiting, before.beforeDevice, before.loading, before.content), (true, true, false, ''));
     for (final waits in [drawn(5, joined: 5), drawn(6, joined: 5), drawn(4)]) {
-      expect((waits.waiting, waits.notOnDevice), (true, false));
+      expect((waits.waiting, waits.beforeDevice), (true, false));
     }
     // Held, opened or not, it's no longer missing, whatever its number.
-    expect(drawn(4, joined: 5, row: _shown('x', text: 'kept')).notOnDevice, isFalse);
-    expect(drawn(4, joined: 5, row: _shown('x', status: 'waiting')).notOnDevice, isFalse);
+    expect(drawn(4, joined: 5, row: _shown('x', text: 'kept')).beforeDevice, isFalse);
+    expect(drawn(4, joined: 5, row: _shown('x', status: 'waiting')).beforeDevice, isFalse);
     // Not applied yet this run, it loads.
     final loading = drawn(4, joined: 5, applied: null);
-    expect((loading.loading, loading.notOnDevice), (true, false));
+    expect((loading.loading, loading.beforeDevice), (true, false));
     // Read again once a shared history brought its row: its text, and nothing more of where it was.
     final shared = withRow(
       before,
@@ -265,7 +265,7 @@ void main() {
       applied: (through: 9),
       joined: 5,
     );
-    expect((shared.content, shared.waiting, shared.notOnDevice), ('shared', false, false));
+    expect((shared.content, shared.waiting, shared.beforeDevice), ('shared', false, false));
     // A chat's page reads it so, and the chat takes it in place of the waiting row it showed.
     final [page] = readFrom(
       [_listed('y').copyWith(seq: 2)],
@@ -274,10 +274,10 @@ void main() {
       applied: (through: 9),
       joined: 3,
     );
-    expect(page.notOnDevice, isTrue);
-    expect(drawn(4).heldAs(before).notOnDevice, isTrue);
+    expect(page.beforeDevice, isTrue);
+    expect(drawn(4).heldAs(before).beforeDevice, isTrue);
     // The Chats tab's line says it, as it says a waiting one waits.
-    expect(previewOf(before, (content) => content), Notice.notOnDevice.text);
+    expect(previewOf(before, (content) => content), Notice.beforeDevice.text);
     expect(previewOf(drawn(5, joined: 5), (content) => content), Notice.waiting.text);
   });
 
@@ -320,8 +320,8 @@ void main() {
         joined: joined,
       );
       final (earlier, later) = (drawn(before), drawn(after));
-      expect((earlier.waiting, earlier.notOnDevice, earlier.content), (true, true, ''));
-      expect((later.waiting, later.notOnDevice, later.content), (false, false, 'after'));
+      expect((earlier.waiting, earlier.beforeDevice, earlier.content), (true, true, ''));
+      expect((later.waiting, later.beforeDevice, later.content), (false, false, 'after'));
       for (final device in [a, b, phone]) {
         await device.engine.stop();
       }

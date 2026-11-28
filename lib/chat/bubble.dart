@@ -165,7 +165,7 @@ class _Bubble extends StatelessWidget {
       final parts = <Widget>[
         if (m.isLoading) _Thinking(name: m.authorName, since: m.createdAt),
         // An encrypted conversation's message this device doesn't hold opened yet, or from before it joined.
-        if (m.waiting) _WaitingRow(maxWidth: maxWidth, notOnDevice: m.notOnDevice),
+        if (m.waiting) _WaitingRow(maxWidth: maxWidth, beforeDevice: m.beforeDevice),
         // One this device hasn't applied yet: it loads, neither empty nor waiting.
         if (m.loading) _LoadingRow(maxWidth: maxWidth),
         if (m.stickerUrl != null)
@@ -1636,16 +1636,16 @@ class _LoadingRow extends StatelessWidget {
 
 /// An encrypted conversation's message this device doesn't hold opened yet (PLAN-E2E-CLIENTES.md, «La vista de una
 /// conversación», its notices): what it is, and that it shows once the sender's device delivers it. One from before
-/// this device joined ([notOnDevice]), which nothing will deliver, says so instead, with the same look (mobile#409).
+/// this device joined ([beforeDevice]), which nothing will deliver, says so instead, with the same look (mobile#409).
 class _WaitingRow extends StatelessWidget {
-  const _WaitingRow({required this.maxWidth, required this.notOnDevice});
+  const _WaitingRow({required this.maxWidth, required this.beforeDevice});
   final double maxWidth;
-  final bool notOnDevice;
+  final bool beforeDevice;
 
   @override
   Widget build(BuildContext context) {
-    final (said, detail) = notOnDevice
-        ? (Notice.notOnDevice, Notice.notOnDeviceDetail)
+    final (said, detail) = beforeDevice
+        ? (Notice.beforeDevice, Notice.beforeDeviceDetail)
         : (Notice.waiting, Notice.waitingDetail);
     final colors = context.theme.colors;
     final quiet = DuvetType.snippet.copyWith(color: colors.mutedForeground);

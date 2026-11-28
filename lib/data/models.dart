@@ -189,7 +189,7 @@ class ChatMessage {
   /// A [waiting] message numbered before this device joined its conversation's group, which the device doesn't hold:
   /// it was never sealed for this device and nothing will deliver it, so it says it's not on this device instead
   /// (mobile#409). Only a shared history or a backup brings it.
-  final bool notOnDevice;
+  final bool beforeDevice;
 
   /// The user's own message this device still sends, from before the app started again: a failed send, with Retry
   /// and Dismiss.
@@ -247,7 +247,7 @@ class ChatMessage {
     this.isComponentsV2 = false,
     this.interaction,
     this.waiting = false,
-    this.notOnDevice = false,
+    this.beforeDevice = false,
     this.pending = false,
     this.filesGone = false,
     this.sealedLinks = const {},
@@ -277,7 +277,7 @@ class ChatMessage {
     bool? pinned,
     MessageReply? reply,
     bool? waiting,
-    bool? notOnDevice,
+    bool? beforeDevice,
     String? sharedBy,
     int? seq,
     bool? loading,
@@ -313,7 +313,7 @@ class ChatMessage {
     isComponentsV2: isComponentsV2,
     interaction: interaction,
     waiting: waiting ?? this.waiting,
-    notOnDevice: notOnDevice ?? this.notOnDevice,
+    beforeDevice: beforeDevice ?? this.beforeDevice,
     pending: pending,
     filesGone: filesGone,
     sealedLinks: sealedLinks,
@@ -363,7 +363,7 @@ class ChatMessage {
           isComponentsV2: update.isComponentsV2,
           interaction: update.interaction ?? interaction,
           waiting: update.waiting,
-          notOnDevice: update.notOnDevice,
+          beforeDevice: update.beforeDevice,
           pending: pending,
           filesGone: filesGone,
           sealedLinks: sealedLinks,
@@ -414,7 +414,7 @@ class ChatMessage {
       isComponentsV2: isComponentsV2,
       interaction: interaction,
       waiting: waiting,
-      notOnDevice: notOnDevice,
+      beforeDevice: beforeDevice,
       pending: pending,
       filesGone: filesGone,
       sealedLinks: sealedLinks,
@@ -458,7 +458,7 @@ class ChatMessage {
       isComponentsV2: isComponentsV2,
       interaction: interaction,
       waiting: waiting,
-      notOnDevice: notOnDevice,
+      beforeDevice: beforeDevice,
       pending: pending,
       filesGone: filesGone,
       sealedLinks: sealedLinks,
@@ -505,7 +505,7 @@ class ChatMessage {
     if (content == held.content &&
         edited == held.edited &&
         waiting == held.waiting &&
-        notOnDevice == held.notOnDevice &&
+        beforeDevice == held.beforeDevice &&
         loading == held.loading &&
         sharedBy == held.sharedBy &&
         identical(quote, reply) &&
@@ -517,7 +517,7 @@ class ChatMessage {
       content: held.content,
       edited: held.edited,
       waiting: held.waiting,
-      notOnDevice: held.notOnDevice,
+      beforeDevice: held.beforeDevice,
       loading: held.loading,
       sharedBy: held.sharedBy,
       reply: quote,

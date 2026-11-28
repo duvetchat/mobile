@@ -1034,7 +1034,7 @@ void main() {
       String id, {
       String text = '',
       bool waiting = false,
-      bool notOnDevice = false,
+      bool beforeDevice = false,
       String? sharedBy,
       bool pending = false,
     }) => ChatMessage(
@@ -1045,7 +1045,7 @@ void main() {
       createdAt: DateTime(2026, 10, 23, 9, 10),
       nonce: pending ? id.substring('pending:'.length) : null,
       waiting: waiting,
-      notOnDevice: notOnDevice,
+      beforeDevice: beforeDevice,
       sharedBy: sharedBy,
       pending: pending,
     );
@@ -1055,13 +1055,13 @@ void main() {
     testWidgets("a message from before this device joined says it's not on this device", (tester) async {
       final repository = await openMaya(tester, setUp: (r) => r.history['c-maya']!.add(held('w1', waiting: true)));
       expect(find.text(Notice.waiting.text), findsOneWidget);
-      expect(find.text(Notice.notOnDevice.text), findsNothing);
+      expect(find.text(Notice.beforeDevice.text), findsNothing);
 
-      repository.contents['w1'] = held('w1', waiting: true, notOnDevice: true);
+      repository.contents['w1'] = held('w1', waiting: true, beforeDevice: true);
       repository.push('c-maya', const ContentChanged());
       await tester.pumpAndSettle();
-      expect(find.text(Notice.notOnDevice.text), findsOneWidget);
-      expect(find.text(Notice.notOnDeviceDetail.text), findsOneWidget);
+      expect(find.text(Notice.beforeDevice.text), findsOneWidget);
+      expect(find.text(Notice.beforeDeviceDetail.text), findsOneWidget);
       expect(find.text(Notice.waiting.text), findsNothing);
       expect(find.text(Notice.waitingDetail.text), findsNothing);
       semantics.dispose();
@@ -1070,9 +1070,9 @@ void main() {
     testWidgets("the Chats tab's line says a message from before this device joined isn't on it", (tester) async {
       final repository = await openMaya(tester);
       await tapLabel(tester, 'Back');
-      repository.push('c-maya', MessageCreated(held('w2', waiting: true, notOnDevice: true).copyWith(seq: 3)));
+      repository.push('c-maya', MessageCreated(held('w2', waiting: true, beforeDevice: true).copyWith(seq: 3)));
       await tester.pumpAndSettle();
-      expect(find.text(Notice.notOnDevice.text), findsOneWidget);
+      expect(find.text(Notice.beforeDevice.text), findsOneWidget);
       expect(find.text(Notice.waiting.text), findsNothing);
       semantics.dispose();
     });

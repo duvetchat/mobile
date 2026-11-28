@@ -107,7 +107,7 @@ ChatMessage withRow(
     return message.copyWith(
       content: '',
       waiting: !loading,
-      notOnDevice: row == null && !loading && seq != null && joined != null && seq < joined,
+      beforeDevice: row == null && !loading && seq != null && joined != null && seq < joined,
       loading: loading,
       reply: reply,
       attachments: const [],
@@ -118,7 +118,7 @@ ChatMessage withRow(
     content: row.text ?? '',
     edited: row.editedAt != null,
     waiting: false,
-    notOnDevice: false,
+    beforeDevice: false,
     loading: false,
     sharedBy: switch (row.sharedBy) {
       final user? => nameOf(user),
