@@ -70,6 +70,18 @@ class MainActivity : AudioServiceActivity() {
                     else -> result.notImplemented()
                 }
             }
+        // What Gradle brought into the APK, for the licence page (lib/licenses.dart): the build writes the libraries it
+        // checked and the notices Google's AARs embed into its assets (app/build.gradle.kts). Null for one it didn't.
+        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "chat.duvet/licenses").setMethodCallHandler { call, result ->
+            when (call.method) {
+                "read" -> try {
+                    result.success(assets.open(call.arguments as String).bufferedReader().use { it.readText() })
+                } catch (e: java.io.IOException) {
+                    result.success(null)
+                }
+                else -> result.notImplemented()
+            }
+        }
         // The phone's model, which names this installation's device among the user's (lib/e2e/bootstrap.dart).
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "chat.duvet/device").setMethodCallHandler { call, result ->
             when (call.method) {

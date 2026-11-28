@@ -92,6 +92,13 @@ jobs:
             if (( align % 16384 != 0 )); then echo "a LOAD segment is aligned to $align, not 16 KiB"; exit 1; fi
           done
           echo "Every LOAD segment is aligned to 16 KiB: $(echo $aligns)"
+      # What Gradle brought into the APK, whose licences the build checked, and the notices Google's AARs embed: the
+      # build writes both into its assets, which the licence page reads (#403).
+      - name: The licences in the APK
+        working-directory: mobile
+        run: |
+          unzip -l build/app/outputs/flutter-apk/app-release.apk assets/licenses/artifacts.json \
+            assets/licenses/google.json
       # Storage is billed in GB-hours: 1-day APKs fit the monthly allowance (372), and once it is
       # used up the upload fails, which shouldn't fail a run whose build and tests passed (#196).
       - uses: actions/upload-artifact@v5

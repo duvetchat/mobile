@@ -155,6 +155,18 @@ flutter:
     - assets/logo/app-icon-rounded.svg
     - assets/logo/app-icon-colored.svg
     - assets/logo/mark-on-light.svg
+    # What the licence page adds to the build's own notices (lib/licenses.dart): the fonts' licences, and the notices
+    # of what else the app ships from elsewhere.
+    - assets/fonts/Fraunces-OFL.txt
+    - assets/fonts/Inter-OFL.txt
+    - assets/fonts/Roboto-OFL.txt
+    - assets/fonts/FiraMono-OFL.txt
+    - assets/fonts/Twemoji-LICENSE.md
+    - assets/licenses/
+    # And of what Gradle brings into the Android app (#403): the texts of the licences its build accepts, and
+    # libwebrtc's notices.
+    - path: assets/licenses/android/
+      platforms: [android]
     # The desktop's .ogg for Android; iOS doesn't decode Vorbis and takes the same sounds as AAC (#228).
     - path: assets/sounds/
       platforms: [android]

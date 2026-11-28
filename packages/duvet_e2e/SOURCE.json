@@ -1,19 +1,20 @@
 {
   "repository": "duvetchat/e2e",
-  "commit": "b7fc99e2254d28ff240bab1b293518f357b2f9b9",
+  "commit": "74f50210d1871ea6ea368bde5a8326c872769e0a",
   "files": {
-    "packages/duvet_e2e/README.md": "34e8bc02c2ba7bb8e15d2d00e9583127404fc089c6e72b0d74d79b31f9da1262",
+    "packages/duvet_e2e/README.md": "0c1bf5f431f1ea71bf7b7a06e92067075320396f24fbc3e33f0b0f59400f7e33",
+    "packages/duvet_e2e/THIRD-PARTY-NOTICES.txt": "3697431c0713918df16c872558c1f2e90b3e861e1d280926039582ef4c6f1f5a",
     "packages/duvet_e2e/android/build.gradle": "0da9cd4927c0a6fc45807619309314dc0e6d39cffa4d2c8a42a9f8af4a0d92b1",
     "packages/duvet_e2e/android/settings.gradle": "b0563273727e73ab52b9af9c2139a1a64f445b4392280deff57c8f8cbfe09c6a",
     "packages/duvet_e2e/android/src/main/AndroidManifest.xml": "81b1e7fde9429805f50708ceb58e072efc425b6f6883f94bc21bf4d00f1ff7bf",
     "packages/duvet_e2e/android/src/main/jniLibs/arm64-v8a/libduvet_e2e.so": "d7d88035971ba1be356eb2a3a11e9b8cc41a6cd7722ce459f34977a6229a7711",
-    "packages/duvet_e2e/ios/duvet_e2e/Frameworks/duvet_e2e.xcframework/Info.plist": "271e118d92cda950e6d245e55aec4aa8f029ddd17aaea8b232c7e23188f58c5f",
+    "packages/duvet_e2e/ios/duvet_e2e/Frameworks/duvet_e2e.xcframework/Info.plist": "0b63cde39947d92714a2744ed096219246ca35eadd612b75bd617df04258a29d",
     "packages/duvet_e2e/ios/duvet_e2e/Frameworks/duvet_e2e.xcframework/ios-arm64-simulator/duvet_e2e.framework/Info.plist": "58795cfad1c857a37fbf388f8db9e1c7261c67555f1ed3d2f7fbf140ef4fe483",
     "packages/duvet_e2e/ios/duvet_e2e/Frameworks/duvet_e2e.xcframework/ios-arm64-simulator/duvet_e2e.framework/_CodeSignature/CodeResources": "1817e9e07dc5aba212b85c254fc5089781680b304487f16c401818ae81c1aacd",
-    "packages/duvet_e2e/ios/duvet_e2e/Frameworks/duvet_e2e.xcframework/ios-arm64-simulator/duvet_e2e.framework/duvet_e2e": "d9ebdd7c17d74883545953f2a11693f569b35fcfa52b70cf79a0844c16a2719f",
+    "packages/duvet_e2e/ios/duvet_e2e/Frameworks/duvet_e2e.xcframework/ios-arm64-simulator/duvet_e2e.framework/duvet_e2e": "7852f7b4ea082de450a563b156cbff5ffd918cbe60b82d13c2adbd104f6e595b",
     "packages/duvet_e2e/ios/duvet_e2e/Frameworks/duvet_e2e.xcframework/ios-arm64/duvet_e2e.framework/Info.plist": "0a91d7819d58866204a928f0a520cfe18503ff0f3a45451c1b37e536636c7f76",
     "packages/duvet_e2e/ios/duvet_e2e/Frameworks/duvet_e2e.xcframework/ios-arm64/duvet_e2e.framework/_CodeSignature/CodeResources": "732fd18256e39f1ca77ebc84704b4e6ec15ae031e492b9b49efb08267ae83070",
-    "packages/duvet_e2e/ios/duvet_e2e/Frameworks/duvet_e2e.xcframework/ios-arm64/duvet_e2e.framework/duvet_e2e": "c873bd37d996594983fb23b296585585b242e73e0d97a8218dfa9fb9f256aadf",
+    "packages/duvet_e2e/ios/duvet_e2e/Frameworks/duvet_e2e.xcframework/ios-arm64/duvet_e2e.framework/duvet_e2e": "057f47b7165d3ee295e0ec5c377aab61c1408c4abffb100a7f6c699c639ac5cf",
     "packages/duvet_e2e/ios/duvet_e2e/Package.swift": "0137ca3304f680ea54a8e056b0e3f99ed137e6b6a12804cf303e9e0d82efa997",
     "packages/duvet_e2e/lib/duvet_e2e.dart": "4139e8f06a27fe9c67be123aacdb4416ef46717eabd55d841fe3e37fdfcc90d7",
     "packages/duvet_e2e/lib/src/rust/api/core.dart": "b243c6357e7decd5c471e57e287e027113db9477f8a8c12703355b035786c4eb",
@@ -21,6 +22,6 @@
     "packages/duvet_e2e/lib/src/rust/frb_generated.io.dart": "fba8e4cf0cd62641aae19bf791ac8d04a6aff8579535f51e760f9458f2272892",
     "packages/duvet_e2e/lib/src/rust/frb_generated.web.dart": "515787e8e841ea897dddb10af4493d8c1d32feb91835937f1162255501cf5664",
     "packages/duvet_e2e/linux-x64/libduvet_e2e.so": "8da64b88f7431be60c5c57ceed9b0091e731a56f3caff1d8888d3d012c205f63",
-    "packages/duvet_e2e/pubspec.yaml": "4327c66335a20ae92eefd6cef3d64aa78f838f26eb144ab04ee05e2029a4cadc"
+    "packages/duvet_e2e/pubspec.yaml": "8cf14dbbef81011ffdfce57d08f47c5cef84c15a06cb0ca71debe596d09083ce"
   }
 }

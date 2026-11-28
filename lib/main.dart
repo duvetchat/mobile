@@ -29,6 +29,7 @@ import 'data/voice.dart';
 import 'data/webrtc_engine.dart';
 import 'calls.dart';
 import 'deep_links.dart';
+import 'licenses.dart';
 // The core's gate needs dart:io and isolates, which the web build lacks.
 import 'e2e/app_host_web.dart' if (dart.library.io) 'e2e/app_host.dart';
 import 'e2e/push_decrypt.dart';
@@ -56,6 +57,8 @@ import 'widgets/youtube_dock.dart';
 
 Future<void> main() async {
   final binding = DuvetBinding();
+  // The notices the build leaves out of the licence page, read only as it opens.
+  addBundledLicenses();
   // Asked once, and not of dart:io in a browser, where asking throws.
   final onAndroid = !kIsWeb && Platform.isAndroid;
   // The theme's mode is the first thing read: the first frame draws by it. The rest of it loads behind.
