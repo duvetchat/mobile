@@ -490,12 +490,15 @@ class ChatMessage {
       (final shown?, final now?) when shown.content != now.content && !shown.deleted => shown.withContent(now.content),
       _ => reply,
     };
+    final files = _filesOf(held);
     if (content == held.content &&
         edited == held.edited &&
         waiting == held.waiting &&
         loading == held.loading &&
         sharedBy == held.sharedBy &&
-        identical(quote, reply)) {
+        identical(quote, reply) &&
+        identical(files, attachments) &&
+        isVoice == held.isVoice) {
       return this;
     }
     return copyWith(
@@ -505,7 +508,25 @@ class ChatMessage {
       loading: held.loading,
       sharedBy: held.sharedBy,
       reply: quote,
+      attachments: files,
+      isVoice: held.isVoice,
     );
+  }
+
+  /// The files [held] says the message has: this message's own while they're the same ones with their links, as a link
+  /// renewed here ([withAttachmentLink]) is newer than the one [held] was made with; otherwise [held]'s, each this
+  /// message already shows at a link keeping it. A message that came live before the device held its row shows none
+  /// until its row is read (mobile#404).
+  List<MessageAttachment> _filesOf(ChatMessage held) {
+    final shown = {for (final a in attachments) a.id: a};
+    MessageAttachment kept(MessageAttachment file) => switch (shown[file.id]) {
+      final mine? when mine.url.isNotEmpty || file.url.isEmpty => mine,
+      _ => file,
+    };
+    if (shown.length == held.attachments.length && held.attachments.every((a) => identical(kept(a), shown[a.id]))) {
+      return attachments;
+    }
+    return [for (final a in held.attachments) kept(a)];
   }
 }
 

@@ -161,8 +161,10 @@ jobs:
       # simulator of the newest iOS the runner has.
       - name: The core on a simulator
         working-directory: mobile
-        # About 10 minutes: an app that never reports fails here, with its log below, not at the job's limit.
-        timeout-minutes: 30
+        # Each test file's app gets 10 minutes and one more try (#406): a launch now and then never reports, where its
+        # tests take seconds. A second try that fails or doesn't report fails here, with its log below, not at the
+        # job's limit.
+        timeout-minutes: 45
         run: |
           pick=$(xcrun simctl list devices available --json | jq -r '[.devices | to_entries | sort_by(.key)[] |
             select(.key | contains(".iOS-")) | .key as $runtime | .value[] | select(.name | startswith("iPhone")) |
@@ -172,7 +174,16 @@ jobs:
           device=${pick%% *}
           echo "SIMULATOR=$device" >> "$GITHUB_ENV"
           xcrun simctl bootstatus "$device" -b
-          flutter test integration_test -d "$device"
+          # A file's run, ended after 10 minutes by perl's alarm, as macOS has no timeout(1).
+          run_file() { perl -e 'alarm shift @ARGV; exec @ARGV' 600 flutter test "$1" -d "$device"; }
+          for file in integration_test/*_test.dart; do
+            run_file "$file" && continue
+            echo "::warning::$file didn't pass, or didn't report within 10 minutes: its app's log, then one more try"
+            xcrun simctl spawn "$device" log show --last 12m --style compact --predicate 'process == "Runner"' |
+              tail -200
+            xcrun simctl terminate "$device" chat.duvet || true
+            run_file "$file"
+          done
           framework=build/ios/iphonesimulator/Runner.app/Frameworks/duvet_e2e.framework
           echo "duvet_e2e.framework: $(du -sh "$framework" | cut -f1)"
       # What the app logged on the simulator, and how it ended, when its tests fail or don't finish.
