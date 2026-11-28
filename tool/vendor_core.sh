@@ -4,8 +4,10 @@
 # artifacts.yml built from that commit (the release artifacts-<7 digits>) live here, prebuilt and checksummed, so
 # neither the app's builds nor its CI compile Rust. Android's arm64-v8a library takes cargokit's place in Gradle's
 # build; iOS's XCFramework, a phone's framework and a simulator's, is a Swift package's binary target, which Xcode
-# links and embeds in the app; Linux's library is what the tests load (DUVET_E2E_LIB). gh reads the repository and
-# the release. Each download is checked against the release's SHA256SUMS before anything is written, and
+# links and embeds in the app; Linux's library is what the tests load (DUVET_E2E_LIB). THIRD-PARTY-NOTICES.txt, the
+# notices of the code those libraries carry, is an asset of the plugin's, which the app's licence page shows
+# (lib/licenses.dart). gh reads the repository and the release. Each download is checked against the release's
+# SHA256SUMS before anything is written, and
 # packages/duvet_e2e/SOURCE.json records the commit and every file's SHA-256, which test/e2e/vendored_core_test.dart
 # checks.
 #
@@ -32,8 +34,14 @@ fi
 cache=$HOME/.cache/duvet-core/${commit:0:7}
 mkdir -p "$cache"
 gh release download "$tag" --repo "$repository" --dir "$cache" --clobber --pattern SHA256SUMS \
-  --pattern android-arm64-v8a-libduvet_e2e.so --pattern libduvet_e2e.so --pattern ios-duvet_e2e.xcframework.zip
-for name in android-arm64-v8a-libduvet_e2e.so libduvet_e2e.so ios-duvet_e2e.xcframework.zip; do
+  --pattern android-arm64-v8a-libduvet_e2e.so --pattern libduvet_e2e.so --pattern ios-duvet_e2e.xcframework.zip \
+  --pattern THIRD-PARTY-NOTICES.txt
+for name in android-arm64-v8a-libduvet_e2e.so libduvet_e2e.so ios-duvet_e2e.xcframework.zip THIRD-PARTY-NOTICES.txt; do
+  # gh downloads what the release has: one without the notices (before the core's own) isn't vendored.
+  if [[ ! -f $cache/$name ]]; then
+    echo "$tag has no $name" >&2
+    exit 1
+  fi
   listed=$(awk -v name="$name" '$2 == name || $2 == "*" name { print $1 }' "$cache/SHA256SUMS")
   actual=$(sha256sum "$cache/$name" | cut -d' ' -f1)
   if [[ -z $listed || $listed != "$actual" ]]; then
@@ -59,10 +67,12 @@ for file in lib/duvet_e2e.dart lib/src/rust/api/core.dart lib/src/rust/frb_gener
 done
 
 # The plugin for Android and iOS, the platforms the app carries the core's libraries for: cargokit, which built them
-# all, isn't here.
+# all, isn't here. Its notices are an asset, packages/duvet_e2e/THIRD-PARTY-NOTICES.txt to the app.
 sed -i '/^flutter:$/,$d' "$next/pubspec.yaml"
 cat >>"$next/pubspec.yaml" <<'YAML'
 flutter:
+  assets:
+    - THIRD-PARTY-NOTICES.txt
   plugin:
     platforms:
       android:
@@ -79,6 +89,7 @@ fi
 mkdir -p "$next/android/src/main/jniLibs/arm64-v8a" "$next/linux-x64" "$next/ios/duvet_e2e/Frameworks"
 cp "$cache/android-arm64-v8a-libduvet_e2e.so" "$next/android/src/main/jniLibs/arm64-v8a/libduvet_e2e.so"
 cp "$cache/libduvet_e2e.so" "$next/linux-x64/libduvet_e2e.so"
+cp "$cache/THIRD-PARTY-NOTICES.txt" "$next/THIRD-PARTY-NOTICES.txt"
 # The XCFramework, whose every entry must be inside it: nothing the archive names lands elsewhere.
 stray=$(unzip -Z1 "$cache/ios-duvet_e2e.xcframework.zip" | awk '!/^duvet_e2e\.xcframework\// || /(^|\/)\.\.(\/|$)/')
 if [[ -n $stray ]]; then
@@ -116,7 +127,8 @@ duvetchat/e2e: its Dart, for Android and iOS, with the libraries the core's CI b
 app's builds compile no Rust. \`android/src/main/jniLibs/arm64-v8a/libduvet_e2e.so\` is Android's;
 \`ios/duvet_e2e/Frameworks/duvet_e2e.xcframework\`, a phone's framework and a simulator's, is iOS's, which
 \`ios/duvet_e2e/Package.swift\` hands to Xcode as a binary target; and \`linux-x64/libduvet_e2e.so\` is what the tests
-load (\`DUVET_E2E_LIB\`). \`SOURCE.json\` has every file's SHA-256. Nothing here is edited by hand: run
+load (\`DUVET_E2E_LIB\`). \`THIRD-PARTY-NOTICES.txt\`, the notices of the code those libraries carry, is an asset the
+app's licence page shows. \`SOURCE.json\` has every file's SHA-256. Nothing here is edited by hand: run
 \`tool/vendor_core.sh <commit>\` again.
 EOF
 

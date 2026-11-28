@@ -56,4 +56,11 @@ void main() {
     final platforms = File('$package/pubspec.yaml').readAsStringSync().split('platforms:\n').last;
     expect(platforms.trim(), 'android:\n        ffiPlugin: true\n      ios:\n        ffiPlugin: true');
   });
+
+  // The notices of the code the core's libraries carry (SQLCipher, OpenSSL, OpenMLS, hpke-rs and the rest), which its
+  // release has beside them: an asset of the plugin's, which the app's licence page shows (lib/licenses.dart, #401).
+  test("it carries the core's third-party notices, as an asset of its own", () {
+    expect(files.keys, contains('$package/THIRD-PARTY-NOTICES.txt'));
+    expect(File('$package/pubspec.yaml').readAsStringSync(), contains('  assets:\n    - THIRD-PARTY-NOTICES.txt\n'));
+  });
 }
