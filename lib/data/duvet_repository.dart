@@ -53,10 +53,11 @@ List<ChatMessage> readFrom(
   Map<String, ShownMessage> held, {
   required String Function(String userId) nameOf,
   ({int? through})? applied,
+  int? joined,
 }) => [
   for (final m in messages)
     m.encrypted && !m.pending
-        ? withRow(m, held[m.id], nameOf: nameOf, quoted: held[m.reply?.messageId], applied: applied)
+        ? withRow(m, held[m.id], nameOf: nameOf, quoted: held[m.reply?.messageId], applied: applied, joined: joined)
         : m,
 ];
 
@@ -81,13 +82,17 @@ bool notApplied(int? seq, ({int? through})? applied) => switch (applied) {
 /// shared it ([nameOf] names them); and its reply's quote, by what the database holds of that message ([quoted]). A
 /// row the database holds as waiting, or none, waits for it, with no text; one it doesn't hold that isn't applied yet
 /// ([notApplied], by how far the device [applied] the conversation's queue, read before [row]) loads instead (M2 of the
-/// desktop's task 16 review, M1 of task 17's). A row, and a quote, show only under the author the API names.
+/// desktop's task 16 review, M1 of task 17's). One it doesn't hold, numbered before the number this device [joined] the
+/// conversation's group at (its joinedSeq), was never sealed for it: it says it's not on this device, as nothing will
+/// deliver it (mobile#409); with [joined] unknown, it waits. A row, and a quote, show only under the author the API
+/// names.
 ChatMessage withRow(
   ChatMessage message,
   ShownMessage? row, {
   required String Function(String userId) nameOf,
   ShownMessage? quoted,
   ({int? through})? applied,
+  int? joined,
 }) {
   // A quote's text only under the author the API names for the message it quotes (M2 of task 17's review).
   final reply = switch ((message.reply, quoted)) {
@@ -98,9 +103,11 @@ ChatMessage withRow(
   // A row whose author isn't the one the API names is another's message: it waits (M4 of the desktop's review).
   if (row == null || row.status != MessageStatus.ok || row.userId != message.authorId) {
     final loading = row == null && notApplied(message.seq, applied);
+    final seq = message.seq;
     return message.copyWith(
       content: '',
       waiting: !loading,
+      notOnDevice: row == null && !loading && seq != null && joined != null && seq < joined,
       loading: loading,
       reply: reply,
       attachments: const [],
@@ -111,6 +118,7 @@ ChatMessage withRow(
     content: row.text ?? '',
     edited: row.editedAt != null,
     waiting: false,
+    notOnDevice: false,
     loading: false,
     sharedBy: switch (row.sharedBy) {
       final user? => nameOf(user),
@@ -1560,7 +1568,7 @@ class DuvetRepository implements ChatRepository {
       }
       rows = drawn.rows;
     }
-    return readFrom(rows, held, nameOf: _sharerName, applied: applied);
+    return readFrom(rows, held, nameOf: _sharerName, applied: applied, joined: _engine?.joinedSeq(conversationId));
   }
 
   String _sharerName(String userId) => nameOf(userId) ?? 'Someone';
@@ -1808,7 +1816,13 @@ class DuvetRepository implements ChatRepository {
       held: held.containsKey,
     );
     if (drawn.beforeJoining) _beforeJoining.add(conversationId);
-    return readFrom(drawn.rows, held, nameOf: _sharerName, applied: applied);
+    return readFrom(
+      drawn.rows,
+      held,
+      nameOf: _sharerName,
+      applied: applied,
+      joined: _engine?.joinedSeq(conversationId),
+    );
   }
 
   @override
@@ -2290,7 +2304,13 @@ class DuvetRepository implements ChatRepository {
         // Its text is what this device holds of it: it loads until its conversation's turn applies it, which reads it
         // again; one the device may hold already is read again now (M1 and I4 of task 17's review).
         final message = mine.encrypted
-            ? withRow(mine, null, nameOf: _sharerName, applied: _engine?.appliedThrough(id))
+            ? withRow(
+                mine,
+                null,
+                nameOf: _sharerName,
+                applied: _engine?.appliedThrough(id),
+                joined: _engine?.joinedSeq(id),
+              )
             : mine;
         if (message.call case final call?) {
           _readCallNotice(id, message.id, call, me);

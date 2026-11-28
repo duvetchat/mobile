@@ -3,6 +3,7 @@ import 'dart:typed_data';
 
 import 'package:duvet/data/duvet_repository.dart' show notYetRead, readFrom, withRow;
 import 'package:duvet/data/models.dart';
+import 'package:duvet/data/recent_chats.dart' show previewOf;
 import 'package:duvet/e2e/content.dart';
 import 'package:duvet/e2e/core_gate.dart';
 import 'package:duvet/e2e/notices.dart';
@@ -11,6 +12,7 @@ import 'package:duvet/e2e/sync.dart' show entryOf;
 import 'package:duvet/e2e/uuid.dart';
 import 'package:duvet/encryption/conversation_start.dart';
 import 'package:duvet/theme.dart';
+import 'package:duvet_client/duvet.dart' as duvet;
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:forui/forui.dart';
@@ -232,6 +234,101 @@ void main() {
       [(true, false), (false, false)],
     );
   });
+
+  // mobile#409: a row this device doesn't hold, numbered before it joined the conversation's group (its joinedSeq), was
+  // never sealed for it, and nothing will deliver it: it says it's not on this device, in the waiting row's place. From
+  // joinedSeq on, or while joinedSeq isn't known, it waits.
+  test("a_row_from_before_this_device_joined_that_it_doesn't_hold_is_not_on_this_device", () {
+    ChatMessage drawn(int seq, {int? joined, ShownMessage? row, ({int? through})? applied = (through: 9)}) => withRow(
+      _listed('x').copyWith(seq: seq),
+      row,
+      nameOf: (_) => '',
+      applied: applied,
+      joined: joined,
+    );
+    final before = drawn(4, joined: 5);
+    expect((before.waiting, before.notOnDevice, before.loading, before.content), (true, true, false, ''));
+    for (final waits in [drawn(5, joined: 5), drawn(6, joined: 5), drawn(4)]) {
+      expect((waits.waiting, waits.notOnDevice), (true, false));
+    }
+    // Held, opened or not, it's no longer missing, whatever its number.
+    expect(drawn(4, joined: 5, row: _shown('x', text: 'kept')).notOnDevice, isFalse);
+    expect(drawn(4, joined: 5, row: _shown('x', status: 'waiting')).notOnDevice, isFalse);
+    // Not applied yet this run, it loads.
+    final loading = drawn(4, joined: 5, applied: null);
+    expect((loading.loading, loading.notOnDevice), (true, false));
+    // Read again once a shared history brought its row: its text, and nothing more of where it was.
+    final shared = withRow(
+      before,
+      _shown('x', text: 'shared'),
+      nameOf: (_) => '',
+      applied: (through: 9),
+      joined: 5,
+    );
+    expect((shared.content, shared.waiting, shared.notOnDevice), ('shared', false, false));
+    // A chat's page reads it so, and the chat takes it in place of the waiting row it showed.
+    final [page] = readFrom(
+      [_listed('y').copyWith(seq: 2)],
+      const {},
+      nameOf: (_) => '',
+      applied: (through: 9),
+      joined: 3,
+    );
+    expect(page.notOnDevice, isTrue);
+    expect(drawn(4).heldAs(before).notOnDevice, isTrue);
+    // The Chats tab's line says it, as it says a waiting one waits.
+    expect(previewOf(before, (content) => content), Notice.notOnDevice.text);
+    expect(previewOf(drawn(5, joined: 5), (content) => content), Notice.waiting.text);
+  });
+
+  // mobile#409: a new device of someone already in the conversation (approved by their first) joins its group by an
+  // external commit, whose number the engine keeps as where it joined, as the API lists it: what came before was never
+  // sealed for it and isn't on it; what comes after, it holds.
+  test(
+    'a_new_device_draws_what_came_before_it_joined_as_not_on_it',
+    () async {
+      final fake = FakeApi();
+      final (ana, bo) = (fake.addUser(), fake.addUser());
+      final conversation = fake.addConversation(group: false, members: [ana, bo]);
+      final a = await firstDevice(fake, ana);
+      final b = await firstDevice(fake, bo);
+      await a.engine.openConversation(conversation);
+      await sameGroup([a, b], conversation);
+      Future<duvet.DirectMessage> said(String text) async =>
+          (await b.engine.sendMessage(Outgoing(conversationId: conversation, nonce: uuidv4(), text: text)))!;
+      final before = await said('before');
+
+      final phone = await approvedDevice(fake, a);
+      await sameGroup([a, b, phone], conversation);
+      await until(() => phone.engine.joinedSeq(conversation) != null, what: 'where the new device joined');
+      final listed = (await phone.api.api.getConversations()).firstWhere((conv) => conv.id == conversation);
+      final joined = phone.engine.joinedSeq(conversation);
+      expect(listed.mls!.joinedSeq, isNotNull);
+      expect(joined, listed.mls!.joinedSeq);
+      expect(joined, greaterThan(before.seq!));
+      final after = await said('after');
+      await until(() async => (await phone.engine.messages(conversation, [after.id])).isNotEmpty);
+
+      final held = {
+        for (final row in await phone.engine.messages(conversation, [before.id, after.id])) row.messageId: row,
+      };
+      ChatMessage drawn(duvet.DirectMessage m) => withRow(
+        _listed(m.id, author: bo).copyWith(seq: m.seq),
+        held[m.id],
+        nameOf: (_) => 'Bo',
+        applied: phone.engine.appliedThrough(conversation),
+        joined: joined,
+      );
+      final (earlier, later) = (drawn(before), drawn(after));
+      expect((earlier.waiting, earlier.notOnDevice, earlier.content), (true, true, ''));
+      expect((later.waiting, later.notOnDevice, later.content), (false, false, 'after'));
+      for (final device in [a, b, phone]) {
+        await device.engine.stop();
+      }
+    },
+    skip: noCore,
+    timeout: _slow,
+  );
 
   testWidgets("the_line_about_the_cutover_shows_on_a_legacy_conversation,_with_the_server's_date", (tester) async {
     final cutoverAt = await tester.runAsync(() async {

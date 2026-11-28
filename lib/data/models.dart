@@ -186,6 +186,11 @@ class ChatMessage {
   /// vista de una conversación»): it shows as waiting for it, with no text.
   final bool waiting;
 
+  /// A [waiting] message numbered before this device joined its conversation's group, which the device doesn't hold:
+  /// it was never sealed for this device and nothing will deliver it, so it says it's not on this device instead
+  /// (mobile#409). Only a shared history or a backup brings it.
+  final bool notOnDevice;
+
   /// The user's own message this device still sends, from before the app started again: a failed send, with Retry
   /// and Dismiss.
   final bool pending;
@@ -242,6 +247,7 @@ class ChatMessage {
     this.isComponentsV2 = false,
     this.interaction,
     this.waiting = false,
+    this.notOnDevice = false,
     this.pending = false,
     this.filesGone = false,
     this.sealedLinks = const {},
@@ -271,6 +277,7 @@ class ChatMessage {
     bool? pinned,
     MessageReply? reply,
     bool? waiting,
+    bool? notOnDevice,
     String? sharedBy,
     int? seq,
     bool? loading,
@@ -306,6 +313,7 @@ class ChatMessage {
     isComponentsV2: isComponentsV2,
     interaction: interaction,
     waiting: waiting ?? this.waiting,
+    notOnDevice: notOnDevice ?? this.notOnDevice,
     pending: pending,
     filesGone: filesGone,
     sealedLinks: sealedLinks,
@@ -355,6 +363,7 @@ class ChatMessage {
           isComponentsV2: update.isComponentsV2,
           interaction: update.interaction ?? interaction,
           waiting: update.waiting,
+          notOnDevice: update.notOnDevice,
           pending: pending,
           filesGone: filesGone,
           sealedLinks: sealedLinks,
@@ -405,6 +414,7 @@ class ChatMessage {
       isComponentsV2: isComponentsV2,
       interaction: interaction,
       waiting: waiting,
+      notOnDevice: notOnDevice,
       pending: pending,
       filesGone: filesGone,
       sealedLinks: sealedLinks,
@@ -448,6 +458,7 @@ class ChatMessage {
       isComponentsV2: isComponentsV2,
       interaction: interaction,
       waiting: waiting,
+      notOnDevice: notOnDevice,
       pending: pending,
       filesGone: filesGone,
       sealedLinks: sealedLinks,
@@ -483,8 +494,8 @@ class ChatMessage {
   bool reactedWith(String userId, String key) => reactions.any((r) => r.key == key && r.users.contains(userId));
 
   /// This message with what this device's own database holds of it now, as [held] has it (an encrypted conversation's,
-  /// read again): its text, whether it was edited, waits or was shared, and its reply's quote; what else it shows
-  /// (reactions, a pin) stays. Itself when that's what it has.
+  /// read again): its text, whether it was edited, waits (or isn't on this device) or was shared, and its reply's
+  /// quote; what else it shows (reactions, a pin) stays. Itself when that's what it has.
   ChatMessage heldAs(ChatMessage held) {
     final quote = switch ((reply, held.reply)) {
       (final shown?, final now?) when shown.content != now.content && !shown.deleted => shown.withContent(now.content),
@@ -494,6 +505,7 @@ class ChatMessage {
     if (content == held.content &&
         edited == held.edited &&
         waiting == held.waiting &&
+        notOnDevice == held.notOnDevice &&
         loading == held.loading &&
         sharedBy == held.sharedBy &&
         identical(quote, reply) &&
@@ -505,6 +517,7 @@ class ChatMessage {
       content: held.content,
       edited: held.edited,
       waiting: held.waiting,
+      notOnDevice: held.notOnDevice,
       loading: held.loading,
       sharedBy: held.sharedBy,
       reply: quote,
